@@ -45,6 +45,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #15 | V1 step 4, verify + GitHub connector + incidents: review-packet assembly from CI on the head SHA, `factory/verify` per SHA, the App webhook (`/webhooks/github`), branch confinement (ruleset + push validation), Workflow v2, incident root causes, the check-only auto-merge (ADR 0230), the evals regression suite. ADRs 0230–0231, migration 0040 |
 | #16 | V1 step 2, the app: `sf-app` on TanStack Start + shadcn (`packages/ui`), GitHub sign-in for the allowlisted login with a Personal org, Inbox + runner health line, New work, work item detail with the Planning tab, the review packet (Merge / Send back), Setup (project, policy sync, runner keys). ADR 0240 |
 | #18 | Bootstrap fixes, the first factory incidents ([write-up](incidents/2026-11-11-bootstrap.md)): `project.update` (installation id / detect, default branch), installation detection as the App (`GitHubService.findRepoInstallation`) with `installationWarning` on `project.create`, Setup's fix path and runner pairing command, `sf-runner pair` tolerant stdin, `sf-runner install` requires Node ≥ 24 |
+| #19 | Onboarding rebuild ([ADR 0055](adr/0055-github-installations-are-org-records.md), [0056](adr/0056-runner-device-login.md)): Connect GitHub through the install flow (installation records, migration 0060), repo picker, policy auto-sync + Create policy PR, `sf-runner login` device flow, Setup as a live checklist and the inbox's Finish setup card |
 
 ## In flight
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
@@ -74,8 +75,14 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   it returns `{ ok: true, result }` or `{ ok: false, error: { code, message } }`. Pass an
   `idempotencyKey` for form submits.
 - Operations by screen:
-  - Setup: `project.create` (finds the App installation itself; `installationWarning` when none), `project.update` (installation id or `detectInstallation`, default branch), `project.list`, `policy.sync` (until the connector does it), `runner.register`
-    (returns the runner key once), `runner.rotateKey`, `runner.list`.
+  - Setup (ADR 0055, 0056): `setup.status { orgId }` (the checklist), `github.connectStart` (GitHub's
+    install URL with a single-use state; GitHub returns to `/integrations/github/setup`, which calls
+    `github.connectInstallation` server-side), `github.repos` (the repo picker), `project.create
+    { orgId, installationRecordId, repoId }` (refuses unreachable repos; reads the policy),
+    `policy.resync`, `policy.proposeTemplate` (the Create policy PR button), `project.list`,
+    `runner.deviceLookup` / `runner.approveDevice` / `runner.denyDevice` (`/runners/connect`), and the
+    key fallback `runner.register`, `runner.rotateKey`, `runner.list`. `project.update` is an admin
+    fix only; the UI never shows an installation id.
   - New work: `workItem.previewRouting { projectId }`, `workItem.create { projectId, title?, body, source: "app", eventId }`.
   - Inbox: `inbox.list { orgId? }` (gates and questions assigned to you, running items, your runners'
     health, WIP holds). Decide with `spec.approve`, `spec.requestChanges { note }`,
@@ -154,6 +161,9 @@ Still open:
 - Speculative continuation past a gate: designed for (0007), not built in R1.
 
 ## Needs the human
+- **The GitHub App's Setup URL**: `https://software-factory.zerobsai.com/integrations/github/setup`
+  with "Redirect on update" on (GitHub → Settings → Developer settings → GitHub Apps →
+  software-factory-zerobsai → General). Then Setup → **Connect GitHub**.
 - **`RUNNER_CHANNEL_SECRET`** as a repo secret (`openssl rand -base64 48 | gh secret set RUNNER_CHANNEL_SECRET`):
   the deploy syncs it to `sf-engine`. Until then the runner channel answers 503.
 - The GitHub App's settings (ADR 0231, `docs/deploying.md`): webhook URL
