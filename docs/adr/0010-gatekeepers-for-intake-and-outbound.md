@@ -17,3 +17,8 @@ sessions. Results go back as comments, PRs and replies. Borrowed from the Relati
 ## Consequences
 - `packages/gatekeeper-webhook` is the first gatekeeper.
 - GitHub access goes through the GitHub App per org ([ADR 0025](0025-github-app-per-org.md)).
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): **gatekeeper is renamed connector** ("gate", "gatekeeper" and "factory gate" collided).
+> `packages/gatekeeper-webhook` is now `packages/connector-webhook`. Everything else in this ADR
+> holds for connectors. The GitHub connector also mints the per-job repo tokens runners push with
+> ([ADR 0033](0033-per-job-github-app-tokens.md)), so agents still never hold a standing token.

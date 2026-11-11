@@ -16,3 +16,10 @@ client repo cannot. Borrowed from Relationship OS's Cautious, Balanced and Auton
 ## Consequences
 - Policy is evaluated in the gate ([ADR 0004](0004-invoke-pipeline-and-gate.md)).
 - Projects show each resolved value with its source: preset, `.factory/` or floor.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): vocabulary: a **preset** of this kind is now called an **autonomy policy** (shipped ones:
+> Cautious, Balanced, Autonomous). The repo-practice bundles are **project templates**
+> ([ADR 0026](0026-repo-practice-via-presets.md)). The floor is unchanged. A client org has its own
+> floor ([ADR 0043](0043-a-client-is-its-own-org.md)). Policy is read from the default branch only
+> ([ADR 0036](0036-policy-from-the-default-branch.md)). Spike ADR 0110 asks whether an unknown
+> policy name should deny every call; this ADR's "fails closed" answers yes.

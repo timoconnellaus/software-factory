@@ -16,3 +16,16 @@ Relationship OS ADRs 0028 and 0130.
 ## Consequences
 - Gate waits cost nothing while idle.
 - Open question: the exact cascade and depth limits, and whether the kill switch is per org or global.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): **one Workflow per work item stays** (the review suggested state in D1 with Workflows per
+> stage; we keep this ADR). The work-item state of record is still in D1 through operations; the
+> Workflow drives it. The build must handle, explicitly and with tests: send-back loops (verify →
+> build, spec → planning) as loops inside one instance; takeover and pause, where a paused item
+> releases its runner slot ([ADR 0035](0035-lease-fencing-and-one-branch-per-run.md)); **Workflow
+> versioning across deploys** (an instance started on an old version must finish or be migrated);
+> step count and payload limits (large artifacts go to R2, steps carry ids); and several intake
+> events merging into one work item. For that last one the **dedupe key on intake events is
+> separate from the Workflow id**: an intake event maps to a work item through the dedupe key, and
+> a second event about the same thing attaches to the existing work item instead of deriving a new
+> Workflow id. The kill switch is **per org and per project** ([ADR 0044](0044-kill-switch-scope.md)).
+> Still open: cascade and depth limits.

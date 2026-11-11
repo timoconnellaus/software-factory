@@ -13,3 +13,7 @@ A gate nobody hears about stalls the factory. Borrowed from Relationship OS ADRs
 
 ## Consequences
 - Escalation of unread approvals, a daily digest and tap-to-approve are designed for but not built in v1.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): **web push is in R1** ([ADR 0040](0040-web-push-and-wip-backpressure.md)): the outbox
+> delivers a browser push with a deep link for every gate assigned to a user. Only the native app
+> is still deferred. Escalation of unread approvals and the daily digest still come later.

@@ -13,3 +13,5 @@ Changing a preset, prompt or model role should be measured, not guessed. Relatio
 
 ## Consequences
 - Self-improvement PRs ([ADR 0009](0009-factory-config-in-git.md)) can cite eval results.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): evals benchmark **autonomy policies**, project templates, model roles and harnesses.

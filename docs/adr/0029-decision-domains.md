@@ -22,3 +22,8 @@ behaviour and UX while engineers decide architecture.
 > their own (e.g. clinical). When build touches a domain the spec did not plan for, the build pauses
 > and sends a scoped question to that domain's owner while other work continues. Still open: a
 > touched domain with no declared owner.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): resolved: a touched domain with no declared owner goes to the **project approver** as
+> backup owner, and every domain owner can name a backup who gets questions on timeout
+> ([ADR 0042](0042-one-question-object.md)). Domains stay in R1, in its third milestone. Status: the
+> UI plan's "proposed" is superseded; domains are accepted.

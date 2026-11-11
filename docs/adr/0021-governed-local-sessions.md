@@ -22,3 +22,9 @@ Principle: **local sessions can do anything locally, but nothing reaches main ex
 ## Consequences
 - Hooks are a convenience; remote enforcement is the guarantee.
 - Open question: lease length and what happens to a cloud run when a local session claims mid-run.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): a lease claim returns a **fencing token**; a local claim mid-run bumps it, the cloud
+> run is stopped and its slot released ([ADR 0035](0035-lease-fencing-and-one-branch-per-run.md)).
+> Lease length is still open. "The factory gate" in the principle means the required
+> `factory/verify` check plus the merge gate ([ADR 0037](0037-factory-verify-pinned-and-sha-bound.md));
+> the hooks step needs the harness's `hooks` capability.

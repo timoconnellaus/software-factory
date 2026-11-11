@@ -1,25 +1,39 @@
-# Stage specs
+# Specs
 
-Each stage is one buildable slice. Format (borrowed from Relationship OS): **Read first / Goal /
+Each spec is one buildable slice. Format (borrowed from Relationship OS): **Read first / Goal /
 Scope / Out of scope / Acceptance criteria**. The acceptance criteria are the definition of done,
-and the factory's own planning stage writes specs in this same format.
+and the factory's own planning stage writes specs in this same format. (This folder was
+`docs/stages/` until 2026-11-11; "stage" now means only a step in a work item's pipeline.)
 
-| # | Stage | Depends on |
+| # | Spec | Depends on |
 | --- | --- | --- |
 | [00](00-scaffold.md) | Scaffold (this repo's skeleton) | — |
-| [01](01-operations-and-store.md) | Operations, invoke pipeline, work-item store, audit journal, outbox | 00 |
-| [02](02-work-item-workflow.md) | CLI/chat intake, the work-item Workflow, triage, spec gate | 01 |
-| [03](03-runner-contract-and-orca.md) | Runner contract, signed channel, runner host, `runner-orca`, `harness-claude`, scheduler | 01; the `spikes/` runner work |
-| [04](04-verify-and-pr.md) | Verify, review packet, PR through the GitHub App gatekeeper, `factory/verify` check | 02, 03 |
+| [01](01-operations-and-store.md) | Operations, invoke pipeline, work-item store, audit journal, outbox, leases with fencing | 00 |
+| [02](02-work-item-workflow.md) | CLI/chat intake, the work-item Workflow, triage, spec gate, questions | 01 |
+| [03](03-runner-contract-and-orca.md) | Runner contract, signed channel, runner host, `runner-orca`, `harness-claude`, job tokens, scheduler | 01; the `spikes/` runner work |
+| [04](04-verify-and-pr.md) | Verify, holdout tests, review packet, PR through the GitHub connector, `factory/verify` check | 02, 03 |
 | [10](10-r1-sign-in-and-org-switcher.md) | R1: sign-in and the org & account switcher | 01 |
 | [11](11-r1-new-work.md) | R1: New work | 02, 10 |
-| [12](12-r1-inbox.md) | R1: Inbox | 02, 10 |
+| [12](12-r1-inbox.md) | R1: Inbox (grouped by project, runner health line) | 02, 10 |
 | [13](13-r1-work-item-detail.md) | R1: Work item detail | 02, 10 |
-| [14](14-r1-review-packet.md) | R1: Review packet | 04, 13 |
+| [14](14-r1-review-packet.md) | R1: Review packet (the merge gate) | 04, 13 |
+| [15](15-r1-notifications-backpressure-and-metrics.md) | R1: web push, WIP backpressure, early metrics | 01, 03, 12 |
 
-Stages 01–04 together are the **MVP backend slice**: CLI/chat intake → triage → implement (Claude
-Code via `runner-orca`) → verify (review packet) → PR in one repo. Stages 10–14 are UI release
-**R1** ([`docs/ui-plan.md`](../ui-plan.md)). The MVP's "simple web inbox" is stage 12.
+Specs 01–04 together are the **MVP backend slice**: CLI/chat intake → triage → implement (Claude
+Code via `runner-orca`) → verify (review packet) → PR in one repo. Specs 10–15 are UI release
+**R1** ([`docs/ui-plan.md`](../ui-plan.md)). The MVP's "simple web inbox" is spec 12.
+
+## R1 milestones
+R1 keeps everything planned (orgs, multi-session, decision domains, clarification, shared runners)
+but is built in three internal milestones
+([review decisions](../reviews/2026-11-11-review-decisions.md), ADR 0031 as amended). Each R1
+spec splits its scope and acceptance criteria by milestone.
+
+| Milestone | What | Specs |
+| --- | --- | --- |
+| **(a) Core loop** | End to end for one user and one repo: intake → triage → spec gate → build → verify → review packet → merge, with web push, WIP backpressure, inbox grouped by project, runner health line and early metrics. Usable as soon as it lands. | 01–04, 15; the (a) parts of 10–14 |
+| **(b) Orgs + multi-session** | Orgs, the switcher, "All factories" across signed-in accounts, per-session actions. | the (b) parts of 10–14 |
+| **(c) Domains, clarification, shared runners** | Decision domains routing questions and approvals, guests and clarification views, runner sharing allowlists and requester-first fallback. | the (c) parts of 10–14; spec 03 criterion 4 |
 
 Mockups for every R1 screen are in [`.kim/mockups/`](../../.kim/mockups/); the design system is in
 [`.kim/design-system/`](../../.kim/design-system/).

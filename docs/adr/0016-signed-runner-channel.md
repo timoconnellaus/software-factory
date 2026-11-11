@@ -15,3 +15,9 @@ must trust what they report. Borrowed from Relationship OS ADR 0250.
 ## Consequences
 - A runner can be revoked by rotating its key.
 - Open question: transport for job assignment (long poll, WebSocket to a Durable Object, or queue pull).
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): a replayed request id is **answered from the idempotency store**, not refused: the host
+> gets the first response again (spike ADR 0100). A bad signature or a stale timestamp is still
+> refused. Each job assignment carries its per-job repo token
+> ([ADR 0033](0033-per-job-github-app-tokens.md)) and the current fencing token
+> ([ADR 0035](0035-lease-fencing-and-one-branch-per-run.md)).

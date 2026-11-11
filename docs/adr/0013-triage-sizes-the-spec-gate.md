@@ -14,3 +14,10 @@ Coding before a spec exists wastes runs; requiring a spec for a one-line fix was
 ## Consequences
 - Spec approval is split per decision domain where domains are declared ([ADR 0029](0029-decision-domains.md)).
 - Open question: what "small" means concretely (diff size, files touched, or a foreman judgement).
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): **LLM triage decides** whether the spec stage is skipped (the review's deterministic
+> rule was not adopted), and **every skip is logged with its reason** in the audit journal and shown
+> on the work item. This resolves the open question: "small" is the triage judgement, bounded by the
+> autonomy policy's threshold. A Jev prompt-injection check on intake text before triage is a
+> follow-up ([ADR 0047](0047-jev-injection-check-follow-up.md)). See the foreman's decisions in
+> [ADR 0005](0005-hybrid-coordinator.md).

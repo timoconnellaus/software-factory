@@ -16,3 +16,11 @@ Relationship OS ADR 0017.
 ## Consequences
 - A metric that cannot be computed from the journal means an operation is missing data.
 - Open question: how runner token usage reaches the journal (runner events vs harness reports).
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): **three early metrics ship in R1**: gate time, send-back rate and cycle time, plus an
+> **"opened full diff?"** signal per PR ([ADR 0041](0041-in-app-review-packet-is-the-merge-gate.md)).
+> Gate time is always shown with **rework** and **escaped defects** next to it
+> ([ADR 0034](0034-holdout-acceptance-tests.md)), so cutting gate time cannot hide worse work.
+> **Autonomy rate** is defined as: the share of merged work items that needed no human action other
+> than the gates the autonomy policy requires (no send-back, no answered question, no takeover).
+> Every spec-gate skip is journaled with its reason ([ADR 0013](0013-triage-sizes-the-spec-gate.md)).

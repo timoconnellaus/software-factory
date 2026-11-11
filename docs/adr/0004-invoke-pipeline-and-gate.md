@@ -19,3 +19,10 @@ Borrowed from Relationship OS ADR 0018.
 - Policy ([ADR 0008](0008-autonomy-presets-and-floor.md)) is enforced here, in code, not in prompts.
 - The audit journal is complete by construction ([ADR 0011](0011-audit-journal-is-the-metrics.md)).
 - Handlers read immediately and queue writes; queued writes are not visible to later reads in the same handler.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): three changes. (1) Spike ADR 0110 adds the risk class **`plan`** (accepting a spec),
+> reviewed for agents under every autonomy policy. (2) An operation whose diff touches `.factory/` is
+> **`self-modify`** ([ADR 0036](0036-policy-from-the-default-branch.md)). (3) Writes from a lease
+> holder carry a **fencing token**, and `invoke()` refuses a stale one
+> ([ADR 0035](0035-lease-fencing-and-one-branch-per-run.md)). Policy here means the project's
+> **autonomy policy** plus the floor; "preset" is no longer used for it.

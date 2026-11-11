@@ -15,7 +15,7 @@ Today that is:
 | `sf-engine` | `apps/engine` | no (`workers_dev: false`) | Work-item Workflows, queues, cron (`*/5 * * * *`) |
 | `sf-app` | `apps/app` | `sf-app.<subdomain>.workers.dev` | Dashboard, MCP surface, operations API |
 
-A new Worker (a gatekeeper, say) is picked up automatically: add its `wrangler.jsonc` and it
+A new Worker (a connector, say) is picked up automatically: add its `wrangler.jsonc` and it
 deploys. Workers deploy in dependency order: a Worker that another binds to with a service
 binding deploys first. `node scripts/deploy/deploy.ts list` prints the order.
 

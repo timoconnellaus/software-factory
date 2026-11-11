@@ -14,3 +14,7 @@ Factory agents depend on repo files to orient themselves. Relationship OS shows 
 
 ## Consequences
 - Open question: the exact contents of each preset tier between `minimal` and `product`.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): these bundles are now called **project templates** (`minimal` → `product`), so they are not
+> confused with autonomy policies ([ADR 0008](0008-autonomy-presets-and-floor.md)). The specs the
+> spec stage writes live in `docs/specs/NN-*.md`. Still open: the contents of each template tier.

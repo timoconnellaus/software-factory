@@ -20,3 +20,8 @@ We copy the Relationship OS repo practice (Relationship OS ADR 0013) so agents t
 ## Consequences
 - `packages/runner-orca` is added when the runner-orca spike lands.
 - Worker `Env` types come from `wrangler types`, never hand-written.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): `packages/gatekeeper-webhook` is renamed `packages/connector-webhook`
+> ([ADR 0010](0010-gatekeepers-for-intake-and-outbound.md)), and the build specs live in
+> `docs/specs/` (was `docs/stages/`, which collided with pipeline stages). D1 tables follow the CRM:
+> `core_*` snake_case names, with Better Auth's tables mapped onto that scheme.
