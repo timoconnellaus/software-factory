@@ -204,6 +204,28 @@ export async function runOperation<O = unknown>(
     );
   }
 
+  // 4c. Browser-only decisions (ADR 0340): a person decides gates in the app, never through a
+  //     token another surface holds (the CLI, MCP), which an agent session might be using.
+  if (
+    actor.type === "human" &&
+    origin.surface !== "app" &&
+    origin.surface !== "test" &&
+    op.browserOnly &&
+    (op.browserOnly === true || op.browserOnly(input))
+  ) {
+    return refuse(
+      {
+        decision: "n/a",
+        outcome: "forbidden",
+        reason: `${op.name} is browser-only (surface ${origin.surface})`,
+      },
+      new OperationError(
+        "forbidden",
+        `${op.name} is a decision you make in the app, not from ${origin.surface} (ADR 0340)`,
+      ),
+    );
+  }
+
   // 5. Kill switch (ADR 0044): non-human writes to a covered item are refused. The details name the
   //    event that releases a parked Workflow step.
   if (actor.type !== "human" && risk !== "read" && !op.allowWhenKilled) {

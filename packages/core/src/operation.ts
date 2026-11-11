@@ -139,6 +139,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    * operations that apply nothing but default-branch content.
    */
   bootstrapsPolicy?: boolean;
+  /**
+   * A decision only a person in the browser makes (ADR 0340): gate decisions, answers, device
+   * approvals, turning a kill switch off. `invoke()` refuses it for a human on any surface but
+   * `app`, so a CLI or MCP token an agent might hold can never approve anything. A function
+   * decides per input (a kill switch may be turned on from a terminal, not off).
+   */
+  browserOnly?: true | ((input: z.output<I>) => boolean);
   /** Which inbox card a `review` answer becomes. Default `approval`. */
   gateKind?: "spec" | "merge" | "approval";
   /**

@@ -511,6 +511,7 @@ export const killSwitchSet = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "member",
+  browserOnly: (input) => !input.on, // turning a kill switch on is fine from a terminal
   input: z.object({
     scope: z.enum(["org", "project"]),
     id: z.string().min(1),

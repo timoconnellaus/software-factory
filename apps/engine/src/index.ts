@@ -10,6 +10,7 @@ import {
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
 import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
+import { CLI_PREFIX, handleCli } from "./cli.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
@@ -24,6 +25,7 @@ export default {
       return Response.json({ ok: true, worker: "sf-engine" });
     }
     if (url.pathname.startsWith(CHANNEL_PREFIX)) return handleChannel(request, env);
+    if (url.pathname.startsWith(CLI_PREFIX)) return handleCli(request, env);
     if (url.pathname === WEBHOOK_PATH) return handleGitHubWebhook(request, env);
     return new Response("Not found", { status: 404 });
   },

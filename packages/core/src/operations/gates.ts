@@ -103,6 +103,7 @@ export const approvalDecide = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "approver",
+  browserOnly: true,
   input: z.object({
     pendingActionId,
     decision: z.enum(["approved", "rejected"]),
@@ -131,6 +132,7 @@ export const specApprove = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "approver",
+  browserOnly: true,
   input: z.object({ workItemId, note: z.string().max(4_000).optional() }),
   output: decisionOutput,
   async handler(input, ctx) {
@@ -150,6 +152,7 @@ export const specRequestChanges = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "approver",
+  browserOnly: true,
   input: z.object({ workItemId, note: z.string().min(1).max(8_000) }),
   output: decisionOutput,
   async handler(input, ctx) {
@@ -169,6 +172,7 @@ export const reviewMerge = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "approver",
+  browserOnly: true,
   input: z.object({
     workItemId,
     openedFullDiff: z.boolean(),
@@ -193,6 +197,7 @@ export const reviewSendBack = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "approver",
+  browserOnly: true,
   input: z.object({ workItemId, note: z.string().min(1).max(8_000), openedFullDiff: z.boolean() }),
   output: decisionOutput.extend({ incidentId: z.string().nullable() }),
   async handler(input, ctx) {

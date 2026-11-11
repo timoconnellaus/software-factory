@@ -18,6 +18,8 @@ export const ID_PREFIXES = {
   deviceCode: "dev",
   attachment: "att",
   mergeQueueEntry: "mq",
+  cliDeviceCode: "cdc",
+  cliToken: "cli",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

@@ -184,6 +184,7 @@ export const questionAnswer = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "member",
+  browserOnly: true,
   input: z.object({ questionId, answer: z.string().min(1).max(8_000) }),
   output: z.object({ answered: z.boolean(), roundComplete: z.boolean() }),
   async handler(input, ctx) {
@@ -208,6 +209,7 @@ export const questionAcceptDefaults = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "member",
+  browserOnly: true,
   input: z.object({ workItemId }),
   output: z.object({
     accepted: z.array(z.string()),

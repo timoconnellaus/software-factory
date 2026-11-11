@@ -635,6 +635,37 @@ export interface CoreMergeQueueTable {
   ended_at: Iso | null;
 }
 
+// ---- 0110: the sf CLI (ADR 0340) ----
+
+export type CliScope = "read" | "write";
+
+export interface CoreCliDeviceCodesTable {
+  id: string;
+  device_code_hash: string;
+  user_code: string;
+  client_name: string | null;
+  requested_scope: Generated<CliScope>;
+  granted_scope: CliScope | null;
+  status: Generated<"pending" | "approved" | "denied" | "consumed">;
+  decided_by: string | null;
+  token_id: string | null;
+  created_at: Iso;
+  expires_at: Iso;
+  decided_at: Iso | null;
+  consumed_at: Iso | null;
+}
+
+export interface CoreCliTokensTable {
+  id: string;
+  token_hash: string;
+  user_id: string;
+  name: string | null;
+  scope: CliScope;
+  created_at: Iso;
+  expires_at: Iso;
+  revoked_at: Iso | null;
+}
+
 export interface CoreDatabase {
   core_meta: CoreMetaTable;
   core_user: CoreUserTable;
@@ -676,4 +707,6 @@ export interface CoreDatabase {
   core_runner_device_codes: CoreRunnerDeviceCodesTable;
   core_attachments: CoreAttachmentsTable;
   core_merge_queue: CoreMergeQueueTable;
+  core_cli_device_codes: CoreCliDeviceCodesTable;
+  core_cli_tokens: CoreCliTokensTable;
 }

@@ -28,7 +28,7 @@ import { secrets } from "./secrets.ts";
 export const CHANNEL_PREFIX = "/runner/v1/";
 
 /** HTTP status for each refusal code. 409 means "stop this job" to the host (`fenced`, `killed`). */
-const STATUS: Record<RefusalCode, number> = {
+export const STATUS: Record<RefusalCode, number> = {
   unknown_operation: 404,
   invalid_input: 400,
   forbidden: 403,
