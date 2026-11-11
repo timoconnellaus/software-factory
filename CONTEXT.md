@@ -132,6 +132,13 @@ notes, screenshots, risk flags, the diff and a preview link. Sections are set pe
 app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
 _Avoid_: PR summary, report
 
+**Merge queue**
+A project's approved merges, waiting to land one at a time (ADR 0330). The **head** (the oldest
+open entry) is brought up to date with the default branch by GitHub's update-branch, CI runs on
+it once, and it merges; then the next head goes. The approval carries over that clean update. A
+conflict or red CI at the head sends the item back to build.
+_Avoid_: merge train, landing queue
+
 **Default-branch ruleset**
 The repository ruleset that guards a project's default branch: a PR, the CI checks and
 `factory/verify` (pinned to the App, branch up to date), no force pushes, no deletion, **no bypass

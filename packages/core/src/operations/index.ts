@@ -4,6 +4,7 @@ export * from "./devices.ts";
 export * from "./gates.ts";
 export * from "./github.ts";
 export * from "./incidents.ts";
+export * from "./merge-queue.ts";
 export * from "./onboarding.ts";
 export * from "./projects.ts";
 export * from "./protection.ts";

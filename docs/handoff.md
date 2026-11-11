@@ -54,6 +54,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #26 | Protect `main` ([ADR 0280](adr/0280-protect-main-with-a-generated-ruleset.md)): the factory generates `<repo>-default-branch.json` (PR, `ci` + `factory/verify` pinned and strict, no force push, no deletion, no bypass) and `<repo>-factory-branches.json` as GitHub ruleset imports; Setup's **Protect `main`** step (Download ruleset, Open GitHub rulesets, Check now, Send to the repo admin); `protection.check` / `protection.observe` record verdicts (migration 0070); `repository_ruleset` / `branch_protection_rule` webhooks and a daily cron re-check; the **Protection on `main` changed** inbox card; policy `protection.onRed` (`warn` default, `block` holds builds). The App keeps `administration: read`. software-factory's own switch is in [`deploying.md`](deploying.md#protecting-main) (owner, at V1 step 5) |
 | #29 | Unmergeable factory PRs ([ADR 0320](adr/0320-factory-branches-stay-mergeable.md), incident [2026-11-11 #7](incidents/2026-11-11-bootstrap.md)): the runner host merges the default branch before a build, Workflow v3 treats a conflicting PR as its own state (back to build, 3 free rounds) and asks a person when no CI reports. Merged with `factory/verify` red (not opened by the factory), a bootstrap exception the owner approved |
 | #23 | Work item #1, attachments ([ADR 0310](adr/0310-work-item-attachments.md), migration 0090), built by the factory; `main` merged in and renumbered by hand after it was stuck (incident #7). Merged with `factory/verify` red (the head moved past the one the factory verified), a bootstrap exception the owner approved |
+| #30 | The merge queue ([ADR 0330](adr/0330-the-factory-runs-its-own-merge-queue.md), [spec 06](specs/06-merge-queue.md), migration 0100): approved merges land one at a time per project through Workflow v4; the head is updated by GitHub's update-branch, CI runs once on it, and the approval and review packet carry over. Merged with `factory/verify` red (not opened by the factory), a bootstrap exception the owner approved |
 
 ## In flight
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
@@ -135,8 +136,18 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
 - Workflow **v3** (`WORKFLOW_VERSION = 3`): `ci.read` also returns the PR's `mergeable`; a conflict
   at PR open or during the CI wait sends the item back to build (3 free rounds); CI still missing
   asks a blocking `operations` Question (Re-check CI / Stop this work item), no build retry.
-- Merge queue: the factory will run its own, per project (ADR 0320, "Merge queue"; GitHub's isn't
-  available on a personal-account repo). Not built yet: needs a spec.
+- Merge queue: built, see below (ADR 0330).
+
+**Merge queue (ADR 0330, spec 06)**
+- Workflow **v4** (`WORKFLOW_VERSION = 4`): an approved merge enters `core_merge_queue` (migration
+  0100) instead of merging; only the head is updated (GitHub's update-branch, accepted only as a clean
+  merge of the default branch into the approved head), CI runs on it, then `pr.merge` lands it with
+  the same approval. The review packet carries over (`sections.carriedFrom`).
+- Operations: `mergeQueue.enter`, `.position`, `.list { projectId }`, `.update`, `.leave`.
+  `pr.merge` / `pr.autoMerge` refuse a queued item that isn't the head. `workItem.get` has
+  `mergeQueue { position, ahead }`; finish and cancel release the entry and wake the next head.
+- A conflict or red CI at the head leaves the queue and goes back to build. The App has no
+  `workflows` permission, so an update that brings in `.github/workflows/` changes is refused.
 
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):

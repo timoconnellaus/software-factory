@@ -11,6 +11,7 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
+import { queuedEntriesQuery, releaseMergeQueue } from "./merge-queue.ts";
 import { protectionDriftQuery } from "./protection.ts";
 import {
   createWorkItem,
@@ -334,6 +335,11 @@ export const workItemGet = defineOperation({
       })
       .nullable(),
     /**
+     * Where the item stands in its project's merge queue (ADR 0330): null when it isn't queued.
+     * `position` 1 is the head, which lands next; `ahead` the work item numbers before it.
+     */
+    mergeQueue: z.object({ position: z.number(), ahead: z.array(z.number()) }).nullable(),
+    /**
      * The project's policy as the detail page and review packet need it (spec 13, 14): null when
      * the project has no valid `.factory/policy.json`. `reviewPacketSections` null: show all.
      */
@@ -372,7 +378,7 @@ export const workItemGet = defineOperation({
     // The item's own rows go to D1 as one batch (ADR 0241), alongside the approver lookup.
     const [
       { ids: approverUserIds, users: approverUsers },
-      [stages, specRows, questions, gates, runs, packetRows],
+      [stages, specRows, questions, gates, runs, packetRows, queue],
     ] = await Promise.all([
       approversLookup,
       readBatch(ctx.d1, [
@@ -407,6 +413,8 @@ export const workItemGet = defineOperation({
           .where("work_item_id", "=", w.id)
           .orderBy("created_at", "desc")
           .limit(1),
+        // Where the item stands in the merge queue (ADR 0330); empty outside the merge stage.
+        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : ""),
       ]),
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
@@ -497,6 +505,7 @@ export const workItemGet = defineOperation({
             createdAt: packet.created_at,
           }
         : null,
+      mergeQueue: queuePosition(queue, w.id),
       policy: policy
         ? {
             autonomyPolicy: policy.autonomyPolicy,
@@ -600,6 +609,7 @@ export const workItemCancel = defineOperation({
       }
     }
     if (!["running", "waiting", "paused"].includes(w.status)) return { cancelled: false };
+    await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -850,6 +860,14 @@ export const workItemFinish = defineOperation({
     const w = requireWorkItem(ctx);
     if (!["running", "waiting", "paused"].includes(w.status)) return { status: w.status };
     setItemStatus(ctx, w.id, ["running", "waiting", "paused"], input.status, input.reason);
+    // An item that ends in the queue (a Workflow giving up, or done without the queue's merge)
+    // stops holding it; the next head is woken (ADR 0330).
+    await releaseMergeQueue(
+      ctx,
+      w,
+      input.status === "done" ? "merged" : "left",
+      `${input.status}: ${input.reason}`,
+    );
     ctx.write(
       ctx.db.updateTable("core_work_items").set({ closed_at: ctx.now }).where("id", "=", w.id),
     );
@@ -1136,4 +1154,13 @@ export async function activeRunCount(
     .where("status", "in", ACTIVE_RUN_STATUSES)
     .executeTakeFirst();
   return Number(row?.n ?? 0);
+}
+
+/** The item's place in its project's merge queue, from the queue head first (ADR 0330). */
+function queuePosition(
+  queue: { work_item_id: string; number: number }[],
+  item: string,
+): { position: number; ahead: number[] } | null {
+  const i = queue.findIndex((e) => e.work_item_id === item);
+  return i < 0 ? null : { position: i + 1, ahead: queue.slice(0, i).map((e) => e.number) };
 }

@@ -21,6 +21,8 @@ interface RepoState {
   touched?: Record<string, Touch[]>;
   /** Check runs per commit SHA. A SHA with none reads as green CI (`ci`), unless `ciDefault` says otherwise. */
   checks?: Record<string, CheckRunInfo[]>;
+  /** What a SHA with no check runs of its own reports (default: one green `ci`). */
+  ciDefault?: Omit<CheckRunInfo, "id">[];
   /** Files by ref or SHA, for `readFile`. */
   blobs?: Record<string, Record<string, string>>;
   guards?: RepoGuards;
@@ -33,6 +35,11 @@ interface RepoState {
   pulls: { number: number; head: string; base: string; title: string; state: "open" | "merged" }[];
   /** PRs GitHub can't merge (`false`) or is still computing (`null`), by number. Default mergeable. */
   mergeable?: Record<number, boolean | null>;
+  /** Update-branch requests waiting for `completeUpdate` (`deferUpdates`), by PR number. */
+  pendingUpdates?: number[];
+  deferUpdates?: boolean;
+  /** A merge commit's second parent (what `update-branch` merged in), by merge commit SHA. */
+  merged?: Record<string, string>;
   tokens: number;
 }
 
@@ -62,6 +69,15 @@ export interface FakeGitHub extends GitHubService {
   /** Puts a file at a ref (or SHA) for `readFile`. */
   setFile(repo: RepoRef, ref: string, path: string, content: string): Promise<void>;
   setGuards(repo: RepoRef, guards: RepoGuards): Promise<void>;
+  /**
+   * Simulates GitHub's update-branch merge commit landing on a PR's head (GitHub does it
+   * asynchronously; the fake does it at once unless `deferUpdates` is set). Returns the new head.
+   */
+  completeUpdate(repo: RepoRef, number: number): Promise<string | null>;
+  /** Sets what CI reports on SHAs with no check runs of their own (null: one green `ci`). */
+  setCiDefault(repo: RepoRef, checks: Omit<CheckRunInfo, "id">[] | null): Promise<void>;
+  /** Makes `updatePullRequestBranch` accept without moving the head until `completeUpdate`. */
+  deferUpdates(repo: RepoRef, on: boolean): Promise<void>;
   /** Sets what GitHub says about a PR's mergeability (false: conflicts; null: still computing). */
   setMergeable(repo: RepoRef, number: number, mergeable: boolean | null): Promise<void>;
   /** Sets a person's role on the repo (null: not a collaborator). */
@@ -162,6 +178,32 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
     }
     return false;
   };
+  /** Every commit reachable from `from`, through first parents and merged-in ones. */
+  const reachable = (state: RepoState, from: string | null | undefined) => {
+    const seen = new Set<string>();
+    const todo = from ? [from] : [];
+    while (todo.length > 0) {
+      const at = todo.pop() as string;
+      if (seen.has(at)) continue;
+      seen.add(at);
+      const parent = state.parents[at];
+      if (parent) todo.push(parent);
+      const other = state.merged?.[at];
+      if (other) todo.push(other);
+    }
+    return seen;
+  };
+  const updateHead = async (state: RepoState, number: number) => {
+    const pull = state.pulls.find((p) => p.number === number);
+    if (!pull) return null;
+    const head = state.refs[pull.head];
+    const base = state.refs[pull.base];
+    if (!head || !base) return null;
+    const next = await commit(state, head, `update-${number}`);
+    state.merged = { ...(state.merged ?? {}), [next]: base };
+    state.refs[pull.head] = next;
+    return next;
+  };
   const commit = async (state: RepoState, parent: string | null, salt: string) => {
     const next = await sha(`${parent}:${salt}:${crypto.randomUUID()}`);
     state.parents[next] = parent;
@@ -261,6 +303,57 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.mergeable = { ...(state.mergeable ?? {}), [number]: mergeable };
       await save(r, state);
     },
+    async compareCommits(r, base, head) {
+      const state = await load(r);
+      const b = reachable(state, state.refs[base] ?? base);
+      const h = reachable(state, state.refs[head] ?? head);
+      return {
+        aheadBy: [...h].filter((c) => !b.has(c)).length,
+        behindBy: [...b].filter((c) => !h.has(c)).length,
+      };
+    },
+    async commitParents(r, at) {
+      const state = await load(r);
+      const first = state.parents[at];
+      const second = state.merged?.[at];
+      return [...(first ? [first] : []), ...(second ? [second] : [])];
+    },
+    async updatePullRequestBranch(r, { number, expectedHeadSha }) {
+      const state = await load(r);
+      const pull = state.pulls.find((p) => p.number === number);
+      if (pull?.state !== "open") return { status: "refused", reason: "not an open PR" };
+      if (state.refs[pull.head] !== expectedHeadSha) {
+        return { status: "refused", reason: "expected head sha didn't match current head ref" };
+      }
+      if (state.mergeable?.[number] === false) {
+        return { status: "conflict", reason: "merge conflict between base and head" };
+      }
+      if (state.deferUpdates) {
+        state.pendingUpdates = [...(state.pendingUpdates ?? []), number];
+      } else {
+        await updateHead(state, number);
+      }
+      await save(r, state);
+      return { status: "requested" };
+    },
+    async completeUpdate(r, number) {
+      const state = await load(r);
+      state.pendingUpdates = (state.pendingUpdates ?? []).filter((n) => n !== number);
+      const next = await updateHead(state, number);
+      await save(r, state);
+      return next;
+    },
+    async setCiDefault(r, checks) {
+      const state = await load(r);
+      if (checks) state.ciDefault = checks;
+      else delete state.ciDefault;
+      await save(r, state);
+    },
+    async deferUpdates(r, on) {
+      const state = await load(r);
+      state.deferUpdates = on;
+      await save(r, state);
+    },
     async mergePullRequest(r, { number, sha: expected }) {
       const state = await load(r);
       const pull = state.pulls.find((p) => p.number === number);
@@ -290,14 +383,19 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const state = await load(r);
       const known = state.checks?.[at];
       if (known) return known;
-      return [{ ...GREEN_CI, id: `ci-${at.slice(0, 8)}` }];
+      return (state.ciDefault ?? [GREEN_CI]).map((c, i) => ({
+        ...c,
+        id: `ci-${at.slice(0, 8)}-${i}`,
+      }));
     },
     async postCheckRun(r, check) {
       const state = await load(r);
       const runs = [
-        ...(state.checks?.[check.headSha] ?? [
-          { ...GREEN_CI, id: `ci-${check.headSha.slice(0, 8)}` },
-        ]),
+        ...(state.checks?.[check.headSha] ??
+          (state.ciDefault ?? [GREEN_CI]).map((c, i) => ({
+            ...c,
+            id: `ci-${check.headSha.slice(0, 8)}-${i}`,
+          }))),
       ];
       const id = check.checkRunId ?? `cr-${crypto.randomUUID().slice(0, 8)}`;
       const run: CheckRunInfo = {

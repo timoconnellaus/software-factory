@@ -17,6 +17,7 @@ export const ID_PREFIXES = {
   githubInstallation: "ghi",
   deviceCode: "dev",
   attachment: "att",
+  mergeQueueEntry: "mq",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

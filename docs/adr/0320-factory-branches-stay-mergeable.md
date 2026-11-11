@@ -65,6 +65,9 @@ serialize merges, so a PR is tested once against the `main` it will land on.
   strict up-to-date rule (ADR 0280) and branches the factory keeps current cover it. GitHub's queue
   can be an alternative backend for org-owned repos later.
 
+> Amended 2026-11-11: built as [ADR 0330](0330-the-factory-runs-its-own-merge-queue.md) and
+> [spec 06](../specs/06-merge-queue.md) (Workflow v4).
+
 ## Consequences
 - A factory PR is mergeable when verify starts, unless `main` moved during the session. Either way
   conflicts come back to the build agent as work, not as a mystery CI failure.

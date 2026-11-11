@@ -17,6 +17,7 @@ import {
   type GateEventPayload,
   invoke,
   isOperationError,
+  mergeQueueEvent,
   type RunEventPayload,
   runEvent,
 } from "@software-factory/core";
@@ -49,7 +50,13 @@ export type WorkItemOutcome =
  *   without a verify run or a packet (it doesn't count as a failed attempt for MERGE_ROUNDS
  *   rounds). CI that never reports asks a person (re-check or stop) instead of a build retry.
  */
-export const WORKFLOW_VERSION = 3;
+/**
+ * - v4 (ADR 0330): approved merges land through the project's merge queue, one at a time. After
+ *   approval the item queues; at the head, the queue merges the default branch in (GitHub's
+ *   update-branch), waits for CI on that head, then merges. A conflict or red CI there leaves the
+ *   queue and goes back to build. A check-only incident fix queues before auto-merge is tried.
+ */
+export const WORKFLOW_VERSION = 4;
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
 export const CI_WAIT = "10 minutes";
 export const CI_ROUNDS = 12;
@@ -63,6 +70,11 @@ export const MERGE_ROUNDS = 3;
 /** v3: the answers to the no-CI question. */
 export const NO_CI_RECHECK = "Re-check CI";
 export const NO_CI_STOP = "Stop this work item";
+/** v4: how long a queued item waits for its turn before it reads its position again. */
+export const QUEUE_WAIT = "1 hour";
+/** v4: reads of the head while GitHub makes the update-branch merge commit, and the pause between. */
+export const UPDATE_READS = 8;
+export const UPDATE_WAIT = "15 seconds";
 /** How long a step refused by a kill switch waits for it to be turned off. */
 export const PARK_TIMEOUT = "365 days";
 /** Slack on top of a job's session timeout before the run counts as stalled. */
@@ -136,6 +148,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(2);
       case 3:
         return flow.runV1(3);
+      case 4:
+        return flow.runV1(4);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -155,7 +169,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 | 4 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       const meta = await this.meta();
@@ -425,6 +439,32 @@ class ItemFlow {
           workItemId: id,
           stage: "merge",
         });
+        if (version >= 4) {
+          const landed = await this.mergeV4(meta, b, headSha, pr.touchesFactoryConfig === true);
+          if (landed.kind === "done") {
+            await this.act("end: done", "workItem.finish", {
+              workItemId: id,
+              status: "done",
+              reason: landed.reason,
+            });
+            return { status: "done", workItemId: id };
+          }
+          if (landed.kind === "sent_back") {
+            note = `Sent back at review: ${landed.note ?? ""}`;
+            await this.act(`merge #${b}: sent back`, "workItem.enterStage", {
+              workItemId: id,
+              stage: "build",
+              closeAs: "sent_back",
+              reason: landed.note ?? "sent back",
+            });
+            continue;
+          }
+          note =
+            landed.kind === "conflict"
+              ? await conflicted(b, verify)
+              : await failed(b, landed.reason, verify);
+          continue;
+        }
         let decided: Awaited<ReturnType<ItemFlow["gate"]>> | null = null;
         if (version >= 2 && meta.kind === "incident") {
           // A check-only incident fix may merge without a person, if the project opted in and the
@@ -605,8 +645,9 @@ class ItemFlow {
     name: string,
     op: string,
     input: unknown,
+    apply = true,
   ): Promise<
-    | { decision: "approved"; output: Json }
+    | { decision: "approved"; output: Json; pendingActionId?: string }
     | { decision: Exclude<GateEventPayload["decision"], "approved">; note: string | null }
   > {
     const first = await this.call(name, op, input);
@@ -632,6 +673,9 @@ class ItemFlow {
       }
       if (decided.decision !== "approved")
         return { decision: decided.decision, note: decided.note };
+      // v4's merge: the approval is applied later, when the item is the head of the merge queue.
+      if (!apply)
+        return { decision: "approved", output: {}, pendingActionId: first.pendingActionId };
       const applied = await this.call(`${name}: apply`, op, input, first.pendingActionId);
       if (applied.status !== "ok") {
         throw new Ended(
@@ -655,20 +699,24 @@ class ItemFlow {
     headSha: string,
     version: number = 2,
     round = 1,
-  ): Promise<"settled" | "missing" | "pending" | "conflict" | "unreadable"> {
+    label?: string,
+  ): Promise<"success" | "failure" | "missing" | "pending" | "conflict" | "unreadable"> {
     for (let i = 1; i <= CI_ROUNDS; i++) {
       const sfx = (round === 1 ? "" : ` r${round}`) + (i === 1 ? "" : ` #${i}`);
-      const ci = await this.call(`verify #${b}: ci${sfx}`, "ci.read", {
+      // v2's names, frozen; v4's merge queue waits under its own `label`.
+      const ciName = label ? `${label}: ci${sfx}` : `verify #${b}: ci${sfx}`;
+      const waitName = label ? `${label}: ci wait${sfx}` : `verify #${b}: ci wait${sfx}`;
+      const ci = await this.call(ciName, "ci.read", {
         workItemId: this.workItemId,
         headSha,
       });
       if (ci.status !== "ok") return "unreadable"; // the packet records why and fails
       if (version >= 3 && ci.output.mergeable === false) return "conflict";
       const state = String(ci.output.state);
-      if (state === "success" || state === "failure") return "settled";
+      if (state === "success" || state === "failure") return state;
       if (state === "missing" && i >= CI_MISSING_ROUNDS) return "missing";
       try {
-        await this.step.waitForEvent(`verify #${b}: ci wait${sfx}`, {
+        await this.step.waitForEvent(waitName, {
           type: ciEvent(this.workItemId, headSha),
           timeout: CI_WAIT,
         });
@@ -697,6 +745,211 @@ class ItemFlow {
         await this.step.sleep(`verify #${b}: mergeable wait${sfx}`, MERGEABLE_WAIT);
     }
     return false;
+  }
+
+  /**
+   * v4: the merge stage through the project's merge queue (ADR 0330). A check-only incident fix
+   * tries auto-merge at the head of the queue first; anything else (and an incident fix that isn't
+   * check-only) goes through the merge gate, then lands at the head of the queue with the approval.
+   */
+  async mergeV4(
+    meta: Meta,
+    b: number,
+    headSha: string,
+    touchesFactoryConfig: boolean,
+  ): Promise<
+    | { kind: "done"; reason: string }
+    | { kind: "sent_back"; note: string | null }
+    | { kind: "conflict" }
+    | { kind: "failed"; reason: string }
+  > {
+    const id = this.workItemId;
+    if (meta.kind === "incident") {
+      const auto = await this.landV4(b, "auto-merge", headSha, null, (at) => ({
+        op: "pr.autoMerge",
+        input: { workItemId: id, headSha: at },
+      }));
+      if (auto.kind === "done")
+        return { kind: "done", reason: "auto-merged: a check-only incident fix (ADR 0230)" };
+      if (auto.kind === "conflict" || auto.kind === "failed") return auto;
+      if (auto.kind === "pending") {
+        // The project's policy asks a person to approve the auto-merge: wait, then land with it.
+        const decided = await this.awaitDecision(
+          meta,
+          `merge #${b}: auto-merge`,
+          auto.pendingActionId,
+        );
+        if (decided.decision !== "approved") return this.notApproved(decided);
+        const landed = await this.landV4(
+          b,
+          "auto-merge landing",
+          auto.headSha,
+          auto.pendingActionId,
+          (at) => ({
+            op: "pr.autoMerge",
+            input: { workItemId: id, headSha: at },
+          }),
+        );
+        if (landed.kind === "done")
+          return { kind: "done", reason: "auto-merged: a check-only incident fix (ADR 0230)" };
+        if (landed.kind === "conflict" || landed.kind === "failed") return landed;
+        return {
+          kind: "failed",
+          reason: `pr.autoMerge after approval: ${landed.kind === "refused" ? landed.message : "still pending"}`,
+        };
+      }
+      headSha = auto.headSha; // refused (not check-only): the normal merge gate on the current head
+    }
+    const input = (at: string) => ({ workItemId: id, headSha: at, touchesFactoryConfig });
+    const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), false);
+    if (decided.decision !== "approved") return this.notApproved(decided);
+    if (!decided.pendingActionId) {
+      // pr.merge ran without a gate (never for `merge` risk; a policy can't loosen it): it merged.
+      return { kind: "done", reason: "merged" };
+    }
+    const landed = await this.landV4(b, "queue", headSha, decided.pendingActionId, (at) => ({
+      op: "pr.merge",
+      input: input(at),
+    }));
+    if (landed.kind === "done") return { kind: "done", reason: "merged through the merge queue" };
+    if (landed.kind === "conflict" || landed.kind === "failed") return landed;
+    throw new Ended(
+      "failed",
+      `pr.merge failed after approval: ${landed.kind === "refused" ? landed.message : "still pending"}`,
+    );
+  }
+
+  private notApproved(decided: {
+    decision: Exclude<GateEventPayload["decision"], "approved">;
+    note: string | null;
+  }): { kind: "sent_back"; note: string | null } {
+    if (decided.decision === "sent_back") return { kind: "sent_back", note: decided.note };
+    throw new Ended("rejected", `merge rejected${decided.note ? `: ${decided.note}` : ""}`);
+  }
+
+  /** Waits for a person's decision on an existing pending action, escalating on each timeout. */
+  async awaitDecision(
+    meta: Meta,
+    name: string,
+    pendingActionId: string,
+  ): Promise<
+    | { decision: "approved" }
+    | { decision: Exclude<GateEventPayload["decision"], "approved">; note: string | null }
+  > {
+    for (let i = 1; ; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      try {
+        const event = await this.step.waitForEvent<GateEventPayload>(`${name}: wait${sfx}`, {
+          type: approvalEvent(pendingActionId),
+          timeout: meta.gateTimeoutMs,
+        });
+        const d = event.payload;
+        return d.decision === "approved"
+          ? { decision: "approved" }
+          : { decision: d.decision, note: d.note };
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+        await this.call(`${name}: escalate${sfx}`, "gate.escalate", { pendingActionId });
+      }
+    }
+  }
+
+  /**
+   * v4: queue, wait for the head, bring the branch up to date, wait for CI on the new head, then
+   * land with `land(head)` (ADR 0330). Leaves the queue on every way out.
+   */
+  async landV4(
+    b: number,
+    tag: string,
+    headSha: string,
+    approvalId: string | null,
+    land: (head: string) => { op: string; input: unknown },
+  ): Promise<
+    | { kind: "done" }
+    | { kind: "conflict" }
+    | { kind: "failed"; reason: string }
+    | { kind: "pending"; pendingActionId: string; headSha: string }
+    | { kind: "refused"; message: string; headSha: string }
+  > {
+    const id = this.workItemId;
+    const p = `merge #${b}: ${tag}`;
+    const leave = (outcome: "merged" | "left", reason: string) =>
+      this.act(`${p}: leave`, "mergeQueue.leave", { workItemId: id, outcome, reason });
+    await this.act(`${p}: enqueue`, "mergeQueue.enter", {
+      workItemId: id,
+      headSha,
+      pendingActionId: approvalId,
+    });
+    await this.waitTurn(p);
+
+    let at = headSha;
+    for (let i = 1; ; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      const u = await this.act(`${p}: update${sfx}`, "mergeQueue.update", { workItemId: id });
+      const state = String(u.state);
+      if (state === "current") break;
+      if (state === "updating" && i < UPDATE_READS) {
+        await this.step.sleep(`${p}: update wait${sfx}`, UPDATE_WAIT);
+        continue;
+      }
+      if (state === "updated") {
+        at = String(u.headSha);
+        const ci = await this.waitForCi(b, at, 4, 1, p);
+        if (ci === "success") break;
+        if (ci === "conflict") {
+          await leave("left", "the default branch moved again and now conflicts");
+          return { kind: "conflict" };
+        }
+        const why = `CI is ${ci} on ${at.slice(0, 7)}, the branch with the default branch merged in`;
+        await leave("left", why);
+        return {
+          kind: "failed",
+          reason: `Merging the default branch into your branch broke CI (${ci} on ${at.slice(0, 7)}). Fix the branch against the latest default branch.`,
+        };
+      }
+      if (state === "conflict") {
+        await leave("left", String(u.reason ?? "conflict"));
+        return { kind: "conflict" };
+      }
+      const reason =
+        state === "updating"
+          ? "GitHub didn't finish merging the default branch in"
+          : `the merge queue couldn't update the branch (${state}): ${String(u.reason ?? "")}`;
+      await leave("left", reason);
+      return { kind: "failed", reason };
+    }
+
+    const { op, input } = land(at);
+    const landed = await this.call(`${p}: land`, op, input, approvalId ?? undefined);
+    if (landed.status === "ok") {
+      await leave("merged", "merged");
+      return { kind: "done" };
+    }
+    await leave("left", landed.status === "refused" ? landed.message : "awaiting approval");
+    if (landed.status === "pending")
+      return { kind: "pending", pendingActionId: landed.pendingActionId, headSha: at };
+    return { kind: "refused", message: landed.message, headSha: at };
+  }
+
+  /** v4: waits until the item is the head of its project's merge queue. */
+  async waitTurn(p: string): Promise<void> {
+    for (let i = 1; ; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      const pos = await this.call(`${p}: position${sfx}`, "mergeQueue.position", {
+        workItemId: this.workItemId,
+      });
+      if (pos.status !== "ok") throw new Ended("failed", "the merge queue couldn't be read");
+      if (pos.output.queued !== true) throw new Ended("failed", "the item left the merge queue");
+      if (pos.output.head === true) return;
+      try {
+        await this.step.waitForEvent(`${p}: turn${sfx}`, {
+          type: mergeQueueEvent(this.workItemId),
+          timeout: QUEUE_WAIT,
+        });
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+      }
+    }
   }
 
   /**
