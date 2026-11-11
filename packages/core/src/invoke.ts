@@ -165,8 +165,16 @@ export async function runOperation<O = unknown>(
 
   // 4. Scope and policy: the work item / project / org this call is about, and the project's
   //    `.factory/` policy at its default-branch SHA (ADR 0036).
+  //    One D1 round trip: the lookups and the human caller's org role go as one batch.
+  let knownRole: string | null | undefined;
   try {
-    scope = await resolveScope(db, op.scope ? await op.scope(input, db) : defaultScopeRef(input));
+    const { role, ...resolved } = await resolveScope(
+      db,
+      op.scope ? await op.scope(input, db) : defaultScopeRef(input),
+      { d1, userId: actor.type === "human" ? actor.id : null },
+    );
+    scope = resolved;
+    knownRole = role;
   } catch (error) {
     if (error instanceof OperationError) {
       return refuse({ decision: "n/a", outcome: "failed", reason: error.message }, error);
@@ -275,7 +283,7 @@ export async function runOperation<O = unknown>(
 
   // 8. Permission (humans).
   try {
-    await checkPermission(db, actor, op.permission, scope);
+    await checkPermission(db, actor, op.permission, scope, knownRole);
   } catch (error) {
     if (error instanceof OperationError) {
       return refuse(

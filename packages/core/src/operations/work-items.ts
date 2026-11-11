@@ -354,15 +354,28 @@ export const workItemGet = defineOperation({
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
     const policy = ctx.scope.policy;
-    const approverUserIds = await approverIds(ctx.db, w.org_id, policy);
-    const approverUsers = approverUserIds.length
-      ? await ctx.db
-          .selectFrom("core_user")
-          .select(["id", "name", "github_login"])
-          .where("id", "in", approverUserIds)
-          .execute()
-      : [];
-    const [stages, spec, questions, gates, runs, packet] = await Promise.all([
+    // The approvers (two lookups) alongside the item's own rows: one wait, not three.
+    const approversLookup = (async () => {
+      const ids = await approverIds(ctx.db, w.org_id, policy);
+      const users = ids.length
+        ? await ctx.db
+            .selectFrom("core_user")
+            .select(["id", "name", "github_login"])
+            .where("id", "in", ids)
+            .execute()
+        : [];
+      return { ids, users };
+    })();
+    const [
+      { ids: approverUserIds, users: approverUsers },
+      stages,
+      spec,
+      questions,
+      gates,
+      runs,
+      packet,
+    ] = await Promise.all([
+      approversLookup,
       ctx.db
         .selectFrom("core_stages")
         .selectAll()
@@ -954,27 +967,73 @@ export const inboxList = defineOperation({
     if (orgIds.length === 0)
       return { gates: [], questions: [], running: [], runners: [], wipHolds: [] };
 
-    const pending = await ctx.db
-      .selectFrom("core_pending_actions")
-      .leftJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
-      .select([
-        "core_pending_actions.id",
-        "core_pending_actions.kind",
-        "core_pending_actions.work_item_id",
-        "core_pending_actions.project_id",
-        "core_pending_actions.org_id",
-        "core_pending_actions.operation",
-        "core_pending_actions.assignee_user_id",
-        "core_pending_actions.created_at",
-        "core_pending_actions.timeout_at",
-        "core_pending_actions.escalations",
-        "core_work_items.title",
-      ])
-      .where("core_pending_actions.status", "=", "pending")
-      .where("core_pending_actions.org_id", "in", orgIds)
-      .orderBy("core_pending_actions.project_id")
-      .orderBy("core_pending_actions.created_at")
-      .execute();
+    // Independent reads, in parallel: one wait instead of five.
+    const [pending, questionRows, running, runnerRows, holds] = await Promise.all([
+      ctx.db
+        .selectFrom("core_pending_actions")
+        .leftJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
+        .select([
+          "core_pending_actions.id",
+          "core_pending_actions.kind",
+          "core_pending_actions.work_item_id",
+          "core_pending_actions.project_id",
+          "core_pending_actions.org_id",
+          "core_pending_actions.operation",
+          "core_pending_actions.assignee_user_id",
+          "core_pending_actions.created_at",
+          "core_pending_actions.timeout_at",
+          "core_pending_actions.escalations",
+          "core_work_items.title",
+        ])
+        .where("core_pending_actions.status", "=", "pending")
+        .where("core_pending_actions.org_id", "in", orgIds)
+        .orderBy("core_pending_actions.project_id")
+        .orderBy("core_pending_actions.created_at")
+        .execute(),
+      ctx.db
+        .selectFrom("core_questions")
+        .innerJoin("core_work_items", "core_work_items.id", "core_questions.work_item_id")
+        .select([
+          "core_questions.id",
+          "core_questions.work_item_id",
+          "core_questions.project_id",
+          "core_questions.domain",
+          "core_questions.prompt",
+          "core_questions.options",
+          "core_questions.default_answer",
+          "core_questions.recommendation",
+          "core_questions.irreversible",
+          "core_work_items.title",
+        ])
+        .where("core_questions.status", "=", "open")
+        .where("core_questions.assignee_user_id", "=", me)
+        .where("core_questions.org_id", "in", orgIds)
+        .orderBy("core_questions.project_id")
+        .orderBy("core_questions.created_at")
+        .execute(),
+      ctx.db
+        .selectFrom("core_work_items")
+        .selectAll()
+        .where("org_id", "in", orgIds)
+        .where("status", "in", ["running", "waiting", "paused"])
+        .orderBy("updated_at", "desc")
+        .limit(100)
+        .execute(),
+      ctx.db
+        .selectFrom("core_runners")
+        .selectAll()
+        .where("owner_user_id", "=", me)
+        .where("revoked_at", "is", null)
+        .execute(),
+      ctx.db
+        .selectFrom("core_jobs")
+        .select(["project_id", (eb) => eb.fn.countAll().as("n")])
+        .where("org_id", "in", orgIds)
+        .where("status", "=", "queued")
+        .where("wait_reason", "=", WIP_WAIT_REASON)
+        .groupBy("project_id")
+        .execute(),
+    ]);
     const gates = pending
       .filter((g) => g.assignee_user_id === me)
       .map((g) => ({
@@ -989,43 +1048,6 @@ export const inboxList = defineOperation({
         escalated: g.escalations > 0,
       }));
 
-    const questionRows = await ctx.db
-      .selectFrom("core_questions")
-      .innerJoin("core_work_items", "core_work_items.id", "core_questions.work_item_id")
-      .select([
-        "core_questions.id",
-        "core_questions.work_item_id",
-        "core_questions.project_id",
-        "core_questions.domain",
-        "core_questions.prompt",
-        "core_questions.options",
-        "core_questions.default_answer",
-        "core_questions.recommendation",
-        "core_questions.irreversible",
-        "core_work_items.title",
-      ])
-      .where("core_questions.status", "=", "open")
-      .where("core_questions.assignee_user_id", "=", me)
-      .where("core_questions.org_id", "in", orgIds)
-      .orderBy("core_questions.project_id")
-      .orderBy("core_questions.created_at")
-      .execute();
-
-    const running = await ctx.db
-      .selectFrom("core_work_items")
-      .selectAll()
-      .where("org_id", "in", orgIds)
-      .where("status", "in", ["running", "waiting", "paused"])
-      .orderBy("updated_at", "desc")
-      .limit(100)
-      .execute();
-
-    const runnerRows = await ctx.db
-      .selectFrom("core_runners")
-      .selectAll()
-      .where("owner_user_id", "=", me)
-      .where("revoked_at", "is", null)
-      .execute();
     const nowMs = Date.parse(ctx.now);
     const runners = await Promise.all(
       runnerRows.map(async (r) => {
@@ -1052,15 +1074,6 @@ export const inboxList = defineOperation({
         };
       }),
     );
-
-    const holds = await ctx.db
-      .selectFrom("core_jobs")
-      .select(["project_id", (eb) => eb.fn.countAll().as("n")])
-      .where("org_id", "in", orgIds)
-      .where("status", "=", "queued")
-      .where("wait_reason", "=", WIP_WAIT_REASON)
-      .groupBy("project_id")
-      .execute();
 
     return {
       gates,
