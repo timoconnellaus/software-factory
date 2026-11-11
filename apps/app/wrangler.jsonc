@@ -1,0 +1,12 @@
+// sf-app: Dashboard (TanStack Start + shadcn/ui, placeholder for now), the MCP surface and the operations API.
+// Account-agnostic: no account or resource IDs are committed.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sf-app",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  }
+}

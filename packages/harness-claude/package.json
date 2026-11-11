@@ -1,0 +1,21 @@
+{
+  "name": "@software-factory/harness-claude",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Claude Code harness adapter and its capability manifest.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "@cloudflare/workers-types": "5.20261104.1",
+    "@software-factory/config": "workspace:*",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}
