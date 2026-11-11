@@ -56,17 +56,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #23 | Work item #1, attachments ([ADR 0310](adr/0310-work-item-attachments.md), migration 0090), built by the factory; `main` merged in and renumbered by hand after it was stuck (incident #7). Merged with `factory/verify` red (the head moved past the one the factory verified), a bootstrap exception the owner approved |
 | #30 | The merge queue ([ADR 0330](adr/0330-the-factory-runs-its-own-merge-queue.md), [spec 06](specs/06-merge-queue.md), migration 0100): approved merges land one at a time per project through Workflow v4; the head is updated by GitHub's update-branch, CI runs once on it, and the approval and review packet carry over. Merged with `factory/verify` red (not opened by the factory), a bootstrap exception the owner approved |
 | #28 | Attach an outside PR ([spec 05](specs/05-attach-a-pull-request.md), [ADR 0290](adr/0290-an-outside-pr-is-attached-and-verified.md)): `workItem.attachPr` gives a local session's or a person's PR a work item of kind `attached` (migration 0080); the Workflow's `runAttached` (kind-gated, no version bump) triages it, skips spec and build, verifies the PR's own head and opens the merge gate, never pushing to its branch; a push re-verifies and withdraws a pending merge, closing the PR cancels the item; the unattached `factory/verify` links to sf-app's `/attach`, and New work lists open unattached PRs. Merged with `factory/verify` red as the **last** bootstrap exception (it can't attach itself); every PR after it is attached instead. Merged with `factory/verify` red, the last bootstrap exception: it is what lets outside PRs pass `factory/verify` (the default-branch ruleset was switched off for #30 and #28, then back on) |
+| #33, #35, #36, #37 | Spec 20, planning M1 ([ADR 0350](adr/0350-how-the-planning-loop-is-wired.md), migration 0120): planning is a live session on a runner. The planning log, sessions, chat and presence; heavy and light pools; the planning MCP server and kim-style hooks through the runner host's relay; Workflow v5's spec stage; the Planning tab, layout A. Merged with `factory/verify` red (not attached), with the default-branch ruleset switched off by the owner |
 
 ## In flight
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.
-- **Spec 20, planning M1** (`planning-loop`, block R, [ADR 0350](adr/0350-how-the-planning-loop-is-wired.md)),
-  landing as four PRs in order: (1) the planning log, sessions, chat, presence, the kim question
-  model, heavy/light pools and the planning operations, the channel's planning call and the
-  PlanningHub (migration 0120; inert until (3)); (2) the runner host's relay and pools, the
-  harness's planning MCP server and hooks, resumable sessions in runner-orca (`sf-runner --max-light`); (3) Workflow v5,
-  whose spec stage is the planning session; (4) the Planning tab, layout A.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
