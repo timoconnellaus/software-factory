@@ -49,12 +49,21 @@ the factory's own.
    prompt change and the host's merge apply to every new build job, whatever version queued it.
 
 ## Merge queue
-Not adopted now. A merge queue answers a different problem: it re-tests a green PR on top of the
-latest `main` before merging. It rejects a conflicting PR rather than resolving it, so it wouldn't
-have unstuck #23. It also needs CI on `merge_group` events and `factory/verify` posted for the
-queue's temporary SHAs, which changes ADR 0037's verify-per-head-SHA model. For now two things
-cover it: ADR 0280's strict required checks (the branch must be up to date) and branches the
-factory keeps current itself. Revisit when merge volume makes up-to-date re-runs the bottleneck.
+Merging `main` before build and verify keeps conflicts rare, but it doesn't stop them: `main` can
+move between verify and the merge gate, and every update re-runs CI. The fix for that is to
+serialize merges, so a PR is tested once against the `main` it will land on.
+
+- **GitHub's merge queue isn't available here.** GitHub offers it on organization-owned repos
+  only; `timoconnellaus/software-factory` is a personal-account repo. It also rejects a
+  conflicting PR rather than resolving it, and needs CI on `merge_group` plus `factory/verify`
+  posted for the queue's temporary SHAs (a change to ADR 0037's verify-per-head-SHA model).
+- **Decided (2026-11-11): the factory runs its own merge queue, per project.** An approved merge
+  enters the queue instead of merging. Only the queue head is updated against `main`, re-checked
+  and merged, so nothing else lands while its CI runs and each PR runs CI once at the head. A clean
+  update keeps the human's approval (the reviewed diff is unchanged); a conflict goes back to build,
+  and the resolved diff is verified and approved again. Spec to follow; until it's built, the
+  strict up-to-date rule (ADR 0280) and branches the factory keeps current cover it. GitHub's queue
+  can be an alternative backend for org-owned repos later.
 
 ## Consequences
 - A factory PR is mergeable when verify starts, unless `main` moved during the session. Either way
