@@ -159,6 +159,14 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   asks a blocking `operations` Question (Re-check CI / Stop this work item), no build retry.
 - Merge queue: built, see below (ADR 0330).
 
+**Prompts travel as a file (incident 2026-11-11 #8)**
+- runner-orca writes the job's prompt to `.factory-prompt.md` in the worktree (in
+  `PRIVATE_WORKTREE_FILES`, so it's excluded from git) and types only `PROMPT_POINTER`, one line,
+  after the live-process check. Typing the whole prompt truncated it to its tail, and every job
+  since #24 ran on a fragment.
+- The M5's runner needs updating to pick it up: `git pull`, then `sf-runner install` with no jobs
+  running.
+
 **The `sf` CLI (ADR 0340, spec 07)**
 - `local/cli` (`sf`): `login [--write]`, `logout`, `status`, `ops`, `call <op>`, `inbox`, `ls`,
   `show`, `timeline`, `queue`, `new`, `attach`, `cancel`, `open`. See its README.
