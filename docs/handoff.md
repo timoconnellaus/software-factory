@@ -159,6 +159,18 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   asks a blocking `operations` Question (Re-check CI / Stop this work item), no build retry.
 - Merge queue: built, see below (ADR 0330).
 
+**The `sf` CLI (ADR 0340, spec 07)**
+- `local/cli` (`sf`): `login [--write]`, `logout`, `status`, `ops`, `call <op>`, `inbox`, `ls`,
+  `show`, `timeline`, `queue`, `new`, `attach`, `cancel`, `open`. See its README.
+- `sf-engine` `/cli/v1`: `device/start`, `device/poll` (unsigned, as `CLI_DEVICE_ACTOR`), `call`
+  (Bearer `sfc_…`; actor `human`, surface `cli`; a `read` token reaches only `read`-risk ops), `ops`.
+- Operations: `cli.deviceStart/devicePoll/deviceLookup/approveDevice/denyDevice`,
+  `cliToken.list/revoke`; migration 0110 (`core_cli_device_codes`, `core_cli_tokens`, hashes only).
+  The app approves codes at `/cli/connect`, where the person picks the scope.
+- `browserOnly` on an operation: `invoke()` refuses it for a human on any surface but `app`
+  (`test` too). Marked: spec/merge decisions, `approval.decide`, question answers, runner and CLI
+  device approval, `runner.register`/`rotateKey`, and `killSwitch.set` with `on: false`.
+
 **Merge queue (ADR 0330, spec 06)**
 - Workflow **v4** (`WORKFLOW_VERSION = 4`): an approved merge enters `core_merge_queue` (migration
   0100) instead of merging; only the head is updated (GitHub's update-branch, accepted only as a clean

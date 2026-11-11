@@ -177,6 +177,12 @@ notes, screenshots, risk flags, the diff and a preview link. Sections are set pe
 app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
 _Avoid_: PR summary, report
 
+**CLI token**
+What `sf login` gets once a person approves its code in the app: acts as that person on the `cli`
+surface, `read` (see work; for agent sessions) or `write` (also create, attach, cancel), for 30
+days, revocable. It can never decide a gate: those operations are **browser-only** (ADR 0340).
+_Avoid_: API key, PAT
+
 **Merge queue**
 A project's approved merges, waiting to land one at a time (ADR 0330). The **head** (the oldest
 open entry) is brought up to date with the default branch by GitHub's update-branch, CI runs on
