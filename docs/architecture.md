@@ -45,7 +45,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
   0231). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
-  ADR 0320). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
+  ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
+  head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
+  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
   auto-merge where policy opts in (ADR 0230).
 - **Runners** execute jobs through the runner contract over a signed, outbound-only channel

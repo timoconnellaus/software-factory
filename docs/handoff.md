@@ -134,8 +134,18 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
 - Workflow **v3** (`WORKFLOW_VERSION = 3`): `ci.read` also returns the PR's `mergeable`; a conflict
   at PR open or during the CI wait sends the item back to build (3 free rounds); CI still missing
   asks a blocking `operations` Question (Re-check CI / Stop this work item), no build retry.
-- Merge queue: the factory will run its own, per project (ADR 0320, "Merge queue"; GitHub's isn't
-  available on a personal-account repo). Not built yet: needs a spec.
+- Merge queue: built, see below (ADR 0330).
+
+**Merge queue (ADR 0330, spec 06)**
+- Workflow **v4** (`WORKFLOW_VERSION = 4`): an approved merge enters `core_merge_queue` (migration
+  0100) instead of merging; only the head is updated (GitHub's update-branch, accepted only as a clean
+  merge of the default branch into the approved head), CI runs on it, then `pr.merge` lands it with
+  the same approval. The review packet carries over (`sections.carriedFrom`).
+- Operations: `mergeQueue.enter`, `.position`, `.list { projectId }`, `.update`, `.leave`.
+  `pr.merge` / `pr.autoMerge` refuse a queued item that isn't the head. `workItem.get` has
+  `mergeQueue { position, ahead }`; finish and cancel release the entry and wake the next head.
+- A conflict or red CI at the head leaves the queue and goes back to build. The App has no
+  `workflows` permission, so an update that brings in `.github/workflows/` changes is refused.
 
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):

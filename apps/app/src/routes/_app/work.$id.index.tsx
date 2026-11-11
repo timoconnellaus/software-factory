@@ -176,6 +176,13 @@ function Header({ detail }: { detail: WorkItemDetail }) {
         {item.kind === "incident" && (
           <span className="rounded-md border px-1.5">factory incident</span>
         )}
+        {detail.mergeQueue && (
+          <span className="rounded-md border px-1.5" data-testid="merge-queue">
+            {detail.mergeQueue.position === 1
+              ? "Landing: next in the merge queue"
+              : `Queued to merge: behind ${detail.mergeQueue.ahead.map((n) => `#${n}`).join(", ")}`}
+          </span>
+        )}
       </div>
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
