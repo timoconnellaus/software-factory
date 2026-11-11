@@ -39,3 +39,5 @@ never be stored by the factory.
 - A leaked job token can at worst push a `factory/*` branch for under an hour, and nothing merges
   without `factory/verify` and a person.
 - Items 1 and 4 are the GitHub connector's job (spec 04); until they land, item 2 is the check.
+
+> Amended 2026-11-11 (V1 step 4, [ADR 0231](0231-verify-verdict-and-the-github-connector.md)): items 1 and 4 are built. The ruleset is `FACTORY_RULESET` (repo admins bypass it; the App doesn't), applied to software-factory and checked by `project.checkGitHub`. The push webhook (`push.observe`) also accepts the App moving a work item's branch to a handed-back run's head, or while no run is active.

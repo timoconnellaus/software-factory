@@ -10,6 +10,7 @@ export default defineWorkersTestConfig({
         GITHUB_FAKE: "1",
         RUNNER_CHANNEL_SECRET: "test-channel-secret",
         GH_APP_PRIVATE_KEY: "",
+        GH_APP_WEBHOOK_SECRET: "test-webhook-secret",
         FACTORY_FLOOR: "",
       },
     },

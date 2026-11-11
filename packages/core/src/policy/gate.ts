@@ -6,7 +6,9 @@ import { ACTOR_TYPES, type ActorType } from "../actors.ts";
 
 /**
  * Risk classes (ADR 0004, amended): `plan` is accepting a spec (spike ADR 0110); a diff that touches
- * `.factory/` is `self-modify` (ADR 0036).
+ * `.factory/` is `self-modify` (ADR 0036). `check-merge` is the one merge a person may pre-approve
+ * by policy (ADR 0230): only `pr.autoMerge` carries it, and its handler enforces the narrow rule
+ * (an incident's fix that only adds checks and regression evals, with green CI on the head SHA).
  */
 export const RISK_CLASSES = [
   "read",
@@ -17,6 +19,7 @@ export const RISK_CLASSES = [
   "merge",
   "deploy",
   "self-modify",
+  "check-merge",
 ] as const;
 export type RiskClass = (typeof RISK_CLASSES)[number];
 
@@ -41,9 +44,21 @@ const row = (
   merge: Decision,
   deploy: Decision,
   selfModify: Decision,
-): Row => ({ read, write, plan, spend, outbound, merge, deploy, "self-modify": selfModify });
+): Row => ({
+  read,
+  write,
+  plan,
+  spend,
+  outbound,
+  merge,
+  deploy,
+  "self-modify": selfModify,
+  // Denied by every shipped policy: a project opts in with an override in `.factory/policy.json`
+  // (`"agent": { "check-merge": "allow" }`), which only a person can merge (ADR 0230).
+  "check-merge": "deny",
+});
 
-// Columns: read, write, plan, spend, outbound, merge, deploy, self-modify.
+// Columns: read, write, plan, spend, outbound, merge, deploy, self-modify (check-merge: always deny).
 // Humans are `allow` in every policy (they are the reviewers) except ALWAYS_REVIEW; the floor can
 // still restrict them.
 export const AUTONOMY_TABLE: Record<AutonomyPolicyName, Record<NonHuman, Row>> = {

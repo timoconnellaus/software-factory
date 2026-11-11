@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Eval suites with recordings, replay and dated reports, used to benchmark factory configs.",
+  "description": "The factory's `.factory/checks/` format, incident regression cases and (later) benchmarks of factory configs.",
   "exports": {
     ".": "./src/index.ts"
   },
@@ -16,5 +16,8 @@
     "@types/node": "24.19.2",
     "typescript": "6.0.3",
     "vitest": "5.1.0"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
   }
 }

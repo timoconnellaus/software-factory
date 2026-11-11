@@ -104,7 +104,32 @@ gh api -X PUT repos/{owner}/{repo}/branches/main/protection --input - <<'EOF'
 EOF
 ```
 
-Stage 4 adds `factory/verify` to the required checks (ADR 0020).
+`factory/verify` joins the required checks at the bootstrap (V1 step 5), pinned to the App (ADR
+0037). Until then the App posts it but it isn't required: it fails every PR the factory didn't
+open, and would block the sessions still building V1. To require it (keeping `ci`):
+
+```sh
+gh api -X PATCH repos/{owner}/{repo}/branches/main/protection/required_status_checks --input - <<'JSON'
+{ "strict": false, "checks": [{ "context": "ci", "app_id": 15368 }, { "context": "factory/verify", "app_id": 5705909 }] }
+JSON
+```
+
+### The repository ruleset
+
+Only repo admins may create, update or delete branches other than `factory/**` and `main`, so the
+App (not a bypass actor) can push only `factory/*` (ADR 0052). The ruleset is `FACTORY_RULESET` in
+`packages/core/src/verify/onboarding.ts` (applied to software-factory on 2026-11-11); apply it with
+`gh api -X POST repos/{owner}/{repo}/rulesets --input <that JSON>`. `project.checkGitHub` reports
+whether a project's repo has both the ruleset and the required check.
+
+### The GitHub App
+
+Webhook URL `https://software-factory.zerobsai.com/webhooks/github` (a Workers route on sf-engine in
+front of sf-app's domain; the deploy token needs Zone → Workers Routes: Edit), secret
+`GH_APP_WEBHOOK_SECRET` (synced to sf-engine). Permissions: contents and pull requests (write),
+checks (write), administration (read), metadata (read). Events: pull request, check suite, check
+run, push, installation, installation repositories (`APP_REQUIREMENTS` in
+`packages/connector-github`).
 
 ## Deploying by hand
 

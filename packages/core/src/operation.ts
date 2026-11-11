@@ -132,6 +132,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
   fenced?: boolean;
   /** Still runs for non-humans while a kill switch covers the item (e.g. a runner releasing). */
   allowWhenKilled?: boolean;
+  /**
+   * The call is how a project's policy arrives (the connector mirroring `.factory/policy.json` from a
+   * default-branch push), so it can't wait for one: the gate judges it as for an unscoped call
+   * (Cautious + the floor) instead of failing closed on a missing or malformed policy. Only for
+   * operations that apply nothing but default-branch content.
+   */
+  bootstrapsPolicy?: boolean;
   /** Which inbox card a `review` answer becomes. Default `approval`. */
   gateKind?: "spec" | "merge" | "approval";
   /** How to find the scope when the default (input field names) isn't enough. */

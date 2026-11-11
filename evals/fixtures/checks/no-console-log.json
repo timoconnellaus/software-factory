@@ -1,0 +1,8 @@
+{
+  "name": "no-console-log",
+  "description": "Worker source logs through `console.error`/`console.warn` with context, never a bare console.log left from debugging.",
+  "appliesTo": ["apps/**/src/**/*.ts", "packages/**/src/**/*.ts"],
+  "exclude": ["**/testing/**"],
+  "forbid": ["^\\s*console\\.log\\("],
+  "message": "Remove the debugging console.log (use console.error/console.warn with context if it must stay)."
+}

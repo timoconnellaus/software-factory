@@ -1,0 +1,23 @@
+{
+  "incident": "example-console-log",
+  "rootCause": "missing-check",
+  "summary": "A build left a debugging console.log in the engine and the reviewer sent it back.",
+  "check": "no-console-log",
+  "cases": [
+    {
+      "path": "apps/engine/src/outbox.ts",
+      "content": "export function deliver() {\n  console.log('here');\n}\n",
+      "expect": "fail"
+    },
+    {
+      "path": "apps/engine/src/outbox.ts",
+      "content": "export function deliver() {\n  console.error('outbox delivery failed', id);\n}\n",
+      "expect": "pass"
+    },
+    {
+      "path": "apps/engine/test/outbox.test.ts",
+      "content": "console.log('fine in a test');\n",
+      "expect": "pass"
+    }
+  ]
+}
