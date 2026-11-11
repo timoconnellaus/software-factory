@@ -100,6 +100,24 @@ export interface AttachmentFile {
   bytes: Uint8Array;
 }
 
+/**
+ * The runner host's local relay for a planning job (ADR 0350): the harness's planning MCP server
+ * and hooks call it with the bearer token, and the host signs the call onto the channel with the
+ * job's id and fencing token. The runner key never leaves the host.
+ */
+export interface PlanningRelay {
+  /** `http://127.0.0.1:<port>`. */
+  url: string;
+  /** Per-job secret; grants that job's planning operations and nothing else. */
+  token: string;
+}
+
+/** What the host gives an adapter beyond the job itself. */
+export interface PrepareOptions {
+  /** For a `planning` job: where its harness reaches the planning operations. */
+  planningRelay?: PlanningRelay;
+}
+
 /** What an adapter returns from prepareWorkspace. Adapters may extend it with private fields. */
 export interface WorkspaceHandle {
   jobId: string;
@@ -164,7 +182,7 @@ export interface RunnerAdapter<
    * `resolveCheckout` named, or the host's clone when there was none. It never registers a second
    * checkout for a repo the runner already has, and never touches the checkout's own working tree.
    */
-  prepareWorkspace(job: Job, signal: AbortSignal): Promise<W>;
+  prepareWorkspace(job: Job, signal: AbortSignal, options?: PrepareOptions): Promise<W>;
   startSession(job: Job, workspace: W, signal: AbortSignal): Promise<S>;
   /** Yields until the session ends; the last event is `session.ended`. */
   events(job: Job, session: S, signal: AbortSignal): AsyncIterable<AdapterEvent>;

@@ -65,7 +65,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   landing as four PRs in order: (1) the planning log, sessions, chat, presence, the kim question
   model, heavy/light pools and the planning operations, the channel's planning call and the
   PlanningHub (migration 0120; inert until (3)); (2) the runner host's relay and pools, the
-  harness's planning MCP server and hooks, resumable sessions in runner-orca; (3) Workflow v5,
+  harness's planning MCP server and hooks, resumable sessions in runner-orca (`sf-runner --max-light`); (3) Workflow v5,
   whose spec stage is the planning session; (4) the Planning tab, layout A.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when

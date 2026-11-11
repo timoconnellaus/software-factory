@@ -9,6 +9,7 @@ import {
   type RunnerAdapter,
   type RunnerEvent,
   type SessionHandle,
+  stagePool,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
 import type { HostGit } from "./git.ts";
@@ -19,8 +20,13 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
   adapter: RunnerAdapter<W, S>;
   cp: ControlPlaneClient;
   git: HostGit;
-  /** Concurrent jobs. The adapter's own `capacity().max` caps it too. */
+  /** Concurrent heavy jobs (build, verify). The adapter's own `capacity().max` caps it too. */
   maxConcurrent: number;
+  /**
+   * Concurrent light jobs (triage, spec, planning), ADR 0301. An idle planning session holds one.
+   * Default 6.
+   */
+  maxLight?: number;
   heartbeatMs?: number;
   log?: (message: string) => void;
   onEvent?: (e: RunnerEvent) => void;
@@ -126,7 +132,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       }
       while (!this.stopped && !this.draining) {
         const room = await this.capacity();
-        if (!room.accepting || room.inUse >= room.max) break;
+        const light = room.light ?? { max: 0, inUse: 0 };
+        if (!room.accepting || (room.inUse >= room.max && light.inUse >= light.max)) break;
         this.pendingClaimId ??= crypto.randomUUID();
         const { job } = await this.options.cp.claim({
           claimId: this.pendingClaimId,
@@ -150,13 +157,19 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     this.schedule(this.failures ? Math.min(every * 2 ** (this.failures - 1), 300_000) : every);
   }
 
+  /** Both pools (ADR 0301): `max`/`inUse` are the heavy pool, `light` the light one. */
   private async capacity() {
     const reported = await this.options.adapter.capacity().catch(() => null);
     const max = Math.min(this.options.maxConcurrent, reported?.max ?? this.options.maxConcurrent);
+    const running = [...this.running.values()];
+    const lightInUse = running.filter((r) => stagePool(r.job.stage) === "light").length;
+    const heavyInUse = running.length - lightInUse;
     return {
       max,
-      inUse: Math.max(this.running.size, reported?.inUse ?? 0),
+      // The adapter may see workspaces the host doesn't run (a crashed run): count them as heavy.
+      inUse: Math.max(heavyInUse, (reported?.inUse ?? 0) - lightInUse),
       accepting: !this.draining && !this.stopped && (reported?.accepting ?? true),
+      light: { max: this.options.maxLight ?? 6, inUse: lightInUse },
     };
   }
 

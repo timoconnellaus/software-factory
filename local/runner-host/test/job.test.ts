@@ -453,7 +453,7 @@ describe("RunnerHost", () => {
     expect(late.every((h) => h.activeJobs.length === 0)).toBe(true);
   });
 
-  it("takes no job when at capacity", async () => {
+  it("takes no job when both pools are at capacity", async () => {
     const { repo, cloud, cp } = await world();
     cloud.queue.push(job());
     const adapter = fakeAdapter((x) => repo.host.clonePath(x), edit("z"));
@@ -463,6 +463,8 @@ describe("RunnerHost", () => {
       cp,
       git: repo.host,
       maxConcurrent: 2,
+      // A light slot free would still claim: the cloud picks a job for the pool with room.
+      maxLight: 0,
       heartbeatMs: 1_000,
       log: () => {},
     });

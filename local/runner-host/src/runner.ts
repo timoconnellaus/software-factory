@@ -66,6 +66,7 @@ export function buildRunner(
     cp,
     git,
     maxConcurrent: config.maxConcurrent,
+    maxLight: config.maxLight,
     heartbeatMs: config.heartbeatMs,
     reapOrphans: (running) => reapOrphanWorktrees(orcaOptions, running),
     // Retire clones an earlier runner registered next to the owner's own checkout (ADR 0260). It

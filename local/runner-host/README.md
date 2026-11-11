@@ -33,6 +33,22 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
 
 A `409 fenced|killed`, or a cancel command, stops the session at once: no push and no hand-back.
 
+### Pools and planning sessions (spec 20, ADR 0301, 0350)
+Capacity has two pools: heavy (build, verify; `maxConcurrent`) and light (triage, spec, planning;
+`maxLight`, default 6). The heartbeat and claim report both, and the host claims while either has
+room; the cloud picks a job for a pool with a free slot.
+
+A **planning** job is a long-lived Claude session that plans one work item with people (ADR 0300):
+- The host serves it a **relay** on `127.0.0.1` (`src/planning-relay.ts`) with a per-job bearer
+  secret. The harness's planning MCP server and hooks call it; the host adds the job and fencing
+  token and signs the call (`/runner/v1/jobs/:id/planning`). The runner key never reaches the
+  harness.
+- runner-orca puts every job of a session in the same worktree path (`sf-plan-<session>`), so a
+  resume (`claude --resume <sessionRef>`) finds the conversation.
+- The session idles in its Stop hook between turns. When the factory asks it to yield, the hook calls
+  `planning.yield`; the host then ends Claude and hands back `{ planning: "yielded" }`. No result file,
+  no diff, no push.
+
 ### Credentials (ADR 0033, 0052)
 - The harness never sees the job token or the owner's credentials. Git talks to GitHub only from the
   host, with no system or global git config, hooks off, and a credential helper that gives the token
@@ -75,7 +91,8 @@ runner and approve. The CLI then receives its key (once), proves it with a signe
    isn't `--runner-id`, `pair` says so instead of failing with `401 bad signature`.
    `pair` sends one signed heartbeat to prove the id and key. It then writes
    `~/.config/software-factory/runner.json` (mode 0600; `--url` for another engine, `--max` for
-   concurrency) and restarts the service if one is installed. Pass the key on stdin, not as an
+   heavy slots, build and verify, default 2; `--max-light` for light slots, triage and planning
+   sessions, default 6: ADR 0301) and restarts the service if one is installed. Pass the key on stdin, not as an
    argument, so it stays out of your shell history.
 3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, orca, claude, Orca being reachable,
    the channel, and Orca's repos: a project (canonical remote) with more than one source repo, and
@@ -117,7 +134,8 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and the pli
 |---|---|---|
 | `baseUrl` | `https://sf-engine.zerobsai.com` | The engine |
 | `runnerId`, `key` | from `pair` | |
-| `maxConcurrent` | 2 | Jobs at once (each is an Orca worktree + a Claude session) |
+| `maxConcurrent` | 2 | Heavy jobs at once: build and verify (each an Orca worktree + a Claude session) |
+| `maxLight` | 6 | Light jobs at once: triage, spec and planning sessions (ADR 0301). An idle planning session holds one |
 | `heartbeatMs` | 20000 | |
 | `permissionMode` | `dontAsk` for every stage | e.g. `{ "build": "auto" }` to use Claude's auto mode for builds |
 | `capabilities` | Orca's: `browser`, `ui-takeover`, `auto-register`, `hooks`, `own-hardware` | |

@@ -327,6 +327,35 @@ describe("runner-orca adapter", () => {
     expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "failed" });
   });
 
+  it("keeps a planning session (spec 20) in its session's worktree, waiting through idle and done until the host stops it", async () => {
+    const { runner, calls } = await setup(
+      [{ state: "idle" }, { state: "working" }, { state: "done", lastAssistantMessage: "drafted" }],
+      { pollMs: 3 },
+    );
+    const planningJob: Job = {
+      ...job,
+      stage: "planning",
+      planning: {
+        sessionId: "ps_0123456789abcdef0123456789abcdef",
+        sessionRef: "6f2c3a9e-1b2d-4c5e-8f90-123456789abc",
+        resume: true,
+      },
+    };
+    const controller = new AbortController();
+    await expect(runner.prepareWorkspace(planningJob, controller.signal)).rejects.toThrow(/relay/);
+    const ws = await runner.prepareWorkspace(planningJob, controller.signal, {
+      planningRelay: { url: "http://127.0.0.1:1", token: "t" },
+    });
+    // The same path for every job of the session, so `claude --resume` finds the conversation.
+    expect(calls.some((c) => c.includes("--name sf-plan-ps-0123456789abcdef"))).toBe(true);
+    expect(ws.launch.argv).toContain("--resume");
+    const session = await runner.startSession(planningJob, ws, controller.signal);
+    setTimeout(() => controller.abort(new Error("the planning session yielded its slot")), 60);
+    const events = await drain(runner.events(planningJob, session, controller.signal));
+    expect(events.filter((e) => e.type === "session.ended")).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "cancelled" });
+  });
+
   it("ends as timed_out when the host aborts for a timeout", async () => {
     const { runner } = await setup([{ state: "working" }], { pollMs: 5 });
     const controller = new AbortController();
