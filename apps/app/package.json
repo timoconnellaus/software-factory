@@ -1,0 +1,21 @@
+{
+  "name": "@software-factory/app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dashboard (TanStack Start + shadcn/ui, placeholder for now), the MCP surface and the operations API.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "types": "wrangler types",
+    "typecheck": "wrangler types --check && tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "@software-factory/config": "workspace:*",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0",
+    "wrangler": "4.157.0"
+  }
+}

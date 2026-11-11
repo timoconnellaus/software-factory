@@ -1,0 +1,17 @@
+// sf-engine: The cloud engine Worker: Cloudflare Workflows (one per work item), queues and cron. Named so it isn't confused with execution runners.
+// Account-agnostic: no account or resource IDs are committed.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sf-engine",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "workers_dev": false,
+  "preview_urls": false
+}

@@ -1,0 +1,13 @@
+# spikes/** is deliberately not a workspace member: spikes are throwaway and own their deps.
+packages:
+  - apps/*
+  - packages/*
+  - local/*
+  - presets
+  - evals
+
+# Build scripts we allow to run on install.
+onlyBuiltDependencies:
+  - esbuild
+  - workerd
+  - sharp
