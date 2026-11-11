@@ -13,7 +13,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | A2 | — | 0033–0049 | Review decisions (`review-decisions-docs`): ADRs 0033–0047, no migrations | merged |
 | S | — | 0100–0199 | Spikes under `spikes/`. Each spike takes the next free ten and notes it here. Taken: **0100–0109** `spike-runner-orca` (ADR 0100, runner contract, in `spikes/runner-orca/`); **0110–0119** `spike-workflow-gate` (ADR 0110, Workflow per work item and the gate, `spikes/workflow-gate/adr/`); **0120–0129** `spike-auth-multisession` (ADR 0120, auth, orgs and multiple accounts, `spikes/auth-multisession/docs/`). The proposed ADRs move to `docs/adr/` when a spec promotes the spike. | merged (spikes); 0130–0199 free |
 | B+C+D | 0010–0039 | 0050–0059 | V1 step 1, core + engine (`v1-core-engine`): specs 01, 02 and the cloud half of 03 (schema, operations, Workflow, runner channel, job tokens). Also promotes spike ADRs 0100 and 0110 into `docs/adr/`. Used: migrations 0010, 0020, 0030; ADRs 0050–0054 | merged |
-| E | 0040–0049 | 0230–0239 (free) | Spec 04, Verify and PR | free |
+| E | 0040–0049 | 0230–0239 | V1 step 4, verify + GitHub connector + incidents (`v1-verify-connector`): spec 04, the webhook connector, `factory/verify`, review-packet assembly, incidents, evals | claimed |
 | F | 0050–0059 | 0240–0249 (free) | Spec 10, Sign-in and org switcher (Better Auth tables already exist in 0010; add columns here) | free |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
