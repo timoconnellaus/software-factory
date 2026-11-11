@@ -10,7 +10,7 @@ Status: done, 2026-11-11. Standalone package; not in the workspace. Proposed ADR
 
 ```sh
 cd spikes/workflow-gate
-pnpm install
+pnpm install --ignore-workspace   # spikes/ is not a workspace member
 pnpm test        # 41 tests, workerd pool
 pnpm typecheck && pnpm lint
 pnpm dev         # applies the local D1 migration, then http://localhost:8787
