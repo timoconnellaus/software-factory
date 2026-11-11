@@ -41,13 +41,11 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #10 | Review decisions applied to the docs: ADRs 0033–0047, amendments to 0001–0032, vocabulary (connector, autonomy policy, project template, Question, `docs/specs/`), R1 specs split into milestones, spec 15 |
 | #11 | [V1 scope](v1-scope.md): the dogfooding factory |
 | #13 | V1 step 1, core + engine: `core_*` schema, operations + `invoke()` + gate, the work-item Workflow, the signed runner channel, GitHub App job tokens. ADRs 0050–0054; spike ADRs 0100 and 0110 promoted |
+| #14 | V1 step 3, the runner: `local/runner-host` (`sf-runner`: heartbeat, claim, the job lifecycle, run-branch push with the job token, launchd), `packages/runner-orca`, `packages/harness-claude` (per-run settings, no owner credentials). ADR 0250. Verified end to end against a local engine |
 
 ## In flight
-- V1 step 3, the runner (`v1-runner`): `local/runner-host` (`sf-runner`), `packages/runner-orca`,
-  `packages/harness-claude`, ADR 0250. Verified end to end against a local `wrangler dev` engine (fake
-  GitHub). Not yet run against the deployed engine: that needs a registered runner (the app's setup
-  screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`.
-- Nothing else recorded. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
+- The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
+  app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
 
 ## Contracts for the V1 sessions (from V1-1, core + engine)
