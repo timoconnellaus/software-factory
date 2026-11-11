@@ -169,9 +169,7 @@ describe("an attached PR's Workflow (spec 05)", () => {
         "SELECT status_reason FROM core_work_items WHERE id = ? AND status = 'waiting'",
         item.workItemId,
       ),
-    ).then((row) =>
-      expect(row.status_reason).toBe("verify found problems: push a fix to the PR"),
-    );
+    ).then((row) => expect(row.status_reason).toBe("verify found problems: push a fix to the PR"));
     expect((await verifyChecks(w, pr.headSha))[0]).toMatchObject({ conclusion: "failure" });
 
     const newHead = await pushToPr(w, pr);
@@ -201,10 +199,14 @@ describe("an attached PR's Workflow (spec 05)", () => {
       ),
     ).toEqual({ status: "rejected", decision: "withdrawn" });
     // Approving the stale gate can't merge the old head.
-    const refused = await ok("review.merge", {
-      workItemId: item.workItemId,
-      openedFullDiff: true,
-    }, w.human).catch((e: unknown) => e);
+    const refused = await ok(
+      "review.merge",
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+      },
+      w.human,
+    ).catch((e: unknown) => e);
     expect(refused).toMatchObject({ code: "conflict" });
     expect((await github.state(w.repo)).pulls.find((p) => p.number === pr.number)?.state).toBe(
       "open",

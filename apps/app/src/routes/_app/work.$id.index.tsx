@@ -168,6 +168,7 @@ function Header({ detail }: { detail: WorkItemDetail }) {
         {item.kind === "incident" && (
           <span className="rounded-md border px-1.5">factory incident</span>
         )}
+        {item.kind === "attached" && <span className="rounded-md border px-1.5">attached PR</span>}
       </div>
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">

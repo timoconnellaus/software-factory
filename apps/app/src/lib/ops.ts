@@ -16,6 +16,9 @@ export interface OpMap {
   "workItem.list": Def<typeof operations.workItemList>;
   "workItem.timeline": Def<typeof operations.workItemTimeline>;
   "workItem.cancel": Def<typeof operations.workItemCancel>;
+  "workItem.attachPr": Def<typeof operations.workItemAttachPr>;
+  "workItem.previewAttach": Def<typeof operations.workItemPreviewAttach>;
+  "github.openPullRequests": Def<typeof operations.githubOpenPullRequests>;
   "spec.approve": Def<typeof operations.specApprove>;
   "spec.requestChanges": Def<typeof operations.specRequestChanges>;
   "review.merge": Def<typeof operations.reviewMerge>;
@@ -54,6 +57,9 @@ export const APP_OPERATIONS = [
   "workItem.list",
   "workItem.timeline",
   "workItem.cancel",
+  "workItem.attachPr",
+  "workItem.previewAttach",
+  "github.openPullRequests",
   "spec.approve",
   "spec.requestChanges",
   "review.merge",
@@ -86,6 +92,8 @@ export const APP_READ_OPERATIONS = [
   "workItem.get",
   "workItem.list",
   "workItem.timeline",
+  "workItem.previewAttach",
+  "github.openPullRequests",
   "project.list",
   "github.repos",
   "setup.status",
@@ -119,3 +127,4 @@ export type TimelineEntry = OpOutput<"workItem.timeline">["entries"][number];
 export type Project = OpOutput<"project.list">["projects"][number];
 export type SetupStatus = OpOutput<"setup.status">;
 export type RepoChoice = OpOutput<"github.repos">["repos"][number];
+export type OpenPull = OpOutput<"github.openPullRequests">["pulls"][number];

@@ -74,11 +74,13 @@ function Breadcrumb() {
           ? ["Factory", "Setup"]
           : path === "/runners/connect"
             ? ["Factory", "Connect a runner"]
-            : path === "/work"
-              ? ["Factory", "Work"]
-              : path.endsWith("/review")
-                ? ["Work", "Review packet"]
-                : ["Factory", "Work item"];
+            : path === "/attach"
+              ? ["Work", "Attach a pull request"]
+              : path === "/work"
+                ? ["Factory", "Work"]
+                : path.endsWith("/review")
+                  ? ["Work", "Review packet"]
+                  : ["Factory", "Work item"];
   return (
     <span className="text-muted-foreground text-sm" data-testid="breadcrumb">
       {crumbs[0]} / <b className="font-medium text-foreground">{crumbs[1]}</b>

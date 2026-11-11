@@ -16,12 +16,7 @@ import type { ChangedFile, RepoRef } from "../services.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import { assemblePacket, verifyCheckOutput } from "../verify/packet.ts";
-import {
-  approvalEvent,
-  ciEvent,
-  type GateEventPayload,
-  prHeadEvent,
-} from "../workflow-events.ts";
+import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
 import { inspectProtection } from "./protection.ts";
 import {
   cancelWorkItem,
@@ -312,8 +307,7 @@ export const verifyRefresh = defineOperation({
       // Only an attached PR's item ends with its PR; the factory's own items end in the Workflow.
       const item = await byPr();
       if (
-        !item ||
-        item.kind !== "attached" ||
+        item?.kind !== "attached" ||
         input.merged ||
         !["running", "waiting", "paused"].includes(item.status)
       ) {
@@ -533,7 +527,11 @@ async function moveAttachedHead(
     const payload: GateEventPayload = { decision: "withdrawn", note, by: ctx.actor.id };
     ctx.emit({
       kind: "workflow.event",
-      payload: { instanceId: gate.workflow_id, type: approvalEvent(gate.id), payload: { ...payload } },
+      payload: {
+        instanceId: gate.workflow_id,
+        type: approvalEvent(gate.id),
+        payload: { ...payload },
+      },
     });
   }
   ctx.emit({

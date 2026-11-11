@@ -3,7 +3,18 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { type Actor, FOREMAN, invoke } from "../src/index.ts";
-import { call, delivered, deps, first, ok, refusal, rows, services, uid, world } from "./helpers.ts";
+import {
+  call,
+  delivered,
+  deps,
+  first,
+  ok,
+  refusal,
+  rows,
+  services,
+  uid,
+  world,
+} from "./helpers.ts";
 
 const github = services.github;
 const INTAKE = { type: "intake" as const, id: "github" };
@@ -278,11 +289,7 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     expect(
       (
         await refusal(
-          ok(
-            "review.merge",
-            { workItemId: created.workItemId, openedFullDiff: true },
-            w.human,
-          ),
+          ok("review.merge", { workItemId: created.workItemId, openedFullDiff: true }, w.human),
         )
       ).code,
     ).toBe("conflict");

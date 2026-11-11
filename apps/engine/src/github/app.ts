@@ -360,7 +360,11 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       return pullInfo(r.json as GitHubPull);
     },
     async listOpenPullRequests(repo) {
-      const r = await api(repo, "GET", "/pulls?state=open&sort=created&direction=desc&per_page=100");
+      const r = await api(
+        repo,
+        "GET",
+        "/pulls?state=open&sort=created&direction=desc&per_page=100",
+      );
       if (r.status !== 200) fail("list open PRs", r);
       return ((r.json as GitHubPull[] | null) ?? []).map(pullInfo);
     },

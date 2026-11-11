@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppAttachRouteImport } from './routes/_app/attach'
 import { Route as AppNewRouteImport } from './routes/_app/new'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
 import { Route as AppRunnersConnectRouteImport } from './routes/_app/runners.connect'
@@ -31,6 +32,11 @@ const SignInRoute = SignInRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAttachRoute = AppAttachRouteImport.update({
+  id: '/attach',
+  path: '/attach',
   getParentRoute: () => AppRoute,
 } as any)
 const AppNewRoute = AppNewRouteImport.update({
@@ -67,6 +73,7 @@ const AppWorkIdReviewRoute = AppWorkIdReviewRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/sign-in': typeof SignInRoute
+  '/attach': typeof AppAttachRoute
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
   '/runners/connect': typeof AppRunnersConnectRoute
@@ -76,6 +83,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof SignInRoute
+  '/attach': typeof AppAttachRoute
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
   '/': typeof AppIndexRoute
@@ -88,6 +96,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/sign-in': typeof SignInRoute
+  '/_app/attach': typeof AppAttachRoute
   '/_app/new': typeof AppNewRoute
   '/_app/setup': typeof AppSetupRoute
   '/_app/': typeof AppIndexRoute
@@ -101,6 +110,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/sign-in'
+    | '/attach'
     | '/new'
     | '/setup'
     | '/runners/connect'
@@ -110,6 +120,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/sign-in'
+    | '/attach'
     | '/new'
     | '/setup'
     | '/'
@@ -121,6 +132,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/sign-in'
+    | '/_app/attach'
     | '/_app/new'
     | '/_app/setup'
     | '/_app/'
@@ -156,6 +168,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/attach': {
+      id: '/_app/attach'
+      path: '/attach'
+      fullPath: '/attach'
+      preLoaderRoute: typeof AppAttachRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/new': {
@@ -204,6 +223,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppAttachRoute: typeof AppAttachRoute
   AppNewRoute: typeof AppNewRoute
   AppSetupRoute: typeof AppSetupRoute
   AppIndexRoute: typeof AppIndexRoute
@@ -214,6 +234,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppAttachRoute: AppAttachRoute,
   AppNewRoute: AppNewRoute,
   AppSetupRoute: AppSetupRoute,
   AppIndexRoute: AppIndexRoute,

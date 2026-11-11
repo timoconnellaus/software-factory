@@ -247,7 +247,11 @@ export const githubOpenPullRequests = defineOperation({
           .selectFrom("core_work_items")
           .select("pr_number")
           .where("project_id", "=", project.id)
-          .where("pr_number", "in", open.map((p) => p.number))
+          .where(
+            "pr_number",
+            "in",
+            open.map((p) => p.number),
+          )
           .where("status", "in", [...LIVE])
           .execute()
       ).map((r) => r.pr_number),

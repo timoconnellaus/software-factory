@@ -30,6 +30,31 @@ describe("calling operations from the app", () => {
     expect(calls[0]?.options.idempotencyKey).toBe("app:key-123");
   });
 
+  it("attaches a pull request as the signed-in person (spec 05)", async () => {
+    const login = uid("gh-");
+    const { engine, calls } = recordingEngine(() => ({
+      ok: true,
+      result: {
+        status: "ok",
+        output: { workItemId: "wi_2", number: 2, branch: "tim/x", outcome: "created" },
+        auditId: "au_2",
+      },
+    }));
+    const appEnv = testEnv(engine, login);
+    const { user, headers } = await signIn(appEnv, login);
+    const result = await runOp(appEnv, headers, {
+      name: "workItem.attachPr",
+      input: { projectId: "prj_1", prNumber: 25 },
+      idempotencyKey: "app:attach-1",
+    });
+    expect(result).toMatchObject({ ok: true, status: "ok", output: { workItemId: "wi_2" } });
+    expect(calls[0]).toMatchObject({
+      name: "workItem.attachPr",
+      input: { projectId: "prj_1", prNumber: 25 },
+    });
+    expect(calls[0]?.options.actor).toEqual({ type: "human", id: user.id });
+  });
+
   it("refuses without a session and never reaches the engine", async () => {
     const { engine, calls } = recordingEngine();
     const result = await runOp(testEnv(engine), new Headers(), { name: "inbox.list", input: {} });

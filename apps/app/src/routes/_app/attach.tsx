@@ -1,0 +1,137 @@
+// Attach an outside pull request to a work item (spec 05, ADR 0290). `factory/verify` on a PR the
+// factory didn't open links here (`/attach?repo=<owner>/<repo>&pr=<n>`): the PR, the project it
+// maps to, and one button. Attaching starts the item's Workflow, which verifies the PR's own head
+// and takes it to the merge gate; then the page goes to the work item.
+import { Badge } from "@software-factory/ui/components/badge";
+import { Button } from "@software-factory/ui/components/button";
+import { Card } from "@software-factory/ui/components/card";
+import { useQuery } from "@tanstack/react-query";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { AttachButton, parseRepo } from "#/components/attach-button";
+import { OpError } from "#/lib/ops";
+import { attachPreviewQuery } from "#/lib/queries";
+
+interface AttachSearch {
+  repo?: string;
+  pr?: number;
+}
+
+export const Route = createFileRoute("/_app/attach")({
+  validateSearch: (s: Record<string, unknown>): AttachSearch => {
+    const pr = Number(s.pr);
+    return {
+      ...(typeof s.repo === "string" ? { repo: s.repo } : {}),
+      ...(Number.isInteger(pr) && pr > 0 ? { pr } : {}),
+    };
+  },
+  loaderDeps: ({ search }) => ({ repo: search.repo, pr: search.pr }),
+  loader: async ({ context: { queryClient }, deps }) => {
+    const repo = parseRepo(deps.repo);
+    if (repo && deps.pr) {
+      await queryClient.ensureQueryData(attachPreviewQuery(repo, deps.pr)).catch(() => null);
+    }
+  },
+  component: AttachPage,
+});
+
+function AttachPage() {
+  const search = Route.useSearch();
+  const repo = parseRepo(search.repo);
+  return (
+    <main className="mx-auto grid w-full grid-cols-[minmax(0,1fr)] max-w-[640px] gap-4 p-4 md:p-6">
+      <div>
+        <h1 className="font-semibold text-2xl tracking-tight">Attach a pull request</h1>
+        <p className="text-muted-foreground text-sm">
+          A pull request opened outside the factory reaches the default branch only through{" "}
+          <span className="font-mono text-xs">factory/verify</span> and the merge gate. Attaching it
+          gives it a work item: the factory verifies its head (it never pushes to the branch) and
+          asks you to merge when it passes.
+        </p>
+      </div>
+      {repo && search.pr ? (
+        <Preview repo={repo} prNumber={search.pr} />
+      ) : (
+        <Card className="px-5 py-4 text-sm" data-testid="attach-bad-link">
+          This link doesn't name a pull request. Open it from the{" "}
+          <span className="font-mono text-xs">factory/verify</span> check's Details, or pick an open
+          pull request on{" "}
+          <Link to="/new" className="underline">
+            New work
+          </Link>
+          .
+        </Card>
+      )}
+    </main>
+  );
+}
+
+function Preview({ repo, prNumber }: { repo: { owner: string; name: string }; prNumber: number }) {
+  const preview = useQuery(attachPreviewQuery(repo, prNumber));
+  if (preview.isPending) {
+    return <div className="text-muted-foreground text-sm">Reading the pull request…</div>;
+  }
+  if (preview.error || !preview.data) {
+    const e = preview.error;
+    const forbidden = e instanceof OpError && e.code === "forbidden";
+    return (
+      <Card className="px-5 py-4 text-sm" data-testid="attach-refused">
+        {forbidden
+          ? `You're not a member of the org that owns ${repo.owner}/${repo.name} in the factory, so you can't attach its pull requests.`
+          : e instanceof OpError && e.code === "not_found"
+            ? `The factory has no project for ${repo.owner}/${repo.name}, or it has no pull request #${prNumber}.`
+            : `Can't read the pull request: ${e?.message ?? "unknown error"}`}
+      </Card>
+    );
+  }
+  const { project, pr, attachedWorkItemId } = preview.data;
+  return (
+    <Card className="gap-0 py-0" data-testid="attach-preview">
+      <div className="grid gap-1 border-b px-5 py-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <a href={pr.url} target="_blank" rel="noreferrer" className="font-medium hover:underline">
+            {pr.title}
+          </a>
+          <span className="text-muted-foreground">#{pr.number}</span>
+          {pr.draft && <Badge variant="outline">Draft</Badge>}
+        </div>
+        <div className="text-muted-foreground text-sm">
+          {pr.author ? `by ${pr.author} · ` : ""}
+          <span className="font-mono text-xs">{pr.branch}</span> at{" "}
+          <span className="font-mono text-xs">{pr.headSha.slice(0, 7)}</span>
+        </div>
+      </div>
+      <table className="mx-5 my-3 text-sm">
+        <tbody className="[&_td]:py-1 [&_td:first-child]:w-24 [&_td:first-child]:text-muted-foreground">
+          <tr>
+            <td>Project</td>
+            <td>
+              {project.name} <span className="font-mono text-xs">({project.repo})</span>
+            </td>
+          </tr>
+          <tr>
+            <td>Then</td>
+            <td>Triage drafts criteria from the PR → verify on its head → the merge gate</td>
+          </tr>
+        </tbody>
+      </table>
+      <div className="flex flex-wrap items-center gap-3 border-t px-5 py-3">
+        {attachedWorkItemId ? (
+          <>
+            <span className="text-sm">Already attached.</span>
+            <Button asChild>
+              <Link to="/work/$id" params={{ id: attachedWorkItemId }}>
+                Open the work item
+              </Link>
+            </Button>
+          </>
+        ) : pr.refusal ? (
+          <span className="text-destructive text-sm" data-testid="attach-refusal">
+            Can't attach: {pr.refusal}.
+          </span>
+        ) : (
+          <AttachButton projectId={project.id} prNumber={pr.number} />
+        )}
+      </div>
+    </Card>
+  );
+}

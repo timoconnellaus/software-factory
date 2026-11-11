@@ -135,13 +135,20 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
       async (): Promise<number> => WORKFLOW_VERSION,
     );
     const flow = new ItemFlow(this.env, step, event.payload.workItemId, event.instanceId);
-    if (version !== 1 && version !== 2) {
-      throw new Error(`no implementation for Workflow version ${version}`);
+    if (version === 1 || version === 2) {
+      // An attached PR's own path (spec 05), chosen by kind. "meta: item" is runV1's first step
+      // anyway and is read once, so every other item runs exactly the steps it ran before.
+      const meta = await flow.meta();
+      if (meta.kind === "attached") return flow.runAttached(version, meta);
     }
-    // "meta: item" was runV1's first step, so reading it here keeps every version's step order.
-    const meta = await flow.meta();
-    if (meta.kind === "attached") return flow.runAttached(version, meta);
-    return flow.runV1(version, meta);
+    switch (version) {
+      case 1:
+        return flow.runV1(1);
+      case 2:
+        return flow.runV1(2);
+      default:
+        throw new Error(`no implementation for Workflow version ${version}`);
+    }
   }
 }
 
@@ -157,9 +164,10 @@ class ItemFlow {
   // v2 only adds steps (`verify #b: open PR`, `verify #b: ci…`, `merge #b: auto-merge`); with
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged.
 
-  async runV1(version: 1 | 2, meta: Meta): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
+      const meta = await this.meta();
       await this.act("triage: enter", "workItem.enterStage", {
         workItemId: id,
         stage: "triage",
@@ -510,10 +518,14 @@ class ItemFlow {
           runFailures++;
           const reason = `the verify run ${verify.outcome}${report.success ? "" : " with an unreadable report"}`;
           if (runFailures > meta.retryLimit) {
-            throw new Ended("failed", `gave up after ${runFailures} failed verify runs: ${reason}`, {
-              kind: verify.outcome === "stalled" ? "run_stalled" : "run_failed",
-              runId: verify.runId,
-            });
+            throw new Ended(
+              "failed",
+              `gave up after ${runFailures} failed verify runs: ${reason}`,
+              {
+                kind: verify.outcome === "stalled" ? "run_stalled" : "run_failed",
+                runId: verify.runId,
+              },
+            );
           }
           close = { as: "failed", reason };
           continue;
@@ -645,7 +657,15 @@ class ItemFlow {
     }
   }
 
+  private metaRead: Promise<Meta> | null = null;
+
+  /** The item and its policy's limits: one step, read once per run. */
   async meta(): Promise<Meta> {
+    this.metaRead ??= this.readMeta();
+    return this.metaRead;
+  }
+
+  private async readMeta(): Promise<Meta> {
     return this.step.do("meta: item", async () => {
       const row = await this.env.DB.prepare(
         `SELECT w.number, w.title, w.body, w.branch, w.kind, w.pr_number, w.head_sha,
