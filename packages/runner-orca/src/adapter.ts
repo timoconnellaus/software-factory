@@ -8,7 +8,7 @@
 // Artifacts are the terminal screen, the check output from Claude's transcript and, with the
 // browser capability, screenshots from Orca's embedded browser. Git (the diff, the push) is the
 // runner host's job, not the adapter's.
-import { access, appendFile, mkdir, readFile, realpath, rmdir } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, realpath, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
@@ -20,6 +20,8 @@ import {
   type LaunchRecord,
   PID_FILE,
   PRIVATE_WORKTREE_FILES,
+  PROMPT_FILE,
+  PROMPT_POINTER,
   projectHarness,
   type ReadCommand,
   readLaunchRecord,
@@ -539,8 +541,11 @@ export function createOrcaRunner(
       const problems = await verifyLaunch(workspace.launch, config.readCommand);
       if (problems.length > 0) await fail(new HarnessConfigMismatch(problems));
 
+      // The prompt goes in a file; the terminal gets one short line pointing at it. A long paste
+      // into the Claude terminal arrives truncated (incident 2026-11-11 #8).
+      await writeFile(join(workspace.path, PROMPT_FILE), job.harness.prompt, { mode: 0o600 });
       session.startedAt = Date.now();
-      await orca.terminalPrompt(terminal.handle, job.harness.prompt).catch(async (err) => {
+      await orca.terminalPrompt(terminal.handle, PROMPT_POINTER).catch(async (err) => {
         await fail(new Error(`sending the prompt: ${err instanceof Error ? err.message : err}`));
       });
       return session;

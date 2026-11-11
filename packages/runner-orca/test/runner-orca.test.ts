@@ -2,7 +2,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readLaunchRecord, SETTINGS_FILE } from "@software-factory/harness-claude";
+import {
+  PROMPT_FILE,
+  PROMPT_POINTER,
+  readLaunchRecord,
+  SETTINGS_FILE,
+} from "@software-factory/harness-claude";
 import type { AdapterEvent, Job } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import {
@@ -396,10 +401,19 @@ describe("runner-orca adapter", () => {
     expect(settings.sandbox.allowUnsandboxedCommands).toBe(false);
     expect(settings.sandbox.filesystem.allowWrite).toContain(`${root}/repo/.git/objects`);
 
-    // The prompt goes in only after the check, as a submitted turn.
-    const prompt = calls.findIndex((c) => c.includes("--text add a line --enter"));
+    // The prompt goes in only after the check, as a submitted turn: the full text in a file kept
+    // out of git, and one short line in the terminal (incident 2026-11-11 #8).
+    expect(await readFile(join(wtPath, PROMPT_FILE), "utf8")).toBe(job.harness.prompt);
+    const sent = calls.filter((c) => c.startsWith("orca terminal send") && c.includes("--enter"));
+    expect(sent).toEqual([expect.stringContaining(`--text ${PROMPT_POINTER} --enter`)]);
+    expect(sent[0]).not.toContain(job.harness.prompt);
+    expect(PROMPT_POINTER).not.toMatch(/\n/);
+    const prompt = calls.findIndex((c) => c.includes(`--text ${PROMPT_POINTER} --enter`));
     const create = calls.findIndex((c) => c.startsWith("orca terminal create"));
     expect(prompt).toBeGreaterThan(create);
+    // Kept out of git, like the result file.
+    const exclude = await readFile(join(wtPath, ".git-exclude"), "utf8");
+    expect(exclude.split("\n")).toContain(`/${PROMPT_FILE}`);
   });
 
   it("answers Claude's folder trust dialog for the job's worktree once", async () => {
