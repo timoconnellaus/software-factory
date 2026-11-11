@@ -93,6 +93,39 @@ function InboxPage() {
         <ProtectionChangedCard key={d.projectId} drift={d} />
       ))}
 
+      {data.planning.map((p) => (
+        <Card
+          key={p.workItemId}
+          className="gap-1 px-5 py-4"
+          data-testid={`planning-${p.workItemId}`}
+        >
+          <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
+            <StatusDot status={p.atGate ? "waiting" : "running"} />
+            <span>{p.atGate ? "Spec ready for your approval" : "Planning is ready"}</span>
+            <span>· {projectName(p.projectId)}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold">
+              #{p.number} {p.title}
+            </span>
+            <span className="text-muted-foreground text-sm">
+              {p.openQuestions
+                ? `${p.openQuestions} open question${p.openQuestions === 1 ? "" : "s"}`
+                : "no open questions"}
+            </span>
+            <span className="grow" />
+            <Link
+              to="/work/$id"
+              params={{ id: p.workItemId }}
+              search={{ tab: "planning" }}
+              className="text-sm underline"
+            >
+              Open planning
+            </Link>
+          </div>
+        </Card>
+      ))}
+
       {highlightGone && (
         <div
           className="rounded-md border px-4 py-3 text-sm"

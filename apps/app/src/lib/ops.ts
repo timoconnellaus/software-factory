@@ -28,6 +28,10 @@ export interface OpMap {
   "approval.decide": Def<typeof operations.approvalDecide>;
   "question.answer": Def<typeof operations.questionAnswer>;
   "question.acceptDefaults": Def<typeof operations.questionAcceptDefaults>;
+  "planning.get": Def<typeof operations.planningGet>;
+  "planning.presence": Def<typeof operations.planningPresence>;
+  "planning.move": Def<typeof operations.planningMove>;
+  "chat.send": Def<typeof operations.chatSend>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;
@@ -74,6 +78,10 @@ export const APP_OPERATIONS = [
   "approval.decide",
   "question.answer",
   "question.acceptDefaults",
+  "planning.get",
+  "planning.presence",
+  "planning.move",
+  "chat.send",
   "project.create",
   "project.list",
   "project.update",
@@ -105,6 +113,7 @@ export const APP_READ_OPERATIONS = [
   "workItem.previewAttach",
   "github.openPullRequests",
   "workItem.attachment.list",
+  "planning.get",
   "project.list",
   "github.repos",
   "setup.status",

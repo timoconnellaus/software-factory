@@ -28,6 +28,7 @@ import { OpError, type WorkItemDetail } from "#/lib/ops";
 import { parsePacket } from "#/lib/packet";
 import {
   attachmentsQuery,
+  planningQuery,
   runnersQuery,
   timelineQuery,
   useRefreshAfterDecision,
@@ -43,13 +44,14 @@ export const Route = createFileRoute("/_app/work/$id/")({
   validateSearch: (s: Record<string, unknown>): { tab?: Tab } =>
     TABS.includes(s.tab as Tab) ? { tab: s.tab as Tab } : {},
   // Everything the page renders, in one request: the item (with its spec, questions, gates, runs
-  // and packet), its timeline, and the runners (for runner names).
+  // and packet), its timeline, the runners (for runner names), and the planning view (spec 20).
   loader: ({ context: { queryClient }, params }) =>
     Promise.all([
       queryClient.ensureQueryData(workItemQuery(params.id)),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
       queryClient.ensureQueryData(attachmentsQuery(params.id)).catch(() => null),
+      queryClient.ensureQueryData(planningQuery(params.id)).catch(() => null),
     ]),
   pendingComponent: () => (
     <Page>

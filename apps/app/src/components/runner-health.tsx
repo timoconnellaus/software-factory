@@ -17,11 +17,15 @@ const DOT: Record<Runner["state"], Status> = {
 };
 
 export function runnerLabel(r: Runner): string {
+  // With a light pool (ADR 0301): "heavy 1/2 · light 2/6".
+  const slots = r.light
+    ? `heavy ${r.inUse}/${r.max} · light ${r.light.inUse}/${r.light.max}`
+    : `${r.inUse}/${r.max}`;
   switch (r.state) {
     case "online":
-      return `online · ${r.inUse}/${r.max}`;
+      return `online · ${slots}`;
     case "busy":
-      return `busy ${r.inUse}/${r.max}`;
+      return r.light ? `busy · ${slots}` : `busy ${slots}`;
     case "rate-limited":
       return r.rateLimitedUntil
         ? `rate-limited until ${clock(r.rateLimitedUntil)}`
@@ -31,7 +35,7 @@ export function runnerLabel(r: Runner): string {
         ? `offline since ${clock(r.lastSeenAt)} (${ago(r.lastSeenAt)})`
         : "offline · never seen";
     case "draining":
-      return `draining · ${r.inUse}/${r.max}`;
+      return `draining · ${slots}`;
   }
 }
 
