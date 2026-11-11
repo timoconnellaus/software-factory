@@ -71,4 +71,5 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0270](0270-the-factory-launches-the-harness-and-verifies-it.md) | The factory launches the harness (its own permission mode, no user settings), sandboxes it, and verifies the live process |
 | [0280](0280-protect-main-with-a-generated-ruleset.md) | The factory generates the default-branch ruleset; a person applies it; the factory verifies it (the App stays `administration: read`) |
 | [0310](0310-work-item-attachments.md) | Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel |
+| [0330](0330-the-factory-runs-its-own-merge-queue.md) | The factory runs its own merge queue per project: approved merges land one at a time, the head is updated by GitHub's update-branch and the approval carries over a clean update (Workflow v4) |
 | [0320](0320-factory-branches-stay-mergeable.md) | Factory branches merge the default branch before a build; a PR that can't merge goes back to build, and CI that never reports asks a person (Workflow v3) |
