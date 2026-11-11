@@ -19,7 +19,9 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | H | 0060–0069 | 0055–0059 | Onboarding (`onboarding-connect-github`): Connect GitHub (installation records), repo picker, policy auto-sync and the policy PR, runner device login, the Setup checklist. Used: migration 0060; ADRs 0055, 0056 | merged |
 | I | — | 0260–0269 | Runner resolves the existing Orca repo (`runner-orca-resolve-repo`): incident 2026-11-11 #5. Used: ADR 0260, no migrations | merged |
 | J | — | 0270–0279 | The factory sets Claude's permission mode and sandbox (`harness-permission-mode`): incident 2026-11-11 #6. Used: ADR 0270, no migrations | merged |
-| K | 0070–0079 | 0280–0289 | Planning design (`planning-process`): ADRs 0280–0286, specs 20–25, no migrations yet (reserved for spec 20's build) | in review |
+| K | 0070–0079 | 0280–0289 | Protect `main` (`protect-main-ruleset`): the default-branch ruleset generator, the Setup step, drift detection. Used: migration 0070; ADR 0280 | merged |
+| L | 0080–0089 | 0290–0299 | Attach an outside PR to a work item (`attach-pr`): spec 05 | claimed |
+| M | — | 0300–0309 | Planning design (`planning-process`): ADRs 0300–0306, specs 20–25, no migrations (spec 20's build claims its own block) | in review |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.

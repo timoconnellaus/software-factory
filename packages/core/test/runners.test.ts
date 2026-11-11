@@ -3,11 +3,13 @@ import type { CapabilityManifest, Job } from "@software-factory/runner-contract"
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { FOREMAN, runEvent } from "../src/index.ts";
+import { protectedGuards } from "../src/testing/index.ts";
 import {
   call,
   first,
   newItem,
   ok,
+  POLICY,
   RUNNER_ACTOR,
   refusal,
   rows,
@@ -146,6 +148,27 @@ describe("runners and the scheduler", () => {
     // Triage isn't a build: it still runs.
     await enqueue(item.workItemId, "triage");
     expect((await claim(actor)).job?.stage).toBe("triage");
+  });
+
+  it("holds builds while protection is red when the policy says block (ADR 0280), and not on warn", async () => {
+    const blocking = await setup({ ...POLICY, protection: { onRed: "block" } });
+    await ok("protection.check", { projectId: blocking.w.projectId }, blocking.w.human);
+    const { jobId } = await enqueue(blocking.item.workItemId);
+    expect((await claim(blocking.actor)).job).toBeNull();
+    const held = await first<{ wait_reason: string }>(
+      "SELECT wait_reason FROM core_jobs WHERE id = ?",
+      jobId,
+    );
+    expect(held.wait_reason).toBe("default-branch protection is red");
+    // Fixed on GitHub: the next check is green and the build is claimed.
+    await services.github.setGuards(blocking.w.repo, protectedGuards());
+    await ok("protection.check", { projectId: blocking.w.projectId }, blocking.w.human);
+    expect((await claim(blocking.actor)).job?.jobId).toBe(jobId);
+
+    const warning = await setup();
+    await ok("protection.check", { projectId: warning.w.projectId }, warning.w.human);
+    await enqueue(warning.item.workItemId);
+    expect((await claim(warning.actor)).job).not.toBeNull();
   });
 
   it("fences a run that was taken over: its writes are refused, the heartbeat cancels it and its slot is free", async () => {

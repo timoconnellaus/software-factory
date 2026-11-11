@@ -1,6 +1,6 @@
 # Spec 24: Planning splits a work item
 
-Read first: ADRs [0283](../adr/0283-a-planning-session-can-split-a-work-item.md) and
+Read first: ADRs [0303](../adr/0303-a-planning-session-can-split-a-work-item.md) and
 [0006](../adr/0006-work-item-workflows.md); [spec 20](20-planning-loop.md); the mockup
 [`planning-session-states.html`](../../.kim/mockups/planning-session-states.html) (the spec gate
 card).

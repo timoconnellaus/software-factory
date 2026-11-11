@@ -21,24 +21,30 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   its decisions are listed as binding or advisory (ADR 0005, 0006). Gates block in v1 and a waiting
   item holds no runner slot.
 - **Questions** are the planning object; interview sessions are views over them (ADR 0042).
-- **Planning** is a live agent session on a runner (ADR 0280): the planning agent works through
+- **Planning** is a live agent session on a runner (ADR 0300): the planning agent works through
   operations over the runner channel (a projected planning MCP server), and kim-style hooks
   (`PostToolUse`, `UserPromptSubmit`, `Stop`) bring answers and chat back from the planning log. It
-  holds a light slot (ADR 0281). Mockups render on a sandboxed origin; kept artifacts land in `.kim/`
-  with the spec (ADR 0285). Specs 20–25.
+  holds a light slot (ADR 0301). Mockups render on a sandboxed origin; kept artifacts land in `.kim/`
+  with the spec (ADR 0305). Specs 20–25.
 - **Connectors** are the only path to GitHub, Linear, Slack and other outside systems (ADR 0010).
   The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033). Its webhook
   (`software-factory.zerobsai.com/webhooks/github`, served by `sf-engine` through a Workers route)
   checks the signature, dedupes deliveries and maps them to operations: `verify.refresh` on PR and
   CI events, `push.observe` on pushes (branch confinement, the default-branch policy mirror),
   `github.installation` (ADR 0231), which keeps the org's **installation** records current (ADR
-  0055).
+  0055), and `protection.observe` on `repository_ruleset` / `branch_protection_rule` (ADR 0280).
 - **Onboarding** never asks for an id the factory can fetch (ADR 0055, 0056): Connect GitHub goes
   through GitHub's install flow back to sf-app's `/integrations/github/setup`
   (`github.connectInstallation` verifies the single-use state and the installation as the App), a
   project is picked from the repos an installation reaches (`github.repos`, `project.create`), the
   policy is read on create and on every default-branch push, and a runner connects by device login
   (`/runner/v1/device/*`, approved at `/runners/connect`). `setup.status` is the Setup checklist.
+- **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
+  protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
+  `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`
+  compare GitHub's rulesets and the rules in force on the branch with it. Verdicts live in
+  `core_project_protection`; drift (a red after an ok, from a webhook or the daily cron re-check)
+  notifies the org's admins and shows in the inbox. A policy may hold builds while it's red.
 - **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
   0231). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and

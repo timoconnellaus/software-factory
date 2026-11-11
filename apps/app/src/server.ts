@@ -1,10 +1,12 @@
 // sf-app's Worker entry: /api/health, Better Auth under /api/auth/*, the GitHub App's Setup URL
-// (/integrations/github/setup), and TanStack Start for every other request (pages and server
+// (/integrations/github/setup), ruleset downloads (/api/projects/<id>/rulesets/<kind>.json, ADR
+// 0280), and TanStack Start for every other request (pages and server
 // functions).
 import handler from "@tanstack/react-start/server-entry";
 import { appEnv } from "./server/app-api.ts";
 import { AUTH_BASE_PATH, getAuth } from "./server/auth.ts";
 import { GITHUB_SETUP_PATH, handleGitHubSetup } from "./server/github-setup.ts";
+import { handleRulesetDownload, matchRulesetDownload } from "./server/ruleset-download.ts";
 
 export default {
   async fetch(request, env) {
@@ -14,6 +16,8 @@ export default {
       return getAuth(env).handler(request);
     }
     if (pathname === GITHUB_SETUP_PATH) return handleGitHubSetup(appEnv(env), request);
+    const ruleset = matchRulesetDownload(pathname);
+    if (ruleset) return handleRulesetDownload(appEnv(env), request, ruleset);
     return handler.fetch(request);
   },
 } satisfies ExportedHandler<Env>;

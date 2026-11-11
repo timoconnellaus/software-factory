@@ -1,7 +1,7 @@
 # Spec 22: Planning M3, system designs and `.kim/` write-back
 
 Read first:
-- ADR [0285](../adr/0285-planning-artifacts-and-the-kim-folder.md);
+- ADR [0305](../adr/0305-planning-artifacts-and-the-kim-folder.md);
 - specs [20](20-planning-loop.md) and [21](21-planning-visuals.md);
 - kim's skill, in the "System designs and the repo's .kim/ folder" section.
 

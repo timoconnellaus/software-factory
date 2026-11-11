@@ -10,6 +10,7 @@ import {
   MODEL_ROLES,
 } from "@software-factory/runner-contract";
 import { z } from "zod";
+import { DEFAULT_REQUIRED_CHECKS } from "../verify/protection.ts";
 import { AUTONOMY_POLICIES, type DecisionRules, rulesError } from "./gate.ts";
 
 /** Where the policy lives in a project's repo. */
@@ -73,6 +74,21 @@ export const projectPolicySchema = z
      * change here is a `.factory/` change, so it reaches runs only after a person merges it.
      */
     harness: harnessProfileSchema.optional(),
+    /**
+     * The default branch's protection (ADR 0280). `onRed: "block"` keeps build jobs queued while the
+     * factory's check of the branch's rulesets is red; `warn` (the default) only shows it.
+     * `requiredChecks` are the CI checks the generated ruleset requires besides `factory/verify`.
+     */
+    protection: z
+      .object({
+        onRed: z.enum(["warn", "block"]).default("warn"),
+        requiredChecks: z
+          .array(z.string().min(1).max(200))
+          .max(20)
+          .default([...DEFAULT_REQUIRED_CHECKS]),
+      })
+      .strict()
+      .default({ onRed: "warn", requiredChecks: [...DEFAULT_REQUIRED_CHECKS] }),
     /** Review packet sections in order (ADR 0020, spec 14). */
     reviewPacket: z.object({ sections: z.array(z.string().min(1)).min(1) }).optional(),
   })

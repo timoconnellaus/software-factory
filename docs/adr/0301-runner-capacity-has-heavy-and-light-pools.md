@@ -1,10 +1,10 @@
-# ADR 0281: Runner capacity has heavy and light pools
+# ADR 0301: Runner capacity has heavy and light pools
 
 Status: accepted, 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)).
 
 ## Context
 A runner reports one capacity number (`maxConcurrent`, default 2), shared by every job. A
-planning session ([ADR 0280](0280-planning-is-a-live-session-on-a-runner.md)) is a Claude process
+planning session ([ADR 0300](0300-planning-is-a-live-session-on-a-runner.md)) is a Claude process
 that mostly reads and waits in its Stop hook: little memory, no CPU, no tokens while idle. A build or
 verify run executes the project's test suite. If both counted the same, a few idle planning
 sessions would block every build, and the other way round.

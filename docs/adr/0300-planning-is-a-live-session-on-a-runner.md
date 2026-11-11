@@ -1,4 +1,4 @@
-# ADR 0280: Planning is a live agent session on a runner, modelled on kim
+# ADR 0300: Planning is a live agent session on a runner, modelled on kim
 
 Status: accepted, 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)).
 
@@ -52,7 +52,7 @@ agent's context:
   spec and adds the first questions. Then an inbox card goes to the owner. When the owner opens the
   Planning tab, the session is live.
 - **An idle session keeps its slot while there is room.** It waits in its Stop hook, spending no
-  tokens and holding a light slot ([ADR 0281](0281-runner-capacity-has-heavy-and-light-pools.md)).
+  tokens and holding a light slot ([ADR 0301](0301-runner-capacity-has-heavy-and-light-pools.md)).
   It yields only when the light pool is full, and then only after about 5 minutes with nobody
   present and no new answers. A yielded session is resumed (`claude --resume`, the same
   conversation) by the next answer or chat message.

@@ -5,6 +5,7 @@ export * from "./github.ts";
 export * from "./incidents.ts";
 export * from "./onboarding.ts";
 export * from "./projects.ts";
+export * from "./protection.ts";
 export * from "./questions.ts";
 export * from "./runners.ts";
 export * from "./specs.ts";

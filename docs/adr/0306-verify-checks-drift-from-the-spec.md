@@ -1,4 +1,4 @@
-# ADR 0286: Verify checks drift from the approved spec
+# ADR 0306: Verify checks drift from the approved spec
 
 Status: accepted, 2026-11-11 (planning interview; prior art: 8090's drift checks, Augment Intent's verifier).
 

@@ -55,4 +55,4 @@ Mockups for every R1 screen are in [`.kim/mockups/`](../../.kim/mockups/); the d
 [`.kim/design-system/`](../../.kim/design-system/).
 
 ## Planning
-Specs 20–25 make planning work the way kim does ([ADR 0280](../adr/0280-planning-is-a-live-session-on-a-runner.md), plan in [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)). Build them in order: 20 → 21 → 22, then 23; 24 and 25 can run alongside after 20 and 04.
+Specs 20–25 make planning work the way kim does ([ADR 0300](../adr/0300-planning-is-a-live-session-on-a-runner.md), plan in [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)). Build them in order: 20 → 21 → 22, then 23; 24 and 25 can run alongside after 20 and 04.

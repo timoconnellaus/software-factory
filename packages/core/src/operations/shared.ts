@@ -1,6 +1,7 @@
 // Pieces several operations share: field schemas, work-item creation, stage transitions and the
 // GitHub repo reference for a project.
 import { json } from "@software-factory/db";
+import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { idPattern, newId, slugify } from "../ids.ts";
@@ -161,3 +162,24 @@ export function setItemStatus(
 }
 
 export { json };
+
+/** A repo as webhooks name it; operations that take one resolve the project from it. */
+export const repoName = z.object({
+  owner: z.string().regex(/^[A-Za-z0-9-]{1,39}$/),
+  name: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
+});
+
+/** Scope resolver for connector calls: the project whose repo this is. */
+export async function projectForRepo(
+  db: HandlerContext["db"],
+  repo: { owner: string; name: string },
+): Promise<string> {
+  const row = await db
+    .selectFrom("core_projects")
+    .select("id")
+    .where(sql<string>`lower(repo_owner)`, "=", repo.owner.toLowerCase())
+    .where(sql<string>`lower(repo_name)`, "=", repo.name.toLowerCase())
+    .executeTakeFirst();
+  if (!row) throw new OperationError("not_found", `no project for ${repo.owner}/${repo.name}`);
+  return row.id;
+}

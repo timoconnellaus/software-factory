@@ -1,9 +1,9 @@
 # Spec 20: Planning M1, the loop
 
 Read first:
-- ADRs [0280](../adr/0280-planning-is-a-live-session-on-a-runner.md),
-  [0281](../adr/0281-runner-capacity-has-heavy-and-light-pools.md),
-  [0282](../adr/0282-spec-provenance-coverage-and-critic.md), [0042](../adr/0042-one-question-object.md),
+- ADRs [0300](../adr/0300-planning-is-a-live-session-on-a-runner.md),
+  [0301](../adr/0301-runner-capacity-has-heavy-and-light-pools.md),
+  [0302](../adr/0302-spec-provenance-coverage-and-critic.md), [0042](../adr/0042-one-question-object.md),
   [0100](../adr/0100-runner-contract.md), [0250](../adr/0250-runner-host-pushes-and-harness-projection.md);
 - the plan [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md);
 - mockups [`planning-three-pane.html`](../../.kim/mockups/planning-three-pane.html),
@@ -58,10 +58,10 @@ V1's one-shot spec run.
 - **Chat**: `core_planning_messages`, one per message, from a person or the agent, optionally about
   a question, with replies. The operations are `chat.send` (person) and `chat.reply` (agent).
 - **The living spec** gains Assumptions, Coverage and Clarifications sections and provenance tags
-  (ADR 0282). `spec.revise` stores a new version, and the app highlights what changed.
+  (ADR 0302). `spec.revise` stores a new version, and the app highlights what changed.
 - **Presence**: the app reports who has the Planning view open (`planning.presence`, heartbeat). The
   agent sees it in its news.
-- **Capacity pools** (ADR 0281):
+- **Capacity pools** (ADR 0301):
   - light and heavy pools in the capacity schema, `sf-runner --max-light`, and scheduler placement
     by pool;
   - a yield request to the oldest idle planning session when the light pool is full.

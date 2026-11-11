@@ -1,4 +1,4 @@
-# ADR 0283: A planning session can split a work item
+# ADR 0303: A planning session can split a work item
 
 Status: accepted, 2026-11-11 (planning interview).
 

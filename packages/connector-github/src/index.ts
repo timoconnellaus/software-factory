@@ -11,6 +11,8 @@
 //                                                     mirror on the default branch)
 //   installation / installation_repositories          → github.installation (record status,
 //                                                     repos added/removed, suspend, delete)
+//   repository_ruleset / branch_protection_rule       → protection.observe (re-check the default
+//                                                     branch's protection: drift, ADR 0280)
 import { z } from "zod";
 
 export const PACKAGE = "@software-factory/connector-github";
@@ -19,7 +21,7 @@ export const VERIFY_CHECK = "factory/verify";
 export const GITHUB_INTAKE = { type: "intake", id: "github" } as const;
 
 export interface OperationCall {
-  op: "verify.refresh" | "push.observe" | "github.installation";
+  op: "verify.refresh" | "push.observe" | "github.installation" | "protection.observe";
   input: Record<string, unknown>;
 }
 
@@ -84,6 +86,13 @@ const installation = z.object({
   repositories: z.array(repoEntry).optional(),
   repositories_added: z.array(repoEntry).optional(),
   repositories_removed: z.array(repoEntry).optional(),
+});
+
+const protectionChange = z.object({
+  action: z.string(),
+  // Org-level rulesets arrive without a repository: nothing to re-check here (the daily check
+  // covers them).
+  repository: repository.optional(),
 });
 
 const PR_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
@@ -239,6 +248,19 @@ export function routeGitHubEvent(event: string, payload: unknown, appSlug: strin
         ignored: calls.length ? null : `${event} ${d.action}`,
       };
     }
+    case "repository_ruleset":
+    case "branch_protection_rule": {
+      const p = protectionChange.safeParse(payload);
+      if (!p.success) return none(null, null, `unreadable ${event} payload`);
+      const { action, repository: r } = p.data;
+      if (!r) return none(null, action, `${event} ${action} without a repository`);
+      return {
+        repo: full(r),
+        action,
+        ignored: null,
+        calls: [{ op: "protection.observe", input: { repo: repoOf(r), event, action } }],
+      };
+    }
     default:
       return none(null, null, `event ${event} isn't used`);
   }
@@ -256,7 +278,12 @@ export const APP_REQUIREMENTS = {
     "push",
     "installation",
     "installation_repositories",
+    // Drift detection on the default branch's protection (ADR 0280). Read-only: the factory never
+    // changes protection.
+    "repository_ruleset",
+    "branch_protection_rule",
   ],
+  /** `administration` stays `read`: write would let the App delete repositories (ADR 0280). */
   permissions: {
     contents: "write",
     pull_requests: "write",
