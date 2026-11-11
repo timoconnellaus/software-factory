@@ -11,10 +11,16 @@
       "**",
       "!spikes",
       "!**/worker-configuration.d.ts",
+      "!**/routeTree.gen.ts",
       "!**/.wrangler",
       "!**/dist",
       "!**/*.md",
       "!.kim"
     ]
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
   }
 }

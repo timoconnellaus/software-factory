@@ -1,8 +1,12 @@
 {
   "extends": "@software-factory/config/tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2023"],
-    "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-plugin/types"]
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["./worker-configuration.d.ts", "vite/client", "@cloudflare/vitest-plugin/types"],
+    "paths": {
+      "#/*": ["./src/*"]
+    }
   },
-  "include": ["src", "test", "worker-configuration.d.ts"]
+  "include": ["src", "test", "worker-configuration.d.ts", "vite.config.ts", "vitest.config.ts"]
 }
