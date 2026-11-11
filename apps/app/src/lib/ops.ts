@@ -61,6 +61,18 @@ export const APP_OPERATIONS = [
   "killSwitch.set",
 ] as const satisfies readonly OpName[];
 
+/** The read operations: what `read()` batches into one server-function call per page load. */
+export const APP_READ_OPERATIONS = [
+  "inbox.list",
+  "workItem.previewRouting",
+  "workItem.get",
+  "workItem.list",
+  "workItem.timeline",
+  "project.list",
+  "runner.list",
+] as const satisfies readonly OpName[];
+export type ReadOpName = (typeof APP_READ_OPERATIONS)[number];
+
 /** JSON as it crosses the server-function boundary (operation outputs are plain JSON). */
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
