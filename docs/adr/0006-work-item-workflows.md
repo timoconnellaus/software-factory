@@ -33,3 +33,5 @@ Relationship OS ADRs 0028 and 0130.
 > Amended 2026-11-11 (V1 core + engine): built as described in [ADR 0110](0110-work-item-workflow-and-gate.md)
 > (promoted) and [ADR 0053](0053-workflow-versioning.md) (versioning). Cascade and depth limit, V1:
 > a factory incident's own failures and send-backs open no further incidents.
+
+> Amended 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)): cascade and depth for planning: a planning session may split its work item into children approved at the spec gate, depth 1 ([ADR 0303](0303-a-planning-session-can-split-a-work-item.md)).

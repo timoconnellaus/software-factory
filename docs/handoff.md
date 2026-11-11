@@ -57,6 +57,9 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #30 | The merge queue ([ADR 0330](adr/0330-the-factory-runs-its-own-merge-queue.md), [spec 06](specs/06-merge-queue.md), migration 0100): approved merges land one at a time per project through Workflow v4; the head is updated by GitHub's update-branch, CI runs once on it, and the approval and review packet carry over. Merged with `factory/verify` red (not opened by the factory), a bootstrap exception the owner approved |
 
 ## In flight
+- **Planning design** (`planning-process`, block I): planning rebuilt as a live session on a runner,
+  modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
+  `.kim/plans/2026-11-11-factory-planning.md`. Next build: spec 20 (M1, the loop).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

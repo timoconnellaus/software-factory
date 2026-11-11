@@ -2,7 +2,7 @@
 
 Each ADR is `NNNN-slug.md` with Status, Context, Decision and Consequences. ADRs are never deleted: when a decision changes, amend it with a dated note.
 
-Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); 0048–0059 is the V1 core + engine build; 0230–0239 is V1 step 4 (verify + connector + incidents); spikes use 0100–0199 (0100 runner contract and 0110 Workflow and gate are accepted and promoted here; 0120 auth is still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
+Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); 0048–0059 is the V1 core + engine build; 0230–0239 is V1 step 4 (verify + connector + incidents); 0300–0309 is the planning design; spikes use 0100–0199 (0100 runner contract and 0110 Workflow and gate are accepted and promoted here; 0120 auth is still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
 
 | ADR | Title |
 | --- | --- |
@@ -70,6 +70,13 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0260](0260-runners-attach-to-the-existing-checkout.md) | Runners attach to the machine's existing checkout of a repo, by canonical identity |
 | [0270](0270-the-factory-launches-the-harness-and-verifies-it.md) | The factory launches the harness (its own permission mode, no user settings), sandboxes it, and verifies the live process |
 | [0280](0280-protect-main-with-a-generated-ruleset.md) | The factory generates the default-branch ruleset; a person applies it; the factory verifies it (the App stays `administration: read`) |
+| [0300](0300-planning-is-a-live-session-on-a-runner.md) | Planning is a live agent session on a runner, modelled on kim |
+| [0301](0301-runner-capacity-has-heavy-and-light-pools.md) | Runner capacity has heavy and light pools |
+| [0302](0302-spec-provenance-coverage-and-critic.md) | Specs carry provenance and coverage, and a critic reviews them before the gate |
+| [0303](0303-a-planning-session-can-split-a-work-item.md) | A planning session can split a work item |
+| [0304](0304-triage-scores-readiness-and-can-ask.md) | Triage scores readiness and can ask |
+| [0305](0305-planning-artifacts-and-the-kim-folder.md) | Planning artifacts are stored in the factory and kept in `.kim/`; mockups render on a sandboxed origin |
+| [0306](0306-verify-checks-drift-from-the-spec.md) | Verify checks drift from the approved spec |
 | [0310](0310-work-item-attachments.md) | Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel |
 | [0330](0330-the-factory-runs-its-own-merge-queue.md) | The factory runs its own merge queue per project: approved merges land one at a time, the head is updated by GitHub's update-branch and the approval carries over a clean update (Workflow v4) |
 | [0320](0320-factory-branches-stay-mergeable.md) | Factory branches merge the default branch before a build; a PR that can't merge goes back to build, and CI that never reports asks a person (Workflow v3) |

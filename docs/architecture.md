@@ -22,6 +22,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   its decisions are listed as binding or advisory (ADR 0005, 0006). Gates block in v1 and a waiting
   item holds no runner slot.
 - **Questions** are the planning object; interview sessions are views over them (ADR 0042).
+- **Planning** is a live agent session on a runner (ADR 0300): the planning agent works through
+  operations over the runner channel (a projected planning MCP server), and kim-style hooks
+  (`PostToolUse`, `UserPromptSubmit`, `Stop`) bring answers and chat back from the planning log. It
+  holds a light slot (ADR 0301). Mockups render on a sandboxed origin; kept artifacts land in `.kim/`
+  with the spec (ADR 0305). Specs 20–25.
 - **Connectors** are the only path to GitHub, Linear, Slack and other outside systems (ADR 0010).
   The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033). Its webhook
   (`software-factory.zerobsai.com/webhooks/github`, served by `sf-engine` through a Workers route)
