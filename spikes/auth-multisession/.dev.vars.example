@@ -1,0 +1,6 @@
+# Copy to .dev.vars (git-ignored). Never commit real values.
+BETTER_AUTH_SECRET=replace-with-openssl-rand-hex-32
+BETTER_AUTH_URL=http://localhost:5173
+# Optional: a GitHub OAuth app with callback http://localhost:5173/api/auth/callback/github
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
