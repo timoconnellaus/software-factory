@@ -1,0 +1,20 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
+  "extends": ["./packages/config/biome-preset.json"],
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "**",
+      "!spikes",
+      "!**/worker-configuration.d.ts",
+      "!**/.wrangler",
+      "!**/dist",
+      "!**/*.md",
+      "!.kim"
+    ]
+  }
+}

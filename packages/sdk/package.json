@@ -1,0 +1,21 @@
+{
+  "name": "@software-factory/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Public types for authoring presets, stages and `.factory/` config. No runtime dependencies on the core.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "@cloudflare/workers-types": "5.20261104.1",
+    "@software-factory/config": "workspace:*",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}

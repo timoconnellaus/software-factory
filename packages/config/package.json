@@ -1,0 +1,15 @@
+{
+  "name": "@software-factory/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tsconfig.base.json": "./tsconfig.base.json",
+    "./biome-preset.json": "./biome-preset.json",
+    "./vitest": "./vitest.ts"
+  },
+  "dependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "vitest": "5.1.0"
+  }
+}
