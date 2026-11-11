@@ -1,0 +1,17 @@
+// Spike only: Better Auth (organization + multi-session + passkey) on D1, behind TanStack Start.
+// No account or resource ids are committed; secrets live in .dev.vars (see .dev.vars.example).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "factory-auth-spike",
+  "main": "./src/server.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "factory-auth-spike",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": { "AUTH_EMAIL_PASSWORD": "true" }
+}
