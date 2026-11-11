@@ -13,6 +13,12 @@
     "enabled": true
   },
   "upload_source_maps": true,
+  // Run next to D1 (ADR 0241). D1's primary is in SJC (WNAM); every page makes several D1 queries
+  // and engine RPCs, so a Worker at the visitor's edge pays a trans-Pacific round trip for each
+  // one. Pinned here, a request crosses once and its D1 and ENGINE calls stay local (the engine's
+  // RPC runs where its caller runs: placement doesn't apply to RPC entrypoints). Static assets
+  // are still served from the edge nearest the visitor.
+  "placement": { "region": "aws:us-west-1" },
   // Public hostname (Workers Custom Domain: Cloudflare creates the DNS record and certificate).
   "routes": [{ "pattern": "software-factory.zerobsai.com", "custom_domain": true }],
   // The factory's one database. Better Auth writes its own core_* tables here; everything else goes

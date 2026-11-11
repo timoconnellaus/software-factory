@@ -3,21 +3,43 @@
 import { Card } from "@software-factory/ui/components/card";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { FinishSetupCard } from "#/components/finish-setup";
 import { GateCard, QuestionCard } from "#/components/inbox-cards";
 import { RunnerHealth } from "#/components/runner-health";
-import { ago, STAGE_LABEL } from "#/lib/format";
-import { groupByProject } from "#/lib/inbox";
-import { inboxQuery, workListQuery } from "#/lib/queries";
+import { ago, errorMessage, STAGE_LABEL } from "#/lib/format";
+import { gateWorkItemIds, groupByProject } from "#/lib/inbox";
+import { inboxQuery, setupStatusQuery, workItemQuery, workListQuery } from "#/lib/queries";
 import { useProjects } from "#/lib/session";
 
 export const Route = createFileRoute("/_app/")({
   validateSearch: (s: Record<string, unknown>): { item?: string } =>
     typeof s.item === "string" ? { item: s.item } : {},
-  loader: ({ context }) => context.queryClient.ensureQueryData(inboxQuery()).catch(() => null),
+  // Everything the page renders, in one request: the inbox and the work list (for "shipped this
+  // week"), then the work items behind the gate cards. The Finish setup card asks GitHub, so it
+  // is started here but not waited for: it shows when it arrives.
+  loader: async ({ context: { queryClient, session } }) => {
+    const orgId = session.personalOrgId;
+    if (orgId) void queryClient.prefetchQuery(setupStatusQuery(orgId));
+    const [inbox] = await Promise.all([
+      queryClient.ensureQueryData(inboxQuery()),
+      orgId ? queryClient.ensureQueryData(workListQuery(orgId)).catch(() => null) : null,
+    ]);
+    await Promise.all(
+      gateWorkItemIds(inbox).map((id) =>
+        queryClient.ensureQueryData(workItemQuery(id)).catch(() => null),
+      ),
+    );
+  },
+  pendingComponent: InboxPending,
+  errorComponent: ({ error }) => (
+    <Page>
+      <h1 className="font-semibold text-2xl tracking-tight">Inbox</h1>
+      <p className="text-destructive text-sm">Couldn't load the inbox: {errorMessage(error)}</p>
+    </Page>
+  ),
   component: InboxPage,
 });
 
@@ -26,7 +48,7 @@ const WEEK = 7 * 24 * 60 * 60 * 1000;
 function InboxPage() {
   const { item: highlight } = Route.useSearch();
   const { session } = Route.useRouteContext();
-  const inbox = useQuery(inboxQuery());
+  const { data } = useSuspenseQuery(inboxQuery());
   const projects = useProjects();
   const work = useQuery({
     ...workListQuery(session.personalOrgId ?? ""),
@@ -36,30 +58,12 @@ function InboxPage() {
     projects.data?.find((p) => p.id === id)?.name ?? (id ? "project" : "factory");
 
   useEffect(() => {
-    if (!highlight || !inbox.data) return;
+    if (!highlight) return;
     document
       .querySelector(`[data-testid="card-${CSS.escape(highlight)}"]`)
       ?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [highlight, inbox.data]);
+  }, [highlight]);
 
-  if (inbox.isPending) {
-    return (
-      <Page>
-        <Skeleton className="h-8 w-40" />
-        <Skeleton className="h-36 w-full" />
-        <Skeleton className="h-36 w-full" />
-      </Page>
-    );
-  }
-  if (inbox.isError) {
-    return (
-      <Page>
-        <h1 className="font-semibold text-2xl tracking-tight">Inbox</h1>
-        <p className="text-destructive text-sm">Couldn't load the inbox: {inbox.error.message}</p>
-      </Page>
-    );
-  }
-  const data = inbox.data;
   const waiting = data.gates.length + data.questions.length;
   const shipped =
     work.data?.items.filter(
@@ -192,6 +196,16 @@ function InboxPage() {
           <RunnerHealth runners={data.runners} />
         </div>
       </Card>
+    </Page>
+  );
+}
+
+function InboxPending() {
+  return (
+    <Page>
+      <Skeleton className="h-8 w-40" />
+      <Skeleton className="h-36 w-full" />
+      <Skeleton className="h-36 w-full" />
     </Page>
   );
 }

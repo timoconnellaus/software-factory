@@ -9,8 +9,20 @@ export interface EngineRpc {
     name: string,
     input: unknown,
     options: { actor: Actor; origin: Origin; idempotencyKey?: string },
-  ): Promise<{ ok: true; result: InvokeResult<unknown> } | { ok: false; error: Refusal }>;
+  ): Promise<
+    | { ok: true; result: InvokeResult<unknown>; ms?: number }
+    | { ok: false; error: Refusal; ms?: number }
+  >;
 }
+
+/** How long one operation took: the whole RPC, and the part spent inside the engine. */
+export interface OpTiming {
+  name: string;
+  ms: number;
+  engineMs: number | null;
+}
+
+const round = (ms: number) => Math.round(ms * 10) / 10;
 
 export async function invokeAs(
   engine: EngineRpc,
@@ -18,12 +30,15 @@ export async function invokeAs(
   name: string,
   input: unknown,
   idempotencyKey?: string,
+  timings?: OpTiming[],
 ): Promise<OpResult> {
+  const start = performance.now();
   const response = await engine.invoke(name, input, {
     actor: { type: "human", id: userId },
     origin: { surface: "app", requestId: crypto.randomUUID() },
     ...(idempotencyKey ? { idempotencyKey } : {}),
   });
+  timings?.push({ name, ms: round(performance.now() - start), engineMs: response.ms ?? null });
   if (!response.ok)
     return { ok: false, code: response.error.code, message: response.error.message };
   const { result } = response;

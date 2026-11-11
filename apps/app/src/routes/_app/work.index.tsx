@@ -10,6 +10,10 @@ import { useProjects, useSession } from "#/lib/session";
 export const Route = createFileRoute("/_app/work/")({
   validateSearch: (s: Record<string, unknown>): { project?: string } =>
     typeof s.project === "string" ? { project: s.project } : {},
+  loader: ({ context: { queryClient, session } }) =>
+    session.personalOrgId
+      ? queryClient.ensureQueryData(workListQuery(session.personalOrgId)).catch(() => null)
+      : null,
   component: WorkList,
 });
 

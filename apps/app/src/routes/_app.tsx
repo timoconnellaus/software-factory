@@ -6,25 +6,36 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@software-factory/ui/components/sidebar";
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Outlet, redirect, useRouterState } from "@tanstack/react-router";
+import { useEffect } from "react";
 import { AppSidebar } from "#/components/app-sidebar";
-import { projectsQuery } from "#/lib/queries";
-import { getSession } from "#/server/fns";
+import { inboxQuery, projectsQuery, sessionQuery } from "#/lib/queries";
 
 export const Route = createFileRoute("/_app")({
-  beforeLoad: async ({ location }) => {
-    const session = await getSession();
+  // The session comes from the query cache: fetched once per page load, then client navigations
+  // don't wait on it. Once stale it is re-checked in the background (and AppLayout signs out if
+  // it has gone). Every operation still checks the session itself.
+  beforeLoad: async ({ context, location }) => {
+    const session = await context.queryClient.ensureQueryData({
+      ...sessionQuery(),
+      revalidateIfStale: true,
+    });
     if (!session) throw redirect({ to: "/sign-in", search: { redirect: location.href } });
     return { session };
   },
+  // What the shell renders on every page: the sidebar's projects and inbox count. Child loaders
+  // run alongside this one, and their reads go out in the same request.
   loader: ({ context }) =>
-    context.queryClient
-      .ensureQueryData(projectsQuery(context.session.orgs.map((o) => o.id)))
-      .catch(() => []),
+    Promise.all([
+      context.queryClient.ensureQueryData(projectsQuery(context.session.orgs.map((o) => o.id))),
+      context.queryClient.ensureQueryData(inboxQuery()),
+    ]).catch(() => null),
   component: AppLayout,
 });
 
 function AppLayout() {
+  useSignOutWhenSessionEnds();
   return (
     <SidebarProvider className="h-dvh overflow-hidden">
       <AppSidebar />
@@ -39,6 +50,17 @@ function AppLayout() {
       </SidebarInset>
     </SidebarProvider>
   );
+}
+
+/** A background session check that finds no session sends the person to sign in. */
+function useSignOutWhenSessionEnds() {
+  const session = useQuery(sessionQuery());
+  const ended = session.isSuccess && session.data === null;
+  useEffect(() => {
+    if (ended) {
+      window.location.assign(`/sign-in?redirect=${encodeURIComponent(window.location.pathname)}`);
+    }
+  }, [ended]);
 }
 
 function Breadcrumb() {

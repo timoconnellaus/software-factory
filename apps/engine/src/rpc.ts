@@ -14,9 +14,10 @@ import {
 } from "@software-factory/core";
 import { invokeDeps } from "./deps.ts";
 
+/** `ms` is the time spent inside the engine, so the caller can tell it apart from the hop. */
 export type EngineInvokeResult<O = unknown> =
-  | { ok: true; result: InvokeResult<O> }
-  | { ok: false; error: Refusal };
+  | { ok: true; result: InvokeResult<O>; ms?: number }
+  | { ok: false; error: Refusal; ms?: number };
 
 export interface EngineInvokeOptions {
   actor: Actor;
@@ -34,10 +35,13 @@ export class EngineApi extends WorkerEntrypoint<Env> {
     input: unknown,
     options: EngineInvokeOptions,
   ): Promise<EngineInvokeResult> {
+    const start = performance.now();
+    const ms = () => Math.round((performance.now() - start) * 10) / 10;
     try {
-      return { ok: true, result: await invoke(invokeDeps(this.env), name, input, options) };
+      const result = await invoke(invokeDeps(this.env), name, input, options);
+      return { ok: true, result, ms: ms() };
     } catch (error) {
-      if (isOperationError(error)) return { ok: false, error: toRefusal(error) };
+      if (isOperationError(error)) return { ok: false, error: toRefusal(error), ms: ms() };
       throw error;
     }
   }

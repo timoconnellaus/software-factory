@@ -23,3 +23,14 @@ export function groupByProject(inbox: Inbox): InboxGroup[] {
   for (const hold of inbox.wipHolds) get(hold.projectId).waitingBuilds = hold.waitingBuilds;
   return [...groups.values()];
 }
+
+/** The work items the inbox's gate cards show details of (spec and merge gates). */
+export function gateWorkItemIds(inbox: Inbox): string[] {
+  return [
+    ...new Set(
+      inbox.gates
+        .filter((g) => (g.kind === "spec" || g.kind === "merge") && g.workItemId)
+        .map((g) => g.workItemId as string),
+    ),
+  ];
+}

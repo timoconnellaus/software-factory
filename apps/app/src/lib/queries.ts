@@ -1,26 +1,46 @@
-// TanStack Query options for every read the dashboard makes. All reads are operations.
+// TanStack Query options for every read the dashboard makes. All reads are operations, through
+// `read()` (batched per tick). Route loaders `ensureQueryData` everything their page renders, so a
+// navigation fetches in one request and pages render from the cache; a cached page shows at once
+// and refreshes in the background once its `staleTime` has passed.
 import { queryOptions, useQueryClient } from "@tanstack/react-query";
-import { op } from "./op.ts";
+import { getSession } from "#/server/fns";
+import { read } from "./op.ts";
 import type { Project } from "./ops.ts";
+
+/**
+ * The signed-in user and their orgs. Fetched once per page load (on the server for the first
+ * render, then carried to the browser with the rest of the cache), so client navigations don't
+ * wait on it; `_app` re-checks it in the background once it is stale. Operations check the session
+ * on every call regardless.
+ */
+export const sessionQuery = () =>
+  queryOptions({
+    queryKey: ["session"],
+    queryFn: () => getSession(),
+    staleTime: 5 * 60_000,
+  });
 
 export const inboxQuery = () =>
   queryOptions({
     queryKey: ["inbox"],
-    queryFn: () => op("inbox.list", {}),
+    queryFn: () => read("inbox.list", {}),
+    staleTime: 10_000,
     refetchInterval: 15_000,
   });
 
 export const workItemQuery = (workItemId: string) =>
   queryOptions({
     queryKey: ["workItem", workItemId],
-    queryFn: () => op("workItem.get", { workItemId }),
+    queryFn: () => read("workItem.get", { workItemId }),
+    staleTime: 5_000,
     refetchInterval: 10_000,
   });
 
 export const timelineQuery = (workItemId: string) =>
   queryOptions({
     queryKey: ["workItem", workItemId, "timeline"],
-    queryFn: () => op("workItem.timeline", { workItemId }),
+    queryFn: () => read("workItem.timeline", { workItemId }),
+    staleTime: 5_000,
     refetchInterval: 10_000,
   });
 
@@ -29,7 +49,7 @@ export const projectsQuery = (orgIds: string[]) =>
   queryOptions({
     queryKey: ["projects", orgIds],
     queryFn: async (): Promise<Project[]> => {
-      const lists = await Promise.all(orgIds.map((orgId) => op("project.list", { orgId })));
+      const lists = await Promise.all(orgIds.map((orgId) => read("project.list", { orgId })));
       return lists.flatMap((l) => l.projects);
     },
     staleTime: 60_000,
@@ -38,14 +58,15 @@ export const projectsQuery = (orgIds: string[]) =>
 export const workListQuery = (orgId: string) =>
   queryOptions({
     queryKey: ["work", orgId],
-    queryFn: () => op("workItem.list", { orgId, limit: 100 }),
+    queryFn: () => read("workItem.list", { orgId, limit: 100 }),
+    staleTime: 10_000,
     refetchInterval: 15_000,
   });
 
 export const runnersQuery = () =>
   queryOptions({
     queryKey: ["runners"],
-    queryFn: () => op("runner.list", {}),
+    queryFn: () => read("runner.list", {}),
     staleTime: 30_000,
   });
 
@@ -53,7 +74,7 @@ export const runnersQuery = () =>
 export const setupStatusQuery = (orgId: string) =>
   queryOptions({
     queryKey: ["setup", orgId],
-    queryFn: () => op("setup.status", { orgId }),
+    queryFn: () => read("setup.status", { orgId }),
     staleTime: 30_000,
     refetchInterval: 30_000,
   });
@@ -61,14 +82,14 @@ export const setupStatusQuery = (orgId: string) =>
 export const reposQuery = (orgId: string) =>
   queryOptions({
     queryKey: ["repos", orgId],
-    queryFn: () => op("github.repos", { orgId }),
+    queryFn: () => read("github.repos", { orgId }),
     staleTime: 30_000,
   });
 
 export const routingQuery = (projectId: string) =>
   queryOptions({
     queryKey: ["routing", projectId],
-    queryFn: () => op("workItem.previewRouting", { projectId }),
+    queryFn: () => read("workItem.previewRouting", { projectId }),
     staleTime: 10_000,
   });
 
