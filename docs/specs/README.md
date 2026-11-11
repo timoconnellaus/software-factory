@@ -37,6 +37,7 @@ and the factory's own planning stage writes specs in this same format.
 | [23](23-triage-questions-and-critic.md) | Planning M4: triage questions, the readiness check and the spec critic | 20 |
 | [24](24-planning-splits.md) | Planning splits a work item | 20 |
 | [25](25-verify-drift-check.md) | Verify checks drift from the spec | 04 |
+| [30](30-runner-local-without-orca.md) | runner-local: agents in tmux on the host, status from hooks, no Orca (piece 1 of the hosts plan) | 03 |
 | [wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md) | Work item attachments (picker, drag-and-drop, paste; R2; runs read them) | 01, 03, 13 |
 
 Specs 01–04 together are the **MVP backend slice**: CLI/chat intake → triage → implement (Claude
