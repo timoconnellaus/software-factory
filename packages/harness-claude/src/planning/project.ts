@@ -1,4 +1,4 @@
-// What a planning session adds to a run's harness projection (spec 20, ADR 0340): the relay file,
+// What a planning session adds to a run's harness projection (spec 20, ADR 0350): the relay file,
 // the planning MCP server's config, the three hooks, and the conversation to start or resume.
 import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";

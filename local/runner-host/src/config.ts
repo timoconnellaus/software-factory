@@ -17,6 +17,8 @@ export const configSchema = z.object({
   key: z.string().min(20),
   name: z.string().max(80).optional(),
   maxConcurrent: z.number().int().min(1).max(16).default(2),
+  /** Light slots (triage, spec, planning sessions), ADR 0301. An idle planning session holds one. */
+  maxLight: z.number().int().min(0).max(32).default(6),
   heartbeatMs: z.number().int().min(2_000).max(120_000).default(20_000),
   /** Capabilities to declare (default: everything the adapter supports). */
   capabilities: z.array(z.enum(CAPABILITIES)).optional(),

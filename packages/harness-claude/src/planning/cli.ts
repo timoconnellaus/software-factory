@@ -1,5 +1,5 @@
 // `node cli.ts mcp <relayFile>` runs the planning MCP server; `node cli.ts hook <event> <relayFile>`
-// runs one planning hook. The runner projects both into a planning session's settings (ADR 0340),
+// runs one planning hook. The runner projects both into a planning session's settings (ADR 0350),
 // started with the runner host's own Node (`--experimental-transform-types`, as `sf-runner` runs).
 
 import { type HookPayload, runNewsHook, runStopHook } from "./hooks.ts";

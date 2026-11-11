@@ -53,7 +53,7 @@ export async function projectHarness(
     identity?: { name: string; email: string };
     claudeBin?: string;
     /**
-     * A planning job's relay (ADR 0340): the planning MCP server and hooks are projected, and the
+     * A planning job's relay (ADR 0350): the planning MCP server and hooks are projected, and the
      * conversation started or resumed. `nodeBin` runs them (default: this process's Node).
      */
     planning?: { relay: PlanningRelay; nodeBin?: string };

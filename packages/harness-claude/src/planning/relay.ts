@@ -1,4 +1,4 @@
-// The harness's side of the planning relay (ADR 0340): the planning MCP server and the hooks call the
+// The harness's side of the planning relay (ADR 0350): the planning MCP server and the hooks call the
 // runner host's local relay, which signs each call onto the channel with the job's id and fencing
 // token. The relay's address and per-job secret are in `<runDir>/planning.json`, which the agent's
 // tools may not read.

@@ -51,7 +51,7 @@ export function claudeArgv(
     settingsPath: string;
     claudeBin?: string;
     profile?: HarnessProfile;
-    /** A planning session (ADR 0340): its MCP server, and the conversation to start or resume. */
+    /** A planning session (ADR 0350): its MCP server, and the conversation to start or resume. */
     planning?: PlanningLaunch;
   },
 ): string[] {

@@ -117,7 +117,7 @@ export interface SettingsOptions {
    * there, never write.
    */
   attachmentsDir?: string;
-  /** Files the agent's Read tool may not open (a planning session's relay file, ADR 0340). */
+  /** Files the agent's Read tool may not open (a planning session's relay file, ADR 0350). */
   denyReadFiles?: string[];
 }
 

@@ -12,7 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@software-factory/runner-contract": "workspace:*"
+    "@software-factory/runner-contract": "workspace:*",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@software-factory/config": "workspace:*",

@@ -101,7 +101,7 @@ export interface AttachmentFile {
 }
 
 /**
- * The runner host's local relay for a planning job (ADR 0340): the harness's planning MCP server
+ * The runner host's local relay for a planning job (ADR 0350): the harness's planning MCP server
  * and hooks call it with the bearer token, and the host signs the call onto the channel with the
  * job's id and fencing token. The runner key never leaves the host.
  */

@@ -73,6 +73,7 @@ async function pair(args: string[]) {
       url: { type: "string" },
       name: { type: "string" },
       max: { type: "string" },
+      "max-light": { type: "string" },
     },
   });
   const existing = await loadConfig(dirs.configFile).catch(() => null);
@@ -88,6 +89,7 @@ async function pair(args: string[]) {
     key,
     ...(values.name ? { name: values.name } : {}),
     ...(values.max ? { maxConcurrent: Number(values.max) } : {}),
+    ...(values["max-light"] ? { maxLight: Number(values["max-light"]) } : {}),
   });
   await adopt(config);
 }
@@ -100,7 +102,12 @@ async function adopt(config: RunnerConfig) {
   try {
     await cp.heartbeat({
       manifest,
-      capacity: { max: config.maxConcurrent, inUse: 0, accepting: false },
+      capacity: {
+        max: config.maxConcurrent,
+        inUse: 0,
+        accepting: false,
+        light: { max: config.maxLight, inUse: 0 },
+      },
       activeJobs: [],
       rateLimitedUntil: null,
     });
@@ -130,6 +137,7 @@ async function login(args: string[]) {
       url: { type: "string" },
       app: { type: "string" },
       max: { type: "string" },
+      "max-light": { type: "string" },
       "no-install": { type: "boolean" },
       "no-open": { type: "boolean" },
     },
@@ -159,6 +167,7 @@ async function login(args: string[]) {
     key: got.key,
     ...(got.name ? { name: got.name } : {}),
     ...(values.max ? { maxConcurrent: Number(values.max) } : {}),
+    ...(values["max-light"] ? { maxLight: Number(values["max-light"]) } : {}),
   });
   console.log(`Approved: ${got.name ?? got.runnerId}.`);
   await adopt(config);
@@ -171,7 +180,7 @@ async function run() {
   const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
   const { host } = buildRunner(config, dirs, { log });
   log(
-    `runner ${config.runnerId} (contract v${CONTRACT_VERSION}) → ${config.baseUrl}, up to ${config.maxConcurrent} jobs`,
+    `runner ${config.runnerId} (contract v${CONTRACT_VERSION}) → ${config.baseUrl}, up to ${config.maxConcurrent} heavy and ${config.maxLight} light jobs`,
   );
   let stopping = false;
   const shutdown = async (signal: string) => {
@@ -335,7 +344,12 @@ async function doctor(args: string[]) {
       const { cp, adapter } = buildRunner(config, dirs);
       await cp.heartbeat({
         manifest: await adapter.manifest(),
-        capacity: { max: config.maxConcurrent, inUse: 0, accepting: false },
+        capacity: {
+          max: config.maxConcurrent,
+          inUse: 0,
+          accepting: false,
+          light: { max: config.maxLight, inUse: 0 },
+        },
         activeJobs: [],
         rateLimitedUntil: null,
       });

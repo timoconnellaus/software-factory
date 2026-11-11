@@ -509,3 +509,80 @@ describe("attachments in a run (ADR 0310)", () => {
     expect(none.permissions.additionalDirectories).toBeUndefined();
   });
 });
+
+describe("a planning session's projection (spec 20, ADR 0350)", () => {
+  const planningJob = (resume: boolean) => ({
+    ...job("planning"),
+    workItem: { id: "wi_1", number: 7, title: "Plan" },
+    planning: {
+      sessionId: "ps_0123456789abcdef0123456789abcdef",
+      sessionRef: "6f2c3a9e-1b2d-4c5e-8f90-123456789abc",
+      resume,
+    },
+  });
+  const relay = { url: "http://127.0.0.1:4555", token: "secret-token" };
+
+  it("projects the planning MCP server, the three hooks and a new conversation, and hides the relay file", async () => {
+    const worktree = await temp("sf-wt-");
+    const runDir = await temp("sf-run-");
+    const projected = await projectHarness(planningJob(false), {
+      worktree,
+      runDir,
+      runTmp: join(runDir, "tmp"),
+      planning: { relay, nodeBin: "/opt/node24/bin/node" },
+    });
+    const argv = projected.launch.argv;
+    expect(argv).toContain("--strict-mcp-config");
+    expect(argv.slice(argv.indexOf("--mcp-config"), argv.indexOf("--mcp-config") + 2)).toEqual([
+      "--mcp-config",
+      join(runDir, "mcp.json"),
+    ]);
+    expect(argv).toContain("--session-id");
+    expect(argv).not.toContain("--resume");
+    expect(argv[argv.indexOf("--session-id") + 1]).toBe("6f2c3a9e-1b2d-4c5e-8f90-123456789abc");
+    expect(projected.launch.mode).toBe("dontAsk");
+
+    const mcp = JSON.parse(await readFile(join(runDir, "mcp.json"), "utf8"));
+    expect(mcp.mcpServers.planning.command).toBe("/opt/node24/bin/node");
+    expect(mcp.mcpServers.planning.args.slice(-2)).toEqual(["mcp", join(runDir, "planning.json")]);
+    const info = JSON.parse(await readFile(join(runDir, "planning.json"), "utf8"));
+    expect(info).toEqual({ ...relay, jobId: planningJob(false).jobId, workItemNumber: 7 });
+    const { statSync } = await import("node:fs");
+    expect(statSync(join(runDir, "planning.json")).mode & 0o777).toBe(0o600);
+
+    const settings = projected.settings;
+    expect(Object.keys(settings.hooks ?? {}).sort()).toEqual([
+      "PostToolUse",
+      "Stop",
+      "UserPromptSubmit",
+    ]);
+    const stop = settings.hooks?.Stop?.[0]?.hooks[0];
+    expect(stop).toMatchObject({ asyncRewake: true, timeout: 86_400 });
+    expect(stop?.command).toContain("hook stop");
+    expect(settings.permissions.allow).toContain("mcp__planning");
+    expect(settings.permissions.allow).not.toContain("Write");
+    expect(settings.permissions.deny).toContain(`Read(/${join(runDir, "planning.json")})`);
+    // No result file in a planning session: its record is in the factory.
+    expect(settings.permissions.allow.some((r) => r.includes(RESULT_FILE))).toBe(false);
+  });
+
+  it("resumes the same conversation on a resume job", async () => {
+    const projected = await projectHarness(planningJob(true), {
+      worktree: await temp("sf-wt-"),
+      runDir: await temp("sf-run-"),
+      planning: { relay },
+    });
+    const argv = projected.launch.argv;
+    expect(argv[argv.indexOf("--resume") + 1]).toBe("6f2c3a9e-1b2d-4c5e-8f90-123456789abc");
+    expect(argv).not.toContain("--session-id");
+  });
+
+  it("refuses a planning job without its relay", async () => {
+    await expect(
+      projectHarness(planningJob(false), {
+        worktree: await temp("sf-wt-"),
+        runDir: await temp("sf-run-"),
+      }),
+    ).rejects.toThrow(/relay/);
+  });
+});
