@@ -330,9 +330,38 @@ export const workItemGet = defineOperation({
         createdAt: z.string(),
       })
       .nullable(),
+    /**
+     * The project's policy as the detail page and review packet need it (spec 13, 14): null when
+     * the project has no valid `.factory/policy.json`. `reviewPacketSections` null: show all.
+     */
+    policy: z
+      .object({
+        autonomyPolicy: z.string(),
+        specRequiredFrom: z.enum(SIZES),
+        reviewPacketSections: z.array(z.string()).nullable(),
+      })
+      .nullable(),
+    /** Who decides this item's gates, and the rule that makes them approvers. */
+    approvers: z.object({
+      rule: z.string(),
+      users: z.array(
+        z.object({ id: z.string(), name: z.string(), githubLogin: z.string().nullable() }),
+      ),
+    }),
+    /** What the caller may do here: the UI disables what the server would refuse anyway. */
+    viewer: z.object({ isApprover: z.boolean(), isRequester: z.boolean() }),
   }),
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
+    const policy = ctx.scope.policy;
+    const approverUserIds = await approverIds(ctx.db, w.org_id, policy);
+    const approverUsers = approverUserIds.length
+      ? await ctx.db
+          .selectFrom("core_user")
+          .select(["id", "name", "github_login"])
+          .where("id", "in", approverUserIds)
+          .execute()
+      : [];
     const [stages, spec, questions, gates, runs, packet] = await Promise.all([
       ctx.db
         .selectFrom("core_stages")
@@ -459,6 +488,26 @@ export const workItemGet = defineOperation({
             createdAt: packet.created_at,
           }
         : null,
+      policy: policy
+        ? {
+            autonomyPolicy: policy.autonomyPolicy,
+            specRequiredFrom: policy.spec.requiredFrom,
+            reviewPacketSections: policy.reviewPacket?.sections ?? null,
+          }
+        : null,
+      approvers: {
+        rule: policy?.approvers.length
+          ? "named in .factory/policy.json"
+          : "org owners and admins (no approvers named in .factory/policy.json)",
+        users: approverUserIds.flatMap((id) => {
+          const u = approverUsers.find((a) => a.id === id);
+          return u ? [{ id: u.id, name: u.name, githubLogin: u.github_login }] : [];
+        }),
+      },
+      viewer: {
+        isApprover: approverUserIds.includes(ctx.actor.id),
+        isRequester: w.requester_user_id === ctx.actor.id,
+      },
     };
   },
 });

@@ -1,0 +1,478 @@
+// The review packet (spec 14, mockup review-packet). In the app it IS the merge gate (ADR 0041):
+// Merge calls review.merge, Send back calls review.sendBack, and both record whether the full diff
+// was opened first. Rendered only from the stored packet: no GitHub calls on load.
+import { Button } from "@software-factory/ui/components/button";
+import { Card } from "@software-factory/ui/components/card";
+import { type Status, StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
+import { cn } from "@software-factory/ui/lib/utils";
+import { useEffect, useState } from "react";
+import Markdown from "react-markdown";
+import type { WorkItemDetail } from "#/lib/ops";
+import {
+  keptOnRunner,
+  type PacketSection,
+  type ParsedPacket,
+  packetCounts,
+  packetSections,
+  parsePacket,
+} from "#/lib/packet";
+import { useSession } from "#/lib/session";
+import { NoteDialog, useDecide } from "./decisions.tsx";
+
+const OPENED_KEY = (id: string) => `sf:opened-diff:${id}`;
+
+/** Whether the approver opened the full diff (or the GitHub PR) for this head SHA. */
+function useOpenedFullDiff(workItemId: string, headSha: string | undefined) {
+  const key = `${OPENED_KEY(workItemId)}:${headSha ?? ""}`;
+  const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    try {
+      setOpened(sessionStorage.getItem(key) === "1");
+    } catch {
+      // Storage blocked: the flag lives in memory for this page only.
+    }
+  }, [key]);
+  const mark = () => {
+    setOpened(true);
+    try {
+      sessionStorage.setItem(key, "1");
+    } catch {
+      // ignore
+    }
+  };
+  return [opened, mark] as const;
+}
+
+export function ReviewPacket({ detail, full = false }: { detail: WorkItemDetail; full?: boolean }) {
+  const { item } = detail;
+  const packet = detail.reviewPacket ? parsePacket(detail.reviewPacket) : null;
+  const mergeGate = detail.gates.find((g) => g.kind === "merge" && g.status === "pending");
+  const [opened, markOpened] = useOpenedFullDiff(item.id, packet?.headSha);
+  const { decide, pending } = useDecide();
+  const [sendBack, setSendBack] = useState(false);
+  const canDecide = !!mergeGate && detail.viewer.isApprover;
+  const me = useSession().user.id;
+  const approverNames = detail.approvers.users.map((u) =>
+    u.id === me ? "you" : (u.githubLogin ?? u.name),
+  );
+  const prFiles = item.prUrl ? `${item.prUrl}/files` : null;
+
+  if (!packet) {
+    return (
+      <Card className="items-center py-10 text-center text-sm" data-testid="no-packet">
+        <div className="font-medium">No review packet yet</div>
+        <div className="text-muted-foreground">
+          The verify stage assembles it once the build has a PR.
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="grid gap-4" data-testid="review-packet">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          {full && (
+            <div className="mb-1 flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
+              <StatusBadge
+                status={mergeGate ? "waiting" : packet.verdict === "pass" ? "done" : "failed"}
+              >
+                {mergeGate ? "Ready to merge" : gateOutcome(detail)}
+              </StatusBadge>
+            </div>
+          )}
+          {full && <h1 className="font-semibold text-2xl tracking-tight">{item.title}</h1>}
+          <div className="text-muted-foreground text-sm">
+            {item.prUrl && item.prNumber ? (
+              <a
+                href={item.prUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="underline"
+                onClick={markOpened}
+                data-testid="pr-link"
+              >
+                PR #{item.prNumber}
+              </a>
+            ) : (
+              "No PR yet"
+            )}{" "}
+            · head <span className="font-mono text-xs">{packet.headSha.slice(0, 7)}</span> ·
+            approver: {approverNames.join(", ") || "nobody"} ({detail.approvers.rule})
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            disabled={!canDecide || pending !== null}
+            onClick={() => setSendBack(true)}
+            data-testid="send-back"
+          >
+            Send back
+          </Button>
+          {prFiles && (
+            <Button variant="outline" asChild>
+              <a href={prFiles} target="_blank" rel="noreferrer" onClick={markOpened}>
+                View diff
+              </a>
+            </Button>
+          )}
+          <Button
+            disabled={!canDecide || pending !== null}
+            title={
+              !mergeGate
+                ? "There is no open merge gate"
+                : detail.viewer.isApprover
+                  ? undefined
+                  : "Only an approver on this project can merge"
+            }
+            onClick={() =>
+              decide({ kind: "review.merge", workItemId: item.id, openedFullDiff: opened })
+            }
+            data-testid="merge"
+          >
+            {pending === "review.merge" ? "Merging…" : "Merge"}
+          </Button>
+        </div>
+      </div>
+
+      {packetSections(detail.policy?.reviewPacketSections).map((section) => (
+        <Section
+          key={section}
+          section={section}
+          packet={packet}
+          detail={detail}
+          onOpenDiff={markOpened}
+        />
+      ))}
+
+      <Card className="gap-1 px-5 py-4 text-sm" data-testid="merge-footer">
+        <div className="font-medium">Merge</div>
+        <div className="text-muted-foreground">
+          Merge always needs a person (the floor): the factory never merges on its own. The GitHub
+          App merges the PR with a merge commit once you decide here.
+          {mergeGate ? "" : ` ${gateOutcome(detail)}.`}
+        </div>
+        <div className="text-muted-foreground text-xs">
+          {opened ? "You opened the full diff." : "You haven't opened the full diff yet."} That's
+          recorded with your decision.
+        </div>
+      </Card>
+
+      <NoteDialog
+        open={sendBack}
+        onOpenChange={setSendBack}
+        title="Send back to build"
+        description="The work item goes back to build with your note (it shows on the timeline). A factory incident opens to fix .factory/ so it doesn't happen again."
+        placeholder="What's wrong, and what should change?"
+        confirm="Send back"
+        destructive
+        onConfirm={(note) =>
+          decide({ kind: "review.sendBack", workItemId: item.id, note, openedFullDiff: opened })
+        }
+      />
+    </div>
+  );
+}
+
+function gateOutcome(detail: WorkItemDetail): string {
+  const last = [...detail.gates].reverse().find((g) => g.kind === "merge");
+  if (!last) return "Not at the merge gate yet";
+  if (last.decision === "approved") return "Merged";
+  if (last.decision === "sent_back") return "Sent back";
+  return last.status === "pending" ? "Ready to merge" : capitalise(last.decision ?? last.status);
+}
+
+const capitalise = (s: string) => (s ? s[0]?.toUpperCase() + s.slice(1) : s);
+
+function Section({
+  section,
+  packet,
+  detail,
+  onOpenDiff,
+}: {
+  section: PacketSection;
+  packet: ParsedPacket;
+  detail: WorkItemDetail;
+  onOpenDiff: () => void;
+}) {
+  switch (section) {
+    case "verdict":
+      return <VerdictRow packet={packet} />;
+    case "whatChanged":
+      return (
+        <Panel title="What changed" testId="section-whatChanged">
+          {packet.summary ? (
+            <div className="prose-sm text-sm [&_code]:font-mono [&_code]:text-xs [&_p]:my-1">
+              <Markdown>{packet.summary}</Markdown>
+            </div>
+          ) : (
+            <Empty>No summary.</Empty>
+          )}
+        </Panel>
+      );
+    case "criteria":
+      return (
+        <Panel title="Acceptance criteria · evidence" testId="section-criteria" flush>
+          {packet.criteria.length === 0 ? (
+            <div className="px-5 pb-4">
+              <Empty>The packet has no criteria.</Empty>
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <tbody>
+                {packet.criteria.map((c) => {
+                  const runner = keptOnRunner(c.evidence);
+                  return (
+                    <tr key={c.criterion} className="border-t align-top" data-met={c.met}>
+                      <td className="w-10 py-2.5 pr-2 pl-5">
+                        <StatusDot status={c.met ? "done" : "failed"} className="mt-1.5" />
+                        <span className="sr-only">{c.met ? "met" : "not met"}</span>
+                      </td>
+                      <td className="py-2.5 pr-3">{c.criterion}</td>
+                      <td className="py-2.5 pr-5 text-muted-foreground text-xs">
+                        {runner ? (
+                          <span data-testid="kept-on-runner">kept on runner · {runner}</span>
+                        ) : (
+                          c.evidence || "no evidence"
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </Panel>
+      );
+    case "holdout": {
+      const holdout = packet.sections.holdout ?? packet.sections.holdouts;
+      return (
+        <Panel
+          title="Holdout tests"
+          subtitle="Written from the approved criteria, never shown to the build"
+          testId="section-holdout"
+        >
+          {Array.isArray(holdout) && holdout.length ? (
+            <ul className="grid gap-1 text-sm">
+              {holdout.map((h, i) => {
+                const t = h as { name?: string; status?: string };
+                return (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: stored list, never reordered.
+                  <li key={i} className="flex items-center gap-2">
+                    <StatusDot
+                      status={
+                        t.status === "pass" ? "done" : t.status === "fail" ? "failed" : "idle"
+                      }
+                    />
+                    {t.name ?? JSON.stringify(h)}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <Empty>No holdout results in this packet.</Empty>
+          )}
+        </Panel>
+      );
+    }
+    case "reviewer":
+      return (
+        <Panel
+          title="Reviewer notes"
+          subtitle={
+            packet.reviewer
+              ? `Independent review · role ${packet.reviewer.role}${packet.reviewer.model ? ` (${packet.reviewer.model})` : ""}`
+              : undefined
+          }
+          testId="section-reviewer"
+        >
+          {packet.reviewer ? (
+            <div className="grid gap-2 text-sm">
+              {packet.reviewer.sameModelAsImplementer ? (
+                <div className="flex items-center gap-2 text-xs" data-testid="same-model-warning">
+                  <StatusDot status="waiting" />
+                  The reviewer ran on the same model as the implementer: it is less independent.
+                </div>
+              ) : (
+                <div className="text-muted-foreground text-xs">
+                  A different model from the implementer.
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <StatusDot status={packet.reviewer.verdict === "approve" ? "done" : "failed"} />
+                <b>{packet.reviewer.verdict === "approve" ? "Approve" : "Request changes"}</b>
+              </div>
+              <div className="whitespace-pre-wrap text-sm">
+                {packet.reviewer.notes || "No notes."}
+              </div>
+            </div>
+          ) : (
+            <Empty>No reviewer verdict.</Empty>
+          )}
+        </Panel>
+      );
+    case "visual": {
+      const shots = packet.sections.visual ?? packet.sections.screenshots;
+      return (
+        <Panel
+          title="Visual evidence"
+          subtitle="Captured by the runner's browser"
+          testId="section-visual"
+        >
+          {Array.isArray(shots) && shots.length ? (
+            <ul className="grid gap-1 text-sm">
+              {shots.map((s, i) => {
+                const label =
+                  typeof s === "string"
+                    ? s
+                    : ((s as { label?: string; ref?: string }).label ?? JSON.stringify(s));
+                const ref = typeof s === "string" ? s : ((s as { ref?: string }).ref ?? "");
+                const runner = keptOnRunner(ref);
+                return (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: stored list, never reordered.
+                  <li key={i}>{runner ? `${label} · kept on runner (${runner})` : label}</li>
+                );
+              })}
+            </ul>
+          ) : (
+            <Empty>No screenshots in this packet.</Empty>
+          )}
+        </Panel>
+      );
+    }
+    case "risk":
+      return (
+        <Panel title="Risk flags" testId="section-risk">
+          {packet.riskFlags.length ? (
+            <ul className="grid gap-1 text-sm">
+              {packet.riskFlags.map((r) => (
+                <li key={r} className="flex items-center gap-2">
+                  <StatusDot status="waiting" />
+                  {r}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Empty>None.</Empty>
+          )}
+        </Panel>
+      );
+    case "diff": {
+      const diff = packet.sections.diff;
+      return (
+        <details
+          className="rounded-xl border px-5 py-4 text-sm"
+          onToggle={(e) => (e.currentTarget.open ? onOpenDiff() : undefined)}
+          data-testid="section-diff"
+        >
+          <summary className="cursor-pointer font-semibold">Diff</summary>
+          {typeof diff === "string" && diff ? (
+            <pre className="mt-3 max-h-[480px] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
+              {diff}
+            </pre>
+          ) : (
+            <div className="mt-2 text-muted-foreground">
+              The packet doesn't carry the diff.{" "}
+              {detail.item.prUrl ? (
+                <a
+                  href={`${detail.item.prUrl}/files`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                  onClick={onOpenDiff}
+                >
+                  Open it on GitHub
+                </a>
+              ) : (
+                "There is no PR yet."
+              )}
+            </div>
+          )}
+        </details>
+      );
+    }
+  }
+}
+
+function VerdictRow({ packet }: { packet: ParsedPacket }) {
+  const c = packetCounts(packet);
+  const cells: { label: string; value: string; status: Status; extra?: string }[] = [
+    {
+      label: "Checks",
+      value: c.checksTotal ? `${c.checksPassed}/${c.checksTotal} passed` : "none reported",
+      status: c.checksFailed ? "failed" : c.checksTotal ? "done" : "idle",
+    },
+    {
+      label: "Criteria",
+      value: `${c.met}/${c.total} met`,
+      status: c.total && c.met === c.total ? "done" : "failed",
+    },
+    {
+      label: "Reviewer (role review)",
+      value: packet.reviewer
+        ? packet.reviewer.verdict === "approve"
+          ? "Approve"
+          : "Request changes"
+        : "none",
+      status: packet.reviewer
+        ? packet.reviewer.verdict === "approve"
+          ? "done"
+          : "failed"
+        : "idle",
+      ...(packet.reviewer?.sameModelAsImplementer ? { extra: "same model" } : {}),
+    },
+    {
+      label: "Risk",
+      value: packet.riskFlags[0] ?? "No flags",
+      status: packet.riskFlags.length ? "waiting" : "done",
+      ...(packet.riskFlags.length > 1 ? { extra: `+${packet.riskFlags.length - 1}` } : {}),
+    },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-4" data-testid="section-verdict">
+      {cells.map((cell) => (
+        <Card key={cell.label} className="gap-1 px-4 py-3">
+          <div className="text-muted-foreground text-xs">{cell.label}</div>
+          <div className="flex items-center gap-2 text-sm">
+            <StatusDot status={cell.status} />
+            <b className="truncate">{cell.value}</b>
+            {cell.extra && <span className="text-muted-foreground text-xs">{cell.extra}</span>}
+          </div>
+        </Card>
+      ))}
+      <div className="col-span-full flex items-center gap-2 text-muted-foreground text-xs">
+        Verdict: <StatusDot status={packet.verdict === "pass" ? "done" : "failed"} />
+        {packet.verdict === "pass" ? "pass" : "fail"} (from CI on the head SHA)
+      </div>
+    </div>
+  );
+}
+
+function Panel({
+  title,
+  subtitle,
+  testId,
+  flush = false,
+  children,
+}: {
+  title: string;
+  subtitle?: string | undefined;
+  testId: string;
+  flush?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card className="gap-0 py-0" data-testid={testId}>
+      <div className="px-5 pt-4 pb-3">
+        <div className="font-semibold">{title}</div>
+        {subtitle && <div className="text-muted-foreground text-xs">{subtitle}</div>}
+      </div>
+      <div className={cn(!flush && "px-5 pb-4")}>{children}</div>
+    </Card>
+  );
+}
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return <div className="text-muted-foreground text-sm">{children}</div>;
+}

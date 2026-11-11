@@ -41,6 +41,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #10 | Review decisions applied to the docs: ADRs 0033–0047, amendments to 0001–0032, vocabulary (connector, autonomy policy, project template, Question, `docs/specs/`), R1 specs split into milestones, spec 15 |
 | #11 | [V1 scope](v1-scope.md): the dogfooding factory |
 | #13 | V1 step 1, core + engine: `core_*` schema, operations + `invoke()` + gate, the work-item Workflow, the signed runner channel, GitHub App job tokens. ADRs 0050–0054; spike ADRs 0100 and 0110 promoted |
+| V1-2 | V1 step 2, the app: `sf-app` on TanStack Start + shadcn (`packages/ui`), GitHub sign-in for the allowlisted login with a Personal org, Inbox + runner health line, New work, work item detail with the Planning tab, the review packet (Merge / Send back), Setup (project, policy sync, runner keys). ADR 0240 |
 
 ## In flight
 - Nothing recorded. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
@@ -77,7 +78,8 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
     `review.merge { openedFullDiff }`, `review.sendBack { note, openedFullDiff }`, `approval.decide`,
     `question.answer`, `question.acceptDefaults`. A repeat decision returns `alreadyDecided: true`.
   - Work item detail: `workItem.get` (item, stages with the spec-skip reason, spec, questions, gates,
-    runs, latest review packet), `workItem.timeline` (the audit journal), `workItem.cancel`.
+    runs, latest review packet; since V1-2 also `policy` with the review packet section order,
+    `approvers` with their rule, and `viewer`), `workItem.timeline` (the audit journal), `workItem.cancel`.
   - Kill switches: `killSwitch.set { scope: "org" | "project", id, on }`.
 - Deep links the outbox `notify` rows carry: `/?item=<workItemId>` and `/work/<workItemId>`.
 

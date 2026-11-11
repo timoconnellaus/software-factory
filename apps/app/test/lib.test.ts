@@ -1,0 +1,261 @@
+// The page logic the specs pin down, as pure functions.
+import { describe, expect, it } from "vitest";
+import { runnerLabel } from "#/components/runner-health";
+import { duration } from "#/lib/format";
+import { groupByProject } from "#/lib/inbox";
+import type { Inbox, WorkItemDetail } from "#/lib/ops";
+import { keptOnRunner, packetSections, parsePacket } from "#/lib/packet";
+import { answerChoices, bulkAcceptable } from "#/lib/questions";
+import { agentTime, stageSteps, yourTime } from "#/lib/work-item";
+
+const NOW = "2026-11-11T10:00:00.000Z";
+
+function detail(
+  over: Partial<WorkItemDetail> & { item?: Partial<WorkItemDetail["item"]> } = {},
+): WorkItemDetail {
+  const { item, ...rest } = over;
+  return {
+    item: {
+      id: "wi_1",
+      projectId: "prj_1",
+      orgId: "org_1",
+      number: 1,
+      title: "Add dark mode",
+      kind: "change",
+      stage: "build",
+      status: "running",
+      statusReason: null,
+      size: "small",
+      requesterUserId: "u_me",
+      source: "app",
+      branch: "factory/1-add-dark-mode",
+      prUrl: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      body: "",
+      specRequired: false,
+      specDecisionReason: "sized small, below the spec threshold (medium)",
+      domains: [],
+      headSha: null,
+      prNumber: null,
+      policySha: null,
+      ...item,
+    },
+    stages: [],
+    spec: null,
+    questions: [],
+    gates: [],
+    runs: [],
+    reviewPacket: null,
+    policy: null,
+    approvers: { rule: "org owners and admins", users: [] },
+    viewer: { isApprover: true, isRequester: true },
+    ...rest,
+  };
+}
+
+describe("review packet sections (spec 14, criterion 1)", () => {
+  it("follows the project's order and leaves out what it doesn't list", () => {
+    expect(packetSections(["reviewer", "verdict", "criteria-evidence", "nonsense"])).toEqual([
+      "reviewer",
+      "verdict",
+      "criteria",
+    ]);
+  });
+  it("shows every section when the project doesn't configure them", () => {
+    expect(packetSections(null)).toEqual([
+      "verdict",
+      "whatChanged",
+      "criteria",
+      "holdout",
+      "reviewer",
+      "visual",
+      "risk",
+      "diff",
+    ]);
+  });
+  it("never fetches evidence kept on the runner, only references it (criterion 9)", () => {
+    expect(keptOnRunner("runner: ~/runs/42/screenshot.png")).toBe("~/runs/42/screenshot.png");
+    expect(keptOnRunner("e2e: login.spec ✓")).toBeNull();
+  });
+  it("reads a stored packet defensively", () => {
+    const p = parsePacket({
+      id: "rp_1",
+      headSha: "a".repeat(40),
+      verdict: "pass",
+      summary: "",
+      criteria: [{ criterion: "A", met: true, evidence: "unit ✓" }, { junk: 1 }],
+      checks: [{ name: "ci", status: "pass" }],
+      reviewer: { role: "review", verdict: "approve", notes: "ok", sameModelAsImplementer: true },
+      riskFlags: [],
+      sections: {},
+      createdAt: NOW,
+    });
+    expect(p.criteria).toHaveLength(1);
+    expect(p.reviewer?.sameModelAsImplementer).toBe(true);
+  });
+});
+
+describe("questions", () => {
+  it("offers the recommendation first, then the default, then the other options, once each", () => {
+    expect(
+      answerChoices({
+        options: ["Cap at 10k", "Stream", "Email a link"],
+        defaultAnswer: "Cap at 10k",
+        recommendation: "Stream",
+      }),
+    ).toEqual([
+      { answer: "Stream", tag: "recommended" },
+      { answer: "Cap at 10k", tag: "default" },
+      { answer: "Email a link", tag: null },
+    ]);
+  });
+  it("never bulk-accepts security & privacy or irreversible questions (spec 13, criterion 9)", () => {
+    const q = {
+      id: "q",
+      domain: "product",
+      prompt: "?",
+      options: [],
+      defaultAnswer: "yes",
+      recommendation: null,
+      blocking: true,
+      irreversible: false,
+      status: "open",
+      answer: null,
+      acceptedDefault: false,
+      assigneeUserId: null,
+    };
+    expect(bulkAcceptable(q)).toBe(true);
+    expect(bulkAcceptable({ ...q, domain: "security" })).toBe(false);
+    expect(bulkAcceptable({ ...q, domain: "Privacy" })).toBe(false);
+    expect(bulkAcceptable({ ...q, irreversible: true })).toBe(false);
+    expect(bulkAcceptable({ ...q, defaultAnswer: null })).toBe(false);
+  });
+});
+
+describe("the inbox", () => {
+  it("puts each gate and question once in its project's group, with the WIP hold", () => {
+    const inbox: Inbox = {
+      gates: [
+        {
+          id: "pa_1",
+          kind: "spec",
+          workItemId: "wi_1",
+          projectId: "p1",
+          title: "A",
+          operation: "spec.approve",
+          createdAt: NOW,
+          timeoutAt: null,
+          escalated: false,
+        },
+        {
+          id: "pa_2",
+          kind: "merge",
+          workItemId: "wi_2",
+          projectId: "p2",
+          title: "B",
+          operation: "pr.merge",
+          createdAt: NOW,
+          timeoutAt: null,
+          escalated: false,
+        },
+      ],
+      questions: [
+        {
+          id: "q1",
+          workItemId: "wi_3",
+          projectId: "p1",
+          title: "C",
+          domain: "product",
+          prompt: "?",
+          options: [],
+          defaultAnswer: null,
+          recommendation: null,
+          irreversible: false,
+        },
+      ],
+      running: [],
+      runners: [],
+      wipHolds: [{ projectId: "p2", waitingBuilds: 2 }],
+    };
+    const groups = groupByProject(inbox);
+    expect(
+      groups.map((g) => [g.projectId, g.gates.length, g.questions.length, g.waitingBuilds]),
+    ).toEqual([
+      ["p1", 1, 1, 0],
+      ["p2", 1, 0, 2],
+    ]);
+  });
+
+  it("shows a rate-limited runner's until time and an offline runner's last-seen time (spec 12, criterion 7)", () => {
+    const base = {
+      id: "r",
+      name: "m5",
+      inUse: 0,
+      max: 2,
+      rateLimitedUntil: null,
+      lastSeenAt: null,
+    };
+    expect(
+      runnerLabel({ ...base, state: "rate-limited", rateLimitedUntil: "2026-11-11T11:30:00.000Z" }),
+    ).toMatch(/^rate-limited until \d\d:\d\d$/);
+    expect(
+      runnerLabel({ ...base, state: "offline", lastSeenAt: "2026-11-11T09:00:00.000Z" }),
+    ).toMatch(/^offline since \d\d:\d\d/);
+    expect(runnerLabel({ ...base, state: "busy", inUse: 2 })).toBe("busy 2/2");
+  });
+});
+
+describe("work item detail", () => {
+  it("shows a skipped spec with the reason triage logged (spec 13, criterion 6)", () => {
+    const steps = stageSteps(detail());
+    expect(steps.map((s) => [s.stage, s.state])).toEqual([
+      ["intake", "done"],
+      ["triage", "done"],
+      ["spec", "skipped"],
+      ["build", "now"],
+      ["verify", "todo"],
+      ["merge", "todo"],
+    ]);
+    expect(steps[2]?.reason).toBe("sized small, below the spec threshold (medium)");
+  });
+
+  it("'your time' is the summed open time of gates you decided (spec 13, criterion 3)", () => {
+    const gate = (id: string, by: string, openMs: number) => ({
+      id,
+      kind: "spec",
+      operation: "spec.approve",
+      status: "approved",
+      decision: "approved",
+      assigneeUserId: by,
+      createdAt: NOW,
+      decidedAt: new Date(Date.parse(NOW) + openMs).toISOString(),
+      decidedBy: by,
+      note: null,
+    });
+    const d = detail({
+      gates: [gate("a", "u_me", 60_000), gate("b", "u_me", 40_000), gate("c", "u_other", 999_000)],
+    });
+    expect(yourTime(d, "u_me")).toBe(100_000);
+    expect(duration(yourTime(d, "u_me"))).toBe("1m 40s");
+  });
+
+  it("'agent time' sums the runs", () => {
+    const run = (n: number, ms: number) => ({
+      id: `run_${n}`,
+      jobId: "job",
+      runNo: n,
+      stage: "build",
+      runnerId: "r",
+      branch: "b",
+      status: "done",
+      outcome: "succeeded",
+      summary: null,
+      headSha: null,
+      takeover: null,
+      startedAt: NOW,
+      endedAt: new Date(Date.parse(NOW) + ms).toISOString(),
+    });
+    expect(agentTime(detail({ runs: [run(1, 60_000), run(2, 120_000)] }))).toBe(180_000);
+  });
+});

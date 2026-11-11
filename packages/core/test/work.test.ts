@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { approvalEvent, FOREMAN, questionsEvent } from "../src/index.ts";
-import { call, first, newItem, ok, refusal, rows, uid, world } from "./helpers.ts";
+import { call, first, newItem, ok, POLICY, refusal, rows, uid, world } from "./helpers.ts";
 
 describe("intake", () => {
   it("creates once per event, ignores a redelivery, and attaches a new event with the same dedupe key", async () => {
@@ -304,5 +304,28 @@ describe("the spec gate and questions", () => {
     expect(inbox.gates.map((g) => g.kind)).toEqual(["spec"]);
     expect(inbox.questions).toHaveLength(1);
     expect(inbox.running).toHaveLength(1);
+  });
+});
+
+describe("workItem.get for the app", () => {
+  it("returns the policy the page needs, the approvers with their rule, and what the viewer may do", async () => {
+    const w = await world({
+      ...POLICY,
+      reviewPacket: { sections: ["verdict", "criteria", "reviewer"] },
+    });
+    const item = await newItem(w);
+    const got = await ok<{
+      policy: { autonomyPolicy: string; specRequiredFrom: string; reviewPacketSections: string[] };
+      approvers: { rule: string; users: { id: string; githubLogin: string | null }[] };
+      viewer: { isApprover: boolean; isRequester: boolean };
+    }>("workItem.get", { workItemId: item.workItemId }, w.human);
+    expect(got.policy).toEqual({
+      autonomyPolicy: "balanced",
+      specRequiredFrom: "medium",
+      reviewPacketSections: ["verdict", "criteria", "reviewer"],
+    });
+    expect(got.approvers.rule).toMatch(/owners and admins/);
+    expect(got.approvers.users.map((u) => u.id)).toEqual([w.userId]);
+    expect(got.viewer).toEqual({ isApprover: true, isRequester: true });
   });
 });

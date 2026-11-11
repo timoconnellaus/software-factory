@@ -1,21 +1,35 @@
-// sf-app: Dashboard (TanStack Start + shadcn/ui, placeholder for now), the MCP surface and the operations API.
+// sf-app: the dashboard (TanStack Start + shadcn/ui), GitHub sign-in (Better Auth) and the server
+// functions that call operations on sf-engine through the ENGINE service binding (ADR 0051).
 // Account-agnostic: no account or resource IDs are committed.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "sf-app",
-  "main": "src/index.ts",
+  // TanStack Start's entry, wrapped for /api/health and Better Auth (src/server.ts). `vite build`
+  // writes the deployable bundle; `wrangler deploy` then follows .wrangler/deploy/config.json.
+  "main": "./src/server.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true
   },
+  "upload_source_maps": true,
   // Public hostname (Workers Custom Domain: Cloudflare creates the DNS record and certificate).
   "routes": [{ "pattern": "software-factory.zerobsai.com", "custom_domain": true }],
+  // The factory's one database. Better Auth writes its own core_* tables here; everything else goes
+  // through operations on sf-engine. No migrations_dir: sf-engine applies them.
+  "d1_databases": [{ "binding": "DB", "database_name": "software-factory" }],
+  // Every operation runs in sf-engine (ADR 0051). The app passes the signed-in person as the actor.
+  "services": [{ "binding": "ENGINE", "service": "sf-engine", "entrypoint": "EngineApi" }],
   "vars": {
     "PUBLIC_BASE_URL": "https://software-factory.zerobsai.com",
     "BETTER_AUTH_URL": "https://software-factory.zerobsai.com",
     "GH_APP_ID": "5705909",
     "GH_APP_CLIENT_ID": "Iv23li0zTckLOY2IO9aB",
-    "GH_APP_SLUG": "software-factory-zerobsai"
+    "GH_APP_SLUG": "software-factory-zerobsai",
+    // V1 has one user (docs/v1-scope.md): GitHub logins allowed to sign in, comma-separated. Empty
+    // lets nobody in (fail closed).
+    "ALLOWED_GITHUB_LOGINS": "timoconnellaus"
   }
+  // Secrets (synced by the deploy workflow, never committed): BETTER_AUTH_SECRET and
+  // GH_APP_CLIENT_SECRET. Typed in src/server/env.ts so a deploy doesn't fail before they exist.
 }
