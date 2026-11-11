@@ -1,4 +1,4 @@
--- Migration 0110 (planning M1, the loop: spec 20, ADRs 0300, 0301, 0302, 0340). Planning becomes a
+-- Migration 0120 (planning M1, the loop: spec 20, ADRs 0300, 0301, 0302, 0350). Planning becomes a
 -- live session on a runner: a planning log with a cursor, chat, presence, the session itself, the
 -- kim question model, the living spec's new sections, and heavy and light runner pools.
 
@@ -34,7 +34,7 @@ ALTER TABLE core_runners ADD COLUMN light_in_use INTEGER NOT NULL DEFAULT 0;
 -- columns, indexes and data; core_runs follows it by name (D1's documented rebuild pattern).
 PRAGMA defer_foreign_keys = on;
 
-CREATE TABLE core_jobs_0110 (
+CREATE TABLE core_jobs_0120 (
   id TEXT PRIMARY KEY NOT NULL,
   work_item_id TEXT NOT NULL REFERENCES core_work_items (id),
   project_id TEXT NOT NULL,
@@ -64,7 +64,7 @@ CREATE TABLE core_jobs_0110 (
   pinned_runner_id TEXT,
   planning_session_id TEXT
 );
-INSERT INTO core_jobs_0110 (
+INSERT INTO core_jobs_0120 (
   id, work_item_id, project_id, org_id, stage, role, harness, requires, prompt, context,
   session_timeout_ms, status, wait_reason, runner_id, claim_id, run_id, created_at, claimed_at,
   finished_at, pool
@@ -75,7 +75,7 @@ SELECT
   finished_at, CASE WHEN stage IN ('triage', 'spec') THEN 'light' ELSE 'heavy' END
 FROM core_jobs;
 DROP TABLE core_jobs;
-ALTER TABLE core_jobs_0110 RENAME TO core_jobs;
+ALTER TABLE core_jobs_0120 RENAME TO core_jobs;
 CREATE INDEX core_jobs_status_idx ON core_jobs (status, created_at);
 CREATE INDEX core_jobs_item_idx ON core_jobs (work_item_id);
 CREATE UNIQUE INDEX core_jobs_claim_idx ON core_jobs (runner_id, claim_id);
@@ -130,7 +130,7 @@ CREATE UNIQUE INDEX core_planning_sessions_open_idx ON core_planning_sessions (w
 CREATE INDEX core_planning_sessions_runner_idx ON core_planning_sessions (runner_id, status);
 
 -- The planning log: every answer, revision, chat message, presence change and agent change, in
--- order. The id is the cursor (ADR 0340).
+-- order. The id is the cursor (ADR 0350).
 CREATE TABLE core_planning_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   work_item_id TEXT NOT NULL REFERENCES core_work_items (id),
@@ -169,4 +169,4 @@ CREATE TABLE core_planning_presence (
   PRIMARY KEY (work_item_id, user_id)
 );
 
-UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 110) WHERE key = 'schema_version';
+UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 120) WHERE key = 'schema_version';

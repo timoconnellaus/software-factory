@@ -218,6 +218,8 @@ export const workItemList = defineOperation({
       projectId: projectId.optional(),
       orgId: z.string().min(1).optional(),
       status: z.array(z.enum(ITEM_STATUSES)).optional(),
+      /** One work item by its number (within `projectId`): how `sf show 12` finds it. */
+      number: z.number().int().positive().optional(),
       limit: z.number().int().min(1).max(200).default(50),
     })
     .refine((v) => v.projectId || v.orgId, { message: "projectId or orgId" }),
@@ -231,6 +233,7 @@ export const workItemList = defineOperation({
     if (input.projectId) query = query.where("project_id", "=", input.projectId);
     else if (input.orgId) query = query.where("org_id", "=", input.orgId);
     if (input.status?.length) query = query.where("status", "in", input.status);
+    if (input.number !== undefined) query = query.where("number", "=", input.number);
     return { items: (await query.execute()).map(summarise) };
   },
 });

@@ -1,7 +1,7 @@
 // Wire shapes of the runner channel, as zod schemas: the engine validates every call with them and
 // the runner host builds its requests from the inferred types. Change them only with a contract
 // version bump (CONTRACT_VERSION in ./types.ts), except for optional, additive fields an older
-// runner never receives (ADR 0340: the light pool, the planning stage and the planning call).
+// runner never receives (ADR 0350: the light pool, the planning stage and the planning call).
 import { z } from "zod";
 import { PLANNING_OPS } from "./planning.ts";
 import {
@@ -116,7 +116,7 @@ export const jobSchema = z.object({
   /** Stage input (spec, acceptance criteria, send-back notes). Never holdout tests (ADR 0034). */
   context: z.record(z.string(), z.unknown()),
   /**
-   * A planning job (ADR 0300, 0340): the session it belongs to, the harness conversation to start
+   * A planning job (ADR 0300, 0350): the session it belongs to, the harness conversation to start
    * (`--session-id`) or resume (`--resume`), and whether this is a resume. The workspace is the
    * session's, kept across yields.
    */
@@ -330,7 +330,7 @@ export type AttachmentsResponse = z.infer<typeof attachmentsResponseSchema>;
 export type AttachmentResponse = z.infer<typeof attachmentResponseSchema>;
 
 /**
- * A planning operation from a planning job's harness, relayed by the host (ADR 0340). The cloud adds
+ * A planning operation from a planning job's harness, relayed by the host (ADR 0350). The cloud adds
  * the job id from the path and runs `op` as the runner, scoped to the job's work item.
  */
 export const planningCallRequestSchema = z.object({

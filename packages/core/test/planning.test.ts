@@ -57,7 +57,7 @@ async function planning(w: W, actor: Actor, title = "Add CSV export") {
   return { item, job, sessionId: started.sessionId };
 }
 
-/** A planning job's call, as the channel's relay makes it (ADR 0340). */
+/** A planning job's call, as the channel's relay makes it (ADR 0350). */
 const agent = <O = Record<string, unknown>>(
   actor: Actor,
   job: Job,

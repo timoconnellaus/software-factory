@@ -106,7 +106,7 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       return;
     }
     case "planning.changed":
-      // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0340).
+      // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
       await planningHub(env, message.payload.workItemId).notify();
       return;
     case "notify":

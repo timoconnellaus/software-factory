@@ -20,6 +20,8 @@ export const ID_PREFIXES = {
   mergeQueueEntry: "mq",
   planningSession: "ps",
   planningMessage: "pm",
+  cliDeviceCode: "cdc",
+  cliToken: "cli",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

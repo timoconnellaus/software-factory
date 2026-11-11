@@ -56,7 +56,7 @@ export interface FakeCloud {
   /** Each job's work item attachments, as the channel serves them (ADR 0310). */
   attachments: Map<string, { meta: AttachmentMeta; base64: string }[]>;
   attachmentCalls: number;
-  /** Planning calls the host relayed (ADR 0340), and how the fake cloud answers them. */
+  /** Planning calls the host relayed (ADR 0350), and how the fake cloud answers them. */
   planningCalls: { jobId: string; op: string; input: Record<string, unknown> }[];
   planning: (call: { jobId: string; op: string; input: Record<string, unknown> }) => unknown;
 }

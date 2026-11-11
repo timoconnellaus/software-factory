@@ -1,4 +1,4 @@
-// Planning, the loop (spec 20, ADR 0300, 0340): the planning session's operations. The Workflow
+// Planning, the loop (spec 20, ADR 0300, 0350): the planning session's operations. The Workflow
 // starts, rounds, notes and ends a session; the planning agent (a runner job) revises the spec,
 // chats, reads news, waits, yields and asks for the gate; people chat, report presence, read the
 // planning view and move a session to another runner. Questions are in ./questions.ts.
@@ -33,7 +33,7 @@ import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 import { RUNNER_OFFLINE_MS } from "./work-items.ts";
 
-/** The fields a planning job's calls carry: the relay adds them (ADR 0340). */
+/** The fields a planning job's calls carry: the relay adds them (ADR 0350). */
 export const planningJobFields = {
   jobId,
   fencingToken,
@@ -44,7 +44,7 @@ export const planningJobFields = {
 export const byJob = async (input: { jobId: string }) => ({ jobId: input.jobId });
 
 /**
- * A planning job's call (ADR 0340): the job is this runner's, its run is active and holds the
+ * A planning job's call (ADR 0350): the job is this runner's, its run is active and holds the
  * work item's lease with this fencing token, and its session is open. Anything else is `fenced`
  * (the session yielded, ended, moved or the lease was lost); another work item is `forbidden`.
  */

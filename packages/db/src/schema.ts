@@ -276,7 +276,7 @@ export interface CoreQuestionsTable {
   escalated_at: Iso | null;
   asked_by: string;
   created_at: Iso;
-  // 0110 (spec 20): the kim question model.
+  // 0120 (spec 20): the kim question model.
   kind: Generated<QuestionKind>;
   /** JSON array of default values (several only for multiple-choice), or null. */
   default_values: JsonText | null;
@@ -306,7 +306,7 @@ export interface CoreSpecsTable {
   created_at: Iso;
   approved_at: Iso | null;
   approved_by: string | null;
-  // 0110 (ADR 0302): the living spec's new sections, as JSON, and what a revision changed.
+  // 0120 (ADR 0302): the living spec's new sections, as JSON, and what a revision changed.
   coverage: Generated<JsonText>;
   clarifications: Generated<JsonText>;
   summary: string | null;
@@ -436,7 +436,7 @@ export interface CoreRunnersTable {
   last_seen_at: Iso | null;
   revoked_at: Iso | null;
   created_at: Iso;
-  /** 0110 (ADR 0301): the light pool; null when the runner reports none. */
+  /** 0120 (ADR 0301): the light pool; null when the runner reports none. */
   light_max: number | null;
   light_in_use: Generated<number>;
 }
@@ -471,7 +471,7 @@ export interface CoreJobsTable {
   created_at: Iso;
   claimed_at: Iso | null;
   finished_at: Iso | null;
-  /** 0110 (ADR 0301). */
+  /** 0120 (ADR 0301). */
   pool: Generated<"heavy" | "light">;
   pinned_runner_id: string | null;
   planning_session_id: string | null;
@@ -660,7 +660,7 @@ export interface CoreMergeQueueTable {
   ended_at: Iso | null;
 }
 
-// ---- 0110: planning, the loop (spec 20, ADR 0300, 0340) ----
+// ---- 0120: planning, the loop (spec 20, ADR 0300, 0350) ----
 
 export type PlanningSessionStatus =
   | "starting"
@@ -728,6 +728,37 @@ export interface CorePlanningPresenceTable {
   left_at: Iso | null;
 }
 
+// ---- 0110: the sf CLI (ADR 0340) ----
+
+export type CliScope = "read" | "write";
+
+export interface CoreCliDeviceCodesTable {
+  id: string;
+  device_code_hash: string;
+  user_code: string;
+  client_name: string | null;
+  requested_scope: Generated<CliScope>;
+  granted_scope: CliScope | null;
+  status: Generated<"pending" | "approved" | "denied" | "consumed">;
+  decided_by: string | null;
+  token_id: string | null;
+  created_at: Iso;
+  expires_at: Iso;
+  decided_at: Iso | null;
+  consumed_at: Iso | null;
+}
+
+export interface CoreCliTokensTable {
+  id: string;
+  token_hash: string;
+  user_id: string;
+  name: string | null;
+  scope: CliScope;
+  created_at: Iso;
+  expires_at: Iso;
+  revoked_at: Iso | null;
+}
+
 export interface CoreDatabase {
   core_meta: CoreMetaTable;
   core_user: CoreUserTable;
@@ -773,4 +804,6 @@ export interface CoreDatabase {
   core_planning_events: CorePlanningEventsTable;
   core_planning_messages: CorePlanningMessagesTable;
   core_planning_presence: CorePlanningPresenceTable;
+  core_cli_device_codes: CoreCliDeviceCodesTable;
+  core_cli_tokens: CoreCliTokensTable;
 }

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Runs the CLI's TypeScript directly on Node >= 24 (no build step), the same way sf-runner does.
+# Resolves symlinks first, so `ln -s …/local/cli/bin/sf ~/.local/bin/sf` works.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+here=$(cd "$(dirname "$self")/.." && pwd -P)
+exec "${SF_NODE:-node}" --experimental-transform-types --no-warnings "$here/src/cli.ts" "$@"

@@ -1,4 +1,4 @@
-// The PlanningHub (spec 20, ADR 0340): one Durable Object per work item that knows when its
+// The PlanningHub (spec 20, ADR 0350): one Durable Object per work item that knows when its
 // planning changed. The outbox delivers each `planning.changed` here; the hub pushes a line to every
 // open Planning tab's Server-Sent-Events stream (the app re-reads `planning.get`) and wakes the
 // planning agent's held `planning.wait`. It keeps no state worth saving: a hub that restarts starts

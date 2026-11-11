@@ -78,6 +78,7 @@ export const runnerRegister = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
+  browserOnly: true,
   input: z.object({ name: z.string().min(1).max(80) }),
   output: z.object({ runnerId: z.string(), keyVersion: z.number(), key: z.string() }),
   redact: { output: (o) => ({ ...o, key: "[redacted]" }) },
@@ -104,6 +105,7 @@ export const runnerRotateKey = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
+  browserOnly: true,
   input: z.object({ runnerId: z.string().min(1) }),
   output: z.object({ runnerId: z.string(), keyVersion: z.number(), key: z.string() }),
   redact: { output: (o) => ({ ...o, key: "[redacted]" }) },
@@ -968,7 +970,7 @@ export function finishRun(
       .where("work_item_id", "=", run.work_item_id)
       .where("holder_id", "=", run.id),
   );
-  // A planning run's session stops holding a slot: yielded, or interrupted (ADR 0340).
+  // A planning run's session stops holding a slot: yielded, or interrupted (ADR 0350).
   if (run.stage === "planning") planningRunEnded(ctx, run);
   ctx.emit({
     kind: "workflow.event",

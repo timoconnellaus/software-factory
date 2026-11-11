@@ -15,6 +15,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAttachRouteImport } from './routes/_app/attach'
 import { Route as AppNewRouteImport } from './routes/_app/new'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
+import { Route as AppCliConnectRouteImport } from './routes/_app/cli.connect'
 import { Route as AppRunnersConnectRouteImport } from './routes/_app/runners.connect'
 import { Route as AppWorkIndexRouteImport } from './routes/_app/work.index'
 import { Route as AppWorkIdIndexRouteImport } from './routes/_app/work.$id.index'
@@ -49,6 +50,11 @@ const AppSetupRoute = AppSetupRouteImport.update({
   path: '/setup',
   getParentRoute: () => AppRoute,
 } as any)
+const AppCliConnectRoute = AppCliConnectRouteImport.update({
+  id: '/cli/connect',
+  path: '/cli/connect',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppRunnersConnectRoute = AppRunnersConnectRouteImport.update({
   id: '/runners/connect',
   path: '/runners/connect',
@@ -76,6 +82,7 @@ export interface FileRoutesByFullPath {
   '/attach': typeof AppAttachRoute
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
+  '/cli/connect': typeof AppCliConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
   '/work/': typeof AppWorkIndexRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
@@ -87,6 +94,7 @@ export interface FileRoutesByTo {
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
   '/': typeof AppIndexRoute
+  '/cli/connect': typeof AppCliConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
   '/work': typeof AppWorkIndexRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
@@ -100,6 +108,7 @@ export interface FileRoutesById {
   '/_app/new': typeof AppNewRoute
   '/_app/setup': typeof AppSetupRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/cli/connect': typeof AppCliConnectRoute
   '/_app/runners/connect': typeof AppRunnersConnectRoute
   '/_app/work/': typeof AppWorkIndexRoute
   '/_app/work/$id/review': typeof AppWorkIdReviewRoute
@@ -113,6 +122,7 @@ export interface FileRouteTypes {
     | '/attach'
     | '/new'
     | '/setup'
+    | '/cli/connect'
     | '/runners/connect'
     | '/work/'
     | '/work/$id/review'
@@ -124,6 +134,7 @@ export interface FileRouteTypes {
     | '/new'
     | '/setup'
     | '/'
+    | '/cli/connect'
     | '/runners/connect'
     | '/work'
     | '/work/$id/review'
@@ -136,6 +147,7 @@ export interface FileRouteTypes {
     | '/_app/new'
     | '/_app/setup'
     | '/_app/'
+    | '/_app/cli/connect'
     | '/_app/runners/connect'
     | '/_app/work/'
     | '/_app/work/$id/review'
@@ -191,6 +203,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSetupRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/cli/connect': {
+      id: '/_app/cli/connect'
+      path: '/cli/connect'
+      fullPath: '/cli/connect'
+      preLoaderRoute: typeof AppCliConnectRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/runners/connect': {
       id: '/_app/runners/connect'
       path: '/runners/connect'
@@ -227,6 +246,7 @@ interface AppRouteChildren {
   AppNewRoute: typeof AppNewRoute
   AppSetupRoute: typeof AppSetupRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppCliConnectRoute: typeof AppCliConnectRoute
   AppRunnersConnectRoute: typeof AppRunnersConnectRoute
   AppWorkIndexRoute: typeof AppWorkIndexRoute
   AppWorkIdReviewRoute: typeof AppWorkIdReviewRoute
@@ -238,6 +258,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppNewRoute: AppNewRoute,
   AppSetupRoute: AppSetupRoute,
   AppIndexRoute: AppIndexRoute,
+  AppCliConnectRoute: AppCliConnectRoute,
   AppRunnersConnectRoute: AppRunnersConnectRoute,
   AppWorkIndexRoute: AppWorkIndexRoute,
   AppWorkIdReviewRoute: AppWorkIdReviewRoute,

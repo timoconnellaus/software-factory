@@ -43,6 +43,9 @@ export interface OpMap {
   "runner.register": Def<typeof operations.runnerRegister>;
   "runner.rotateKey": Def<typeof operations.runnerRotateKey>;
   "runner.list": Def<typeof operations.runnerList>;
+  "cli.deviceLookup": Def<typeof operations.cliDeviceLookup>;
+  "cli.approveDevice": Def<typeof operations.cliApproveDevice>;
+  "cli.denyDevice": Def<typeof operations.cliDenyDevice>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
 }
 
@@ -86,6 +89,9 @@ export const APP_OPERATIONS = [
   "runner.register",
   "runner.rotateKey",
   "runner.list",
+  "cli.deviceLookup",
+  "cli.approveDevice",
+  "cli.denyDevice",
   "killSwitch.set",
 ] as const satisfies readonly OpName[];
 

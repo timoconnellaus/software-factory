@@ -320,7 +320,7 @@ describe("device login over the channel (ADR 0056)", () => {
   });
 });
 
-describe("planning over the channel (spec 20, ADR 0340)", () => {
+describe("planning over the channel (spec 20, ADR 0350)", () => {
   async function planningJob(w: Awaited<ReturnType<typeof world>>) {
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
