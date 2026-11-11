@@ -5,6 +5,14 @@ manifest, the wire shapes of the signed channel (zod), the signing and idempoten
 client for the runner host, and the result each stage hands back. Runtime-neutral (Web APIs + zod);
 it names no runner, and a guard test keeps Orca out of it, `packages/core` and `apps/*`.
 
+## The workspace resolution rule (ADR 0260)
+A runner makes a job's workspace inside the checkout its machine already has for the job's repo,
+found by canonical identity (`canonicalRepoKey(job.repo)` → `github.com/<owner>/<name>`, lower-cased;
+`canonicalKeyFromUrl` for a remote URL). The adapter names it from `resolveCheckout(job)`; the host
+fetches the base into it (never writing the token to its config) instead of cloning. Only when there
+is none does the host clone, and the adapter registers that clone once and keeps it. Per-job state is
+a worktree and a branch; `release` never unregisters or deletes a checkout.
+
 ## The runner host's loop (`local/runner-host`)
 1. `heartbeat` every ~20 s with the manifest, capacity, `rateLimitedUntil` and `activeJobs`
    (`{ jobId, fencingToken }`): renews each lease (10 min) and returns `cancel` commands for jobs the

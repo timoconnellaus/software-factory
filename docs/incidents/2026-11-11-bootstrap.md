@@ -2,8 +2,8 @@
 
 The first factory incidents. They were found by hand while setting up V1 on production (the app's
 Setup page and the M5 runner), not opened by `incident.open`, because the factory wasn't running yet.
-There are four. Each has the root-cause class the incident flow uses (`packages/core/src/incidents/classify.ts`)
-and what in `.factory/` or the specs would have caught it. All four are fixed on branch `bootstrap-fixes`.
+There are five (the fifth was found during the first real job). Each has the root-cause class the incident flow uses (`packages/core/src/incidents/classify.ts`)
+and what in `.factory/` or the specs would have caught it. The first four are fixed on branch `bootstrap-fixes`, the fifth on `runner-orca-resolve-repo`.
 
 | # | What happened | Root cause class | Fixed by |
 | --- | --- | --- | --- |
@@ -11,6 +11,7 @@ and what in `.factory/` or the specs would have caught it. All four are fixed on
 | 2 | Setup's installation auto-detect failed ("No GitHub App installation found: …") although the App is installed on the repo | `missing-context` | Detection moved to the engine and asks as the App (JWT), not the user; the reason is shown as GitHub gave it |
 | 3 | Setup's Copy gave `runner id: …\nkey: …`; `sf-runner pair --key-stdin` read all of it as the key → `401 bad signature` | `missing-check` (no contract test across two builds) | Copy gives the ready-to-run command plus a separate key copy; `pair` accepts either form and names a runner-id mismatch |
 | 4 | `sf-runner install` captured the shell's Node 22 into the launchd plist | `runner` | `install` refuses Node < 24 with the fix, pins the absolute Node path and puts its directory first on `PATH` |
+| 5 | The runner added a second Orca repo for `software-factory` next to the owner's, and churned a new one per job | `missing-check` (spec gap) | ADR 0260: jobs run in the existing Orca repo found by canonical identity; clone-once fallback; startup migration; `sf-runner doctor --fix` (branch `runner-orca-resolve-repo`) |
 
 ## 1. A project couldn't be fixed after creation
 **What happened.** The installation lookup failed (incident 2), Setup showed a toast that disappeared, and
@@ -93,6 +94,41 @@ the runner spawns use the same Node.
 
 **What would have caught it.** A rule that every precondition `doctor` checks is also checked by the
 command that depends on it. It belongs in the runner-host spec's acceptance criteria.
+
+## 5. The runner added a second Orca repo
+**What happened.** Found on the M5 during work item #1, the first real job. Orca showed the project
+`github:timoconnellaus/software-factory` with two source repos, both named `software-factory`: the
+owner's `~/orca/projects/software-factory` and the runner's own clone under
+`~/.local/state/software-factory/runner/repos/`. The sidebar showed confusing duplicates.
+`runner-orca`'s `prepareWorkspace` always registered the host's clone and never looked for a repo Orca
+already had for the project; `release` unregistered it when its last job ended, so every job
+registered it again under a new repo id.
+
+**Root cause (`missing-check`, a spec gap).** The runner brief said "isolated workspace" and ADR 0250
+said "the host owns the clone; the runner never uses the owner's own checkouts". Nobody specified
+"resolve the existing Orca project": that a runner on a person's machine joins the projects they
+already have. The spike's finding that Orca has no `repo rm` (only `project setup-delete --force`)
+was read as "clean up what you add" rather than "don't add". No test looked at Orca's repo list
+across jobs.
+
+**Fix.** [ADR 0260](../adr/0260-runners-attach-to-the-existing-checkout.md). The runner contract has a
+workspace resolution rule (`canonicalRepoKey`, optional `RunnerAdapter.resolveCheckout`). `runner-orca`
+finds the Orca repo whose `gitRemoteIdentity.canonicalKey` is the job's `github.com/<owner>/<repo>` and
+creates the job's worktree in it. The host fetches the item branch into that checkout by URL, into
+`refs/software-factory/heads/*`, with the token only in the git process's environment, and never
+touches the owner's config, branches or working tree. Only when Orca has no repo for the remote does
+the host clone once and register it once, for good. `release` never unregisters. On startup the host
+retires a clone it registered earlier next to an owner repo, and `sf-runner doctor [--fix]` flags (and
+repairs) duplicate source repos and orphaned `sf-job:` worktrees. Tests run the real adapter and host
+git against a scripted Orca CLI (`local/runner-host/test/orca-workspace.test.ts`).
+
+**What would have caught it.** A spec line for every runner adapter: *resolve existing workspaces by
+canonical identity and never create a duplicate registration; per-job state is a worktree and a
+branch.* It is now in `.factory/checks/runner-adapters.md`, with two checks that run in CI:
+`runner-adapter-resolves-existing-repo` (the adapter must call `findRepoForJob` and never
+`repoForget`; it flags the old adapter) and `runner-never-rewrites-remotes`. No
+`evals/regressions/` case: like the other bootstrap incidents it has no `inc_` id, and the regression
+format requires one.
 
 ## Follow-ups (not done here)
 - ~~Add the spec-template rules from 1 and 3 when the stage-spec template is next touched.~~ Done

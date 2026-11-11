@@ -4,6 +4,11 @@
 // no system or global config (so never the owner's keychain helper or `gh auth git-credential`),
 // hooks off, and a credential helper that answers only github.com with the job token. The token is
 // passed in the environment of that one git process, never in its arguments or on disk.
+//
+// The checkout is the one the adapter resolved (ADR 0260): usually the owner's own (their Orca
+// project), else the host's clone. In the owner's checkout the host only fetches, by explicit URL,
+// into its own ref namespace (`refs/software-factory/…`): it never changes their remotes, config,
+// FETCH_HEAD, branches or working tree, and never pushes from or checks out in it.
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { PRIVATE_WORKTREE_FILES } from "@software-factory/harness-claude";
@@ -22,6 +27,9 @@ const HELPER = [
   'test -n "$ok" && test -n "$SF_JOB_TOKEN" && printf "username=x-access-token\\npassword=%s\\n" "$SF_JOB_TOKEN";',
   "}; f",
 ].join(" ");
+
+/** Where the host keeps the item branches it fetched, in any checkout. */
+export const FETCH_NAMESPACE = "refs/software-factory/heads";
 
 /** Variables the host's own git calls never inherit. */
 const DROP = /TOKEN|SECRET|PASSWORD|CREDENTIAL|^SSH_|^GIT_|^GH_|^GITHUB_/i;
@@ -132,33 +140,47 @@ export function hostGit(options: HostGitOptions) {
     },
 
     /**
-     * Makes sure the host's clone of the job's repo exists and has the job's base (and, for verify,
-     * the head under review). Returns the clone's path.
+     * Makes sure the job's base (the item branch) is in the checkout the job will run in, and
+     * returns that checkout's path. `existing` is the checkout the adapter resolved for the repo
+     * (ADR 0260): the host fetches into it and leaves everything else alone. Only when there is
+     * none does the host clone, once, into `clonePath(job)`.
      */
-    async ensureRepo(job: Job, token: string): Promise<string> {
-      const path = this.clonePath(job);
+    async ensureRepo(job: Job, token: string, existing?: string | null): Promise<string> {
       const url = remoteUrl(job);
+      const path = existing ?? this.clonePath(job);
       return locked(path, async () => {
-        const isRepo = await exec("git", ["rev-parse", "--git-dir"], { cwd: path, env: env() })
-          .then((r) => r.code === 0)
-          .catch(() => false);
-        if (!isRepo) {
-          await mkdir(dirname(path), { recursive: true });
-          await git(dirname(path), ["clone", "--no-checkout", "--quiet", url, path], token);
+        if (!existing) {
+          const isRepo = await exec("git", ["rev-parse", "--git-dir"], { cwd: path, env: env() })
+            .then((r) => r.code === 0)
+            .catch(() => false);
+          if (!isRepo) {
+            await mkdir(dirname(path), { recursive: true });
+            await git(dirname(path), ["clone", "--no-checkout", "--quiet", url, path], token);
+          }
+          // The host's own clone: fetch from GitHub, never push through `origin`, no helpers.
+          await git(path, ["config", "remote.origin.url", url]);
+          await git(path, ["config", "remote.origin.pushurl", DISABLED_PUSH_URL]);
+          await git(path, ["config", "--replace-all", "credential.helper", ""]);
+          await excludePrivate(path);
         }
-        // The clone's own config: fetch from GitHub, never push through `origin`, no helpers.
-        await git(path, ["config", "remote.origin.url", url]);
-        await git(path, ["config", "remote.origin.pushurl", DISABLED_PUSH_URL]);
-        await git(path, ["config", "--replace-all", "credential.helper", ""]);
-        await excludePrivate(path);
+        // By URL, not through a remote: the token stays in this process's environment, the
+        // checkout's remotes and config are untouched, and FETCH_HEAD isn't rewritten. Only https
+        // (and file, for tests): a URL rewrite in the checkout's config can't send it over ssh.
         await git(
           path,
           [
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.file.allow=always",
             "fetch",
             "--quiet",
-            "--prune",
-            "origin",
-            `+refs/heads/${job.repo.baseRef}:refs/remotes/origin/${job.repo.baseRef}`,
+            "--no-write-fetch-head",
+            "--no-tags",
+            url,
+            `+refs/heads/${job.repo.baseRef}:${FETCH_NAMESPACE}/${job.repo.baseRef}`,
           ],
           token,
         );
@@ -166,17 +188,26 @@ export function hostGit(options: HostGitOptions) {
       });
     },
 
-    /** Where the job's worktree should start: the reviewed head for verify, else the base. */
-    async startPoint(job: Job, clone: string): Promise<string> {
+    /**
+     * Where the job's worktree should start, as a SHA in `checkout`: the reviewed head for verify,
+     * else the item branch as just fetched.
+     */
+    async startPoint(job: Job, checkout: string): Promise<string> {
       const head = typeof job.context.headSha === "string" ? job.context.headSha : null;
       if (job.stage === "verify" && head && /^[0-9a-f]{40}$/.test(head)) {
         const has = await exec("git", ["cat-file", "-e", `${head}^{commit}`], {
-          cwd: clone,
+          cwd: checkout,
           env: env(),
         });
         if (has.code === 0) return head;
       }
-      return `origin/${job.repo.baseRef}`;
+      return (
+        await git(checkout, [
+          "rev-parse",
+          "--verify",
+          `${FETCH_NAMESPACE}/${job.repo.baseRef}^{commit}`,
+        ])
+      ).trim();
     },
 
     /** The config keys that could redirect a push or run code, for a before/after check. */

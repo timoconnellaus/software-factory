@@ -115,15 +115,52 @@ export interface RunnerAdapter<
 > {
   manifest(): Promise<CapabilityManifest>;
   capacity(): Promise<Capacity>;
+  /**
+   * The workspace resolution rule (ADR 0260): the local checkout of `job.repo` this runner's
+   * machine already has, found by canonical identity (`canonicalRepoKey`), or null when there is
+   * none. The host fetches the job's base into that checkout (never writing the job token to its
+   * config) instead of cloning a second copy. Optional: an adapter without a registry of checkouts
+   * leaves it out and the host uses its own clone.
+   */
+  resolveCheckout?(job: Job): Promise<string | null>;
+  /**
+   * Makes the job's isolated workspace (its own worktree on `job.branch`) inside the checkout
+   * `resolveCheckout` named, or the host's clone when there was none. It never registers a second
+   * checkout for a repo the runner already has, and never touches the checkout's own working tree.
+   */
   prepareWorkspace(job: Job, signal: AbortSignal): Promise<W>;
   startSession(job: Job, workspace: W, signal: AbortSignal): Promise<S>;
   /** Yields until the session ends; the last event is `session.ended`. */
   events(job: Job, session: S, signal: AbortSignal): AsyncIterable<AdapterEvent>;
   collectArtifacts(job: Job, workspace: W, session: S | undefined): Promise<Artifact[]>;
-  /** Frees everything prepareWorkspace/startSession made. Must be safe to call twice. */
+  /**
+   * Frees everything prepareWorkspace/startSession made for this job (its worktree and branch).
+   * Never the checkout or its registration, which outlive the job. Must be safe to call twice.
+   */
   release(job: Job, workspace: W | undefined, session: S | undefined): Promise<void>;
   /** Optional: send a person's message into the live session. */
   steer?(session: S, text: string): Promise<void>;
+}
+
+/**
+ * A repo's canonical identity, `github.com/<owner>/<name>`, lower-cased: the key runners match
+ * existing checkouts by (ADR 0260). GitHub owner and repo names are case-insensitive.
+ */
+export function canonicalRepoKey(repo: { owner: string; name: string }): string {
+  return `github.com/${repo.owner}/${repo.name.replace(/\.git$/, "")}`.toLowerCase();
+}
+
+/**
+ * The canonical identity of a git remote URL (https, ssh or scp-like), or null when it isn't a
+ * GitHub repo URL. `https://github.com/A/b.git`, `git@github.com:A/b` → `github.com/a/b`.
+ */
+export function canonicalKeyFromUrl(url: string): string | null {
+  const m = url
+    .trim()
+    .match(
+      /^(?:(?:https?|ssh|git):\/\/(?:[^@/]+@)?|[^@/]+@)?github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i,
+    );
+  return m?.[1] && m[2] ? canonicalRepoKey({ owner: m[1], name: m[2] }) : null;
 }
 
 /** Whether a manifest covers a job's needs; returns the missing capabilities. */
