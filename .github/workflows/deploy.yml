@@ -1,0 +1,76 @@
+name: Deploy
+
+# Deploys main to Cloudflare once CI has passed on it, or on demand. See docs/deploying.md.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# One production deploy at a time, in order; never cancel one half way.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Secrets can't appear in a job's `if:`, so this job looks and reports. Without the token the
+  # deploy job is skipped with a notice instead of failing.
+  check:
+    name: Check deploy prerequisites
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::notice title=Deploy skipped::The CLOUDFLARE_API_TOKEN secret is not set. Add it with 'gh secret set CLOUDFLARE_API_TOKEN' (see docs/deploying.md)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$ACCOUNT_ID" ]; then
+            echo "::notice title=Deploy skipped::The CLOUDFLARE_ACCOUNT_ID variable is not set. Add it with 'gh variable set CLOUDFLARE_ACCOUNT_ID' (see docs/deploying.md)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: check
+    if: needs.check.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The commit CI passed on, not whatever main is now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Workers to deploy
+        run: node scripts/deploy/deploy.ts list
+      - name: Provision D1, R2 and queues
+        run: node scripts/deploy/provision.ts
+      - name: Apply D1 migrations
+        run: node scripts/deploy/deploy.ts migrate
+      - name: Deploy Workers
+        run: node scripts/deploy/deploy.ts workers
