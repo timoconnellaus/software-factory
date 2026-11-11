@@ -1,0 +1,21 @@
+{
+  "name": "@software-factory/engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The cloud engine Worker: Cloudflare Workflows (one per work item), queues and cron. Named so it isn't confused with execution runners.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "types": "wrangler types",
+    "typecheck": "wrangler types --check && tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "@software-factory/config": "workspace:*",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0",
+    "wrangler": "4.157.0"
+  }
+}

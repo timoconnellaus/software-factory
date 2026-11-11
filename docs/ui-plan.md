@@ -50,4 +50,31 @@
 
 - **Decision domains (proposed):** `.factory/` declares domains (product, architecture, security…) and their owners. Triage tags which domains a work item touches, and each planning question is tagged and routed to that domain's owner. Spec approval is split per domain. Example: in patientos, James owns product, you own architecture and security.
 
-_Open:_ planning scope, domains, unplanned-domain handling.
+- **Planning is used at:** spec stage, agent questions mid-run, triage clarifications, design review, review packet decisions and greenfield kickoff.
+- **Who answers:** each question goes to its decision domain's owner, and spec approval is split per domain.
+- **Spec format:** the living spec uses the stage-spec format and is committed to `docs/stages/NN-*.md` on approval.
+
+- **Planning placement:** a Planning tab on the work item, inbox cards for single questions, and a full-screen canvas.
+- **Default decision domains:** product, architecture, security & privacy. Projects can add their own (e.g. clinical).
+- **Unplanned domain during build:** the build pauses and sends a scoped question to that domain's owner, and other work continues.
+- **Interview sessions are the core planning object.** A work item has several, by type:
+  - **planning:** the owners, with full view
+  - **clarification:** a guest (a client, James) sees only their questions and the shared mockups, and the answers roll up into the parent
+  - **design review**
+  - **decision:** a one-off question, mid-run or at review
+
+  You keep ownership of planning and **delegate questions**, never the whole feature.
+
+- **Planning concepts (v1):**
+  - questions with a default + recommendation, with "accept remaining defaults"
+  - a living spec
+  - adaptive follow-up questions
+  - per-question chat with the planning agent
+  - mockup option cards
+  - system designs on a canvas
+  - **question delegation through clarification sessions**
+
+  Later: pinned comments, live mockup controls, a design system per project.
+
+## Done
+All questions are answered. Next: build R1 against the stage specs (scaffold, then R1 UI on TanStack Start + shadcn using this design system), with the planning/interview-session model as a core part of the backend.
