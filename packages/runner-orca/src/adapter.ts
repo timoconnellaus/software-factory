@@ -17,6 +17,7 @@ import {
   findTranscript,
   HARNESS_CONFIG_MISMATCH,
   type LaunchRecord,
+  PID_FILE,
   PRIVATE_WORKTREE_FILES,
   projectHarness,
   type ReadCommand,
@@ -63,6 +64,8 @@ export interface OrcaSession extends SessionHandle {
   paneKey?: string;
   worktreeId: string;
   worktreePath: string;
+  /** The harness's launch script; its pid file is next to it. */
+  launchScript: string;
   startedAt: number;
 }
 
@@ -234,6 +237,18 @@ export function createOrcaRunner(
       row.agents.find((a) => session.paneKey && a.paneKey === session.paneKey) ??
       row.agents.find((a) => a.agentType === agent)
     );
+  }
+
+  /** Claude is up in the job's own pane: its launch script ran and Orca sees an agent there. */
+  async function isUp(session: OrcaSession): Promise<boolean> {
+    if (!session.paneKey) return false;
+    const pid = await readFile(join(dirname(session.launchScript), PID_FILE), "utf8").catch(
+      () => "",
+    );
+    if (!pid.trim()) return false;
+    const rows = await orca.worktreePs().catch(() => []);
+    const row = rows.find((r) => r.worktreeId === session.worktreeId);
+    return !!row?.agents.some((a) => a.paneKey === session.paneKey);
   }
 
   async function screenshot(worktreeId: string, url: string): Promise<Artifact> {
@@ -435,6 +450,7 @@ export function createOrcaRunner(
         ...(terminal.paneKey ? { paneKey: terminal.paneKey } : {}),
         worktreeId: workspace.worktreeId,
         worktreePath: workspace.path,
+        launchScript: workspace.launchScript,
         startedAt: Date.now(),
         takeover: {
           label: "Open in Orca",
@@ -462,7 +478,7 @@ export function createOrcaRunner(
           await sleep(300);
           await orca.terminalWrite(terminal.handle, "\r");
           trusted = true;
-        } else if (await findAgent(session).catch(() => undefined)) {
+        } else if (await isUp(session)) {
           break;
         }
         if (Date.now() > deadline) {

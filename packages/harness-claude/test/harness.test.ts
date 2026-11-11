@@ -211,7 +211,7 @@ describe("launch", () => {
       ["verify", "dontAsk"],
     ] as const) {
       expect(
-        claudeArgv(job(stage, { model: "claude-sonnet-5-5" }), { settingsPath: "/r/s.json" }),
+        claudeArgv(job(stage, { model: "model-for-implement" }), { settingsPath: "/r/s.json" }),
       ).toEqual([
         "claude",
         "--permission-mode",
@@ -222,7 +222,7 @@ describe("launch", () => {
         "/r/s.json",
         "--strict-mcp-config",
         "--model",
-        "claude-sonnet-5-5",
+        "model-for-implement",
       ]);
     }
     // The project's choice comes from the job's profile (its default-branch policy).

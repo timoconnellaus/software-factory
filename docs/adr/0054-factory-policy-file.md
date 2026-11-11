@@ -39,3 +39,9 @@ The gate needs a concrete policy per project, read only from the default branch.
 ## Consequences
 - The bootstrap step (V1 build plan, step 5) writes software-factory's own `.factory/policy.json`.
 - `packages/sdk` can re-export the schema for project templates.
+
+> Amended 2026-11-11 ([ADR 0270](0270-the-factory-launches-the-harness-and-verifies-it.md)): a
+> `harness` field sets the harness per stage: `permissionMode` (`dontAsk | acceptEdits |
+> bypassPermissions | plan`), extra `allow` rules and extra `allowedDomains` for the sandbox. It can
+> only pick a mode and add to allowlists; the sandbox and the deny rules are fixed in
+> `harness-claude`. The engine puts it on each job (`harness.profile`) from the default branch's policy.
