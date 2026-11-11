@@ -6,7 +6,8 @@
 //          --settings <runDir>/claude-settings.json --strict-mcp-config [--model <model>]
 //
 // No user settings source, so the owner's personal Claude config (their own default mode, hooks,
-// plugins) never applies to a run. No MCP servers. The prompt is not an argument: the adapter sends
+// plugins) never applies to a run. No MCP servers, except a planning session's own planning server
+// (`--mcp-config`), which starts (`--session-id`) or resumes (`--resume`) a known conversation. The prompt is not an argument: the adapter sends
 // it once the launch is verified, so nothing runs before the check passes.
 //
 // After launch, `inspectLaunch` reads the pid the launch script recorded, the live process's
@@ -18,6 +19,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HarnessProfile, Job, JobStage } from "@software-factory/runner-contract";
+import type { PlanningLaunch } from "./planning/project.ts";
 import { type PermissionMode, RUN_SETTINGS_FILE, SETTINGS_FILE, stageMode } from "./settings.ts";
 
 /** The setting sources a run loads: the repo's and the projected local file, never the user's. */
@@ -45,8 +47,15 @@ export interface LaunchRecord {
 /** The exact argv for a run's Claude. */
 export function claudeArgv(
   job: Pick<Job, "stage" | "harness">,
-  options: { settingsPath: string; claudeBin?: string; profile?: HarnessProfile },
+  options: {
+    settingsPath: string;
+    claudeBin?: string;
+    profile?: HarnessProfile;
+    /** A planning session (ADR 0340): its MCP server, and the conversation to start or resume. */
+    planning?: PlanningLaunch;
+  },
 ): string[] {
+  const planning = options.planning;
   return [
     options.claudeBin ?? "claude",
     "--permission-mode",
@@ -56,6 +65,14 @@ export function claudeArgv(
     "--settings",
     options.settingsPath,
     "--strict-mcp-config",
+    ...(planning
+      ? [
+          "--mcp-config",
+          planning.mcpConfigPath,
+          planning.resume ? "--resume" : "--session-id",
+          planning.sessionRef,
+        ]
+      : []),
     ...(job.harness.model ? ["--model", job.harness.model] : []),
   ];
 }

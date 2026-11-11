@@ -36,7 +36,15 @@ export type ClaudeHooks = Record<
   string,
   Array<{
     matcher?: string;
-    hooks: Array<{ type: "command"; command: string; timeout?: number }>;
+    hooks: Array<{
+      type: "command";
+      command: string;
+      timeout?: number;
+      /** Runs in the background and wakes the model when it exits 2 (kim's Stop hook). */
+      asyncRewake?: boolean;
+      rewakeMessage?: string;
+      rewakeSummary?: string;
+    }>;
   }>
 >;
 
@@ -109,6 +117,8 @@ export interface SettingsOptions {
    * there, never write.
    */
   attachmentsDir?: string;
+  /** Files the agent's Read tool may not open (a planning session's relay file, ADR 0340). */
+  denyReadFiles?: string[];
 }
 
 /** Hook events whose output can grant a permission or answer a dialog: a runner may not add them. */
@@ -412,6 +422,7 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
   const deny = [
     ...bash(DENY_COMMANDS),
     ...readDeny.map((p) => `Read(${p})`),
+    ...(options.denyReadFiles ?? []).map((p) => `Read(${abs(p)})`),
     ...writeDeny.map((p) => `Edit(${p})`),
     ...writeDeny.map((p) => `Write(${p})`),
     // The worktree's git internals are the host's (it pushes from them).
