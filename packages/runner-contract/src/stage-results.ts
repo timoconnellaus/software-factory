@@ -1,0 +1,87 @@
+// What each stage's run hands back in `Handback.result`: the harness writes it (as JSON) and the
+// runner host passes it through untouched. The cloud parses it with these schemas; a result that
+// doesn't parse fails the run.
+import { z } from "zod";
+
+const criterion = z.string().min(1).max(1_000);
+
+/** `triage`: the foreman's sizing (ADR 0005, 0013). */
+export const triageResultSchema = z.object({
+  size: z.enum(["small", "medium", "large"]),
+  /** Why this size; logged with the spec decision. */
+  reason: z.string().min(1).max(2_000),
+  /** Decision domains touched (ADR 0029): product, architecture, security, … */
+  domains: z.array(z.string().min(1).max(40)).max(10).default([]),
+  acceptanceCriteria: z.array(criterion).max(30).default([]),
+  /**
+   * The foreman may *ask* to skip or require the spec stage. Advisory only: the autonomy policy's
+   * threshold decides (spec 02, criterion 4).
+   */
+  specRequested: z.enum(["skip", "require"]).optional(),
+  summary: z.string().max(4_000).optional(),
+});
+
+export const questionDraftSchema = z.object({
+  domain: z.string().min(1).max(40).default("product"),
+  prompt: z.string().min(1).max(2_000),
+  context: z.string().max(8_000).optional(),
+  options: z.array(z.string().min(1).max(500)).max(8).default([]),
+  defaultAnswer: z.string().max(2_000).optional(),
+  recommendation: z.string().max(2_000).optional(),
+  recommendationReason: z.string().max(2_000).optional(),
+  blocking: z.boolean().default(true),
+  irreversible: z.boolean().default(false),
+});
+
+/** `spec`: the living spec (stage-spec format) plus the questions it still needs answered. */
+export const specResultSchema = z.object({
+  title: z.string().max(200).optional(),
+  /** Goal / Scope / Out of scope / Acceptance criteria, in markdown. */
+  specMd: z.string().min(1).max(100_000),
+  acceptanceCriteria: z.array(criterion).min(1).max(30),
+  /** Reversible choices recorded instead of asked (ADR 0042). */
+  assumptions: z.array(z.string().min(1).max(1_000)).max(30).default([]),
+  questions: z.array(questionDraftSchema).max(20).default([]),
+});
+
+/** `build`: nothing beyond the hand-back's branch and head SHA; an optional note. */
+export const buildResultSchema = z
+  .object({ notes: z.string().max(20_000).optional() })
+  .default({});
+
+export const checkResultSchema = z.object({
+  name: z.string().min(1).max(100),
+  status: z.enum(["pass", "fail", "skipped"]),
+  detail: z.string().max(4_000).optional(),
+});
+
+/** `verify`: evidence for the review packet (ADR 0020). The verdict itself comes from CI (spec 04). */
+export const verifyResultSchema = z.object({
+  summary: z.string().max(8_000),
+  checks: z.array(checkResultSchema).max(50),
+  criteria: z
+    .array(
+      z.object({
+        criterion,
+        met: z.boolean(),
+        evidence: z.string().min(1).max(4_000),
+      }),
+    )
+    .max(30),
+  reviewer: z
+    .object({
+      role: z.literal("review"),
+      model: z.string().optional(),
+      verdict: z.enum(["approve", "request_changes"]),
+      notes: z.string().max(20_000),
+    })
+    .optional(),
+  riskFlags: z.array(z.string().max(500)).max(20).default([]),
+});
+
+export type TriageResult = z.infer<typeof triageResultSchema>;
+export type QuestionDraft = z.infer<typeof questionDraftSchema>;
+export type SpecResult = z.infer<typeof specResultSchema>;
+export type BuildResult = z.infer<typeof buildResultSchema>;
+export type CheckResult = z.infer<typeof checkResultSchema>;
+export type VerifyResult = z.infer<typeof verifyResultSchema>;
