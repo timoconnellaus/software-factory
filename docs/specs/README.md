@@ -28,6 +28,12 @@ and the factory's own planning stage writes specs in this same format.
 | [13](13-r1-work-item-detail.md) | R1: Work item detail | 02, 10 |
 | [14](14-r1-review-packet.md) | R1: Review packet (the merge gate) | 04, 13 |
 | [15](15-r1-notifications-backpressure-and-metrics.md) | R1: web push, WIP backpressure, early metrics | 01, 03, 12 |
+| [20](20-planning-loop.md) | Planning M1: the loop (a live session on a runner, hooks, questions, living spec, chat, light pool) | 02, 03, 13 |
+| [21](21-planning-visuals.md) | Planning M2: mockups, option cards, live controls, canvas, pinned comments | 20 |
+| [22](22-planning-system-designs.md) | Planning M3: system designs and `.kim/` write-back | 21 |
+| [23](23-triage-questions-and-critic.md) | Planning M4: triage questions, the readiness check and the spec critic | 20 |
+| [24](24-planning-splits.md) | Planning splits a work item | 20 |
+| [25](25-verify-drift-check.md) | Verify checks drift from the spec | 04 |
 
 Specs 01–04 together are the **MVP backend slice**: CLI/chat intake → triage → implement (Claude
 Code via `runner-orca`) → verify (review packet) → PR in one repo. Specs 10–15 are UI release
@@ -47,3 +53,6 @@ spec splits its scope and acceptance criteria by milestone.
 
 Mockups for every R1 screen are in [`.kim/mockups/`](../../.kim/mockups/); the design system is in
 [`.kim/design-system/`](../../.kim/design-system/).
+
+## Planning
+Specs 20–25 make planning work the way kim does ([ADR 0260](../adr/0260-planning-is-a-live-session-on-a-runner.md), plan in [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)). Build them in order: 20 → 21 → 22, then 23; 24 and 25 can run alongside after 20 and 04.

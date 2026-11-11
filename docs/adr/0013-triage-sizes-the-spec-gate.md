@@ -21,3 +21,5 @@ Coding before a spec exists wastes runs; requiring a spec for a one-line fix was
 > autonomy policy's threshold. A Jev prompt-injection check on intake text before triage is a
 > follow-up ([ADR 0047](0047-jev-injection-check-follow-up.md)). See the foreman's decisions in
 > [ADR 0005](0005-hybrid-coordinator.md).
+
+> Amended 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)): triage also scores **readiness** (ready / needs answers / not actionable) and can ask questions; a deterministic readiness pre-check runs first, and unactionable items are parked as `needs_info` ([ADR 0264](0264-triage-scores-readiness-and-can-ask.md)).

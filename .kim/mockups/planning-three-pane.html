@@ -1,0 +1,179 @@
+<!doctype html><html data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../design-system/tokens.css"><style>/* Factory design system: component styles (shadcn/ui equivalents). Needs tokens.css. */
+* { box-sizing: border-box; border-color: hsl(var(--border)); }
+body { margin: 0; font-family: var(--font-sans); background: hsl(var(--background)); color: hsl(var(--foreground)); font-size: var(--text-base); line-height: 1.45; -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-decoration: none; }
+.text-muted { color: hsl(var(--muted-foreground)); } .text-xs { font-size: var(--text-xs); } .text-sm { font-size: var(--text-sm); }
+.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
+.row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; } .grow { flex: 1; }
+h1 { font-size: var(--text-2xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tight); margin: 0 0 var(--space-1); }
+
+/* App shell (shadcn Sidebar + SidebarInset) */
+.shell { display: grid; grid-template-columns: var(--sidebar-width) 1fr; min-height: 100vh; }
+.sidebar { background: hsl(var(--sidebar)); border-right: 1px solid hsl(var(--border)); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-1); }
+.sb-brand { display: flex; align-items: center; gap: var(--space-2); padding: 6px 8px 14px; font-weight: var(--weight-semibold); }
+.sb-logo { width: 28px; height: 28px; border-radius: 6px; background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); display: grid; place-items: center; }
+.sb-label { font-size: var(--text-xs); color: hsl(var(--muted-foreground)); padding: 10px 8px 4px; font-weight: var(--weight-medium); }
+.sb-item { display: flex; align-items: center; gap: var(--space-2); padding: 6px 8px; border-radius: 6px; }
+.sb-item:hover, .sb-item.active { background: hsl(var(--sidebar-accent)); font-weight: var(--weight-medium); }
+.sb-item .count { margin-left: auto; font-size: var(--text-xs); color: hsl(var(--muted-foreground)); }
+.ic { width: 16px; text-align: center; opacity: .7; }
+.main { display: flex; flex-direction: column; min-width: 0; }
+.header { height: var(--header-height); display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-6); border-bottom: 1px solid hsl(var(--border)); }
+.crumb { color: hsl(var(--muted-foreground)); } .crumb b { color: hsl(var(--foreground)); font-weight: var(--weight-medium); }
+.content { padding: var(--space-6); max-width: var(--content-max); width: 100%; }
+
+/* Card */
+.card { background: hsl(var(--card)); color: hsl(var(--card-foreground)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); }
+.card.waiting { box-shadow: var(--shadow-ring-waiting); }
+.card-h { padding: var(--space-5) var(--space-5) 0; }
+.card-t { font-weight: var(--weight-semibold); font-size: var(--text-lg); letter-spacing: -.01em; margin: 0; }
+.card-d { font-size: var(--text-sm); color: hsl(var(--muted-foreground)); margin-top: var(--space-1); }
+.card-c { padding: var(--space-4) var(--space-5) var(--space-5); }
+.card-f { padding: var(--space-4) var(--space-5) var(--space-5); display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+/* Badge */
+.badge { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 2px 8px; font-size: var(--text-xs); font-weight: var(--weight-medium); border: 1px solid transparent; white-space: nowrap; }
+.b-default { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+.b-secondary { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); }
+.b-outline { border-color: hsl(var(--border)); }
+.b-destructive { background: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
+
+/* Status dot */
+.dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: none; }
+.s-waiting { background: hsl(var(--status-waiting)); } .s-running { background: hsl(var(--status-running)); }
+.s-done { background: hsl(var(--status-done)); } .s-failed { background: hsl(var(--status-failed)); }
+.s-idle { background: hsl(var(--status-idle)); } .s-local { background: hsl(var(--status-local)); }
+
+/* Button */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: var(--radius); font-size: var(--text-base); font-weight: var(--weight-medium); border: 1px solid transparent; cursor: pointer; white-space: nowrap; font-family: inherit; }
+.btn-sm { height: 32px; padding: 0 12px; font-size: var(--text-sm); }
+.btn-default { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+.btn-secondary { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); }
+.btn-outline { border-color: hsl(var(--input)); background: hsl(var(--background)); box-shadow: var(--shadow-xs); }
+.btn-ghost { background: transparent; } .btn-ghost:hover { background: hsl(var(--accent)); }
+.btn-destructive { background: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
+
+/* Table, Tabs, Input, Kbd, Progress, Separator */
+.table { width: 100%; border-collapse: collapse; }
+.table th { text-align: left; font-weight: var(--weight-medium); color: hsl(var(--muted-foreground)); font-size: var(--text-sm); padding: 10px 12px; border-bottom: 1px solid hsl(var(--border)); }
+.table td { padding: 12px; border-bottom: 1px solid hsl(var(--border)); } .table tr:last-child td { border-bottom: 0; }
+.tabs { display: inline-flex; background: hsl(var(--muted)); border-radius: var(--radius); padding: 3px; gap: 2px; }
+.tab { padding: 5px 12px; border-radius: 6px; font-size: var(--text-sm); font-weight: var(--weight-medium); color: hsl(var(--muted-foreground)); }
+.tab.on { background: hsl(var(--background)); color: hsl(var(--foreground)); box-shadow: var(--shadow-xs); }
+.input { height: 36px; border: 1px solid hsl(var(--input)); border-radius: var(--radius); padding: 0 12px; display: flex; align-items: center; color: hsl(var(--muted-foreground)); min-width: 220px; background: hsl(var(--background)); }
+.kbd { font-family: var(--font-mono); font-size: 11px; border: 1px solid hsl(var(--border)); border-radius: 4px; padding: 0 4px; color: hsl(var(--muted-foreground)); }
+.progress { height: 8px; background: hsl(var(--muted)); border-radius: 99px; overflow: hidden; } .progress > i { display: block; height: 100%; background: hsl(var(--primary)); }
+.sep { height: 1px; background: hsl(var(--border)); }
+
+/* Factory-specific */
+.stage-steps { display: flex; gap: 4px; align-items: center; font-size: var(--text-xs); }
+.stage-steps span { padding: 2px 8px; border-radius: 99px; border: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); }
+.stage-steps span.done { background: hsl(var(--secondary)); color: hsl(var(--foreground)); }
+.stage-steps span.now { border-color: hsl(var(--status-running)); color: hsl(var(--foreground)); font-weight: var(--weight-medium); }
+.stage-steps span.gate { border-style: dashed; }
+.criteria { display: grid; gap: 6px; } .criterion { display: flex; gap: 8px; align-items: flex-start; font-size: var(--text-sm); }
+
+@media (max-width: 820px) {
+  .shell { grid-template-columns: 1fr; } .sidebar { display: none; }
+  .header { padding: 0 var(--space-4); } .content { padding: var(--space-4); } .hide-sm { display: none !important; }
+}
+
+
+body{overflow:hidden}
+.shell{height:100vh;min-height:0}
+.main{height:100vh;overflow:hidden}
+.page{flex:1;min-height:0;display:flex;flex-direction:column}
+.top{padding:14px 20px 10px;border-bottom:1px solid hsl(var(--border))}
+h1{font-size:var(--text-xl);margin:0}
+.panes{flex:1;min-height:0;display:grid}
+.pane{min-height:0;overflow:auto;padding:14px 16px}
+.pane+.pane{border-left:1px solid hsl(var(--border))}
+.ph{font-size:var(--text-xs);color:hsl(var(--muted-foreground));font-weight:500;text-transform:uppercase;letter-spacing:.04em;margin:2px 0 8px;display:flex;gap:6px;align-items:center}
+.q{border:1px solid hsl(var(--border));border-radius:var(--radius-lg);padding:12px 14px;background:hsl(var(--card))}
+.q.focus{box-shadow:0 0 0 2px hsl(var(--ring)/.15);border-color:hsl(var(--ring)/.4)}
+.q + .q{margin-top:10px}
+.qp{font-weight:500;margin:4px 0 8px}
+.opt{display:flex;gap:8px;align-items:center;border:1px solid hsl(var(--border));border-radius:8px;padding:7px 10px;font-size:var(--text-sm)}
+.opt+.opt{margin-top:6px}
+.opt.sel{box-shadow:0 0 0 2px hsl(var(--primary)/.22)}
+.radio{width:14px;height:14px;border-radius:50%;border:1px solid hsl(var(--border));flex:none}
+.opt.sel .radio{background:hsl(var(--primary));border-color:hsl(var(--primary))}
+.why{font-size:var(--text-xs);color:hsl(var(--muted-foreground));margin-top:8px}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ocard{border:1px solid hsl(var(--border));border-radius:8px;overflow:hidden;font-size:var(--text-sm)}
+.ocard.sel{box-shadow:0 0 0 2px hsl(var(--primary)/.25)}
+.thumb{height:64px;background:hsl(var(--muted));display:grid;place-items:center;color:hsl(var(--muted-foreground));font-size:11px;position:relative}
+.thumb i{position:absolute;left:10px;right:10px;height:6px;border-radius:3px;background:hsl(var(--border))}
+.ocard .l{padding:6px 8px;display:flex;gap:6px;align-items:center}
+.tag{font-family:var(--font-mono);font-size:10.5px;padding:0 5px;border-radius:4px;border:1px solid hsl(var(--border));color:hsl(var(--muted-foreground));white-space:nowrap;vertical-align:1px}
+.tag.as{border-color:hsl(var(--status-waiting)/.6);color:hsl(38 80% 35%);background:hsl(var(--status-waiting)/.08)}
+.spec{font-size:var(--text-sm);display:grid;gap:12px}
+.spec h3{font-size:var(--text-sm);margin:0 0 4px;font-weight:600}
+.spec p{margin:0;color:hsl(var(--foreground))}
+.spec ul{margin:0;padding-left:16px;display:grid;gap:3px}
+.chg{background:hsl(var(--status-running)/.08);border-radius:3px;box-shadow:0 0 0 2px hsl(var(--status-running)/.08)}
+.cov{display:grid;grid-template-columns:1fr auto;gap:3px 10px;font-size:var(--text-xs)}
+.cov .ok{color:hsl(var(--status-done))}.cov .part{color:hsl(38 80% 40%)}.cov .miss{color:hsl(var(--status-failed))}
+.msg{font-size:var(--text-sm);padding:8px 10px;border-radius:10px;max-width:92%}
+.msg.a{background:hsl(var(--muted))}
+.msg.u{background:hsl(var(--primary));color:hsl(var(--primary-foreground));margin-left:auto}
+.msgs{display:grid;gap:8px}
+.who{font-size:11px;color:hsl(var(--muted-foreground));margin-bottom:2px}
+.compose{border:1px solid hsl(var(--input));border-radius:10px;padding:8px 10px;color:hsl(var(--muted-foreground));font-size:var(--text-sm);display:flex;gap:8px;align-items:center}
+.sess{display:flex;gap:8px;align-items:center;font-size:var(--text-xs);color:hsl(var(--muted-foreground));flex-wrap:wrap}
+.pill{display:inline-flex;gap:6px;align-items:center;border:1px solid hsl(var(--border));border-radius:99px;padding:2px 9px;font-size:var(--text-xs)}
+.gatebar{border-top:1px solid hsl(var(--border));padding:10px 20px;display:flex;gap:8px;align-items:center;background:hsl(var(--background))}
+.child{display:flex;gap:8px;align-items:center;border:1px dashed hsl(var(--border));border-radius:8px;padding:6px 10px;font-size:var(--text-sm)}
+.child+.child{margin-top:6px}
+.note{border-left:2px solid hsl(var(--status-waiting));padding:4px 10px;font-size:var(--text-xs);color:hsl(var(--muted-foreground))}
+.typing{display:inline-flex;gap:3px}.typing i{width:5px;height:5px;border-radius:50%;background:hsl(var(--status-running));opacity:.6}
+.mtabs{display:none}
+@media(max-width:820px){
+ body{overflow:auto}.shell,.main{height:auto}.panes{display:block!important}.pane{display:none;overflow:visible}.pane.m-on{display:block}.pane+.pane{border-left:0}
+ .mtabs{display:flex;gap:2px;padding:6px 12px;border-bottom:1px solid hsl(var(--border));position:sticky;top:0;background:hsl(var(--background));z-index:2}
+ .mtabs span{flex:1;text-align:center;padding:6px;border-radius:6px;font-size:var(--text-sm);color:hsl(var(--muted-foreground))}.mtabs span.on{background:hsl(var(--muted));color:hsl(var(--foreground));font-weight:500}
+ .top{padding:12px 14px}.gatebar{position:sticky;bottom:0;padding:10px 14px}.hide-sm{display:none!important}.cards{grid-template-columns:1fr 1fr}
+}
+</style></head><body><div class="shell">
+<aside class="sidebar" data-name="sidebar"><a class="sb-brand"><span class="sb-logo">⚙</span>Personal</a>
+<a class="btn btn-default btn-sm" style="margin:0 4px 8px">+ New work</a>
+<div class="sb-label">Platform</div><a class="sb-item"><span class="ic">◉</span>Inbox<span class="count">3</span></a><a class="sb-item active"><span class="ic">▤</span>Work<span class="count">12</span></a><a class="sb-item"><span class="ic">◫</span>Projects</a><a class="sb-item"><span class="ic">⚙</span>Runners</a>
+<div class="grow"></div><div class="sep"></div><a class="sb-item text-sm" data-name="runner status"><span class="dot s-done"></span>mac-mini · heavy 1/2 · light 2/6</a></aside>
+<div class="main"><header class="header"><span class="crumb">Work / ROS-212 / <b>Planning</b></span><span class="grow"></span><span class="tabs hide-sm"><span class="tab">Timeline</span><span class="tab on">Planning</span><span class="tab">Runs</span><span class="tab">Review packet</span></span></header>
+<div class="page">
+<div class="top" data-name="item header"><div class="row" style="align-items:flex-start"><div class="grow"><div class="row text-xs text-muted" style="margin-bottom:4px"><span class="badge b-outline"><span class="dot s-waiting"></span>Spec · planning</span>relationship-os · medium · touches <b>product</b> + <b>architecture</b></div><h1>Add CSV export to the deals list</h1></div>
+<div class="sess" data-name="session status"><span class="pill" data-name="agent presence"><span class="dot s-running"></span>Planning agent · attached · mac-mini</span><span class="pill hide-sm" title="you and James are viewing">● You, James here</span><a class="btn btn-outline btn-sm hide-sm" data-name="full screen button" title="Full screen (F)">⤢ Full screen <span class="kbd">F</span></a></div></div></div>
+<div class="mtabs" data-name="phone tabs"><span class="on">Questions 2</span><span class="">Spec</span><span class="">Chat</span></div><div class="panes" style="grid-template-columns:340px 1fr 320px">
+<div class="pane m-on" data-name="questions pane"><div class="ph">Open · 2</div><div class="q focus" data-name="question 7"><div class="row text-xs text-muted">7 · new<span class="grow"></span><span class="badge b-outline">product</span>→ you</div><div class="qp">Where does the export button go?</div>
+<div class="cards"><div class="ocard sel" data-name="option toolbar"><div class="thumb"><i style="top:12px;width:40%;left:auto;right:10px;background:hsl(var(--primary)/.5)"></i><i style="top:28px"></i><i style="top:40px"></i></div><div class="l"><span class="radio" style="background:hsl(var(--primary))"></span>List toolbar<span class="grow"></span><span class="badge b-secondary">rec.</span></div></div>
+<div class="ocard" data-name="option row menu"><div class="thumb"><i style="top:16px"></i><i style="top:30px;width:30%;left:auto;right:10px;background:hsl(var(--primary)/.35)"></i><i style="top:44px"></i></div><div class="l"><span class="radio"></span>Bulk-select menu</div></div></div>
+<div class="why">Matches the reports page, where people already look for "Export". Bulk-select hides it until something's selected.</div></div><div class="q" data-name="question 5"><div class="row text-xs text-muted">5<span class="grow"></span><span class="badge b-outline">architecture</span>→ you</div><div class="qp">How should exports over 10k rows work?</div>
+<div class="opt sel"><span class="radio"></span>Stream the download<span class="grow"></span><span class="badge b-secondary">recommended</span></div><div class="opt"><span class="radio"></span>Email a link when ready</div><div class="opt"><span class="radio"></span>Cap at 10k</div>
+<div class="why">The reports page timeout is the original bug. Streaming fixes it without an async job. <a class="text-xs" style="text-decoration:underline" data-name="thread link">2 messages in thread</a></div></div><div style="height:10px"></div><div class="q" style="padding:10px 14px" data-name="answered"><div class="text-xs text-muted" style="margin-bottom:6px">Answered</div><div class="text-sm" style="display:grid;gap:4px">
+<div class="row"><span class="dot s-done"></span>1. Format: CSV, UTF-8 with BOM <span class="text-muted">· default</span></div>
+<div class="row"><span class="dot s-done"></span>2. Respect current filters: yes <span class="text-muted">· default</span></div>
+<div class="row"><span class="dot s-done"></span>3. Who can export: deals:read <span class="text-muted">· changed</span></div>
+<div class="row"><span class="dot s-done"></span>4. Columns: visible only <span class="text-muted">· James · default</span></div>
+<div class="row"><span class="dot s-done"></span>6. Filename: deals-YYYY-MM-DD <span class="text-muted">· default</span></div></div></div></div>
+<div class="pane" data-name="workspace pane"><div class="row" style="margin-bottom:12px"><span class="tabs"><span class="tab on">Spec</span><span class="tab">Mockups 2</span><span class="tab">System 1</span><span class="tab">Canvas</span></span></div><div class="spec" data-name="living spec">
+<div class="row"><b style="font-size:var(--text-lg)">Spec</b><span class="text-xs text-muted">rev 6 · updated just now</span><span class="grow"></span><span class="badge b-secondary mono">docs/specs/14-deals-csv-export.md</span></div>
+<div><h3>Goal</h3><p>Export the deals list as CSV, respecting filters, without timeouts on large sets. <span class="tag">request</span></p></div>
+<div><h3>Scope</h3><ul><li>A <code>deals.export</code> operation that streams CSV <span class="tag">Q5</span></li><li>An Export button in the list toolbar <span class="tag">Q7</span></li><li>Visible columns only, current filters applied <span class="tag">Q2</span> <span class="tag">Q4</span></li></ul></div>
+<div><h3>Out of scope</h3><ul><li>Scheduled exports, XLSX <span class="tag">request</span></li></ul></div>
+<div><h3>Acceptance criteria</h3><ul><li>Members with <code>deals:read</code> see Export; others don't <span class="tag">Q3</span></li><li class="chg">50k rows download in under 10 s with no timeout <span class="tag">Q5</span> <span class="tag">repo</span></li><li>Dates export as ISO 8601 in the org's time zone <span class="tag as">assumption</span></li></ul></div>
+<div><h3>Assumptions <span class="text-xs text-muted" style="font-weight:400">· reversible, overturn any</span></h3><ul><li>ISO 8601 dates in the org's time zone <a class="text-xs text-muted" style="text-decoration:underline">overturn</a></li><li>Empty filters export all deals the user can see <a class="text-xs text-muted" style="text-decoration:underline">overturn</a></li></ul></div>
+<div><h3>Coverage</h3><div class="cov" data-name="coverage checklist"><span>Scope</span><span class="ok">clear</span><span>Data & permissions</span><span class="ok">clear</span><span>UX</span><span class="part">Q7 open</span><span>Edge cases (empty, 100k+, unicode)</span><span class="ok">clear</span><span>Non-functional</span><span class="ok">clear</span><span>Terminology</span><span class="ok">clear</span></div></div>
+<div><h3>Designs</h3><div class="row"><span class="badge b-outline">mockup · export button</span><span class="badge b-outline">sequence · streaming export</span></div></div>
+<div data-name="split proposal"><h3>Splits into</h3><div class="child"><span class="dot s-idle"></span>ROS-212a · <code>deals.export</code> streaming operation<span class="grow"></span><span class="text-xs text-muted">small</span></div><div class="child"><span class="dot s-idle"></span>ROS-212b · Export button + permission<span class="grow"></span><span class="text-xs text-muted">small</span></div></div>
+<div class="note" data-name="critic note">Spec critic: criterion "50k rows in under 10 s" needs a fixture; suggests seeding 50k deals in the e2e test.</div>
+</div></div>
+<div class="pane" data-name="chat pane" style="display:flex;flex-direction:column"><div class="ph">Chat</div><div class="grow"><div class="msgs" data-name="chat">
+<div><div class="who">Planning agent</div><div class="msg a">Q3 changed to <code>deals:read</code>, so I've dropped the separate export permission from scope. I also found the reports page streams CSV through <code>lib/stream.ts</code>, so Q5 reuses it.</div></div>
+<div><div class="who" style="text-align:right">You</div><div class="msg u">Where would the button go? I'm not sure.</div></div>
+<div><div class="who">Planning agent</div><div class="msg a">I drew two options and added them as question 7. The toolbar one matches the reports page.</div></div>
+<div><div class="who">Planning agent</div><div class="msg a"><span class="typing"><i></i><i></i><i></i></span> revising the acceptance criteria…</div></div>
+</div></div><div class="compose" data-name="chat input" style="margin-top:12px">Ask the planning agent, or tell it what to change…<span class="grow"></span><span class="kbd">↵</span></div></div>
+</div><div class="gatebar" data-name="spec gate bar"><span class="text-sm"><b>6 of 8</b> answered · 4 defaults accepted · 2 assumptions · coverage 5/6</span><span class="grow"></span><a class="btn btn-ghost btn-sm hide-sm" data-name="accept defaults">Accept remaining defaults</a><a class="btn btn-outline btn-sm" data-name="request changes">Request changes</a><a class="btn btn-default btn-sm" data-name="approve spec">Approve spec + 2 work items</a></div>
+</div></div></div></body></html>

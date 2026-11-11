@@ -25,3 +25,5 @@ Review overload is a core pain. An approver should be able to decide on a PR fro
 > what evidence may be stored follows the project's **evidence policy**
 > ([ADR 0039](0039-per-project-evidence-policy.md)); the deploy preview link waits for preview
 > environments ([ADR 0045](0045-preview-environments-later.md)).
+
+> Amended 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)): the review packet gains a **Drift** section comparing the build with the approved spec, and the merged spec gets an "As built" note ([ADR 0266](0266-verify-checks-drift-from-the-spec.md)).

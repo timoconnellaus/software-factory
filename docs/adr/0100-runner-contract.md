@@ -80,3 +80,4 @@ The plan's rule is that the factory schedules and runners execute. The core must
 > (7) the channel is served by `sf-engine` at `https://sf-engine.zerobsai.com/runner/v1/*`.
 > Open questions 1 (harness vs runner split), 5 (large artifacts to R2) and 8 stay as they were.
 
+> Amended 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)): a planning job is long-lived and resumable: the runner keeps its `sessionRef` across yields, and a resume is a new job for the same session on the same runner ([ADR 0260](0260-planning-is-a-live-session-on-a-runner.md)). Capacity reports a light pool ([ADR 0261](0261-runner-capacity-has-heavy-and-light-pools.md)).

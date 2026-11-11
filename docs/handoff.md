@@ -49,6 +49,9 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #20 | App performance ([ADR 0241](adr/0241-app-runs-next-to-d1-and-loads-pages-in-one-request.md)): `sf-app` (and `sf-engine`'s fetch handlers) pinned next to D1 in SJC, session in the query cache, loaders prefetch everything in one batched `callReads` request, SSR query integration, pending skeletons, `Server-Timing` on server functions and engine RPC; `test/perf.test.ts` guards loaders. Merged with `factory/verify` red (not attached to a work item; the factory had no project or runner yet), as a one-off bootstrap exception the owner approved |
 
 ## In flight
+- **Planning design** (`planning-process`, block I): planning rebuilt as a live session on a runner,
+  modelled on kim. ADRs 0260–0266, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
+  `.kim/plans/2026-11-11-factory-planning.md`. Next build: spec 20 (M1, the loop).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
