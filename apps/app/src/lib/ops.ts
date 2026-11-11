@@ -93,6 +93,12 @@ export const APP_READ_OPERATIONS = [
 ] as const satisfies readonly OpName[];
 export type ReadOpName = (typeof APP_READ_OPERATIONS)[number];
 
+/**
+ * Reads that call GitHub (seconds, not milliseconds). They go in a request of their own: a batch
+ * answers when its slowest read does, and these would hold up the page's database reads.
+ */
+export const SLOW_READS: ReadonlySet<ReadOpName> = new Set(["setup.status", "github.repos"]);
+
 /** JSON as it crosses the server-function boundary (operation outputs are plain JSON). */
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 

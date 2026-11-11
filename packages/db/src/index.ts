@@ -1,6 +1,6 @@
 // @software-factory/db: the core_* schema (SQL migrations in ../migrations) and typed access to it
 // through Kysely over a D1 binding (ADR 0050).
-import { type Compilable, Kysely } from "kysely";
+import { type Compilable, type InferResult, Kysely } from "kysely";
 import { D1Dialect } from "./dialect.ts";
 import type { CoreDatabase } from "./schema.ts";
 
@@ -33,6 +33,19 @@ export function createDb(d1: D1Database): Db {
 export function toStatement(d1: D1Database, query: Compilable): D1PreparedStatement {
   const { sql, parameters } = query.compile();
   return d1.prepare(sql).bind(...parameters);
+}
+
+/**
+ * Several independent reads in one D1 request (ADR 0241): each query's rows, in order. Concurrent
+ * D1 requests queue behind each other, so one batch beats the same queries in `Promise.all`.
+ */
+export async function readBatch<const Q extends readonly Compilable<unknown>[]>(
+  d1: D1Database,
+  queries: Q,
+): Promise<{ -readonly [K in keyof Q]: InferResult<Q[K]> }> {
+  if (queries.length === 0) return [] as { -readonly [K in keyof Q]: InferResult<Q[K]> };
+  const results = await d1.batch(queries.map((q) => toStatement(d1, q)));
+  return results.map((r) => r.results) as { -readonly [K in keyof Q]: InferResult<Q[K]> };
 }
 
 /**
