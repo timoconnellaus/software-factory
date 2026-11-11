@@ -31,7 +31,8 @@ function sources(dir: string): string[] {
 }
 
 const MODEL_REGISTRY = "packages/core/src/model-roles.ts";
-const MODEL_ID = /\b(claude-(?:opus|sonnet|haiku|fable)-[0-9][0-9a-z.-]*|gpt-[0-9][0-9a-z.-]*|gemini-[0-9][0-9a-z.-]*)\b/i;
+const MODEL_ID =
+  /\b(claude-(?:opus|sonnet|haiku|fable)-[0-9][0-9a-z.-]*|gpt-[0-9][0-9a-z.-]*|gemini-[0-9][0-9a-z.-]*)\b/i;
 
 test("no source file outside the model-role registry names a model id", () => {
   const offenders: string[] = [];
@@ -49,7 +50,8 @@ test("no source file outside the model-role registry names a model id", () => {
 test("core, the runner contract and the apps never import Orca or a runner adapter", () => {
   const offenders: string[] = [];
   const areas = ["packages/core", "packages/runner-contract", "packages/db", "apps"];
-  const forbidden = /from\s+["'](?:@software-factory\/runner-(?!contract)[a-z-]+|[^"']*orca[^"']*)["']|import\(\s*["'][^"']*orca/i;
+  const forbidden =
+    /from\s+["'](?:@software-factory\/runner-(?!contract)[a-z-]+|[^"']*orca[^"']*)["']|import\(\s*["'][^"']*orca/i;
   for (const area of areas) {
     for (const file of sources(join(root, area))) {
       const text = readFileSync(file, "utf8");
