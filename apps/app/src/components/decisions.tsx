@@ -21,7 +21,13 @@ export type Decision =
   | { kind: "spec.requestChanges"; workItemId: string; note: string }
   | { kind: "review.merge"; workItemId: string; openedFullDiff: boolean }
   | { kind: "review.sendBack"; workItemId: string; note: string; openedFullDiff: boolean }
-  | { kind: "question.answer"; workItemId: string; questionId: string; answer: string }
+  | {
+      kind: "question.answer";
+      workItemId: string;
+      questionId: string;
+      answer: string;
+      note?: string;
+    }
   | { kind: "question.acceptDefaults"; workItemId: string }
   | {
       kind: "approval.decide";
@@ -69,8 +75,12 @@ async function run(d: Decision): Promise<string> {
       return r.incidentId ? `${DONE[d.kind]} · factory incident opened` : DONE[d.kind];
     }
     case "question.answer": {
-      const r = await op("question.answer", { questionId: d.questionId, answer: d.answer }, key);
-      return r.answered ? DONE[d.kind] : "Already answered";
+      const r = await op(
+        "question.answer",
+        { questionId: d.questionId, answer: d.answer, ...(d.note ? { note: d.note } : {}) },
+        key,
+      );
+      return r.revised ? "Answer changed" : r.answered ? DONE[d.kind] : "Already answered";
     }
     case "question.acceptDefaults": {
       const r = await op("question.acceptDefaults", { workItemId: d.workItemId }, key);

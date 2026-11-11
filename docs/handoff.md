@@ -217,6 +217,12 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   projects the planning MCP server and the hooks (`sf-runner --max-light`, default 6).
 - `spec.commit` writes Assumptions, Coverage and Clarifications sections and keeps the provenance
   tags.
+- The app's Planning tab is layout A (`components/planning.tsx`, logic in `lib/planning.ts`):
+  questions (by kind, with a note; planning answers can be changed) | the spec (provenance chips,
+  assumptions highlighted, what changed since the last revision, coverage, clarifications) | chat,
+  with the gate bar, the session pill, Continue on another runner, full screen (F / Esc) and phone
+  tabs. It re-reads `planning.get` on each Server-Sent Event from `/api/work/<id>/planning/live`
+  and heartbeats `planning.presence`. The inbox shows "Planning is ready" cards.
 
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):

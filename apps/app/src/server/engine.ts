@@ -13,6 +13,11 @@ export interface EngineRpc {
     | { ok: true; result: InvokeResult<unknown>; ms?: number }
     | { ok: false; error: Refusal; ms?: number }
   >;
+  /** A work item's planning changes as Server-Sent Events (spec 20, ADR 0350). */
+  planningStream?(
+    workItemId: string,
+    options: { actor: Actor; origin: Origin },
+  ): Promise<{ ok: true; stream: ReadableStream<Uint8Array> } | { ok: false; error: Refusal }>;
 }
 
 /** How long one operation took: the whole RPC, and the part spent inside the engine. */
