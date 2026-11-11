@@ -5,21 +5,23 @@ import { fakeGitHub } from "@software-factory/core/testing";
 import { runnerChannelKey } from "@software-factory/runner-contract";
 import { githubApp } from "./github/app.ts";
 import { deliverOutbox } from "./outbox.ts";
+import { secrets } from "./secrets.ts";
 
 export function services(env: Env): FactoryServices {
+  const { GH_APP_PRIVATE_KEY, RUNNER_CHANNEL_SECRET } = secrets(env);
   const github =
     env.GITHUB_FAKE === "1"
       ? fakeGitHub(env.DB)
-      : env.GH_APP_PRIVATE_KEY
-        ? githubApp({ appId: env.GH_APP_ID, privateKey: env.GH_APP_PRIVATE_KEY })
+      : GH_APP_PRIVATE_KEY
+        ? githubApp({ appId: env.GH_APP_ID, privateKey: GH_APP_PRIVATE_KEY })
         : unavailableGitHub();
   return {
     github,
     runnerKey: async (runnerId, version) => {
-      if (!env.RUNNER_CHANNEL_SECRET) {
+      if (!RUNNER_CHANNEL_SECRET) {
         throw new OperationError("unavailable", "RUNNER_CHANNEL_SECRET is not set on sf-engine");
       }
-      return runnerChannelKey(env.RUNNER_CHANNEL_SECRET, runnerId, version);
+      return runnerChannelKey(RUNNER_CHANNEL_SECRET, runnerId, version);
     },
   };
 }

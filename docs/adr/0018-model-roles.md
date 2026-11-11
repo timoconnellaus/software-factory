@@ -15,3 +15,9 @@ Models change monthly. Code and config that name model ids rot. Borrowed from Re
 - Swapping a model is a config change, not a code change.
 - Open question: whether the role map lives in the factory repo, `.factory/`, or runner config, given
   that runners own their credentials ([ADR 0017](0017-harness-adapters.md)).
+
+> Amended 2026-11-11 (V1 core + engine): V1 roles are `triage`, `implement`, `review`, `summarise`
+> (the foreman and spec stages run as `triage`). The default map is `packages/core/src/model-roles.ts`,
+> the only source file allowed to name a model (a guard test enforces it); a project overrides it in
+> `.factory/policy.json` `modelRoles` ([ADR 0054](0054-factory-policy-file.md)). Jobs name the role and
+> carry the resolved model for the harness.

@@ -1,5 +1,40 @@
 # @software-factory/db
 
-D1 migrations and typed access for the work-item store, audit journal, outbox, leases and Better Auth tables.
+The `core_*` schema (plain SQL in [`migrations/`](migrations/), applied by `wrangler d1 migrations
+apply` from `apps/engine` and by `applyD1Migrations` in tests) and typed access through Kysely
+(ADR 0050). Nothing writes these tables except operations in `packages/core` (and Better Auth, its
+own tables).
 
-Placeholder. See ADRs 0004, 0011, 0012 in [`docs/adr/`](../../docs/adr/). Don't invent APIs here ahead of the stage that needs them.
+```ts
+import { createDb, toStatement, guardChanged, SCHEMA_VERSION } from "@software-factory/db";
+const db = createDb(env.DB);            // typed reads
+d1.batch([toStatement(env.DB, db.updateTable(...)), guardChanged(env.DB, "name"), ...]);
+```
+
+## Tables
+| Migration | Tables |
+| --- | --- |
+| 0010 | `core_meta`, Better Auth (`core_user`, `core_session`, `core_account`, `core_verification`, `core_organization`, `core_member`, `core_invitation`), `core_factories`, `core_projects`, `core_project_policies`, `core_kill_switches`, `core_batch_guard` |
+| 0020 | `core_work_items`, `core_intake_keys`, `core_intake_events`, `core_stages`, `core_questions`, `core_specs`, `core_pending_actions`, `core_review_packets`, `core_incidents`, `core_audit` (append-only), `core_outbox` |
+| 0030 | `core_runners`, `core_runner_shares`, `core_jobs`, `core_runs`, `core_run_events`, `core_artifacts`, `core_leases`, `core_channel_requests` |
+
+`SCHEMA_VERSION` equals the highest migration on this branch (30). Parallel builds number their
+migrations from the block they claim in `docs/parallel-work.md`.
+
+## Better Auth mapping (for the app session)
+Better Auth 1.7 with the organization plugin. Set `modelName` and map every camelCase field to its
+snake_case column:
+
+| Better Auth model | `modelName` | Fields → columns |
+| --- | --- | --- |
+| user | `core_user` | `emailVerified` → `email_verified`, `createdAt` → `created_at`, `updatedAt` → `updated_at` |
+| session | `core_session` | `userId` → `user_id`, `expiresAt` → `expires_at`, `ipAddress` → `ip_address`, `userAgent` → `user_agent`, `activeOrganizationId` → `active_organization_id`, timestamps |
+| account | `core_account` | `userId`, `accountId`, `providerId`, `accessToken`, `refreshToken`, `idToken`, `accessTokenExpiresAt`, `refreshTokenExpiresAt` → snake_case; timestamps |
+| verification | `core_verification` | `expiresAt` → `expires_at`, timestamps |
+| organization | `core_organization` | `createdAt` → `created_at` (also `kind`: `personal` / `team` / `client`, and `github_installation_id`) |
+| member | `core_member` | `organizationId` → `organization_id`, `userId` → `user_id`, `createdAt` → `created_at` |
+| invitation | `core_invitation` | `organizationId`, `inviterId`, `expiresAt`, `createdAt` → snake_case |
+
+Extra columns the factory reads: `core_user.github_login` (fill it from the GitHub account on
+sign-in: `.factory/policy.json` names approvers by login) and `core_organization.kind` /
+`github_installation_id`. Member roles `owner` and `admin` are org admins.

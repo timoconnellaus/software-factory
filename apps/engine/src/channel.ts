@@ -14,6 +14,7 @@ import {
   runnerChannelKey,
 } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
+import { secrets } from "./secrets.ts";
 
 export const CHANNEL_PREFIX = "/runner/v1/";
 
@@ -33,7 +34,8 @@ const STATUS: Record<RefusalCode, number> = {
 
 export async function handleChannel(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return Response.json({ error: "POST only" }, { status: 405 });
-  if (!env.RUNNER_CHANNEL_SECRET) {
+  const secret = secrets(env).RUNNER_CHANNEL_SECRET;
+  if (!secret) {
     return Response.json(
       { error: "the runner channel is not configured", code: "unavailable" },
       { status: 503 },
@@ -46,7 +48,7 @@ export async function handleChannel(request: Request, env: Env): Promise<Respons
       .bind(runner)
       .first<{ key_version: number; revoked_at: string | null }>();
     if (!row || row.revoked_at) return null;
-    return runnerChannelKey(env.RUNNER_CHANNEL_SECRET, runner, row.key_version);
+    return runnerChannelKey(secret, runner, row.key_version);
   };
   return handleRunnerCall(
     request,

@@ -28,3 +28,8 @@ Principle: **local sessions can do anything locally, but nothing reaches main ex
 > Lease length is still open. "The factory gate" in the principle means the required
 > `factory/verify` check plus the merge gate ([ADR 0037](0037-factory-verify-pinned-and-sha-bound.md));
 > the hooks step needs the harness's `hooks` capability.
+
+> Amended 2026-11-11 (V1 core + engine): lease length is **10 minutes**, renewed by each runner
+> heartbeat (and `lease.heartbeat` for sessions); a run whose lease lapses is failed by the cron
+> (`run.expire`), which bumps the fencing token. A session's `lease.claim` is refused while another
+> holder's lease is live, unless a person passes `takeover`.

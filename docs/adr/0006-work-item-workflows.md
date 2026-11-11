@@ -29,3 +29,7 @@ Relationship OS ADRs 0028 and 0130.
 > a second event about the same thing attaches to the existing work item instead of deriving a new
 > Workflow id. The kill switch is **per org and per project** ([ADR 0044](0044-kill-switch-scope.md)).
 > Still open: cascade and depth limits.
+
+> Amended 2026-11-11 (V1 core + engine): built as described in [ADR 0110](0110-work-item-workflow-and-gate.md)
+> (promoted) and [ADR 0053](0053-workflow-versioning.md) (versioning). Cascade and depth limit, V1:
+> a factory incident's own failures and send-backs open no further incidents.

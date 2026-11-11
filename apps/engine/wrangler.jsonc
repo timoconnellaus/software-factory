@@ -45,9 +45,9 @@
     "FACTORY_FLOOR": "",
     // "1" swaps the GitHub App for an in-D1 fake (tests and local dev only).
     "GITHUB_FAKE": ""
-  },
-  // Set by the deploy workflow (`wrangler secret bulk`), never committed.
-  "secrets": {
-    "required": ["RUNNER_CHANNEL_SECRET", "GH_APP_PRIVATE_KEY"]
   }
+  // Secrets (set by the deploy workflow with `wrangler secret bulk`, never committed):
+  // RUNNER_CHANNEL_SECRET and GH_APP_PRIVATE_KEY. They are typed in src/secrets.ts rather than with
+  // `secrets.required`, which would make `wrangler deploy` fail until they exist. Without them the
+  // runner channel answers 503 and GitHub calls are refused as `unavailable`.
 }

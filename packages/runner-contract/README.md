@@ -1,5 +1,24 @@
 # @software-factory/runner-contract
 
-The runner contract: the operations a runner adapter implements and its capability manifest. Imports nothing runner-specific.
+The runner contract (ADRs 0014, 0016, 0100, 0052): what a runner adapter implements, the capability
+manifest, the wire shapes of the signed channel (zod), the signing and idempotency helpers, an HTTP
+client for the runner host, and the result each stage hands back. Runtime-neutral (Web APIs + zod);
+it names no runner, and a guard test keeps Orca out of it, `packages/core` and `apps/*`.
 
-Placeholder. See ADRs 0014, 0015 in [`docs/adr/`](../../docs/adr/). Don't invent APIs here ahead of the stage that needs them.
+## The runner host's loop (`local/runner-host`)
+1. `heartbeat` every ~20 s with the manifest, capacity, `rateLimitedUntil` and `activeJobs`
+   (`{ jobId, fencingToken }`): renews each lease (10 min) and returns `cancel` commands for jobs the
+   cloud stopped (cancelled, taken over, kill switch).
+2. `claim { claimId }` when there's room. The `Job` names the run branch (`job.branch`, the only
+   branch it may push), its base (`job.repo.baseRef`, the work item branch), the role and model, the
+   prompt and context, and `lease.fencingToken`.
+3. `token(jobId, fencingToken)`: a fresh GitHub App token for the one repo, `contents: write`. Never
+   cached by the cloud. Give the harness a git credential helper that serves only this token, in a
+   scrubbed environment (no `GH_TOKEN`, SSH agent, cloud credentials). Revoke it when done.
+4. Run the adapter; send `events` and `artifact`s with the fencing token.
+5. Read the stage result from `RESULT_FILE` (`.factory-result.json`, never committed), push the run
+   branch, then `handback { branch, headSha, result }` and `release`.
+6. Any `409` with code `fenced` or `killed`: stop the session, release the workspace, drop the job.
+
+`httpControlPlane({ baseUrl: "https://sf-engine.zerobsai.com", runnerId, key })` implements all of
+these with signed requests and verified responses.

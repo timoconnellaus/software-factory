@@ -33,3 +33,8 @@ enforced in code" only holds in the cloud.
 - A client project whose runner sits on a shared machine needs a separate OS user or container per
   client until per-item grants exist ([ADR 0030](0030-deferred-from-v1.md)).
 - Open: whether the subscription terms of each harness allow unattended or team use of a runner.
+
+> Amended 2026-11-11 (V1 core + engine): the token is fetched by the runner host with its own channel
+> call after the claim (not carried in the job), never stored, and its lifetime is GitHub's fixed hour;
+> branch confinement is rulesets + hand-back validation + the push webhook
+> ([ADR 0052](0052-job-tokens-and-branch-confinement.md)).
