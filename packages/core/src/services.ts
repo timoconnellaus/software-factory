@@ -1,3 +1,5 @@
+import type { AttachmentBlobs } from "./attachments.ts";
+
 // What operations may call outside D1. sf-engine supplies the real ones (the GitHub App, the runner
 // channel secret); tests supply fakes (`@software-factory/core/testing`). Handlers that call a
 // service do it before the batch commits, so every such call must be idempotent.
@@ -147,6 +149,11 @@ export interface GitHubService {
 
 export interface FactoryServices {
   github: GitHubService;
+  /**
+   * Blob storage for work item attachments (ADR 0260): R2 on sf-engine. Absent where nothing
+   * stores files; the attachment operations then refuse with `unavailable`.
+   */
+  attachments?: AttachmentBlobs;
   /** The app's public URL (`PUBLIC_BASE_URL`), for links GitHub shows (the check's details). */
   publicBaseUrl?: string;
   /**

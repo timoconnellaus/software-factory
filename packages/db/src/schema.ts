@@ -580,6 +580,24 @@ export interface CoreRunnerDeviceCodesTable {
   consumed_at: Iso | null;
 }
 
+// ---- 0070: work item attachments (ADR 0260) ----
+
+export interface CoreAttachmentsTable {
+  id: string;
+  work_item_id: string;
+  org_id: string;
+  project_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  /** `<org>/<work item>/<attachment id>` in the ATTACHMENTS bucket. */
+  blob_key: string;
+  uploader_type: string;
+  uploader_id: string;
+  created_at: Iso;
+}
+
 /** Every core table, for `Kysely<CoreDatabase>`. */
 export interface CoreDatabase {
   core_meta: CoreMetaTable;
@@ -619,4 +637,5 @@ export interface CoreDatabase {
   core_github_installations: CoreGithubInstallationsTable;
   core_github_connect_states: CoreGithubConnectStatesTable;
   core_runner_device_codes: CoreRunnerDeviceCodesTable;
+  core_attachments: CoreAttachmentsTable;
 }
