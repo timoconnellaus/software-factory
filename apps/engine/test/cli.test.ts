@@ -64,6 +64,10 @@ describe("the sf CLI door (/cli/v1)", () => {
     expect(await json(inbox)).toHaveProperty("result");
     const projects = await callOp(token, "project.list", { orgId: w.orgId });
     expect(projects.status).toBe(200);
+    const orgs = await json<{ result: { orgs: { id: string; role: string }[] } }>(
+      await callOp(token, "org.list", {}),
+    );
+    expect(orgs.result.orgs).toEqual([expect.objectContaining({ id: w.orgId, role: "owner" })]);
 
     const create = await callOp(token, "workItem.create", {
       projectId: w.projectId,
@@ -96,6 +100,10 @@ describe("the sf CLI door (/cli/v1)", () => {
     });
     expect(created.status).toBe(200);
     const { result } = await json<{ result: { workItemId: string } }>(created);
+    const found = await json<{ result: { items: { id: string }[] } }>(
+      await callOp(token, "workItem.list", { projectId: w.projectId, number: 1 }),
+    );
+    expect(found.result.items.map((i) => i.id)).toEqual([result.workItemId]);
     // Audited as the person, on the cli surface (criterion 4).
     const audited = await first<{ origin: string; actor_type: string; actor_id: string }>(
       "SELECT origin, actor_type, actor_id FROM core_audit WHERE operation = 'workItem.create' AND work_item_id = ?",

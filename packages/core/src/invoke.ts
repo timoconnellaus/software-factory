@@ -222,6 +222,7 @@ export async function runOperation<O = unknown>(
       new OperationError(
         "forbidden",
         `${op.name} is a decision you make in the app, not from ${origin.surface} (ADR 0340)`,
+        { browserOnly: true },
       ),
     );
   }

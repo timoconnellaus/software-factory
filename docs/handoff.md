@@ -164,6 +164,7 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   `show`, `timeline`, `queue`, `new`, `attach`, `cancel`, `open`. See its README.
 - `sf-engine` `/cli/v1`: `device/start`, `device/poll` (unsigned, as `CLI_DEVICE_ACTOR`), `call`
   (Bearer `sfc_…`; actor `human`, surface `cli`; a `read` token reaches only `read`-risk ops), `ops`.
+- New reads the CLI needs: `org.list` (your orgs and role) and `workItem.list { number }`.
 - Operations: `cli.deviceStart/devicePoll/deviceLookup/approveDevice/denyDevice`,
   `cliToken.list/revoke`; migration 0110 (`core_cli_device_codes`, `core_cli_tokens`, hashes only).
   The app approves codes at `/cli/connect`, where the person picks the scope.

@@ -23,6 +23,7 @@ import * as workItems from "./operations/work-items.ts";
 export const OPERATIONS: readonly AnyOperation[] = [
   projects.projectCreate,
   projects.projectList,
+  projects.orgList,
   projects.projectUpdate,
   projects.policySync,
   projects.killSwitchSet,

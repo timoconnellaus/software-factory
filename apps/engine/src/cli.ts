@@ -110,7 +110,10 @@ async function run(
         {
           error: error.message,
           code: error.code,
-          ...(error.code === "invalid_input" ? { details: error.details } : {}),
+          ...(error.code === "invalid_input" ||
+          (error.code === "forbidden" && error.details !== undefined)
+            ? { details: error.details }
+            : {}),
         },
         STATUS[error.code],
       );
