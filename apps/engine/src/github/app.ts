@@ -15,6 +15,7 @@ import {
   type InstallationInfo,
   type InstallationRepo,
   OperationError,
+  type PullRequestInfo,
   type RepoGuards,
   type RepoRef,
 } from "@software-factory/core";
@@ -352,6 +353,17 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       const pr = r.json as { number: number; html_url: string };
       return { number: pr.number, url: pr.html_url };
     },
+    async getPullRequest(repo, number) {
+      const r = await api(repo, "GET", `/pulls/${number}`);
+      if (r.status === 404) return null;
+      if (r.status !== 200) fail(`read PR #${number}`, r);
+      return pullInfo(r.json as GitHubPull);
+    },
+    async listOpenPullRequests(repo) {
+      const r = await api(repo, "GET", "/pulls?state=open&sort=created&direction=desc&per_page=100");
+      if (r.status !== 200) fail("list open PRs", r);
+      return ((r.json as GitHubPull[] | null) ?? []).map(pullInfo);
+    },
     async mergePullRequest(repo, { number, sha, method }) {
       const r = await api(repo, "PUT", `/pulls/${number}/merge`, { sha, merge_method: method });
       if (r.status === 200) return { merged: true, sha: (r.json as { sha: string }).sha };
@@ -649,4 +661,35 @@ function b64url(input: string | Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** The fields of GitHub's pull request object the factory reads. */
+interface GitHubPull {
+  number: number;
+  html_url: string;
+  title: string;
+  body: string | null;
+  state: "open" | "closed";
+  merged?: boolean;
+  merged_at?: string | null;
+  draft?: boolean;
+  user?: { login: string } | null;
+  head: { ref: string; sha: string; repo: { full_name: string } | null };
+  base: { ref: string };
+}
+
+function pullInfo(p: GitHubPull): PullRequestInfo {
+  return {
+    number: p.number,
+    url: p.html_url,
+    title: p.title,
+    body: p.body ?? "",
+    state: p.state,
+    // The list endpoint has no `merged`; `merged_at` says the same.
+    merged: p.merged ?? Boolean(p.merged_at),
+    draft: p.draft ?? false,
+    author: p.user?.login ?? null,
+    head: { ref: p.head.ref, sha: p.head.sha, repo: p.head.repo?.full_name ?? null },
+    base: { ref: p.base.ref },
+  };
 }

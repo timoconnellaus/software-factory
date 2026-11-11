@@ -54,6 +54,8 @@ function unavailableGitHub(): FactoryServices["github"] {
     openPullRequest: no,
     changedFiles: no,
     mergePullRequest: no,
+    getPullRequest: no,
+    listOpenPullRequests: no,
     compareFiles: no,
     readFile: no,
     listCheckRuns: no,

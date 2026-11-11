@@ -29,16 +29,41 @@ describe("routing GitHub App webhooks", () => {
         },
       ]);
     }
-    const closed = routeGitHubEvent(
+    const labeled = routeGitHubEvent(
       "pull_request",
       {
-        action: "closed",
+        action: "labeled",
         repository,
         pull_request: { number: 7, head: { sha: sha("a"), ref: "x" }, base: { ref: "main" } },
       },
       SLUG,
     );
-    expect(closed).toMatchObject({ calls: [], ignored: "pull_request closed" });
+    expect(labeled).toMatchObject({ calls: [], ignored: "pull_request labeled" });
+  });
+
+  it("tells verify.refresh when a PR closes, and whether it merged (spec 05)", () => {
+    const close = (merged: boolean) =>
+      routeGitHubEvent(
+        "pull_request",
+        {
+          action: "closed",
+          repository,
+          pull_request: {
+            number: 7,
+            merged,
+            head: { sha: sha("a"), ref: "tim/x" },
+            base: { ref: "main" },
+          },
+        },
+        SLUG,
+      ).calls;
+    expect(close(false)).toEqual([
+      {
+        op: "verify.refresh",
+        input: { repo, headSha: sha("a"), prNumber: 7, trigger: "closed", merged: false },
+      },
+    ]);
+    expect(close(true)[0]?.input).toMatchObject({ trigger: "closed", merged: true });
   });
 
   it("re-evaluates when CI's check suite completes, but never for the factory's own checks", () => {

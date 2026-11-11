@@ -13,6 +13,8 @@ import { approverIds } from "../scope.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { protectionDrift } from "./protection.ts";
 import {
+  ATTACHED_SKIP_REASON,
+  cancelWorkItem,
   createWorkItem,
   projectId,
   requireProject,
@@ -39,7 +41,7 @@ const itemSummary = z.object({
   orgId: z.string(),
   number: z.number(),
   title: z.string(),
-  kind: z.enum(["change", "incident"]),
+  kind: z.enum(["change", "incident", "attached"]),
   stage: z.enum(STAGES),
   status: z.enum(ITEM_STATUSES),
   statusReason: z.string().nullable(),
@@ -607,76 +609,7 @@ export const workItemCancel = defineOperation({
       }
     }
     if (!["running", "waiting", "paused"].includes(w.status)) return { cancelled: false };
-    ctx.write(
-      ctx.db
-        .updateTable("core_work_items")
-        .set({
-          status: "cancelled",
-          status_reason: input.reason,
-          closed_at: ctx.now,
-          updated_at: ctx.now,
-        })
-        .where("id", "=", w.id),
-    );
-    ctx.write(
-      ctx.db
-        .updateTable("core_stages")
-        .set({ status: "cancelled", ended_at: ctx.now, reason: input.reason })
-        .where("work_item_id", "=", w.id)
-        .where("status", "=", "active"),
-    );
-    ctx.write(
-      ctx.db
-        .updateTable("core_jobs")
-        .set({ status: "cancelled", finished_at: ctx.now })
-        .where("work_item_id", "=", w.id)
-        .where("status", "in", ["queued", "claimed"]),
-    );
-    ctx.write(
-      ctx.db
-        .updateTable("core_runs")
-        .set({ status: "cancelled", outcome: "cancelled", ended_at: ctx.now })
-        .where("work_item_id", "=", w.id)
-        .where("status", "in", ["claimed", "preparing", "running", "collecting"]),
-    );
-    ctx.write(
-      ctx.db
-        .updateTable("core_leases")
-        .set((eb) => ({
-          fencing_token: eb("fencing_token", "+", 1),
-          holder_kind: null,
-          holder_id: null,
-          released_at: ctx.now,
-        }))
-        .where("work_item_id", "=", w.id),
-    );
-    ctx.write(
-      ctx.db
-        .updateTable("core_pending_actions")
-        .set({
-          status: "rejected",
-          decision: "rejected",
-          decided_at: ctx.now,
-          decided_by: ctx.actor.id,
-          note: "work item cancelled",
-        })
-        .where("work_item_id", "=", w.id)
-        .where("status", "=", "pending"),
-    );
-    ctx.write(
-      ctx.db
-        .updateTable("core_questions")
-        .set({ status: "withdrawn" })
-        .where("work_item_id", "=", w.id)
-        .where("status", "=", "open"),
-    );
-    ctx.emit({ kind: "workflow.terminate", payload: { instanceId: w.workflow_id } });
-    ctx.change({
-      entity: "work_item",
-      id: w.id,
-      before: { status: w.status },
-      after: { status: "cancelled" },
-    });
+    cancelWorkItem(ctx, w, input.reason);
     return { cancelled: true };
   },
 });
@@ -699,7 +632,11 @@ export const workItemTriage = defineOperation({
     const w = requireWorkItem(ctx);
     const policy = ctx.scope.policy;
     if (!policy) throw new OperationError("denied", "no valid policy");
-    const decision = specRequired(policy, input.result.size, input.result.specRequested);
+    // An attached PR is already built: spec and build are skipped whatever its size (spec 05).
+    const decision =
+      w.kind === "attached"
+        ? { required: false, reason: ATTACHED_SKIP_REASON }
+        : specRequired(policy, input.result.size, input.result.specRequested);
     const reason = `${decision.reason}. Triage: ${input.result.reason}`;
     const specId = newId("spec");
     const criteria = input.result.acceptanceCriteria;

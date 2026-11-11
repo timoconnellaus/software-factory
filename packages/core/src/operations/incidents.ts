@@ -18,6 +18,9 @@ export async function openIncident(
 ): Promise<{ incidentId: string; fixWorkItemId: string; rootCause: string } | null> {
   const w = requireWorkItem(ctx);
   if (w.kind === "incident") return null;
+  // An attached PR was built outside the factory: sending it back is review of a person's work, not
+  // a factory failure (spec 05, ADR 0290). Its verify runs failing still are.
+  if (w.kind === "attached" && input.kind === "sent_back") return null;
   const project = requireProject(ctx);
   const incidentId = newId("incident");
   const { rootCause, proposedFix } = classifyIncident({ ...input, incidentId });

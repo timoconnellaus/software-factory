@@ -13,7 +13,8 @@ export const questionsEvent = (workItemId: string, round: number) =>
   `questions-${workItemId}-${round}`;
 
 export interface GateEventPayload {
-  decision: "approved" | "rejected" | "changes_requested" | "sent_back";
+  /** `withdrawn`: an attached PR's head moved while its merge gate was open (spec 05). */
+  decision: "approved" | "rejected" | "changes_requested" | "sent_back" | "withdrawn";
   note: string | null;
   by: string;
 }
@@ -29,3 +30,10 @@ export interface RunEventPayload {
  * `{ state }`. The Workflow re-reads CI after it, so a missed or early event only costs a timeout.
  */
 export const ciEvent = (workItemId: string, sha: string) => `ci-${workItemId}-${sha}`;
+
+/**
+ * An attached PR's head changed (spec 05): `verify.refresh` saw a push to it and recorded the new
+ * `head_sha`. Payload `{ headSha }`. The same type repeats per push, so the Workflow re-reads the
+ * item's head after waking and waits again when it hasn't moved.
+ */
+export const prHeadEvent = (workItemId: string) => `pr-head-${workItemId}`;

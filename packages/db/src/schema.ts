@@ -180,6 +180,8 @@ export type WorkItemStatus =
   | "rejected"
   | "cancelled";
 export type Size = "small" | "medium" | "large";
+/** `attached`: a PR opened outside the factory, verified and merged by it (spec 05). */
+export type WorkItemKind = "change" | "incident" | "attached";
 
 export interface CoreWorkItemsTable {
   id: string;
@@ -189,7 +191,7 @@ export interface CoreWorkItemsTable {
   slug: string;
   title: string;
   body: Generated<string>;
-  kind: Generated<"change" | "incident">;
+  kind: Generated<WorkItemKind>;
   requester_user_id: string;
   source: string;
   stage: Generated<Stage>;
@@ -310,7 +312,8 @@ export interface CorePendingActionsTable {
   input: JsonText;
   reason: string | null;
   status: Generated<PendingActionStatus>;
-  decision: GateDecisionKind | null;
+  /** `withdrawn`: an attached PR's head moved while its merge gate was open (spec 05). */
+  decision: GateDecisionKind | "withdrawn" | null;
   assignee_user_id: string | null;
   escalations: Generated<number>;
   timeout_at: Iso | null;

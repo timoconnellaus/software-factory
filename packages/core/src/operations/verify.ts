@@ -16,9 +16,15 @@ import type { ChangedFile, RepoRef } from "../services.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import { assemblePacket, verifyCheckOutput } from "../verify/packet.ts";
-import { ciEvent } from "../workflow-events.ts";
+import {
+  approvalEvent,
+  ciEvent,
+  type GateEventPayload,
+  prHeadEvent,
+} from "../workflow-events.ts";
 import { inspectProtection } from "./protection.ts";
 import {
+  cancelWorkItem,
   projectForRepo,
   projectId,
   repoName,
@@ -41,13 +47,15 @@ async function readCi(ctx: HandlerContext, repo: RepoRef, headSha: string): Prom
  * without `checks: write`, an outage) is returned, not thrown: the packet still records, and the
  * required check simply stays unpassed.
  */
-async function postVerify(
+export async function postVerify(
   ctx: HandlerContext,
   args: {
     project: ProjectRow;
     repo: RepoRef;
     headSha: string;
-    item: WorkItemRow | null;
+    item: Pick<WorkItemRow, "id" | "pr_number"> | null;
+    /** The check's Details link, under the app's URL, when there is no item to link to. */
+    detailsPath?: string;
     prNumber: number | null;
     packetId: string | null;
     output: {
@@ -75,7 +83,11 @@ async function postVerify(
       ...(args.output.conclusion ? { conclusion: args.output.conclusion } : {}),
       title: args.output.title,
       summary: args.output.summary,
-      ...(base && args.item ? { detailsUrl: `${base}/work/${args.item.id}` } : {}),
+      ...(base && args.item
+        ? { detailsUrl: `${base}/work/${args.item.id}` }
+        : base && args.detailsPath
+          ? { detailsUrl: `${base}${args.detailsPath}` }
+          : {}),
       ...(args.item ? { externalId: args.item.id } : {}),
       checkRunId,
     });
@@ -260,7 +272,7 @@ export const ciRead = defineOperation({
 export const verifyRefresh = defineOperation({
   name: "verify.refresh",
   description:
-    "Re-evaluate `factory/verify` for one commit of a project's repo, from the newest review packet for it and CI as it stands on GitHub (ADR 0037). Called by the GitHub connector when a PR opens or gets a new push, when a check suite completes, or when someone re-runs the check. A new head with no packet yet is left without a passing check; a PR the factory didn't open fails until it is attached to a work item (spec 04, criterion 3). Wakes a Workflow waiting on CI.",
+    "Re-evaluate `factory/verify` for one commit of a project's repo, from the newest review packet for it and CI as it stands on GitHub (ADR 0037). Called by the GitHub connector when a PR opens or gets a new push, when a check suite completes, or when someone re-runs the check. A new head with no packet yet is left without a passing check; a PR the factory didn't open fails until it is attached to a work item (spec 04, criterion 3), and its check links to the app's `/attach` page (spec 05). For an attached PR, a new push records the new head, withdraws a pending merge gate and wakes the Workflow to verify again; closing it without merging cancels its item. Wakes a Workflow waiting on CI.",
   risk: "write",
   actors: ["intake", "agent"],
   permission: "signed-in",
@@ -269,10 +281,12 @@ export const verifyRefresh = defineOperation({
     repo: repoName,
     headSha: z.string().regex(/^[0-9a-f]{40}$/),
     prNumber: z.number().int().positive().nullable().default(null),
-    trigger: z.enum(["pull_request", "ci", "rerequested"]),
+    trigger: z.enum(["pull_request", "ci", "rerequested", "closed"]),
+    /** With `closed`: whether the PR was merged. */
+    merged: z.boolean().default(false),
   }),
   output: z.object({
-    outcome: z.enum(["posted", "unattached", "ignored"]),
+    outcome: z.enum(["posted", "unattached", "ignored", "cancelled"]),
     workItemId: z.string().nullable(),
     status: z.string().nullable(),
     conclusion: z.string().nullable(),
@@ -282,6 +296,40 @@ export const verifyRefresh = defineOperation({
   async handler(input, ctx) {
     const project = requireProject(ctx);
     const repo = await repoRef(ctx, project);
+    const none = { workItemId: null, status: null, conclusion: null, ciState: null };
+    const byPr = async () =>
+      input.prNumber
+        ? ((await ctx.db
+            .selectFrom("core_work_items")
+            .selectAll()
+            .where("project_id", "=", project.id)
+            .where("pr_number", "=", input.prNumber)
+            .orderBy("updated_at", "desc")
+            .executeTakeFirst()) ?? null)
+        : null;
+
+    if (input.trigger === "closed") {
+      // Only an attached PR's item ends with its PR; the factory's own items end in the Workflow.
+      const item = await byPr();
+      if (
+        !item ||
+        item.kind !== "attached" ||
+        input.merged ||
+        !["running", "waiting", "paused"].includes(item.status)
+      ) {
+        return { outcome: "ignored" as const, ...none, workItemId: item?.id ?? null };
+      }
+      ctx.subject({ workItemId: item.id });
+      cancelWorkItem(ctx, item, "the pull request was closed without merging");
+      return { outcome: "cancelled" as const, ...none, workItemId: item.id };
+    }
+
+    const existing = await ctx.db
+      .selectFrom("core_verify_checks")
+      .select(["status", "work_item_id"])
+      .where("project_id", "=", project.id)
+      .where("head_sha", "=", input.headSha)
+      .executeTakeFirst();
     let item =
       (await ctx.db
         .selectFrom("core_work_items")
@@ -290,23 +338,16 @@ export const verifyRefresh = defineOperation({
         .where("head_sha", "=", input.headSha)
         .orderBy("updated_at", "desc")
         .executeTakeFirst()) ?? null;
-    if (!item && input.prNumber) {
+    item ??= await byPr();
+    if (!item && existing?.work_item_id) {
+      // An earlier head of an item: its check stays what its own packet says (ADR 0037).
       item =
         (await ctx.db
           .selectFrom("core_work_items")
           .selectAll()
-          .where("project_id", "=", project.id)
-          .where("pr_number", "=", input.prNumber)
-          .orderBy("updated_at", "desc")
+          .where("id", "=", existing.work_item_id)
           .executeTakeFirst()) ?? null;
     }
-    const existing = await ctx.db
-      .selectFrom("core_verify_checks")
-      .select(["status"])
-      .where("project_id", "=", project.id)
-      .where("head_sha", "=", input.headSha)
-      .executeTakeFirst();
-    const none = { workItemId: null, status: null, conclusion: null, ciState: null };
 
     if (!item) {
       if (!input.prNumber && !existing) return { outcome: "ignored" as const, ...none };
@@ -315,14 +356,20 @@ export const verifyRefresh = defineOperation({
         conclusion: "failure" as const,
         title: "Not attached to a factory work item",
         summary:
-          "This pull request wasn't opened by the factory, so nothing has verified it. Attach it to a work item (or file one) and the factory will verify this commit. Nothing reaches the default branch except through `factory/verify` (ADR 0020, 0021).",
+          "This pull request wasn't opened by the factory, so nothing has verified it. Attach it to a work item (Details → **Attach and verify**) and the factory will verify this commit. Nothing reaches the default branch except through `factory/verify` (ADR 0020, 0021).",
       };
+      const prNumber = input.prNumber ?? null;
       await postVerify(ctx, {
         project,
         repo,
         headSha: input.headSha,
         item: null,
-        prNumber: input.prNumber,
+        ...(prNumber
+          ? {
+              detailsPath: `/attach?repo=${encodeURIComponent(`${project.repo_owner}/${project.repo_name}`)}&pr=${prNumber}`,
+            }
+          : {}),
+        prNumber,
         packetId: null,
         output,
       });
@@ -335,6 +382,22 @@ export const verifyRefresh = defineOperation({
       };
     }
     ctx.subject({ workItemId: item.id });
+
+    if (
+      item.kind === "attached" &&
+      input.trigger === "pull_request" &&
+      input.prNumber !== null &&
+      input.prNumber === item.pr_number &&
+      item.head_sha !== input.headSha &&
+      ["running", "waiting", "paused"].includes(item.status)
+    ) {
+      // A push to an attached PR (spec 05). GitHub says what the head is now, so a late delivery
+      // for an older push can't move the item back.
+      const pr = await ctx.services.github.getPullRequest(repo, input.prNumber);
+      if (pr?.state === "open" && pr.head.sha === input.headSha) {
+        item = await moveAttachedHead(ctx, item, input.headSha);
+      }
+    }
 
     const ci = await readCi(ctx, repo, input.headSha);
     const packet = await ctx.db
@@ -411,6 +474,84 @@ export const verifyRefresh = defineOperation({
     };
   },
 });
+
+/**
+ * Records an attached PR's new head (spec 05): the item runs again, a merge gate still open for
+ * the old head is withdrawn (its approval can no longer merge anything), and the Workflow is woken
+ * with `pr-head-<item>` to verify the new head. Returns the item as it now stands.
+ */
+async function moveAttachedHead(
+  ctx: HandlerContext,
+  item: WorkItemRow,
+  headSha: string,
+): Promise<WorkItemRow> {
+  const gates = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select(["id", "workflow_id"])
+    .where("work_item_id", "=", item.id)
+    .where("kind", "=", "merge")
+    .where("status", "=", "pending")
+    .execute();
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set((eb) => ({
+        head_sha: headSha,
+        status: eb
+          .case()
+          .when("status", "=", "waiting")
+          .then("running" as const)
+          .else(eb.ref("status"))
+          .end(),
+        status_reason: eb
+          .case()
+          .when("status", "=", "waiting")
+          .then(null)
+          .else(eb.ref("status_reason"))
+          .end(),
+        updated_at: ctx.now,
+      }))
+      .where("id", "=", item.id),
+  );
+  const note = `withdrawn: the pull request's head moved to ${headSha.slice(0, 7)}, so the factory verifies it again`;
+  ctx.write(
+    ctx.db
+      .updateTable("core_pending_actions")
+      .set({
+        status: "rejected",
+        decision: "withdrawn",
+        decided_at: ctx.now,
+        decided_by: ctx.actor.id,
+        note,
+      })
+      .where("work_item_id", "=", item.id)
+      .where("kind", "=", "merge")
+      .where("status", "=", "pending"),
+  );
+  for (const gate of gates) {
+    if (!gate.workflow_id) continue;
+    const payload: GateEventPayload = { decision: "withdrawn", note, by: ctx.actor.id };
+    ctx.emit({
+      kind: "workflow.event",
+      payload: { instanceId: gate.workflow_id, type: approvalEvent(gate.id), payload: { ...payload } },
+    });
+  }
+  ctx.emit({
+    kind: "workflow.event",
+    payload: { instanceId: item.workflow_id, type: prHeadEvent(item.id), payload: { headSha } },
+  });
+  ctx.change({
+    entity: "work_item",
+    id: item.id,
+    before: { headSha: item.head_sha },
+    after: { headSha, reason: "a push to the attached pull request" },
+  });
+  return {
+    ...item,
+    head_sha: headSha,
+    status: item.status === "waiting" ? "running" : item.status,
+  };
+}
 
 export const prAutoMerge = defineOperation({
   name: "pr.autoMerge",

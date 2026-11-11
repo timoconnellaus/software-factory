@@ -1,3 +1,4 @@
+export * from "./attach.ts";
 export * from "./connector.ts";
 export * from "./devices.ts";
 export * from "./gates.ts";

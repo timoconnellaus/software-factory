@@ -111,6 +111,22 @@ export interface InstallationRepo {
 }
 
 /** The GitHub App, acting as the factory (ADR 0025, 0033). Never a user token. */
+/** A pull request as GitHub reports it. */
+export interface PullRequestInfo {
+  number: number;
+  url: string;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  merged: boolean;
+  draft: boolean;
+  /** The author's login. */
+  author: string | null;
+  /** `repo` is the head repository's `owner/name` (a fork's differs); null when it was deleted. */
+  head: { ref: string; sha: string; repo: string | null };
+  base: { ref: string };
+}
+
 export interface GitHubService {
   /** The App itself: its id (branch protection pins `factory/verify` to it) and slug (`<slug>[bot]`). */
   readonly app: { id: string; slug: string };
@@ -179,6 +195,10 @@ export interface GitHubService {
   repoPermission(repo: RepoRef, login: string): Promise<string | null>;
   /** The App's subscribed events and permissions (`GET /app`, its JWT). */
   appSettings(): Promise<AppSettings>;
+  /** One pull request, or null when it doesn't exist (spec 05: attaching an outside PR). */
+  getPullRequest(repo: RepoRef, number: number): Promise<PullRequestInfo | null>;
+  /** The repo's open pull requests, newest first (at most 100). */
+  listOpenPullRequests(repo: RepoRef): Promise<PullRequestInfo[]>;
   /** Merges the PR if its head is still `sha`. */
   mergePullRequest(
     repo: RepoRef,
