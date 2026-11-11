@@ -9,6 +9,7 @@ import * as github from "./operations/github.ts";
 import * as incidents from "./operations/incidents.ts";
 import * as onboarding from "./operations/onboarding.ts";
 import * as projects from "./operations/projects.ts";
+import * as protection from "./operations/protection.ts";
 import * as questions from "./operations/questions.ts";
 import * as runners from "./operations/runners.ts";
 import * as specs from "./operations/specs.ts";
@@ -27,6 +28,9 @@ export const OPERATIONS: readonly AnyOperation[] = [
   onboarding.policyResync,
   onboarding.policyProposeTemplate,
   onboarding.setupStatus,
+  protection.protectionRuleset,
+  protection.protectionCheck,
+  protection.protectionObserve,
   workItems.workItemCreate,
   workItems.workItemList,
   workItems.workItemGet,
