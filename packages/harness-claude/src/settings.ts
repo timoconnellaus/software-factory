@@ -26,7 +26,17 @@ export const PLANNING_MCP_SERVER = "planning";
 export const RUN_SETTINGS_FILE = "claude-settings.json";
 
 /** Files the harness writes into the worktree that must never be committed or pushed. */
-export const PRIVATE_WORKTREE_FILES = [SETTINGS_FILE, RESULT_FILE] as const;
+/**
+ * The job's full prompt, written into the worktree (kept out of git) so the terminal only ever
+ * carries one short line pointing at it (incident 2026-11-11 #8: a multi-kilobyte prompt pasted
+ * into the Claude terminal arrived with only its tail).
+ */
+export const PROMPT_FILE = ".factory-prompt.md";
+
+/** The one line typed into the agent's terminal: short, no newlines, nothing to truncate. */
+export const PROMPT_POINTER = `Your instructions for this job are in ${PROMPT_FILE} at the repository root. Read the whole file first, then follow it exactly.`;
+
+export const PRIVATE_WORKTREE_FILES = [SETTINGS_FILE, RESULT_FILE, PROMPT_FILE] as const;
 
 /** Claude Code permission modes the factory uses (ADR 0270). */
 export type PermissionMode = HarnessPermissionMode;

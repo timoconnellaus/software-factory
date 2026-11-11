@@ -2,7 +2,7 @@
 
 The first factory incidents. They were found by hand while setting up V1 on production (the app's
 Setup page and the M5 runner), not opened by `incident.open`, because the factory wasn't running yet.
-There are six (the fifth and sixth were found during the first real job). Each has the root-cause class the incident flow uses (`packages/core/src/incidents/classify.ts`)
+There are eight (the fifth to eighth were found during the first real jobs). Each has the root-cause class the incident flow uses (`packages/core/src/incidents/classify.ts`)
 and what in `.factory/` or the specs would have caught it. The first four are fixed on branch `bootstrap-fixes`, the fifth on `runner-orca-resolve-repo`, the sixth on `harness-permission-mode`.
 
 | # | What happened | Root cause class | Fixed by |
@@ -13,6 +13,8 @@ and what in `.factory/` or the specs would have caught it. The first four are fi
 | 4 | `sf-runner install` captured the shell's Node 22 into the launchd plist | `runner` | `install` refuses Node < 24 with the fix, pins the absolute Node path and puts its directory first on `PATH` |
 | 5 | The runner added a second Orca repo for `software-factory` next to the owner's, and churned a new one per job | `missing-check` (spec gap) | ADR 0260: jobs run in the existing Orca repo found by canonical identity; clone-once fallback; startup migration; `sf-runner doctor --fix` (branch `runner-orca-resolve-repo`) |
 | 6 | The job's Claude ran with `--permission-mode auto` although the factory projected `dontAsk`: the launcher added the owner's own mode, and a CLI flag beats a settings file | `runner` (launcher override + missing post-launch verification) | ADR 0270: the harness owns its launch command (no user settings, its own mode), the sandbox in every stage, the live process verified before the prompt, `harness-config-mismatch` kills and fails the job; `sf-runner doctor` checks running jobs (branch `harness-permission-mode`) |
+| 7 | Work item #1's PR conflicted with `main` from the start, so GitHub ran no CI; verify read "no CI" as a build failure and the retries couldn't fix it | `missing-check` (spec gap) | ADR 0320: branches merge the default branch before build, a conflict is its own state, missing CI asks a person (Workflow v3); then the merge queue (ADR 0330) |
+| 8 | Every job since #24 ran on the tail of its prompt: typed into the Claude terminal, a multi-kilobyte prompt arrived truncated | `runner` (prompt transport) | The prompt goes in `.factory-prompt.md` in the worktree; the terminal gets one short pointer line; `runner-sends-the-prompt-as-a-file` check |
 
 ## 1. A project couldn't be fixed after creation
 **What happened.** The installation lookup failed (incident 2), Setup showed a toast that disappeared, and
@@ -244,6 +246,47 @@ off) would have shown both. Both now exist in `apps/engine/test/verify-flow.test
 
 No `evals/regressions/` case: like the other bootstrap incidents, it has no `inc_` id. Incident
 item #2 can be cancelled, because its cause is fixed here.
+
+## 8. Agents received only the tail of their prompts
+**What happened.** Found with the new `sf` CLI (`sf show 1`, `sf show 2`) the day after. Every job
+since #24 merged (07:15) ran on a fragment of its prompt:
+- **Work item #1's last build** received only `viewer should know (optional)" }` and a closing fence,
+  the last line of the build prompt's result-file footer. It asked whether the message had been cut
+  off, wrote no result file, and the item used up its last retry.
+- **Incident item #2's three triage runs** each said the prompt "starts mid-sentence" (`…ay ask to
+  skip or require a spec`). They wrote no result, so triage failed three times.
+- **Attached PR #31's triage** judged the PR from the diff alone, because the title and body never
+  arrived.
+
+Runs before 07:15 (#1's triage, spec, first build and verify) got their whole prompts.
+
+**Root cause (`runner`: the prompt's transport).**
+- **The transport changed.** #24 (ADR 0270) stopped launching Claude with `orca agent launch --prompt`.
+  The runner now starts the harness's own command in an Orca terminal, verifies the live process, and
+  then types the prompt with `orca terminal send --text <prompt> --enter`. A multi-kilobyte prompt
+  typed into the Claude terminal arrives with only its tail.
+- **Nothing checked what arrived.** The adapter's tests covered the order (send after verify) but
+  not what the agent received. In production, what it received was a fragment.
+
+**Fix.**
+- **The prompt travels as a file.** The adapter writes `job.harness.prompt` to `.factory-prompt.md`
+  in the job's worktree, excluded from git like `.factory-result.json` (`PRIVATE_WORKTREE_FILES`).
+- **The terminal gets one short line,** harness-claude's `PROMPT_POINTER`: "Your instructions for
+  this job are in .factory-prompt.md at the repository root. Read the whole file first, then follow
+  it exactly."
+- The live-process check still runs before the pointer is sent.
+- **Test:** the terminal receives only the pointer, the file holds the prompt exactly, and the file
+  is excluded from git.
+- **Rolling it out:** the M5's runner must be updated (`git pull`, then `sf-runner install` when no
+  job is running) for this to take effect.
+
+**What would have caught it.** Two things:
+- **A rule:** never type a job's prompt into a terminal; send it as a file. It is in
+  `.factory/checks/runner-adapters.md`, with `runner-sends-the-prompt-as-a-file.json`, which flags
+  the old adapter.
+- **A smoke check:** the factory reading back what an agent was given. Whenever an agent's summary
+  says its message was cut off, the run should fail as `runner`, not as the build. That isn't built
+  yet.
 
 ## Follow-ups (not done here)
 - ~~Add the spec-template rules from 1 and 3 when the stage-spec template is next touched.~~ Done
