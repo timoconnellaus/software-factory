@@ -43,7 +43,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #13 | V1 step 1, core + engine: `core_*` schema, operations + `invoke()` + gate, the work-item Workflow, the signed runner channel, GitHub App job tokens. ADRs 0050–0054; spike ADRs 0100 and 0110 promoted |
 | #14 | V1 step 3, the runner: `local/runner-host` (`sf-runner`: heartbeat, claim, the job lifecycle, run-branch push with the job token, launchd), `packages/runner-orca`, `packages/harness-claude` (per-run settings, no owner credentials). ADR 0250. Verified end to end against a local engine |
 | #15 | V1 step 4, verify + GitHub connector + incidents: review-packet assembly from CI on the head SHA, `factory/verify` per SHA, the App webhook (`/webhooks/github`), branch confinement (ruleset + push validation), Workflow v2, incident root causes, the check-only auto-merge (ADR 0230), the evals regression suite. ADRs 0230–0231, migration 0040 |
-| V1-2 | V1 step 2, the app: `sf-app` on TanStack Start + shadcn (`packages/ui`), GitHub sign-in for the allowlisted login with a Personal org, Inbox + runner health line, New work, work item detail with the Planning tab, the review packet (Merge / Send back), Setup (project, policy sync, runner keys). ADR 0240 |
+| #16 | V1 step 2, the app: `sf-app` on TanStack Start + shadcn (`packages/ui`), GitHub sign-in for the allowlisted login with a Personal org, Inbox + runner health line, New work, work item detail with the Planning tab, the review packet (Merge / Send back), Setup (project, policy sync, runner keys). ADR 0240 |
 
 ## In flight
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
