@@ -77,7 +77,7 @@ by tests (`apps/app/test/lib.test.ts`, `local/runner-host/test/pairing.test.ts`)
 
 **What would have caught it.** A spec rule: *any text a person carries from one component to another
 is specified verbatim in the spec, and both ends are tested against that string.* A regression case
-for `evals/regressions/` belongs with the first `.factory/checks/` (V1 step 5), e.g. a check that
+for `evals/regressions/` belongs with the first `.factory/checks/`, e.g. a check that
 forbids `writeText(\`runner id:` in `apps/app/src`.
 
 ## 4. The launchd service pinned Node 22
@@ -96,5 +96,5 @@ command that depends on it. It belongs in the runner-host spec's acceptance crit
 
 ## Follow-ups (not done here)
 - Add the spec-template rules from 1 and 3 when the stage-spec template is next touched.
-- Add the agent-context line from 2 to `.factory/` when V1 step 5 creates it.
+- Add the agent-context line from 2 and the check from 3 under `.factory/` (only `policy.json` exists so far, #17).
 - Add a post-deploy setup smoke step (2) to `docs/deploying.md`.
