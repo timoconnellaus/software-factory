@@ -352,6 +352,20 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       const pr = r.json as { number: number; html_url: string };
       return { number: pr.number, url: pr.html_url };
     },
+    async pullRequestMergeability(repo, number) {
+      const r = await api(repo, "GET", `/pulls/${number}`);
+      if (r.status !== 200) fail(`pull request #${number}`, r);
+      const pr = r.json as {
+        mergeable: boolean | null;
+        mergeable_state?: string | null;
+        head?: { sha?: string };
+      };
+      return {
+        mergeable: pr.mergeable ?? null,
+        mergeableState: pr.mergeable_state ?? null,
+        headSha: pr.head?.sha ?? null,
+      };
+    },
     async mergePullRequest(repo, { number, sha, method }) {
       const r = await api(repo, "PUT", `/pulls/${number}/merge`, { sha, merge_method: method });
       if (r.status === 200) return { merged: true, sha: (r.json as { sha: string }).sha };

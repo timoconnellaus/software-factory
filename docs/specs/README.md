@@ -28,6 +28,7 @@ and the factory's own planning stage writes specs in this same format.
 | [13](13-r1-work-item-detail.md) | R1: Work item detail | 02, 10 |
 | [14](14-r1-review-packet.md) | R1: Review packet (the merge gate) | 04, 13 |
 | [15](15-r1-notifications-backpressure-and-metrics.md) | R1: web push, WIP backpressure, early metrics | 01, 03, 12 |
+| [wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md) | Work item attachments (picker, drag-and-drop, paste; R2; runs read them) | 01, 03, 13 |
 
 Specs 01–04 together are the **MVP backend slice**: CLI/chat intake → triage → implement (Claude
 Code via `runner-orca`) → verify (review packet) → PR in one repo. Specs 10–15 are UI release

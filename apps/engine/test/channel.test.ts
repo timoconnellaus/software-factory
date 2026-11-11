@@ -192,6 +192,82 @@ describe("the signed runner channel", () => {
   });
 });
 
+describe("attachments over the channel (ADR 0310)", () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+
+  async function claimed(w: Awaited<ReturnType<typeof world>>) {
+    const c = await client(w.runner.runnerId);
+    for (let i = 0; i < 100; i++) {
+      const { job } = await c.claim({
+        claimId: uid("claim-"),
+        manifest: {
+          ...MANIFEST,
+          capabilities: [...MANIFEST.capabilities, "work-item-attachments"],
+        },
+        capacity: { max: 4, inUse: 0, accepting: true },
+      });
+      if (job) return { c, job };
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error("no job");
+  }
+
+  it("lists and fetches the job's own work item's files from R2, never stored, and nothing else's", async () => {
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Attachment item" },
+      w.human,
+    );
+    const other = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Someone else's" },
+      w.human,
+    );
+    const mine = await ok<{ attachment: { id: string } }>(
+      "workItem.attachment.add",
+      { workItemId: item.workItemId, filename: "shot.png", contentType: "image/png", bytes: PNG },
+      w.human,
+    );
+    const theirs = await ok<{ attachment: { id: string } }>(
+      "workItem.attachment.add",
+      { workItemId: other.workItemId, filename: "x.png", contentType: "image/png", bytes: PNG },
+      w.human,
+    );
+    // The bytes are in the real R2 binding, keyed by org, item and id.
+    const key = `${w.orgId}/${item.workItemId}/${mine.attachment.id}`;
+    expect(await env.ATTACHMENTS.head(key)).not.toBeNull();
+
+    let found = null;
+    for (let i = 0; i < 10 && !found; i++) {
+      const { c, job } = await claimed(w);
+      if (job.workItem.id === item.workItemId) found = { c, job };
+    }
+    if (!found) throw new Error("didn't claim the attachment item's job");
+    const { c, job } = found;
+    const listed = await c.attachments?.(job.jobId, job.lease.fencingToken);
+    expect(listed?.attachments.map((a) => a.id)).toEqual([mine.attachment.id]);
+    expect(listed?.attachments[0]).not.toHaveProperty("uploader");
+    const file = await c.attachment?.(job.jobId, job.lease.fencingToken, mine.attachment.id);
+    expect(file?.attachment.filename).toBe("shot.png");
+    expect([...Uint8Array.from(atob(file?.base64 ?? ""), (ch) => ch.charCodeAt(0))]).toEqual([
+      ...PNG,
+    ]);
+
+    const cross = await c
+      .attachment?.(job.jobId, job.lease.fencingToken, theirs.attachment.id)
+      .catch((e) => e);
+    expect(cross).toBeInstanceOf(ChannelCallError);
+    expect((cross as ChannelCallError).status).toBe(404);
+
+    const stored = await all<{ response: string | null }>(
+      "SELECT response FROM core_channel_requests WHERE runner_id = ? AND idempotency_key LIKE 'att:%'",
+      w.runner.runnerId,
+    );
+    expect(stored.every((r) => r.response === null)).toBe(true);
+  });
+});
+
 describe("device login over the channel (ADR 0056)", () => {
   const post = (path: string, body: unknown) =>
     engineFetch(`${base}${path}`, {

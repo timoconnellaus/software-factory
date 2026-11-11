@@ -1,7 +1,14 @@
 // sf-engine: one Workflow per work item, the signed runner channel, the GitHub App webhook, outbox
 // delivery and the minute cron. sf-app calls operations through the `EngineApi` RPC entrypoint (service binding).
 import { GITHUB_INTAKE } from "@software-factory/connector-github";
-import { FOREMAN, invoke, isOperationError, PROTECTION_RECHECK_MS } from "@software-factory/core";
+import {
+  FOREMAN,
+  invoke,
+  isOperationError,
+  PROTECTION_RECHECK_MS,
+  r2AttachmentBlobs,
+  sweepStrayAttachmentBlobs,
+} from "@software-factory/core";
 import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
@@ -27,6 +34,10 @@ export default {
     await expireQuietRuns(env, now);
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);
+    // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
+    if (now.getUTCMinutes() === 17) {
+      await sweepStrayAttachmentBlobs(env.DB, r2AttachmentBlobs(env.ATTACHMENTS), now);
+    }
   },
 } satisfies ExportedHandler<Env>;
 

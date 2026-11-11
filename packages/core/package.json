@@ -6,6 +6,7 @@
   "description": "Operations registry, the invoke() pipeline and gate, autonomy policy + floor, model roles, the work-item model.",
   "exports": {
     ".": "./src/index.ts",
+    "./attachments": "./src/attachments.ts",
     "./testing": "./src/testing/index.ts"
   },
   "scripts": {
