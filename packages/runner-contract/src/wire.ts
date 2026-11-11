@@ -81,6 +81,11 @@ export const jobSchema = z.object({
     name: z.string(),
     /** Where the run starts: the work item branch `factory/<n>-<slug>`. */
     baseRef: z.string(),
+    /**
+     * The project's default branch (ADR 0320). A build merges it into the run branch before the
+     * session, so the PR stays mergeable. Optional: a job without it skips the merge.
+     */
+    defaultBranch: z.string().optional(),
   }),
   /** The run branch, `factory/<n>-<slug>-run-<k>`. The only branch this run may push (ADR 0035). */
   branch: z.string(),

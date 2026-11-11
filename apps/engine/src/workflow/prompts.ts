@@ -8,6 +8,8 @@ export interface ItemBrief {
   title: string;
   body: string;
   branch: string;
+  /** The project's default branch. Missing in the cached meta of instances started before v3. */
+  defaultBranch?: string;
 }
 
 const footer = (shape: string) =>
@@ -83,6 +85,8 @@ export function buildPrompt(
       : "",
     `Acceptance criteria:\n${input.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n") || "(none recorded; infer them from the request)"}`,
     input.note ? `\nThis is attempt ${input.attempt}. Fix this first:\n${input.note}` : "",
+    "",
+    `Before you start, the runner merged the latest \`${item.defaultBranch ?? "main"}\` into this branch (ADR 0320). If \`git status\` shows a merge in progress, resolve every conflict first, keeping the intent of both sides, then \`git commit --no-edit\`. Never rebase, reset or force-push. A renumbered ADR or migration that collides with one on \`${item.defaultBranch ?? "main"}\` takes the next free number (docs/parallel-work.md, if the repo has it).`,
     "",
     "Commit your work on the current branch with focused commits. Run the project's lint, typecheck and tests before you finish. Don't change `.factory/` unless the work item is about it.",
     footer('{ "notes": "anything the reviewer should know (optional)" }'),

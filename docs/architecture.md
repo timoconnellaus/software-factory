@@ -42,7 +42,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   notifies the org's admins and shows in the inbox. A policy may hold builds while it's red.
 - **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
-  0231). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
+  0231). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
+  to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
+  ADR 0320). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
   auto-merge where policy opts in (ADR 0230).
 - **Runners** execute jobs through the runner contract over a signed, outbound-only channel
