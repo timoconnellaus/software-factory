@@ -27,7 +27,7 @@ import {
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
 import { nodeExec } from "@software-factory/runner-orca";
-import { hostGit } from "../src/git.ts";
+import { FETCH_NAMESPACE, hostGit } from "../src/git.ts";
 
 export const RUNNER = "r_hosttest01";
 
@@ -219,7 +219,16 @@ export function fakeAdapter(
       calls.push("prepare");
       const clone = clonePath(j);
       const path = join(clone, "..", `wt-${j.jobId}`);
-      git(clone, "worktree", "add", "-q", "-b", j.branch, path, `origin/${j.repo.baseRef}`);
+      git(
+        clone,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        j.branch,
+        path,
+        `${FETCH_NAMESPACE}/${j.repo.baseRef}`,
+      );
       return {
         jobId: j.jobId,
         path,

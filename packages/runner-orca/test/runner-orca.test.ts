@@ -152,7 +152,7 @@ describe("runner-orca adapter", () => {
     expect(agentStatus("something-new")).toBe("idle");
   });
 
-  it("runs a job: registers the repo, projects the harness, ends on done, cleans up", async () => {
+  it("runs a job: registers the clone when Orca has no repo, projects the harness, ends on done, cleans up", async () => {
     const { runner, calls, wtPath, root } = await setup([
       { state: "idle" }, // read by capacity()
       { state: "working", toolName: "Edit", toolInput: "README.md" },
@@ -187,7 +187,9 @@ describe("runner-orca adapter", () => {
     expect(artifacts.every((a) => a.kind !== "diff")).toBe(true); // the host takes the diff
 
     await runner.release(job, ws, session);
-    expect(calls.some((c) => c.startsWith("orca project setup-delete --setup repo1"))).toBe(true);
+    // ADR 0260: the repo stays registered; only the job's worktree and branch go.
+    expect(calls.some((c) => c.startsWith("orca project setup-delete"))).toBe(false);
+    expect(calls.some((c) => c.startsWith("orca worktree rm"))).toBe(true);
     // Safe to call twice: "already gone" is not an error.
     await expect(runner.release(job, ws, session)).resolves.toBeUndefined();
   });

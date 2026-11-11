@@ -14,10 +14,28 @@ export class OrcaCliError extends Error {
   }
 }
 
+export interface OrcaRemoteIdentity {
+  /** `github.com/<owner>/<repo>`, as Orca normalises the remote. */
+  canonicalKey?: string;
+  remoteName?: string;
+  remoteUrl?: string;
+}
+
 export interface OrcaRepo {
   id: string;
   path: string;
   displayName: string;
+  kind?: string;
+  addedAt?: number;
+  gitRemoteIdentity?: OrcaRemoteIdentity | null;
+}
+
+/** A durable Orca project: one remote identity, one or more source repos (checkouts). */
+export interface OrcaProject {
+  id: string;
+  displayName: string;
+  gitRemoteIdentity?: OrcaRemoteIdentity | null;
+  sourceRepoIds?: string[];
 }
 
 export interface OrcaWorktree {
@@ -105,6 +123,8 @@ export function orcaCli(options: OrcaCliOptions = {}) {
   return {
     call,
     repoList: async () => (await call<{ repos: OrcaRepo[] }>(["repo", "list"])).repos,
+    projectList: async () =>
+      (await call<{ projects: OrcaProject[] }>(["project", "list"])).projects,
     repoAdd: async (path: string) =>
       (await call<{ repo: OrcaRepo }>(["repo", "add", "--path", path])).repo,
     /** There is no `repo rm`; a repo-backed project setup is removed with `project setup-delete`. */

@@ -67,7 +67,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `packages/connector-webhook` | Inbound webhook connector, provider-neutral: signature check, delivery naming |
 | `packages/connector-github` | The GitHub App connector: App webhooks → operations |
 | `packages/config` | Shared tsconfig, Biome preset, Vitest preset |
-| `local/runner-host` | The runner host daemon `sf-runner` (Node, on a person's machine): heartbeat, claim, the job lifecycle, the host's own clone, the run-branch push with the job token (ADR 0250), launchd service |
+| `local/runner-host` | The runner host daemon `sf-runner` (Node, on a person's machine): heartbeat, claim, the job lifecycle, fetching into the machine's existing checkout (its own clone only as a fallback, ADR 0260), the run-branch push with the job token (ADR 0250), launchd service |
 | `presets/` | The shipped autonomy policies, project templates and the floor (directory name kept) |
 | `evals/` | The `.factory/checks/` format, incident regression cases (`evals/regressions/`) and the suite CI runs over both; benchmarks later |
 | `spikes/` | Throwaway spikes. Not in the workspace or Biome |

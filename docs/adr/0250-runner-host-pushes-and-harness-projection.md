@@ -23,6 +23,12 @@ with the per-job App token.
 2. **The host owns the clone.** One clone per repo under the runner's state dir, fetched with the job
    token. Its `origin` push URL is disabled and it has no credential helper. The runner never uses
    the owner's own checkouts.
+
+   > Amended 2026-11-11 ([ADR 0260](0260-runners-attach-to-the-existing-checkout.md), incident
+   > 2026-11-11 bootstrap #5): superseded. Jobs run in the checkout the machine's Orca already has for
+   > the repo (found by canonical identity), as a worktree of their own; the host fetches into it by
+   > URL, into `refs/software-factory/*`, and never changes its config or working tree. The host's
+   > clone is only the fallback when Orca has none, registered once and kept.
 3. **The config check before a push.** The host snapshots the clone's push-relevant git config
    (remotes, `url.*.insteadOf`, credential helpers, `http.*`, includes, hooks path, filters) after
    preparing the workspace and compares it before pushing. If anything changed, it doesn't push and

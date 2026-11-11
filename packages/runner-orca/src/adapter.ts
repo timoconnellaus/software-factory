@@ -35,8 +35,9 @@ import {
 } from "@software-factory/runner-contract";
 import { type Exec, nodeExec, run } from "./exec.ts";
 import { type OrcaAgentRow, OrcaCliError, type OrcaCliOptions, orcaCli } from "./orca-cli.ts";
+import { findRepoForJob, JOB_COMMENT_PREFIX } from "./workspace.ts";
 
-export const JOB_COMMENT_PREFIX = "sf-job:";
+export { JOB_COMMENT_PREFIX };
 
 export interface OrcaWorkspace extends WorkspaceHandle {
   worktreeId: string;
@@ -55,10 +56,21 @@ export interface OrcaSession extends SessionHandle {
 
 export interface OrcaRunnerConfig extends OrcaCliOptions {
   maxConcurrent?: number;
-  /** The local checkout Orca registers for a job's repo (the runner host's clone). */
+  /**
+   * The runner host's own clone of a job's repo. Used only when this machine's Orca has no repo for
+   * the job's remote (ADR 0260): it is then registered once and kept.
+   */
   resolveRepoPath: (job: Job) => Promise<string> | string;
-  /** Where the job's worktree starts (default `job.repo.baseRef`): a ref or a SHA in that checkout. */
-  startPoint?: (job: Job) => Promise<string> | string;
+  /**
+   * Where the runner keeps its own clones. A repo under it loses to the owner's own checkout of the
+   * same remote, and the startup migration retires it.
+   */
+  ownReposDir?: string;
+  /**
+   * Where the job's worktree starts (default `job.repo.baseRef`): a ref or a SHA in the checkout at
+   * `repoPath`.
+   */
+  startPoint?: (job: Job, repoPath: string) => Promise<string> | string;
   /** Per-run private directories (git config, empty tool dirs) go under here. */
   runsDir: string;
   /** Absolute paths the harness must not read (the runner's key, the repo cache's .git). */
@@ -107,6 +119,11 @@ function findImagePath(value: unknown): string | undefined {
   return undefined;
 }
 
+/** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
+export function isRunBranch(branch: string): boolean {
+  return /^factory\/[0-9]+-[a-z0-9-]+-run-[0-9]+$/.test(branch);
+}
+
 /** A worktree directory name for the job. */
 export function worktreeName(jobId: string): string {
   return `sf-${jobId.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 40)}`;
@@ -129,8 +146,10 @@ export function createOrcaRunner(
   const agent = config.agent ?? "claude";
   const waitingInputTimeoutMs = config.waitingInputTimeoutMs ?? 15 * 60_000;
   const capabilities = config.capabilities ?? DEFAULT_CAPABILITIES;
-  /** Repos this runner registered in Orca, to unregister when its last job is released. */
-  const addedRepos = new Set<string>();
+  const ownership = {
+    exec,
+    ...(config.ownReposDir ? { ownReposDir: config.ownReposDir } : {}),
+  };
 
   async function findAgent(session: OrcaSession): Promise<OrcaAgentRow | undefined> {
     const rows = await orca.worktreePs();
@@ -208,7 +227,9 @@ export function createOrcaRunner(
       // empty. rmdir only succeeds on an empty folder, so other worktrees are never touched.
       await rmdir(dirname(workspace.path)).catch(() => {});
       // The local branch always goes: the pushed run branch (or the diff artifact) is the record.
+      // Only ever a factory run branch: the checkout may be the owner's own.
       await attempt("delete branch", async () => {
+        if (!isRunBranch(workspace.branch)) return;
         const has = await exec(
           "git",
           ["rev-parse", "--verify", "--quiet", `refs/heads/${workspace.branch}`],
@@ -219,15 +240,8 @@ export function createOrcaRunner(
         }
       });
       await attempt("remove run dir", () => removeRunDir(workspace.runDir));
-      if (addedRepos.has(workspace.repoId)) {
-        const stillUsed = (await orca.worktreePs()).some(
-          (r) => r.repoId === workspace.repoId && r.comment?.startsWith(JOB_COMMENT_PREFIX),
-        );
-        if (!stillUsed) {
-          await attempt("unregister repo", () => orca.repoForget(workspace.repoId));
-          addedRepos.delete(workspace.repoId);
-        }
-      }
+      // The repo itself stays registered: it is the owner's project (or the runner's one permanent
+      // clone), never a per-job registration (ADR 0260).
     }
     if (errors.length > 0) throw new Error(errors.join("; "));
   }
@@ -248,28 +262,35 @@ export function createOrcaRunner(
       return { max: config.maxConcurrent ?? 2, inUse, accepting: true };
     },
 
+    async resolveCheckout(job): Promise<string | null> {
+      return (await findRepoForJob(orca, job, ownership))?.path ?? null;
+    },
+
     async prepareWorkspace(job): Promise<OrcaWorkspace> {
-      const repoPath = await realpath(await config.resolveRepoPath(job));
-      const repos = await orca.repoList();
-      let repo: (typeof repos)[number] | undefined;
-      for (const r of repos) {
-        if ((await realpath(r.path).catch(() => r.path)) === repoPath) repo = r;
-      }
+      // ADR 0260: the Orca repo that already exists for the job's remote; only when there is none,
+      // the host's clone, registered once and kept.
+      let repo: { id: string; path: string } | null = await findRepoForJob(orca, job, ownership);
       if (!repo) {
-        repo = await orca.repoAdd(repoPath);
-        addedRepos.add(repo.id);
+        const clone = await realpath(await config.resolveRepoPath(job));
+        // Registered already under another identity (no remote yet, say)? Reuse it by path.
+        for (const r of await orca.repoList()) {
+          if ((await realpath(r.path).catch(() => r.path)) === clone) repo = r;
+        }
+        repo ??= await orca.repoAdd(clone);
       }
+      const repoPath = await realpath(repo.path).catch(() => repo.path);
       // A local branch left by a crashed run would make Orca suffix the name; the run branch is
-      // this run's alone (ADR 0035), so a stale local copy can go.
+      // this run's alone (ADR 0035), so a stale local copy can go. Only a factory run branch that
+      // no worktree has checked out: never one of the owner's branches.
       const stale = await exec("git", ["worktree", "list", "--porcelain"], { cwd: repoPath });
-      if (!stale.stdout.includes(`branch refs/heads/${job.branch}\n`)) {
+      if (isRunBranch(job.branch) && !stale.stdout.includes(`branch refs/heads/${job.branch}\n`)) {
         await exec("git", ["branch", "-D", job.branch], { cwd: repoPath });
       }
       const worktree = await orca.worktreeCreate({
         repoId: repo.id,
         name: worktreeName(job.jobId),
         branch: job.branch,
-        baseRef: config.startPoint ? await config.startPoint(job) : job.repo.baseRef,
+        baseRef: config.startPoint ? await config.startPoint(job, repoPath) : job.repo.baseRef,
         comment: `${JOB_COMMENT_PREFIX}${job.jobId}`,
       });
       const runDir = join(config.runsDir, job.jobId);
@@ -292,7 +313,9 @@ export function createOrcaRunner(
       await projectHarness(job, {
         worktree: worktree.path,
         runDir,
-        protectPaths: config.protectPaths ?? [],
+        // The checkout the worktree hangs off may be the owner's own: the harness reads only its
+        // worktree, never the main checkout (its .env files, other branches' work).
+        protectPaths: [...new Set([...(config.protectPaths ?? []), repoPath])],
         ...(config.permissionMode ? { permissionMode: config.permissionMode } : {}),
         ...(config.identity ? { identity: config.identity } : {}),
       });

@@ -1,0 +1,7 @@
+{
+  "name": "runner-never-rewrites-remotes",
+  "description": "ADR 0260: the runner host fetches into the owner's own checkout, so it must never change that checkout's remotes or write a job token into git config. Fetch and push go by explicit URL with the token in one git process's environment.",
+  "appliesTo": ["packages/runner-*/src/**/*.ts", "local/runner-host/src/**/*.ts"],
+  "forbid": ["[\"']set-url[\"']", "remote set-url", "x-access-token:\\$\\{"],
+  "message": "Don't rewrite a checkout's remotes or embed a token in a URL. Fetch or push by explicit URL with the token served by the command-line credential helper (local/runner-host/src/git.ts). See ADR 0260."
+}
