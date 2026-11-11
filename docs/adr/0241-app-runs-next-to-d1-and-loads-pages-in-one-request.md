@@ -57,3 +57,12 @@ RPC callee runs where its caller runs.
   crossing later than at the edge, and no longer pays for many crossings inside the render.
 - A revoked session can keep the shell on screen until the next background check (≤ 5 minutes),
   but every read and write is refused at once.
+
+> Amended 2026-11-11 (after deploying #20): `cf-placement: remote-SJC` confirmed, and cached page
+> switches take 4–11 ms. A navigation that fetches still took 360–525 ms, because D1 costs about
+> 10–25 ms per query even from the same colo and operations ran their lookups one after another
+> (`workItem.get` made 7 round trips). `invoke()` now resolves the scope (work item → project →
+> policy) and the human caller's org role in **one D1 batch**, using subqueries for the dependent
+> lookups. `checkPermission` takes the role it read, and still refuses the same way.
+> `workItem.get` and `inbox.list` run their independent reads in parallel. Round trips:
+> `workItem.get` 7 → 3, `inbox.list` 7 → 3, `workItem.timeline` 5 → 2.
