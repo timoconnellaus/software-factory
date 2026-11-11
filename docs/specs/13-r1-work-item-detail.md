@@ -25,7 +25,9 @@ One page shows where a work item is, how it got there, and what it is being chec
 - **(a)** Stage steps: Intake › Triage › Spec › Build › Verify › Merge, from the project's pipeline,
   with the current one highlighted and done ones ticked. A skipped spec stage shows the triage reason.
 - **(a)** Tabs: **Timeline** (from the audit journal: each stage with actor, duration, gate time and
-  links), **Spec** (the living spec, with its assumptions marked), **Runs** (each run: runner,
+  links; the wording of each entry, its label, detail, note, actor and dot, is
+  `@software-factory/timeline`'s, which `sf timeline` prints too, spec
+  [wi-4](wi-4-let-s-improve-the-event-log-so-it-s-usef.md)), **Spec** (the living spec, with its assumptions marked), **Runs** (each run: runner,
   harness, run branch, duration, status), **Review packet** (spec 14).
 - **(a)** Sidebar: acceptance criteria with checked state, and Details: autonomy policy, approvers,
   runner, agent time, your time.
