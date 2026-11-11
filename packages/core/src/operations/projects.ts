@@ -226,7 +226,10 @@ export const projectCreate = defineOperation({
       );
     }
     // Only GitHub's answer counts: the repo must be reachable through this installation now.
-    const repo = await ctx.services.github.getInstallationRepo(record.installation_id, input.repoId);
+    const repo = await ctx.services.github.getInstallationRepo(
+      record.installation_id,
+      input.repoId,
+    );
     if (!repo) {
       throw new OperationError(
         "unavailable",
@@ -293,7 +296,10 @@ export const projectCreate = defineOperation({
       ? { state: "none" as const, error: null }
       : synced.valid
         ? { state: "valid" as const, error: null }
-        : { state: synced.error?.startsWith("no ") ? ("missing" as const) : ("invalid" as const), error: synced.error };
+        : {
+            state: synced.error?.startsWith("no ") ? ("missing" as const) : ("invalid" as const),
+            error: synced.error,
+          };
     return {
       id: row.id,
       orgId: row.org_id,

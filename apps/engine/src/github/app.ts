@@ -247,7 +247,10 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       });
       if (response.status === 404) return null;
       if (!response.ok) {
-        throw new OperationError("unavailable", `GitHub answered ${response.status} for repo ${repoId}`);
+        throw new OperationError(
+          "unavailable",
+          `GitHub answered ${response.status} for repo ${repoId}`,
+        );
       }
       return toRepo((await response.json()) as GitHubRepoJson);
     },

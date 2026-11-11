@@ -14,6 +14,7 @@ import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppNewRouteImport } from './routes/_app/new'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
+import { Route as AppRunnersConnectRouteImport } from './routes/_app/runners.connect'
 import { Route as AppWorkIndexRouteImport } from './routes/_app/work.index'
 import { Route as AppWorkIdIndexRouteImport } from './routes/_app/work.$id.index'
 import { Route as AppWorkIdReviewRouteImport } from './routes/_app/work.$id.review'
@@ -42,6 +43,11 @@ const AppSetupRoute = AppSetupRouteImport.update({
   path: '/setup',
   getParentRoute: () => AppRoute,
 } as any)
+const AppRunnersConnectRoute = AppRunnersConnectRouteImport.update({
+  id: '/runners/connect',
+  path: '/runners/connect',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppWorkIndexRoute = AppWorkIndexRouteImport.update({
   id: '/work/',
   path: '/work/',
@@ -63,6 +69,7 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof SignInRoute
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
+  '/runners/connect': typeof AppRunnersConnectRoute
   '/work/': typeof AppWorkIndexRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
   '/work/$id/': typeof AppWorkIdIndexRoute
@@ -72,6 +79,7 @@ export interface FileRoutesByTo {
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
   '/': typeof AppIndexRoute
+  '/runners/connect': typeof AppRunnersConnectRoute
   '/work': typeof AppWorkIndexRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
   '/work/$id': typeof AppWorkIdIndexRoute
@@ -83,6 +91,7 @@ export interface FileRoutesById {
   '/_app/new': typeof AppNewRoute
   '/_app/setup': typeof AppSetupRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/runners/connect': typeof AppRunnersConnectRoute
   '/_app/work/': typeof AppWorkIndexRoute
   '/_app/work/$id/review': typeof AppWorkIdReviewRoute
   '/_app/work/$id/': typeof AppWorkIdIndexRoute
@@ -94,6 +103,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/new'
     | '/setup'
+    | '/runners/connect'
     | '/work/'
     | '/work/$id/review'
     | '/work/$id/'
@@ -103,6 +113,7 @@ export interface FileRouteTypes {
     | '/new'
     | '/setup'
     | '/'
+    | '/runners/connect'
     | '/work'
     | '/work/$id/review'
     | '/work/$id'
@@ -113,6 +124,7 @@ export interface FileRouteTypes {
     | '/_app/new'
     | '/_app/setup'
     | '/_app/'
+    | '/_app/runners/connect'
     | '/_app/work/'
     | '/_app/work/$id/review'
     | '/_app/work/$id/'
@@ -160,6 +172,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSetupRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/runners/connect': {
+      id: '/_app/runners/connect'
+      path: '/runners/connect'
+      fullPath: '/runners/connect'
+      preLoaderRoute: typeof AppRunnersConnectRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/work/': {
       id: '/_app/work/'
       path: '/work'
@@ -188,6 +207,7 @@ interface AppRouteChildren {
   AppNewRoute: typeof AppNewRoute
   AppSetupRoute: typeof AppSetupRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppRunnersConnectRoute: typeof AppRunnersConnectRoute
   AppWorkIndexRoute: typeof AppWorkIndexRoute
   AppWorkIdReviewRoute: typeof AppWorkIdReviewRoute
   AppWorkIdIndexRoute: typeof AppWorkIdIndexRoute
@@ -197,6 +217,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppNewRoute: AppNewRoute,
   AppSetupRoute: AppSetupRoute,
   AppIndexRoute: AppIndexRoute,
+  AppRunnersConnectRoute: AppRunnersConnectRoute,
   AppWorkIndexRoute: AppWorkIndexRoute,
   AppWorkIdReviewRoute: AppWorkIdReviewRoute,
   AppWorkIdIndexRoute: AppWorkIdIndexRoute,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { runOp, sessionInfo, syncPolicyFromGitHub } from "#/server/app-api";
+import { runOp, sessionInfo } from "#/server/app-api";
+import { handleGitHubSetup } from "#/server/github-setup";
 import { recordingEngine, signIn, testEnv, uid } from "./helpers.ts";
 
 describe("calling operations from the app", () => {
@@ -87,76 +88,87 @@ describe("calling operations from the app", () => {
   });
 });
 
-describe("syncing .factory/policy.json", () => {
-  const project = {
-    id: "prj_1",
-    repo: { owner: "timoconnellaus", name: "software-factory", defaultBranch: "main" },
-  };
-  const sha = "a".repeat(40);
+describe("the GitHub App's Setup URL (/integrations/github/setup)", () => {
+  const setup = (query: string) =>
+    new Request(`https://software-factory.example/integrations/github/setup?${query}`);
 
-  function engineWithProject() {
-    return recordingEngine((name) =>
-      name === "project.list"
-        ? { ok: true, result: { status: "ok", output: { projects: [project] }, auditId: null } }
-        : {
-            ok: true,
-            result: {
-              status: "ok",
-              output: { applied: true, valid: true, error: null },
-              auditId: "au",
-            },
-          },
+  it("sends a signed-out person to sign in, then back with GitHub's parameters", async () => {
+    const { engine, calls } = recordingEngine();
+    const r = await handleGitHubSetup(
+      testEnv(engine),
+      setup("installation_id=7&setup_action=install&state=abc"),
     );
-  }
+    expect(r.status).toBe(303);
+    expect(r.headers.get("location")).toBe(
+      `/sign-in?redirect=${encodeURIComponent("/integrations/github/setup?installation_id=7&setup_action=install&state=abc")}`,
+    );
+    expect(calls).toHaveLength(0);
+  });
 
-  it("reads the file from GitHub at the default branch's head, never from the browser", async () => {
+  it("hands GitHub's installation and state to the engine as the signed-in person", async () => {
     const login = uid("gh-");
-    const { engine, calls } = engineWithProject();
+    const { engine, calls } = recordingEngine(() => ({
+      ok: true,
+      result: {
+        status: "ok",
+        output: {
+          outcome: "connected",
+          orgId: "org_1",
+          installation: { account: login },
+          linkedProjects: [],
+        },
+        auditId: "au",
+      },
+    }));
     const appEnv = testEnv(engine, login);
-    const { headers } = await signIn(appEnv, login);
-    const fetched: string[] = [];
-    const fakeFetch = (async (url: string) => {
-      fetched.push(url);
-      if (url.includes("/commits/main")) return Response.json({ sha });
-      return new Response('{"version":1}');
-    }) as unknown as typeof fetch;
-    const result = await syncPolicyFromGitHub(appEnv, headers, "prj_1", fakeFetch);
-    expect(result).toMatchObject({ ok: true, status: "ok" });
-    expect(fetched).toEqual([
-      "https://api.github.com/repos/timoconnellaus/software-factory/commits/main",
-      `https://raw.githubusercontent.com/timoconnellaus/software-factory/${sha}/.factory/policy.json`,
-    ]);
-    const sync = calls.find((c) => c.name === "policy.sync");
-    expect(sync?.input).toEqual({
-      projectId: "prj_1",
-      ref: "refs/heads/main",
-      sha,
-      content: '{"version":1}',
+    const { user, headers } = await signIn(appEnv, login);
+    const request = new Request(setup("installation_id=7&setup_action=install&state=s-123"), {
+      headers,
     });
+    const r = await handleGitHubSetup(appEnv, request);
+    expect(r.status).toBe(303);
+    expect(r.headers.get("location")).toBe(`/setup?github=connected&account=${login}`);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.name).toBe("github.connectInstallation");
+    expect(calls[0]?.input).toEqual({
+      installationId: "7",
+      setupAction: "install",
+      state: "s-123",
+    });
+    expect(calls[0]?.options.actor).toEqual({ type: "human", id: user.id });
   });
 
-  it("records a missing file as null content (the project then fails closed)", async () => {
+  it("shows the engine's refusal on Setup, and refuses a missing installation without calling it", async () => {
     const login = uid("gh-");
-    const { engine, calls } = engineWithProject();
+    const { engine, calls } = recordingEngine(() => ({
+      ok: false,
+      error: { code: "forbidden", message: "this GitHub connection was started by someone else" },
+    }));
     const appEnv = testEnv(engine, login);
     const { headers } = await signIn(appEnv, login);
-    const fakeFetch = (async (url: string) =>
-      url.includes("/commits/")
-        ? Response.json({ sha })
-        : new Response("404", { status: 404 })) as unknown as typeof fetch;
-    await syncPolicyFromGitHub(appEnv, headers, "prj_1", fakeFetch);
-    expect(calls.find((c) => c.name === "policy.sync")?.input).toMatchObject({ content: null });
+    const refused = await handleGitHubSetup(
+      appEnv,
+      new Request(setup("installation_id=7&state=stolen"), { headers }),
+    );
+    expect(
+      new URL(refused.headers.get("location") ?? "", "http://x").searchParams.get("github_error"),
+    ).toBe("this GitHub connection was started by someone else");
+    const missing = await handleGitHubSetup(
+      appEnv,
+      new Request(setup("installation_id=abc&state=x"), { headers }),
+    );
+    expect(missing.headers.get("location")).toMatch(/github_error=/);
+    expect(calls).toHaveLength(1);
   });
 
-  it("refuses a project the user can't see", async () => {
+  it("is not an operation the browser can call", async () => {
     const login = uid("gh-");
-    const { engine, calls } = engineWithProject();
+    const { engine, calls } = recordingEngine();
     const appEnv = testEnv(engine, login);
     const { headers } = await signIn(appEnv, login);
-    const result = await syncPolicyFromGitHub(appEnv, headers, "prj_other", (async () => {
-      throw new Error("no fetch expected");
-    }) as unknown as typeof fetch);
-    expect(result).toMatchObject({ ok: false, code: "not_found" });
-    expect(calls.some((c) => c.name === "policy.sync")).toBe(false);
+    expect(
+      await runOp(appEnv, headers, { name: "github.connectInstallation", input: {} }),
+    ).toMatchObject({ ok: false, code: "invalid_input" });
+    expect(calls).toHaveLength(0);
   });
 });

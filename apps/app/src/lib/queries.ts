@@ -49,6 +49,22 @@ export const runnersQuery = () =>
     staleTime: 30_000,
   });
 
+/** The Setup checklist for an org, live (GitHub, project, policy, runner, factory/verify). */
+export const setupStatusQuery = (orgId: string) =>
+  queryOptions({
+    queryKey: ["setup", orgId],
+    queryFn: () => op("setup.status", { orgId }),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+
+export const reposQuery = (orgId: string) =>
+  queryOptions({
+    queryKey: ["repos", orgId],
+    queryFn: () => op("github.repos", { orgId }),
+    staleTime: 30_000,
+  });
+
 export const routingQuery = (projectId: string) =>
   queryOptions({
     queryKey: ["routing", projectId],

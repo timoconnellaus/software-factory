@@ -219,7 +219,10 @@ describe("installations and their repositories (ADR 0055)", () => {
     const { app } = await appWith(async (r) => {
       if (r.url.endsWith("/access_tokens")) {
         expect(await r.json()).toEqual({ permissions: { metadata: "read" } });
-        return Response.json({ token: "ghs_meta", expires_at: new Date(Date.now() + 3_600_000).toISOString() });
+        return Response.json({
+          token: "ghs_meta",
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        });
       }
       expect(r.headers.get("authorization")).toBe("token ghs_meta");
       const page = new URL(r.url).searchParams.get("page");
@@ -236,13 +239,26 @@ describe("installations and their repositories (ADR 0055)", () => {
       if (r.url.endsWith("/access_tokens")) {
         const body = (await r.json()) as { repository_ids: number[] };
         if (body.repository_ids[0] === 99) {
-          return Response.json({ message: "There is at least one repository that does not exist or is not accessible to the parent installation." }, { status: 422 });
+          return Response.json(
+            {
+              message:
+                "There is at least one repository that does not exist or is not accessible to the parent installation.",
+            },
+            { status: 422 },
+          );
         }
-        return Response.json({ token: "ghs_one", expires_at: new Date(Date.now() + 3_600_000).toISOString() });
+        return Response.json({
+          token: "ghs_one",
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        });
       }
       return Response.json(repoJson(5, "software-factory"));
     });
-    expect(await app.getInstallationRepo("7", 5)).toMatchObject({ id: 5, name: "software-factory", defaultBranch: "main" });
+    expect(await app.getInstallationRepo("7", 5)).toMatchObject({
+      id: 5,
+      name: "software-factory",
+      defaultBranch: "main",
+    });
     expect(await app.getInstallationRepo("7", 99)).toBeNull();
   });
 

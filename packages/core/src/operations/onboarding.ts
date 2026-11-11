@@ -19,8 +19,8 @@ import {
   projectViews,
   syncPolicyFromGitHub,
 } from "./projects.ts";
-import { RUNNER_OFFLINE_MS } from "./work-items.ts";
 import { projectId, repoRef, requireProject } from "./shared.ts";
+import { RUNNER_OFFLINE_MS } from "./work-items.ts";
 
 /** How long a "Connect GitHub" round trip may take. */
 export const CONNECT_STATE_TTL_MS = 15 * 60_000;
@@ -146,7 +146,10 @@ export const githubConnectInstallation = defineOperation({
         .where("state_hash", "=", hash)
         .executeTakeFirst();
       if (!row) {
-        throw new OperationError("forbidden", "this GitHub connection wasn't started here (unknown state)");
+        throw new OperationError(
+          "forbidden",
+          "this GitHub connection wasn't started here (unknown state)",
+        );
       }
       if (row.user_id !== ctx.actor.id) {
         throw new OperationError(
@@ -158,7 +161,10 @@ export const githubConnectInstallation = defineOperation({
         throw new OperationError("forbidden", "this GitHub connection link was already used");
       }
       if (Date.parse(row.expires_at) <= Date.parse(ctx.now)) {
-        throw new OperationError("forbidden", "this GitHub connection link expired: start it again from Setup");
+        throw new OperationError(
+          "forbidden",
+          "this GitHub connection link expired: start it again from Setup",
+        );
       }
       orgId = row.org_id;
       // Single use: the state is spent in this call's batch, or the batch fails.
@@ -489,7 +495,10 @@ export const policyProposeTemplate = defineOperation({
     const gh = ctx.services.github;
     const head = await gh.getBranchSha(repo, project.default_branch);
     if (!head) {
-      throw new OperationError("unavailable", `no ${project.default_branch} branch to propose against`);
+      throw new OperationError(
+        "unavailable",
+        `no ${project.default_branch} branch to propose against`,
+      );
     }
     if ((await gh.readFile(repo, POLICY_PATH, head)) !== null) {
       throw new OperationError(
@@ -540,9 +549,7 @@ export const setupStatus = defineOperation({
   input: z.object({ orgId: z.string().min(1) }),
   output: z.object({
     complete: z.boolean(),
-    steps: z.array(
-      z.object({ key: z.enum(STEP_KEYS), done: z.boolean(), detail: z.string() }),
-    ),
+    steps: z.array(z.object({ key: z.enum(STEP_KEYS), done: z.boolean(), detail: z.string() })),
     installations: z.array(installationView),
     projects: z.array(
       projectView.extend({
@@ -572,7 +579,9 @@ export const setupStatus = defineOperation({
         } catch (err) {
           verify = {
             ok: false,
-            problems: [`couldn't read branch protection: ${err instanceof Error ? err.message : String(err)}`],
+            problems: [
+              `couldn't read branch protection: ${err instanceof Error ? err.message : String(err)}`,
+            ],
           };
         }
       }

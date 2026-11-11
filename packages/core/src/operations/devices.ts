@@ -6,6 +6,7 @@
 // The CLI isn't anyone yet, so the runner channel calls deviceStart and devicePoll unsigned, as
 // DEVICE_LOGIN_ACTOR. The device code is the CLI's secret (stored only as its SHA-256); the user code
 // is useless without a signed-in person approving it.
+import { DEVICE_APPROVE_PATH } from "@software-factory/runner-contract";
 import { z } from "zod";
 import type { Actor } from "../actors.ts";
 import { OperationError } from "../errors.ts";
@@ -66,6 +67,8 @@ export const runnerDeviceStart = defineOperation({
   output: z.object({
     deviceCode: z.string(),
     userCode: z.string(),
+    /** Where the person approves it: the app's /runners/connect with the code filled in. */
+    verificationUrl: z.string(),
     expiresAt: z.string(),
     interval: z.number(),
   }),
@@ -92,7 +95,14 @@ export const runnerDeviceStart = defineOperation({
         consumed_at: null,
       }),
     );
-    return { deviceCode, userCode: code, expiresAt, interval: DEVICE_POLL_INTERVAL_S };
+    const base = (ctx.services.publicBaseUrl ?? "").replace(/\/+$/, "");
+    return {
+      deviceCode,
+      userCode: code,
+      verificationUrl: `${base}${DEVICE_APPROVE_PATH}?code=${code}`,
+      expiresAt,
+      interval: DEVICE_POLL_INTERVAL_S,
+    };
   },
 });
 
@@ -254,7 +264,8 @@ export const runnerDenyDevice = defineOperation({
   output: z.object({ denied: z.boolean() }),
   async handler(input, ctx) {
     const row = await byUserCode(ctx, input.userCode);
-    if (row.status !== "pending") throw new OperationError("conflict", "this code was already decided");
+    if (row.status !== "pending")
+      throw new OperationError("conflict", "this code was already decided");
     ctx.write(
       ctx.db
         .updateTable("core_runner_device_codes")

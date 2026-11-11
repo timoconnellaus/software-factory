@@ -75,7 +75,15 @@ export async function world(policy: unknown = BALANCED) {
   await github.putInstallation({
     installationId,
     account: { login: "timoconnellaus", type: "Organization" },
-    repos: [{ id: repoId, owner: "timoconnellaus", name: repoName, private: false, defaultBranch: "main" }],
+    repos: [
+      {
+        id: repoId,
+        owner: "timoconnellaus",
+        name: repoName,
+        private: false,
+        defaultBranch: "main",
+      },
+    ],
     members: [`gh-${userId}`],
   });
   const started = await ok<{ state: string }>("github.connectStart", { orgId }, human);

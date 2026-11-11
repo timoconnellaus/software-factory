@@ -74,7 +74,13 @@ export default {
               installationId,
               account: { login: body.owner, type: "Organization" },
               repos: [
-                { id: repoId, owner: body.owner, name: body.name, private: false, defaultBranch: "main" },
+                {
+                  id: repoId,
+                  owner: body.owner,
+                  name: body.name,
+                  private: false,
+                  defaultBranch: "main",
+                },
               ],
               members: [`e2e-${id}`],
             }),

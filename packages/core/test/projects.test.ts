@@ -3,7 +3,18 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { POLICY_PATH } from "../src/index.ts";
-import { call, first, numericId, ok, onboard, POLICY, refusal, services, uid, world } from "./helpers.ts";
+import {
+  call,
+  first,
+  numericId,
+  ok,
+  onboard,
+  POLICY,
+  refusal,
+  services,
+  uid,
+  world,
+} from "./helpers.ts";
 
 const github = services.github;
 
@@ -61,7 +72,9 @@ describe("project.create from the repo picker", () => {
       `https://github.com/organizations/timoconnellaus/settings/installations/${installationId}`,
     );
     const listed = await ok<{ projects: View[] }>("project.list", { orgId: w.orgId }, w.human);
-    expect(listed.projects.find((x) => x.id === p.id)).toMatchObject({ policy: { state: "valid" } });
+    expect(listed.projects.find((x) => x.id === p.id)).toMatchObject({
+      policy: { state: "valid" },
+    });
   });
 
   it("records a missing policy, so Setup can offer the PR", async () => {

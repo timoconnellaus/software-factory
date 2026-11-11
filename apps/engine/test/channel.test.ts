@@ -225,7 +225,11 @@ describe("device login over the channel (ADR 0056)", () => {
     // The key works on the signed channel.
     const c = await client(got.runnerId, { key: got.key });
     await expect(
-      c.heartbeat({ manifest: MANIFEST, capacity: { max: 1, inUse: 0, accepting: true }, activeJobs: [] }),
+      c.heartbeat({
+        manifest: MANIFEST,
+        capacity: { max: 1, inUse: 0, accepting: true },
+        activeJobs: [],
+      }),
     ).resolves.toEqual({ commands: [], leases: [] });
     expect(
       await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json(),

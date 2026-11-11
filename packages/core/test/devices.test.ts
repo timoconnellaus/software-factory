@@ -14,7 +14,8 @@ type Polled = {
 };
 
 const startLogin = (name = "m5") => ok<Started>("runner.deviceStart", { name }, DEVICE_LOGIN_ACTOR);
-const poll = (deviceCode: string) => ok<Polled>("runner.devicePoll", { deviceCode }, DEVICE_LOGIN_ACTOR);
+const poll = (deviceCode: string) =>
+  ok<Polled>("runner.devicePoll", { deviceCode }, DEVICE_LOGIN_ACTOR);
 
 describe("runner device login", () => {
   it("hands the approved runner's key to the CLI once", async () => {
@@ -22,6 +23,9 @@ describe("runner device login", () => {
     const s = await startLogin("tims-m5");
     expect(s.userCode).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
     expect(s.interval).toBe(5);
+    expect((s as Started & { verificationUrl: string }).verificationUrl).toBe(
+      `/runners/connect?code=${s.userCode}`,
+    );
     expect((await poll(s.deviceCode)).status).toBe("pending");
 
     const seen = await ok<{ suggestedName: string; status: string }>(
@@ -78,7 +82,9 @@ describe("runner device login", () => {
     );
     expect(r.code).toBe("conflict");
     expect(r.message).toMatch(/expired/);
-    expect(await rows("SELECT 1 FROM core_runners WHERE owner_user_id = ?", w.userId)).toHaveLength(0);
+    expect(await rows("SELECT 1 FROM core_runners WHERE owner_user_id = ?", w.userId)).toHaveLength(
+      0,
+    );
   });
 
   it("can't be approved twice or taken over by another person", async () => {
@@ -119,16 +125,26 @@ describe("runner device login", () => {
     const w = await world();
     const s = await startLogin();
     const byRunner = await refusal(
-      call("runner.approveDevice", { userCode: s.userCode, name: "x" }, { type: "runner", id: "r_abc123" }),
+      call(
+        "runner.approveDevice",
+        { userCode: s.userCode, name: "x" },
+        { type: "runner", id: "r_abc123" },
+      ),
     );
     expect(byRunner.code).toBe("forbidden");
     const byAgent = await refusal(
-      call("runner.approveDevice", { userCode: s.userCode, name: "x" }, { type: "agent", id: "foreman" }),
+      call(
+        "runner.approveDevice",
+        { userCode: s.userCode, name: "x" },
+        { type: "agent", id: "foreman" },
+      ),
     );
     expect(byAgent.code).toBe("forbidden");
     const byHuman = await refusal(call("runner.deviceStart", {}, w.human));
     expect(byHuman.code).toBe("forbidden");
-    const paired = await refusal(call("runner.devicePoll", { deviceCode: s.deviceCode }, { type: "runner", id: "r_abc123" }));
+    const paired = await refusal(
+      call("runner.devicePoll", { deviceCode: s.deviceCode }, { type: "runner", id: "r_abc123" }),
+    );
     expect(paired.code).toBe("forbidden");
     expect((await poll("not-a-real-device-code-at-all")).status).toBe("expired");
   });

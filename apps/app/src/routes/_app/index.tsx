@@ -6,6 +6,7 @@ import { StatusBadge, StatusDot } from "@software-factory/ui/components/status-d
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { FinishSetupCard } from "#/components/finish-setup";
 import { GateCard, QuestionCard } from "#/components/inbox-cards";
 import { RunnerHealth } from "#/components/runner-health";
 import { ago, STAGE_LABEL } from "#/lib/format";
@@ -81,6 +82,8 @@ function InboxPage() {
           running · {shipped} shipped this week
         </div>
       </div>
+
+      <FinishSetupCard orgId={session.personalOrgId ?? ""} />
 
       {highlightGone && (
         <div

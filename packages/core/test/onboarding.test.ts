@@ -53,7 +53,8 @@ async function installOnOwnAccount(p: Person, repoName = uid("repo-")) {
   return { installationId, repoId, repoName };
 }
 
-const start = (p: Person) => ok<{ url: string; state: string }>("github.connectStart", { orgId: p.orgId }, p.human);
+const start = (p: Person) =>
+  ok<{ url: string; state: string }>("github.connectStart", { orgId: p.orgId }, p.human);
 
 type Connected = {
   outcome: string;
@@ -122,11 +123,7 @@ describe("Connect GitHub: the state", () => {
     ).toHaveLength(0);
 
     const unknown = await refusal(
-      call(
-        "github.connectInstallation",
-        { installationId, state: "x".repeat(43) },
-        attacker.human,
-      ),
+      call("github.connectInstallation", { installationId, state: "x".repeat(43) }, attacker.human),
     );
     expect(unknown.message).toMatch(/unknown state/);
 
@@ -158,7 +155,9 @@ describe("Connect GitHub: verifying the installation", () => {
       call("github.connectInstallation", { installationId: "999999999", state: s.state }, p.human),
     );
     expect(r.code).toBe("not_found");
-    expect(await rows("SELECT 1 FROM core_github_installations WHERE org_id = ?", p.orgId)).toHaveLength(0);
+    expect(
+      await rows("SELECT 1 FROM core_github_installations WHERE org_id = ?", p.orgId),
+    ).toHaveLength(0);
   });
 
   it("refuses someone else's real installation (forged id from another account)", async () => {
@@ -200,7 +199,9 @@ describe("Connect GitHub: verifying the installation", () => {
       { installationId, state: s2.state, userAccessToken: fakeUserToken(p.login) },
       p.human,
     );
-    expect(done.installation?.manageUrl).toMatch(/\/organizations\/acme-.*\/settings\/installations\//);
+    expect(done.installation?.manageUrl).toMatch(
+      /\/organizations\/acme-.*\/settings\/installations\//,
+    );
     const audit = await first<{ input: string }>(
       "SELECT input FROM core_audit WHERE operation = 'github.connectInstallation' AND org_id = ? AND outcome = 'ok'",
       p.orgId,
@@ -258,7 +259,9 @@ describe("Connect GitHub: verifying the installation", () => {
       p.human,
     );
     expect(requested).toMatchObject({ outcome: "requested", installation: null });
-    expect(await rows("SELECT 1 FROM core_github_installations WHERE org_id = ?", p.orgId)).toHaveLength(0);
+    expect(
+      await rows("SELECT 1 FROM core_github_installations WHERE org_id = ?", p.orgId),
+    ).toHaveLength(0);
   });
 
   it("links an existing project with no installation (the first software-factory) and reads its policy", async () => {
@@ -311,8 +314,12 @@ describe("the installation webhooks keep the record current", () => {
 
     await ok("github.installation", { ...base, action: "suspended", repositories: null }, INTAKE);
     expect(
-      (await first<{ status: string }>("SELECT status FROM core_github_installations WHERE id = ?", record.id))
-        .status,
+      (
+        await first<{ status: string }>(
+          "SELECT status FROM core_github_installations WHERE id = ?",
+          record.id,
+        )
+      ).status,
     ).toBe("suspended");
     const blocked = await refusal(call("policy.resync", { projectId: w.projectId }, w.human));
     expect(blocked.code).toBe("unavailable");
@@ -332,7 +339,10 @@ describe("the installation webhooks keep the record current", () => {
       { ...base, action: "removed", repositories: [w.repo.repo], repositorySelection: "selected" },
       INTAKE,
     );
-    const removed = await first<{ github_installation_id: string | null; installation_record_id: string | null }>(
+    const removed = await first<{
+      github_installation_id: string | null;
+      installation_record_id: string | null;
+    }>(
       "SELECT github_installation_id, installation_record_id FROM core_projects WHERE id = ?",
       w.projectId,
     );
@@ -351,12 +361,20 @@ describe("the installation webhooks keep the record current", () => {
 
     await ok("github.installation", { ...base, action: "deleted", repositories: null }, INTAKE);
     expect(
-      (await first<{ status: string }>("SELECT status FROM core_github_installations WHERE id = ?", record.id))
-        .status,
+      (
+        await first<{ status: string }>(
+          "SELECT status FROM core_github_installations WHERE id = ?",
+          record.id,
+        )
+      ).status,
     ).toBe("deleted");
     expect(
-      (await first<{ id: string | null }>("SELECT github_installation_id AS id FROM core_projects WHERE id = ?", w.projectId))
-        .id,
+      (
+        await first<{ id: string | null }>(
+          "SELECT github_installation_id AS id FROM core_projects WHERE id = ?",
+          w.projectId,
+        )
+      ).id,
     ).toBeNull();
   });
 });
@@ -518,7 +536,10 @@ describe("setup.status", () => {
       .bind(new Date().toISOString(), runner.runnerId)
       .run();
     await github.setGuards(w.repo, {
-      protection: { requiredChecks: [{ context: "factory/verify", appId: 1000 }], enforceAdmins: true },
+      protection: {
+        requiredChecks: [{ context: "factory/verify", appId: 1000 }],
+        enforceAdmins: true,
+      },
       rulesets: [
         {
           name: "factory",
