@@ -3,13 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The runner contract: the operations a runner adapter implements and its capability manifest. Imports nothing runner-specific.",
+  "description": "The runner contract: the adapter interface, capability manifest, signed channel, wire shapes and stage results. Imports nothing runner-specific.",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.5.1",

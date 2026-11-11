@@ -12,7 +12,7 @@ Today that is:
 
 | Worker | Folder | Public | Notes |
 | --- | --- | --- | --- |
-| `sf-engine` | `apps/engine` | no (`workers_dev: false`) | Work-item Workflows, queues, cron (`*/5 * * * *`) |
+| `sf-engine` | `apps/engine` | `sf-engine.zerobsai.com` (runner channel + `/health` only) | Every operation (RPC for `sf-app`), work-item Workflows, the runner channel, cron (`* * * * *`). D1 `software-factory`, migrations from `packages/db/migrations`. Secrets `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY` |
 | `sf-app` | `apps/app` | `sf-app.<subdomain>.workers.dev` | Dashboard, MCP surface, operations API |
 
 A new Worker (a connector, say) is picked up automatically: add its `wrangler.jsonc` and it
@@ -122,5 +122,7 @@ node scripts/deploy/deploy.ts                # provision + migrate + deploy ever
 - **Preview deploys per PR.** `wrangler versions upload --preview-alias pr-<n>` would give each
   PR a URL, but a preview version uses the production bindings, so it would read and write the
   production D1. It waits for separate preview resources.
-- **Secrets on the Workers.** None are needed yet. When one is (Better Auth's secret, say), the
-  deploy job will pass it from a GitHub secret with `wrangler secret bulk`.
+- **Secrets on the Workers** are synced by the deploy job from repo secrets with
+  `wrangler secret bulk`: `sf-app` gets the Better Auth and GitHub App secrets; `sf-engine` gets
+  `RUNNER_CHANNEL_SECRET` and `GH_APP_PRIVATE_KEY`. Unset ones are skipped, and the engine degrades
+  (the runner channel answers 503) instead of failing to deploy.

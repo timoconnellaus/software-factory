@@ -137,11 +137,28 @@ lease holder carries it, and a write with a stale token is refused, so a holder 
 taken over can no longer change anything (ADR 0035).
 _Avoid_: lease id, version, epoch (the kill switch has one)
 
+**Job**
+One stage's assignment to a runner: triage, spec, build or verify, with the model role, prompt,
+context and required capabilities. Queued until a runner claims it; a retry is a new job.
+_Avoid_: task, run (a run is one execution of a job)
+
 **Run**
 One execution of a stage job on a runner. Each run pushes to its own branch
 (`factory/<id>-<slug>-run-<n>`); only the control plane moves the work item's branch
 (`factory/<id>-<slug>`) forward to an accepted run.
 _Avoid_: job (the assignment), session (the harness's), attempt
+
+**Pending action**
+A gate waiting on a person: an operation the gate check answered `review` for, stored with its
+input until someone decides it (ADR 0007). Its kind says which inbox card it is: `spec`, `merge` or
+`approval`. Approving re-runs the operation once, as the original actor.
+_Avoid_: approval request, ticket, task
+
+**Factory incident**
+A work item the factory opens on itself when a PR is sent back or a run fails or stalls: it proposes
+a fix to `.factory/` plus a regression case in `evals/`, and goes through the normal gates. An
+incident's own failures open no further incidents.
+_Avoid_: bug, postmortem, issue
 
 ## Execution
 

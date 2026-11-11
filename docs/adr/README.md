@@ -2,7 +2,7 @@
 
 Each ADR is `NNNN-slug.md` with Status, Context, Decision and Consequences. ADRs are never deleted: when a decision changes, amend it with a dated note.
 
-Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); spikes use 0100–0199 (0100 runner contract, 0110 Workflow and gate, 0120 auth, each still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
+Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); 0048–0059 is the V1 core + engine build; spikes use 0100–0199 (0100 runner contract and 0110 Workflow and gate are accepted and promoted here; 0120 auth is still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
 
 | ADR | Title |
 | --- | --- |
@@ -53,3 +53,10 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0045](0045-preview-environments-later.md) | Preview environments later, never against prod data |
 | [0046](0046-content-cut-from-v1.md) | Content is cut from v1 |
 | [0047](0047-jev-injection-check-follow-up.md) | A Jev prompt-injection check on intake (follow-up) |
+| [0050](0050-kysely-and-batch-guards.md) | Kysely for typed D1 access, and batch guards for atomic conditional writes |
+| [0051](0051-operations-rpc-on-the-engine.md) | Operations run in sf-engine; sf-app calls them over RPC |
+| [0052](0052-job-tokens-and-branch-confinement.md) | Minting job tokens, and confining pushes to the run branch |
+| [0053](0053-workflow-versioning.md) | Versioning the work-item Workflow across deploys |
+| [0054](0054-factory-policy-file.md) | `.factory/policy.json`: the project's autonomy policy file |
+| [0100](0100-runner-contract.md) | The runner contract (promoted from the spike) |
+| [0110](0110-work-item-workflow-and-gate.md) | A Workflow per work item, gated through the operation pipeline (promoted from the spike) |

@@ -1,4 +1,6 @@
-// sf-engine: The cloud engine Worker: Cloudflare Workflows (one per work item), queues and cron. Named so it isn't confused with execution runners.
+// sf-engine: the cloud engine Worker. One Cloudflare Workflow per work item, the runner channel
+// (/runner/v1/*), outbox delivery and the minute cron, and the operations RPC (EngineApi) that
+// sf-app calls through a service binding.
 // Account-agnostic: no account or resource IDs are committed.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -9,9 +11,43 @@
   "observability": {
     "enabled": true
   },
-  "triggers": {
-    "crons": ["*/5 * * * *"]
-  },
+  // Runner hosts reach the channel here (outbound HTTPS from the runner, ADR 0016). Nothing else on
+  // this host is public: the operations API is RPC over a service binding (ADR 0051).
+  "routes": [{ "pattern": "sf-engine.zerobsai.com", "custom_domain": true }],
   "workers_dev": false,
-  "preview_urls": false
+  "preview_urls": false,
+  // The factory's one database. Bound by name; created by scripts/deploy/provision.ts. Migrations
+  // live in packages/db and are applied from here (the first Worker in deploy order that sets them).
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "software-factory",
+      "migrations_dir": "../../packages/db/migrations"
+    }
+  ],
+  // One instance per work item; the instance id is the work item id (ADR 0006, 0053).
+  "workflows": [
+    {
+      "binding": "WORK_ITEM_WORKFLOW",
+      "name": "sf-work-item",
+      "class_name": "WorkItemWorkflow"
+    }
+  ],
+  // Outbox retries, quiet-run sweeps and channel-store pruning, every minute.
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "vars": {
+    "PUBLIC_BASE_URL": "https://software-factory.zerobsai.com",
+    "GH_APP_ID": "5705909",
+    // The global floor (ADR 0008): JSON, actor|"*" → risk|"*" → "allow"|"review"|"deny". It can only
+    // tighten; anything malformed denies every call. Empty = no floor.
+    "FACTORY_FLOOR": "",
+    // "1" swaps the GitHub App for an in-D1 fake (tests and local dev only).
+    "GITHUB_FAKE": ""
+  }
+  // Secrets (set by the deploy workflow with `wrangler secret bulk`, never committed):
+  // RUNNER_CHANNEL_SECRET and GH_APP_PRIVATE_KEY. They are typed in src/secrets.ts rather than with
+  // `secrets.required`, which would make `wrangler deploy` fail until they exist. Without them the
+  // runner channel answers 503 and GitHub calls are refused as `unavailable`.
 }

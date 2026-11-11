@@ -3,13 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "D1 migrations and typed access for the work-item store, audit journal, outbox, leases and Better Auth tables.",
+  "description": "D1 migrations and typed access (Kysely) for the core_* schema: identity, projects, work items, questions, gates, runners, jobs, leases, audit journal and outbox.",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "kysely": "0.29.8"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.5.1",

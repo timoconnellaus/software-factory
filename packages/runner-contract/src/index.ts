@@ -1,2 +1,8 @@
-/** Package name, so the placeholder has something to export and test. */
-export const PACKAGE = "@software-factory/runner-contract";
+// @software-factory/runner-contract: the runner contract (ADR 0014, 0100), the signed channel
+// (ADR 0016), the wire shapes and each stage's result shape. Runtime-neutral (Web APIs + zod); it
+// names no runner.
+export * from "./channel.ts";
+export * from "./protocol.ts";
+export * from "./stage-results.ts";
+export * from "./types.ts";
+export * from "./wire.ts";

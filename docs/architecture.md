@@ -7,10 +7,12 @@ as [`v1-architecture.svg`](../.kim/designs/v1-architecture.svg)). This page maps
 Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 
 ## Shape
-- **Cloud control plane** on Cloudflare (ADR 0002). `sf-app` serves the dashboard, the MCP surface
-  and the operations API. `sf-engine` runs one Workflow per work item, queues and cron. Both share
-  one D1 database: work items, questions, audit journal, outbox, leases, Better Auth (CRM-style
-  `core_*` tables).
+- **Cloud control plane** on Cloudflare (ADR 0002). `sf-app` serves the dashboard and the MCP
+  surface, and calls operations on `sf-engine` over RPC (ADR 0051). `sf-engine` runs every operation,
+  one Workflow per work item, outbox delivery, the minute cron and the signed runner channel
+  (`sf-engine.zerobsai.com/runner/v1/*`). Both bind one D1 database, `software-factory`: work items,
+  questions, gates, runs, leases, audit journal, outbox and Better Auth, all `core_*` tables
+  (`packages/db/migrations`, ADR 0050).
 - **Operations** (ADR 0003, 0004) are the only way to change state. Every call goes through
   `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, read from
   the default branch), fencing token, permission, handler, then one D1 batch with the audit row and
@@ -37,11 +39,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | Path | What |
 | --- | --- |
 | `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui), MCP, operations API |
-| `apps/engine` | Worker `sf-engine`: Workflows, queues, cron |
-| `packages/core` | Operations registry, `invoke()`, policy, work-item model |
-| `packages/db` | D1 migrations and typed access |
+| `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, GitHub App token minting, outbox, cron, `EngineApi` RPC |
+| `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, `.factory/policy.json` schema, model roles, Workflow event names, a fake GitHub for tests (`/testing`) |
+| `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
-| `packages/runner-contract` | The runner contract and capability manifest |
+| `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |
 | `packages/harness-claude` | Claude Code harness adapter |
 | `packages/connector-webhook` | Inbound webhook connector: verification and dedupe |
 | `packages/config` | Shared tsconfig, Biome preset, Vitest preset |

@@ -40,7 +40,8 @@ jobs:
       - run: pnpm typecheck
       # Capped like local runs (docs/parallel-work.md): workerd tests are CPU-heavy.
       - run: pnpm test --concurrency=2
-      # The deploy scripts aren't a workspace package; their tests run on Node directly.
-      - run: node --test "scripts/deploy/*.test.ts"
+      # The deploy scripts and the repo guards (model ids, runner imports) aren't a workspace
+      # package; their tests run on Node directly.
+      - run: node --test "scripts/*/*.test.ts"
       # Every Worker must bundle; a dry run catches what typecheck can't (bad bindings, imports).
       - run: pnpm build
