@@ -10,6 +10,8 @@
 //   artifacts   art:<job>:<artifact id>        artifact ids are content hashes
 //   handback    hand:<job>
 //   release     rel:<job>
+//   attachments att:<job>:<uuid>               NOT stored: the job's work item's attachments (list)
+//   attachment  att:<job>:<uuid>               NOT stored: one attachment's bytes (ADR 0260)
 //
 // Every job-scoped call carries the job's fencing token; after a takeover or a lost lease the cloud
 // answers 409 with code `fenced`, and the host must stop the run (ADR 0035).
@@ -17,6 +19,8 @@
 import { sha256Hex, signRunnerRequest, verifyRunnerResponse } from "./channel.ts";
 import type { Handback, StoredArtifact } from "./types.ts";
 import type {
+  AttachmentResponse,
+  AttachmentsResponse,
   ClaimRequest,
   ClaimResponse,
   EventsRequest,
@@ -34,6 +38,8 @@ export const PATHS = {
   artifacts: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/artifacts`,
   handback: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/handback`,
   release: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/release`,
+  attachments: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/attachments`,
+  attachment: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/attachment`,
 } as const;
 
 /**
@@ -50,7 +56,15 @@ export const DEVICE_PATHS = {
 export const DEVICE_APPROVE_PATH = "/runners/connect";
 
 /** Job-scoped calls, as the path's last segment. */
-export const JOB_CALLS = ["token", "events", "artifacts", "handback", "release"] as const;
+export const JOB_CALLS = [
+  "token",
+  "events",
+  "artifacts",
+  "handback",
+  "release",
+  "attachments",
+  "attachment",
+] as const;
 export type JobCall = (typeof JOB_CALLS)[number];
 
 /** Parses `/runner/v1/jobs/<id>/<call>`. */
@@ -62,9 +76,10 @@ export function parseJobPath(path: string): { jobId: string; call: JobCall } | n
   return { jobId: decodeURIComponent(match[1] ?? ""), call };
 }
 
-/** Calls whose responses the cloud never stores (they carry a secret). */
+/** Calls whose responses the cloud never stores (a secret, or a file's bytes). */
 export function isUnstoredPath(path: string): boolean {
-  return parseJobPath(path)?.call === "token";
+  const call = parseJobPath(path)?.call;
+  return call === "token" || call === "attachments" || call === "attachment";
 }
 
 /** A refused channel call. `code` is the cloud's refusal code (`fenced`, `killed`, …). */
@@ -89,6 +104,14 @@ export interface ControlPlaneClient {
   artifact(jobId: string, fencingToken: number, artifact: StoredArtifact): Promise<void>;
   handback(body: Handback): Promise<void>;
   release(body: ReleaseRequest): Promise<void>;
+  /** The job's work item's attachments (ADR 0260). Optional: a test client may leave it out. */
+  attachments?(jobId: string, fencingToken: number): Promise<AttachmentsResponse>;
+  /** One of them, with its bytes (base64). */
+  attachment?(
+    jobId: string,
+    fencingToken: number,
+    attachmentId: string,
+  ): Promise<AttachmentResponse>;
 }
 
 /** Content-hash id for an artifact, so uploading it twice is a no-op. */
@@ -165,5 +188,13 @@ export function httpControlPlane(config: {
     release: async (body) => {
       await call(PATHS.release(body.jobId), `rel:${body.jobId}`, body);
     },
+    // Reads, never stored by the cloud: each call gets a fresh key.
+    attachments: (jobId, fencingToken) =>
+      call(PATHS.attachments(jobId), `att:${jobId}:${crypto.randomUUID()}`, { fencingToken }),
+    attachment: (jobId, fencingToken, attachmentId) =>
+      call(PATHS.attachment(jobId), `att:${jobId}:${crypto.randomUUID()}`, {
+        fencingToken,
+        attachmentId,
+      }),
   };
 }

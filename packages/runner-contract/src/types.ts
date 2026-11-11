@@ -33,6 +33,9 @@ export const CONTRACT_VERSION = "1" as const;
  * - `hooks`: the harness session runs with the factory's hooks (claim-before-write, heartbeat).
  * - `headless`: runs with no desktop UI (a server, CI, a dev box).
  * - `own-hardware`: the runner is a machine its owner controls (client repos may require it).
+ * - `work-item-attachments`: fetches the work item's attachments over the channel into the run's
+ *   workspace, outside the git tree, and tells the agent where they are (ADR 0260). A runner
+ *   without it still runs every job; its agent just sees no attachments.
  */
 export const CAPABILITIES = [
   "browser",
@@ -41,6 +44,7 @@ export const CAPABILITIES = [
   "hooks",
   "headless",
   "own-hardware",
+  "work-item-attachments",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 

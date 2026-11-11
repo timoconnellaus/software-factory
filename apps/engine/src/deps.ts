@@ -1,6 +1,11 @@
 // Builds the core's InvokeDeps from the Worker's env: the GitHub App (or the fake), the runner-key
 // derivation, the floor and outbox delivery.
-import { type FactoryServices, type InvokeDeps, OperationError } from "@software-factory/core";
+import {
+  type FactoryServices,
+  type InvokeDeps,
+  OperationError,
+  r2AttachmentBlobs,
+} from "@software-factory/core";
 import { fakeGitHub } from "@software-factory/core/testing";
 import { runnerChannelKey } from "@software-factory/runner-contract";
 import { githubApp } from "./github/app.ts";
@@ -22,6 +27,7 @@ export function services(env: Env): FactoryServices {
   return {
     github,
     publicBaseUrl: env.PUBLIC_BASE_URL,
+    attachments: r2AttachmentBlobs(env.ATTACHMENTS),
     runnerKey: async (runnerId, version) => {
       if (!RUNNER_CHANNEL_SECRET) {
         throw new OperationError("unavailable", "RUNNER_CHANNEL_SECRET is not set on sf-engine");
