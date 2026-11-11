@@ -40,7 +40,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #9 | [Review decisions](reviews/2026-11-11-review-decisions.md) |
 | #10 | Review decisions applied to the docs: ADRs 0033–0047, amendments to 0001–0032, vocabulary (connector, autonomy policy, project template, Question, `docs/specs/`), R1 specs split into milestones, spec 15 |
 | #11 | [V1 scope](v1-scope.md): the dogfooding factory |
-| V1-1 | Core + engine: `core_*` schema, operations + `invoke()` + gate, the work-item Workflow, the signed runner channel, GitHub App job tokens. ADRs 0050–0054; spike ADRs 0100 and 0110 promoted |
+| #13 | V1 step 1, core + engine: `core_*` schema, operations + `invoke()` + gate, the work-item Workflow, the signed runner channel, GitHub App job tokens. ADRs 0050–0054; spike ADRs 0100 and 0110 promoted |
 
 ## In flight
 - Nothing recorded. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
