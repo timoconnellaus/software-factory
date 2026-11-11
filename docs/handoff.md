@@ -38,7 +38,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #7 | [Design review](reviews/2026-11-11-design-review.md) |
 | #8 | Custom domain and Worker secrets; `sf-app` and `sf-engine` deployed as placeholders (`/api/health` only) |
 | #9 | [Review decisions](reviews/2026-11-11-review-decisions.md) |
-| this | Review decisions applied to the docs: ADRs 0033–0047, amendments to 0001–0032, vocabulary (connector, autonomy policy, project template, Question, `docs/specs/`), R1 specs split into milestones, spec 15 |
+| #10 | Review decisions applied to the docs: ADRs 0033–0047, amendments to 0001–0032, vocabulary (connector, autonomy policy, project template, Question, `docs/specs/`), R1 specs split into milestones, spec 15 |
 
 ## In flight
 - Nothing recorded. The spikes are merged; their proposed ADRs (0100, 0110, 0120) move into
