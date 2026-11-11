@@ -500,3 +500,60 @@ export function assertSession(
   }
   return session;
 }
+
+/**
+ * The work item ended (cancelled, failed, rejected, done) while its planning session was open:
+ * end the session and stop its job, so its light slot comes free. Write-only, for any batch: a
+ * queued planning job is cancelled; a running one's run is cancelled and its lease released with the
+ * fencing token bumped, so the harness's next call is fenced and the heartbeat stops it.
+ */
+export function endPlanningSessions(ctx: HandlerContext, workItemId: string, reason: string) {
+  ctx.write(
+    ctx.db
+      .updateTable("core_planning_sessions")
+      .set({
+        status: "ended",
+        current_job_id: null,
+        ended_at: ctx.now,
+        end_reason: reason,
+        updated_at: ctx.now,
+      })
+      .where("work_item_id", "=", workItemId)
+      .where("status", "in", OPEN_SESSION as PlanningSessionRow["status"][]),
+  );
+  const planningRuns = ctx.db
+    .selectFrom("core_runs")
+    .select("core_runs.id")
+    .where("core_runs.work_item_id", "=", workItemId)
+    .where("core_runs.stage", "=", "planning")
+    .where("core_runs.status", "in", ["claimed", "preparing", "running", "collecting"]);
+  ctx.write(
+    ctx.db
+      .updateTable("core_leases")
+      .set((eb) => ({
+        fencing_token: eb("fencing_token", "+", 1),
+        holder_kind: null,
+        holder_id: null,
+        released_at: ctx.now,
+      }))
+      .where("work_item_id", "=", workItemId)
+      .where("holder_id", "in", planningRuns),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_runs")
+      .set({ status: "cancelled", outcome: "cancelled", summary: reason, ended_at: ctx.now })
+      .where("work_item_id", "=", workItemId)
+      .where("stage", "=", "planning")
+      .where("status", "in", ["claimed", "preparing", "running", "collecting"]),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_jobs")
+      .set({ status: "cancelled", finished_at: ctx.now })
+      .where("work_item_id", "=", workItemId)
+      .where("stage", "=", "planning")
+      .where("status", "in", ["queued", "claimed"]),
+  );
+  emitChanged(ctx, workItemId);
+}

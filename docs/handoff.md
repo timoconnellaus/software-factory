@@ -197,6 +197,27 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
 - A conflict or red CI at the head leaves the queue and goes back to build. The App has no
   `workflows` permission, so an update that brings in `.github/workflows/` changes is refused.
 
+**Planning, the loop (spec 20, ADRs 0300, 0301, 0302, 0350)**
+- Workflow **v5** (`WORKFLOW_VERSION = 5`): the spec stage is a planning session. `planning.start`
+  queues a light `planning` job; each round waits for the agent's `planning.ready`
+  (`planning-ready-<item>-<k>`, escalating open blocking questions on each question timeout), then
+  the spec gate. Request changes → `planning.note` (a chat message from the approver, same
+  session); approval or rejection → `planning.end`. Cancelling or finishing the item also ends it.
+  v1–v4 keep V1's spec rounds and `planning_round`.
+- The planning job's operations go over `/runner/v1/jobs/:id/planning`, scoped by the job and
+  fenced by its lease: `question.ask/update/delete/reorder/focus`, `spec.revise`, `chat.reply`,
+  `planning.news/wait/yield/ready`. People: `question.answer { note? }` (planning answers can be
+  revised), `chat.send`, `planning.presence`, `planning.move` (Continue on another runner),
+  `planning.get` (the Planning view). Live updates: `EngineApi.planningStream(workItemId)` (SSE from
+  the work item's PlanningHub). `inbox.list` has `planning` (sessions with a first draft) and each
+  runner's `light` pool.
+- Runners report `capacity.light`; the scheduler places light jobs (triage, spec, planning) and
+  heavy ones (build, verify) apart, pins a resume to its runner, and asks the oldest idle session to
+  yield when the light pool is full. The host relays the harness's planning calls; the harness
+  projects the planning MCP server and the hooks (`sf-runner --max-light`, default 6).
+- `spec.commit` writes Assumptions, Coverage and Clarifications sections and keeps the provenance
+  tags.
+
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):
 1. **(a) Core loop**, one user and one repo: spec 01 first (everything builds on it), then 02 and 03
