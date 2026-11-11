@@ -1,0 +1,214 @@
+// The runner host daemon (ADR 0014, 0016, 0100). Outbound only: every ~20 s it heartbeats (manifest,
+// capacity, the jobs it holds with their fencing tokens, which renews their leases), applies the
+// commands that come back (cancel, drain, steer), and claims jobs while it has room. Each job runs
+// concurrently through `runJob`. Nothing here knows which runner adapter it drives.
+import {
+  ChannelCallError,
+  type ControlPlaneClient,
+  type Job,
+  type RunnerAdapter,
+  type RunnerEvent,
+  type SessionHandle,
+  type WorkspaceHandle,
+} from "@software-factory/runner-contract";
+import type { HostGit } from "./git.ts";
+import { type JobReport, runJob } from "./job.ts";
+
+export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle> {
+  adapter: RunnerAdapter<W, S>;
+  cp: ControlPlaneClient;
+  git: HostGit;
+  /** Concurrent jobs. The adapter's own `capacity().max` caps it too. */
+  maxConcurrent: number;
+  heartbeatMs?: number;
+  log?: (message: string) => void;
+  onEvent?: (e: RunnerEvent) => void;
+  onJobDone?: (report: JobReport) => void;
+  fetch?: typeof fetch;
+  /** Tidies up after a crash: jobs this adapter still holds that the host isn't running. */
+  reapOrphans?: (running: Set<string>) => Promise<string[]>;
+}
+
+interface Running {
+  job: Job;
+  /** Handed back: the lease is gone, so the heartbeat no longer reports it. */
+  handedBack: boolean;
+  controller: AbortController;
+  done: Promise<JobReport>;
+}
+
+export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
+  private readonly running = new Map<string, Running>();
+  private draining = false;
+  private stopped = false;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private ticking: Promise<void> | null = null;
+  /** A claim whose answer never arrived is retried with the same id (same job back). */
+  private pendingClaimId: string | null = null;
+  private failures = 0;
+  readonly log: (message: string) => void;
+
+  constructor(private readonly options: HostOptions<W, S>) {
+    this.log = options.log ?? ((m) => console.log(`[runner] ${m}`));
+  }
+
+  get activeJobs(): string[] {
+    return [...this.running.keys()];
+  }
+
+  /** Starts the loop. Resolves once the first tick is done. */
+  async start(): Promise<void> {
+    if (this.options.reapOrphans) {
+      const reaped = await this.options.reapOrphans(new Set()).catch((err) => {
+        this.log(`reap: ${err instanceof Error ? err.message : err}`);
+        return [];
+      });
+      if (reaped.length) this.log(`cleaned up after a previous run: ${reaped.join(", ")}`);
+    }
+    await this.tick();
+  }
+
+  private schedule(ms: number) {
+    if (this.stopped) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => void this.tick(), ms);
+  }
+
+  /** One turn: heartbeat, commands, claims. Never overlaps itself. */
+  tick(): Promise<void> {
+    this.ticking ??= this.turn().finally(() => {
+      this.ticking = null;
+    });
+    return this.ticking;
+  }
+
+  private async turn(): Promise<void> {
+    const every = this.options.heartbeatMs ?? 20_000;
+    try {
+      const manifest = await this.options.adapter.manifest();
+      const capacity = await this.capacity();
+      const { commands, leases } = await this.options.cp.heartbeat({
+        manifest,
+        capacity,
+        activeJobs: [...this.running.values()]
+          .filter((r) => !r.handedBack)
+          .map((r) => ({
+            jobId: r.job.jobId,
+            fencingToken: r.job.lease.fencingToken,
+          })),
+        rateLimitedUntil: null,
+      });
+      this.failures = 0;
+      for (const lease of leases) {
+        const r = this.running.get(lease.jobId);
+        if (r) r.job.lease.expiresAt = lease.expiresAt;
+      }
+      for (const command of commands) {
+        if (command.kind === "cancel") {
+          const r = this.running.get(command.jobId);
+          if (r && !r.handedBack) {
+            this.log(`cancel ${command.jobId}: ${command.reason}`);
+            r.controller.abort(new Error(command.reason));
+          }
+        } else if (command.kind === "drain") {
+          this.log("drain: taking no new jobs");
+          this.draining = true;
+        }
+      }
+      while (!this.stopped && !this.draining) {
+        const room = await this.capacity();
+        if (!room.accepting || room.inUse >= room.max) break;
+        this.pendingClaimId ??= crypto.randomUUID();
+        const { job } = await this.options.cp.claim({
+          claimId: this.pendingClaimId,
+          capacity: room,
+          manifest,
+        });
+        this.pendingClaimId = null;
+        if (!job) break;
+        if (this.running.has(job.jobId)) break; // a replayed claim of a job we already run
+        this.launch(job);
+      }
+    } catch (err) {
+      // A refused claim (as opposed to a lost answer) gets a fresh id next time.
+      if (err instanceof ChannelCallError) this.pendingClaimId = null;
+      this.failures++;
+      this.log(
+        `heartbeat/claim failed (${this.failures}): ${err instanceof Error ? err.message : err}`,
+      );
+    }
+    // Back off on repeated failures, up to 5 minutes.
+    this.schedule(this.failures ? Math.min(every * 2 ** (this.failures - 1), 300_000) : every);
+  }
+
+  private async capacity() {
+    const reported = await this.options.adapter.capacity().catch(() => null);
+    const max = Math.min(this.options.maxConcurrent, reported?.max ?? this.options.maxConcurrent);
+    return {
+      max,
+      inUse: Math.max(this.running.size, reported?.inUse ?? 0),
+      accepting: !this.draining && !this.stopped && (reported?.accepting ?? true),
+    };
+  }
+
+  private launch(job: Job) {
+    const controller = new AbortController();
+    const entry: Running = {
+      job,
+      controller,
+      handedBack: false,
+      done: Promise.resolve(null as unknown as JobReport),
+    };
+    this.log(`claimed ${job.jobId}: ${job.stage} for #${job.workItem.number} on ${job.branch}`);
+    const done = runJob({
+      adapter: this.options.adapter,
+      cp: this.options.cp,
+      git: this.options.git,
+      job,
+      signal: controller.signal,
+      log: this.log,
+      onHandedBack: () => {
+        entry.handedBack = true;
+      },
+      ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
+      ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
+    })
+      .then((report) => {
+        this.log(
+          `${job.jobId} ${report.outcome}${report.handedBack ? ", handed back" : ""}${report.headSha ? ` @ ${report.headSha.slice(0, 7)}` : ""}${report.error ? ` (${report.error.slice(0, 300)})` : ""}`,
+        );
+        this.options.onJobDone?.(report);
+        return report;
+      })
+      .finally(() => {
+        this.running.delete(job.jobId);
+        // A slot came free: look for the next job now rather than at the next heartbeat.
+        if (!this.stopped) this.schedule(1_000);
+      });
+    entry.done = done;
+    this.running.set(job.jobId, entry);
+  }
+
+  /** Waits for every running job to finish. */
+  async idle(): Promise<JobReport[]> {
+    return Promise.all([...this.running.values()].map((r) => r.done));
+  }
+
+  /**
+   * Stops claiming. With `cancel`, running jobs are stopped (they release their workspaces and
+   * report failed, so the Workflow retries them elsewhere); otherwise they finish first.
+   */
+  async stop(options: { cancel?: boolean; timeoutMs?: number } = {}): Promise<void> {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    if (options.cancel) {
+      for (const r of this.running.values())
+        r.controller.abort(new Error("the runner is stopping"));
+    }
+    await Promise.race([
+      this.idle(),
+      new Promise((resolve) => setTimeout(resolve, options.timeoutMs ?? 120_000)),
+    ]);
+    await this.ticking;
+  }
+}

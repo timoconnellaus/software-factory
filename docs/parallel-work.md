@@ -15,6 +15,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | B+C+D | 0010–0039 | 0050–0059 | V1 step 1, core + engine (`v1-core-engine`): specs 01, 02 and the cloud half of 03 (schema, operations, Workflow, runner channel, job tokens). Also promotes spike ADRs 0100 and 0110 into `docs/adr/`. Used: migrations 0010, 0020, 0030; ADRs 0050–0054 | merged |
 | E | 0040–0049 | 0230–0239 | V1 step 4, verify + GitHub connector + incidents (`v1-verify-connector`): spec 04, the webhook connector, `factory/verify`, review-packet assembly, incidents, evals. Used: migration 0040; ADRs 0230, 0231 | merged |
 | F | 0050–0059 | 0240–0249 (free) | Spec 10, Sign-in and org switcher (Better Auth tables already exist in 0010; add columns here) | free |
+| G | — | 0250–0259 | V1 step 3, the runner (`v1-runner`): `local/runner-host`, `runner-orca`, `harness-claude`. Used: ADR 0250, no migrations | merged |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.

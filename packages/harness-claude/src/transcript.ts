@@ -1,0 +1,177 @@
+// Reading what a Claude Code session did, after it ends. Claude keeps each session's transcript as
+// JSONL under `<config dir>/projects/<cwd, with every non-alphanumeric character as "-">/`. From it
+// the runner takes the check output (tests, lint, typecheck the agent ran, with their results) and
+// the last thing the agent said, for the run's artifacts.
+import { readdir, readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { AdapterEvent } from "@software-factory/runner-contract";
+
+/** The transcript directory name Claude uses for a working directory. */
+export function projectDirName(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, "-");
+}
+
+/**
+ * Where Claude's config may live on this host: `CLAUDE_CONFIG_DIR`, `~/.claude`, and Orca's
+ * per-profile homes (Orca starts Claude with its own `CLAUDE_CONFIG_DIR` per account profile).
+ */
+export async function claudeConfigDirs(env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  const dirs = new Set<string>();
+  if (env.CLAUDE_CONFIG_DIR) dirs.add(env.CLAUDE_CONFIG_DIR);
+  dirs.add(join(homedir(), ".claude"));
+  const profiles = join(homedir(), "Library", "Application Support", "orca", "claude-profiles");
+  for (const entry of await readdir(profiles).catch(() => [] as string[])) {
+    dirs.add(join(profiles, entry, "home"));
+  }
+  return [...dirs];
+}
+
+/** The newest transcript for a working directory, modified at or after `since` (ms). */
+export async function findTranscript(
+  cwd: string,
+  options: { since?: number; configDirs?: string[] } = {},
+): Promise<string | null> {
+  const name = projectDirName(cwd);
+  let best: { path: string; mtime: number } | null = null;
+  for (const root of options.configDirs ?? (await claudeConfigDirs())) {
+    const dir = join(root, "projects", name);
+    for (const file of await readdir(dir).catch(() => [] as string[])) {
+      if (!file.endsWith(".jsonl")) continue;
+      const path = join(dir, file);
+      const { mtimeMs } = await stat(path);
+      if (mtimeMs < (options.since ?? 0)) continue;
+      if (!best || mtimeMs > best.mtime) best = { path, mtime: mtimeMs };
+    }
+  }
+  return best?.path ?? null;
+}
+
+interface ContentPart {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: { command?: string } & Record<string, unknown>;
+  tool_use_id?: string;
+  content?: string | { type: string; text?: string }[];
+  is_error?: boolean;
+}
+interface TranscriptLine {
+  type?: string;
+  message?: { role?: string; content?: string | ContentPart[] };
+}
+
+export interface CommandRun {
+  command: string;
+  output: string;
+  isError: boolean;
+}
+
+export interface TranscriptSummary {
+  commands: CommandRun[];
+  lastAssistantText: string | null;
+  toolCalls: number;
+}
+
+function text(content: ContentPart["content"]): string {
+  if (typeof content === "string") return content;
+  return (content ?? []).map((c) => c.text ?? "").join("\n");
+}
+
+/** Parses a transcript's JSONL: every Bash command with its output, and the final assistant text. */
+export function parseTranscript(jsonl: string): TranscriptSummary {
+  const pending = new Map<string, string>();
+  const commands: CommandRun[] = [];
+  let lastAssistantText: string | null = null;
+  let toolCalls = 0;
+  for (const line of jsonl.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: TranscriptLine;
+    try {
+      entry = JSON.parse(line) as TranscriptLine;
+    } catch {
+      continue;
+    }
+    const content = entry.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (entry.type === "assistant" && part.type === "tool_use") {
+        toolCalls++;
+        if (part.name === "Bash" && part.id && typeof part.input?.command === "string") {
+          pending.set(part.id, part.input.command);
+        }
+      } else if (entry.type === "assistant" && part.type === "text" && part.text?.trim()) {
+        lastAssistantText = part.text.trim();
+      } else if (entry.type === "user" && part.type === "tool_result" && part.tool_use_id) {
+        const command = pending.get(part.tool_use_id);
+        if (command === undefined) continue;
+        pending.delete(part.tool_use_id);
+        commands.push({ command, output: text(part.content), isError: part.is_error === true });
+      }
+    }
+  }
+  return { commands, lastAssistantText, toolCalls };
+}
+
+const CHECK = /\b(test|tests|vitest|jest|lint|biome|eslint|typecheck|tsc|check)\b/;
+
+/** The check commands (tests, lint, typecheck) and their output, as one log. */
+export function checkOutputLog(summary: TranscriptSummary, maxChars = 200_000): string | null {
+  const runs = summary.commands.filter((c) => CHECK.test(c.command));
+  if (runs.length === 0) return null;
+  const body = runs
+    .map((r) => `$ ${r.command}${r.isError ? "   [exit ≠ 0]" : ""}\n${r.output.trim()}\n`)
+    .join("\n");
+  return body.length > maxChars ? `…${body.slice(-maxChars)}` : body;
+}
+
+export async function readTranscript(path: string): Promise<TranscriptSummary> {
+  return parseTranscript(await readFile(path, "utf8"));
+}
+
+/**
+ * One stream-json line from headless `claude -p --output-format stream-json --verbose` (used by
+ * runner-local) → contract events.
+ */
+export function streamJsonToEvents(line: string): AdapterEvent[] {
+  let msg: {
+    type?: string;
+    subtype?: string;
+    result?: string;
+    is_error?: boolean;
+    message?: { content?: Array<{ type: string; text?: string; name?: string; input?: unknown }> };
+  };
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return line.trim() ? [{ type: "log", stream: "stdout", text: line }] : [];
+  }
+  if (msg.type === "system" && msg.subtype === "init") {
+    return [{ type: "agent.status", status: "working" }];
+  }
+  if (msg.type === "assistant") {
+    return (msg.message?.content ?? []).flatMap((part): AdapterEvent[] => {
+      if (part.type === "tool_use") {
+        const input = JSON.stringify(part.input ?? {});
+        return [{ type: "tool", name: part.name ?? "", input: input.slice(0, 8_000) }];
+      }
+      if (part.type === "text" && part.text) {
+        return [{ type: "log", stream: "stdout", text: part.text.slice(0, 64_000) }];
+      }
+      return [];
+    });
+  }
+  if (msg.type === "result") {
+    const ok = msg.subtype === "success" && !msg.is_error;
+    return [
+      { type: "agent.status", status: ok ? "done" : "error" },
+      {
+        type: "session.ended",
+        outcome: ok ? "completed" : "failed",
+        ...(msg.result ? { summary: msg.result } : {}),
+      },
+    ];
+  }
+  return [];
+}

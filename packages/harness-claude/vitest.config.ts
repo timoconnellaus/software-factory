@@ -1,3 +1,4 @@
-import { defineWorkersTestConfig } from "@software-factory/config/vitest";
+import { defineConfig } from "vitest/config";
 
-export default defineWorkersTestConfig();
+// Node, not workerd: the harness writes files and runs on the runner host.
+export default defineConfig({ test: { include: ["test/**/*.test.ts"] } });
