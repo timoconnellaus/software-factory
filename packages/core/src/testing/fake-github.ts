@@ -31,6 +31,8 @@ interface RepoState {
   parents: Record<string, string | null>;
   files: Record<string, Record<string, string>>;
   pulls: { number: number; head: string; base: string; title: string; state: "open" | "merged" }[];
+  /** PRs GitHub can't merge (`false`) or is still computing (`null`), by number. Default mergeable. */
+  mergeable?: Record<number, boolean | null>;
   tokens: number;
 }
 
@@ -60,6 +62,8 @@ export interface FakeGitHub extends GitHubService {
   /** Puts a file at a ref (or SHA) for `readFile`. */
   setFile(repo: RepoRef, ref: string, path: string, content: string): Promise<void>;
   setGuards(repo: RepoRef, guards: RepoGuards): Promise<void>;
+  /** Sets what GitHub says about a PR's mergeability (false: conflicts; null: still computing). */
+  setMergeable(repo: RepoRef, number: number, mergeable: boolean | null): Promise<void>;
   /** Sets a person's role on the repo (null: not a collaborator). */
   setPermission(repo: RepoRef, login: string, permission: string | null): Promise<void>;
   /** What `GET /app` reports (default: every event the factory needs). */
@@ -240,6 +244,22 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.pulls.push({ number, head, base, title, state: "open" });
       await save(r, state);
       return { number, url: pullUrl(r, number) };
+    },
+    async pullRequestMergeability(r, number) {
+      const state = await load(r);
+      const pull = state.pulls.find((p) => p.number === number);
+      if (!pull) throw new Error(`GitHub pull request #${number}: HTTP 404`);
+      const mergeable = state.mergeable?.[number] ?? true;
+      return {
+        mergeable: pull.state === "merged" ? false : mergeable,
+        mergeableState: mergeable === null ? "unknown" : mergeable ? "clean" : "dirty",
+        headSha: state.refs[pull.head] ?? null,
+      };
+    },
+    async setMergeable(r, number, mergeable) {
+      const state = await load(r);
+      state.mergeable = { ...(state.mergeable ?? {}), [number]: mergeable };
+      await save(r, state);
     },
     async mergePullRequest(r, { number, sha: expected }) {
       const state = await load(r);

@@ -233,7 +233,7 @@ export const reviewPacketRecord = defineOperation({
 export const ciRead = defineOperation({
   name: "ci.read",
   description:
-    "Read CI on GitHub for a work item's head SHA: the check runs other than the factory's own, and their state (success, failure, pending, missing). The Workflow waits on this before it assembles the review packet.",
+    "Read CI on GitHub for a work item's head SHA: the check runs other than the factory's own, and their state (success, failure, pending, missing). Also whether GitHub can merge the item's PR into the default branch (`mergeable`: false means conflicts, and GitHub then runs no `pull_request` CI at all; null means unknown or still computing). The Workflow waits on this before it assembles the review packet.",
   risk: "read",
   actors: ["agent", "human"],
   permission: "member",
@@ -250,12 +250,37 @@ export const ciRead = defineOperation({
         url: z.string().nullable(),
       }),
     ),
+    /** Added by ADR 0320; v2 Workflow instances ignore it. */
+    mergeable: z.boolean().nullable(),
+    mergeableState: z.string().nullable(),
   }),
   async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
     const repo = await repoRef(ctx, requireProject(ctx));
-    return readCi(ctx, repo, input.headSha);
+    const ci = await readCi(ctx, repo, input.headSha);
+    return { ...ci, ...(await readMergeability(ctx, repo, w.pr_number, input.headSha)) };
   },
 });
+
+/**
+ * Whether the item's PR can merge (ADR 0320). Unknown (null) when there's no PR, GitHub is still
+ * computing it, its head isn't `headSha` yet, or GitHub can't be read: never a guess.
+ */
+async function readMergeability(
+  ctx: HandlerContext,
+  repo: RepoRef,
+  prNumber: number | null,
+  headSha: string,
+): Promise<{ mergeable: boolean | null; mergeableState: string | null }> {
+  if (!prNumber) return { mergeable: null, mergeableState: null };
+  try {
+    const pr = await ctx.services.github.pullRequestMergeability(repo, prNumber);
+    if (pr.headSha && pr.headSha !== headSha) return { mergeable: null, mergeableState: "stale" };
+    return { mergeable: pr.mergeable, mergeableState: pr.mergeableState };
+  } catch {
+    return { mergeable: null, mergeableState: null };
+  }
+}
 
 export const verifyRefresh = defineOperation({
   name: "verify.refresh",

@@ -181,6 +181,15 @@ export interface GitHubService {
   repoPermission(repo: RepoRef, login: string): Promise<string | null>;
   /** The App's subscribed events and permissions (`GET /app`, its JWT). */
   appSettings(): Promise<AppSettings>;
+  /**
+   * Whether GitHub can merge the PR into its base (`GET /pulls/{n}`): `mergeable` is null while
+   * GitHub is still computing it (the first read starts that). `headSha` is the PR's head as GitHub
+   * sees it. GitHub runs no `pull_request` workflows on a PR it can't merge (ADR 0320).
+   */
+  pullRequestMergeability(
+    repo: RepoRef,
+    number: number,
+  ): Promise<{ mergeable: boolean | null; mergeableState: string | null; headSha: string | null }>;
   /** Merges the PR if its head is still `sha`. */
   mergePullRequest(
     repo: RepoRef,

@@ -258,6 +258,111 @@ describe("runJob", () => {
   });
 });
 
+/** Commits `content` to `path` on `branch` of the scratch GitHub, as someone else landing work. */
+async function land(
+  repo: { root: string; bare: string },
+  branch: string,
+  path: string,
+  content: string,
+) {
+  const wt = join(repo.root, `land-${Math.random().toString(36).slice(2, 8)}`);
+  git(repo.root, "clone", "-q", "-b", branch, repo.bare, wt);
+  await writeFile(join(wt, path), content);
+  git(wt, "add", ".");
+  git(wt, "-c", "user.name=o", "-c", "user.email=o@x.invalid", "commit", "-qm", `land ${path}`);
+  git(wt, "push", "-q", "origin", branch);
+}
+
+describe("runJob: the default branch is merged before a build (ADR 0320)", () => {
+  it("merges the default branch in, so the run branch stays mergeable", async () => {
+    const { repo, cloud, cp } = await world();
+    await land(repo, "main", "other.txt", "landed meanwhile\n");
+    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
+    cloud.claims.set("c", j);
+    const adapter = fakeAdapter((x) => repo.host.clonePath(x), edit("hello"));
+    const report = await runJob({ adapter, cp, git: repo.host, job: j });
+    expect(report.outcome).toBe("completed");
+    expect(git(repo.bare, "show", `${j.branch}:other.txt`)).toBe("landed meanwhile");
+    // main is an ancestor of the pushed head: the PR merges cleanly
+    git(repo.bare, "merge-base", "--is-ancestor", "main", j.branch);
+    // the diff artifact shows the session's change, not main's
+    const diff = [...cloud.artifacts.values()].find((a) => a.kind === "diff");
+    expect(diff?.kind === "diff" && diff.patch).toContain("+hello");
+    expect(diff?.kind === "diff" && diff.patch).not.toContain("landed meanwhile");
+  });
+
+  it("leaves a conflict for the session, and pushes the merge once it is resolved", async () => {
+    const { repo, cloud, cp } = await world();
+    await land(repo, "factory/7-add-a-line", "README.md", "# scratch\nours\n");
+    await land(repo, "main", "README.md", "# scratch\ntheirs\n");
+    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
+    cloud.claims.set("c", j);
+    let seen = "";
+    const adapter = fakeAdapter(
+      (x) => repo.host.clonePath(x),
+      async (wt) => {
+        seen = git(wt, "status", "--porcelain");
+        await writeFile(join(wt, "README.md"), "# scratch\nours\ntheirs\n");
+        git(wt, "add", "README.md");
+        git(wt, "-c", "user.name=a", "-c", "user.email=a@x.invalid", "commit", "-q", "--no-edit");
+        return [{ type: "session.ended", outcome: "completed" }];
+      },
+    );
+    const report = await runJob({ adapter, cp, git: repo.host, job: j });
+    expect(seen).toContain("UU README.md");
+    expect(report.outcome).toBe("completed");
+    expect(git(repo.bare, "show", `${j.branch}:README.md`)).toBe("# scratch\nours\ntheirs");
+    git(repo.bare, "merge-base", "--is-ancestor", "main", j.branch);
+    const events = cloud.events.get(j.jobId) ?? [];
+    expect(JSON.stringify(events)).toContain("merging main conflicts in 1 file(s)");
+  });
+
+  it("fails a build that leaves the merge unresolved, and pushes nothing", async () => {
+    const { repo, cloud, cp } = await world();
+    await land(repo, "factory/7-add-a-line", "README.md", "# scratch\nours\n");
+    await land(repo, "main", "README.md", "# scratch\ntheirs\n");
+    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
+    cloud.claims.set("c", j);
+    const adapter = fakeAdapter(
+      (x) => repo.host.clonePath(x),
+      async () => [{ type: "session.ended", outcome: "completed" }],
+    );
+    const report = await runJob({ adapter, cp, git: repo.host, job: j });
+    expect(report.outcome).toBe("failed");
+    expect(cloud.handbacks.get(j.jobId)?.summary).toContain("left unresolved in: README.md");
+    expect(() => git(repo.bare, "rev-parse", "--verify", j.branch)).toThrow();
+  });
+
+  it("a clean merge alone is not a build when the branch has no work of its own", async () => {
+    const { repo, cloud, cp } = await world();
+    await land(repo, "main", "other.txt", "x\n");
+    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
+    cloud.claims.set("c", j);
+    const adapter = fakeAdapter(
+      (x) => repo.host.clonePath(x),
+      async () => [{ type: "session.ended", outcome: "completed" }],
+    );
+    const report = await runJob({ adapter, cp, git: repo.host, job: j });
+    expect(report.outcome).toBe("failed");
+    expect(cloud.handbacks.get(j.jobId)?.summary).toContain("no commits");
+  });
+
+  it("a clean merge alone is a build on a retry, when the branch already has work", async () => {
+    const { repo, cloud, cp } = await world();
+    await land(repo, "factory/7-add-a-line", "mine.txt", "mine\n");
+    await land(repo, "main", "other.txt", "x\n");
+    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
+    cloud.claims.set("c", j);
+    const adapter = fakeAdapter(
+      (x) => repo.host.clonePath(x),
+      async () => [{ type: "session.ended", outcome: "completed" }],
+    );
+    const report = await runJob({ adapter, cp, git: repo.host, job: j });
+    expect(report.outcome).toBe("completed");
+    git(repo.bare, "merge-base", "--is-ancestor", "main", j.branch);
+  });
+});
+
 describe("RunnerHost", () => {
   it("heartbeats, claims, runs, and frees its slot", async () => {
     const { repo, cloud, cp } = await world();
