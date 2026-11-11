@@ -63,9 +63,16 @@ recommendations, mockups and designs. Used at triage, spec, agent questions, des
 greenfield kickoff.
 _Avoid_: interview (that is the kim tool it is modelled on), grooming
 
+**Planning session**
+One session of planning on a work item, by type: planning (the owners), clarification (a guest who
+sees only their own questions), design review, or decision (a one-off question). A work item can
+have several. Owners delegate questions, never the whole feature.
+_Avoid_: interview, meeting, thread
+
 **Living spec**
 A work item's spec, updated as planning answers arrive, with its acceptance criteria. Written in the
-stage-spec format (Goal / Scope / Out of scope / Acceptance criteria).
+stage-spec format (Goal / Scope / Out of scope / Acceptance criteria). Committed to
+`docs/stages/NN-*.md` when it is approved.
 _Avoid_: PRD, design doc, plan
 
 **Acceptance criterion**

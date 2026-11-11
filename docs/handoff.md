@@ -47,7 +47,7 @@ Recorded under each ADR's Consequences: cascade/depth limits and kill-switch sco
 `.factory/` changes reach the control plane (0009), token usage reporting (0011), what "small"
 means for skipping the spec (0013), job transport to runners (0016), where the model-role map
 lives (0018), lease length and mid-run local takeover (0021), runner push credentials (0025),
-preset tiers (0026), v1 planning scope (0028), unowned decision domains (0029), client as org vs
+preset tiers (0026), decision domains with no owner (0029), client as org vs
 factory (0032).
 
 ## Needs the human

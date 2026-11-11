@@ -16,3 +16,9 @@ behaviour and UX while engineers decide architecture.
 - Open question: how to handle a domain that is touched but has no declared owner (fall back to the
   project approver, or block).
 - Status note: the UI plan marks domains as proposed; this ADR records the product plan's decision.
+
+> Amended 2026-11-11 (UI interview, `.kim/plans/2026-11-11-software-factory-ui-design.md`): the
+> default domains are **product**, **architecture** and **security & privacy**; projects can add
+> their own (e.g. clinical). When build touches a domain the spec did not plan for, the build pauses
+> and sends a scoped question to that domain's owner while other work continues. Still open: a
+> touched domain with no declared owner.
