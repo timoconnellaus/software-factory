@@ -481,35 +481,98 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
               })),
               enforceAdmins: raw.enforce_admins?.enabled === true,
             };
-      const list = await api(repo, "GET", "/rulesets", undefined, ADMIN_READ_PERMISSIONS);
+      // Org rulesets too: they guard the branch as much as the repo's own.
+      const list = await api(
+        repo,
+        "GET",
+        "/rulesets?includes_parents=true&per_page=100",
+        undefined,
+        ADMIN_READ_PERMISSIONS,
+      );
       if (list.status !== 200) fail("rulesets", list);
       const rulesets: RepoGuards["rulesets"] = [];
       for (const item of (list.json as { id: number }[]) ?? []) {
         const one = await api(
           repo,
           "GET",
-          `/rulesets/${item.id}`,
+          `/rulesets/${item.id}?includes_parents=true`,
           undefined,
           ADMIN_READ_PERMISSIONS,
         );
         if (one.status !== 200) continue;
         const rs = one.json as {
+          id: number;
           name: string;
           enforcement: string;
           target?: string;
           conditions?: { ref_name?: { include?: string[]; exclude?: string[] } };
-          rules?: { type: string }[];
+          rules?: { type: string; parameters?: Record<string, unknown> }[];
+          bypass_actors?: { actor_id: number | null; actor_type: string; bypass_mode?: string }[];
         };
-        if (rs.target && rs.target !== "branch") continue;
         rulesets.push({
+          id: rs.id,
           name: rs.name,
+          target: rs.target ?? "branch",
           enforcement: rs.enforcement,
           include: rs.conditions?.ref_name?.include ?? [],
           exclude: rs.conditions?.ref_name?.exclude ?? [],
-          rules: (rs.rules ?? []).map((x) => x.type),
+          rules: (rs.rules ?? []).map((x) => ({
+            type: x.type,
+            ...(x.parameters ? { parameters: x.parameters } : {}),
+          })),
+          // GitHub leaves the list out for callers it won't show it to: unknown, not empty.
+          bypassActors: rs.bypass_actors
+            ? rs.bypass_actors.map((x) => ({
+                actorType: x.actor_type,
+                actorId: x.actor_id ?? null,
+                bypassMode: x.bypass_mode ?? "always",
+              }))
+            : null,
         });
       }
-      return { protection, rulesets };
+      // GitHub's own answer for what is in force on the branch (org rulesets, patterns, evaluate
+      // mode all resolved by GitHub).
+      const inForce = await api(
+        repo,
+        "GET",
+        `/rules/branches/${ref(branch)}?per_page=100`,
+        undefined,
+        METADATA_PERMISSIONS,
+      );
+      const branchRules =
+        inForce.status === 200
+          ? (
+              inForce.json as {
+                type: string;
+                parameters?: Record<string, unknown>;
+                ruleset_id: number;
+              }[]
+            ).map((x) => ({
+              type: x.type,
+              rulesetId: x.ruleset_id,
+              ...(x.parameters ? { parameters: x.parameters } : {}),
+            }))
+          : null;
+      return { protection, rulesets, branchRules };
+    },
+    async repoPermission(repo, login) {
+      const r = await api(
+        repo,
+        "GET",
+        `/collaborators/${encodeURIComponent(login)}/permission`,
+        undefined,
+        METADATA_PERMISSIONS,
+      );
+      if (r.status === 404) return null;
+      if (r.status !== 200) fail(`permission of ${login}`, r);
+      const body = r.json as { permission?: string; role_name?: string };
+      return body.role_name ?? body.permission ?? null;
+    },
+    async appSettings() {
+      const r = await asApp("/app");
+      if (!r.ok) throw new Error(`GitHub /app: HTTP ${r.status} ${await r.text()}`);
+      const body = (await r.json()) as { events?: string[]; permissions?: Record<string, string> };
+      return { events: body.events ?? [], permissions: body.permissions ?? {} };
     },
   };
 }

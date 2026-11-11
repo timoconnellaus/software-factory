@@ -1,15 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import {
-  assemblePacket,
-  checkOnlyDiff,
-  checkRepoGuards,
-  FACTORY_RULESET,
-  FOREMAN,
-  riskFlags,
-  summarizeCi,
-} from "../src/index.ts";
-import { FAKE_APP } from "../src/testing/index.ts";
+import { assemblePacket, checkOnlyDiff, FOREMAN, riskFlags, summarizeCi } from "../src/index.ts";
+import { FAKE_APP, protectedGuards } from "../src/testing/index.ts";
 import { first, newItem, ok, refusal, rows, services, world } from "./helpers.ts";
 
 const github = services.github;
@@ -463,7 +455,7 @@ describe("the check-only auto-merge (ADR 0230)", () => {
 });
 
 describe("project onboarding", () => {
-  it("needs factory/verify pinned to the App, enforce_admins and the confining ruleset", async () => {
+  it("needs the generated default-branch ruleset and the confining ruleset (ADR 0280)", async () => {
     const w = await world();
     const bad = await ok<{ ok: boolean; problems: string[] }>(
       "project.checkGitHub",
@@ -472,46 +464,19 @@ describe("project onboarding", () => {
     );
     expect(bad.ok).toBe(false);
     expect(bad.problems).toEqual([
-      "the default branch has no branch protection",
-      "no active ruleset confines App pushes to factory/*",
+      "a pull request isn't required before merging",
+      "`factory/verify` not required",
+      "`ci` not required",
+      "force pushes are allowed",
+      "the branch can be deleted",
+      "no active ruleset confines the App's pushes to `factory/*`",
     ]);
-    const ruleset = {
-      name: FACTORY_RULESET.name,
-      enforcement: "active",
-      include: [...FACTORY_RULESET.conditions.ref_name.include],
-      exclude: [...FACTORY_RULESET.conditions.ref_name.exclude],
-      rules: FACTORY_RULESET.rules.map((r) => r.type),
-    };
-    await github.setGuards(w.repo, {
-      protection: {
-        requiredChecks: [
-          { context: "ci", appId: 15368 },
-          { context: "factory/verify", appId: Number(FAKE_APP.id) },
-        ],
-        enforceAdmins: true,
-      },
-      rulesets: [ruleset],
-    });
+    await github.setGuards(w.repo, protectedGuards());
     const good = await ok<{ ok: boolean }>(
       "project.checkGitHub",
       { projectId: w.projectId },
       w.human,
     );
     expect(good).toEqual({ ok: true, problems: [] });
-    expect(
-      checkRepoGuards(
-        {
-          protection: {
-            requiredChecks: [{ context: "factory/verify", appId: null }],
-            enforceAdmins: false,
-          },
-          rulesets: [ruleset],
-        },
-        FAKE_APP.id,
-      ).problems,
-    ).toEqual([
-      "factory/verify isn't pinned to the factory's App (1000); it is any source",
-      "branch protection doesn't enforce admins",
-    ]);
   });
 });

@@ -127,6 +127,20 @@ export interface CoreProjectsTable {
   policy_pr_url: string | null;
 }
 
+/** 0070 (ADR 0280): the last verdict on a project's default-branch protection. */
+export interface CoreProjectProtectionTable {
+  project_id: string;
+  state: "ok" | "red" | "unknown";
+  /** JSON string[]: what's missing. */
+  problems: JsonText;
+  /** JSON string[]: what couldn't be confirmed (not a failure). */
+  warnings: JsonText;
+  trigger: string;
+  checked_at: Iso;
+  changed_at: Iso;
+  last_ok_at: Iso | null;
+}
+
 export interface CoreProjectPoliciesTable {
   project_id: string;
   sha: string;
@@ -593,6 +607,7 @@ export interface CoreDatabase {
   core_factories: CoreFactoriesTable;
   core_projects: CoreProjectsTable;
   core_project_policies: CoreProjectPoliciesTable;
+  core_project_protection: CoreProjectProtectionTable;
   core_kill_switches: CoreKillSwitchesTable;
   core_batch_guard: CoreBatchGuardTable;
   core_work_items: CoreWorkItemsTable;

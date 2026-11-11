@@ -126,6 +126,14 @@ notes, screenshots, risk flags, the diff and a preview link. Sections are set pe
 app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
 _Avoid_: PR summary, report
 
+**Default-branch ruleset**
+The repository ruleset that guards a project's default branch: a PR, the CI checks and
+`factory/verify` (pinned to the App, branch up to date), no force pushes, no deletion, **no bypass
+actors**. The factory generates it as a file (`<repo>-default-branch.json`); a person imports it on
+GitHub, because the App only reads repository settings. **Protection** is the factory's verdict on
+it: `ok`, or `red` with what's missing; a red after an ok is **drift** (ADR 0280).
+_Avoid_: branch protection (GitHub's older, classic mechanism), lock
+
 **Lease**
 A time-limited claim on a work item by a session or runner, kept alive by heartbeat. While a local
 session holds the lease, cloud runs back off.

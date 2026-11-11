@@ -2,7 +2,6 @@
 // SHA, assemble the review packet, post `factory/verify` from the App for that SHA, re-evaluate it
 // whenever CI or the PR changes, the onboarding check, and the check-only auto-merge (ADR 0230).
 import { checkResultSchema } from "@software-factory/runner-contract";
-import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
@@ -16,31 +15,21 @@ import {
 import type { ChangedFile, RepoRef } from "../services.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
-import { checkRepoGuards } from "../verify/onboarding.ts";
 import { assemblePacket, verifyCheckOutput } from "../verify/packet.ts";
 import { ciEvent } from "../workflow-events.ts";
-import { projectId, repoRef, requireProject, requireWorkItem, sha, workItemId } from "./shared.ts";
+import { inspectProtection } from "./protection.ts";
+import {
+  projectForRepo,
+  projectId,
+  repoName,
+  repoRef,
+  requireProject,
+  requireWorkItem,
+  sha,
+  workItemId,
+} from "./shared.ts";
 
-/** A repo as webhooks name it; operations that take one resolve the project from it. */
-export const repoName = z.object({
-  owner: z.string().regex(/^[A-Za-z0-9-]{1,39}$/),
-  name: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
-});
-
-/** Scope resolver for connector calls: the project whose repo this is. */
-export async function projectForRepo(
-  db: HandlerContext["db"],
-  repo: { owner: string; name: string },
-): Promise<string> {
-  const row = await db
-    .selectFrom("core_projects")
-    .select("id")
-    .where(sql<string>`lower(repo_owner)`, "=", repo.owner.toLowerCase())
-    .where(sql<string>`lower(repo_name)`, "=", repo.name.toLowerCase())
-    .executeTakeFirst();
-  if (!row) throw new OperationError("not_found", `no project for ${repo.owner}/${repo.name}`);
-  return row.id;
-}
+export { projectForRepo, repoName };
 
 async function readCi(ctx: HandlerContext, repo: RepoRef, headSha: string): Promise<CiSummary> {
   const gh = ctx.services.github;
@@ -480,17 +469,15 @@ export const prAutoMerge = defineOperation({
 export const projectCheckGitHub = defineOperation({
   name: "project.checkGitHub",
   description:
-    "The onboarding check (spec 04): does the project's repo require `factory/verify` from the factory's App on its default branch with admins enforced, and does an active ruleset confine App pushes to `factory/*` (ADR 0052)? Returns the problems; a project with any isn't ready for the factory.",
+    "The onboarding check (spec 04, ADR 0280): do the rules in force on the project's default branch match the generated ruleset (a PR, `ci` and `factory/verify` pinned to the factory's App, strict, no force pushes, no deletion, nobody bypassing), and does an active ruleset confine App pushes to `factory/*` (ADR 0052)? Returns the problems without recording them (protection.check records).",
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
   input: z.object({ projectId }),
   output: z.object({ ok: z.boolean(), problems: z.array(z.string()) }),
   async handler(_input, ctx) {
-    const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
-    const gh = ctx.services.github;
-    return checkRepoGuards(await gh.repoGuards(repo, project.default_branch), gh.app.id);
+    const { verdict } = await inspectProtection(ctx, requireProject(ctx));
+    return { ok: verdict.ok, problems: verdict.problems };
   },
 });
 

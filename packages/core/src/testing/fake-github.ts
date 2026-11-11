@@ -2,6 +2,7 @@
 // D1 (one JSON row per repo, in a table it creates), so a Workflow and a test see the same repo.
 // Commits form a parent chain so fast-forwards are checked like the real thing.
 import type {
+  AppSettings,
   ChangedFile,
   CheckRunInfo,
   GitHubService,
@@ -10,6 +11,7 @@ import type {
   RepoGuards,
   RepoRef,
 } from "../services.ts";
+import { PROTECTION_EVENTS } from "../verify/protection.ts";
 
 type Touch = string | { path: string; status: ChangedFile["status"] };
 
@@ -22,6 +24,8 @@ interface RepoState {
   /** Files by ref or SHA, for `readFile`. */
   blobs?: Record<string, Record<string, string>>;
   guards?: RepoGuards;
+  /** Repo roles by lowercased login, for `repoPermission`. The owner is admin unless set. */
+  permissions?: Record<string, string | null>;
   /** The App's installation on this repo; undefined reads as `"1"`, null as not installed. */
   installation?: string | null;
   parents: Record<string, string | null>;
@@ -56,6 +60,10 @@ export interface FakeGitHub extends GitHubService {
   /** Puts a file at a ref (or SHA) for `readFile`. */
   setFile(repo: RepoRef, ref: string, path: string, content: string): Promise<void>;
   setGuards(repo: RepoRef, guards: RepoGuards): Promise<void>;
+  /** Sets a person's role on the repo (null: not a collaborator). */
+  setPermission(repo: RepoRef, login: string, permission: string | null): Promise<void>;
+  /** What `GET /app` reports (default: every event the factory needs). */
+  setAppSettings(settings: AppSettings): void;
   /** Sets the App's installation on a repo for `findRepoInstallation` (null: not installed). Default `"1"`. */
   setInstallation(
     repo: Pick<RepoRef, "owner" | "repo">,
@@ -80,6 +88,18 @@ const GREEN_CI: Omit<CheckRunInfo, "id"> = {
 
 export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
   const key = (r: RepoRef) => `${r.owner}/${r.repo}`;
+  let appSettings: AppSettings = {
+    events: [
+      "pull_request",
+      "check_suite",
+      "check_run",
+      "push",
+      "installation",
+      "installation_repositories",
+      ...PROTECTION_EVENTS,
+    ],
+    permissions: { administration: "read", contents: "write", metadata: "read" },
+  };
   let ready: Promise<unknown> | null = null;
   const init = () => {
     ready ??= d1
@@ -337,7 +357,22 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       await d1.prepare(`DELETE FROM ${INSTALLATIONS} WHERE id = ?`).bind(id).run();
     },
     async repoGuards(r) {
-      return (await load(r)).guards ?? { protection: null, rulesets: [] };
+      return (await load(r)).guards ?? { protection: null, rulesets: [], branchRules: null };
+    },
+    async repoPermission(r, login) {
+      const state = await load(r);
+      return state.permissions?.[login.toLowerCase()] ?? (login === r.owner ? "admin" : null);
+    },
+    async appSettings() {
+      return appSettings;
+    },
+    setAppSettings(settings) {
+      appSettings = settings;
+    },
+    async setPermission(r, login, permission) {
+      const state = await load(r);
+      state.permissions = { ...(state.permissions ?? {}), [login.toLowerCase()]: permission };
+      await save(r, state);
     },
     async setChecks(r, at, checks) {
       const state = await load(r);

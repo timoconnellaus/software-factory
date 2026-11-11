@@ -4,7 +4,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { POLICY_PATH, parseProjectPolicy } from "../src/index.ts";
-import { fakeUserToken } from "../src/testing/index.ts";
+import { fakeUserToken, protectedGuards } from "../src/testing/index.ts";
 import {
   call,
   first,
@@ -528,28 +528,14 @@ describe("setup.status", () => {
     expect(step(s, "project")?.done).toBe(true);
     expect(step(s, "policy")?.done).toBe(true);
     expect(step(s, "runner")?.done).toBe(false);
-    expect(step(s, "verify")).toMatchObject({ done: false });
-    expect(step(s, "verify")?.detail).toMatch(/branch protection/);
+    expect(step(s, "protect")).toMatchObject({ done: false });
+    expect(step(s, "protect")?.detail).toMatch(/`factory\/verify` not required/);
 
     const runner = await ok<{ runnerId: string }>("runner.register", { name: "m5" }, w.human);
     await env.DB.prepare("UPDATE core_runners SET last_seen_at = ? WHERE id = ?")
       .bind(new Date().toISOString(), runner.runnerId)
       .run();
-    await github.setGuards(w.repo, {
-      protection: {
-        requiredChecks: [{ context: "factory/verify", appId: 1000 }],
-        enforceAdmins: true,
-      },
-      rulesets: [
-        {
-          name: "factory",
-          enforcement: "active",
-          include: ["~ALL"],
-          exclude: ["refs/heads/factory/**", "~DEFAULT_BRANCH"],
-          rules: ["creation", "update", "deletion"],
-        },
-      ],
-    });
+    await github.setGuards(w.repo, protectedGuards());
     s = await ok<Status>("setup.status", { orgId: w.orgId }, w.human);
     expect(s.steps.filter((x) => !x.done)).toEqual([]);
     expect(s.complete).toBe(true);

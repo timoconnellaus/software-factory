@@ -42,5 +42,5 @@ const LABEL: Record<string, string> = {
   project: "Project",
   policy: "Policy",
   runner: "Runner online",
-  verify: "factory/verify",
+  protect: "Protect main",
 };

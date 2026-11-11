@@ -11,7 +11,6 @@ import { defineOperation, type HandlerContext, type ProjectRow } from "../operat
 import { POLICY_PATH } from "../policy/project-policy.ts";
 import { isOrgAdmin } from "../scope.ts";
 import type { InstallationInfo, InstallationRepo } from "../services.ts";
-import { checkRepoGuards } from "../verify/onboarding.ts";
 import {
   manageInstallationUrl,
   type ProjectView,
@@ -19,6 +18,12 @@ import {
   projectViews,
   syncPolicyFromGitHub,
 } from "./projects.ts";
+import {
+  missingProtectionEvents,
+  type ProtectionView,
+  protectionView,
+  protectionViewFor,
+} from "./protection.ts";
 import { projectId, repoRef, requireProject } from "./shared.ts";
 import { RUNNER_OFFLINE_MS } from "./work-items.ts";
 
@@ -537,12 +542,12 @@ export const policyProposeTemplate = defineOperation({
   },
 });
 
-const STEP_KEYS = ["github", "project", "policy", "runner", "verify"] as const;
+const STEP_KEYS = ["github", "project", "policy", "runner", "protect"] as const;
 
 export const setupStatus = defineOperation({
   name: "setup.status",
   description:
-    "The Setup checklist for an org, live: GitHub connected, a project, its policy valid, one of your runners online, and `factory/verify` required on the default branch (asked of GitHub as the App). Each step says what's wrong; `complete` is true when all are green.",
+    "The Setup checklist for an org, live: GitHub connected, a project, its policy valid, one of your runners online, and the default branch protected (ADR 0280: the rules in force match the generated ruleset, asked of GitHub with the App's read-only access; Setup offers the file to import, the deep link to GitHub's rulesets page, and a message for the repo admin when the viewer isn't one). Each step says what's wrong; `complete` is true when all are green. `missingEvents` lists App webhook events drift detection needs that the App isn't subscribed to.",
   risk: "read",
   actors: ["human"],
   permission: "member",
@@ -553,9 +558,12 @@ export const setupStatus = defineOperation({
     installations: z.array(installationView),
     projects: z.array(
       projectView.extend({
-        verify: z.object({ ok: z.boolean(), problems: z.array(z.string()) }).nullable(),
+        /** Null until the project is connected. */
+        protection: protectionView.nullable(),
       }),
     ),
+    /** App events (repository_ruleset, branch_protection_rule) to tick on the App's settings. */
+    missingEvents: z.array(z.string()),
     runners: z.object({ total: z.number(), online: z.number() }),
   }),
   async handler(input, ctx) {
@@ -567,25 +575,12 @@ export const setupStatus = defineOperation({
       .orderBy("name")
       .execute();
     const views = await projectViews(ctx.db, rows);
-    const projects: (ProjectView & { verify: { ok: boolean; problems: string[] } | null })[] = [];
+    const projects: (ProjectView & { protection: ProtectionView | null })[] = [];
     for (const [i, view] of views.entries()) {
       const row = rows[i] as ProjectRow;
-      let verify: { ok: boolean; problems: string[] } | null = null;
-      if (view.connection.status === "connected") {
-        try {
-          const gh = ctx.services.github;
-          const repo = await repoRef(ctx, row);
-          verify = checkRepoGuards(await gh.repoGuards(repo, row.default_branch), gh.app.id);
-        } catch (err) {
-          verify = {
-            ok: false,
-            problems: [
-              `couldn't read branch protection: ${err instanceof Error ? err.message : String(err)}`,
-            ],
-          };
-        }
-      }
-      projects.push({ ...view, verify });
+      const protection =
+        view.connection.status === "connected" ? await protectionViewFor(ctx, row) : null;
+      projects.push({ ...view, protection });
     }
     const runners = await ctx.db
       .selectFrom("core_runners")
@@ -601,7 +596,7 @@ export const setupStatus = defineOperation({
     const active = records.filter((r) => r.status === "active");
     const connected = projects.filter((p) => p.connection.status === "connected");
     const withPolicy = connected.filter((p) => p.policy.state === "valid");
-    const verified = withPolicy.filter((p) => p.verify?.ok);
+    const protectedOnes = withPolicy.filter((p) => p.protection?.state === "ok");
     const first = connected[0] ?? projects[0];
     const steps = [
       {
@@ -648,15 +643,15 @@ export const setupStatus = defineOperation({
             : "Connect a runner: run `sf-runner login` on the machine that will build",
       },
       {
-        key: "verify" as const,
-        done: withPolicy.length > 0 && verified.length === withPolicy.length,
+        key: "protect" as const,
+        done: withPolicy.length > 0 && protectedOnes.length === withPolicy.length,
         detail: !withPolicy.length
           ? "Once the project has a policy"
-          : verified.length === withPolicy.length
-            ? "factory/verify is required on the default branch"
+          : protectedOnes.length === withPolicy.length
+            ? `${withPolicy.map((p) => p.repo.defaultBranch).join(", ")} protected: a PR, ci and factory/verify required, no bypass`
             : withPolicy
-                .filter((p) => !p.verify?.ok)
-                .map((p) => `${p.name}: ${(p.verify?.problems ?? ["not checked"]).join("; ")}`)
+                .filter((p) => p.protection?.state !== "ok")
+                .map((p) => `${p.name}: ${(p.protection?.problems ?? ["not checked"]).join("; ")}`)
                 .join(" · "),
       },
     ];
@@ -666,6 +661,7 @@ export const setupStatus = defineOperation({
       installations: records.map(toInstallationView),
       projects,
       runners: { total: runners.length, online },
+      missingEvents: connected.length ? await missingProtectionEvents(ctx) : [],
     };
   },
 });

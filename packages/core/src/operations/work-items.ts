@@ -1,5 +1,6 @@
 // Work items: intake (with dedupe), reads for the app, stage bookkeeping for the Workflow, triage,
 // finishing and cancelling.
+
 import { parseJson } from "@software-factory/db";
 import { triageResultSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
@@ -9,6 +10,8 @@ import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
+import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
+import { protectionDrift } from "./protection.ts";
 import {
   createWorkItem,
   projectId,
@@ -940,6 +943,19 @@ export const inboxList = defineOperation({
       }),
     ),
     wipHolds: z.array(z.object({ projectId: z.string(), waitingBuilds: z.number() })),
+    /** "Protection on `main` changed" (ADR 0280): projects whose protection went red after ok. */
+    protection: z.array(
+      z.object({
+        projectId: z.string(),
+        name: z.string(),
+        repo: z.object({ owner: z.string(), name: z.string() }),
+        branch: z.string(),
+        problems: z.array(z.string()),
+        changedAt: z.string(),
+        rulesetsUrl: z.string(),
+        files: z.array(z.object({ kind: z.enum(RULESET_KINDS), filename: z.string() })),
+      }),
+    ),
   }),
   async handler(input, ctx) {
     const me = ctx.actor.id;
@@ -952,7 +968,7 @@ export const inboxList = defineOperation({
       .map((m) => m.organization_id)
       .filter((id) => !input.orgId || id === input.orgId);
     if (orgIds.length === 0)
-      return { gates: [], questions: [], running: [], runners: [], wipHolds: [] };
+      return { gates: [], questions: [], running: [], runners: [], wipHolds: [], protection: [] };
 
     const pending = await ctx.db
       .selectFrom("core_pending_actions")
@@ -1079,6 +1095,22 @@ export const inboxList = defineOperation({
       running: running.map(summarise),
       runners,
       wipHolds: holds.map((h) => ({ projectId: h.project_id, waitingBuilds: Number(h.n) })),
+      protection: (await protectionDrift(ctx, orgIds)).map((d) => {
+        const problems = parseJson<string[]>(d.problems, []);
+        return {
+          projectId: d.projectId,
+          name: d.name,
+          repo: { owner: d.owner, name: d.repo },
+          branch: d.branch,
+          problems,
+          changedAt: d.changedAt,
+          rulesetsUrl: rulesetsUrl({ owner: d.owner, name: d.repo }),
+          files: (problems.some((p) => p.includes("confines the App's pushes"))
+            ? (["default-branch", "factory-branches"] as const)
+            : (["default-branch"] as const)
+          ).map((kind) => ({ kind, filename: `${d.repo}-${kind}.json` })),
+        };
+      }),
     };
   },
 });
