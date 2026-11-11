@@ -1,8 +1,8 @@
 # Spec 21: Planning M2, visuals
 
 Read first:
-- ADRs [0260](../adr/0260-planning-is-a-live-session-on-a-runner.md) and
-  [0265](../adr/0265-planning-artifacts-and-the-kim-folder.md);
+- ADRs [0280](../adr/0280-planning-is-a-live-session-on-a-runner.md) and
+  [0285](../adr/0285-planning-artifacts-and-the-kim-folder.md);
 - [spec 20](20-planning-loop.md);
 - the mockup [`planning-three-pane.html`](../../.kim/mockups/planning-three-pane.html) (the
   Mockups and Canvas tabs);

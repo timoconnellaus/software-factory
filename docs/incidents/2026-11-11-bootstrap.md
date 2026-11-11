@@ -2,8 +2,8 @@
 
 The first factory incidents. They were found by hand while setting up V1 on production (the app's
 Setup page and the M5 runner), not opened by `incident.open`, because the factory wasn't running yet.
-There are four. Each has the root-cause class the incident flow uses (`packages/core/src/incidents/classify.ts`)
-and what in `.factory/` or the specs would have caught it. All four are fixed on branch `bootstrap-fixes`.
+There are six (the fifth and sixth were found during the first real job). Each has the root-cause class the incident flow uses (`packages/core/src/incidents/classify.ts`)
+and what in `.factory/` or the specs would have caught it. The first four are fixed on branch `bootstrap-fixes`, the fifth on `runner-orca-resolve-repo`, the sixth on `harness-permission-mode`.
 
 | # | What happened | Root cause class | Fixed by |
 | --- | --- | --- | --- |
@@ -11,6 +11,8 @@ and what in `.factory/` or the specs would have caught it. All four are fixed on
 | 2 | Setup's installation auto-detect failed ("No GitHub App installation found: …") although the App is installed on the repo | `missing-context` | Detection moved to the engine and asks as the App (JWT), not the user; the reason is shown as GitHub gave it |
 | 3 | Setup's Copy gave `runner id: …\nkey: …`; `sf-runner pair --key-stdin` read all of it as the key → `401 bad signature` | `missing-check` (no contract test across two builds) | Copy gives the ready-to-run command plus a separate key copy; `pair` accepts either form and names a runner-id mismatch |
 | 4 | `sf-runner install` captured the shell's Node 22 into the launchd plist | `runner` | `install` refuses Node < 24 with the fix, pins the absolute Node path and puts its directory first on `PATH` |
+| 5 | The runner added a second Orca repo for `software-factory` next to the owner's, and churned a new one per job | `missing-check` (spec gap) | ADR 0260: jobs run in the existing Orca repo found by canonical identity; clone-once fallback; startup migration; `sf-runner doctor --fix` (branch `runner-orca-resolve-repo`) |
+| 6 | The job's Claude ran with `--permission-mode auto` although the factory projected `dontAsk`: the launcher added the owner's own mode, and a CLI flag beats a settings file | `runner` (launcher override + missing post-launch verification) | ADR 0270: the harness owns its launch command (no user settings, its own mode), the sandbox in every stage, the live process verified before the prompt, `harness-config-mismatch` kills and fails the job; `sf-runner doctor` checks running jobs (branch `harness-permission-mode`) |
 
 ## 1. A project couldn't be fixed after creation
 **What happened.** The installation lookup failed (incident 2), Setup showed a toast that disappeared, and
@@ -93,6 +95,106 @@ the runner spawns use the same Node.
 
 **What would have caught it.** A rule that every precondition `doctor` checks is also checked by the
 command that depends on it. It belongs in the runner-host spec's acceptance criteria.
+
+## 5. The runner added a second Orca repo
+**What happened.** Found on the M5 during work item #1, the first real job. Orca showed the project
+`github:timoconnellaus/software-factory` with two source repos, both named `software-factory`: the
+owner's `~/orca/projects/software-factory` and the runner's own clone under
+`~/.local/state/software-factory/runner/repos/`. The sidebar showed confusing duplicates.
+`runner-orca`'s `prepareWorkspace` always registered the host's clone and never looked for a repo Orca
+already had for the project; `release` unregistered it when its last job ended, so every job
+registered it again under a new repo id.
+
+**Root cause (`missing-check`, a spec gap).** The runner brief said "isolated workspace" and ADR 0250
+said "the host owns the clone; the runner never uses the owner's own checkouts". Nobody specified
+"resolve the existing Orca project": that a runner on a person's machine joins the projects they
+already have. The spike's finding that Orca has no `repo rm` (only `project setup-delete --force`)
+was read as "clean up what you add" rather than "don't add". No test looked at Orca's repo list
+across jobs.
+
+**Fix.** [ADR 0260](../adr/0260-runners-attach-to-the-existing-checkout.md). The runner contract has a
+workspace resolution rule (`canonicalRepoKey`, optional `RunnerAdapter.resolveCheckout`). `runner-orca`
+finds the Orca repo whose `gitRemoteIdentity.canonicalKey` is the job's `github.com/<owner>/<repo>` and
+creates the job's worktree in it. The host fetches the item branch into that checkout by URL, into
+`refs/software-factory/heads/*`, with the token only in the git process's environment, and never
+touches the owner's config, branches or working tree. Only when Orca has no repo for the remote does
+the host clone once and register it once, for good. `release` never unregisters. On startup the host
+retires a clone it registered earlier next to an owner repo, and `sf-runner doctor [--fix]` flags (and
+repairs) duplicate source repos and orphaned `sf-job:` worktrees. Tests run the real adapter and host
+git against a scripted Orca CLI (`local/runner-host/test/orca-workspace.test.ts`).
+
+**What would have caught it.** A spec line for every runner adapter: *resolve existing workspaces by
+canonical identity and never create a duplicate registration; per-job state is a worktree and a
+branch.* It is now in `.factory/checks/runner-adapters.md`, with two checks that run in CI:
+`runner-adapter-resolves-existing-repo` (the adapter must call `findRepoForJob` and never
+`repoForget`; it flags the old adapter) and `runner-never-rewrites-remotes`. No
+`evals/regressions/` case: like the other bootstrap incidents it has no `inc_` id, and the regression
+format requires one.
+
+## 6. The launcher overrode the harness's permission mode
+**What happened.** Found on the M5 during work item #1. The runner projected
+`.claude/settings.local.json` with `"defaultMode": "dontAsk"` into the job's worktree, but the job's
+Claude process (pid 45141 in `sf-job-8de27aab…`) ran as `claude … --permission-mode auto`. The
+runner started Claude with `orca agent launch`, which adds the owner's own Claude permission mode:
+their `~/.claude/settings.json` has `"defaultMode": "auto"`. A CLI flag beats any settings file, so
+the factory's mode was silently replaced. The run went ahead in the owner's auto mode, with a model
+classifier rather than the stage's allowlist deciding what it could do. Nothing looked at the process
+after launch, so nobody knew until someone ran `ps`.
+
+**Root cause (`runner`: launcher override + missing post-launch verification).** Two gaps:
+- **The launcher was trusted to pass the harness's config through.** The spike had already found that
+  `orca agent launch` takes no agent arguments and starts Claude with the owner's own settings
+  (`spikes/runner-orca` finding 7). ADR 0250 answered that with a projected settings file. It didn't
+  ask what the launcher adds on top, or whether a settings file can lose to a flag (it can).
+- **Nothing verified the effective configuration.** The projection was write-only: the harness
+  wrote a file and assumed the process obeyed it. The same pattern hid two more launcher effects,
+  found while fixing this:
+  - Orca's status hooks live in the owner's user settings, and its `PreToolUse` and
+    `PermissionRequest` hooks can answer permission decisions.
+  - Orca's terminals add `CLAUDE_CODE_PLUGIN_DIRS`.
+
+**Fix.** [ADR 0270](../adr/0270-the-factory-launches-the-harness-and-verifies-it.md).
+- **The harness owns the invocation.** `harness-claude` writes a launch script that `exec`s
+  `claude --permission-mode <mode> --setting-sources project,local --settings <run settings> --strict-mcp-config [--model …]`.
+  No user settings, so the owner's config never applies. `runner-orca` runs it in a visible Orca
+  terminal (`orca terminal create`), not `orca agent launch`, and answers Claude's folder trust dialog
+  for the job's worktree. Orca's status hooks come with the factory's settings, without the
+  permission-deciding ones.
+- **Per-stage settings:**
+  - build runs in `bypassPermissions` inside Claude Code's sandbox (`allowUnsandboxedCommands: false`,
+    writes limited to the worktree, temp and the run's own git objects, network limited to the npm
+    registry, GitHub and the Cloudflare API, deny rules on the runner key, `~/.ssh`, `~/.config/gh`,
+    `~/.wrangler` and the keychains);
+  - triage, spec and verify keep `dontAsk` with their allowlists, plus the sandbox;
+  - `.factory/policy.json` → `harness` can pick the modes and add to the allowlists, read from the
+    default branch only.
+- **Verify after launch.** Before the prompt is sent, the runner compares the live process's command
+  line with the launch record, and both settings copies with the projected hash. Any difference
+  closes the terminal (killing Claude) and fails the job with `harness-config-mismatch`, which the
+  incident classifier files as `runner`. `sf-runner doctor` runs the same check on running jobs.
+- **Tests:**
+  - the invocation per stage;
+  - the sandbox block (never `allowUnsandboxedCommands: true`);
+  - the mismatch → kill → fail path against a scripted Orca and `ps`;
+  - the owner's user settings not loaded;
+  - a launch script run for real and verified, then caught after its settings are edited.
+- **Live run on the M5,** through the real adapter, Orca and Claude:
+  - verified before the prompt;
+  - `example.com` blocked, the npm registry reachable;
+  - `~/.ssh` and the owner's checkout's `.env` unreadable;
+  - writes to `~` refused by both Bash and the Write tool;
+  - a commit in the linked worktree went through.
+
+**What would have caught it.** A rule for every harness: *a harness must verify its effective
+configuration after launch*: the flags it really runs with and the settings it really loaded,
+before it does any work. It is in `.factory/checks/runner-adapters.md`, with two checks that run in
+CI:
+- `harness-verifies-its-launch` (a runner adapter must call `verifyLaunch` and fail with
+  `harness-config-mismatch`, and must not use `agent launch`; it flags the old adapter);
+- `harness-sandbox-floor` (the harness never sets `allowUnsandboxedCommands: true`, never skips
+  permissions by flag, and never loads `user` settings).
+
+No `evals/regressions/` case: like the other bootstrap incidents, it has no `inc_` id.
 
 ## Follow-ups (not done here)
 - ~~Add the spec-template rules from 1 and 3 when the stage-spec template is next touched.~~ Done

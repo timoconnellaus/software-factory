@@ -1,6 +1,6 @@
 # Spec 25: Verify checks drift from the spec
 
-Read first: ADRs [0266](../adr/0266-verify-checks-drift-from-the-spec.md) and
+Read first: ADRs [0286](../adr/0286-verify-checks-drift-from-the-spec.md) and
 [0020](../adr/0020-verification-and-review-packet.md); [spec 04](04-verify-and-pr.md).
 
 ## Goal

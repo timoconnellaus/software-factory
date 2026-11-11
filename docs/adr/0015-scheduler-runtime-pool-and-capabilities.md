@@ -23,4 +23,4 @@ The factory decides what runs where; runners only execute.
 > allowlist covers the project ([ADR 0038](0038-runner-sharing-is-an-owner-allowlist.md)), and a
 > paused work item releases its slot ([ADR 0035](0035-lease-fencing-and-one-branch-per-run.md)).
 
-> Amended 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)): runner capacity has **heavy** (build, verify) and **light** (planning, triage) pools with separate limits; idle planning sessions are asked to yield only when the light pool is full ([ADR 0261](0261-runner-capacity-has-heavy-and-light-pools.md)).
+> Amended 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)): runner capacity has **heavy** (build, verify) and **light** (planning, triage) pools with separate limits; idle planning sessions are asked to yield only when the light pool is full ([ADR 0281](0281-runner-capacity-has-heavy-and-light-pools.md)).

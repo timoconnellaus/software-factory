@@ -1,4 +1,4 @@
-# ADR 0262: Specs carry provenance and coverage, and a critic reviews them before the gate
+# ADR 0282: Specs carry provenance and coverage, and a critic reviews them before the gate
 
 Status: accepted, 2026-11-11 (planning interview; prior art: AWS AI-DLC, GitHub Spec Kit `/clarify`, Jules' planning critic).
 

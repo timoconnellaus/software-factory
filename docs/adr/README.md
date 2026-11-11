@@ -2,7 +2,7 @@
 
 Each ADR is `NNNN-slug.md` with Status, Context, Decision and Consequences. ADRs are never deleted: when a decision changes, amend it with a dated note.
 
-Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); 0048–0059 is the V1 core + engine build; 0230–0239 is V1 step 4 (verify + connector + incidents); 0260–0269 is the planning design; spikes use 0100–0199 (0100 runner contract and 0110 Workflow and gate are accepted and promoted here; 0120 auth is still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
+Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); 0048–0059 is the V1 core + engine build; 0230–0239 is V1 step 4 (verify + connector + incidents); 0280–0289 is the planning design; spikes use 0100–0199 (0100 runner contract and 0110 Workflow and gate are accepted and promoted here; 0120 auth is still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
 
 | ADR | Title |
 | --- | --- |
@@ -67,10 +67,12 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0100](0100-runner-contract.md) | The runner contract (promoted from the spike) |
 | [0110](0110-work-item-workflow-and-gate.md) | A Workflow per work item, gated through the operation pipeline (promoted from the spike) |
 | [0250](0250-runner-host-pushes-and-harness-projection.md) | The runner host pushes; the harness gets a projected settings file and no credentials |
-| [0260](0260-planning-is-a-live-session-on-a-runner.md) | Planning is a live agent session on a runner, modelled on kim |
-| [0261](0261-runner-capacity-has-heavy-and-light-pools.md) | Runner capacity has heavy and light pools |
-| [0262](0262-spec-provenance-coverage-and-critic.md) | Specs carry provenance and coverage, and a critic reviews them before the gate |
-| [0263](0263-a-planning-session-can-split-a-work-item.md) | A planning session can split a work item |
-| [0264](0264-triage-scores-readiness-and-can-ask.md) | Triage scores readiness and can ask |
-| [0265](0265-planning-artifacts-and-the-kim-folder.md) | Planning artifacts are stored in the factory and kept in `.kim/`; mockups render on a sandboxed origin |
-| [0266](0266-verify-checks-drift-from-the-spec.md) | Verify checks drift from the approved spec |
+| [0260](0260-runners-attach-to-the-existing-checkout.md) | Runners attach to the machine's existing checkout of a repo, by canonical identity |
+| [0270](0270-the-factory-launches-the-harness-and-verifies-it.md) | The factory launches the harness (its own permission mode, no user settings), sandboxes it, and verifies the live process |
+| [0280](0280-planning-is-a-live-session-on-a-runner.md) | Planning is a live agent session on a runner, modelled on kim |
+| [0281](0281-runner-capacity-has-heavy-and-light-pools.md) | Runner capacity has heavy and light pools |
+| [0282](0282-spec-provenance-coverage-and-critic.md) | Specs carry provenance and coverage, and a critic reviews them before the gate |
+| [0283](0283-a-planning-session-can-split-a-work-item.md) | A planning session can split a work item |
+| [0284](0284-triage-scores-readiness-and-can-ask.md) | Triage scores readiness and can ask |
+| [0285](0285-planning-artifacts-and-the-kim-folder.md) | Planning artifacts are stored in the factory and kept in `.kim/`; mockups render on a sandboxed origin |
+| [0286](0286-verify-checks-drift-from-the-spec.md) | Verify checks drift from the approved spec |

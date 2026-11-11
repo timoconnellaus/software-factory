@@ -4,7 +4,7 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { CAPABILITIES, type Capability, JOB_STAGES } from "@software-factory/runner-contract";
+import { CAPABILITIES, type Capability } from "@software-factory/runner-contract";
 import { z } from "zod";
 
 export const DEFAULT_BASE_URL = "https://sf-engine.zerobsai.com";
@@ -20,10 +20,6 @@ export const configSchema = z.object({
   heartbeatMs: z.number().int().min(2_000).max(120_000).default(20_000),
   /** Capabilities to declare (default: everything the adapter supports). */
   capabilities: z.array(z.enum(CAPABILITIES)).optional(),
-  /** Claude permission mode per stage (default: `dontAsk` everywhere). */
-  permissionMode: z
-    .partialRecord(z.enum(JOB_STAGES), z.enum(["dontAsk", "acceptEdits", "auto", "plan"]))
-    .optional(),
   identity: z.object({ name: z.string(), email: z.string() }).optional(),
   orcaBin: z.string().optional(),
   /** Test only: clone/push URL per canonical GitHub URL. */

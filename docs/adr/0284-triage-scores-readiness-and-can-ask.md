@@ -1,4 +1,4 @@
-# ADR 0264: Triage scores readiness and can ask
+# ADR 0284: Triage scores readiness and can ask
 
 Status: accepted, 2026-11-11 (planning interview; prior art: Devin's `!plan` confidence, OpenHands' `ready-for-dev`).
 

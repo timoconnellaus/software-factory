@@ -1,8 +1,8 @@
 # Spec 23: Planning M4, triage questions, the readiness check and the spec critic
 
 Read first:
-- ADRs [0264](../adr/0264-triage-scores-readiness-and-can-ask.md),
-  [0262](../adr/0262-spec-provenance-coverage-and-critic.md) and
+- ADRs [0284](../adr/0284-triage-scores-readiness-and-can-ask.md),
+  [0282](../adr/0282-spec-provenance-coverage-and-critic.md) and
   [0013](../adr/0013-triage-sizes-the-spec-gate.md);
 - [spec 20](20-planning-loop.md).
 

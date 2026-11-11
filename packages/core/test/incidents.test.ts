@@ -15,6 +15,12 @@ describe("incident root causes", () => {
     expect(c("run_stalled", "the run stalled")).toBe("runner");
     expect(c("run_failed", "lease expired: no heartbeat")).toBe("runner");
     expect(
+      c(
+        "run_failed",
+        "gave up after 3 failed attempts: the build run failed: harness-config-mismatch: the process runs `claude --permission-mode auto`",
+      ),
+    ).toBe("runner");
+    expect(
       c("run_failed", "branch confinement (ADR 0052): the run pushed outside its own branch"),
     ).toBe("confinement");
     expect(c("sent_back", "It didn't follow our convention for route files")).toBe(

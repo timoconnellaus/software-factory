@@ -1,9 +1,9 @@
-# ADR 0265: Planning artifacts are stored in the factory and kept in `.kim/`; mockups render on a sandboxed origin
+# ADR 0285: Planning artifacts are stored in the factory and kept in `.kim/`; mockups render on a sandboxed origin
 
 Status: accepted, 2026-11-11 (planning interview).
 
 ## Context
-Planning now makes mockups and system designs ([ADR 0260](0260-planning-is-a-live-session-on-a-runner.md)).
+Planning now makes mockups and system designs ([ADR 0280](0280-planning-is-a-live-session-on-a-runner.md)).
 They need a home while planning runs, a place in the repo once approved, and a safe way to show
 agent-written HTML.
 

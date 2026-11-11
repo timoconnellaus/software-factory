@@ -1,7 +1,9 @@
 // runner-orca: the runner contract over the `orca` CLI (ADR 0014, 0100). A job becomes an Orca
 // worktree on the run branch (tagged with an `sf-job:<jobId>` comment so capacity and cleanup
 // survive a host restart), the Claude harness's per-run settings are projected into it, and Claude
-// Code runs in an Orca terminal, so a person can take the run over in the Orca UI. Events come from
+// Code runs in an Orca terminal with the harness's own launch command (ADR 0270), so a person can
+// take the run over in the Orca UI. The live process is checked against the launch record before
+// the prompt is sent. Events come from
 // polling `orca worktree ps` (agent state, tool, last message) and paging `orca terminal read`.
 // Artifacts are the terminal screen, the check output from Claude's transcript and, with the
 // browser capability, screenshots from Orca's embedded browser. Git (the diff, the push) is the
@@ -10,13 +12,20 @@ import { access, appendFile, mkdir, readFile, realpath, rmdir } from "node:fs/pr
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  type ClaudeHooks,
   checkOutputLog,
   findTranscript,
-  type PermissionMode,
+  HARNESS_CONFIG_MISMATCH,
+  type LaunchRecord,
+  PID_FILE,
   PRIVATE_WORKTREE_FILES,
   projectHarness,
+  type ReadCommand,
+  readLaunchRecord,
   readTranscript,
   removeRunDir,
+  shellQuote,
+  verifyLaunch,
 } from "@software-factory/harness-claude";
 import {
   type AdapterEvent,
@@ -27,7 +36,6 @@ import {
   type Capacity,
   CONTRACT_VERSION,
   type Job,
-  type JobStage,
   RESULT_FILE,
   type RunnerAdapter,
   type SessionHandle,
@@ -35,14 +43,20 @@ import {
 } from "@software-factory/runner-contract";
 import { type Exec, nodeExec, run } from "./exec.ts";
 import { type OrcaAgentRow, OrcaCliError, type OrcaCliOptions, orcaCli } from "./orca-cli.ts";
+import { findRepoForJob, JOB_COMMENT_PREFIX } from "./workspace.ts";
 
-export const JOB_COMMENT_PREFIX = "sf-job:";
+export { JOB_COMMENT_PREFIX };
 
 export interface OrcaWorkspace extends WorkspaceHandle {
   worktreeId: string;
   repoId: string;
   repoPath: string;
   runDir: string;
+  runTmp: string;
+  /** What the harness must look like once launched (the harness's launch record). */
+  launch: LaunchRecord;
+  /** The harness's launch script, run with `/bin/sh` in the job's terminal. */
+  launchScript: string;
 }
 
 export interface OrcaSession extends SessionHandle {
@@ -50,25 +64,42 @@ export interface OrcaSession extends SessionHandle {
   paneKey?: string;
   worktreeId: string;
   worktreePath: string;
+  /** The harness's launch script; its pid file is next to it. */
+  launchScript: string;
   startedAt: number;
 }
 
 export interface OrcaRunnerConfig extends OrcaCliOptions {
   maxConcurrent?: number;
-  /** The local checkout Orca registers for a job's repo (the runner host's clone). */
+  /**
+   * The runner host's own clone of a job's repo. Used only when this machine's Orca has no repo for
+   * the job's remote (ADR 0260): it is then registered once and kept.
+   */
   resolveRepoPath: (job: Job) => Promise<string> | string;
-  /** Where the job's worktree starts (default `job.repo.baseRef`): a ref or a SHA in that checkout. */
-  startPoint?: (job: Job) => Promise<string> | string;
+  /**
+   * Where the runner keeps its own clones. A repo under it loses to the owner's own checkout of the
+   * same remote, and the startup migration retires it.
+   */
+  ownReposDir?: string;
+  /**
+   * Where the job's worktree starts (default `job.repo.baseRef`): a ref or a SHA in the checkout at
+   * `repoPath`.
+   */
+  startPoint?: (job: Job, repoPath: string) => Promise<string> | string;
   /** Per-run private directories (git config, empty tool dirs) go under here. */
   runsDir: string;
   /** Absolute paths the harness must not read (the runner's key, the repo cache's .git). */
   protectPaths?: string[];
-  /** Permission mode per stage, overriding the harness defaults. */
-  permissionMode?: Partial<Record<JobStage, PermissionMode>>;
   /** Commit identity for the harness. */
   identity?: { name: string; email: string };
   /** The Orca agent id for the harness; V1 only has claude-code → "claude". */
   agent?: string;
+  /** The `claude` executable the launch script runs (default `claude` on the terminal's PATH). */
+  claudeBin?: string;
+  /** How long Claude may take to come up in its terminal before the job fails. */
+  startTimeoutMs?: number;
+  /** Reads a live process's command line (default `ps`). Tests script it. */
+  readCommand?: ReadCommand;
   pollMs?: number;
   /** A session waiting on a person this long fails (it can be taken over before then). */
   waitingInputTimeoutMs?: number;
@@ -107,6 +138,11 @@ function findImagePath(value: unknown): string | undefined {
   return undefined;
 }
 
+/** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
+export function isRunBranch(branch: string): boolean {
+  return /^factory\/[0-9]+-[a-z0-9-]+-run-[0-9]+$/.test(branch);
+}
+
 /** A worktree directory name for the job. */
 export function worktreeName(jobId: string): string {
   return `sf-${jobId.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 40)}`;
@@ -120,6 +156,64 @@ const exists = (path: string) =>
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
+/**
+ * Orca's status hook, for a harness launched without the owner's user settings (where Orca keeps
+ * its hooks). It reports to Orca over the env Orca gives every terminal, and is a no-op elsewhere.
+ */
+export const ORCA_STATUS_HOOK_COMMAND =
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansions, not a template
+  'if [ -n "${HOME-}" ] && [ -x "${HOME-}/.orca/agent-hooks/claude-hook.sh" ]; then ORCA_HOOK_AGENT_PID="${PPID:-}"; export ORCA_HOOK_AGENT_PID; /bin/sh "${HOME-}/.orca/agent-hooks/claude-hook.sh"; else printf \'{}\\n\'; fi';
+
+/**
+ * The events Orca's sidebar needs to show the run's state. Not PreToolUse, PermissionRequest or
+ * Elicitation: Orca's hook can answer those, and the factory's settings decide permissions alone.
+ */
+export const ORCA_STATUS_HOOK_EVENTS = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "Stop",
+  "StopFailure",
+  "SubagentStart",
+  "SubagentStop",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "SessionEnd",
+] as const;
+
+export function orcaStatusHooks(): ClaudeHooks {
+  const hooks: ClaudeHooks = {};
+  for (const event of ORCA_STATUS_HOOK_EVENTS) {
+    hooks[event] = [
+      { hooks: [{ type: "command", command: ORCA_STATUS_HOOK_COMMAND, timeout: 10 }] },
+    ];
+  }
+  return hooks;
+}
+
+/** A job failed because its live harness isn't configured as the factory set it (ADR 0270). */
+export class HarnessConfigMismatch extends Error {
+  override name = "HarnessConfigMismatch";
+  constructor(readonly problems: string[]) {
+    super(`${HARNESS_CONFIG_MISMATCH}: ${problems.join("; ")}`);
+  }
+}
+
+/** Claude's first-run folder trust dialog (Orca's `agent launch` pre-trusts; a plain terminal doesn't). */
+const TRUST_DIALOG = /trust this folder/i;
+
+/**
+ * Checks a running job's harness against its launch record (for `sf-runner doctor`). Null when the
+ * job has no launch record (not launched yet, or by an older runner).
+ */
+export async function checkRunningHarness(
+  runDir: string,
+  readCommand?: ReadCommand,
+): Promise<{ record: LaunchRecord; problems: string[] } | null> {
+  const record = await readLaunchRecord(runDir);
+  if (!record) return null;
+  return { record, problems: await verifyLaunch(record, readCommand) };
+}
+
 export function createOrcaRunner(
   config: OrcaRunnerConfig,
 ): RunnerAdapter<OrcaWorkspace, OrcaSession> {
@@ -128,9 +222,12 @@ export function createOrcaRunner(
   const pollMs = config.pollMs ?? 2000;
   const agent = config.agent ?? "claude";
   const waitingInputTimeoutMs = config.waitingInputTimeoutMs ?? 15 * 60_000;
+  const startTimeoutMs = config.startTimeoutMs ?? 90_000;
   const capabilities = config.capabilities ?? DEFAULT_CAPABILITIES;
-  /** Repos this runner registered in Orca, to unregister when its last job is released. */
-  const addedRepos = new Set<string>();
+  const ownership = {
+    exec,
+    ...(config.ownReposDir ? { ownReposDir: config.ownReposDir } : {}),
+  };
 
   async function findAgent(session: OrcaSession): Promise<OrcaAgentRow | undefined> {
     const rows = await orca.worktreePs();
@@ -140,6 +237,18 @@ export function createOrcaRunner(
       row.agents.find((a) => session.paneKey && a.paneKey === session.paneKey) ??
       row.agents.find((a) => a.agentType === agent)
     );
+  }
+
+  /** Claude is up in the job's own pane: its launch script ran and Orca sees an agent there. */
+  async function isUp(session: OrcaSession): Promise<boolean> {
+    if (!session.paneKey) return false;
+    const pid = await readFile(join(dirname(session.launchScript), PID_FILE), "utf8").catch(
+      () => "",
+    );
+    if (!pid.trim()) return false;
+    const rows = await orca.worktreePs().catch(() => []);
+    const row = rows.find((r) => r.worktreeId === session.worktreeId);
+    return !!row?.agents.some((a) => a.paneKey === session.paneKey);
   }
 
   async function screenshot(worktreeId: string, url: string): Promise<Artifact> {
@@ -208,7 +317,9 @@ export function createOrcaRunner(
       // empty. rmdir only succeeds on an empty folder, so other worktrees are never touched.
       await rmdir(dirname(workspace.path)).catch(() => {});
       // The local branch always goes: the pushed run branch (or the diff artifact) is the record.
+      // Only ever a factory run branch: the checkout may be the owner's own.
       await attempt("delete branch", async () => {
+        if (!isRunBranch(workspace.branch)) return;
         const has = await exec(
           "git",
           ["rev-parse", "--verify", "--quiet", `refs/heads/${workspace.branch}`],
@@ -218,16 +329,9 @@ export function createOrcaRunner(
           await run(exec, "git", ["branch", "-D", workspace.branch], { cwd: workspace.repoPath });
         }
       });
-      await attempt("remove run dir", () => removeRunDir(workspace.runDir));
-      if (addedRepos.has(workspace.repoId)) {
-        const stillUsed = (await orca.worktreePs()).some(
-          (r) => r.repoId === workspace.repoId && r.comment?.startsWith(JOB_COMMENT_PREFIX),
-        );
-        if (!stillUsed) {
-          await attempt("unregister repo", () => orca.repoForget(workspace.repoId));
-          addedRepos.delete(workspace.repoId);
-        }
-      }
+      await attempt("remove run dir", () => removeRunDir(workspace.runDir, workspace.runTmp));
+      // The repo itself stays registered: it is the owner's project (or the runner's one permanent
+      // clone), never a per-job registration (ADR 0260).
     }
     if (errors.length > 0) throw new Error(errors.join("; "));
   }
@@ -248,32 +352,39 @@ export function createOrcaRunner(
       return { max: config.maxConcurrent ?? 2, inUse, accepting: true };
     },
 
+    async resolveCheckout(job): Promise<string | null> {
+      return (await findRepoForJob(orca, job, ownership))?.path ?? null;
+    },
+
     async prepareWorkspace(job): Promise<OrcaWorkspace> {
-      const repoPath = await realpath(await config.resolveRepoPath(job));
-      const repos = await orca.repoList();
-      let repo: (typeof repos)[number] | undefined;
-      for (const r of repos) {
-        if ((await realpath(r.path).catch(() => r.path)) === repoPath) repo = r;
-      }
+      // ADR 0260: the Orca repo that already exists for the job's remote; only when there is none,
+      // the host's clone, registered once and kept.
+      let repo: { id: string; path: string } | null = await findRepoForJob(orca, job, ownership);
       if (!repo) {
-        repo = await orca.repoAdd(repoPath);
-        addedRepos.add(repo.id);
+        const clone = await realpath(await config.resolveRepoPath(job));
+        // Registered already under another identity (no remote yet, say)? Reuse it by path.
+        for (const r of await orca.repoList()) {
+          if ((await realpath(r.path).catch(() => r.path)) === clone) repo = r;
+        }
+        repo ??= await orca.repoAdd(clone);
       }
+      const repoPath = await realpath(repo.path).catch(() => repo.path);
       // A local branch left by a crashed run would make Orca suffix the name; the run branch is
-      // this run's alone (ADR 0035), so a stale local copy can go.
+      // this run's alone (ADR 0035), so a stale local copy can go. Only a factory run branch that
+      // no worktree has checked out: never one of the owner's branches.
       const stale = await exec("git", ["worktree", "list", "--porcelain"], { cwd: repoPath });
-      if (!stale.stdout.includes(`branch refs/heads/${job.branch}\n`)) {
+      if (isRunBranch(job.branch) && !stale.stdout.includes(`branch refs/heads/${job.branch}\n`)) {
         await exec("git", ["branch", "-D", job.branch], { cwd: repoPath });
       }
       const worktree = await orca.worktreeCreate({
         repoId: repo.id,
         name: worktreeName(job.jobId),
         branch: job.branch,
-        baseRef: config.startPoint ? await config.startPoint(job) : job.repo.baseRef,
+        baseRef: config.startPoint ? await config.startPoint(job, repoPath) : job.repo.baseRef,
         comment: `${JOB_COMMENT_PREFIX}${job.jobId}`,
       });
       const runDir = join(config.runsDir, job.jobId);
-      const workspace: OrcaWorkspace = {
+      const workspace = {
         jobId: job.jobId,
         path: worktree.path,
         branch: worktree.branch.replace(/^refs\/heads\//, ""),
@@ -285,41 +396,111 @@ export function createOrcaRunner(
       };
       if (workspace.branch !== job.branch) {
         // One branch per run: Orca picked another name, so this workspace can't be used.
-        await release(job, workspace, undefined).catch(() => {});
+        await release(
+          job,
+          { ...workspace, runTmp: "", launch: {} as LaunchRecord, launchScript: "" },
+          undefined,
+        ).catch(() => {});
         throw new Error(`Orca made branch ${workspace.branch}, not ${job.branch}`);
       }
       await excludePrivateFiles(worktree.path);
-      await projectHarness(job, {
+      // A linked worktree keeps its objects and refs in the checkout's git dir, outside the
+      // worktree: the harness's sandbox must let the run's own git write there (and only there).
+      const [commonDir = "", gitDir = ""] = (
+        await run(
+          exec,
+          "git",
+          ["rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir"],
+          { cwd: worktree.path },
+        )
+      )
+        .trim()
+        .split("\n");
+      const projected = await projectHarness(job, {
         worktree: worktree.path,
         runDir,
-        protectPaths: config.protectPaths ?? [],
-        ...(config.permissionMode ? { permissionMode: config.permissionMode } : {}),
+        // The checkout the worktree hangs off may be the owner's own: the harness reads only its
+        // worktree, never the main checkout (its .env files, other branches' work).
+        protectPaths: [...new Set([...(config.protectPaths ?? []), repoPath])],
+        ...(commonDir && gitDir ? { git: { commonDir, gitDir } } : {}),
+        // Orca keeps its status hooks in the owner's user settings, which a run doesn't load.
+        hooks: orcaStatusHooks(),
         ...(config.identity ? { identity: config.identity } : {}),
-      });
-      return workspace;
-    },
-
-    async startSession(job, workspace): Promise<OrcaSession> {
-      const startedAt = Date.now();
-      const launch = await orca.agentLaunch({
-        worktreeId: workspace.worktreeId,
-        agent,
-        prompt: job.harness.prompt,
-        ...(job.harness.model ? { model: job.harness.model } : {}),
+        ...(config.claudeBin ? { claudeBin: config.claudeBin } : {}),
       });
       return {
+        ...workspace,
+        runTmp: projected.runTmp,
+        launch: projected.launch,
+        launchScript: projected.scriptPath,
+      };
+    },
+
+    async startSession(job, workspace, signal): Promise<OrcaSession> {
+      // The harness's own command, not `orca agent launch` (which adds the owner's agent flags).
+      const terminal = await orca.terminalCreate({
+        worktreeId: workspace.worktreeId,
+        title: `factory ${job.stage} ${job.workItem.number}`,
+        command: `exec /bin/sh ${shellQuote(workspace.launchScript)}`,
+      });
+      const session: OrcaSession = {
         jobId: job.jobId,
-        sessionRef: launch.outcome.handle,
-        handle: launch.outcome.handle,
-        ...(launch.outcome.paneKey ? { paneKey: launch.outcome.paneKey } : {}),
+        sessionRef: terminal.handle,
+        handle: terminal.handle,
+        ...(terminal.paneKey ? { paneKey: terminal.paneKey } : {}),
         worktreeId: workspace.worktreeId,
         worktreePath: workspace.path,
-        startedAt,
+        launchScript: workspace.launchScript,
+        startedAt: Date.now(),
         takeover: {
           label: "Open in Orca",
-          hint: `orca worktree activate --worktree id:${workspace.worktreeId} && orca terminal switch --terminal ${launch.outcome.handle}`,
+          hint: `orca worktree activate --worktree id:${workspace.worktreeId} && orca terminal switch --terminal ${terminal.handle}`,
         },
       };
+      const fail = async (error: Error): Promise<never> => {
+        await orca.terminalClose(terminal.handle).catch(() => {});
+        throw error;
+      };
+
+      // Wait for Claude to come up: answer its first-run folder trust dialog for the job's own
+      // worktree (once), and wait for Orca to see the agent in this pane.
+      const deadline = Date.now() + startTimeoutMs;
+      let trusted = false;
+      for (;;) {
+        if (signal.aborted) await fail(new Error(String(signal.reason ?? "cancelled")));
+        const screen = await orca
+          .terminalRead(terminal.handle, { screen: true })
+          .then((r) => r.tail.join("\n"))
+          .catch(() => "");
+        if (TRUST_DIALOG.test(screen)) {
+          if (trusted) await fail(new Error("Claude asked to trust the worktree twice"));
+          await orca.terminalWrite(terminal.handle, "\u001b[B"); // "Yes, I trust this folder"
+          await sleep(300);
+          await orca.terminalWrite(terminal.handle, "\r");
+          trusted = true;
+        } else if (await isUp(session)) {
+          break;
+        }
+        if (Date.now() > deadline) {
+          await fail(
+            new Error(
+              `Claude did not start within ${Math.round(startTimeoutMs / 1000)} s:\n${screen.slice(-2_000)}`,
+            ),
+          );
+        }
+        await sleep(Math.min(pollMs, 1_000), undefined, { signal }).catch(() => {});
+      }
+
+      // Before the job does anything: the live process and its settings must be exactly what the
+      // harness set. Otherwise kill it and fail the job (incident 2026-11-11 #6).
+      const problems = await verifyLaunch(workspace.launch, config.readCommand);
+      if (problems.length > 0) await fail(new HarnessConfigMismatch(problems));
+
+      session.startedAt = Date.now();
+      await orca.terminalPrompt(terminal.handle, job.harness.prompt).catch(async (err) => {
+        await fail(new Error(`sending the prompt: ${err instanceof Error ? err.message : err}`));
+      });
+      return session;
     },
 
     async *events(_job, session, signal): AsyncIterable<AdapterEvent> {
@@ -467,7 +648,7 @@ export function createOrcaRunner(
     release,
 
     async steer(session, text) {
-      await orca.terminalSend(session.handle, text);
+      await orca.terminalPrompt(session.handle, text);
     },
   };
 }

@@ -11,11 +11,16 @@ The heartbeat renews each lease (10 min), and cancel/drain commands come back on
 While it has room it claims jobs; a retried claim reuses its `claimId`. For each job (`src/job.ts`):
 
 1. It fetches a **job token** (`run.issueToken`): a GitHub App installation token for the one repo.
-2. It clones or fetches the repo into its own clone (`~/.local/state/software-factory/runner/repos/<owner>/<name>`),
-   using the token. The clone's push URL is disabled and it has no credential helper.
-3. runner-orca makes an Orca worktree on the run branch `factory/<n>-<slug>-run-<k>` and projects
+2. It fetches the item branch into the checkout this machine's Orca already has for the repo (found
+   by canonical remote identity, ADR 0260), by URL, into `refs/software-factory/heads/<branch>`,
+   with the token only in that git process's environment. It never changes that checkout's config,
+   remotes, branches or working tree. Only when Orca has no repo for the remote does it clone, once,
+   into `~/.local/state/software-factory/runner/repos/<owner>/<name>` (push URL disabled, no
+   credential helper), which the adapter registers once and keeps.
+3. runner-orca makes an Orca worktree, in that repo, on the run branch `factory/<n>-<slug>-run-<k>` and projects
    `harness-claude`'s per-run settings into it. Claude Code then starts in an Orca terminal (you can
-   take it over there).
+   take it over there), with the harness's own flags, and is checked before it gets the prompt
+   (ADR 0270).
 4. It streams events (state, agent status, tools, terminal output) with the fencing token.
 5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
 6. **Build only:** it commits any leftovers, then pushes `HEAD` to the run branch, and only there,
@@ -29,7 +34,14 @@ A `409 fenced|killed`, or a cancel command, stops the session at once: no push a
 - The harness never sees the job token or the owner's credentials. Git talks to GitHub only from the
   host, with no system or global git config, hooks off, and a credential helper that gives the token
   to `github.com` only. The token is passed in that one git process's environment.
-- The harness's settings (`.claude/settings.local.json`) do four things:
+- Claude starts with `--permission-mode <stage mode> --setting-sources project,local --settings <run
+  settings>`: never your user settings, so your own Claude mode, hooks and plugins don't apply to a
+  run. The runner checks the live process against that before sending the prompt; a difference kills
+  it and fails the job (`harness-config-mismatch`). The mode per stage comes from the project's
+  `.factory/policy.json` (`harness`), not from `runner.json`; an old `permissionMode` there is ignored.
+- Every Bash command runs in Claude Code's sandbox: writes only to the worktree and temp, network
+  only to the npm registry, GitHub, the Cloudflare API and the project's hosts.
+- The harness's settings also do four things:
   - blank or redirect every credential variable (`GH_TOKEN`, `SSH_AUTH_SOCK`, AWS, Cloudflare, …);
   - point `GIT_CONFIG_GLOBAL` at a per-run config with no credential helper, and set `GIT_CONFIG_NOSYSTEM` (on macOS that turns off the keychain helper);
   - deny `git push`, `gh`, `ssh`, `wrangler`, cloud CLIs, `orca`, `security` and similar;
@@ -37,8 +49,8 @@ A `409 fenced|killed`, or a cancel command, stops the session at once: no push a
 - Before pushing, the host compares the push-relevant git config (remotes, URL rewrites, credential
   helpers, `http.*`, includes, hooks path) with what it was before the session. If anything changed,
   it refuses to push and fails the run.
-- Orca starts Claude with Orca's own environment, so the settings file is defence in depth, not an
-  OS sandbox. See the open questions in ADR 0250.
+- Orca's terminal gives Claude Orca's environment. The launch script unsets the credential variables
+  and Orca's plugin dirs; the sandbox (ADR 0270) is what confines it.
 
 ## Connecting: `sf-runner login` (ADR 0056)
 From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
@@ -62,7 +74,14 @@ runner and approve. The CLI then receives its key (once), proves it with a signe
    `~/.config/software-factory/runner.json` (mode 0600; `--url` for another engine, `--max` for
    concurrency) and restarts the service if one is installed. Pass the key on stdin, not as an
    argument, so it stays out of your shell history.
-3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, orca, claude, Orca being reachable, and the channel.
+3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, orca, claude, Orca being reachable,
+   the channel, and Orca's repos: a project (canonical remote) with more than one source repo, and
+   `sf-job:` worktrees with no live job. `sf-runner doctor --fix` removes the orphaned worktrees and
+   retires a clone the runner registered next to your own checkout (ADR 0260). It never touches your
+   own checkouts: two of yours for one remote are reported, not fixed. While a service is running that
+   doesn't report its jobs (one from before this change), it treats every job worktree as live.
+   It also checks each running job's Claude against its launch record (permission mode, setting
+   sources, settings hash) and reports `harness-config-mismatch` (ADR 0270).
 
 The e2e driver below calls `runner.register` through `EngineApi` against a local engine.
 
@@ -70,7 +89,7 @@ The e2e driver below calls `runner.register` through `EngineApi` against a local
 It's a per-user LaunchAgent, because Orca and Claude Code run in your GUI session:
 ```sh
 local/runner-host/bin/sf-runner install     # ~/Library/LaunchAgents/com.software-factory.runner.plist
-local/runner-host/bin/sf-runner status      # config (key redacted) + service state
+local/runner-host/bin/sf-runner status      # config (key redacted), service state, jobs running
 tail -f ~/Library/Logs/software-factory/runner.log
 local/runner-host/bin/sf-runner uninstall
 ```
@@ -81,6 +100,11 @@ local/runner-host/bin/sf-runner uninstall
 - The service gets the `PATH` of the shell you install from (so it finds `orca`, `claude` and `git`),
   with the pinned Node's directory first, and nothing else from that shell.
 - It restarts after a crash. An unpaired runner exits cleanly, and launchd leaves it stopped until `pair`.
+- `install` restarts the service, which cancels running jobs. To upgrade, wait until `status` shows no
+  jobs running and no job worktrees in Orca, then pull and `install`.
+- On start it reaps orphaned job worktrees, then retires any clone it registered earlier next to your
+  own Orca repo for the same remote (ADR 0260), before claiming work. It records the jobs it is
+  running in `~/.local/state/software-factory/runner/live-jobs.json`.
 
 Node runs the TypeScript directly with `--experimental-transform-types`. Strip-only mode isn't
 enough: `runner-contract` uses parameter properties. `bin/sf-runner` and the plist pass the flag.
