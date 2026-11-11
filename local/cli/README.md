@@ -51,7 +51,7 @@ approve its own work.
 | `sf inbox` | Gates and questions waiting on you (with app links), running items, your runners |
 | `sf ls [--project p] [--all] [--limit n]` | Work items, newest first; live ones unless `--all` |
 | `sf show <n>` | Stage, status and reason, kind, PR, merge queue place, open gates with links, runs, the review packet's verdict |
-| `sf timeline <n>` | The audit trail, oldest first |
+| `sf timeline <n>` | The event log, oldest first, in the dashboard's words: time, what happened, who, and the detail, outcome and reason |
 | `sf queue [--project p]` | The merge queue, head first (every project's without `--project`) |
 | `sf new "<title>" [--body t \| --body-file f\|-] [--project p]` | File work (source `cli`) |
 | `sf attach <pr> [--project p]` | Attach a PR opened outside the factory |
