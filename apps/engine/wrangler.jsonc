@@ -36,7 +36,7 @@
   // One instance per work item; the instance id is the work item id (ADR 0006, 0053).
   // Work item attachments (ADR 0310): private, reached only through the attachment operations.
   "r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "sf-attachments" }],
-  // One PlanningHub per work item (spec 20, ADR 0340): live Planning tabs and the planning
+  // One PlanningHub per work item (spec 20, ADR 0350): live Planning tabs and the planning
   // agent's held waits hear about changes here.
   "durable_objects": {
     "bindings": [{ "name": "PLANNING_HUB", "class_name": "PlanningHub" }]

@@ -78,7 +78,8 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0304](0304-triage-scores-readiness-and-can-ask.md) | Triage scores readiness and can ask |
 | [0305](0305-planning-artifacts-and-the-kim-folder.md) | Planning artifacts are stored in the factory and kept in `.kim/`; mockups render on a sandboxed origin |
 | [0306](0306-verify-checks-drift-from-the-spec.md) | Verify checks drift from the approved spec |
-| [0340](0340-how-the-planning-loop-is-wired.md) | How the planning loop is wired: one planning call on the channel scoped by the job, a host relay for the harness, the log's id as the cursor, held waits, yields and pinned resumes, pools, the PlanningHub, Workflow v5 |
 | [0310](0310-work-item-attachments.md) | Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel |
+| [0340](0340-a-cli-for-people-gates-stay-in-the-browser.md) | A CLI for people: device login, read/write tokens, `/cli/v1` on sf-engine; gate decisions are browser-only, enforced in `invoke()` |
+| [0350](0350-how-the-planning-loop-is-wired.md) | How the planning loop is wired: one planning call on the channel scoped by the job, a host relay for the harness, the log's id as the cursor, held waits, yields and pinned resumes, pools, the PlanningHub, Workflow v5 |
 | [0330](0330-the-factory-runs-its-own-merge-queue.md) | The factory runs its own merge queue per project: approved merges land one at a time, the head is updated by GitHub's update-branch and the approval carries over a clean update (Workflow v4) |
 | [0320](0320-factory-branches-stay-mergeable.md) | Factory branches merge the default branch before a build; a PR that can't merge goes back to build, and CI that never reports asks a person (Workflow v3) |

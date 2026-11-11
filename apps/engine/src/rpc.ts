@@ -48,7 +48,7 @@ export class EngineApi extends WorkerEntrypoint<Env> {
   }
 
   /**
-   * A work item's planning changes as Server-Sent Events (spec 20, ADR 0340), for the Planning tab:
+   * A work item's planning changes as Server-Sent Events (spec 20, ADR 0350), for the Planning tab:
    * one `changed` event per change, then the app re-reads `planning.get`. Only for a person who may
    * read the planning view (checked with `planning.get`).
    */

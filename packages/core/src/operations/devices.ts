@@ -206,6 +206,7 @@ export const runnerApproveDevice = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
+  browserOnly: true,
   input: z.object({ userCode, name: runnerName }),
   output: z.object({ runnerId: z.string(), name: z.string() }),
   async handler(input, ctx) {

@@ -61,10 +61,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.
-- **Spec 20, planning M1** (`planning-loop`, block Q, [ADR 0340](adr/0340-how-the-planning-loop-is-wired.md)),
+- **Spec 20, planning M1** (`planning-loop`, block R, [ADR 0350](adr/0350-how-the-planning-loop-is-wired.md)),
   landing as four PRs in order: (1) the planning log, sessions, chat, presence, the kim question
   model, heavy/light pools and the planning operations, the channel's planning call and the
-  PlanningHub (migration 0110; inert until (3)); (2) the runner host's relay and pools, the
+  PlanningHub (migration 0120; inert until (3)); (2) the runner host's relay and pools, the
   harness's planning MCP server and hooks, resumable sessions in runner-orca; (3) Workflow v5,
   whose spec stage is the planning session; (4) the Planning tab, layout A.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
@@ -164,6 +164,19 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   at PR open or during the CI wait sends the item back to build (3 free rounds); CI still missing
   asks a blocking `operations` Question (Re-check CI / Stop this work item), no build retry.
 - Merge queue: built, see below (ADR 0330).
+
+**The `sf` CLI (ADR 0340, spec 07)**
+- `local/cli` (`sf`): `login [--write]`, `logout`, `status`, `ops`, `call <op>`, `inbox`, `ls`,
+  `show`, `timeline`, `queue`, `new`, `attach`, `cancel`, `open`. See its README.
+- `sf-engine` `/cli/v1`: `device/start`, `device/poll` (unsigned, as `CLI_DEVICE_ACTOR`), `call`
+  (Bearer `sfc_…`; actor `human`, surface `cli`; a `read` token reaches only `read`-risk ops), `ops`.
+- New reads the CLI needs: `org.list` (your orgs and role) and `workItem.list { number }`.
+- Operations: `cli.deviceStart/devicePoll/deviceLookup/approveDevice/denyDevice`,
+  `cliToken.list/revoke`; migration 0110 (`core_cli_device_codes`, `core_cli_tokens`, hashes only).
+  The app approves codes at `/cli/connect`, where the person picks the scope.
+- `browserOnly` on an operation: `invoke()` refuses it for a human on any surface but `app`
+  (`test` too). Marked: spec/merge decisions, `approval.decide`, question answers, runner and CLI
+  device approval, `runner.register`/`rotateKey`, and `killSwitch.set` with `on: false`.
 
 **Merge queue (ADR 0330, spec 06)**
 - Workflow **v4** (`WORKFLOW_VERSION = 4`): an approved merge enters `core_merge_queue` (migration

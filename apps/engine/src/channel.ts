@@ -31,7 +31,7 @@ import { secrets } from "./secrets.ts";
 export const CHANNEL_PREFIX = "/runner/v1/";
 
 /** HTTP status for each refusal code. 409 means "stop this job" to the host (`fenced`, `killed`). */
-const STATUS: Record<RefusalCode, number> = {
+export const STATUS: Record<RefusalCode, number> = {
   unknown_operation: 404,
   invalid_input: 400,
   forbidden: 403,
@@ -162,7 +162,7 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 /**
- * A planning job's operation (ADR 0340), relayed by the runner host for its harness: one operation
+ * A planning job's operation (ADR 0350), relayed by the runner host for its harness: one operation
  * from the allowlist, as the runner, with the job id from the path. `planning.wait` is held here: it
  * is evaluated, then re-evaluated whenever the work item's PlanningHub hears of a change or a
  * person's pause runs out, until news is due, the session must yield or end, or the wait's time is up.

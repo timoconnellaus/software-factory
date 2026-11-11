@@ -1,6 +1,6 @@
-# ADR 0340: How the planning loop is wired
+# ADR 0350: How the planning loop is wired
 
-Status: accepted, 2026-11-12 (spec 20 build, block Q). Implements [ADR 0300](0300-planning-is-a-live-session-on-a-runner.md)
+Status: accepted, 2026-11-12 (spec 20 build, block R). Implements [ADR 0300](0300-planning-is-a-live-session-on-a-runner.md)
 and [ADR 0301](0301-runner-capacity-has-heavy-and-light-pools.md); builds on [ADR 0035](0035-lease-fencing-and-one-branch-per-run.md),
 [0053](0053-workflow-versioning.md), [0100](0100-runner-contract.md), [0250](0250-runner-host-pushes-and-harness-projection.md)
 and [0270](0270-the-factory-launches-the-harness-and-verifies-it.md).

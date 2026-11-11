@@ -1,0 +1,21 @@
+{
+  "name": "@software-factory/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "`sf`, the factory from a terminal (spec 07, ADR 0340): log in by device code, read the inbox, work items, timelines and the merge queue, file and attach work, and call any operation a token's scope allows. Gate decisions stay in the browser.",
+  "bin": {
+    "sf": "./bin/sf"
+  },
+  "scripts": {
+    "sf": "node --experimental-transform-types --no-warnings src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@software-factory/config": "workspace:*",
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}

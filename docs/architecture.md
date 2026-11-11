@@ -26,7 +26,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   operations over the runner channel (a projected planning MCP server), and kim-style hooks
   (`PostToolUse`, `UserPromptSubmit`, `Stop`) bring answers and chat back from the planning log. It
   holds a light slot (ADR 0301). Mockups render on a sandboxed origin; kept artifacts land in `.kim/`
-  with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0340): the planning agent's calls go through one
+  with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
   channel path, `/runner/v1/jobs/:id/planning`, scoped by the job and fenced by its lease; the
   runner host relays them for the harness, so the runner key never leaves it. Every change is a row
   in the **planning log** (`core_planning_events`, its id the agent's cursor) and a
@@ -74,6 +74,10 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   allowlist (ADR 0038), each run pushes its own branch under a fencing token (ADR 0035), and the
   harness runs without the owner's git or cloud credentials (ADR 0033): the runner host, not the
   harness, pushes the run branch with the job token (ADR 0250).
+- **The `sf` CLI** (`local/cli`, ADR 0340) is a surface for people and their agent sessions: it
+  calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
+  `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses
+  off the app, so no token (the CLI's, MCP's) can approve anything.
 - **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
   without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
   0037). A session's PR that never joined is attached afterwards (ADR 0290).

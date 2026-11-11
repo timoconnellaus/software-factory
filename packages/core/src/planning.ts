@@ -1,4 +1,4 @@
-// Planning, the loop (spec 20, ADR 0300, 0340): the pieces the planning operations share. The
+// Planning, the loop (spec 20, ADR 0300, 0350): the pieces the planning operations share. The
 // planning log (every answer, revision, chat message, presence change and agent change, with a
 // cursor), the session row, waking a yielded session, the job that runs it, and the prompt a fresh
 // session is rebuilt from.
@@ -49,7 +49,7 @@ export async function openSession(
 }
 
 /**
- * Appends to the planning log and tells the live views and waiting agents (ADR 0340). Written in the
+ * Appends to the planning log and tells the live views and waiting agents (ADR 0350). Written in the
  * operation's batch, so the event exists exactly when the change does.
  */
 export function logPlanning(
@@ -80,7 +80,7 @@ export function emitChanged(ctx: HandlerContext, workItemId: string) {
   ctx.emit({ kind: "planning.changed", payload: { workItemId } });
 }
 
-/** Queues a planning job for a session: light pool, pinned to its runner when resuming (ADR 0340). */
+/** Queues a planning job for a session: light pool, pinned to its runner when resuming (ADR 0350). */
 export function enqueuePlanningJob(
   ctx: HandlerContext,
   w: WorkItemRow,
@@ -490,7 +490,7 @@ export async function planningPrompt(
     .join("\n");
 }
 
-/** Refuses unless the session belongs to this job (ADR 0340). */
+/** Refuses unless the session belongs to this job (ADR 0350). */
 export function assertSession(
   session: PlanningSessionRow | null,
   jobId: string,

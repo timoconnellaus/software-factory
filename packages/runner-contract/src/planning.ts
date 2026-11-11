@@ -1,10 +1,10 @@
-// The planning session's vocabulary (spec 20, ADR 0300, 0340): the operations a planning job's
+// The planning session's vocabulary (spec 20, ADR 0300, 0350): the operations a planning job's
 // harness may call through the channel, their inputs (the planning MCP server's tool schemas), and
 // what news and waits answer. Shared by the cloud (operation inputs) and the harness (tool schemas),
 // so the two can't drift. Runtime-neutral.
 import { z } from "zod";
 
-/** Operations a planning job may run over `/runner/v1/jobs/:id/planning` (ADR 0340). */
+/** Operations a planning job may run over `/runner/v1/jobs/:id/planning` (ADR 0350). */
 export const PLANNING_OPS = [
   "question.ask",
   "question.update",

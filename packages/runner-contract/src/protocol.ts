@@ -12,7 +12,7 @@
 //   release     rel:<job>
 //   attachments att:<job>:<uuid>               NOT stored: the job's work item's attachments (list)
 //   attachment  att:<job>:<uuid>               NOT stored: one attachment's bytes (ADR 0310)
-//   planning    plan:<job>:<uuid>              NOT stored: a planning operation (ADR 0340)
+//   planning    plan:<job>:<uuid>              NOT stored: a planning operation (ADR 0350)
 //
 // Every job-scoped call carries the job's fencing token; after a takeover or a lost lease the cloud
 // answers 409 with code `fenced`, and the host must stop the run (ADR 0035).
@@ -117,7 +117,7 @@ export interface ControlPlaneClient {
     attachmentId: string,
   ): Promise<AttachmentResponse>;
   /**
-   * A planning job's operation (ADR 0340), relayed for its harness. Answers the operation's output;
+   * A planning job's operation (ADR 0350), relayed for its harness. Answers the operation's output;
    * a refusal throws ChannelCallError (409 `fenced` means the session is over).
    */
   planning?(jobId: string, body: PlanningCallRequest): Promise<unknown>;
