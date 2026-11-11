@@ -1,3 +1,5 @@
+import type { AttachmentBlobs } from "./attachments.ts";
+
 // What operations may call outside D1. sf-engine supplies the real ones (the GitHub App, the runner
 // channel secret); tests supply fakes (`@software-factory/core/testing`). Handlers that call a
 // service do it before the batch commits, so every such call must be idempotent.
@@ -179,6 +181,15 @@ export interface GitHubService {
   repoPermission(repo: RepoRef, login: string): Promise<string | null>;
   /** The App's subscribed events and permissions (`GET /app`, its JWT). */
   appSettings(): Promise<AppSettings>;
+  /**
+   * Whether GitHub can merge the PR into its base (`GET /pulls/{n}`): `mergeable` is null while
+   * GitHub is still computing it (the first read starts that). `headSha` is the PR's head as GitHub
+   * sees it. GitHub runs no `pull_request` workflows on a PR it can't merge (ADR 0320).
+   */
+  pullRequestMergeability(
+    repo: RepoRef,
+    number: number,
+  ): Promise<{ mergeable: boolean | null; mergeableState: string | null; headSha: string | null }>;
   /** Merges the PR if its head is still `sha`. */
   mergePullRequest(
     repo: RepoRef,
@@ -188,6 +199,11 @@ export interface GitHubService {
 
 export interface FactoryServices {
   github: GitHubService;
+  /**
+   * Blob storage for work item attachments (ADR 0310): R2 on sf-engine. Absent where nothing
+   * stores files; the attachment operations then refuse with `unavailable`.
+   */
+  attachments?: AttachmentBlobs;
   /** The app's public URL (`PUBLIC_BASE_URL`), for links GitHub shows (the check's details). */
   publicBaseUrl?: string;
   /**

@@ -14,6 +14,7 @@
 // zod schemas in ./wire.ts; the types here that cross the wire are inferred from them.
 import type { z } from "zod";
 import type {
+  AttachmentMeta,
   artifactSchema,
   capabilityManifestSchema,
   capacitySchema,
@@ -33,6 +34,9 @@ export const CONTRACT_VERSION = "1" as const;
  * - `hooks`: the harness session runs with the factory's hooks (claim-before-write, heartbeat).
  * - `headless`: runs with no desktop UI (a server, CI, a dev box).
  * - `own-hardware`: the runner is a machine its owner controls (client repos may require it).
+ * - `work-item-attachments`: fetches the work item's attachments over the channel into the run's
+ *   workspace, outside the git tree, and tells the agent where they are (ADR 0310). A runner
+ *   without it still runs every job; its agent just sees no attachments.
  */
 export const CAPABILITIES = [
   "browser",
@@ -41,6 +45,7 @@ export const CAPABILITIES = [
   "hooks",
   "headless",
   "own-hardware",
+  "work-item-attachments",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -76,6 +81,12 @@ export type RunnerEvent = z.infer<typeof runnerEventSchema>;
 export type Artifact = z.infer<typeof artifactSchema>;
 export type StoredArtifact = z.infer<typeof storedArtifactSchema>;
 export type Handback = z.infer<typeof handbackSchema>;
+
+/** A work item attachment the host fetched for a run (ADR 0310). Untrusted data. */
+export interface AttachmentFile {
+  meta: AttachmentMeta;
+  bytes: Uint8Array;
+}
 
 /** What an adapter returns from prepareWorkspace. Adapters may extend it with private fields. */
 export interface WorkspaceHandle {
@@ -151,6 +162,12 @@ export interface RunnerAdapter<
    * Never the checkout or its registration, which outlive the job. Must be safe to call twice.
    */
   release(job: Job, workspace: W | undefined, session: S | undefined): Promise<void>;
+  /**
+   * Optional, with the `work-item-attachments` capability (ADR 0310): put the work item's files
+   * into the run, outside the git tree, and return the text to add to the prompt (labelled
+   * untrusted data). Called after prepareWorkspace and before startSession.
+   */
+  attachFiles?(job: Job, workspace: W, files: AttachmentFile[]): Promise<string>;
   /** Optional: send a person's message into the live session. */
   steer?(session: S, text: string): Promise<void>;
 }

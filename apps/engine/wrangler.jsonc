@@ -34,6 +34,8 @@
     }
   ],
   // One instance per work item; the instance id is the work item id (ADR 0006, 0053).
+  // Work item attachments (ADR 0310): private, reached only through the attachment operations.
+  "r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "sf-attachments" }],
   "workflows": [
     {
       "binding": "WORK_ITEM_WORKFLOW",

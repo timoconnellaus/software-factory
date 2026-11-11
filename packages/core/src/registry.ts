@@ -2,6 +2,7 @@
 // available to every surface (the engine RPC the app calls, the runner channel, MCP later).
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
+import * as attachments from "./operations/attachments.ts";
 import * as connector from "./operations/connector.ts";
 import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
@@ -40,6 +41,10 @@ export const OPERATIONS: readonly AnyOperation[] = [
   workItems.workItemEnterStage,
   workItems.workItemFinish,
   workItems.inboxList,
+  attachments.workItemAttachmentAdd,
+  attachments.workItemAttachmentList,
+  attachments.workItemAttachmentGet,
+  attachments.workItemAttachmentRemove,
   questions.questionAsk,
   questions.workItemAwaitQuestions,
   questions.questionAnswer,

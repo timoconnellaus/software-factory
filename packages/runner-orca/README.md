@@ -11,6 +11,10 @@ The Orca runner adapter (ADR 0014, 0100), promoted from `spikes/runner-orca`. It
   does it register the host's clone, once and for good. It refuses a workspace whose branch Orca
   renamed (one branch per run), denies the harness reads of the main checkout (except its git dir, which
   the run's own git needs), then projects `harness-claude`'s per-run settings and launch script.
+- **attachFiles** (`work-item-attachments`, ADR 0310): writes the work item's attachments to
+  `<attachmentsDir>/<jobId>/<id>/<safe name>` (default: `attachments` next to `runsDir`), outside the
+  worktree; the projected settings let the harness read that directory and not edit it, and the
+  prompt lists the files as untrusted data. `release` removes it.
 - **startSession** (ADR 0270):
   - Runs the harness's launch script in a visible Orca terminal
     (`orca terminal create --command "exec /bin/sh <runDir>/launch.sh"`), never `orca agent launch`,

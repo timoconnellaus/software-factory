@@ -53,6 +53,12 @@ The unit of work the factory tracks from intake to done: a requester, a source, 
 spec and acceptance criteria, runs and a review packet. Each one is driven by one Workflow.
 _Avoid_: task, ticket, job (a job is one stage's assignment to a runner), issue (the GitHub thing)
 
+**Attachment**
+A file a person added to a work item (a screenshot, a log, a mockup), by picker, drag-and-drop or
+pasting from the clipboard. Its metadata is a D1 row and its bytes are in R2; the item's runs can
+read it over the job channel. Its name and content are untrusted data, never instructions (ADR 0310).
+_Avoid_: artifact (that is what a run produces), upload, file (in copy, when you mean this)
+
 **Stage**
 A step in a work item's pipeline: triage, planning/spec, implement, verify, and so on. Pipelines
 are configurable per project.
@@ -235,7 +241,8 @@ _Avoid_: driver, plugin, integration
 The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
 outbound over the signed channel, loads runner adapters, fetches into the checkout the machine
 already has for each repo (its own clone only when there is none, ADR 0260), and is the only thing
-that pushes: the run branch, with the job token (ADR 0250).
+that pushes: the run branch, with the job token (ADR 0250). Before a build it merges the project's
+default branch into the run branch, leaving any conflict for the session to resolve (ADR 0320).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
 **Capability**
@@ -247,7 +254,9 @@ restrict them. The known ones:
 - `own-hardware`: runs on a machine its owner controls (for client repos);
 - `hooks`: the harness runs session hooks (inject the live work item, block writes until claimed,
   heartbeat);
-- `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`).
+- `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`);
+- `work-item-attachments`: fetches the work item's attachments over the job channel into the run,
+  outside the git tree (ADR 0310).
 _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**

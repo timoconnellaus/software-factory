@@ -181,6 +181,12 @@ export function hostGit(options: HostGitOptions) {
             "--no-tags",
             url,
             `+refs/heads/${job.repo.baseRef}:${FETCH_NAMESPACE}/${job.repo.baseRef}`,
+            // The default branch too, so a build can merge it before the session (ADR 0320).
+            ...(job.repo.defaultBranch && job.repo.defaultBranch !== job.repo.baseRef
+              ? [
+                  `+refs/heads/${job.repo.defaultBranch}:${FETCH_NAMESPACE}/${job.repo.defaultBranch}`,
+                ]
+              : []),
           ],
           token,
         );
@@ -208,6 +214,64 @@ export function hostGit(options: HostGitOptions) {
           `${FETCH_NAMESPACE}/${job.repo.baseRef}^{commit}`,
         ])
       ).trim();
+    },
+
+    /**
+     * Merges the default branch, as just fetched, into the job's worktree (ADR 0320), so the run's
+     * PR stays mergeable while `main` moves. Merge commits only, never a rebase. A conflict is left
+     * in progress (MERGE_HEAD and the conflict markers) for the build agent to resolve; the prompt
+     * says so. `ahead`: whether the branch had commits of its own before the merge.
+     */
+    async mergeDefault(
+      job: Job,
+      worktree: string,
+    ): Promise<
+      | { status: "skipped" | "up-to-date"; ahead: boolean }
+      | { status: "merged"; sha: string; ahead: boolean }
+      | { status: "conflict"; files: string[]; ahead: boolean }
+    > {
+      const branch = job.repo.defaultBranch;
+      if (!branch || branch === job.repo.baseRef) return { status: "skipped", ahead: true };
+      const ref = `${FETCH_NAMESPACE}/${branch}`;
+      const has = await exec("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+        cwd: worktree,
+        env: env(),
+      });
+      if (has.code !== 0) return { status: "skipped", ahead: true };
+      const ahead =
+        Number((await git(worktree, ["rev-list", "--count", `${ref}..HEAD`])).trim()) > 0;
+      const contained = await exec("git", ["merge-base", "--is-ancestor", ref, "HEAD"], {
+        cwd: worktree,
+        env: env(),
+      });
+      if (contained.code === 0) return { status: "up-to-date", ahead };
+      const merged = await exec(
+        "git",
+        [...base, "merge", "--no-ff", "--no-edit", "-m", `Merge ${branch} into ${job.branch}`, ref],
+        { cwd: worktree, timeoutMs: 10 * 60_000, env: env() },
+      );
+      if (merged.code === 0) return { status: "merged", sha: await this.headSha(worktree), ahead };
+      const files = (await git(worktree, ["diff", "--name-only", "--diff-filter=U"]))
+        .split("\n")
+        .filter(Boolean);
+      if (files.length === 0) {
+        // Not a content conflict (a dirty tree, an unrelated history): undo and say why.
+        await exec("git", [...base, "merge", "--abort"], { cwd: worktree, env: env() });
+        throw new GitError(`git merge ${branch} exited ${merged.code}: ${merged.stderr.trim()}`);
+      }
+      return { status: "conflict", files, ahead };
+    },
+
+    /** Paths still unmerged, and whether a merge is still in progress (MERGE_HEAD). */
+    async mergeState(worktree: string): Promise<{ inProgress: boolean; unmerged: string[] }> {
+      const head = await exec("git", ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], {
+        cwd: worktree,
+        env: env(),
+      });
+      const unmerged = (await git(worktree, ["diff", "--name-only", "--diff-filter=U"]))
+        .split("\n")
+        .filter(Boolean);
+      return { inProgress: head.code === 0, unmerged };
     },
 
     /** The config keys that could redirect a push or run code, for a before/after check. */

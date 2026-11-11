@@ -113,6 +113,9 @@ export async function runOperation<O = unknown>(
     }
     if (prior && prior.outcome !== "failed") {
       const details = parse(prior.result) as Record<string, unknown> | null;
+      if (typeof details?.concealedAs === "string") {
+        throw new OperationError("not_found", details.concealedAs);
+      }
       throw new OperationError(
         refusalCode(prior.outcome),
         prior.reason ?? prior.outcome,
@@ -165,10 +168,25 @@ export async function runOperation<O = unknown>(
 
   // 4. Scope and policy: the work item / project / org this call is about, and the project's
   //    `.factory/` policy at its default-branch SHA (ADR 0036).
+  //    One D1 round trip: the lookups and the human caller's org role go as one batch.
+  let knownRole: string | null | undefined;
   try {
-    scope = await resolveScope(db, op.scope ? await op.scope(input, db) : defaultScopeRef(input));
+    const { role, ...resolved } = await resolveScope(
+      db,
+      op.scope ? await op.scope(input, db) : defaultScopeRef(input),
+      { d1, userId: actor.type === "human" ? actor.id : null },
+    );
+    scope = resolved;
+    knownRole = role;
   } catch (error) {
     if (error instanceof OperationError) {
+      if (op.concealAs && error.code === "not_found") {
+        const message = op.concealAs(input);
+        return refuse(
+          { decision: "n/a", outcome: "failed", reason: error.message },
+          new OperationError("not_found", message),
+        );
+      }
       return refuse({ decision: "n/a", outcome: "failed", reason: error.message }, error);
     }
     throw error;
@@ -275,8 +293,20 @@ export async function runOperation<O = unknown>(
 
   // 8. Permission (humans).
   try {
-    await checkPermission(db, actor, op.permission, scope);
+    await checkPermission(db, actor, op.permission, scope, knownRole);
   } catch (error) {
+    if (error instanceof OperationError && op.concealAs) {
+      // Audited as the forbidden call it is; answered as if there were nothing there.
+      // The audit row keeps the answer given, so an idempotent replay gives the same one.
+      const message = op.concealAs(input);
+      await audit({
+        decision: gate.decision,
+        outcome: "forbidden",
+        reason: error.message,
+        result: { concealedAs: message },
+      }).run();
+      throw new OperationError("not_found", message);
+    }
     if (error instanceof OperationError) {
       return refuse(
         { decision: gate.decision, outcome: "forbidden", reason: error.message },
