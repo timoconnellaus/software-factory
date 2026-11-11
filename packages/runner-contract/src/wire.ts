@@ -48,7 +48,7 @@ const permissionRule = z
   .regex(/^[A-Za-z][A-Za-z0-9_]*(\(.+\))?$/, "a permission rule like Bash(pnpm test:*)");
 
 /**
- * The project's harness settings (ADR 0261), from `.factory/policy.json` on the default branch,
+ * The project's harness settings (ADR 0270), from `.factory/policy.json` on the default branch,
  * carried on each job. They can only choose a mode and add to allowlists: the deny rules, the
  * sandbox and its `allowUnsandboxedCommands: false` are the harness's floor and can't be changed.
  */
@@ -91,7 +91,7 @@ export const jobSchema = z.object({
     model: z.string().optional(),
     prompt: z.string(),
     /**
-     * The project's harness settings (ADR 0261). Optional and additive: a runner that predates it
+     * The project's harness settings (ADR 0270). Optional and additive: a runner that predates it
      * ignores it, and a job without one gets the harness defaults.
      */
     profile: harnessProfileSchema.optional(),

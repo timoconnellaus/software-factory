@@ -163,7 +163,7 @@ export function orcaCli(options: OrcaCliOptions = {}) {
     /**
      * A visible terminal in the worktree running `command` (typed into the login shell). The runner
      * starts the harness this way, not with `agent launch`, which adds the owner's own agent flags
-     * (incident 2026-11-11 bootstrap #6, ADR 0261).
+     * (incident 2026-11-11 bootstrap #6, ADR 0270).
      */
     terminalCreate: async (input: { worktreeId: string; title: string; command: string }) => {
       const result = await call<{ terminal: OrcaTerminal }>([

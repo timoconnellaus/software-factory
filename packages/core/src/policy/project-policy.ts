@@ -68,7 +68,7 @@ export const projectPolicySchema = z
     /** Capabilities each stage's job requires (`.factory/` limits placement, ADR 0015). */
     requires: z.partialRecord(z.enum(JOB_STAGES), z.array(z.enum(CAPABILITIES))).default({}),
     /**
-     * The harness's permission mode and allowlists per stage (ADR 0261). It can only pick a mode
+     * The harness's permission mode and allowlists per stage (ADR 0270). It can only pick a mode
      * and add allow rules and hosts; the deny rules and the sandbox are fixed in the harness. A
      * change here is a `.factory/` change, so it reaches runs only after a person merges it.
      */

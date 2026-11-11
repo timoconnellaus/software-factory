@@ -2,7 +2,7 @@
 // session (an Orca terminal, a headless process, later a dev box); this package says how Claude
 // runs there: the per-run settings it projects (permission mode and allowlist per stage, the OS
 // sandbox, deny rules, a credential-free environment), the run's git identity, the exact launch
-// command and the post-launch check (ADR 0261), and how to read a session's transcript or stream.
+// command and the post-launch check (ADR 0270), and how to read a session's transcript or stream.
 import type { HarnessId, Job } from "@software-factory/runner-contract";
 import { claudeArgv } from "./launch.ts";
 
@@ -18,7 +18,7 @@ export const HARNESS_MANIFEST = {
   id: HARNESS_ID,
   /** Projects the run's settings (permissions, sandbox, env) before launch. */
   projectsSettings: true,
-  /** Owns the launch command and verifies the live process against it (ADR 0261). */
+  /** Owns the launch command and verifies the live process against it (ADR 0270). */
   verifiesLaunch: true,
   /** Reads results from the stage result file, never from chat output. */
   resultFile: true,

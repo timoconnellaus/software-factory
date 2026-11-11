@@ -1,4 +1,4 @@
-// The per-run Claude Code settings (ADR 0017, amended; ADR 0033, 0250, 0261). The harness runs
+// The per-run Claude Code settings (ADR 0017, amended; ADR 0033, 0250, 0270). The harness runs
 // unattended in a workspace it doesn't own, so the runner projects a settings file before Claude
 // starts: a permission mode and allowlist per stage, deny rules for anything that reaches the
 // owner's credentials, Claude Code's OS sandbox for every Bash command (filesystem writes limited to
@@ -26,7 +26,7 @@ export const RUN_SETTINGS_FILE = "claude-settings.json";
 /** Files the harness writes into the worktree that must never be committed or pushed. */
 export const PRIVATE_WORKTREE_FILES = [SETTINGS_FILE, RESULT_FILE] as const;
 
-/** Claude Code permission modes the factory uses (ADR 0261). */
+/** Claude Code permission modes the factory uses (ADR 0270). */
 export type PermissionMode = HarnessPermissionMode;
 
 /** Claude Code hooks, as the settings file spells them. */
@@ -93,7 +93,7 @@ export interface SettingsOptions {
   git?: { commonDir: string; gitDir: string };
   /** Temp directories sandboxed commands may write (absolute, symlinks resolved). */
   tempDirs?: string[];
-  /** The project's harness settings from its default-branch policy (ADR 0261). */
+  /** The project's harness settings from its default-branch policy (ADR 0270). */
   profile?: HarnessProfile;
   /**
    * Hooks the runner adapter needs (status reporting to its UI). Never a hook that can answer a

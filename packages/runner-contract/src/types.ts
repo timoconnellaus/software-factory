@@ -57,7 +57,7 @@ export const JOB_STAGES = ["triage", "spec", "build", "verify"] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
 
 /**
- * Permission modes a project may give a stage's harness (ADR 0261). No mode that prompts a person
+ * Permission modes a project may give a stage's harness (ADR 0270). No mode that prompts a person
  * (`default`/`manual`) and no `auto` (a model classifier decides, not the project's rules).
  * `bypassPermissions` only ever runs inside the harness's OS sandbox.
  */

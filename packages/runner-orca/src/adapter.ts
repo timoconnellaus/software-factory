@@ -1,7 +1,7 @@
 // runner-orca: the runner contract over the `orca` CLI (ADR 0014, 0100). A job becomes an Orca
 // worktree on the run branch (tagged with an `sf-job:<jobId>` comment so capacity and cleanup
 // survive a host restart), the Claude harness's per-run settings are projected into it, and Claude
-// Code runs in an Orca terminal with the harness's own launch command (ADR 0261), so a person can
+// Code runs in an Orca terminal with the harness's own launch command (ADR 0270), so a person can
 // take the run over in the Orca UI. The live process is checked against the launch record before
 // the prompt is sent. Events come from
 // polling `orca worktree ps` (agent state, tool, last message) and paging `orca terminal read`.
@@ -187,7 +187,7 @@ export function orcaStatusHooks(): ClaudeHooks {
   return hooks;
 }
 
-/** A job failed because its live harness isn't configured as the factory set it (ADR 0261). */
+/** A job failed because its live harness isn't configured as the factory set it (ADR 0270). */
 export class HarnessConfigMismatch extends Error {
   override name = "HarnessConfigMismatch";
   constructor(readonly problems: string[]) {

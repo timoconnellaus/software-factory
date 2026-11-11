@@ -9,7 +9,7 @@
 //   sf-runner doctor [--fix]       check node, git, orca, claude, the channel, Orca's repos
 //                                  (duplicate source repos for one remote, job worktrees with no
 //                                  job), and that each running job's Claude runs exactly as the
-//                                  harness launched it (ADR 0261)
+//                                  harness launched it (ADR 0270)
 //   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -323,7 +323,7 @@ async function doctor(args: string[]) {
   const raw = await readFile(dirs.configFile, "utf8").catch(() => "");
   if (/"permissionMode"/.test(raw)) {
     console.log(
-      `! ${dirs.configFile} sets permissionMode, which is ignored: the project's policy sets it (ADR 0261)`,
+      `! ${dirs.configFile} sets permissionMode, which is ignored: the project's policy sets it (ADR 0270)`,
     );
   }
   const config = await loadConfig(dirs.configFile).catch(() => null);

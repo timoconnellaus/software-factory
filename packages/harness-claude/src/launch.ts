@@ -1,4 +1,4 @@
-// How Claude Code is started for a run, and the check that it really started that way (ADR 0261,
+// How Claude Code is started for a run, and the check that it really started that way (ADR 0270,
 // incident 2026-11-11 bootstrap #6). The harness owns the exact invocation: a runner adapter only
 // hosts it (an Orca terminal, a headless process) and runs the launch script as it is.
 //
@@ -87,7 +87,7 @@ export function launchScript(record: LaunchRecord, unset: readonly string[]): st
   return [
     "#!/bin/sh",
     `# Written by the software factory runner for job ${record.jobId} (${record.stage}).`,
-    "# The harness's own invocation (ADR 0261); the runner checks the live process against",
+    "# The harness's own invocation (ADR 0270); the runner checks the live process against",
     `# ${LAUNCH_RECORD} before it sends the prompt.`,
     ...(unset.length ? [`unset ${unset.map(shellQuote).join(" ")}`] : []),
     `cd ${shellQuote(record.worktree)} || exit 97`,

@@ -1,6 +1,6 @@
 // Writes a run's harness files: the settings (into the run dir, passed with `--settings`, and the
 // same bytes into the worktree's `.claude/settings.local.json`), the git config and empty tool dirs
-// into the run's private directory, the run's temp dir, and the launch script and record (ADR 0261).
+// into the run's private directory, the run's temp dir, and the launch script and record (ADR 0270).
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
