@@ -98,6 +98,14 @@ export interface GitHubService {
   listCheckRuns(repo: RepoRef, sha: string): Promise<CheckRunInfo[]>;
   /** Creates (or, with `checkRunId`, updates) a check run as the App. Needs `checks: write`. */
   postCheckRun(repo: RepoRef, check: CheckRunPost): Promise<{ id: string }>;
+  /**
+   * The App's installation covering `owner/repo`, asked as the App itself (its JWT, `GET
+   * /repos/{owner}/{repo}/installation`): no user token involved. `reason` says why there is none.
+   */
+  findRepoInstallation(
+    owner: string,
+    repo: string,
+  ): Promise<{ installationId: string; reason: null } | { installationId: null; reason: string }>;
   /** Branch protection and rulesets on `branch` (project onboarding, spec 04). */
   repoGuards(repo: RepoRef, branch: string): Promise<RepoGuards>;
   /** Merges the PR if its head is still `sha`. */

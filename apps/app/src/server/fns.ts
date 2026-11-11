@@ -4,7 +4,7 @@ import { env } from "cloudflare:workers";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { appEnv, findInstallation, runOp, sessionInfo, syncPolicyFromGitHub } from "./app-api.ts";
+import { appEnv, runOp, sessionInfo, syncPolicyFromGitHub } from "./app-api.ts";
 
 const headers = () => getRequest().headers;
 
@@ -22,10 +22,3 @@ export const callOperation = createServerFn({ method: "POST" })
 export const syncPolicy = createServerFn({ method: "POST" })
   .validator((data: unknown) => z.object({ projectId: z.string().min(1) }).parse(data))
   .handler(({ data }) => syncPolicyFromGitHub(appEnv(env), headers(), data.projectId));
-
-/** The GitHub App installation covering a repo, for Setup's "Add project". */
-export const detectInstallation = createServerFn({ method: "POST" })
-  .validator((data: unknown) =>
-    z.object({ owner: z.string().min(1).max(39), name: z.string().min(1).max(100) }).parse(data),
-  )
-  .handler(({ data }) => findInstallation(appEnv(env), headers(), data));

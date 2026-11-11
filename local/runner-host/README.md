@@ -41,19 +41,21 @@ A `409 fenced|killed`, or a cancel command, stops the session at once: no push a
   OS sandbox. See the open questions in ADR 0250.
 
 ## Pairing (`runner register` → engine)
-1. In the app, add a runner. This calls `runner.register` and shows the runner id and key **once**.
-2. On this machine, from a checkout of software-factory with `pnpm install` done, run:
+1. In the app (Setup), add a runner. This calls `runner.register` and shows the runner id and key **once**.
+2. On this machine, from a checkout of software-factory with `pnpm install` done: press **1. Copy
+   command** in Setup and paste it here (don't run it yet), press **2. Copy key**, then press Enter:
    ```sh
    pbpaste | local/runner-host/bin/sf-runner pair --runner-id r_… --key-stdin
    ```
+   stdin takes the bare key or the two-line `runner id: …` / `key: …` block. If the block's runner id
+   isn't `--runner-id`, `pair` says so instead of failing with `401 bad signature`.
    `pair` sends one signed heartbeat to prove the id and key. It then writes
    `~/.config/software-factory/runner.json` (mode 0600; `--url` for another engine, `--max` for
    concurrency) and restarts the service if one is installed. Pass the key on stdin, not as an
    argument, so it stays out of your shell history.
 3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, orca, claude, Orca being reachable, and the channel.
 
-Until the app's setup screen exists, `runner.register` can only be called through `EngineApi` (the
-e2e driver below does this against a local engine).
+The e2e driver below calls `runner.register` through `EngineApi` against a local engine.
 
 ## Running as a launchd service (macOS)
 It's a per-user LaunchAgent, because Orca and Claude Code run in your GUI session:
@@ -64,8 +66,11 @@ tail -f ~/Library/Logs/software-factory/runner.log
 local/runner-host/bin/sf-runner uninstall
 ```
 - **Install from a checkout you keep**, not a job worktree: the plist runs `src/cli.ts` from it.
-- The service gets the `PATH` of the shell you install from (so it finds `node` 24, `orca`, `claude`
-  and `git`) and nothing else from that shell.
+- `install` refuses to run on Node < 24 and says how to fix it (`nvm use 24`, or
+  `SF_RUNNER_NODE=/abs/path/to/node24 local/runner-host/bin/sf-runner install`). The plist pins
+  that absolute Node.
+- The service gets the `PATH` of the shell you install from (so it finds `orca`, `claude` and `git`),
+  with the pinned Node's directory first, and nothing else from that shell.
 - It restarts after a crash. An unpaired runner exits cleanly, and launchd leaves it stopped until `pair`.
 
 Node runs the TypeScript directly with `--experimental-transform-types`. Strip-only mode isn't

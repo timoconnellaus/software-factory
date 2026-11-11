@@ -25,6 +25,7 @@ export interface OpMap {
   "question.acceptDefaults": Def<typeof operations.questionAcceptDefaults>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
+  "project.update": Def<typeof operations.projectUpdate>;
   "runner.register": Def<typeof operations.runnerRegister>;
   "runner.rotateKey": Def<typeof operations.runnerRotateKey>;
   "runner.list": Def<typeof operations.runnerList>;
@@ -53,6 +54,7 @@ export const APP_OPERATIONS = [
   "question.acceptDefaults",
   "project.create",
   "project.list",
+  "project.update",
   "runner.register",
   "runner.rotateKey",
   "runner.list",

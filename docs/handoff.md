@@ -73,7 +73,7 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   it returns `{ ok: true, result }` or `{ ok: false, error: { code, message } }`. Pass an
   `idempotencyKey` for form submits.
 - Operations by screen:
-  - Setup: `project.create`, `project.list`, `policy.sync` (until the connector does it), `runner.register`
+  - Setup: `project.create` (finds the App installation itself; `installationWarning` when none), `project.update` (installation id or `detectInstallation`, default branch), `project.list`, `policy.sync` (until the connector does it), `runner.register`
     (returns the runner key once), `runner.rotateKey`, `runner.list`.
   - New work: `workItem.previewRouting { projectId }`, `workItem.create { projectId, title?, body, source: "app", eventId }`.
   - Inbox: `inbox.list { orgId? }` (gates and questions assigned to you, running items, your runners'
