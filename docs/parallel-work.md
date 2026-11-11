@@ -10,7 +10,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | Block | Migrations | ADRs | Claimed by | Status |
 | --- | --- | --- | --- | --- |
 | A | 0001–0009 | 0001–0099 | Scaffold + docs (`scaffold-and-docs`): ADRs 0001–0032 used, no migrations | merged |
-| S | — | 0100–0199 | Spikes under `spikes/` (runner contract, `runner-orca`, Workflow gate). Each spike takes the next free ten (0100–0109, 0110–0119, …) and notes it here | in flight |
+| S | — | 0100–0199 | Spikes under `spikes/` (runner contract, `runner-orca`, Workflow gate). Each spike takes the next free ten (0100–0109, 0110–0119, …) and notes it here. Taken: 0100–0109 `spike-runner-orca` (ADR 0100, runner contract); 0120 `spike-auth-multisession` | in flight |
 | B | 0010–0019 | 0200–0209 (free) | Stage 01, Operations and store | free |
 | C | 0020–0029 | 0210–0219 (free) | Stage 02, Work-item Workflow | free |
 | D | 0030–0039 | 0220–0229 (free) | Stage 03, Runner contract and `runner-orca` | free |
