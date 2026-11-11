@@ -20,6 +20,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | I | — | 0260–0269 | Runner resolves the existing Orca repo (`runner-orca-resolve-repo`): incident 2026-11-11 #5. Used: ADR 0260, no migrations | merged |
 | J | — | 0270–0279 | The factory sets Claude's permission mode and sandbox (`harness-permission-mode`): incident 2026-11-11 #6. Used: ADR 0270, no migrations | merged |
 | K | 0070–0079 | 0280–0289 | Protect `main` (`protect-main-ruleset`): the default-branch ruleset generator, the Setup step, drift detection. Used: migration 0070; ADR 0280 | merged |
+| O | — | 0320–0329 | Unmergeable factory PRs (`stuck-work-item`): incident 2026-11-11 #7. Branches merge the default branch before build, `conflict` is its own verify state, missing CI asks a person instead of retrying the build | claimed |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
