@@ -40,8 +40,17 @@ A `409 fenced|killed`, or a cancel command, stops the session at once: no push a
 - Orca starts Claude with Orca's own environment, so the settings file is defence in depth, not an
   OS sandbox. See the open questions in ADR 0250.
 
-## Pairing (`runner register` → engine)
-1. In the app (Setup), add a runner. This calls `runner.register` and shows the runner id and key **once**.
+## Connecting: `sf-runner login` (ADR 0056)
+From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
+```sh
+local/runner-host/bin/sf-runner login            # --name m5, --no-install, --no-open, --url <engine>
+```
+It prints a code and a link (and opens it on macOS). Open the link, check the code matches, name the
+runner and approve. The CLI then receives its key (once), proves it with a signed heartbeat, saves
+`~/.config/software-factory/runner.json` (0600) and installs the launchd service. Nothing is copied.
+
+## Pairing with a key (fallback)
+1. In the app (Setup → "Can't use a login code? Pair with a key instead"), register a runner. This calls `runner.register` and shows the runner id and key **once**.
 2. On this machine, from a checkout of software-factory with `pnpm install` done: press **1. Copy
    command** in Setup and paste it here (don't run it yet), press **2. Copy key**, then press Enter:
    ```sh

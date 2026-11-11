@@ -95,6 +95,28 @@ the runner spawns use the same Node.
 command that depends on it. It belongs in the runner-host spec's acceptance criteria.
 
 ## Follow-ups (not done here)
-- Add the spec-template rules from 1 and 3 when the stage-spec template is next touched.
+- ~~Add the spec-template rules from 1 and 3 when the stage-spec template is next touched.~~ Done
+  with the onboarding rebuild (below).
 - Add the agent-context line from 2 and the check from 3 under `.factory/` (only `policy.json` exists so far, #17).
 - Add a post-deploy setup smoke step (2) to `docs/deploying.md`.
+
+## The lesson, and the rebuild (2026-11-11, branch `onboarding-connect-github`)
+All four incidents share a root: Setup exposed the factory's plumbing (a typed owner/repo/branch, an
+installation id nobody can find, a "Detect installation" button, a manual "Sync policy", a runner key
+to copy) instead of fetching what it needed. The owner's verdict: "weird, I've never seen a process
+like this." The rule, for every setup or onboarding screen from now on:
+
+> **Onboarding must never ask users for ids the system can fetch.**
+
+What replaced it ([ADR 0055](../adr/0055-github-installations-are-org-records.md),
+[ADR 0056](../adr/0056-runner-device-login.md)): **Connect GitHub** through GitHub's own install flow
+(a single-use state, the installation verified as the App and against the person), a **repo picker**
+over what the installation reaches (`project.create` refuses an unreachable repo, so no half-broken
+projects), the **policy syncing itself** on create and on every push (with a **Create policy PR**
+button when there is none), **`sf-runner login`** with a code approved in the app, and Setup as a
+**checklist** with live state. The existing `software-factory` project is linked to its installation
+automatically when GitHub is connected.
+
+The rule is in the spec template ([`docs/specs/README.md`](../specs/README.md)) as an acceptance
+criterion for any setup screen, next to the rules from incidents 1 and 3.
+

@@ -14,6 +14,8 @@ export const ID_PREFIXES = {
   incident: "inc",
   audit: "au",
   outbox: "ob",
+  githubInstallation: "ghi",
+  deviceCode: "dev",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

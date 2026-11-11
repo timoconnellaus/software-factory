@@ -58,6 +58,8 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0052](0052-job-tokens-and-branch-confinement.md) | Minting job tokens, and confining pushes to the run branch |
 | [0053](0053-workflow-versioning.md) | Versioning the work-item Workflow across deploys |
 | [0054](0054-factory-policy-file.md) | `.factory/policy.json`: the project's autonomy policy file |
+| [0055](0055-github-installations-are-org-records.md) | GitHub App installations are org records, connected through GitHub's install flow |
+| [0056](0056-runner-device-login.md) | Runners connect by device login |
 | [0230](0230-check-only-incident-fixes-auto-merge.md) | A factory incident's check-only fix may merge without a person (amends 0008) |
 | [0231](0231-verify-verdict-and-the-github-connector.md) | The verify verdict, `factory/verify` and the GitHub App connector |
 | [0240](0240-v1-app-sign-in-and-server-functions.md) | V1 app: GitHub-only sign-in for one user, and one allowlisted server function to the engine |

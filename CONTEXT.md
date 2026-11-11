@@ -10,7 +10,7 @@ planning session → **interview session**, now a view over **questions**.
 
 **Org**
 A group of users with members, roles and invitations (Better Auth organization plugin). Every user
-gets a **Personal** org. An org owns factories and a GitHub App installation; runners are shared into
+gets a **Personal** org. An org owns factories and its GitHub App installations; runners are shared into
 it by their owners. A client is its own org (ADR 0043).
 _Avoid_: team (except the Team view in the UI), workspace, tenant, account (an account is a
 signed-in session)
@@ -265,6 +265,17 @@ webhooks into typed events and maps them to operations (the GitHub connector: `v
 (comments, PRs) so agents never hold standing tokens. The GitHub connector mints per-job repo
 tokens (ADR 0033).
 _Avoid_: gatekeeper (old name), integration, webhook handler
+
+**Installation**
+One GitHub App installation on a GitHub account, recorded for one org (`core_github_installations`,
+ADR 0055). Connected with **Connect GitHub** (GitHub's install flow and the app's Setup URL), kept
+current by webhooks. People never see or type its id; a project is a repo an installation reaches.
+_Avoid_: installation id (in anything a person reads), GitHub integration
+
+**Device login**
+How a runner connects (ADR 0056): `sf-runner login` shows a short code, a person approves it in the
+app at `/runners/connect`, and the runner receives its key once. `pair --key-stdin` is the fallback.
+_Avoid_: pairing (for the main path), registration code
 
 **Job token**
 A short-lived GitHub App token scoped to one repo, minted for one job and pushed with only to the

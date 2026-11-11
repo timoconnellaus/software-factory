@@ -1,14 +1,33 @@
 // Projects, their `.factory/` policy (mirrored from the default branch) and kill switches.
+import type { Db } from "@software-factory/db";
+import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
-import { newId, slugify } from "../ids.ts";
+import { idPattern, newId, slugify } from "../ids.ts";
 import { defineOperation, type HandlerContext, type ProjectRow } from "../operation.ts";
 import { POLICY_PATH, parseProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, approverIds, isOrgAdmin, resumeEventType } from "../scope.ts";
-import type { FactoryServices } from "../services.ts";
+import type { FactoryServices, RepoRef } from "../services.ts";
 import { projectId, requireProject } from "./shared.ts";
 
-const projectView = z.object({
+const connectionView = z.object({
+  /** `missing`: no installation reaches the repo; `suspended`/`deleted`: as GitHub reported. */
+  status: z.enum(["connected", "missing", "suspended", "deleted"]),
+  /** The GitHub account the App is installed on. */
+  account: z.string().nullable(),
+  /** Where to change which repositories the App can reach (GitHub's settings page). */
+  manageUrl: z.string().nullable(),
+});
+
+const policyView = z.object({
+  /** `none`: never read; `missing`: no `.factory/policy.json` on the default branch. */
+  state: z.enum(["valid", "invalid", "missing", "none"]),
+  error: z.string().nullable(),
+  /** The open PR that adds a template policy, when one was opened from Setup. */
+  prUrl: z.string().nullable(),
+});
+
+export const projectView = z.object({
   id: z.string(),
   orgId: z.string(),
   factoryId: z.string(),
@@ -16,25 +35,96 @@ const projectView = z.object({
   slug: z.string(),
   repo: z.object({ owner: z.string(), name: z.string(), defaultBranch: z.string() }),
   policySha: z.string().nullable(),
+  /** For admin tools and MCP. The app never shows it (onboarding never asks for ids, ADR 0055). */
   githubInstallationId: z.string().nullable(),
+  connection: connectionView,
+  policy: policyView,
 });
+export type ProjectView = z.input<typeof projectView>;
 
 const installationId = z.string().regex(/^\d+$/);
 
 /** Set when a project is saved without a GitHub App installation: why, and what to do. */
 const installationWarning = z.string().nullable();
 
-function toView(p: ProjectRow): z.input<typeof projectView> {
-  return {
-    id: p.id,
-    orgId: p.org_id,
-    factoryId: p.factory_id,
-    name: p.name,
-    slug: p.slug,
-    repo: { owner: p.repo_owner, name: p.repo_name, defaultBranch: p.default_branch },
-    policySha: p.policy_sha,
-    githubInstallationId: p.github_installation_id,
-  };
+/** GitHub's page for changing which repositories an installation can reach. */
+export function manageInstallationUrl(record: {
+  installation_id: string;
+  account_login: string;
+  account_type: string;
+}): string {
+  return record.account_type === "Organization"
+    ? `https://github.com/organizations/${record.account_login}/settings/installations/${record.installation_id}`
+    : `https://github.com/settings/installations/${record.installation_id}`;
+}
+
+/** Project rows with their connection and policy state, as every project operation returns them. */
+export async function projectViews(db: Db, rows: ProjectRow[]): Promise<ProjectView[]> {
+  if (rows.length === 0) return [];
+  const recordIds = rows.map((r) => r.installation_record_id).filter((x): x is string => !!x);
+  const installationIds = rows.map((r) => r.github_installation_id).filter((x): x is string => !!x);
+  const records =
+    recordIds.length || installationIds.length
+      ? await db
+          .selectFrom("core_github_installations")
+          .selectAll()
+          .where((eb) =>
+            eb.or([
+              ...(recordIds.length ? [eb("id", "in", recordIds)] : []),
+              ...(installationIds.length ? [eb("installation_id", "in", installationIds)] : []),
+            ]),
+          )
+          .execute()
+      : [];
+  const policies = await db
+    .selectFrom("core_project_policies")
+    .select(["project_id", "sha", "raw", "valid", "error"])
+    .where(
+      "project_id",
+      "in",
+      rows.map((r) => r.id),
+    )
+    .execute();
+  return rows.map((p) => {
+    const record =
+      records.find((r) => r.id === p.installation_record_id) ??
+      records.find((r) => r.installation_id === p.github_installation_id);
+    const policy = policies.find((x) => x.project_id === p.id && x.sha === p.policy_sha);
+    const connection: z.input<typeof connectionView> = !p.github_installation_id
+      ? { status: "missing", account: record?.account_login ?? null, manageUrl: null }
+      : {
+          status:
+            record?.status === "suspended"
+              ? "suspended"
+              : record?.status === "deleted"
+                ? "deleted"
+                : "connected",
+          account: record?.account_login ?? p.repo_owner,
+          manageUrl: record ? manageInstallationUrl(record) : null,
+        };
+    return {
+      id: p.id,
+      orgId: p.org_id,
+      factoryId: p.factory_id,
+      name: p.name,
+      slug: p.slug,
+      repo: { owner: p.repo_owner, name: p.repo_name, defaultBranch: p.default_branch },
+      policySha: p.policy_sha,
+      githubInstallationId: p.github_installation_id,
+      connection,
+      policy: {
+        state: !policy
+          ? "none"
+          : policy.valid
+            ? "valid"
+            : policy.raw === ""
+              ? "missing"
+              : "invalid",
+        error: policy && !policy.valid ? policy.error : null,
+        prUrl: p.policy_pr_url ?? null,
+      },
+    };
+  });
 }
 
 /** Asks GitHub, as the App, for its installation on the repo. Never throws: a failure is the reason. */
@@ -51,24 +141,68 @@ async function detect(
 }
 
 const noInstallation = (reason: string) =>
-  `No GitHub App installation: ${reason}. The factory can't read or push this repo until one is set (Setup → Detect installation).`;
+  `No GitHub App installation: ${reason}. The factory can't read or push this repo until one is connected (Setup → Connect GitHub).`;
+
+/**
+ * Reads `.factory/policy.json` at the default branch's head through the App and records it (ADR
+ * 0036, 0054). Used when a project is created, when an installation is connected, and by
+ * policy.resync. Returns null when the branch doesn't exist yet (an empty repo).
+ */
+export async function syncPolicyFromGitHub(
+  ctx: HandlerContext,
+  project: ProjectRow,
+  repo: RepoRef,
+): Promise<{ applied: boolean; valid: boolean; error: string | null; sha: string } | null> {
+  const head = await ctx.services.github.getBranchSha(repo, project.default_branch);
+  if (!head) return null;
+  const content = await ctx.services.github.readFile(repo, POLICY_PATH, head);
+  const recorded = recordPolicy(ctx, project, {
+    ref: `refs/heads/${project.default_branch}`,
+    sha: head,
+    content,
+  });
+  return { ...recorded, sha: head };
+}
+
+/** The org's factory, created on first use. */
+async function ensureFactory(ctx: HandlerContext, orgId: string): Promise<string> {
+  const factory = await ctx.db
+    .selectFrom("core_factories")
+    .select("id")
+    .where("org_id", "=", orgId)
+    .orderBy("created_at")
+    .executeTakeFirst();
+  if (factory) return factory.id;
+  const id = newId("factory");
+  ctx.write(
+    ctx.db.insertInto("core_factories").values({
+      id,
+      org_id: orgId,
+      name: "Default",
+      created_at: ctx.now,
+      created_by: ctx.actor.id,
+    }),
+  );
+  return id;
+}
 
 export const projectCreate = defineOperation({
   name: "project.create",
   description:
-    "Add a project: one GitHub repo inside the org's factory. Needs an org owner or admin. Without `githubInstallationId` the App's installation on the repo is looked up as the App; if there is none the project is still saved and `installationWarning` says why (fix it with project.update). Its policy is read from `.factory/policy.json` on the default branch (policy.sync); until one is synced, agents and runners can do nothing on it (fail closed).",
+    "Add a project: one GitHub repository the org's connected GitHub App installation can reach (pick it from github.repos; ADR 0055). Needs an org owner or admin. The default branch comes from GitHub. Refuses, saving nothing, when the installation isn't the org's, isn't active, or can't reach the repo. Reads `.factory/policy.json` from the default branch right away (policy.sync); without a valid one agents and runners can do nothing on the project (fail closed) and Setup offers a PR that adds one.",
   risk: "write",
   actors: ["human"],
   permission: "admin",
   input: z.object({
     orgId: z.string().min(1),
-    name: z.string().min(1).max(100),
-    repoOwner: z.string().regex(/^[A-Za-z0-9-]{1,39}$/),
-    repoName: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
-    defaultBranch: z.string().min(1).max(100).default("main"),
-    githubInstallationId: installationId.optional(),
+    /** The org's installation record (`ghi_…`) from github.repos. */
+    installationRecordId: z.string().regex(idPattern("githubInstallation")),
+    /** GitHub's repository id, from github.repos. */
+    repoId: z.number().int().positive(),
+    /** Defaults to the repo's name. */
+    name: z.string().min(1).max(100).optional(),
   }),
-  output: projectView.extend({ installationWarning }),
+  output: projectView,
   async handler(input, ctx) {
     const org = await ctx.db
       .selectFrom("core_organization")
@@ -76,68 +210,111 @@ export const projectCreate = defineOperation({
       .where("id", "=", input.orgId)
       .executeTakeFirst();
     if (!org) throw new OperationError("not_found", "no such org");
-    let factory = await ctx.db
-      .selectFrom("core_factories")
-      .select("id")
+    const record = await ctx.db
+      .selectFrom("core_github_installations")
+      .selectAll()
+      .where("id", "=", input.installationRecordId)
       .where("org_id", "=", input.orgId)
-      .orderBy("created_at")
       .executeTakeFirst();
-    if (!factory) {
-      factory = { id: newId("factory") };
-      ctx.write(
-        ctx.db.insertInto("core_factories").values({
-          id: factory.id,
-          org_id: input.orgId,
-          name: "Default",
-          created_at: ctx.now,
-          created_by: ctx.actor.id,
-        }),
+    if (!record) {
+      throw new OperationError("not_found", "that GitHub connection isn't this org's");
+    }
+    if (record.status !== "active") {
+      throw new OperationError(
+        "unavailable",
+        `the GitHub App's installation on ${record.account_login} is ${record.status}: reconnect it first`,
       );
     }
-    let installation = input.githubInstallationId ?? null;
-    let warning: string | null = null;
-    if (!installation) {
-      const found = await detect(ctx.services, input.repoOwner, input.repoName);
-      installation = found.installationId;
-      if (!installation) warning = noInstallation(found.reason ?? "not found");
-    }
-    const id = newId("project");
-    const slug = slugify(input.name);
-    ctx.write(
-      ctx.db.insertInto("core_projects").values({
-        id,
-        org_id: input.orgId,
-        factory_id: factory.id,
-        name: input.name,
-        slug,
-        repo_owner: input.repoOwner,
-        repo_name: input.repoName,
-        default_branch: input.defaultBranch,
-        github_installation_id: installation,
-        created_at: ctx.now,
-        created_by: ctx.actor.id,
-      }),
+    // Only GitHub's answer counts: the repo must be reachable through this installation now.
+    const repo = await ctx.services.github.getInstallationRepo(
+      record.installation_id,
+      input.repoId,
     );
+    if (!repo) {
+      throw new OperationError(
+        "unavailable",
+        `the GitHub App's installation on ${record.account_login} can't reach that repository. Add it under "Manage repositories on GitHub", then pick it again.`,
+      );
+    }
+    const taken = await ctx.db
+      .selectFrom("core_projects")
+      .select(["id", "org_id"])
+      .where(sql<string>`lower(repo_owner)`, "=", repo.owner.toLowerCase())
+      .where(sql<string>`lower(repo_name)`, "=", repo.name.toLowerCase())
+      .executeTakeFirst();
+    if (taken) {
+      throw new OperationError(
+        "conflict",
+        `${repo.owner}/${repo.name} is already a project${taken.org_id === input.orgId ? "" : " in another org"}`,
+      );
+    }
+    const factoryId = await ensureFactory(ctx, input.orgId);
+    const name = input.name ?? repo.name;
+    const slugs = new Set(
+      (
+        await ctx.db
+          .selectFrom("core_projects")
+          .select("slug")
+          .where("org_id", "=", input.orgId)
+          .execute()
+      ).map((r) => r.slug),
+    );
+    let slug = slugify(name);
+    for (let i = 2; slugs.has(slug); i++) slug = `${slugify(name)}-${i}`;
+    const row: ProjectRow = {
+      id: newId("project"),
+      org_id: input.orgId,
+      factory_id: factoryId,
+      name,
+      slug,
+      repo_owner: repo.owner,
+      repo_name: repo.name,
+      default_branch: repo.defaultBranch,
+      github_installation_id: record.installation_id,
+      installation_record_id: record.id,
+      github_repo_id: repo.id,
+      policy_sha: null,
+      policy_pr_url: null,
+      next_number: 1,
+      created_at: ctx.now,
+      created_by: ctx.actor.id,
+    };
+    ctx.write(ctx.db.insertInto("core_projects").values(row));
     ctx.change({
       entity: "project",
-      id,
-      after: {
-        name: input.name,
-        repo: `${input.repoOwner}/${input.repoName}`,
-        githubInstallationId: installation,
-      },
+      id: row.id,
+      after: { name, repo: `${repo.owner}/${repo.name}`, repoId: repo.id, installation: record.id },
     });
-    ctx.subject({ projectId: id, orgId: input.orgId });
+    ctx.subject({ projectId: row.id, orgId: input.orgId });
+    // The policy, read now through the App, in the same batch: no "Sync" step for people.
+    const synced = await syncPolicyFromGitHub(ctx, row, {
+      installationId: record.installation_id,
+      owner: repo.owner,
+      repo: repo.name,
+    });
+    const policyState = !synced
+      ? { state: "none" as const, error: null }
+      : synced.valid
+        ? { state: "valid" as const, error: null }
+        : {
+            state: synced.error?.startsWith("no ") ? ("missing" as const) : ("invalid" as const),
+            error: synced.error,
+          };
     return {
-      id,
-      orgId: input.orgId,
-      factoryId: factory.id,
-      name: input.name,
-      slug,
-      repo: { owner: input.repoOwner, name: input.repoName, defaultBranch: input.defaultBranch },
-      policySha: null,
-      githubInstallationId: installation,
-      installationWarning: warning,
+      id: row.id,
+      orgId: row.org_id,
+      factoryId,
+      name,
+      slug: row.slug,
+      repo: { owner: repo.owner, name: repo.name, defaultBranch: repo.defaultBranch },
+      policySha: synced?.sha ?? null,
+      githubInstallationId: record.installation_id,
+      connection: {
+        status: "connected" as const,
+        account: record.account_login,
+        manageUrl: manageInstallationUrl(record),
+      },
+      policy: { ...policyState, prUrl: null },
     };
   },
 });
@@ -145,7 +322,7 @@ export const projectCreate = defineOperation({
 export const projectUpdate = defineOperation({
   name: "project.update",
   description:
-    "Fix a project's connection to GitHub: set its GitHub App installation id (or `detectInstallation: true` to look it up as the App), and/or its default branch. Needs an org owner or admin. Changing the default branch clears the synced policy: it is re-read from the new branch (policy.sync) and the project fails closed until then. Refuses with the reason when detection finds no installation.",
+    "Admin fix for a project's connection to GitHub (not part of onboarding, which never asks for ids): set its GitHub App installation id (or `detectInstallation: true` to look it up as the App), and/or its default branch. Needs an org owner or admin. Changing the default branch clears the synced policy: it is re-read from the new branch (policy.sync) and the project fails closed until then. Refuses with the reason when detection finds no installation.",
   risk: "write",
   actors: ["human"],
   permission: "admin",
@@ -223,8 +400,9 @@ export const projectUpdate = defineOperation({
       ctx.change({ entity: "project", id: project.id, before, after });
     }
     ctx.subject({ projectId: project.id, orgId: project.org_id });
+    const [view] = await projectViews(ctx.db, [next]);
     return {
-      ...toView(next),
+      ...(view as ProjectView),
       installationWarning: next.github_installation_id ? null : noInstallation("none set"),
     };
   },
@@ -245,7 +423,7 @@ export const projectList = defineOperation({
       .where("org_id", "=", input.orgId)
       .orderBy("name")
       .execute();
-    return { projects: rows.map(toView) };
+    return { projects: await projectViews(ctx.db, rows) };
   },
 });
 

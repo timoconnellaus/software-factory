@@ -8,3 +8,10 @@
 export function pairCommand(runnerId: string): string {
   return `pbpaste | local/runner-host/bin/sf-runner pair --runner-id ${runnerId} --key-stdin`;
 }
+
+/**
+ * Connecting a runner (ADR 0056): run this on the runner's machine, from the software-factory
+ * checkout. It prints a code and a link to /runners/connect, waits for approval, saves its key and
+ * installs the service.
+ */
+export const LOGIN_COMMAND = "local/runner-host/bin/sf-runner login";

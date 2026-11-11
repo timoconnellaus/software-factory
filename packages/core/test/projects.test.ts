@@ -1,71 +1,199 @@
-// Incident 2026-11-11-bootstrap: project.create saved software-factory with no GitHub App
-// installation, silently, and nothing could fix it afterwards.
+// project.create takes a repo the org's installation reaches (ADR 0055) and refuses anything else;
+// project.update stays as the admin fix from incident 2026-11-11-bootstrap.
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { call, first, ok, refusal, services, uid, world } from "./helpers.ts";
+import { POLICY_PATH } from "../src/index.ts";
+import {
+  call,
+  first,
+  numericId,
+  ok,
+  onboard,
+  POLICY,
+  refusal,
+  services,
+  uid,
+  world,
+} from "./helpers.ts";
 
 const github = services.github;
 
 type View = {
   id: string;
   githubInstallationId: string | null;
-  installationWarning: string | null;
-  repo: { defaultBranch: string };
+  installationWarning?: string | null;
+  repo: { owner: string; name: string; defaultBranch: string };
   policySha: string | null;
+  connection: { status: string; account: string | null; manageUrl: string | null };
+  policy: { state: string; error: string | null; prUrl: string | null };
 };
 
-async function create(w: Awaited<ReturnType<typeof world>>, repoName: string) {
-  return ok<View>(
-    "project.create",
-    { orgId: w.orgId, name: uid("p-"), repoOwner: "timoconnellaus", repoName },
-    w.human,
+/** A world plus a second repo on the same installation, not yet a project. */
+async function withSpareRepo(defaultBranch = "trunk") {
+  const w = await world();
+  const record = await first<{ id: string; installation_id: string }>(
+    "SELECT id, installation_id FROM core_github_installations WHERE org_id = ?",
+    w.orgId,
   );
+  const repoId = Number(numericId());
+  const name = uid("spare-");
+  const current = await github.getInstallation(record.installation_id);
+  const repos = await github.listInstallationRepos(record.installation_id);
+  await github.putInstallation({
+    installationId: record.installation_id,
+    account: current?.account ?? { login: "timoconnellaus", type: "Organization" },
+    repos: [...repos, { id: repoId, owner: "timoconnellaus", name, private: true, defaultBranch }],
+    members: [`gh-${w.userId}`],
+  });
+  return { w, recordId: record.id, installationId: record.installation_id, repoId, name };
 }
 
-describe("project.create finds the App's installation", () => {
-  it("as the App, when no id is given", async () => {
-    const w = await world();
-    const repoName = uid("repo-");
-    await github.setInstallation({ owner: "timoconnellaus", repo: repoName }, "777");
-    const p = await create(w, repoName);
-    expect(p).toMatchObject({ githubInstallationId: "777", installationWarning: null });
+describe("project.create from the repo picker", () => {
+  it("takes the default branch from GitHub and reads the policy right away", async () => {
+    const { w, recordId, installationId, repoId, name } = await withSpareRepo("trunk");
+    const repo = { installationId, owner: "timoconnellaus", repo: name };
+    const head = await github.getBranchSha(repo, "main");
+    // The fake's repo starts with `main`; give it the `trunk` GitHub reported, with a policy.
+    await github.createBranch(repo, "trunk", head as string);
+    await github.setFile(repo, head as string, POLICY_PATH, JSON.stringify(POLICY));
+    const p = await ok<View>(
+      "project.create",
+      { orgId: w.orgId, installationRecordId: recordId, repoId },
+      w.human,
+    );
+    expect(p).toMatchObject({
+      repo: { owner: "timoconnellaus", name, defaultBranch: "trunk" },
+      policySha: head,
+      githubInstallationId: installationId,
+      connection: { status: "connected", account: "timoconnellaus" },
+      policy: { state: "valid", error: null },
+    });
+    expect(p.connection.manageUrl).toBe(
+      `https://github.com/organizations/timoconnellaus/settings/installations/${installationId}`,
+    );
+    const listed = await ok<{ projects: View[] }>("project.list", { orgId: w.orgId }, w.human);
+    expect(listed.projects.find((x) => x.id === p.id)).toMatchObject({
+      policy: { state: "valid" },
+    });
   });
 
-  it("saves the project but says why when there is none", async () => {
-    const w = await world();
-    const repoName = uid("repo-");
-    await github.setInstallation({ owner: "timoconnellaus", repo: repoName }, null);
-    const p = await create(w, repoName);
-    expect(p.githubInstallationId).toBeNull();
-    expect(p.installationWarning).toMatch(
-      new RegExp(`No GitHub App installation: .*isn't installed on timoconnellaus/${repoName}`),
+  it("records a missing policy, so Setup can offer the PR", async () => {
+    const { w, recordId, repoId } = await withSpareRepo("main");
+    const p = await ok<View>(
+      "project.create",
+      { orgId: w.orgId, installationRecordId: recordId, repoId },
+      w.human,
     );
+    expect(p.policy).toEqual({
+      state: "missing",
+      error: expect.stringContaining(`no ${POLICY_PATH}`),
+      prUrl: null,
+    });
+    // Fails closed: no work until a valid policy lands.
+    const r = await refusal(
+      call("workItem.create", { projectId: p.id, title: "x", body: "y" }, w.human),
+    );
+    expect(r.message).toMatch(/policy/i);
+  });
+
+  it("refuses a repo the installation can't reach, and saves nothing", async () => {
+    const { w, recordId } = await withSpareRepo();
+    const before = await first<{ n: number }>(
+      "SELECT count(*) AS n FROM core_projects WHERE org_id = ?",
+      w.orgId,
+    );
+    const r = await refusal(
+      call(
+        "project.create",
+        { orgId: w.orgId, installationRecordId: recordId, repoId: 424242 },
+        w.human,
+      ),
+    );
+    expect(r.code).toBe("unavailable");
+    expect(r.message).toMatch(/can't reach that repository.*Manage repositories on GitHub/);
+    const after = await first<{ n: number }>(
+      "SELECT count(*) AS n FROM core_projects WHERE org_id = ?",
+      w.orgId,
+    );
+    expect(after.n).toBe(before.n);
+  });
+
+  it("refuses another org's installation, a suspended one, free text and a repo already taken", async () => {
+    const { w, recordId, repoId } = await withSpareRepo();
+    const other = await world();
+    const foreign = await refusal(
+      call(
+        "project.create",
+        { orgId: other.orgId, installationRecordId: recordId, repoId },
+        other.human,
+      ),
+    );
+    expect(foreign.code).toBe("not_found");
+
+    const text = await refusal(
+      call(
+        "project.create",
+        { orgId: w.orgId, name: "x", repoOwner: "timoconnellaus", repoName: "y" },
+        w.human,
+      ),
+    );
+    expect(text.code).toBe("invalid_input");
+
+    await ok("project.create", { orgId: w.orgId, installationRecordId: recordId, repoId }, w.human);
+    const twice = await refusal(
+      call("project.create", { orgId: w.orgId, installationRecordId: recordId, repoId }, w.human),
+    );
+    expect(twice.code).toBe("conflict");
+
+    await env.DB.prepare("UPDATE core_github_installations SET status = 'suspended' WHERE id = ?")
+      .bind(recordId)
+      .run();
+    const suspended = await refusal(
+      call("project.create", { orgId: w.orgId, installationRecordId: recordId, repoId }, w.human),
+    );
+    expect(suspended.code).toBe("unavailable");
+    expect(suspended.message).toMatch(/suspended/);
+  });
+
+  it("is for org owners and admins", async () => {
+    const { w, recordId, repoId } = await withSpareRepo();
+    const outsider = await world();
+    const r = await refusal(
+      call(
+        "project.create",
+        { orgId: w.orgId, installationRecordId: recordId, repoId },
+        outsider.human,
+      ),
+    );
+    expect(r.code).toBe("forbidden");
   });
 });
 
-describe("project.update", () => {
-  it("sets the installation by detection, audited, before any policy is synced", async () => {
+describe("project.update (admin fix, not in onboarding)", () => {
+  it("sets the installation by detection, audited", async () => {
     const w = await world();
-    const repoName = uid("repo-");
-    await github.setInstallation({ owner: "timoconnellaus", repo: repoName }, null);
-    const p = await create(w, repoName);
-    expect(p.policySha).toBeNull();
-
+    await env.DB.prepare(
+      "UPDATE core_projects SET github_installation_id = NULL, installation_record_id = NULL WHERE id = ?",
+    )
+      .bind(w.projectId)
+      .run();
+    await github.setInstallation({ owner: "timoconnellaus", repo: w.repo.repo }, null);
     const miss = await refusal(
-      ok("project.update", { projectId: p.id, detectInstallation: true }, w.human),
+      ok("project.update", { projectId: w.projectId, detectInstallation: true }, w.human),
     );
     expect(miss.code).toBe("not_found");
     expect(miss.message).toMatch(/isn't installed on/);
 
-    await github.setInstallation({ owner: "timoconnellaus", repo: repoName }, "778");
+    await github.setInstallation({ owner: "timoconnellaus", repo: w.repo.repo }, "778");
     const fixed = await ok<View>(
       "project.update",
-      { projectId: p.id, detectInstallation: true },
+      { projectId: w.projectId, detectInstallation: true },
       w.human,
     );
     expect(fixed).toMatchObject({ githubInstallationId: "778", installationWarning: null });
     const audit = await first<{ diff: string }>(
       "SELECT diff FROM core_audit WHERE operation = 'project.update' AND project_id = ? ORDER BY at DESC LIMIT 1",
-      p.id,
+      w.projectId,
     );
     expect(JSON.parse(audit.diff)).toEqual([
       expect.objectContaining({
@@ -86,6 +214,7 @@ describe("project.update", () => {
       githubInstallationId: "99",
       repo: { defaultBranch: "trunk" },
       policySha: null,
+      policy: { state: "none" },
     });
   });
 
@@ -106,5 +235,14 @@ describe("project.update", () => {
     expect(["forbidden", "denied"]).toContain(agent.code);
     const empty = await refusal(call("project.update", { projectId: w.projectId }, w.human));
     expect(empty.code).toBe("invalid_input");
+  });
+});
+
+describe("the onboard helper", () => {
+  it("is what Setup does", async () => {
+    const w = await world();
+    const human = w.human;
+    const repo = await onboard(human, w.orgId, { owner: "timoconnellaus", name: uid("r-") });
+    expect(repo.installationRecordId).toMatch(/^ghi_/);
   });
 });

@@ -2,7 +2,17 @@
 
 Each spec is one buildable slice. Format (borrowed from Relationship OS): **Read first / Goal /
 Scope / Out of scope / Acceptance criteria**. The acceptance criteria are the definition of done,
-and the factory's own planning stage writes specs in this same format. (This folder was
+and the factory's own planning stage writes specs in this same format.
+
+**Rules every spec with a setup or onboarding screen carries in its acceptance criteria**
+([incident 2026-11-11-bootstrap](../incidents/2026-11-11-bootstrap.md)):
+- **Onboarding must never ask users for ids the system can fetch.** Installations, repos, branches
+  and keys come from the provider's own flow (install redirect, picker, device login), never a text
+  field.
+- Every value a setup screen writes has an update operation, and a save that leaves the entity
+  degraded is refused or shown on the entity, never only in a toast.
+- Any text a person carries from one component to another is specified verbatim, and both ends are
+  tested against it. Better: don't make them carry it. (This folder was
 `docs/stages/` until 2026-11-11; "stage" now means only a step in a work item's pipeline.)
 
 | # | Spec | Depends on |

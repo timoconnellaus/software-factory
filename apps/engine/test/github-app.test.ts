@@ -169,3 +169,105 @@ describe("finding the App's installation on a repo (incident 2026-11-11-bootstra
     );
   });
 });
+
+describe("installations and their repositories (ADR 0055)", () => {
+  async function appWith(respond: (request: Request) => Promise<Response> | Response) {
+    const { pkcs1Pem } = await keyPair();
+    const seen: Request[] = [];
+    const app = githubApp({
+      appId: "5705909",
+      appSlug: "software-factory-zerobsai",
+      privateKey: pkcs1Pem,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        seen.push(request.clone());
+        return respond(request);
+      },
+    });
+    return { app, seen };
+  }
+  const repoJson = (id: number, name: string) => ({
+    id,
+    name,
+    owner: { login: "timoconnellaus" },
+    private: false,
+    default_branch: "main",
+  });
+
+  it("reads an installation as the App; one GitHub doesn't know is null (a forged id)", async () => {
+    const { app, seen } = await appWith((r) =>
+      r.url.endsWith("/app/installations/7")
+        ? Response.json({
+            id: 7,
+            account: { login: "acme", type: "Organization" },
+            repository_selection: "selected",
+            suspended_at: "2026-11-11T00:00:00Z",
+          })
+        : Response.json({ message: "Not Found" }, { status: 404 }),
+    );
+    expect(await app.getInstallation("7")).toEqual({
+      installationId: "7",
+      account: { login: "acme", type: "Organization" },
+      repositorySelection: "selected",
+      suspended: true,
+    });
+    expect(await app.getInstallation("8")).toBeNull();
+    expect(seen[0]?.headers.get("authorization")).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/);
+  });
+
+  it("lists repositories with a metadata-only installation token, paged", async () => {
+    const { app } = await appWith(async (r) => {
+      if (r.url.endsWith("/access_tokens")) {
+        expect(await r.json()).toEqual({ permissions: { metadata: "read" } });
+        return Response.json({
+          token: "ghs_meta",
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        });
+      }
+      expect(r.headers.get("authorization")).toBe("token ghs_meta");
+      const page = new URL(r.url).searchParams.get("page");
+      return Response.json({
+        total_count: 2,
+        repositories: page === "1" ? [repoJson(1, "a")] : [repoJson(2, "b")],
+      });
+    });
+    expect((await app.listInstallationRepos("7")).map((r) => r.name)).toEqual(["a", "b"]);
+  });
+
+  it("reaches a repo only through a token GitHub limits to it (422: not reachable)", async () => {
+    const { app } = await appWith(async (r) => {
+      if (r.url.endsWith("/access_tokens")) {
+        const body = (await r.json()) as { repository_ids: number[] };
+        if (body.repository_ids[0] === 99) {
+          return Response.json(
+            {
+              message:
+                "There is at least one repository that does not exist or is not accessible to the parent installation.",
+            },
+            { status: 422 },
+          );
+        }
+        return Response.json({
+          token: "ghs_one",
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        });
+      }
+      return Response.json(repoJson(5, "software-factory"));
+    });
+    expect(await app.getInstallationRepo("7", 5)).toMatchObject({
+      id: 5,
+      name: "software-factory",
+      defaultBranch: "main",
+    });
+    expect(await app.getInstallationRepo("7", 99)).toBeNull();
+  });
+
+  it("lists a person's installations with their own token, only to check access", async () => {
+    const { app, seen } = await appWith(() =>
+      Response.json({ total_count: 2, installations: [{ id: 7 }, { id: 9 }] }),
+    );
+    expect(await app.userInstallationIds("ghu_person")).toEqual(["7", "9"]);
+    expect(seen[0]?.url).toBe("https://api.github.com/user/installations?per_page=100&page=1");
+    expect(seen[0]?.headers.get("authorization")).toBe("Bearer ghu_person");
+  });
+});

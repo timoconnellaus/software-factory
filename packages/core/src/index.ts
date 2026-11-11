@@ -7,6 +7,7 @@ export * from "./incidents/classify.ts";
 export * from "./invoke.ts";
 export * from "./model-roles.ts";
 export * from "./operation.ts";
+export { DEVICE_LOGIN_ACTOR, normalizeUserCode } from "./operations/devices.ts";
 export * as operations from "./operations/index.ts";
 export { NEVER_BULK_ACCEPTED_DOMAINS } from "./operations/questions.ts";
 export { LEASE_TTL_MS } from "./operations/runners.ts";

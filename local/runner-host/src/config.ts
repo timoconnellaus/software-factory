@@ -8,6 +8,8 @@ import { CAPABILITIES, type Capability, JOB_STAGES } from "@software-factory/run
 import { z } from "zod";
 
 export const DEFAULT_BASE_URL = "https://sf-engine.zerobsai.com";
+/** The app, where a person approves `sf-runner login` (when the engine's link is relative). */
+export const DEFAULT_APP_URL = "https://software-factory.zerobsai.com";
 
 export const configSchema = z.object({
   baseUrl: z.string().url().default(DEFAULT_BASE_URL),

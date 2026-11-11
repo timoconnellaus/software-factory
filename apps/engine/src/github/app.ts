@@ -12,6 +12,8 @@ import {
   type ChangedFile,
   type CheckRunInfo,
   type GitHubService,
+  type InstallationInfo,
+  type InstallationRepo,
   OperationError,
   type RepoGuards,
   type RepoRef,
@@ -39,6 +41,23 @@ export const CONTROL_PLANE_PERMISSIONS = { contents: "write", pull_requests: "wr
 export const CHECKS_PERMISSIONS = { checks: "write" } as const;
 /** Reading branch protection and rulesets at onboarding (spec 04). */
 export const ADMIN_READ_PERMISSIONS = { administration: "read" } as const;
+/** Listing the repositories an installation reaches (the repo picker, ADR 0055). */
+export const METADATA_PERMISSIONS = { metadata: "read" } as const;
+
+interface GitHubRepoJson {
+  id: number;
+  name: string;
+  owner: { login: string };
+  private: boolean;
+  default_branch: string;
+}
+const toRepo = (r: GitHubRepoJson): InstallationRepo => ({
+  id: r.id,
+  owner: r.owner.login,
+  name: r.name,
+  private: r.private,
+  defaultBranch: r.default_branch,
+});
 
 export function githubApp(config: GitHubAppConfig): GitHubService & {
   appJwt(): Promise<string>;
@@ -124,11 +143,135 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
 
   const enc = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 
+  /** Asks GitHub as the App (its JWT). */
+  async function asApp(path: string): Promise<Response> {
+    return doFetch(`${API}${path}`, { headers: headers(`Bearer ${await appJwt()}`) });
+  }
+
+  /**
+   * A metadata-only installation token: for every repo the installation reaches, or only for
+   * `repositoryIds` (GitHub refuses with 422 when the installation can't reach one of them).
+   */
+  async function metadataToken(
+    installationId: string,
+    repositoryIds?: number[],
+  ): Promise<{ ok: true; token: string } | { ok: false; status: number; message: string }> {
+    const cacheKey = `meta:${installationId}:${repositoryIds?.join(",") ?? "*"}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.parse(cached.expiresAt) - now().getTime() > 5 * 60_000) {
+      return { ok: true, token: cached.token };
+    }
+    const response = await doFetch(`${API}/app/installations/${installationId}/access_tokens`, {
+      method: "POST",
+      headers: headers(`Bearer ${await appJwt()}`),
+      body: JSON.stringify({
+        permissions: METADATA_PERMISSIONS,
+        ...(repositoryIds ? { repository_ids: repositoryIds } : {}),
+      }),
+    });
+    if (!response.ok) {
+      return { ok: false, status: response.status, message: await response.text() };
+    }
+    const body = (await response.json()) as { token: string; expires_at: string };
+    cache.set(cacheKey, { token: body.token, expiresAt: body.expires_at });
+    return { ok: true, token: body.token };
+  }
+
   return {
     app: { id: config.appId, slug: config.appSlug },
     appJwt,
     installationToken,
     mintRepoToken: (repo) => installationToken(repo, JOB_TOKEN_PERMISSIONS),
+    async getInstallation(installationId): Promise<InstallationInfo | null> {
+      const response = await asApp(`/app/installations/${encodeURIComponent(installationId)}`);
+      if (response.status === 404) return null;
+      if (!response.ok) {
+        throw new OperationError(
+          "unavailable",
+          `GitHub answered ${response.status} for the App's installation: ${await response.text()}`,
+        );
+      }
+      const body = (await response.json()) as {
+        id: number;
+        account: { login: string; type: string } | null;
+        repository_selection: "all" | "selected";
+        suspended_at: string | null;
+      };
+      if (!body.account) return null;
+      return {
+        installationId: String(body.id),
+        account: {
+          login: body.account.login,
+          type: body.account.type === "Organization" ? "Organization" : "User",
+        },
+        repositorySelection: body.repository_selection,
+        suspended: !!body.suspended_at,
+      };
+    },
+    async listInstallationRepos(installationId) {
+      const token = await metadataToken(installationId);
+      if (!token.ok) {
+        throw new Error(`GitHub installation token: HTTP ${token.status} ${token.message}`);
+      }
+      const out: InstallationRepo[] = [];
+      for (let page = 1; page <= 20; page++) {
+        const response = await doFetch(
+          `${API}/installation/repositories?per_page=100&page=${page}`,
+          { headers: headers(`token ${token.token}`) },
+        );
+        if (!response.ok) {
+          throw new Error(`GitHub installation repositories: HTTP ${response.status}`);
+        }
+        const body = (await response.json()) as {
+          total_count: number;
+          repositories: GitHubRepoJson[];
+        };
+        out.push(...body.repositories.map(toRepo));
+        if (out.length >= body.total_count || body.repositories.length === 0) break;
+      }
+      return out;
+    },
+    async getInstallationRepo(installationId, repoId) {
+      // A token limited to this one repo: GitHub refuses it (422) unless the installation reaches
+      // it. Reading /repositories/{id} alone would also answer for any public repo.
+      const token = await metadataToken(installationId, [repoId]);
+      if (!token.ok) {
+        if (token.status === 422 || token.status === 404) return null;
+        throw new OperationError(
+          "unavailable",
+          `GitHub answered ${token.status} for an installation token: ${token.message}`,
+        );
+      }
+      const response = await doFetch(`${API}/repositories/${repoId}`, {
+        headers: headers(`token ${token.token}`),
+      });
+      if (response.status === 404) return null;
+      if (!response.ok) {
+        throw new OperationError(
+          "unavailable",
+          `GitHub answered ${response.status} for repo ${repoId}`,
+        );
+      }
+      return toRepo((await response.json()) as GitHubRepoJson);
+    },
+    async userInstallationIds(userToken) {
+      const ids: string[] = [];
+      for (let page = 1; page <= 10; page++) {
+        const response = await doFetch(`${API}/user/installations?per_page=100&page=${page}`, {
+          headers: headers(`Bearer ${userToken}`),
+        });
+        if (!response.ok) {
+          throw new Error(`GitHub /user/installations answered ${response.status}`);
+        }
+        const body = (await response.json()) as {
+          total_count: number;
+          installations: { id: number }[];
+        };
+        ids.push(...body.installations.map((i) => String(i.id)));
+        if (ids.length >= body.total_count || body.installations.length === 0) break;
+      }
+      return ids;
+    },
     async findRepoInstallation(owner, repo) {
       const response = await doFetch(
         `${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,

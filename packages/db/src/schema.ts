@@ -119,6 +119,12 @@ export interface CoreProjectsTable {
   next_number: Generated<number>;
   created_at: Iso;
   created_by: string;
+  /** 0060: the org's installation record this project's repo is reached through. */
+  installation_record_id: string | null;
+  /** 0060: GitHub's repo id (survives renames). */
+  github_repo_id: number | null;
+  /** 0060: the open PR adding a template `.factory/policy.json`, if one was opened from Setup. */
+  policy_pr_url: string | null;
 }
 
 export interface CoreProjectPoliciesTable {
@@ -531,6 +537,49 @@ export interface CoreVerifyChecksTable {
   updated_at: Iso;
 }
 
+// ---- 0060: onboarding (installations, connect state, runner device login) ----
+
+export type InstallationAccountType = "User" | "Organization";
+export type InstallationStatus = "active" | "suspended" | "deleted";
+
+export interface CoreGithubInstallationsTable {
+  id: string;
+  org_id: string;
+  installation_id: string;
+  account_login: string;
+  account_type: InstallationAccountType;
+  repository_selection: "all" | "selected";
+  status: InstallationStatus;
+  connected_by: string;
+  created_at: Iso;
+  updated_at: Iso;
+}
+
+export interface CoreGithubConnectStatesTable {
+  state_hash: string;
+  org_id: string;
+  user_id: string;
+  created_at: Iso;
+  expires_at: Iso;
+  used_at: Iso | null;
+}
+
+export type DeviceCodeStatus = "pending" | "approved" | "denied" | "consumed";
+
+export interface CoreRunnerDeviceCodesTable {
+  id: string;
+  device_code_hash: string;
+  user_code: string;
+  suggested_name: string | null;
+  status: DeviceCodeStatus;
+  decided_by: string | null;
+  runner_id: string | null;
+  created_at: Iso;
+  expires_at: Iso;
+  decided_at: Iso | null;
+  consumed_at: Iso | null;
+}
+
 /** Every core table, for `Kysely<CoreDatabase>`. */
 export interface CoreDatabase {
   core_meta: CoreMetaTable;
@@ -567,4 +616,7 @@ export interface CoreDatabase {
   core_channel_requests: CoreChannelRequestsTable;
   core_connector_events: CoreConnectorEventsTable;
   core_verify_checks: CoreVerifyChecksTable;
+  core_github_installations: CoreGithubInstallationsTable;
+  core_github_connect_states: CoreGithubConnectStatesTable;
+  core_runner_device_codes: CoreRunnerDeviceCodesTable;
 }
