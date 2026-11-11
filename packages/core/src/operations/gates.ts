@@ -31,8 +31,7 @@ export function decidePending(
   openedFullDiff: boolean | null = null,
 ): z.input<typeof decisionOutput> {
   if (pa.status !== "pending") {
-    const same =
-      pa.decision === decision || (decision === "approved" && pa.status === "applied");
+    const same = pa.decision === decision || (decision === "approved" && pa.status === "applied");
     if (same) return { pendingActionId: pa.id, decision, alreadyDecided: true };
     throw new OperationError("conflict", `already decided: ${pa.decision ?? pa.status}`);
   }
@@ -135,7 +134,12 @@ export const specApprove = defineOperation({
   input: z.object({ workItemId, note: z.string().max(4_000).optional() }),
   output: decisionOutput,
   async handler(input, ctx) {
-    return decidePending(ctx, await gateFor(ctx, input.workItemId, "spec"), "approved", input.note ?? null);
+    return decidePending(
+      ctx,
+      await gateFor(ctx, input.workItemId, "spec"),
+      "approved",
+      input.note ?? null,
+    );
   },
 });
 
@@ -149,7 +153,12 @@ export const specRequestChanges = defineOperation({
   input: z.object({ workItemId, note: z.string().min(1).max(8_000) }),
   output: decisionOutput,
   async handler(input, ctx) {
-    return decidePending(ctx, await gateFor(ctx, input.workItemId, "spec"), "changes_requested", input.note);
+    return decidePending(
+      ctx,
+      await gateFor(ctx, input.workItemId, "spec"),
+      "changes_requested",
+      input.note,
+    );
   },
 });
 
@@ -160,7 +169,11 @@ export const reviewMerge = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "approver",
-  input: z.object({ workItemId, openedFullDiff: z.boolean(), note: z.string().max(4_000).optional() }),
+  input: z.object({
+    workItemId,
+    openedFullDiff: z.boolean(),
+    note: z.string().max(4_000).optional(),
+  }),
   output: decisionOutput,
   async handler(input, ctx) {
     return decidePending(
@@ -210,7 +223,7 @@ export const gateEscalate = defineOperation({
       .selectAll()
       .where("id", "=", input.pendingActionId)
       .executeTakeFirst();
-    if (!pa || pa.status !== "pending" || !pa.org_id) return { escalated: false, to: null };
+    if (pa?.status !== "pending" || !pa.org_id) return { escalated: false, to: null };
     const to = await backupOwnerId(ctx.db, pa.org_id, ctx.scope.policy);
     const hours = ctx.scope.policy?.timeouts.gateHours ?? 72;
     ctx.write(
@@ -234,8 +247,12 @@ export const gateEscalate = defineOperation({
         url: pa.work_item_id ? `/?item=${pa.work_item_id}` : "/",
       },
     });
-    ctx.change({ entity: "pending_action", id: pa.id, before: { assignee: pa.assignee_user_id }, after: { assignee: to } });
+    ctx.change({
+      entity: "pending_action",
+      id: pa.id,
+      before: { assignee: pa.assignee_user_id },
+      after: { assignee: to },
+    });
     return { escalated: true, to };
   },
 });
-

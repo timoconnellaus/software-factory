@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   artifactId,
-  CONTRACT_VERSION,
   type CapabilityManifest,
-  canRun,
   ChannelCallError,
+  CONTRACT_VERSION,
+  canRun,
   handleRunnerCall,
   httpControlPlane,
   isFactoryBranch,
@@ -38,7 +38,9 @@ describe("contract helpers", () => {
   });
 
   it("checks capabilities and harness before a runner takes a job", () => {
-    expect(canRun(manifest, { harness: { id: "claude-code" } as never, requires: ["browser"] })).toEqual({
+    expect(
+      canRun(manifest, { harness: { id: "claude-code" } as never, requires: ["browser"] }),
+    ).toEqual({
       ok: true,
     });
     expect(
@@ -58,9 +60,9 @@ describe("contract helpers", () => {
       triageResultSchema.parse({ size: "small", reason: "one-line copy change" }),
     ).toMatchObject({ domains: [], acceptanceCriteria: [] });
     expect(() => triageResultSchema.parse({ size: "huge", reason: "x" })).toThrow();
-    expect(
-      verifyResultSchema.safeParse({ summary: "ok", checks: [], criteria: [] }).success,
-    ).toBe(true);
+    expect(verifyResultSchema.safeParse({ summary: "ok", checks: [], criteria: [] }).success).toBe(
+      true,
+    );
   });
 
   it("gives an artifact a content-hash id", async () => {
@@ -79,7 +81,12 @@ describe("httpControlPlane against handleRunnerCall", () => {
     runNo: 1,
     stage: "build",
     workItem: { id: "wi_1", number: 1, title: "Add dark mode" },
-    repo: { url: "https://github.com/o/r.git", owner: "o", name: "r", baseRef: "factory/1-add-dark-mode" },
+    repo: {
+      url: "https://github.com/o/r.git",
+      owner: "o",
+      name: "r",
+      baseRef: "factory/1-add-dark-mode",
+    },
     branch: "factory/1-add-dark-mode-run-1",
     harness: { id: "claude-code", role: "implement", prompt: "do it" },
     context: {},
@@ -124,7 +131,13 @@ describe("httpControlPlane against handleRunnerCall", () => {
       branch: job.branch,
     });
     const refused = await client
-      .handback({ jobId: "job_1", fencingToken: 0, outcome: "completed", artifactIds: [], branch: job.branch })
+      .handback({
+        jobId: "job_1",
+        fencingToken: 0,
+        outcome: "completed",
+        artifactIds: [],
+        branch: job.branch,
+      })
       .catch((e: unknown) => e);
     // Same idempotency key (hand:job_1) with another body: the store refuses it before the handler.
     expect(refused).toBeInstanceOf(ChannelCallError);

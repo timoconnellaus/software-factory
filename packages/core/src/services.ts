@@ -36,6 +36,8 @@ export interface GitHubService {
     repo: RepoRef,
     input: { head: string; base: string; title: string; body: string },
   ): Promise<{ number: number; url: string }>;
+  /** Paths changed between two refs (for the self-modify check on `.factory/`, ADR 0036). */
+  changedFiles(repo: RepoRef, base: string, head: string): Promise<string[]>;
   /** Merges the PR if its head is still `sha`. */
   mergePullRequest(
     repo: RepoRef,

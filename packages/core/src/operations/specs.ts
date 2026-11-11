@@ -3,8 +3,8 @@
 import { parseJson } from "@software-factory/db";
 import { specResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
-import { newId } from "../ids.ts";
 import { OperationError } from "../errors.ts";
+import { newId } from "../ids.ts";
 import { defineOperation } from "../operation.ts";
 import { repoRef, requireProject, requireWorkItem, workItemId } from "./shared.ts";
 
@@ -47,9 +47,16 @@ export const specPropose = defineOperation({
       }),
     );
     ctx.write(
-      ctx.db.updateTable("core_work_items").set({ current_spec_id: specId, updated_at: ctx.now }).where("id", "=", w.id),
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ current_spec_id: specId, updated_at: ctx.now })
+        .where("id", "=", w.id),
     );
-    ctx.change({ entity: "spec", id: specId, after: { version, criteria: input.spec.acceptanceCriteria.length } });
+    ctx.change({
+      entity: "spec",
+      id: specId,
+      after: { version, criteria: input.spec.acceptanceCriteria.length },
+    });
     return { specId, version };
   },
 });
@@ -78,7 +85,12 @@ export const specAccept = defineOperation({
         .where("status", "=", "draft"),
     );
     ctx.guardChanged("spec still a draft");
-    ctx.change({ entity: "spec", id: input.specId, before: { status: "draft" }, after: { status: "approved", approvedBy } });
+    ctx.change({
+      entity: "spec",
+      id: input.specId,
+      before: { status: "draft" },
+      after: { status: "approved", approvedBy },
+    });
     return { specId: input.specId, approvedBy };
   },
 });
@@ -95,9 +107,13 @@ export const specCommit = defineOperation({
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
     const spec = w.current_spec_id
-      ? await ctx.db.selectFrom("core_specs").selectAll().where("id", "=", w.current_spec_id).executeTakeFirst()
+      ? await ctx.db
+          .selectFrom("core_specs")
+          .selectAll()
+          .where("id", "=", w.current_spec_id)
+          .executeTakeFirst()
       : undefined;
-    if (!spec || spec.status !== "approved") throw new OperationError("conflict", "no approved spec");
+    if (spec?.status !== "approved") throw new OperationError("conflict", "no approved spec");
     if (spec.commit_sha && spec.path) return { path: spec.path, commitSha: spec.commit_sha };
     const path = `docs/specs/wi-${w.number}-${w.slug}.md`;
     const criteria = parseJson<string[]>(spec.acceptance_criteria, []);
@@ -111,8 +127,18 @@ export const specCommit = defineOperation({
       content,
       message: `spec: ${w.title} (work item ${w.number})`,
     });
-    ctx.write(ctx.db.updateTable("core_specs").set({ path, commit_sha: commitSha }).where("id", "=", spec.id));
-    ctx.write(ctx.db.updateTable("core_work_items").set({ head_sha: commitSha, updated_at: ctx.now }).where("id", "=", w.id));
+    ctx.write(
+      ctx.db
+        .updateTable("core_specs")
+        .set({ path, commit_sha: commitSha })
+        .where("id", "=", spec.id),
+    );
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ head_sha: commitSha, updated_at: ctx.now })
+        .where("id", "=", w.id),
+    );
     ctx.change({ entity: "spec", id: spec.id, after: { path, commitSha } });
     return { path, commitSha };
   },

@@ -3,8 +3,8 @@
 // round is answered, the Workflow gets `questions-<item>-<round>`.
 import { questionDraftSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
-import { newId } from "../ids.ts";
 import { OperationError } from "../errors.ts";
+import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { approverIds, backupOwnerId } from "../scope.ts";
 import { questionsEvent } from "../workflow-events.ts";
@@ -25,7 +25,9 @@ export const questionAsk = defineOperation({
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const approvers = await approverIds(ctx.db, w.org_id, ctx.scope.policy);
-    const assignee = approvers.includes(w.requester_user_id) ? w.requester_user_id : (approvers[0] ?? null);
+    const assignee = approvers.includes(w.requester_user_id)
+      ? w.requester_user_id
+      : (approvers[0] ?? null);
     const hours = ctx.scope.policy?.timeouts.questionHours ?? 48;
     const timeoutAt = new Date(Date.parse(ctx.now) + hours * 3_600_000).toISOString();
     const ids: string[] = [];
@@ -96,7 +98,11 @@ export const workItemAwaitQuestions = defineOperation({
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
-        .set({ planning_round: round, ...(open > 0 ? { status: "waiting" as const } : {}), updated_at: ctx.now })
+        .set({
+          planning_round: round,
+          ...(open > 0 ? { status: "waiting" as const } : {}),
+          updated_at: ctx.now,
+        })
         .where("id", "=", w.id),
     );
     return { round, open, event: questionsEvent(w.id, round) };
@@ -135,7 +141,12 @@ function answer(
       .where("status", "=", "open"),
   );
   ctx.guardChanged(`answer ${q.id} once`);
-  ctx.change({ entity: "question", id: q.id, before: { status: "open" }, after: { answer: value, acceptedDefault } });
+  ctx.change({
+    entity: "question",
+    id: q.id,
+    before: { status: "open" },
+    after: { answer: value, acceptedDefault },
+  });
 }
 
 async function closeRoundIfDone(ctx: HandlerContext, answeredIds: string[]) {
@@ -157,7 +168,11 @@ async function closeRoundIfDone(ctx: HandlerContext, answeredIds: string[]) {
   );
   ctx.emit({
     kind: "workflow.event",
-    payload: { instanceId: w.workflow_id, type: questionsEvent(w.id, w.planning_round), payload: { by: ctx.actor.id } },
+    payload: {
+      instanceId: w.workflow_id,
+      type: questionsEvent(w.id, w.planning_round),
+      payload: { by: ctx.actor.id },
+    },
   });
   return true;
 }
@@ -172,7 +187,11 @@ export const questionAnswer = defineOperation({
   input: z.object({ questionId, answer: z.string().min(1).max(8_000) }),
   output: z.object({ answered: z.boolean(), roundComplete: z.boolean() }),
   async handler(input, ctx) {
-    const q = await ctx.db.selectFrom("core_questions").selectAll().where("id", "=", input.questionId).executeTakeFirst();
+    const q = await ctx.db
+      .selectFrom("core_questions")
+      .selectAll()
+      .where("id", "=", input.questionId)
+      .executeTakeFirst();
     if (!q) throw new OperationError("not_found", "no such question");
     if (q.status !== "open") throw new OperationError("conflict", `question already ${q.status}`);
     await assertCanAnswer(ctx, q.assignee_user_id);
@@ -190,7 +209,11 @@ export const questionAcceptDefaults = defineOperation({
   actors: ["human"],
   permission: "member",
   input: z.object({ workItemId }),
-  output: z.object({ accepted: z.array(z.string()), skipped: z.array(z.object({ id: z.string(), why: z.string() })), roundComplete: z.boolean() }),
+  output: z.object({
+    accepted: z.array(z.string()),
+    skipped: z.array(z.object({ id: z.string(), why: z.string() })),
+    roundComplete: z.boolean(),
+  }),
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
     const open = await ctx.db

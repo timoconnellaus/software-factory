@@ -133,9 +133,7 @@ describe("idempotent calls", () => {
 
 describe("signed responses and key versions", () => {
   it("the host accepts only a response signed for its own call", async () => {
-    const { signedRunnerResponse, verifyRunnerResponse } = await import(
-      "../src/channel.ts"
-    );
+    const { signedRunnerResponse, verifyRunnerResponse } = await import("../src/channel.ts");
     const key = await runnerChannelKey(MASTER, RUNNER);
     const call = {
       key,
@@ -208,9 +206,13 @@ describe("store semantics", () => {
         throw new Error("boom");
       }),
     ).rejects.toThrow("boom");
-    const retried = await handleRunnerCall(await signed(), { keyFor, store: failing, now }, async () => ({
-      body: { ok: "again" },
-    }));
+    const retried = await handleRunnerCall(
+      await signed(),
+      { keyFor, store: failing, now },
+      async () => ({
+        body: { ok: "again" },
+      }),
+    );
     expect(await retried.json()).toEqual({ ok: "again" });
   });
 

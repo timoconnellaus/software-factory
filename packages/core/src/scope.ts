@@ -4,7 +4,7 @@ import type { Db, KillScope } from "@software-factory/db";
 import type { Actor } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import type { ProjectRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
-import { parseProjectPolicy, type ProjectPolicy } from "./policy/project-policy.ts";
+import { type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
 
 const EMPTY: Scope = {
   orgId: null,
@@ -227,7 +227,10 @@ export async function backupOwnerId(
       .selectFrom("core_user")
       .select("id")
       .where((eb) =>
-        eb.or([eb("id", "=", policy.backupOwner ?? ""), eb("github_login", "=", policy.backupOwner ?? "")]),
+        eb.or([
+          eb("id", "=", policy.backupOwner ?? ""),
+          eb("github_login", "=", policy.backupOwner ?? ""),
+        ]),
       )
       .executeTakeFirst();
     if (user) return user.id;
@@ -248,7 +251,8 @@ export async function checkPermission(
   if (role === null) throw new OperationError("forbidden", "not a member of this org");
   if (permission === "member") return;
   if (permission === "admin") {
-    if (!ADMIN_ROLES.has(role)) throw new OperationError("forbidden", "needs an org owner or admin");
+    if (!ADMIN_ROLES.has(role))
+      throw new OperationError("forbidden", "needs an org owner or admin");
     return;
   }
   const approvers = await approverIds(db, scope.orgId, scope.policy);

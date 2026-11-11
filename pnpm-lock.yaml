@@ -37,6 +37,22 @@ importers:
         version: 4.157.0(@cloudflare/workers-types@5.20261104.1)(@types/node@24.19.2)
 
   apps/engine:
+    dependencies:
+      '@software-factory/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@software-factory/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@software-factory/runner-contract':
+        specifier: workspace:*
+        version: link:../../packages/runner-contract
+      kysely:
+        specifier: 0.29.8
+        version: 0.29.8
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: 1.5.1

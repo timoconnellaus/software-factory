@@ -9,7 +9,11 @@ import { createWorkItem, requireProject, requireWorkItem, workItemId } from "./s
 
 export async function openIncident(
   ctx: HandlerContext,
-  input: { kind: "sent_back" | "run_failed" | "run_stalled" | "manual"; reason: string; runId: string | null },
+  input: {
+    kind: "sent_back" | "run_failed" | "run_stalled" | "manual";
+    reason: string;
+    runId: string | null;
+  },
 ): Promise<{ incidentId: string; fixWorkItemId: string } | null> {
   const w = requireWorkItem(ctx);
   if (w.kind === "incident") return null;
@@ -56,7 +60,11 @@ export async function openIncident(
       created_at: ctx.now,
     }),
   );
-  ctx.change({ entity: "incident", id: incidentId, after: { kind: input.kind, fixWorkItemId: fix.id } });
+  ctx.change({
+    entity: "incident",
+    id: incidentId,
+    after: { kind: input.kind, fixWorkItemId: fix.id },
+  });
   return { incidentId, fixWorkItemId: fix.id };
 }
 

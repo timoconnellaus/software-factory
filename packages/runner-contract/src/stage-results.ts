@@ -3,6 +3,12 @@
 // doesn't parse fails the run.
 import { z } from "zod";
 
+/**
+ * Where the harness writes its stage result, relative to the worktree root. The runner host reads
+ * it into `Handback.result`, then deletes it: it is never committed or pushed.
+ */
+export const RESULT_FILE = ".factory-result.json";
+
 const criterion = z.string().min(1).max(1_000);
 
 /** `triage`: the foreman's sizing (ADR 0005, 0013). */
@@ -45,9 +51,7 @@ export const specResultSchema = z.object({
 });
 
 /** `build`: nothing beyond the hand-back's branch and head SHA; an optional note. */
-export const buildResultSchema = z
-  .object({ notes: z.string().max(20_000).optional() })
-  .default({});
+export const buildResultSchema = z.object({ notes: z.string().max(20_000).optional() }).default({});
 
 export const checkResultSchema = z.object({
   name: z.string().min(1).max(100),

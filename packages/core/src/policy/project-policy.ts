@@ -2,8 +2,9 @@
 // GitHub connector mirrors it with `policy.sync` on each push to the default branch; a policy
 // offered from any other ref is ignored. A missing or malformed policy fails closed: every
 // non-human call on the project is denied until a valid one lands.
-import { z } from "zod";
+
 import { CAPABILITIES, JOB_STAGES, MODEL_ROLES } from "@software-factory/runner-contract";
+import { z } from "zod";
 import { AUTONOMY_POLICIES, type DecisionRules, rulesError } from "./gate.ts";
 
 /** Where the policy lives in a project's repo. */
@@ -37,8 +38,16 @@ export const projectPolicySchema = z
     timeouts: z
       .object({
         /** Hours a gate waits before it goes to the backup owner (never auto-accepted). */
-        gateHours: z.number().positive().max(24 * 60).default(72),
-        questionHours: z.number().positive().max(24 * 60).default(48),
+        gateHours: z
+          .number()
+          .positive()
+          .max(24 * 60)
+          .default(72),
+        questionHours: z
+          .number()
+          .positive()
+          .max(24 * 60)
+          .default(48),
       })
       .default({ gateHours: 72, questionHours: 48 }),
     /** How many items may wait at human gates before new builds stop (ADR 0040). */
@@ -54,9 +63,7 @@ export const projectPolicySchema = z
     /** Capabilities each stage's job requires (`.factory/` limits placement, ADR 0015). */
     requires: z.partialRecord(z.enum(JOB_STAGES), z.array(z.enum(CAPABILITIES))).default({}),
     /** Review packet sections in order (ADR 0020, spec 14). */
-    reviewPacket: z
-      .object({ sections: z.array(z.string().min(1)).min(1) })
-      .optional(),
+    reviewPacket: z.object({ sections: z.array(z.string().min(1)).min(1) }).optional(),
   })
   .strict();
 

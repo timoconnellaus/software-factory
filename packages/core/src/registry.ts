@@ -65,7 +65,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
 
 const byName = new Map<string, AnyOperation>();
 for (const op of OPERATIONS) {
-  if (byName.has(op.name)) throw new OperationError("conflict", `operation ${op.name} is defined twice`);
+  if (byName.has(op.name))
+    throw new OperationError("conflict", `operation ${op.name} is defined twice`);
   byName.set(op.name, op);
 }
 

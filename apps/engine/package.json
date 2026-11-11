@@ -3,13 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The cloud engine Worker: Cloudflare Workflows (one per work item), queues and cron. Named so it isn't confused with execution runners.",
+  "description": "The cloud engine Worker: one Workflow per work item, the signed runner channel, outbox delivery, cron, and the operations RPC for sf-app.",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler d1 migrations apply software-factory --local && wrangler dev",
     "build": "wrangler deploy --dry-run --outdir dist",
-    "types": "wrangler types",
-    "typecheck": "wrangler types --check && tsc --noEmit",
+    "types": "wrangler types --strict-vars=false",
+    "typecheck": "wrangler types --strict-vars=false --check && tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@software-factory/core": "workspace:*",
+    "@software-factory/db": "workspace:*",
+    "@software-factory/runner-contract": "workspace:*",
+    "kysely": "0.29.8",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.5.1",

@@ -5,11 +5,20 @@ import { call, first, newItem, ok, refusal, rows, uid, world } from "./helpers.t
 describe("intake", () => {
   it("creates once per event, ignores a redelivery, and attaches a new event with the same dedupe key", async () => {
     const w = await world();
-    const event = { projectId: w.projectId, title: "Fix login", source: "github", dedupeKey: `github:o/r#${uid("")}` };
-    const one = await ok<{ workItemId: string; outcome: string }>("workItem.create", { ...event, eventId: "d1" }, {
-      type: "intake",
-      id: "github",
-    }).catch(() => null);
+    const event = {
+      projectId: w.projectId,
+      title: "Fix login",
+      source: "github",
+      dedupeKey: `github:o/r#${uid("")}`,
+    };
+    const one = await ok<{ workItemId: string; outcome: string }>(
+      "workItem.create",
+      { ...event, eventId: "d1" },
+      {
+        type: "intake",
+        id: "github",
+      },
+    ).catch(() => null);
     // Intake must name a requester.
     expect(one).toBeNull();
     const intake = { type: "intake" as const, id: "github" };
@@ -31,8 +40,13 @@ describe("intake", () => {
       intake,
     );
     expect(attached).toMatchObject({ workItemId: created.workItemId, outcome: "attached" });
-    expect(await rows("SELECT id FROM core_work_items WHERE project_id = ?", w.projectId)).toHaveLength(1);
-    const starts = await rows("SELECT id FROM core_outbox WHERE kind = 'workflow.create' AND payload LIKE ?", `%${created.workItemId}%`);
+    expect(
+      await rows("SELECT id FROM core_work_items WHERE project_id = ?", w.projectId),
+    ).toHaveLength(1);
+    const starts = await rows(
+      "SELECT id FROM core_outbox WHERE kind = 'workflow.create' AND payload LIKE ?",
+      `%${created.workItemId}%`,
+    );
     expect(starts).toHaveLength(1);
     // The Workflow id is the work item id, not derived from the dedupe key.
     const item = await first<{ workflow_id: string; branch: string; number: number }>(
@@ -58,7 +72,10 @@ describe("triage", () => {
     const item = await newItem(w);
     const out = await ok<{ specRequired: boolean; reason: string }>(
       "workItem.triage",
-      { workItemId: item.workItemId, result: { size: "small", reason: "a one-line change", acceptanceCriteria: ["It works"] } },
+      {
+        workItemId: item.workItemId,
+        result: { size: "small", reason: "a one-line change", acceptanceCriteria: ["It works"] },
+      },
       FOREMAN,
     );
     expect(out.specRequired).toBe(false);
@@ -80,7 +97,10 @@ describe("triage", () => {
     const item = await newItem(w);
     const out = await ok<{ specRequired: boolean }>(
       "workItem.triage",
-      { workItemId: item.workItemId, result: { size: "medium", reason: "two screens", specRequested: "skip" } },
+      {
+        workItemId: item.workItemId,
+        result: { size: "medium", reason: "two screens", specRequested: "skip" },
+      },
       FOREMAN,
     );
     expect(out.specRequired).toBe(true);
@@ -91,10 +111,17 @@ describe("the spec gate and questions", () => {
   async function specItem() {
     const w = await world();
     const item = await newItem(w);
-    await ok("workItem.triage", { workItemId: item.workItemId, result: { size: "medium", reason: "x" } }, FOREMAN);
+    await ok(
+      "workItem.triage",
+      { workItemId: item.workItemId, result: { size: "medium", reason: "x" } },
+      FOREMAN,
+    );
     const spec = await ok<{ specId: string }>(
       "spec.propose",
-      { workItemId: item.workItemId, spec: { specMd: "# Spec", acceptanceCriteria: ["A", "B"], assumptions: [] } },
+      {
+        workItemId: item.workItemId,
+        spec: { specMd: "# Spec", acceptanceCriteria: ["A", "B"], assumptions: [] },
+      },
       FOREMAN,
     );
     return { w, item, spec };
@@ -102,16 +129,32 @@ describe("the spec gate and questions", () => {
 
   it("opens a spec gate an approver decides once; a second tap reports it was already decided", async () => {
     const { w, item, spec } = await specItem();
-    const pending = await call("spec.accept", { workItemId: item.workItemId, specId: spec.specId }, FOREMAN);
+    const pending = await call(
+      "spec.accept",
+      { workItemId: item.workItemId, specId: spec.specId },
+      FOREMAN,
+    );
     expect(pending.status).toBe("pending");
     const id = pending.status === "pending" ? pending.pendingActionId : "";
-    const first_ = await ok<{ alreadyDecided: boolean }>("spec.approve", { workItemId: item.workItemId }, w.human);
-    expect(first_.alreadyDecided).toBe(false);
-    const second = await ok<{ alreadyDecided: boolean }>("spec.approve", { workItemId: item.workItemId }, w.human);
-    expect(second.alreadyDecided).toBe(true);
-    expect((await refusal(call("spec.requestChanges", { workItemId: item.workItemId, note: "no" }, w.human))).code).toBe(
-      "conflict",
+    const first_ = await ok<{ alreadyDecided: boolean }>(
+      "spec.approve",
+      { workItemId: item.workItemId },
+      w.human,
     );
+    expect(first_.alreadyDecided).toBe(false);
+    const second = await ok<{ alreadyDecided: boolean }>(
+      "spec.approve",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    expect(second.alreadyDecided).toBe(true);
+    expect(
+      (
+        await refusal(
+          call("spec.requestChanges", { workItemId: item.workItemId, note: "no" }, w.human),
+        )
+      ).code,
+    ).toBe("conflict");
     const event = await rows<{ payload: string }>(
       "SELECT payload FROM core_outbox WHERE kind = 'workflow.event' AND payload LIKE ?",
       `%${approvalEvent(id)}%`,
@@ -125,17 +168,26 @@ describe("the spec gate and questions", () => {
     expect(gate.gate_open_ms).toBeGreaterThanOrEqual(0);
 
     // The approved re-run applies it, once.
-    const applied = await call("spec.accept", { workItemId: item.workItemId, specId: spec.specId }, FOREMAN, { approvalId: id });
+    const applied = await call(
+      "spec.accept",
+      { workItemId: item.workItemId, specId: spec.specId },
+      FOREMAN,
+      { approvalId: id },
+    );
     expect(applied.status).toBe("ok");
     const reused = await refusal(
-      call("spec.accept", { workItemId: item.workItemId, specId: spec.specId }, FOREMAN, { approvalId: id }),
+      call("spec.accept", { workItemId: item.workItemId, specId: spec.specId }, FOREMAN, {
+        approvalId: id,
+      }),
     );
     expect(reused.code).toBe("bad_approval");
   });
 
   it("refuses spec approval from someone who isn't an approver", async () => {
     const { item } = await specItem();
-    const error = await refusal(call("spec.approve", { workItemId: item.workItemId }, { type: "human", id: uid("usr_") }));
+    const error = await refusal(
+      call("spec.approve", { workItemId: item.workItemId }, { type: "human", id: uid("usr_") }),
+    );
     expect(error.code).toBe("forbidden");
   });
 
@@ -160,31 +212,46 @@ describe("the spec gate and questions", () => {
     );
     expect(round.open).toBe(3);
     expect(round.event).toBe(questionsEvent(item.workItemId, round.round));
-    const bulk = await ok<{ accepted: string[]; skipped: { id: string }[]; roundComplete: boolean }>(
-      "question.acceptDefaults",
-      { workItemId: item.workItemId },
-      w.human,
-    );
+    const bulk = await ok<{
+      accepted: string[];
+      skipped: { id: string }[];
+      roundComplete: boolean;
+    }>("question.acceptDefaults", { workItemId: item.workItemId }, w.human);
     expect(bulk.accepted).toEqual([asked.questionIds[0]]);
     expect(bulk.skipped.map((s) => s.id)).toEqual(asked.questionIds.slice(1));
     expect(bulk.roundComplete).toBe(false);
-    await ok("question.answer", { questionId: asked.questionIds[1], answer: "No, use localStorage" }, w.human);
+    await ok(
+      "question.answer",
+      { questionId: asked.questionIds[1], answer: "No, use localStorage" },
+      w.human,
+    );
     const last = await ok<{ roundComplete: boolean }>(
       "question.answer",
       { questionId: asked.questionIds[2], answer: "No" },
       w.human,
     );
     expect(last.roundComplete).toBe(true);
-    const events = await rows("SELECT id FROM core_outbox WHERE payload LIKE ?", `%${round.event}%`);
-    expect(events).toHaveLength(1);
-    expect((await refusal(call("question.answer", { questionId: asked.questionIds[2], answer: "x" }, w.human))).code).toBe(
-      "conflict",
+    const events = await rows(
+      "SELECT id FROM core_outbox WHERE payload LIKE ?",
+      `%${round.event}%`,
     );
+    expect(events).toHaveLength(1);
+    expect(
+      (
+        await refusal(
+          call("question.answer", { questionId: asked.questionIds[2], answer: "x" }, w.human),
+        )
+      ).code,
+    ).toBe("conflict");
   });
 
   it("escalates timed-out gates to the backup owner without deciding them", async () => {
     const { item, spec } = await specItem();
-    const pending = await call("spec.accept", { workItemId: item.workItemId, specId: spec.specId }, FOREMAN);
+    const pending = await call(
+      "spec.accept",
+      { workItemId: item.workItemId, specId: spec.specId },
+      FOREMAN,
+    );
     const id = pending.status === "pending" ? pending.pendingActionId : "";
     const out = await ok<{ escalated: boolean }>("gate.escalate", { pendingActionId: id }, FOREMAN);
     expect(out.escalated).toBe(true);
@@ -198,7 +265,11 @@ describe("the spec gate and questions", () => {
   it("sending back from review opens a factory incident as a new work item, but not for an incident", async () => {
     const w = await world();
     const item = await newItem(w);
-    await call("pr.merge", { workItemId: item.workItemId, headSha: "abcdef1", touchesFactoryConfig: false }, FOREMAN);
+    await call(
+      "pr.merge",
+      { workItemId: item.workItemId, headSha: "abcdef1", touchesFactoryConfig: false },
+      FOREMAN,
+    );
     const out = await ok<{ incidentId: string | null }>(
       "review.sendBack",
       { workItemId: item.workItemId, note: "Missing tests", openedFullDiff: true },
@@ -220,7 +291,11 @@ describe("the spec gate and questions", () => {
   it("lists the gates and questions waiting on a person in their inbox", async () => {
     const { w, item, spec } = await specItem();
     await call("spec.accept", { workItemId: item.workItemId, specId: spec.specId }, FOREMAN);
-    await ok("question.ask", { workItemId: item.workItemId, questions: [{ prompt: "Colour?" }] }, FOREMAN);
+    await ok(
+      "question.ask",
+      { workItemId: item.workItemId, questions: [{ prompt: "Colour?" }] },
+      FOREMAN,
+    );
     const inbox = await ok<{ gates: { kind: string }[]; questions: unknown[]; running: unknown[] }>(
       "inbox.list",
       {},

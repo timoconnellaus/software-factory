@@ -4,8 +4,8 @@ import { parseJson } from "@software-factory/db";
 import { triageResultSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
-import { newId } from "../ids.ts";
 import { OperationError } from "../errors.ts";
+import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
@@ -120,7 +120,12 @@ export const workItemCreate = defineOperation({
       .executeTakeFirst();
     if (seen) {
       ctx.subject({ workItemId: seen.id });
-      return { workItemId: seen.id, number: seen.number, branch: seen.branch, outcome: "duplicate" as const };
+      return {
+        workItemId: seen.id,
+        number: seen.number,
+        branch: seen.branch,
+        outcome: "duplicate" as const,
+      };
     }
 
     const event = {
@@ -146,7 +151,9 @@ export const workItemCreate = defineOperation({
       .executeTakeFirst();
     if (existing) {
       ctx.write(
-        ctx.db.insertInto("core_intake_events").values({ ...event, work_item_id: existing.id, outcome: "attached" }),
+        ctx.db
+          .insertInto("core_intake_events")
+          .values({ ...event, work_item_id: existing.id, outcome: "attached" }),
       );
       ctx.emit({
         kind: "notify",
@@ -176,10 +183,21 @@ export const workItemCreate = defineOperation({
       number: project.next_number,
     });
     ctx.write(
-      ctx.db.insertInto("core_intake_keys").values({ dedupe_key: dedupeKey, work_item_id: created.id, created_at: ctx.now }),
+      ctx.db
+        .insertInto("core_intake_keys")
+        .values({ dedupe_key: dedupeKey, work_item_id: created.id, created_at: ctx.now }),
     );
-    ctx.write(ctx.db.insertInto("core_intake_events").values({ ...event, work_item_id: created.id, outcome: "created" }));
-    return { workItemId: created.id, number: project.next_number, branch: created.branch, outcome: "created" as const };
+    ctx.write(
+      ctx.db
+        .insertInto("core_intake_events")
+        .values({ ...event, work_item_id: created.id, outcome: "created" }),
+    );
+    return {
+      workItemId: created.id,
+      number: project.next_number,
+      branch: created.branch,
+      outcome: "created" as const,
+    };
   },
 });
 
@@ -199,7 +217,11 @@ export const workItemList = defineOperation({
     .refine((v) => v.projectId || v.orgId, { message: "projectId or orgId" }),
   output: z.object({ items: z.array(itemSummary) }),
   async handler(input, ctx) {
-    let query = ctx.db.selectFrom("core_work_items").selectAll().orderBy("updated_at", "desc").limit(input.limit);
+    let query = ctx.db
+      .selectFrom("core_work_items")
+      .selectAll()
+      .orderBy("updated_at", "desc")
+      .limit(input.limit);
     if (input.projectId) query = query.where("project_id", "=", input.projectId);
     else if (input.orgId) query = query.where("org_id", "=", input.orgId);
     if (input.status?.length) query = query.where("status", "in", input.status);
@@ -312,13 +334,38 @@ export const workItemGet = defineOperation({
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
     const [stages, spec, questions, gates, runs, packet] = await Promise.all([
-      ctx.db.selectFrom("core_stages").selectAll().where("work_item_id", "=", w.id).orderBy("started_at").orderBy("id").execute(),
+      ctx.db
+        .selectFrom("core_stages")
+        .selectAll()
+        .where("work_item_id", "=", w.id)
+        .orderBy("started_at")
+        .orderBy("id")
+        .execute(),
       w.current_spec_id
-        ? ctx.db.selectFrom("core_specs").selectAll().where("id", "=", w.current_spec_id).executeTakeFirst()
+        ? ctx.db
+            .selectFrom("core_specs")
+            .selectAll()
+            .where("id", "=", w.current_spec_id)
+            .executeTakeFirst()
         : Promise.resolve(undefined),
-      ctx.db.selectFrom("core_questions").selectAll().where("work_item_id", "=", w.id).orderBy("created_at").execute(),
-      ctx.db.selectFrom("core_pending_actions").selectAll().where("work_item_id", "=", w.id).orderBy("created_at").execute(),
-      ctx.db.selectFrom("core_runs").selectAll().where("work_item_id", "=", w.id).orderBy("run_no").execute(),
+      ctx.db
+        .selectFrom("core_questions")
+        .selectAll()
+        .where("work_item_id", "=", w.id)
+        .orderBy("created_at")
+        .execute(),
+      ctx.db
+        .selectFrom("core_pending_actions")
+        .selectAll()
+        .where("work_item_id", "=", w.id)
+        .orderBy("created_at")
+        .execute(),
+      ctx.db
+        .selectFrom("core_runs")
+        .selectAll()
+        .where("work_item_id", "=", w.id)
+        .orderBy("run_no")
+        .execute(),
       ctx.db
         .selectFrom("core_review_packets")
         .selectAll()
@@ -498,7 +545,12 @@ export const workItemCancel = defineOperation({
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
-        .set({ status: "cancelled", status_reason: input.reason, closed_at: ctx.now, updated_at: ctx.now })
+        .set({
+          status: "cancelled",
+          status_reason: input.reason,
+          closed_at: ctx.now,
+          updated_at: ctx.now,
+        })
         .where("id", "=", w.id),
     );
     ctx.write(
@@ -525,21 +577,41 @@ export const workItemCancel = defineOperation({
     ctx.write(
       ctx.db
         .updateTable("core_leases")
-        .set((eb) => ({ fencing_token: eb("fencing_token", "+", 1), holder_kind: null, holder_id: null, released_at: ctx.now }))
+        .set((eb) => ({
+          fencing_token: eb("fencing_token", "+", 1),
+          holder_kind: null,
+          holder_id: null,
+          released_at: ctx.now,
+        }))
         .where("work_item_id", "=", w.id),
     );
     ctx.write(
       ctx.db
         .updateTable("core_pending_actions")
-        .set({ status: "rejected", decision: "rejected", decided_at: ctx.now, decided_by: ctx.actor.id, note: "work item cancelled" })
+        .set({
+          status: "rejected",
+          decision: "rejected",
+          decided_at: ctx.now,
+          decided_by: ctx.actor.id,
+          note: "work item cancelled",
+        })
         .where("work_item_id", "=", w.id)
         .where("status", "=", "pending"),
     );
     ctx.write(
-      ctx.db.updateTable("core_questions").set({ status: "withdrawn" }).where("work_item_id", "=", w.id).where("status", "=", "open"),
+      ctx.db
+        .updateTable("core_questions")
+        .set({ status: "withdrawn" })
+        .where("work_item_id", "=", w.id)
+        .where("status", "=", "open"),
     );
     ctx.emit({ kind: "workflow.terminate", payload: { instanceId: w.workflow_id } });
-    ctx.change({ entity: "work_item", id: w.id, before: { status: w.status }, after: { status: "cancelled" } });
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      before: { status: w.status },
+      after: { status: "cancelled" },
+    });
     return { cancelled: true };
   },
 });
@@ -552,7 +624,12 @@ export const workItemTriage = defineOperation({
   actors: ["agent"],
   permission: "signed-in",
   input: z.object({ workItemId, result: triageResultSchema }),
-  output: z.object({ size: z.enum(SIZES), specRequired: z.boolean(), reason: z.string(), specId: z.string() }),
+  output: z.object({
+    size: z.enum(SIZES),
+    specRequired: z.boolean(),
+    reason: z.string(),
+    specId: z.string(),
+  }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const policy = ctx.scope.policy;
@@ -625,7 +702,11 @@ export const workItemEnterStage = defineOperation({
     stage: z.enum(STAGES),
     closeAs: z.enum(["done", "sent_back", "failed"]).default("done"),
     reason: z.string().max(4_000).optional(),
-    skipped: z.array(z.object({ stage: z.enum(STAGES), reason: z.string().max(4_000) })).default([]),
+    skipped: z
+      .array(z.object({ stage: z.enum(STAGES), reason: z.string().max(4_000) }))
+      .default([]),
+    /** The Workflow version driving the item (ADR 0053), recorded on its first transition. */
+    workflowVersion: z.number().int().positive().optional(),
   }),
   output: z.object({ stage: z.enum(STAGES), attempt: z.number() }),
   async handler(input, ctx) {
@@ -674,8 +755,22 @@ export const workItemEnterStage = defineOperation({
         ended_at: input.stage === "done" ? ctx.now : null,
       }),
     );
-    ctx.write(ctx.db.updateTable("core_work_items").set({ stage: input.stage, updated_at: ctx.now }).where("id", "=", w.id));
-    ctx.change({ entity: "work_item", id: w.id, before: { stage: w.stage }, after: { stage: input.stage, attempt } });
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          stage: input.stage,
+          updated_at: ctx.now,
+          ...(input.workflowVersion ? { workflow_version: input.workflowVersion } : {}),
+        })
+        .where("id", "=", w.id),
+    );
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      before: { stage: w.stage },
+      after: { stage: input.stage, attempt },
+    });
     return { stage: input.stage, attempt };
   },
 });
@@ -687,17 +782,27 @@ export const workItemFinish = defineOperation({
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
-  input: z.object({ workItemId, status: z.enum(["done", "failed", "rejected"]), reason: z.string().max(4_000) }),
+  input: z.object({
+    workItemId,
+    status: z.enum(["done", "failed", "rejected"]),
+    reason: z.string().max(4_000),
+  }),
   output: z.object({ status: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     if (!["running", "waiting", "paused"].includes(w.status)) return { status: w.status };
     setItemStatus(ctx, w.id, ["running", "waiting", "paused"], input.status, input.reason);
-    ctx.write(ctx.db.updateTable("core_work_items").set({ closed_at: ctx.now }).where("id", "=", w.id));
+    ctx.write(
+      ctx.db.updateTable("core_work_items").set({ closed_at: ctx.now }).where("id", "=", w.id),
+    );
     ctx.write(
       ctx.db
         .updateTable("core_stages")
-        .set({ status: input.status === "done" ? "done" : "failed", ended_at: ctx.now, reason: input.reason })
+        .set({
+          status: input.status === "done" ? "done" : "failed",
+          ended_at: ctx.now,
+          reason: input.reason,
+        })
         .where("work_item_id", "=", w.id)
         .where("status", "=", "active"),
     );
@@ -713,7 +818,9 @@ export const workItemFinish = defineOperation({
           ended_at: ctx.now,
         }),
       );
-      ctx.write(ctx.db.updateTable("core_work_items").set({ stage: "done" }).where("id", "=", w.id));
+      ctx.write(
+        ctx.db.updateTable("core_work_items").set({ stage: "done" }).where("id", "=", w.id),
+      );
     }
     ctx.emit({
       kind: "notify",
@@ -725,7 +832,12 @@ export const workItemFinish = defineOperation({
         url: `/work/${w.id}`,
       },
     });
-    ctx.change({ entity: "work_item", id: w.id, before: { status: w.status }, after: { status: input.status } });
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      before: { status: w.status },
+      after: { status: input.status },
+    });
     return { status: input.status };
   },
 });
@@ -790,7 +902,8 @@ export const inboxList = defineOperation({
     const orgIds = memberships
       .map((m) => m.organization_id)
       .filter((id) => !input.orgId || id === input.orgId);
-    if (orgIds.length === 0) return { gates: [], questions: [], running: [], runners: [], wipHolds: [] };
+    if (orgIds.length === 0)
+      return { gates: [], questions: [], running: [], runners: [], wipHolds: [] };
 
     const pending = await ctx.db
       .selectFrom("core_pending_actions")
@@ -926,7 +1039,10 @@ export const RUNNER_OFFLINE_MS = 2 * 60_000;
 /** The queued reason when a project is at its WIP limit (spec 03, criterion 10). */
 export const WIP_WAIT_REASON = "waiting on review";
 
-export async function activeRunCount(ctx: Pick<HandlerContext, "db">, runnerId: string): Promise<number> {
+export async function activeRunCount(
+  ctx: Pick<HandlerContext, "db">,
+  runnerId: string,
+): Promise<number> {
   const row = await ctx.db
     .selectFrom("core_runs")
     .select((eb) => eb.fn.countAll().as("n"))

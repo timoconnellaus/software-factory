@@ -69,7 +69,10 @@ describe("batch guards", () => {
   it("let the batch commit when the condition holds, and leave no guard rows", async () => {
     await env.DB.batch([
       insertMeta("guard-b"),
-      toStatement(env.DB, db.updateTable("core_meta").set({ value: "y" }).where("key", "=", "guard-b")),
+      toStatement(
+        env.DB,
+        db.updateTable("core_meta").set({ value: "y" }).where("key", "=", "guard-b"),
+      ),
       guardChanged(env.DB, "update"),
       guardExists(
         env.DB,
@@ -99,6 +102,8 @@ describe("batch guards", () => {
       clearGuards(env.DB),
     ]).catch((e: unknown) => e);
     expect(failedGuard(error)).toBe("guard");
-    expect(await env.DB.prepare("SELECT key FROM core_meta WHERE key = 'guard-c'").first()).toBeNull();
+    expect(
+      await env.DB.prepare("SELECT key FROM core_meta WHERE key = 'guard-c'").first(),
+    ).toBeNull();
   });
 });

@@ -4,8 +4,8 @@
 // their own run branch.
 import { checkResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
-import { newId } from "../ids.ts";
 import { OperationError } from "../errors.ts";
+import { newId } from "../ids.ts";
 import { defineOperation } from "../operation.ts";
 import { repoRef, requireProject, requireWorkItem, sha, workItemId } from "./shared.ts";
 
@@ -25,12 +25,21 @@ export const branchEnsure = defineOperation({
     let head = await ctx.services.github.getBranchSha(repo, w.branch);
     if (!head) {
       const base = await ctx.services.github.getBranchSha(repo, project.default_branch);
-      if (!base) throw new OperationError("unavailable", `no ${project.default_branch} branch on ${repo.owner}/${repo.repo}`);
+      if (!base)
+        throw new OperationError(
+          "unavailable",
+          `no ${project.default_branch} branch on ${repo.owner}/${repo.repo}`,
+        );
       await ctx.services.github.createBranch(repo, w.branch, base);
       head = base;
       ctx.change({ entity: "branch", id: w.branch, after: { sha: base } });
     }
-    ctx.write(ctx.db.updateTable("core_work_items").set({ head_sha: head, updated_at: ctx.now }).where("id", "=", w.id));
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ head_sha: head, updated_at: ctx.now })
+        .where("id", "=", w.id),
+    );
     return { branch: w.branch, sha: head };
   },
 });
@@ -46,7 +55,11 @@ export const branchAdvance = defineOperation({
   output: z.object({ ok: z.boolean(), sha: z.string().nullable(), reason: z.string().nullable() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const run = await ctx.db.selectFrom("core_runs").selectAll().where("id", "=", input.runId).executeTakeFirst();
+    const run = await ctx.db
+      .selectFrom("core_runs")
+      .selectAll()
+      .where("id", "=", input.runId)
+      .executeTakeFirst();
     if (!run || run.work_item_id !== w.id) throw new OperationError("not_found", "no such run");
     if (run.status !== "handed_back" || !run.head_sha) {
       return { ok: false, sha: null, reason: `run is ${run.status} with no pushed head` };
@@ -62,8 +75,18 @@ export const branchAdvance = defineOperation({
     const repo = await repoRef(ctx, requireProject(ctx));
     const moved = await ctx.services.github.fastForward(repo, w.branch, run.head_sha);
     if (!moved.ok) return { ok: false, sha: null, reason: moved.reason };
-    ctx.write(ctx.db.updateTable("core_work_items").set({ head_sha: run.head_sha, updated_at: ctx.now }).where("id", "=", w.id));
-    ctx.change({ entity: "branch", id: w.branch, before: { sha: w.head_sha }, after: { sha: run.head_sha } });
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ head_sha: run.head_sha, updated_at: ctx.now })
+        .where("id", "=", w.id),
+    );
+    ctx.change({
+      entity: "branch",
+      id: w.branch,
+      before: { sha: w.head_sha },
+      after: { sha: run.head_sha },
+    });
     return { ok: true, sha: run.head_sha, reason: null };
   },
 });
@@ -76,12 +99,27 @@ export const prOpen = defineOperation({
   actors: ["agent"],
   permission: "signed-in",
   input: z.object({ workItemId, body: z.string().max(60_000).default("") }),
-  output: z.object({ number: z.number(), url: z.string() }),
+  output: z.object({
+    number: z.number(),
+    url: z.string(),
+    /** Whether the branch's diff touches `.factory/`: its merge is then self-modify (ADR 0036). */
+    touchesFactoryConfig: z.boolean(),
+    changedFiles: z.number(),
+  }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const project = requireProject(ctx);
-    if (w.pr_number && w.pr_url) return { number: w.pr_number, url: w.pr_url };
     const repo = await repoRef(ctx, project);
+    const files = await ctx.services.github.changedFiles(repo, project.default_branch, w.branch);
+    const touchesFactoryConfig = files.some((f) => f === ".factory" || f.startsWith(".factory/"));
+    if (w.pr_number && w.pr_url) {
+      return {
+        number: w.pr_number,
+        url: w.pr_url,
+        touchesFactoryConfig,
+        changedFiles: files.length,
+      };
+    }
     const pr = await ctx.services.github.openPullRequest(repo, {
       head: w.branch,
       base: project.default_branch,
@@ -95,7 +133,7 @@ export const prOpen = defineOperation({
         .where("id", "=", w.id),
     );
     ctx.change({ entity: "work_item", id: w.id, after: { pr: pr.url } });
-    return pr;
+    return { ...pr, touchesFactoryConfig, changedFiles: files.length };
   },
 });
 
@@ -179,7 +217,11 @@ export const reviewPacketRecord = defineOperation({
         created_at: ctx.now,
       }),
     );
-    ctx.change({ entity: "review_packet", id, after: { verdict: input.verdict, headSha: input.headSha } });
+    ctx.change({
+      entity: "review_packet",
+      id,
+      after: { verdict: input.verdict, headSha: input.headSha },
+    });
     return { reviewPacketId: id };
   },
 });

@@ -1,7 +1,14 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { defineOperation, FOREMAN, OPERATIONS, PERMISSIONS, RISK_CLASSES, runOperation } from "../src/index.ts";
+import {
+  defineOperation,
+  FOREMAN,
+  OPERATIONS,
+  PERMISSIONS,
+  RISK_CLASSES,
+  runOperation,
+} from "../src/index.ts";
 import { call, deps, first, newItem, ok, refusal, rows, sha40, uid, world } from "./helpers.ts";
 
 describe("the registry", () => {
@@ -17,7 +24,19 @@ describe("the registry", () => {
       expect(RISK_CLASSES, op.name).toContain(op.risk);
       expect(op.actors.length, op.name).toBeGreaterThan(0);
     }
-    for (const verb of ["workItem.create", "question.answer", "question.acceptDefaults", "spec.approve", "review.merge", "review.sendBack", "incident.open", "killSwitch.set", "job.claim", "run.handBack", "lease.claim"]) {
+    for (const verb of [
+      "workItem.create",
+      "question.answer",
+      "question.acceptDefaults",
+      "spec.approve",
+      "review.merge",
+      "review.sendBack",
+      "incident.open",
+      "killSwitch.set",
+      "job.claim",
+      "run.handBack",
+      "lease.claim",
+    ]) {
       expect(names, verb).toContain(verb);
     }
   });
@@ -31,9 +50,18 @@ describe("invoke()", () => {
       "SELECT * FROM core_audit WHERE operation = 'workItem.create' AND work_item_id = ?",
       item.workItemId,
     );
-    expect(audit).toMatchObject({ actor_type: "human", actor_id: w.userId, decision: "allow", outcome: "ok", policy_sha: w.policySha });
+    expect(audit).toMatchObject({
+      actor_type: "human",
+      actor_id: w.userId,
+      decision: "allow",
+      outcome: "ok",
+      policy_sha: w.policySha,
+    });
     expect(JSON.parse(audit.origin as string)).toEqual({ surface: "test" });
-    expect(JSON.parse(audit.diff as string)[0]).toMatchObject({ entity: "work_item", id: item.workItemId });
+    expect(JSON.parse(audit.diff as string)[0]).toMatchObject({
+      entity: "work_item",
+      id: item.workItemId,
+    });
     const outbox = await rows<{ kind: string; payload: string }>(
       "SELECT kind, payload FROM core_outbox WHERE payload LIKE ?",
       `%${item.workItemId}%`,
@@ -59,7 +87,9 @@ describe("invoke()", () => {
       },
     });
     const key = uid("atomic-");
-    const error = await refusal(runOperation(deps, op, { key }, { actor: w.human, origin: { surface: "test" } }));
+    const error = await refusal(
+      runOperation(deps, op, { key }, { actor: w.human, origin: { surface: "test" } }),
+    );
     expect(error.code).toBe("conflict");
     expect(await rows("SELECT * FROM core_meta WHERE key = ?", key)).toEqual([]);
     expect(await rows("SELECT * FROM core_outbox WHERE payload LIKE ?", `%${key}%`)).toEqual([]);
@@ -72,7 +102,10 @@ describe("invoke()", () => {
 
   it("fails closed on a malformed policy, and audits the refusal with the policy SHA", async () => {
     const w = await world('{"version":1,"autonomyPolicy":"yolo"}');
-    const project = await first<{ policy_sha: string }>("SELECT policy_sha FROM core_projects WHERE id = ?", w.projectId);
+    const project = await first<{ policy_sha: string }>(
+      "SELECT policy_sha FROM core_projects WHERE id = ?",
+      w.projectId,
+    );
     expect(project.policy_sha).toBe(w.policySha);
     // People can't create work on it either: agents couldn't run it.
     expect((await refusal(newItem(w))).code).toBe("unavailable");
@@ -109,26 +142,48 @@ describe("invoke()", () => {
       w.human,
     );
     expect(result.applied).toBe(false);
-    const project = await first<{ policy_sha: string }>("SELECT policy_sha FROM core_projects WHERE id = ?", w.projectId);
+    const project = await first<{ policy_sha: string }>(
+      "SELECT policy_sha FROM core_projects WHERE id = ?",
+      w.projectId,
+    );
     expect(project.policy_sha).toBe(w.policySha);
   });
 
   it("returns the first outcome for a repeated idempotency key", async () => {
     const w = await world();
     const key = uid("idem-");
-    const first_ = await call("workItem.create", { projectId: w.projectId, title: "Once" }, w.human, { idempotencyKey: key });
-    const again = await call("workItem.create", { projectId: w.projectId, title: "Once" }, w.human, { idempotencyKey: key });
+    const first_ = await call(
+      "workItem.create",
+      { projectId: w.projectId, title: "Once" },
+      w.human,
+      { idempotencyKey: key },
+    );
+    const again = await call(
+      "workItem.create",
+      { projectId: w.projectId, title: "Once" },
+      w.human,
+      { idempotencyKey: key },
+    );
     expect(again).toEqual(first_);
-    expect(await rows("SELECT id FROM core_work_items WHERE project_id = ? AND title = 'Once'", w.projectId)).toHaveLength(1);
+    expect(
+      await rows(
+        "SELECT id FROM core_work_items WHERE project_id = ? AND title = 'Once'",
+        w.projectId,
+      ),
+    ).toHaveLength(1);
   });
 
   it("refuses the wrong actor type and a non-member human, and audits both", async () => {
     const w = await world();
-    expect((await refusal(call("workItem.create", { projectId: w.projectId, title: "x" }, FOREMAN))).code).toBe("forbidden");
+    expect(
+      (await refusal(call("workItem.create", { projectId: w.projectId, title: "x" }, FOREMAN)))
+        .code,
+    ).toBe("forbidden");
     const stranger = { type: "human" as const, id: uid("usr_") };
-    expect((await refusal(call("workItem.create", { projectId: w.projectId, title: "x" }, stranger))).code).toBe(
-      "forbidden",
-    );
+    expect(
+      (await refusal(call("workItem.create", { projectId: w.projectId, title: "x" }, stranger)))
+        .code,
+    ).toBe("forbidden");
     const audit = await rows<{ outcome: string }>(
       "SELECT outcome FROM core_audit WHERE project_id = ? AND outcome = 'forbidden'",
       w.projectId,
@@ -137,7 +192,11 @@ describe("invoke()", () => {
   });
 
   it("sends an agent's merge to review: a pending action, an audit row and a notification", async () => {
-    const w = await world({ version: 1, autonomyPolicy: "autonomous", overrides: { agent: { merge: "allow" } } });
+    const w = await world({
+      version: 1,
+      autonomyPolicy: "autonomous",
+      overrides: { agent: { merge: "allow" } },
+    });
     const item = await newItem(w);
     const result = await call(
       "pr.merge",
@@ -161,7 +220,10 @@ describe("invoke()", () => {
       item.workItemId,
     );
     expect(risks.map((r) => r.risk)).toEqual(["merge", "self-modify"]);
-    const status = await first<{ status: string }>("SELECT status FROM core_work_items WHERE id = ?", item.workItemId);
+    const status = await first<{ status: string }>(
+      "SELECT status FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
     expect(status.status).toBe("waiting");
     void env;
   });
@@ -173,14 +235,21 @@ describe("kill switches", () => {
     const b = await world();
     const itemA = await newItem(a);
     const itemB = await newItem(b);
-    await ok("killSwitch.set", { scope: "project", id: a.projectId, on: true, reason: "test" }, a.human);
+    await ok(
+      "killSwitch.set",
+      { scope: "project", id: a.projectId, on: true, reason: "test" },
+      a.human,
+    );
     const killed = await refusal(
       call("workItem.enterStage", { workItemId: itemA.workItemId, stage: "triage" }, FOREMAN),
     );
     expect(killed.code).toBe("killed");
     expect(killed.details).toMatchObject({ scope: "project", scopeId: a.projectId, epoch: 1 });
     await ok("workItem.enterStage", { workItemId: itemB.workItemId, stage: "triage" }, FOREMAN);
-    const paused = await first<{ status: string }>("SELECT status FROM core_work_items WHERE id = ?", itemA.workItemId);
+    const paused = await first<{ status: string }>(
+      "SELECT status FROM core_work_items WHERE id = ?",
+      itemA.workItemId,
+    );
     expect(paused.status).toBe("paused");
     const pauses = await rows<{ payload: string }>(
       "SELECT payload FROM core_outbox WHERE kind = 'workflow.pause' AND payload LIKE ?",
@@ -194,30 +263,39 @@ describe("kill switches", () => {
       "SELECT payload FROM core_outbox WHERE kind = 'workflow.resume' AND payload LIKE ?",
       `%${itemA.workItemId}%`,
     );
-    expect(JSON.parse(resumes[0]?.payload ?? "{}").events).toContain(`resume-project-${a.projectId}-1`);
+    expect(JSON.parse(resumes[0]?.payload ?? "{}").events).toContain(
+      `resume-project-${a.projectId}-1`,
+    );
   });
 
   it("the org switch covers every project in the org and needs an org admin", async () => {
     const w = await world();
     const item = await newItem(w);
     await ok("killSwitch.set", { scope: "org", id: w.orgId, on: true }, w.human);
-    expect((await refusal(call("workItem.enterStage", { workItemId: item.workItemId, stage: "triage" }, FOREMAN))).code).toBe(
-      "killed",
-    );
+    expect(
+      (
+        await refusal(
+          call("workItem.enterStage", { workItemId: item.workItemId, stage: "triage" }, FOREMAN),
+        )
+      ).code,
+    ).toBe("killed");
     const memberId = uid("usr_");
     const now = new Date().toISOString();
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO core_user (id, name, email, created_at, updated_at) VALUES (?, 'M', ?, ?, ?)").bind(
-        memberId,
-        `${memberId}@x`,
-        now,
-        now,
-      ),
+      env.DB.prepare(
+        "INSERT INTO core_user (id, name, email, created_at, updated_at) VALUES (?, 'M', ?, ?, ?)",
+      ).bind(memberId, `${memberId}@x`, now, now),
       env.DB.prepare(
         "INSERT INTO core_member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, 'member', ?)",
       ).bind(uid("mem_"), w.orgId, memberId, now),
     ]);
-    const error = await refusal(call("killSwitch.set", { scope: "org", id: w.orgId, on: false }, { type: "human", id: memberId }));
+    const error = await refusal(
+      call(
+        "killSwitch.set",
+        { scope: "org", id: w.orgId, on: false },
+        { type: "human", id: memberId },
+      ),
+    );
     expect(error.code).toBe("forbidden");
   });
 });
@@ -231,10 +309,14 @@ describe("leases and fencing tokens", () => {
       { workItemId: item.workItemId, holderId: "session-a", ttlSeconds: 60 },
       FOREMAN,
     );
-    const held = await refusal(call("lease.claim", { workItemId: item.workItemId, holderId: "session-b" }, FOREMAN));
+    const held = await refusal(
+      call("lease.claim", { workItemId: item.workItemId, holderId: "session-b" }, FOREMAN),
+    );
     expect(held.code).toBe("conflict");
 
-    await env.DB.prepare("UPDATE core_leases SET expires_at = '2000-01-01T00:00:00.000Z' WHERE work_item_id = ?")
+    await env.DB.prepare(
+      "UPDATE core_leases SET expires_at = '2000-01-01T00:00:00.000Z' WHERE work_item_id = ?",
+    )
       .bind(item.workItemId)
       .run();
     const two = await ok<{ fencingToken: number }>(
@@ -245,7 +327,11 @@ describe("leases and fencing tokens", () => {
     expect(two.fencingToken).toBeGreaterThan(one.fencingToken);
 
     const stale = await refusal(
-      call("lease.heartbeat", { workItemId: item.workItemId, fencingToken: one.fencingToken }, FOREMAN),
+      call(
+        "lease.heartbeat",
+        { workItemId: item.workItemId, fencingToken: one.fencingToken },
+        FOREMAN,
+      ),
     );
     expect(stale.code).toBe("fenced");
     const audit = await first<{ outcome: string }>(
@@ -253,6 +339,10 @@ describe("leases and fencing tokens", () => {
       item.workItemId,
     );
     expect(audit.outcome).toBe("fenced");
-    await ok("lease.heartbeat", { workItemId: item.workItemId, fencingToken: two.fencingToken }, FOREMAN);
+    await ok(
+      "lease.heartbeat",
+      { workItemId: item.workItemId, fencingToken: two.fencingToken },
+      FOREMAN,
+    );
   });
 });

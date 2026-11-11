@@ -105,7 +105,9 @@ export function parseFloor(raw: string | undefined | null): FloorParse {
     return { ok: false, error: "floor is not JSON" };
   }
   const error = rulesError(value);
-  return error ? { ok: false, error: `floor: ${error}` } : { ok: true, floor: value as DecisionRules };
+  return error
+    ? { ok: false, error: `floor: ${error}` }
+    : { ok: true, floor: value as DecisionRules };
 }
 
 export interface GatePolicy {

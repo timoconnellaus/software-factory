@@ -11,7 +11,15 @@ export interface Actor {
   id: string;
 }
 
-export const SURFACES = ["app", "mcp", "runner-channel", "workflow", "cron", "connector", "test"] as const;
+export const SURFACES = [
+  "app",
+  "mcp",
+  "runner-channel",
+  "workflow",
+  "cron",
+  "connector",
+  "test",
+] as const;
 export type Surface = (typeof SURFACES)[number];
 
 export interface Origin {

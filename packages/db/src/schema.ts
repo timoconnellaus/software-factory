@@ -334,7 +334,14 @@ export interface CoreIncidentsTable {
 }
 
 export type AuditDecision = "allow" | "review" | "deny" | "n/a";
-export type AuditOutcome = "ok" | "review" | "denied" | "forbidden" | "killed" | "fenced" | "failed";
+export type AuditOutcome =
+  | "ok"
+  | "review"
+  | "denied"
+  | "forbidden"
+  | "killed"
+  | "fenced"
+  | "failed";
 
 export interface CoreAuditTable {
   id: string;

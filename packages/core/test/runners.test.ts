@@ -3,9 +3,22 @@ import type { CapabilityManifest, Job } from "@software-factory/runner-contract"
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { FOREMAN, runEvent } from "../src/index.ts";
-import { call, first, newItem, ok, refusal, rows, RUNNER_ACTOR, services, uid, world } from "./helpers.ts";
+import {
+  call,
+  first,
+  newItem,
+  ok,
+  RUNNER_ACTOR,
+  refusal,
+  rows,
+  services,
+  uid,
+  world,
+} from "./helpers.ts";
 
-const manifest = (capabilities: CapabilityManifest["capabilities"] = ["hooks"]): CapabilityManifest => ({
+const manifest = (
+  capabilities: CapabilityManifest["capabilities"] = ["hooks"],
+): CapabilityManifest => ({
   contractVersion: CONTRACT_VERSION,
   runnerKind: "orca",
   harnesses: ["claude-code"],
@@ -15,18 +28,30 @@ const capacity = (max = 2, inUse = 0) => ({ max, inUse, accepting: true });
 
 async function setup(policy?: unknown) {
   const w = await world(policy);
-  const runner = await ok<{ runnerId: string; key: string }>("runner.register", { name: "M5" }, w.human);
+  const runner = await ok<{ runnerId: string; key: string }>(
+    "runner.register",
+    { name: "M5" },
+    w.human,
+  );
   const item = await newItem(w);
   await ok("branch.ensure", { workItemId: item.workItemId }, FOREMAN);
   return { w, runner, item, actor: RUNNER_ACTOR(runner.runnerId) };
 }
 
 async function enqueue(workItemId: string, stage: "triage" | "build" = "build") {
-  return ok<{ jobId: string }>("job.enqueue", { workItemId, stage, role: stage === "build" ? "implement" : "triage", prompt: "Do it" }, FOREMAN);
+  return ok<{ jobId: string }>(
+    "job.enqueue",
+    { workItemId, stage, role: stage === "build" ? "implement" : "triage", prompt: "Do it" },
+    FOREMAN,
+  );
 }
 
-const claim = (actor: ReturnType<typeof RUNNER_ACTOR>, m = manifest(), c = capacity(), claimId = uid("claim-")) =>
-  ok<{ job: Job | null }>("job.claim", { claimId, manifest: m, capacity: c }, actor);
+const claim = (
+  actor: ReturnType<typeof RUNNER_ACTOR>,
+  m = manifest(),
+  c = capacity(),
+  claimId = uid("claim-"),
+) => ok<{ job: Job | null }>("job.claim", { claimId, manifest: m, capacity: c }, actor);
 
 describe("runners and the scheduler", () => {
   it("registers a runner and never writes its key to the audit journal", async () => {
@@ -59,24 +84,46 @@ describe("runners and the scheduler", () => {
   });
 
   it("gives no job to a runner at capacity, without a required capability, or rate-limited", async () => {
-    const { item, actor } = await setup({ version: 1, autonomyPolicy: "balanced", requires: { build: ["browser"] } });
+    const { item, actor } = await setup({
+      version: 1,
+      autonomyPolicy: "balanced",
+      requires: { build: ["browser"] },
+    });
     await enqueue(item.workItemId);
     expect((await claim(actor, manifest(["hooks"]))).job).toBeNull();
     expect((await claim(actor, manifest(["browser"]), capacity(1, 1))).job).toBeNull();
     await ok(
       "runner.heartbeat",
-      { manifest: manifest(["browser"]), capacity: capacity(), activeJobs: [], rateLimitedUntil: new Date(Date.now() + 60_000).toISOString() },
+      {
+        manifest: manifest(["browser"]),
+        capacity: capacity(),
+        activeJobs: [],
+        rateLimitedUntil: new Date(Date.now() + 60_000).toISOString(),
+      },
       actor,
     );
     expect((await claim(actor, manifest(["browser"]))).job).toBeNull();
-    await ok("runner.heartbeat", { manifest: manifest(["browser"]), capacity: capacity(), activeJobs: [], rateLimitedUntil: null }, actor);
+    await ok(
+      "runner.heartbeat",
+      {
+        manifest: manifest(["browser"]),
+        capacity: capacity(),
+        activeJobs: [],
+        rateLimitedUntil: null,
+      },
+      actor,
+    );
     expect((await claim(actor, manifest(["browser"]))).job).not.toBeNull();
   });
 
   it("never gives a job to someone else's runner that isn't shared into the project", async () => {
     const { item } = await setup();
     const other = await world();
-    const stranger = await ok<{ runnerId: string }>("runner.register", { name: "theirs" }, other.human);
+    const stranger = await ok<{ runnerId: string }>(
+      "runner.register",
+      { name: "theirs" },
+      other.human,
+    );
     await enqueue(item.workItemId);
     expect((await claim(RUNNER_ACTOR(stranger.runnerId))).job).toBeNull();
   });
@@ -84,10 +131,17 @@ describe("runners and the scheduler", () => {
   it("holds new builds when the project is at its WIP limit, with the reason 'waiting on review'", async () => {
     const { w, item, actor } = await setup({ version: 1, autonomyPolicy: "balanced", wipLimit: 1 });
     const waiting = await newItem(w, "Waiting thing");
-    await call("pr.merge", { workItemId: waiting.workItemId, headSha: "abcdef1", touchesFactoryConfig: false }, FOREMAN);
+    await call(
+      "pr.merge",
+      { workItemId: waiting.workItemId, headSha: "abcdef1", touchesFactoryConfig: false },
+      FOREMAN,
+    );
     const { jobId } = await enqueue(item.workItemId);
     expect((await claim(actor)).job).toBeNull();
-    const job = await first<{ wait_reason: string }>("SELECT wait_reason FROM core_jobs WHERE id = ?", jobId);
+    const job = await first<{ wait_reason: string }>(
+      "SELECT wait_reason FROM core_jobs WHERE id = ?",
+      jobId,
+    );
     expect(job.wait_reason).toBe("waiting on review");
     // Triage isn't a build: it still runs.
     await enqueue(item.workItemId, "triage");
@@ -98,7 +152,23 @@ describe("runners and the scheduler", () => {
     const { w, item, actor } = await setup();
     await enqueue(item.workItemId);
     const job = (await claim(actor)).job as Job;
-    await ok("run.reportEvents", { jobId: job.jobId, fencingToken: 1, events: [{ jobId: job.jobId, seq: 0, at: new Date().toISOString(), type: "job.state", state: "running" }] }, actor);
+    await ok(
+      "run.reportEvents",
+      {
+        jobId: job.jobId,
+        fencingToken: 1,
+        events: [
+          {
+            jobId: job.jobId,
+            seq: 0,
+            at: new Date().toISOString(),
+            type: "job.state",
+            state: "running",
+          },
+        ],
+      },
+      actor,
+    );
     const taken = await ok<{ fencingToken: number }>(
       "lease.claim",
       { workItemId: item.workItemId, holderId: "local-session", takeover: true },
@@ -106,18 +176,38 @@ describe("runners and the scheduler", () => {
     );
     expect(taken.fencingToken).toBe(2);
     const refused = await refusal(
-      call("run.handBack", { jobId: job.jobId, fencingToken: 1, outcome: "completed", artifactIds: [], branch: job.branch }, actor),
+      call(
+        "run.handBack",
+        {
+          jobId: job.jobId,
+          fencingToken: 1,
+          outcome: "completed",
+          artifactIds: [],
+          branch: job.branch,
+        },
+        actor,
+      ),
     );
     expect(refused.code).toBe("fenced");
     const beat = await ok<{ commands: { kind: string; jobId: string }[] }>(
       "runner.heartbeat",
-      { manifest: manifest(), capacity: capacity(), activeJobs: [{ jobId: job.jobId, fencingToken: 1 }] },
+      {
+        manifest: manifest(),
+        capacity: capacity(),
+        activeJobs: [{ jobId: job.jobId, fencingToken: 1 }],
+      },
       actor,
     );
     expect(beat.commands).toEqual([expect.objectContaining({ kind: "cancel", jobId: job.jobId })]);
-    const run = await first<{ status: string }>("SELECT status FROM core_runs WHERE id = ?", job.runId);
+    const run = await first<{ status: string }>(
+      "SELECT status FROM core_runs WHERE id = ?",
+      job.runId,
+    );
     expect(run.status).toBe("cancelled");
-    const event = await rows("SELECT id FROM core_outbox WHERE payload LIKE ?", `%${runEvent(job.jobId)}%`);
+    const event = await rows(
+      "SELECT id FROM core_outbox WHERE payload LIKE ?",
+      `%${runEvent(job.jobId)}%`,
+    );
     expect(event).toHaveLength(1);
   });
 
@@ -125,7 +215,11 @@ describe("runners and the scheduler", () => {
     const { item, actor } = await setup();
     await enqueue(item.workItemId);
     const job = (await claim(actor)).job as Job;
-    const token = await ok<{ token: string; pushBranch: string }>("run.issueToken", { jobId: job.jobId, fencingToken: 1 }, actor);
+    const token = await ok<{ token: string; pushBranch: string }>(
+      "run.issueToken",
+      { jobId: job.jobId, fencingToken: 1 },
+      actor,
+    );
     expect(token.token).toMatch(/^ghs_fake_/);
     expect(token.pushBranch).toBe(job.branch);
     const audit = await first<{ result: string }>(
@@ -133,7 +227,9 @@ describe("runners and the scheduler", () => {
       item.workItemId,
     );
     expect(audit.result).not.toContain(token.token);
-    expect((await refusal(call("run.issueToken", { jobId: job.jobId, fencingToken: 0 }, actor))).code).toBe("fenced");
+    expect(
+      (await refusal(call("run.issueToken", { jobId: job.jobId, fencingToken: 0 }, actor))).code,
+    ).toBe("fenced");
   });
 
   it("accepts a build hand-back only for the run's own branch at the head pushed to GitHub, then fast-forwards the item branch", async () => {
@@ -145,7 +241,14 @@ describe("runners and the scheduler", () => {
 
     const wrong = await ok<{ accepted: boolean; reason: string }>(
       "run.handBack",
-      { jobId: job.jobId, fencingToken: 1, outcome: "completed", artifactIds: [], branch: "main", headSha: head },
+      {
+        jobId: job.jobId,
+        fencingToken: 1,
+        outcome: "completed",
+        artifactIds: [],
+        branch: "main",
+        headSha: head,
+      },
       actor,
     );
     expect(wrong).toMatchObject({ accepted: false });
@@ -158,14 +261,29 @@ describe("runners and the scheduler", () => {
     const head2 = await services.github.push(w.repo, retry.branch, base ?? undefined);
     const handed = await ok<{ accepted: boolean }>(
       "run.handBack",
-      { jobId: retry.jobId, fencingToken: 2, outcome: "completed", artifactIds: [], branch: retry.branch, headSha: head2 },
+      {
+        jobId: retry.jobId,
+        fencingToken: 2,
+        outcome: "completed",
+        artifactIds: [],
+        branch: retry.branch,
+        headSha: head2,
+      },
       actor,
     );
     expect(handed.accepted).toBe(true);
-    const advanced = await ok<{ ok: boolean; sha: string }>("branch.advance", { workItemId: item.workItemId, runId: retry.runId }, FOREMAN);
+    const advanced = await ok<{ ok: boolean; sha: string }>(
+      "branch.advance",
+      { workItemId: item.workItemId, runId: retry.runId },
+      FOREMAN,
+    );
     expect(advanced).toMatchObject({ ok: true, sha: head2 });
     expect(await services.github.getBranchSha(w.repo, item.branch)).toBe(head2);
-    await ok("run.release", { jobId: retry.jobId, fencingToken: 2, finalState: "handed_back" }, actor);
+    await ok(
+      "run.release",
+      { jobId: retry.jobId, fencingToken: 2, finalState: "handed_back" },
+      actor,
+    );
     const lease = await first<{ holder_id: string | null; fencing_token: number }>(
       "SELECT holder_id, fencing_token FROM core_leases WHERE work_item_id = ?",
       item.workItemId,
@@ -178,16 +296,32 @@ describe("runners and the scheduler", () => {
     const { item, actor } = await setup();
     const { jobId } = await enqueue(item.workItemId);
     const job = (await claim(actor)).job as Job;
-    const out = await ok<{ expired: boolean }>("run.expire", { jobId, reason: "no hand-back in time" }, FOREMAN);
-    expect(out.expired).toBe(true);
-    expect((await refusal(call("run.reportEvents", { jobId, fencingToken: job.lease.fencingToken, events: [] }, actor))).code).toBe(
-      "fenced",
+    const out = await ok<{ expired: boolean }>(
+      "run.expire",
+      { jobId, reason: "no hand-back in time" },
+      FOREMAN,
     );
+    expect(out.expired).toBe(true);
+    expect(
+      (
+        await refusal(
+          call(
+            "run.reportEvents",
+            { jobId, fencingToken: job.lease.fencingToken, events: [] },
+            actor,
+          ),
+        )
+      ).code,
+    ).toBe("fenced");
   });
 
   it("previews routing with the same placement rules as the scheduler", async () => {
     const { w, runner, actor } = await setup();
-    await ok("runner.heartbeat", { manifest: manifest(), capacity: capacity(), activeJobs: [] }, actor);
+    await ok(
+      "runner.heartbeat",
+      { manifest: manifest(), capacity: capacity(), activeJobs: [] },
+      actor,
+    );
     const preview = await ok<{ runner: { id: string } | null; models: { sameModel: boolean } }>(
       "workItem.previewRouting",
       { projectId: w.projectId },

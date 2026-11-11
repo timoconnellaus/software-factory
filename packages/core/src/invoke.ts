@@ -6,11 +6,18 @@
 //
 // A `review` answer does not run the handler: it records a pending action (in one batch with its
 // audit and notify rows) and returns `pending`. The approved re-run passes `approvalId`.
-import { clearGuards, createDb, type Db, failedGuard, guardChanged, toStatement } from "@software-factory/db";
+import {
+  clearGuards,
+  createDb,
+  type Db,
+  failedGuard,
+  guardChanged,
+  toStatement,
+} from "@software-factory/db";
 import type { Compilable } from "kysely";
 import type { Actor, Origin } from "./actors.ts";
-import { newId } from "./ids.ts";
 import { OperationError } from "./errors.ts";
+import { newId } from "./ids.ts";
 import type {
   AnyOperation,
   Change,
@@ -170,7 +177,11 @@ export async function runOperation<O = unknown>(
   // 4b. Actor check (after the scope, so the refusal is audited against it).
   if (!op.actors.includes(actor.type)) {
     return refuse(
-      { decision: "n/a", outcome: "forbidden", reason: `actor ${actor.type} may not call ${op.name}` },
+      {
+        decision: "n/a",
+        outcome: "forbidden",
+        reason: `actor ${actor.type} may not call ${op.name}`,
+      },
       new OperationError("forbidden", `${actor.type} may not call ${op.name}`),
     );
   }
@@ -303,7 +314,8 @@ export async function runOperation<O = unknown>(
     now,
     services: deps.services,
     scope,
-    write: (statement) => statements.push(isPrepared(statement) ? statement : toStatement(d1, statement)),
+    write: (statement) =>
+      statements.push(isPrepared(statement) ? statement : toStatement(d1, statement)),
     guardChanged: (guardName) => statements.push(guardChanged(d1, `${op.name}:${guardName}`)),
     guardExists: (guardName, query: Compilable) => {
       const { sql, parameters } = query.compile();
@@ -330,7 +342,10 @@ export async function runOperation<O = unknown>(
   try {
     output = op.output.parse(await op.handler(input, ctx));
   } catch (error) {
-    await audit({ decision: gate.decision, outcome: "failed", reason: String(error) }, subject).run();
+    await audit(
+      { decision: gate.decision, outcome: "failed", reason: String(error) },
+      subject,
+    ).run();
     throw error;
   }
   if (risk === "read") {
@@ -357,7 +372,9 @@ export async function runOperation<O = unknown>(
     ...(approval
       ? [
           d1
-            .prepare("UPDATE core_pending_actions SET status = 'applied' WHERE id = ? AND status = 'approved'")
+            .prepare(
+              "UPDATE core_pending_actions SET status = 'applied' WHERE id = ? AND status = 'approved'",
+            )
             .bind(approval.id),
           guardChanged(d1, "approval used once"),
         ]
@@ -386,7 +403,9 @@ export async function runOperation<O = unknown>(
       {
         decision: gate.decision,
         outcome: fenced ? "fenced" : "failed",
-        reason: guard ? `conflict: a guarded write found the state changed (${String(error)})` : String(error),
+        reason: guard
+          ? `conflict: a guarded write found the state changed (${String(error)})`
+          : String(error),
       },
       subject,
     ).run();
@@ -432,8 +451,7 @@ async function openPendingAction(
   // The requester decides when they are an approver; otherwise the first approver.
   const approvers = scope.orgId ? await approverIds(db, scope.orgId, scope.policy) : [];
   const requester = scope.workItem?.requester_user_id;
-  const assignee =
-    requester && approvers.includes(requester) ? requester : (approvers[0] ?? null);
+  const assignee = requester && approvers.includes(requester) ? requester : (approvers[0] ?? null);
   const hours = scope.policy?.timeouts.gateHours ?? 72;
   const timeoutAt = new Date(Date.parse(now) + hours * 3_600_000).toISOString();
   const title =

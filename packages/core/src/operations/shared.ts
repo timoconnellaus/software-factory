@@ -2,8 +2,8 @@
 // GitHub repo reference for a project.
 import { json } from "@software-factory/db";
 import { z } from "zod";
-import { idPattern, newId, slugify } from "../ids.ts";
 import { OperationError } from "../errors.ts";
+import { idPattern, newId, slugify } from "../ids.ts";
 import type { HandlerContext, ProjectRow, WorkItemRow } from "../operation.ts";
 import type { RepoRef } from "../services.ts";
 
@@ -72,7 +72,10 @@ export interface NewWorkItem {
  * Queues the writes that create a work item and start its Workflow: the item, its lease row, the
  * intake stage, the project's number bump (guarded) and `workflow.create`.
  */
-export function createWorkItem(ctx: HandlerContext, item: NewWorkItem): { id: string; branch: string } {
+export function createWorkItem(
+  ctx: HandlerContext,
+  item: NewWorkItem,
+): { id: string; branch: string } {
   const id = newId("workItem");
   const slug = slugify(item.title);
   const branch = itemBranch(item.number, slug);

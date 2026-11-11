@@ -5,6 +5,8 @@ import type { GitHubService, RepoRef } from "../services.ts";
 
 interface RepoState {
   refs: Record<string, string>;
+  /** Paths each commit touched (set by `push`), for `changedFiles`. */
+  touched?: Record<string, string[]>;
   parents: Record<string, string | null>;
   files: Record<string, Record<string, string>>;
   pulls: { number: number; head: string; base: string; title: string; state: "open" | "merged" }[];
@@ -15,7 +17,7 @@ const TABLE = "fake_github_repos";
 
 export interface FakeGitHub extends GitHubService {
   /** Simulates a runner's push: a new commit on `branch` whose parent is the branch head (or `from`). */
-  push(repo: RepoRef, branch: string, from?: string): Promise<string>;
+  push(repo: RepoRef, branch: string, from?: string, files?: string[]): Promise<string>;
   state(repo: RepoRef): Promise<RepoState>;
 }
 
@@ -99,6 +101,7 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const parent = state.refs[branch] ?? null;
       const next = await commit(state, parent, path);
       state.refs[branch] = next;
+      state.touched = { ...(state.touched ?? {}), [next]: [path] };
       state.files[branch] = { ...(state.files[branch] ?? {}), [path]: content };
       await save(r, state);
       return { commitSha: next };
@@ -124,11 +127,26 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       await save(r, state);
       return { merged: true, sha: merge };
     },
-    async push(r, branch, from) {
+    async changedFiles(r, base, head) {
+      const state = await load(r);
+      const stop = state.refs[base] ?? base;
+      const files = new Set<string>();
+      for (
+        let at: string | null | undefined = state.refs[head] ?? head;
+        at && at !== stop;
+        at = state.parents[at]
+      ) {
+        if (isAncestor(state, at, stop)) break;
+        for (const f of state.touched?.[at] ?? []) files.add(f);
+      }
+      return [...files];
+    },
+    async push(r, branch, from, files = ["src/index.ts"]) {
       const state = await load(r);
       const parent = from ?? state.refs[branch] ?? null;
       const next = await commit(state, parent, `push-${branch}`);
       state.refs[branch] = next;
+      state.touched = { ...(state.touched ?? {}), [next]: files };
       await save(r, state);
       return next;
     },

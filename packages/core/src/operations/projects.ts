@@ -1,9 +1,9 @@
 // Projects, their `.factory/` policy (mirrored from the default branch) and kill switches.
 import { z } from "zod";
-import { newId, slugify } from "../ids.ts";
 import { OperationError } from "../errors.ts";
+import { newId, slugify } from "../ids.ts";
 import { defineOperation } from "../operation.ts";
-import { parseProjectPolicy, POLICY_PATH } from "../policy/project-policy.ts";
+import { POLICY_PATH, parseProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, approverIds, isOrgAdmin, resumeEventType } from "../scope.ts";
 import { projectId, requireProject } from "./shared.ts";
 
@@ -76,7 +76,11 @@ export const projectCreate = defineOperation({
         created_by: ctx.actor.id,
       }),
     );
-    ctx.change({ entity: "project", id, after: { name: input.name, repo: `${input.repoOwner}/${input.repoName}` } });
+    ctx.change({
+      entity: "project",
+      id,
+      after: { name: input.name, repo: `${input.repoOwner}/${input.repoName}` },
+    });
     ctx.subject({ projectId: id, orgId: input.orgId });
     return {
       id,
@@ -146,7 +150,11 @@ export const policySync = defineOperation({
     if (!fromDefault) {
       // Policy is read from the default branch only: an agent can't loosen its own policy from a
       // branch (ADR 0036). The refusal is audited by this call's audit row.
-      return { applied: false, valid: false, error: `ignored: ${input.ref} is not the default branch` };
+      return {
+        applied: false,
+        valid: false,
+        error: `ignored: ${input.ref} is not the default branch`,
+      };
     }
     const parsed =
       input.content === null
@@ -167,7 +175,12 @@ export const policySync = defineOperation({
         })
         .onConflict((oc) => oc.columns(["project_id", "sha"]).doNothing()),
     );
-    ctx.write(ctx.db.updateTable("core_projects").set({ policy_sha: input.sha }).where("id", "=", project.id));
+    ctx.write(
+      ctx.db
+        .updateTable("core_projects")
+        .set({ policy_sha: input.sha })
+        .where("id", "=", project.id),
+    );
     ctx.change({
       entity: "project",
       id: project.id,
@@ -191,7 +204,12 @@ export const killSwitchSet = defineOperation({
     on: z.boolean(),
     reason: z.string().max(500).optional(),
   }),
-  output: z.object({ on: z.boolean(), epoch: z.number(), workItems: z.number(), changed: z.boolean() }),
+  output: z.object({
+    on: z.boolean(),
+    epoch: z.number(),
+    workItems: z.number(),
+    changed: z.boolean(),
+  }),
   scope: async (input) => (input.scope === "org" ? { orgId: input.id } : { projectId: input.id }),
   async handler(input, ctx) {
     const orgId = ctx.scope.orgId;
@@ -257,7 +275,11 @@ export const killSwitchSet = defineOperation({
         ctx.write(
           ctx.db
             .updateTable("core_work_items")
-            .set({ status: "paused", status_reason: `kill switch (${input.scope})`, updated_at: ctx.now })
+            .set({
+              status: "paused",
+              status_reason: `kill switch (${input.scope})`,
+              updated_at: ctx.now,
+            })
             .where("id", "=", item.id),
         );
         ctx.emit({ kind: "workflow.pause", payload: { instanceId: item.workflow_id } });
@@ -267,7 +289,12 @@ export const killSwitchSet = defineOperation({
       const runs = await ctx.db
         .selectFrom("core_runs")
         .innerJoin("core_work_items", "core_work_items.id", "core_runs.work_item_id")
-        .select(["core_runs.id", "core_runs.job_id", "core_runs.work_item_id", "core_work_items.workflow_id"])
+        .select([
+          "core_runs.id",
+          "core_runs.job_id",
+          "core_runs.work_item_id",
+          "core_work_items.workflow_id",
+        ])
         .where(`core_work_items.${column}`, "=", input.id)
         .where("core_runs.status", "in", ["claimed", "preparing", "running", "collecting"])
         .execute();
@@ -279,7 +306,10 @@ export const killSwitchSet = defineOperation({
             .where("id", "=", run.id),
         );
         ctx.write(
-          ctx.db.updateTable("core_jobs").set({ status: "cancelled", finished_at: ctx.now }).where("id", "=", run.job_id),
+          ctx.db
+            .updateTable("core_jobs")
+            .set({ status: "cancelled", finished_at: ctx.now })
+            .where("id", "=", run.job_id),
         );
         ctx.write(
           ctx.db
@@ -325,9 +355,10 @@ export const killSwitchSet = defineOperation({
         );
         // Releases a step a switch refused mid-flight: it parked on that switch's current epoch.
         // The other scope's switch is off by now (checked above), so its event is safe to send too.
-        const other_ = input.scope === "org"
-          ? { scope: "project" as const, scopeId: item.project_id }
-          : { scope: "org" as const, scopeId: item.org_id };
+        const other_ =
+          input.scope === "org"
+            ? { scope: "project" as const, scopeId: item.project_id }
+            : { scope: "org" as const, scopeId: item.org_id };
         const otherRow = await ctx.db
           .selectFrom("core_kill_switches")
           .select("epoch")

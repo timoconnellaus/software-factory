@@ -70,7 +70,10 @@ export const POLICY = {
 };
 
 export function sha40(seed: string): string {
-  return seed.padEnd(40, "0").replace(/[^0-9a-f]/g, "a").slice(0, 40);
+  return seed
+    .padEnd(40, "0")
+    .replace(/[^0-9a-f]/g, "a")
+    .slice(0, 40);
 }
 
 /** A user who owns a fresh org with one project whose valid policy is synced. */
