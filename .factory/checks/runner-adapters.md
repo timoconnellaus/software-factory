@@ -39,3 +39,15 @@ and [ADR 0270](../../docs/adr/0270-the-factory-launches-the-harness-and-verifies
 - `sf-runner doctor` runs the same check on running jobs.
 
 `harness-verifies-its-launch.json` and `harness-sandbox-floor.json` enforce the parts a regex can see.
+
+## The prompt travels as a file, never as typed input
+
+From incident [2026-11-11 bootstrap #8](../../docs/incidents/2026-11-11-bootstrap.md#8-agents-received-only-the-tail-of-their-prompts).
+
+- **Never type a job's prompt into a terminal.** A multi-kilobyte paste into an agent's terminal
+  can arrive truncated, and the agent then works on a fragment. Write the full prompt to the
+  harness's prompt file in the worktree (`.factory-prompt.md`, excluded from git like the result
+  file) and send only the harness's one-line pointer to it.
+- Test that the terminal only ever receives the pointer, and that the file holds the prompt exactly.
+
+`runner-sends-the-prompt-as-a-file.json` enforces it.
