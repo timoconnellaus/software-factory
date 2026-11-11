@@ -8,6 +8,7 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { endPlanningSessions } from "../planning.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
@@ -800,6 +801,8 @@ export const workItemFinish = defineOperation({
     const w = requireWorkItem(ctx);
     if (!["running", "waiting", "paused"].includes(w.status)) return { status: w.status };
     setItemStatus(ctx, w.id, ["running", "waiting", "paused"], input.status, input.reason);
+    // Its planning session, if it ended mid-planning, gives its slot back (spec 20).
+    endPlanningSessions(ctx, w.id, `${input.status}: ${input.reason}`);
     // An item that ends in the queue (a Workflow giving up, or done without the queue's merge)
     // stops holding it; the next head is woken (ADR 0330).
     await releaseMergeQueue(

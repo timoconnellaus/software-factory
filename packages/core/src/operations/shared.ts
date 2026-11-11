@@ -6,6 +6,7 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { idPattern, newId, slugify } from "../ids.ts";
 import type { HandlerContext, ProjectRow, WorkItemRow } from "../operation.ts";
+import { endPlanningSessions } from "../planning.ts";
 import type { RepoRef } from "../services.ts";
 
 export const workItemId = z.string().regex(idPattern("workItem"), "a work item id (wi_…)");
@@ -180,6 +181,7 @@ export const ATTACHED_SKIP_REASON = "attached PR: built outside the factory";
  * Workflow. The caller has checked who may cancel and that the item is still open.
  */
 export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: string): void {
+  endPlanningSessions(ctx, w.id, `cancelled: ${reason}`);
   ctx.write(
     ctx.db
       .updateTable("core_work_items")
