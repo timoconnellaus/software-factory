@@ -12,6 +12,7 @@ import { access, appendFile, mkdir, readFile, realpath, rmdir } from "node:fs/pr
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  attachmentsPrompt,
   type ClaudeHooks,
   checkOutputLog,
   findTranscript,
@@ -26,6 +27,7 @@ import {
   removeRunDir,
   shellQuote,
   verifyLaunch,
+  writeAttachments,
 } from "@software-factory/harness-claude";
 import {
   type AdapterEvent,
@@ -57,6 +59,8 @@ export interface OrcaWorkspace extends WorkspaceHandle {
   launch: LaunchRecord;
   /** The harness's launch script, run with `/bin/sh` in the job's terminal. */
   launchScript: string;
+  /** Where this run's attachments go: outside the worktree and the protected run dirs. */
+  attachmentsDir: string;
 }
 
 export interface OrcaSession extends SessionHandle {
@@ -88,6 +92,11 @@ export interface OrcaRunnerConfig extends OrcaCliOptions {
   startPoint?: (job: Job, repoPath: string) => Promise<string> | string;
   /** Per-run private directories (git config, empty tool dirs) go under here. */
   runsDir: string;
+  /**
+   * Each run's attachments go under here, in `<jobId>/` (ADR 0310). Outside every worktree, and
+   * not in `protectPaths`, so the harness can read them. Default: `attachments` next to `runsDir`.
+   */
+  attachmentsDir?: string;
   /** Absolute paths the harness must not read (the runner's key, the repo cache's .git). */
   protectPaths?: string[];
   /** Commit identity for the harness. */
@@ -114,6 +123,7 @@ export const DEFAULT_CAPABILITIES: Capability[] = [
   "auto-register",
   "hooks",
   "own-hardware",
+  "work-item-attachments",
 ];
 
 /** Orca agent states → contract statuses. Unknown states are reported as idle with the raw name. */
@@ -330,6 +340,7 @@ export function createOrcaRunner(
         }
       });
       await attempt("remove run dir", () => removeRunDir(workspace.runDir, workspace.runTmp));
+      await attempt("remove attachments", () => removeRunDir(workspace.attachmentsDir));
       // The repo itself stays registered: it is the owner's project (or the runner's one permanent
       // clone), never a per-job registration (ADR 0260).
     }
@@ -384,6 +395,10 @@ export function createOrcaRunner(
         comment: `${JOB_COMMENT_PREFIX}${job.jobId}`,
       });
       const runDir = join(config.runsDir, job.jobId);
+      const attachmentsDir = join(
+        config.attachmentsDir ?? join(dirname(config.runsDir), "attachments"),
+        job.jobId,
+      );
       const workspace = {
         jobId: job.jobId,
         path: worktree.path,
@@ -393,6 +408,7 @@ export function createOrcaRunner(
         repoId: repo.id,
         repoPath,
         runDir,
+        attachmentsDir,
       };
       if (workspace.branch !== job.branch) {
         // One branch per run: Orca picked another name, so this workspace can't be used.
@@ -423,6 +439,7 @@ export function createOrcaRunner(
         // worktree, never the main checkout (its .env files, other branches' work).
         protectPaths: [...new Set([...(config.protectPaths ?? []), repoPath])],
         ...(commonDir && gitDir ? { git: { commonDir, gitDir } } : {}),
+        ...(capabilities.includes("work-item-attachments") ? { attachmentsDir } : {}),
         // Orca keeps its status hooks in the owner's user settings, which a run doesn't load.
         hooks: orcaStatusHooks(),
         ...(config.identity ? { identity: config.identity } : {}),
@@ -434,6 +451,12 @@ export function createOrcaRunner(
         launch: projected.launch,
         launchScript: projected.scriptPath,
       };
+    },
+
+    async attachFiles(_job, workspace, files): Promise<string> {
+      if (!capabilities.includes("work-item-attachments")) return "";
+      const written = await writeAttachments(workspace.attachmentsDir, files);
+      return attachmentsPrompt(written, new Map(files.map((f) => [f.meta.id, f.bytes])));
     },
 
     async startSession(job, workspace, signal): Promise<OrcaSession> {

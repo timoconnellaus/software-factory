@@ -18,6 +18,7 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
+import { Attachments } from "#/components/attachments";
 import { Planning } from "#/components/planning";
 import { ReviewPacket } from "#/components/review-packet";
 import { Timeline } from "#/components/timeline";
@@ -25,7 +26,13 @@ import { ago, capitalise, duration, errorMessage, STAGE_LABEL } from "#/lib/form
 import { op } from "#/lib/op";
 import { OpError, type WorkItemDetail } from "#/lib/ops";
 import { parsePacket } from "#/lib/packet";
-import { runnersQuery, timelineQuery, useRefreshAfterDecision, workItemQuery } from "#/lib/queries";
+import {
+  attachmentsQuery,
+  runnersQuery,
+  timelineQuery,
+  useRefreshAfterDecision,
+  workItemQuery,
+} from "#/lib/queries";
 import { useProjects, useSession } from "#/lib/session";
 import { agentTime, stageSteps, statusOf, yourTime } from "#/lib/work-item";
 
@@ -42,6 +49,7 @@ export const Route = createFileRoute("/_app/work/$id/")({
       queryClient.ensureQueryData(workItemQuery(params.id)),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
+      queryClient.ensureQueryData(attachmentsQuery(params.id)).catch(() => null),
     ]),
   pendingComponent: () => (
     <Page>
@@ -169,6 +177,13 @@ function Header({ detail }: { detail: WorkItemDetail }) {
           <span className="rounded-md border px-1.5">factory incident</span>
         )}
         {item.kind === "attached" && <span className="rounded-md border px-1.5">attached PR</span>}
+        {detail.mergeQueue && (
+          <span className="rounded-md border px-1.5" data-testid="merge-queue">
+            {detail.mergeQueue.position === 1
+              ? "Landing: next in the merge queue"
+              : `Queued to merge: behind ${detail.mergeQueue.ahead.map((n) => `#${n}`).join(", ")}`}
+          </span>
+        )}
       </div>
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
@@ -360,6 +375,8 @@ function Runs({ detail }: { detail: WorkItemDetail }) {
 
 function Aside({ detail }: { detail: WorkItemDetail }) {
   const me = useSessionId();
+  const session = useSession();
+  const role = session.orgs.find((o) => o.id === detail.item.orgId)?.role;
   const runners = useQuery(runnersQuery());
   const packet = detail.reviewPacket ? parsePacket(detail.reviewPacket) : null;
   const criteria = detail.spec?.acceptanceCriteria ?? [];
@@ -447,6 +464,11 @@ function Aside({ detail }: { detail: WorkItemDetail }) {
           </tbody>
         </table>
       </Card>
+      <Attachments
+        workItemId={detail.item.id}
+        meId={me}
+        isAdmin={role === "owner" || role === "admin"}
+      />
     </div>
   );
 }

@@ -48,12 +48,19 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #19 | Onboarding rebuild ([ADR 0055](adr/0055-github-installations-are-org-records.md), [0056](adr/0056-runner-device-login.md)): Connect GitHub through the install flow (installation records, migration 0060), repo picker, policy auto-sync + Create policy PR, `sf-runner login` device flow, Setup as a live checklist and the inbox's Finish setup card |
 | #20 | App performance ([ADR 0241](adr/0241-app-runs-next-to-d1-and-loads-pages-in-one-request.md)): `sf-app` (and `sf-engine`'s fetch handlers) pinned next to D1 in SJC, session in the query cache, loaders prefetch everything in one batched `callReads` request, SSR query integration, pending skeletons, `Server-Timing` on server functions and engine RPC; `test/perf.test.ts` guards loaders. Merged with `factory/verify` red (not attached to a work item; the factory had no project or runner yet), as a one-off bootstrap exception the owner approved |
 | #21 | Core: fewer D1 round trips per operation (ADR 0241 amendment): `invoke()` resolves scope + the caller's org role in one D1 batch; `workItem.get` and `inbox.list` read in parallel. Also merged with `factory/verify` red, the same bootstrap exception (owner approved) |
+| #27 | Fewer D1 requests per page (ADR 0241, second amendment): `readBatch` in `packages/db`; `inbox.list` is one D1 request, `workItem.get` reads its rows in one; GitHub-backed reads (`SLOW_READS`) never batched with database reads. Also merged with `factory/verify` red, the same bootstrap exception (owner approved) |
 | #22 | Runner attaches to the existing Orca repo ([ADR 0260](adr/0260-runners-attach-to-the-existing-checkout.md), incident [2026-11-11 #5](incidents/2026-11-11-bootstrap.md#5-the-runner-added-a-second-orca-repo)): jobs run as worktrees of the Orca repo found by canonical remote identity (`runner-contract` `canonicalRepoKey`, `resolveCheckout`), the host fetches by URL into `refs/software-factory/heads/*` without touching the owner's checkout, clone-once fallback, no unregister in `release`, startup migration, `sf-runner status` shows jobs, `sf-runner doctor --fix`; `.factory/checks/` for runner adapters |
 | #24 | The factory launches the harness ([ADR 0270](adr/0270-the-factory-launches-the-harness-and-verifies-it.md), incident [2026-11-11 #6](incidents/2026-11-11-bootstrap.md#6-the-launcher-overrode-the-harnesss-permission-mode)): `harness-claude` owns the launch (`claude --permission-mode <stage mode> --setting-sources project,local --settings <run settings>`, no user settings), the Claude sandbox in every stage (build `bypassPermissions` sandboxed; triage/spec/verify `dontAsk`), `.factory/policy.json` → `harness` (modes, allow rules, hosts; on the job as `harness.profile`); runner-orca runs the launch script in an Orca terminal (not `agent launch`), verifies the live process before the prompt, `harness-config-mismatch` kills and fails; `sf-runner doctor` checks running jobs; `.factory/checks/` for both. Merged with `factory/verify` red (not opened by the factory), as a bootstrap exception like #20 and #22: the fix stops jobs running in the owner's own permission mode |
 | #26 | Protect `main` ([ADR 0280](adr/0280-protect-main-with-a-generated-ruleset.md)): the factory generates `<repo>-default-branch.json` (PR, `ci` + `factory/verify` pinned and strict, no force push, no deletion, no bypass) and `<repo>-factory-branches.json` as GitHub ruleset imports; Setup's **Protect `main`** step (Download ruleset, Open GitHub rulesets, Check now, Send to the repo admin); `protection.check` / `protection.observe` record verdicts (migration 0070); `repository_ruleset` / `branch_protection_rule` webhooks and a daily cron re-check; the **Protection on `main` changed** inbox card; policy `protection.onRed` (`warn` default, `block` holds builds). The App keeps `administration: read`. software-factory's own switch is in [`deploying.md`](deploying.md#protecting-main) (owner, at V1 step 5) |
-| #28 | Attach an outside PR ([spec 05](specs/05-attach-a-pull-request.md), [ADR 0290](adr/0290-an-outside-pr-is-attached-and-verified.md)): `workItem.attachPr` gives a local session's or a person's PR a work item of kind `attached` (migration 0080); the Workflow's `runAttached` (kind-gated, no version bump) triages it, skips spec and build, verifies the PR's own head and opens the merge gate, never pushing to its branch; a push re-verifies and withdraws a pending merge, closing the PR cancels the item; the unattached `factory/verify` links to sf-app's `/attach`, and New work lists open unattached PRs. Merged with `factory/verify` red as the **last** bootstrap exception (it can't attach itself); every PR after it is attached instead |
+| #29 | Unmergeable factory PRs ([ADR 0320](adr/0320-factory-branches-stay-mergeable.md), incident [2026-11-11 #7](incidents/2026-11-11-bootstrap.md)): the runner host merges the default branch before a build, Workflow v3 treats a conflicting PR as its own state (back to build, 3 free rounds) and asks a person when no CI reports. Merged with `factory/verify` red (not opened by the factory), a bootstrap exception the owner approved |
+| #23 | Work item #1, attachments ([ADR 0310](adr/0310-work-item-attachments.md), migration 0090), built by the factory; `main` merged in and renumbered by hand after it was stuck (incident #7). Merged with `factory/verify` red (the head moved past the one the factory verified), a bootstrap exception the owner approved |
+| #30 | The merge queue ([ADR 0330](adr/0330-the-factory-runs-its-own-merge-queue.md), [spec 06](specs/06-merge-queue.md), migration 0100): approved merges land one at a time per project through Workflow v4; the head is updated by GitHub's update-branch, CI runs once on it, and the approval and review packet carry over. Merged with `factory/verify` red (not opened by the factory), a bootstrap exception the owner approved |
+| #28 | Attach an outside PR ([spec 05](specs/05-attach-a-pull-request.md), [ADR 0290](adr/0290-an-outside-pr-is-attached-and-verified.md)): `workItem.attachPr` gives a local session's or a person's PR a work item of kind `attached` (migration 0080); the Workflow's `runAttached` (kind-gated, no version bump) triages it, skips spec and build, verifies the PR's own head and opens the merge gate, never pushing to its branch; a push re-verifies and withdraws a pending merge, closing the PR cancels the item; the unattached `factory/verify` links to sf-app's `/attach`, and New work lists open unattached PRs. Merged with `factory/verify` red as the **last** bootstrap exception (it can't attach itself); every PR after it is attached instead. Merged with `factory/verify` red, the last bootstrap exception: it is what lets outside PRs pass `factory/verify` (the default-branch ruleset was switched off for #30 and #28, then back on) |
 
 ## In flight
+- **Planning design** (`planning-process`, block I): planning rebuilt as a live session on a runner,
+  modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
+  `.kim/plans/2026-11-11-factory-planning.md`. Next build: spec 20 (M1, the loop).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
@@ -136,13 +143,32 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   work item of kind `attached` (branch = the PR's head ref, `pr_number`, `head_sha`; source `pr`;
   dedupe key `github:<owner>/<repo>#<n>`). Forks, closed or merged PRs, `factory/*` branches and
   projects without a valid policy are refused.
-- The Workflow's `runAttached` (chosen by kind, no version bump): triage, spec and build skipped
+- The Workflow's `runAttached` (chosen by kind for every Workflow version; it merges directly, not through the merge queue, since the App can't update a person's branch): triage, spec and build skipped
   with "attached PR: built outside the factory", then verify on the PR's head → merge gate. No
   `branch.ensure`/`branch.advance`, no build jobs. Fail or send-back → `workItem.awaitHead` (status
   `waiting` with the reason) until a push; a push withdraws a pending merge gate (decision
   `withdrawn`). `verify.refresh` records the new head and sends `pr-head-<item>`; `pull_request
   closed` without a merge cancels the item.
 - `GitHubService.getPullRequest` / `listOpenPullRequests` (no new App permissions or events).
+
+**Unmergeable PRs (ADR 0320, incident 2026-11-11 #7)**
+- Jobs carry `repo.defaultBranch`; the runner host merges it into the run branch before a build
+  (conflicts left for the session; unresolved ones fail without a push).
+- Workflow **v3** (`WORKFLOW_VERSION = 3`): `ci.read` also returns the PR's `mergeable`; a conflict
+  at PR open or during the CI wait sends the item back to build (3 free rounds); CI still missing
+  asks a blocking `operations` Question (Re-check CI / Stop this work item), no build retry.
+- Merge queue: built, see below (ADR 0330).
+
+**Merge queue (ADR 0330, spec 06)**
+- Workflow **v4** (`WORKFLOW_VERSION = 4`): an approved merge enters `core_merge_queue` (migration
+  0100) instead of merging; only the head is updated (GitHub's update-branch, accepted only as a clean
+  merge of the default branch into the approved head), CI runs on it, then `pr.merge` lands it with
+  the same approval. The review packet carries over (`sections.carriedFrom`).
+- Operations: `mergeQueue.enter`, `.position`, `.list { projectId }`, `.update`, `.leave`.
+  `pr.merge` / `pr.autoMerge` refuse a queued item that isn't the head. `workItem.get` has
+  `mergeQueue { position, ahead }`; finish and cancel release the entry and wake the next head.
+- A conflict or red CI at the head leaves the queue and goes back to build. The App has no
+  `workflows` permission, so an update that brings in `.github/workflows/` changes is refused.
 
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):

@@ -22,6 +22,7 @@ import {
   type GateEventPayload,
   invoke,
   isOperationError,
+  mergeQueueEvent,
   type RunEventPayload,
   runEvent,
 } from "@software-factory/core";
@@ -56,8 +57,18 @@ export type WorkItemOutcome =
  * - v2 (V1 step 4, spec 04): the PR opens before verify so CI runs on the head; verify waits for CI
  *   and the verdict is the review packet's (green CI + a complete packet); a factory incident's
  *   check-only fix may auto-merge (ADR 0230).
+ * - v3 (ADR 0320): a PR GitHub can't merge is its own state. It is checked right after the PR
+ *   opens and on every CI read, and sends the item back to build to merge the default branch,
+ *   without a verify run or a packet (it doesn't count as a failed attempt for MERGE_ROUNDS
+ *   rounds). CI that never reports asks a person (re-check or stop) instead of a build retry.
  */
-export const WORKFLOW_VERSION = 2;
+/**
+ * - v4 (ADR 0330): approved merges land through the project's merge queue, one at a time. After
+ *   approval the item queues; at the head, the queue merges the default branch in (GitHub's
+ *   update-branch), waits for CI on that head, then merges. A conflict or red CI there leaves the
+ *   queue and goes back to build. A check-only incident fix queues before auto-merge is tried.
+ */
+export const WORKFLOW_VERSION = 4;
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
 export const CI_WAIT = "10 minutes";
 export const CI_ROUNDS = 12;
@@ -65,6 +76,19 @@ export const CI_ROUNDS = 12;
 export const CI_MISSING_ROUNDS = 3;
 /** How long an attached PR waits for a push before it re-reads its head (the webhook wakes it sooner). */
 export const HEAD_RECHECK = "12 hours";
+/** v3: reads of a just-opened PR's mergeability while GitHub computes it, and the pause between. */
+export const MERGEABLE_READS = 3;
+export const MERGEABLE_WAIT = "20 seconds";
+/** v3: conflict send-backs that don't count against the retry limit (the default branch moved). */
+export const MERGE_ROUNDS = 3;
+/** v3: the answers to the no-CI question. */
+export const NO_CI_RECHECK = "Re-check CI";
+export const NO_CI_STOP = "Stop this work item";
+/** v4: how long a queued item waits for its turn before it reads its position again. */
+export const QUEUE_WAIT = "1 hour";
+/** v4: reads of the head while GitHub makes the update-branch merge commit, and the pause between. */
+export const UPDATE_READS = 8;
+export const UPDATE_WAIT = "15 seconds";
 /** How long a step refused by a kill switch waits for it to be turned off. */
 export const PARK_TIMEOUT = "365 days";
 /** Slack on top of a job's session timeout before the run counts as stalled. */
@@ -135,8 +159,9 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
       async (): Promise<number> => WORKFLOW_VERSION,
     );
     const flow = new ItemFlow(this.env, step, event.payload.workItemId, event.instanceId);
-    if (version === 1 || version === 2) {
-      // An attached PR's own path (spec 05), chosen by kind. "meta: item" is runV1's first step
+    if (version >= 1 && version <= WORKFLOW_VERSION) {
+      // An attached PR's own path (spec 05), chosen by kind, whatever version the item started on
+      // (it merges directly, not through the merge queue: the App can't update a person's branch). "meta: item" is runV1's first step
       // anyway and is read once, so every other item runs exactly the steps it ran before.
       const meta = await flow.meta();
       if (meta.kind === "attached") return flow.runAttached(version, meta);
@@ -146,6 +171,10 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(1);
       case 2:
         return flow.runV1(2);
+      case 3:
+        return flow.runV1(3);
+      case 4:
+        return flow.runV1(4);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -160,11 +189,12 @@ class ItemFlow {
     private readonly workflowId: string,
   ) {}
 
-  // ---- v1 and v2 ----
+  // ---- v1, v2 and v3 ----
   // v2 only adds steps (`verify #b: open PR`, `verify #b: ci…`, `merge #b: auto-merge`); with
-  // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged.
+  // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
+  // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 | 4 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       const meta = await this.meta();
@@ -256,6 +286,7 @@ class ItemFlow {
 
       // Build → verify → merge gate, looping back on failures and send-backs.
       let failures = 0;
+      let conflicts = 0;
       let note: string | null = null;
       const failed = async (b: number, reason: string, run: RunResult | null) => {
         failures++;
@@ -270,6 +301,25 @@ class ItemFlow {
           stage: "build",
           closeAs: "failed",
           reason,
+        });
+        return reason;
+      };
+      // v3: the PR can't merge into the default branch, so GitHub runs no CI on it. Back to build
+      // with what to do; the first MERGE_ROUNDS of these are the default branch moving, not a
+      // failed attempt.
+      const conflicted = async (b: number, run: RunResult | null) => {
+        const into = meta.defaultBranch ?? "the default branch";
+        const reason = [
+          `The pull request can't merge into \`${into}\`: it conflicts with work that landed there, so GitHub ran no CI on it.`,
+          `The runner has merged \`${into}\` into your branch: resolve the conflicts \`git status\` shows, keeping the intent of both sides, and commit the merge. Don't rebase.`,
+        ].join("\n");
+        conflicts++;
+        if (conflicts > MERGE_ROUNDS) return failed(b, reason, run);
+        await this.act(`build #${b}: conflict`, "workItem.enterStage", {
+          workItemId: id,
+          stage: "build",
+          closeAs: "failed",
+          reason: `the PR conflicts with ${into}`,
         });
         return reason;
       };
@@ -321,6 +371,10 @@ class ItemFlow {
           // carries a factory/verify that isn't passing until the packet below says so.
           await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
         }
+        if (version >= 3 && (await this.unmergeable(b, headSha))) {
+          note = await conflicted(b, build);
+          continue;
+        }
         const verify = await this.runJob(
           `verify #${b}`,
           "verify",
@@ -353,7 +407,18 @@ class ItemFlow {
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        if (version >= 2) await this.waitForCi(b, headSha);
+        if (version >= 2) {
+          let ci = await this.waitForCi(b, headSha, version);
+          for (let k = 1; version >= 3 && ci === "missing"; k++) {
+            // No CI at all is a setup problem the builder can't fix: ask a person (ADR 0320).
+            await this.askNoCi(meta, b, k, headSha);
+            ci = await this.waitForCi(b, headSha, version, k + 1);
+          }
+          if (ci === "conflict") {
+            note = await conflicted(b, verify);
+            continue;
+          }
+        }
         const packet = await this.act(`verify #${b}: packet`, "reviewPacket.record", {
           workItemId: id,
           runId: verify.runId,
@@ -399,6 +464,32 @@ class ItemFlow {
           workItemId: id,
           stage: "merge",
         });
+        if (version >= 4) {
+          const landed = await this.mergeV4(meta, b, headSha, pr.touchesFactoryConfig === true);
+          if (landed.kind === "done") {
+            await this.act("end: done", "workItem.finish", {
+              workItemId: id,
+              status: "done",
+              reason: landed.reason,
+            });
+            return { status: "done", workItemId: id };
+          }
+          if (landed.kind === "sent_back") {
+            note = `Sent back at review: ${landed.note ?? ""}`;
+            await this.act(`merge #${b}: sent back`, "workItem.enterStage", {
+              workItemId: id,
+              stage: "build",
+              closeAs: "sent_back",
+              reason: landed.note ?? "sent back",
+            });
+            continue;
+          }
+          note =
+            landed.kind === "conflict"
+              ? await conflicted(b, verify)
+              : await failed(b, landed.reason, verify);
+          continue;
+        }
         let decided: Awaited<ReturnType<ItemFlow["gate"]>> | null = null;
         if (version >= 2 && meta.kind === "incident") {
           // A check-only incident fix may merge without a person, if the project opted in and the
@@ -787,9 +878,9 @@ class ItemFlow {
     name: string,
     op: string,
     input: unknown,
-    options: { returnRefusedApply?: boolean } = {},
+    options: { returnRefusedApply?: boolean; apply?: boolean } = {},
   ): Promise<
-    | { decision: "approved"; output: Json }
+    | { decision: "approved"; output: Json; pendingActionId?: string }
     | {
         decision: Exclude<GateEventPayload["decision"], "approved"> | "refused";
         note: string | null;
@@ -818,6 +909,9 @@ class ItemFlow {
       }
       if (decided.decision !== "approved")
         return { decision: decided.decision, note: decided.note };
+      // v4's merge: the approval is applied later, when the item is the head of the merge queue.
+      if (options.apply === false)
+        return { decision: "approved", output: {}, pendingActionId: first.pendingActionId };
       const applied = await this.call(`${name}: apply`, op, input, first.pendingActionId);
       if (applied.status === "refused" && options.returnRefusedApply) {
         return { decision: "refused", note: applied.message };
@@ -836,26 +930,309 @@ class ItemFlow {
    * v2: waits until CI on the head SHA has settled (the connector sends `ci-<item>-<sha>` when a
    * check suite completes; each timeout reads CI again), so the packet reads a final answer. Gives
    * up after CI_ROUNDS (or CI_MISSING_ROUNDS when no CI reports at all); the packet then fails.
+   * v3 also stops at once when GitHub says the PR can't merge (`conflict`), and says how it ended.
+   * `round` > 1 is a re-check after the no-CI question, under its own step names.
    */
-  async waitForCi(b: number, headSha: string): Promise<void> {
+  async waitForCi(
+    b: number,
+    headSha: string,
+    version: number = 2,
+    round = 1,
+    label?: string,
+  ): Promise<"success" | "failure" | "missing" | "pending" | "conflict" | "unreadable"> {
     for (let i = 1; i <= CI_ROUNDS; i++) {
-      const sfx = i === 1 ? "" : ` #${i}`;
-      const ci = await this.call(`verify #${b}: ci${sfx}`, "ci.read", {
+      const sfx = (round === 1 ? "" : ` r${round}`) + (i === 1 ? "" : ` #${i}`);
+      // v2's names, frozen; v4's merge queue waits under its own `label`.
+      const ciName = label ? `${label}: ci${sfx}` : `verify #${b}: ci${sfx}`;
+      const waitName = label ? `${label}: ci wait${sfx}` : `verify #${b}: ci wait${sfx}`;
+      const ci = await this.call(ciName, "ci.read", {
         workItemId: this.workItemId,
         headSha,
       });
-      if (ci.status !== "ok") return; // unreadable: the packet records why and fails
+      if (ci.status !== "ok") return "unreadable"; // the packet records why and fails
+      if (version >= 3 && ci.output.mergeable === false) return "conflict";
       const state = String(ci.output.state);
-      if (state === "success" || state === "failure") return;
-      if (state === "missing" && i >= CI_MISSING_ROUNDS) return;
+      if (state === "success" || state === "failure") return state;
+      if (state === "missing" && i >= CI_MISSING_ROUNDS) return "missing";
       try {
-        await this.step.waitForEvent(`verify #${b}: ci wait${sfx}`, {
+        await this.step.waitForEvent(waitName, {
           type: ciEvent(this.workItemId, headSha),
           timeout: CI_WAIT,
         });
       } catch (error) {
         if (!isWaitTimeout(error)) throw error;
       }
+    }
+    return "pending";
+  }
+
+  /**
+   * v3: whether GitHub says the just-opened PR can't merge into the default branch (ADR 0320). Reads
+   * a few times while GitHub computes it; still unknown counts as mergeable (the CI reads look again).
+   */
+  async unmergeable(b: number, headSha: string): Promise<boolean> {
+    for (let i = 1; i <= MERGEABLE_READS; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      const read = await this.call(`verify #${b}: mergeable${sfx}`, "ci.read", {
+        workItemId: this.workItemId,
+        headSha,
+      });
+      if (read.status !== "ok") return false;
+      if (read.output.mergeable === false) return true;
+      if (read.output.mergeable === true) return false;
+      if (i < MERGEABLE_READS)
+        await this.step.sleep(`verify #${b}: mergeable wait${sfx}`, MERGEABLE_WAIT);
+    }
+    return false;
+  }
+
+  /**
+   * v4: the merge stage through the project's merge queue (ADR 0330). A check-only incident fix
+   * tries auto-merge at the head of the queue first; anything else (and an incident fix that isn't
+   * check-only) goes through the merge gate, then lands at the head of the queue with the approval.
+   */
+  async mergeV4(
+    meta: Meta,
+    b: number,
+    headSha: string,
+    touchesFactoryConfig: boolean,
+  ): Promise<
+    | { kind: "done"; reason: string }
+    | { kind: "sent_back"; note: string | null }
+    | { kind: "conflict" }
+    | { kind: "failed"; reason: string }
+  > {
+    const id = this.workItemId;
+    if (meta.kind === "incident") {
+      const auto = await this.landV4(b, "auto-merge", headSha, null, (at) => ({
+        op: "pr.autoMerge",
+        input: { workItemId: id, headSha: at },
+      }));
+      if (auto.kind === "done")
+        return { kind: "done", reason: "auto-merged: a check-only incident fix (ADR 0230)" };
+      if (auto.kind === "conflict" || auto.kind === "failed") return auto;
+      if (auto.kind === "pending") {
+        // The project's policy asks a person to approve the auto-merge: wait, then land with it.
+        const decided = await this.awaitDecision(
+          meta,
+          `merge #${b}: auto-merge`,
+          auto.pendingActionId,
+        );
+        if (decided.decision !== "approved") return this.notApproved(decided);
+        const landed = await this.landV4(
+          b,
+          "auto-merge landing",
+          auto.headSha,
+          auto.pendingActionId,
+          (at) => ({
+            op: "pr.autoMerge",
+            input: { workItemId: id, headSha: at },
+          }),
+        );
+        if (landed.kind === "done")
+          return { kind: "done", reason: "auto-merged: a check-only incident fix (ADR 0230)" };
+        if (landed.kind === "conflict" || landed.kind === "failed") return landed;
+        return {
+          kind: "failed",
+          reason: `pr.autoMerge after approval: ${landed.kind === "refused" ? landed.message : "still pending"}`,
+        };
+      }
+      headSha = auto.headSha; // refused (not check-only): the normal merge gate on the current head
+    }
+    const input = (at: string) => ({ workItemId: id, headSha: at, touchesFactoryConfig });
+    const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
+      apply: false,
+    });
+    if (decided.decision !== "approved") return this.notApproved(decided);
+    if (!decided.pendingActionId) {
+      // pr.merge ran without a gate (never for `merge` risk; a policy can't loosen it): it merged.
+      return { kind: "done", reason: "merged" };
+    }
+    const landed = await this.landV4(b, "queue", headSha, decided.pendingActionId, (at) => ({
+      op: "pr.merge",
+      input: input(at),
+    }));
+    if (landed.kind === "done") return { kind: "done", reason: "merged through the merge queue" };
+    if (landed.kind === "conflict" || landed.kind === "failed") return landed;
+    throw new Ended(
+      "failed",
+      `pr.merge failed after approval: ${landed.kind === "refused" ? landed.message : "still pending"}`,
+    );
+  }
+
+  private notApproved(decided: {
+    // `withdrawn` and `refused` are an attached PR's (its head moved); a factory item's head
+    // doesn't move while its merge gate is open, so they end it like a rejection.
+    decision: Exclude<GateEventPayload["decision"], "approved"> | "refused";
+    note: string | null;
+  }): { kind: "sent_back"; note: string | null } {
+    if (decided.decision === "sent_back") return { kind: "sent_back", note: decided.note };
+    throw new Ended("rejected", `merge rejected${decided.note ? `: ${decided.note}` : ""}`);
+  }
+
+  /** Waits for a person's decision on an existing pending action, escalating on each timeout. */
+  async awaitDecision(
+    meta: Meta,
+    name: string,
+    pendingActionId: string,
+  ): Promise<
+    | { decision: "approved" }
+    | { decision: Exclude<GateEventPayload["decision"], "approved">; note: string | null }
+  > {
+    for (let i = 1; ; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      try {
+        const event = await this.step.waitForEvent<GateEventPayload>(`${name}: wait${sfx}`, {
+          type: approvalEvent(pendingActionId),
+          timeout: meta.gateTimeoutMs,
+        });
+        const d = event.payload;
+        return d.decision === "approved"
+          ? { decision: "approved" }
+          : { decision: d.decision, note: d.note };
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+        await this.call(`${name}: escalate${sfx}`, "gate.escalate", { pendingActionId });
+      }
+    }
+  }
+
+  /**
+   * v4: queue, wait for the head, bring the branch up to date, wait for CI on the new head, then
+   * land with `land(head)` (ADR 0330). Leaves the queue on every way out.
+   */
+  async landV4(
+    b: number,
+    tag: string,
+    headSha: string,
+    approvalId: string | null,
+    land: (head: string) => { op: string; input: unknown },
+  ): Promise<
+    | { kind: "done" }
+    | { kind: "conflict" }
+    | { kind: "failed"; reason: string }
+    | { kind: "pending"; pendingActionId: string; headSha: string }
+    | { kind: "refused"; message: string; headSha: string }
+  > {
+    const id = this.workItemId;
+    const p = `merge #${b}: ${tag}`;
+    const leave = (outcome: "merged" | "left", reason: string) =>
+      this.act(`${p}: leave`, "mergeQueue.leave", { workItemId: id, outcome, reason });
+    await this.act(`${p}: enqueue`, "mergeQueue.enter", {
+      workItemId: id,
+      headSha,
+      pendingActionId: approvalId,
+    });
+    await this.waitTurn(p);
+
+    let at = headSha;
+    for (let i = 1; ; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      const u = await this.act(`${p}: update${sfx}`, "mergeQueue.update", { workItemId: id });
+      const state = String(u.state);
+      if (state === "current") break;
+      if (state === "updating" && i < UPDATE_READS) {
+        await this.step.sleep(`${p}: update wait${sfx}`, UPDATE_WAIT);
+        continue;
+      }
+      if (state === "updated") {
+        at = String(u.headSha);
+        const ci = await this.waitForCi(b, at, 4, 1, p);
+        if (ci === "success") break;
+        if (ci === "conflict") {
+          await leave("left", "the default branch moved again and now conflicts");
+          return { kind: "conflict" };
+        }
+        const why = `CI is ${ci} on ${at.slice(0, 7)}, the branch with the default branch merged in`;
+        await leave("left", why);
+        return {
+          kind: "failed",
+          reason: `Merging the default branch into your branch broke CI (${ci} on ${at.slice(0, 7)}). Fix the branch against the latest default branch.`,
+        };
+      }
+      if (state === "conflict") {
+        await leave("left", String(u.reason ?? "conflict"));
+        return { kind: "conflict" };
+      }
+      const reason =
+        state === "updating"
+          ? "GitHub didn't finish merging the default branch in"
+          : `the merge queue couldn't update the branch (${state}): ${String(u.reason ?? "")}`;
+      await leave("left", reason);
+      return { kind: "failed", reason };
+    }
+
+    const { op, input } = land(at);
+    const landed = await this.call(`${p}: land`, op, input, approvalId ?? undefined);
+    if (landed.status === "ok") {
+      await leave("merged", "merged");
+      return { kind: "done" };
+    }
+    await leave("left", landed.status === "refused" ? landed.message : "awaiting approval");
+    if (landed.status === "pending")
+      return { kind: "pending", pendingActionId: landed.pendingActionId, headSha: at };
+    return { kind: "refused", message: landed.message, headSha: at };
+  }
+
+  /** v4: waits until the item is the head of its project's merge queue. */
+  async waitTurn(p: string): Promise<void> {
+    for (let i = 1; ; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      const pos = await this.call(`${p}: position${sfx}`, "mergeQueue.position", {
+        workItemId: this.workItemId,
+      });
+      if (pos.status !== "ok") throw new Ended("failed", "the merge queue couldn't be read");
+      if (pos.output.queued !== true) throw new Ended("failed", "the item left the merge queue");
+      if (pos.output.head === true) return;
+      try {
+        await this.step.waitForEvent(`${p}: turn${sfx}`, {
+          type: mergeQueueEvent(this.workItemId),
+          timeout: QUEUE_WAIT,
+        });
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+      }
+    }
+  }
+
+  /**
+   * v3: no CI has reported on the head at all. That's the repo's setup (Actions off, a run waiting
+   * for approval, no workflow on `pull_request`), not the build, so a person is asked to fix it and
+   * re-check, or to stop the item; no build retry is spent (ADR 0320).
+   */
+  async askNoCi(meta: Meta, b: number, k: number, headSha: string): Promise<void> {
+    const name = `verify #${b}: no ci${k === 1 ? "" : ` #${k}`}`;
+    const asked = await this.act(`${name}: ask`, "question.ask", {
+      workItemId: this.workItemId,
+      questions: [
+        {
+          domain: "operations",
+          prompt: `No CI has reported on ${headSha.slice(0, 7)}, the head of work item #${meta.number}'s pull request. Fix CI on GitHub, then re-check, or stop the item.`,
+          context: [
+            "The factory waited and GitHub shows no check run on this commit apart from the factory's own. Usual causes:",
+            "- GitHub Actions is off for the repository, or the workflow doesn't run on `pull_request`;",
+            "- the run is waiting for approval (the Actions tab: 'Approve and run', e.g. for a first-time contributor such as the App's bot);",
+            "- the CI provider is down.",
+            "A change to the code won't fix this, so no build retry was spent.",
+          ].join("\n"),
+          options: [NO_CI_RECHECK, NO_CI_STOP],
+          defaultAnswer: NO_CI_RECHECK,
+          recommendation: NO_CI_RECHECK,
+          recommendationReason: "Once CI runs on the head, verify carries on where it stopped.",
+          blocking: true,
+        },
+      ],
+    });
+    await this.waitForAnswers(meta, name);
+    const questionId = (asked.questionIds as string[])[0];
+    const answer = await this.step.do(`${name}: answer`, async () => {
+      const row = await this.env.DB.prepare("SELECT answer FROM core_questions WHERE id = ?")
+        .bind(questionId)
+        .first<{ answer: string | null }>();
+      return row?.answer ?? NO_CI_RECHECK;
+    });
+    if (answer === NO_CI_STOP) {
+      throw new Ended("failed", `stopped: no CI reported on ${headSha.slice(0, 7)}`);
     }
   }
 

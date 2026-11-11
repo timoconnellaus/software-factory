@@ -4,12 +4,14 @@
 // `{ type: "runner", id: <runner id> }`. The job token call is never stored.
 import {
   type Actor,
+  type AttachmentView,
   DEVICE_LOGIN_ACTOR,
   invoke,
   OperationError,
   type RefusalCode,
 } from "@software-factory/core";
 import {
+  type AttachmentMeta,
   type ChannelReply,
   DEVICE_PATHS,
   handleRunnerCall,
@@ -88,6 +90,9 @@ async function route(env: Env, runner: string, path: string, body: unknown): Pro
       };
     }
     input = { ...record, jobId: job.jobId };
+    if (job.call === "attachments" || job.call === "attachment") {
+      return attachmentReply(env, runner, job.call, input as Record<string, unknown>);
+    }
     op = {
       token: "run.issueToken",
       events: "run.reportEvents",
@@ -97,6 +102,59 @@ async function route(env: Env, runner: string, path: string, body: unknown): Pro
     }[job.call];
   }
   return invokeReply(env, op, input, { type: "runner", id: runner });
+}
+
+/**
+ * The run's view of its work item's attachments (ADR 0310): `workItem.attachment.list` / `.get`
+ * as the runner, scoped by the job and its fencing token, answered in the wire shapes
+ * (`attachmentsResponseSchema`, `attachmentResponseSchema`: the bytes as base64).
+ */
+async function attachmentReply(
+  env: Env,
+  runner: string,
+  call: "attachments" | "attachment",
+  record: Record<string, unknown>,
+): Promise<ChannelReply> {
+  const meta = (a: AttachmentView): AttachmentMeta => ({
+    id: a.id,
+    filename: a.filename,
+    contentType: a.contentType,
+    sizeBytes: a.sizeBytes,
+    sha256: a.sha256,
+    createdAt: a.createdAt,
+  });
+  const actor: Actor = { type: "runner", id: runner };
+  const input =
+    call === "attachments"
+      ? { jobId: record.jobId, fencingToken: record.fencingToken }
+      : {
+          jobId: record.jobId,
+          fencingToken: record.fencingToken,
+          attachmentId: record.attachmentId,
+        };
+  const reply = await invokeReply(
+    env,
+    call === "attachments" ? "workItem.attachment.list" : "workItem.attachment.get",
+    input,
+    actor,
+  );
+  if (reply.status && reply.status !== 200) return reply;
+  if (call === "attachments") {
+    const out = reply.body as { attachments: AttachmentView[] };
+    return { body: { attachments: out.attachments.map(meta) } };
+  }
+  const out = reply.body as { attachment: AttachmentView; bytes: Uint8Array };
+  return {
+    body: { attachment: meta(out.attachment), base64: toBase64(out.bytes) },
+  };
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
 }
 
 /**

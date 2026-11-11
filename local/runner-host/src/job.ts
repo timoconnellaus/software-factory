@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
   type AdapterEvent,
   type Artifact,
+  type AttachmentFile,
   artifactId,
   ChannelCallError,
   type ControlPlaneClient,
@@ -48,6 +49,11 @@ export class StopJob extends Error {
   ) {
     super(reason);
   }
+}
+
+/** The session left the host's merge of the default branch with conflicts: nothing is pushed. */
+class UnresolvedMerge extends Error {
+  override name = "UnresolvedMerge";
 }
 
 /** Whether a channel refusal means "stop this job now" (ADR 0035, 0044). */
@@ -189,6 +195,10 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   };
 
   let workspace: W | undefined;
+  /** Where the session started: the base, or the host's merge of the default branch on top of it. */
+  let startSha: string | undefined;
+  /** Whether the branch had commits of its own before that merge. */
+  let ahead = true;
   let session: S | undefined;
   let outcome: SessionOutcome = "failed";
   let summary: string | undefined;
@@ -197,6 +207,59 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let result: unknown;
   let stored: StoredArtifact[] = [];
   const notes: string[] = [];
+
+  /**
+   * The work item's attachments (ADR 0310), when the adapter declares `work-item-attachments`:
+   * fetched over the job channel with this job's fencing token, handed to the adapter to put
+   * outside the git tree, and its note appended to the prompt. Any other runner skips this.
+   */
+  const withAttachments = async (j: Job, w: W): Promise<Job> => {
+    const manifest = await adapter.manifest();
+    if (
+      !manifest.capabilities.includes("work-item-attachments") ||
+      !adapter.attachFiles ||
+      !cp.attachments ||
+      !cp.attachment
+    ) {
+      return j;
+    }
+    const list = cp.attachments.bind(cp);
+    const fetchOne = cp.attachment.bind(cp);
+    let files: AttachmentFile[];
+    try {
+      const { attachments } = await channel(() => list(j.jobId, fence));
+      if (attachments.length === 0) return j;
+      files = [];
+      for (const meta of attachments) {
+        const got = await channel(() => fetchOne(j.jobId, fence, meta.id));
+        files.push({
+          meta: got.attachment,
+          bytes: Uint8Array.from(Buffer.from(got.base64, "base64")),
+        });
+      }
+    } catch (error) {
+      if (error instanceof StopJob) throw error;
+      // The run goes on without them; the agent is told so.
+      log(
+        `attachments for ${j.jobId} not fetched: ${error instanceof Error ? error.message : error}`,
+      );
+      notes.push("attachments could not be fetched");
+      return {
+        ...j,
+        harness: {
+          ...j.harness,
+          prompt: `${j.harness.prompt}\n\n(The work item has attachments, but they could not be fetched for this run.)`,
+        },
+      };
+    }
+    const note = await adapter.attachFiles(j, w, files);
+    await stream.push({
+      type: "job.state",
+      state: "preparing",
+      detail: `${files.length} attachment(s) fetched`,
+    });
+    return note ? { ...j, harness: { ...j.harness, prompt: `${j.harness.prompt}\n${note}` } } : j;
+  };
 
   const abortedOutcome = (): SessionOutcome => {
     const reason = signal.reason;
@@ -224,15 +287,39 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       if (workspace.branch !== job.branch) {
         throw new Error(`workspace is on ${workspace.branch}, not ${job.branch}`);
       }
+      startSha = workspace.baseSha;
       await stream.push({
         type: "job.state",
         state: "preparing",
         detail: `${workspace.path} on ${workspace.branch} @ ${workspace.baseSha.slice(0, 7)} (${clone})`,
       });
+      // A build starts from the default branch's latest too (ADR 0320): the host merges it in, so
+      // the PR stays mergeable while other work lands. A conflict is left for the agent.
+      if (job.stage === "build") {
+        const merge = await git.mergeDefault(job, workspace.path);
+        ahead = merge.ahead;
+        const from = job.repo.defaultBranch;
+        if (merge.status === "merged") {
+          startSha = merge.sha;
+          await stream.push({
+            type: "job.state",
+            state: "preparing",
+            detail: `merged ${from} @ ${merge.sha.slice(0, 7)}`,
+          });
+        } else if (merge.status === "conflict") {
+          await stream.push({
+            type: "job.state",
+            state: "preparing",
+            detail: `merging ${from} conflicts in ${merge.files.length} file(s), left for the session: ${merge.files.slice(0, 20).join(", ")}`,
+          });
+        }
+      }
       const configBefore = await git.sensitiveConfig(workspace.path);
 
       if (signal.aborted) throw signal.reason;
-      session = await adapter.startSession(job, workspace, signal);
+      const runJob = await withAttachments(job, workspace);
+      if (signal.aborted) throw signal.reason;
+      session = await adapter.startSession(runJob, workspace, signal);
       await stream.push({ type: "job.state", state: "running" });
       await stream.push({
         type: "session.started",
@@ -284,6 +371,12 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
 
       if (job.stage === "build" && outcome === "completed" && !error) {
         try {
+          const merge = await git.mergeState(workspace.path);
+          if (merge.unmerged.length > 0) {
+            throw new UnresolvedMerge(
+              `the merge of ${job.repo.defaultBranch ?? "the default branch"} was left unresolved in: ${merge.unmerged.slice(0, 20).join(", ")}`,
+            );
+          }
           if (
             await git.commitLeftovers(
               workspace.path,
@@ -293,7 +386,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
             notes.push("the session left uncommitted changes; the runner committed them");
           }
           const head = await git.headSha(workspace.path);
-          if (head === workspace.baseSha) {
+          if (head === workspace.baseSha || (head === startSha && !ahead)) {
             outcome = "failed";
             notes.push("the build made no commits");
           } else {
@@ -308,14 +401,15 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         } catch (err) {
           if (err instanceof StopJob) throw err;
           outcome = "failed";
-          error = `push: ${err instanceof Error ? err.message : String(err)}`;
+          if (err instanceof UnresolvedMerge) notes.push(err.message);
+          else error = `push: ${err instanceof Error ? err.message : String(err)}`;
         }
       }
 
       // Collect even after a failure: a partial diff and the logs are what a person needs.
       const artifacts: Artifact[] = [];
       try {
-        artifacts.push(await git.diff(workspace.path, workspace.baseSha, job.branch));
+        artifacts.push(await git.diff(workspace.path, startSha ?? workspace.baseSha, job.branch));
       } catch (err) {
         artifacts.push({ kind: "log", name: "diff-error", text: String(err) });
       }

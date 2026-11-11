@@ -9,7 +9,7 @@ import {
 } from "../src/index.ts";
 import { fakeServices, fakeUserToken } from "../src/testing/index.ts";
 
-export const services = fakeServices(env.DB);
+export const services = fakeServices(env.DB, env.ATTACHMENTS);
 export const delivered: string[][] = [];
 export const deps: InvokeDeps = {
   d1: env.DB,

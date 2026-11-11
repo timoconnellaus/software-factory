@@ -1,7 +1,7 @@
 // Work items: intake (with dedupe), reads for the app, stage bookkeeping for the Workflow, triage,
 // finishing and cancelling.
 
-import { parseJson } from "@software-factory/db";
+import { parseJson, readBatch } from "@software-factory/db";
 import { triageResultSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
@@ -11,7 +11,8 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
-import { protectionDrift } from "./protection.ts";
+import { queuedEntriesQuery, releaseMergeQueue } from "./merge-queue.ts";
+import { protectionDriftQuery } from "./protection.ts";
 import {
   ATTACHED_SKIP_REASON,
   cancelWorkItem,
@@ -336,6 +337,11 @@ export const workItemGet = defineOperation({
       })
       .nullable(),
     /**
+     * Where the item stands in its project's merge queue (ADR 0330): null when it isn't queued.
+     * `position` 1 is the head, which lands next; `ahead` the work item numbers before it.
+     */
+    mergeQueue: z.object({ position: z.number(), ahead: z.array(z.number()) }).nullable(),
+    /**
      * The project's policy as the detail page and review packet need it (spec 13, 14): null when
      * the project has no valid `.factory/policy.json`. `reviewPacketSections` null: show all.
      */
@@ -371,55 +377,50 @@ export const workItemGet = defineOperation({
         : [];
       return { ids, users };
     })();
+    // The item's own rows go to D1 as one batch (ADR 0241), alongside the approver lookup.
     const [
       { ids: approverUserIds, users: approverUsers },
-      stages,
-      spec,
-      questions,
-      gates,
-      runs,
-      packet,
+      [stages, specRows, questions, gates, runs, packetRows, queue],
     ] = await Promise.all([
       approversLookup,
-      ctx.db
-        .selectFrom("core_stages")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("started_at")
-        .orderBy("id")
-        .execute(),
-      w.current_spec_id
-        ? ctx.db
-            .selectFrom("core_specs")
-            .selectAll()
-            .where("id", "=", w.current_spec_id)
-            .executeTakeFirst()
-        : Promise.resolve(undefined),
-      ctx.db
-        .selectFrom("core_questions")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("created_at")
-        .execute(),
-      ctx.db
-        .selectFrom("core_pending_actions")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("created_at")
-        .execute(),
-      ctx.db
-        .selectFrom("core_runs")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("run_no")
-        .execute(),
-      ctx.db
-        .selectFrom("core_review_packets")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("created_at", "desc")
-        .executeTakeFirst(),
+      readBatch(ctx.d1, [
+        ctx.db
+          .selectFrom("core_stages")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("started_at")
+          .orderBy("id"),
+        ctx.db
+          .selectFrom("core_specs")
+          .selectAll()
+          .where("id", "=", w.current_spec_id ?? ""),
+        ctx.db
+          .selectFrom("core_questions")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("created_at"),
+        ctx.db
+          .selectFrom("core_pending_actions")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("created_at"),
+        ctx.db
+          .selectFrom("core_runs")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("run_no"),
+        ctx.db
+          .selectFrom("core_review_packets")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("created_at", "desc")
+          .limit(1),
+        // Where the item stands in the merge queue (ADR 0330); empty outside the merge stage.
+        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : ""),
+      ]),
     ]);
+    const spec = w.current_spec_id ? specRows[0] : undefined;
+    const packet = packetRows[0];
     return {
       item: {
         ...summarise(w),
@@ -506,6 +507,7 @@ export const workItemGet = defineOperation({
             createdAt: packet.created_at,
           }
         : null,
+      mergeQueue: queuePosition(queue, w.id),
       policy: policy
         ? {
             autonomyPolicy: policy.autonomyPolicy,
@@ -609,6 +611,7 @@ export const workItemCancel = defineOperation({
       }
     }
     if (!["running", "waiting", "paused"].includes(w.status)) return { cancelled: false };
+    await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     cancelWorkItem(ctx, w, input.reason);
     return { cancelled: true };
   },
@@ -794,6 +797,14 @@ export const workItemFinish = defineOperation({
     const w = requireWorkItem(ctx);
     if (!["running", "waiting", "paused"].includes(w.status)) return { status: w.status };
     setItemStatus(ctx, w.id, ["running", "waiting", "paused"], input.status, input.reason);
+    // An item that ends in the queue (a Workflow giving up, or done without the queue's merge)
+    // stops holding it; the next head is woken (ADR 0330).
+    await releaseMergeQueue(
+      ctx,
+      w,
+      input.status === "done" ? "merged" : "left",
+      `${input.status}: ${input.reason}`,
+    );
     ctx.write(
       ctx.db.updateTable("core_work_items").set({ closed_at: ctx.now }).where("id", "=", w.id),
     );
@@ -909,19 +920,14 @@ export const inboxList = defineOperation({
   }),
   async handler(input, ctx) {
     const me = ctx.actor.id;
-    const memberships = await ctx.db
+    // The caller's orgs (narrowed to one when asked), as a subquery: everything below is one D1
+    // request (ADR 0241).
+    const myOrgs = ctx.db
       .selectFrom("core_member")
-      .select(["organization_id"])
+      .select("organization_id")
       .where("user_id", "=", me)
-      .execute();
-    const orgIds = memberships
-      .map((m) => m.organization_id)
-      .filter((id) => !input.orgId || id === input.orgId);
-    if (orgIds.length === 0)
-      return { gates: [], questions: [], running: [], runners: [], wipHolds: [], protection: [] };
-
-    // Independent reads, in parallel: one wait instead of five.
-    const [pending, questionRows, running, runnerRows, holds] = await Promise.all([
+      .$if(!!input.orgId, (q) => q.where("organization_id", "=", input.orgId ?? ""));
+    const [pending, questionRows, running, runnerRows, holds, drift] = await readBatch(ctx.d1, [
       ctx.db
         .selectFrom("core_pending_actions")
         .leftJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
@@ -939,10 +945,9 @@ export const inboxList = defineOperation({
           "core_work_items.title",
         ])
         .where("core_pending_actions.status", "=", "pending")
-        .where("core_pending_actions.org_id", "in", orgIds)
+        .where("core_pending_actions.org_id", "in", myOrgs)
         .orderBy("core_pending_actions.project_id")
-        .orderBy("core_pending_actions.created_at")
-        .execute(),
+        .orderBy("core_pending_actions.created_at"),
       ctx.db
         .selectFrom("core_questions")
         .innerJoin("core_work_items", "core_work_items.id", "core_questions.work_item_id")
@@ -960,32 +965,37 @@ export const inboxList = defineOperation({
         ])
         .where("core_questions.status", "=", "open")
         .where("core_questions.assignee_user_id", "=", me)
-        .where("core_questions.org_id", "in", orgIds)
+        .where("core_questions.org_id", "in", myOrgs)
         .orderBy("core_questions.project_id")
-        .orderBy("core_questions.created_at")
-        .execute(),
+        .orderBy("core_questions.created_at"),
       ctx.db
         .selectFrom("core_work_items")
         .selectAll()
-        .where("org_id", "in", orgIds)
+        .where("org_id", "in", myOrgs)
         .where("status", "in", ["running", "waiting", "paused"])
         .orderBy("updated_at", "desc")
-        .limit(100)
-        .execute(),
+        .limit(100),
       ctx.db
         .selectFrom("core_runners")
         .selectAll()
+        .select((eb) =>
+          eb
+            .selectFrom("core_runs")
+            .select(eb.fn.countAll<number>().as("n"))
+            .whereRef("core_runs.runner_id", "=", "core_runners.id")
+            .where("core_runs.status", "in", ACTIVE_RUN_STATUSES)
+            .as("active_runs"),
+        )
         .where("owner_user_id", "=", me)
-        .where("revoked_at", "is", null)
-        .execute(),
+        .where("revoked_at", "is", null),
       ctx.db
         .selectFrom("core_jobs")
         .select(["project_id", (eb) => eb.fn.countAll().as("n")])
-        .where("org_id", "in", orgIds)
+        .where("org_id", "in", myOrgs)
         .where("status", "=", "queued")
         .where("wait_reason", "=", WIP_WAIT_REASON)
-        .groupBy("project_id")
-        .execute(),
+        .groupBy("project_id"),
+      protectionDriftQuery(ctx, myOrgs),
     ]);
     const gates = pending
       .filter((g) => g.assignee_user_id === me)
@@ -1000,33 +1010,30 @@ export const inboxList = defineOperation({
         timeoutAt: g.timeout_at,
         escalated: g.escalations > 0,
       }));
-
     const nowMs = Date.parse(ctx.now);
-    const runners = await Promise.all(
-      runnerRows.map(async (r) => {
-        const active = await activeRunCount(ctx, r.id);
-        const offline = !r.last_seen_at || nowMs - Date.parse(r.last_seen_at) > RUNNER_OFFLINE_MS;
-        const limited = r.rate_limited_until !== null && Date.parse(r.rate_limited_until) > nowMs;
-        const state = offline
-          ? ("offline" as const)
-          : limited
-            ? ("rate-limited" as const)
-            : !r.accepting
-              ? ("draining" as const)
-              : active > 0
-                ? ("busy" as const)
-                : ("online" as const);
-        return {
-          id: r.id,
-          name: r.name,
-          state,
-          inUse: active,
-          max: r.capacity_max,
-          rateLimitedUntil: limited ? r.rate_limited_until : null,
-          lastSeenAt: r.last_seen_at,
-        };
-      }),
-    );
+    const runners = runnerRows.map((r) => {
+      const active = Number(r.active_runs ?? 0);
+      const offline = !r.last_seen_at || nowMs - Date.parse(r.last_seen_at) > RUNNER_OFFLINE_MS;
+      const limited = r.rate_limited_until !== null && Date.parse(r.rate_limited_until) > nowMs;
+      const state = offline
+        ? ("offline" as const)
+        : limited
+          ? ("rate-limited" as const)
+          : !r.accepting
+            ? ("draining" as const)
+            : active > 0
+              ? ("busy" as const)
+              : ("online" as const);
+      return {
+        id: r.id,
+        name: r.name,
+        state,
+        inUse: active,
+        max: r.capacity_max,
+        rateLimitedUntil: limited ? r.rate_limited_until : null,
+        lastSeenAt: r.last_seen_at,
+      };
+    });
 
     return {
       gates,
@@ -1045,7 +1052,7 @@ export const inboxList = defineOperation({
       running: running.map(summarise),
       runners,
       wipHolds: holds.map((h) => ({ projectId: h.project_id, waitingBuilds: Number(h.n) })),
-      protection: (await protectionDrift(ctx, orgIds)).map((d) => {
+      protection: drift.map((d) => {
         const problems = parseJson<string[]>(d.problems, []);
         return {
           projectId: d.projectId,
@@ -1070,6 +1077,9 @@ export const RUNNER_OFFLINE_MS = 2 * 60_000;
 /** The queued reason when a project is at its WIP limit (spec 03, criterion 10). */
 export const WIP_WAIT_REASON = "waiting on review";
 
+/** Run statuses that hold a runner slot. */
+const ACTIVE_RUN_STATUSES = ["claimed", "preparing", "running", "collecting"] as const;
+
 export async function activeRunCount(
   ctx: Pick<HandlerContext, "db">,
   runnerId: string,
@@ -1078,7 +1088,16 @@ export async function activeRunCount(
     .selectFrom("core_runs")
     .select((eb) => eb.fn.countAll().as("n"))
     .where("runner_id", "=", runnerId)
-    .where("status", "in", ["claimed", "preparing", "running", "collecting"])
+    .where("status", "in", ACTIVE_RUN_STATUSES)
     .executeTakeFirst();
   return Number(row?.n ?? 0);
+}
+
+/** The item's place in its project's merge queue, from the queue head first (ADR 0330). */
+function queuePosition(
+  queue: { work_item_id: string; number: number }[],
+  item: string,
+): { position: number; ahead: number[] } | null {
+  const i = queue.findIndex((e) => e.work_item_id === item);
+  return i < 0 ? null : { position: i + 1, ahead: queue.slice(0, i).map((e) => e.number) };
 }

@@ -1,3 +1,5 @@
+import type { AttachmentBlobs } from "./attachments.ts";
+
 // What operations may call outside D1. sf-engine supplies the real ones (the GitHub App, the runner
 // channel secret); tests supply fakes (`@software-factory/core/testing`). Handlers that call a
 // service do it before the batch commits, so every such call must be idempotent.
@@ -199,6 +201,36 @@ export interface GitHubService {
   getPullRequest(repo: RepoRef, number: number): Promise<PullRequestInfo | null>;
   /** The repo's open pull requests, newest first (at most 100). */
   listOpenPullRequests(repo: RepoRef): Promise<PullRequestInfo[]>;
+  /**
+   * Whether GitHub can merge the PR into its base (`GET /pulls/{n}`): `mergeable` is null while
+   * GitHub is still computing it (the first read starts that). `headSha` is the PR's head as GitHub
+   * sees it. GitHub runs no `pull_request` workflows on a PR it can't merge (ADR 0320).
+   */
+  pullRequestMergeability(
+    repo: RepoRef,
+    number: number,
+  ): Promise<{ mergeable: boolean | null; mergeableState: string | null; headSha: string | null }>;
+  /**
+   * How two commits relate (`GET /compare/{base}...{head}`): `aheadBy` commits in `head` that
+   * aren't in `base`, `behindBy` commits in `base` that aren't in `head`. The merge queue uses
+   * `behindBy` to see whether a PR's head still lacks the default branch (ADR 0330).
+   */
+  compareCommits(
+    repo: RepoRef,
+    base: string,
+    head: string,
+  ): Promise<{ aheadBy: number; behindBy: number }>;
+  /** A commit's parents, in order (`GET /commits/{sha}`). */
+  commitParents(repo: RepoRef, sha: string): Promise<string[]>;
+  /**
+   * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
+   * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`
+   * means it accepted; read the PR's head afterwards. `conflict`: the base can't merge in cleanly.
+   */
+  updatePullRequestBranch(
+    repo: RepoRef,
+    input: { number: number; expectedHeadSha: string },
+  ): Promise<{ status: "requested" } | { status: "conflict" | "refused"; reason: string }>;
   /** Merges the PR if its head is still `sha`. */
   mergePullRequest(
     repo: RepoRef,
@@ -208,6 +240,11 @@ export interface GitHubService {
 
 export interface FactoryServices {
   github: GitHubService;
+  /**
+   * Blob storage for work item attachments (ADR 0310): R2 on sf-engine. Absent where nothing
+   * stores files; the attachment operations then refuse with `unavailable`.
+   */
+  attachments?: AttachmentBlobs;
   /** The app's public URL (`PUBLIC_BASE_URL`), for links GitHub shows (the check's details). */
   publicBaseUrl?: string;
   /**

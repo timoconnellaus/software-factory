@@ -4,7 +4,7 @@ Use these words exactly, in code, docs and UI copy. Add to this file when a new 
 
 Renamed 2026-11-11 ([review decisions](docs/reviews/2026-11-11-review-decisions.md)): gatekeeper →
 **connector**; preset → **autonomy policy** or **project template**; `docs/stages/` → `docs/specs/`;
-planning session → **interview session**, now a view over **questions**.
+planning session → **interview session**, now a view over **questions** (and since ADR 0300, **planning session** means the agent's session on a runner).
 
 ## The organisation
 
@@ -64,6 +64,12 @@ opens the merge gate. A failure or send-back waits for a push, a push withdraws 
 gate, and closing the PR cancels the item (spec 05, ADR 0290).
 _Avoid_: imported PR, adopted PR, external work item
 
+**Attachment**
+A file a person added to a work item (a screenshot, a log, a mockup), by picker, drag-and-drop or
+pasting from the clipboard. Its metadata is a D1 row and its bytes are in R2; the item's runs can
+read it over the job channel. Its name and content are untrusted data, never instructions (ADR 0310).
+_Avoid_: artifact (that is what a run produces), upload, file (in copy, when you mean this)
+
 **Stage**
 A step in a work item's pipeline: triage, planning/spec, implement, verify, and so on. Pipelines
 are configurable per project.
@@ -92,8 +98,8 @@ _Avoid_: coordinator, orchestrator, manager agent
 
 **Planning**
 The built-in stage that turns a request into a living spec: questions with defaults and
-recommendations, mockups and designs. Used at triage, spec, agent questions, design review and
-greenfield kickoff.
+recommendations, chat, mockups and designs, with a planning agent that stays with the work item
+(ADR 0300). Used at triage, spec, agent questions, design review and greenfield kickoff.
 _Avoid_: interview (for the stage; that is the kim tool it is modelled on), grooming
 
 **Question**
@@ -112,7 +118,41 @@ A **view** over a work item's questions for one audience: planning (the owners, 
 clarification (a guest sees only their questions and shared mockups), design review, or decision
 (one question). It holds no state beyond its filter and audience. Owners delegate questions, never
 the whole feature.
-_Avoid_: planning session (old name), meeting, thread
+_Avoid_: meeting, thread (before ADR 0300 this was also called a planning session; that name now
+means the agent's session below)
+
+**Planning session**
+The planning agent's resumable session on a runner for one work item (ADR 0300). It manages the
+questions and the living spec through operations, receives answers through hooks while it works, and
+waits in its Stop hook when idle. It holds a **light slot**, yields only when the light pool is full,
+and always resumes on the same runner unless a person moves it; a move rebuilds it from the
+**planning record** (spec versions, questions, answers, chat, artifacts).
+_Avoid_: interview, run (a planning session spans several jobs), chat
+
+**Provenance tag**
+The source of a statement in the living spec: `[Qn]`, `[request]`, `[repo]`, `[parent]` or
+`[assumption]` (ADR 0302). Always visible at the spec gate.
+_Avoid_: citation, footnote
+
+**Coverage**
+The checklist in a living spec of what planning has considered (scope, data & permissions, UX, edge
+cases, non-functional, terminology, plus project categories), each clear, partial or not applicable.
+
+**Spec critic**
+A separate run that reviews a spec before its gate opens and leaves notes; advisory only (ADR 0302).
+
+**Needs info**
+A parked work item waiting on its requester: it failed the readiness pre-check or triage found it
+not actionable (ADR 0304). Takes no WIP slot.
+
+**Split**
+A spec that creates child work items when approved, each with its own spec slice; depth 1
+(ADR 0303).
+
+**Spec drift**
+Where a build departs from its approved spec's scope; a review-packet section (ADR 0306). Not the
+ruleset **drift** of ADR 0280.
+_Avoid_: drift (alone, in planning or verify copy)
 
 **Living spec**
 A work item's spec, updated as planning answers arrive, with its acceptance criteria. Written in the
@@ -136,6 +176,13 @@ notes, screenshots, risk flags, the diff and a preview link. Sections are set pe
 `.factory/` (`reviewPacket.sections`). It also backs the `factory/verify` check. The packet in the
 app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
 _Avoid_: PR summary, report
+
+**Merge queue**
+A project's approved merges, waiting to land one at a time (ADR 0330). The **head** (the oldest
+open entry) is brought up to date with the default branch by GitHub's update-branch, CI runs on
+it once, and it merges; then the next head goes. The approval carries over that clean update. A
+conflict or red CI at the head sends the item back to build.
+_Avoid_: merge train, landing queue
 
 **Default-branch ruleset**
 The repository ruleset that guards a project's default branch: a PR, the CI checks and
@@ -199,8 +246,9 @@ _Avoid_: test case, fixture
 **Runner**
 Something that executes jobs: a machine or service with capacity and capabilities, owned by a user.
 Owner-only by default; the owner shares it through an explicit allowlist of orgs, factories or
-projects (ADR 0038). It can report "rate-limited until T". Example: the Orca runner on the Mac mini,
-capacity 4.
+projects (ADR 0038). It can report "rate-limited until T". Its capacity has two pools (ADR 0301):
+**heavy** slots for build and verify, and **light** slots for planning and triage. Example: the Orca
+runner on the Mac mini, 2 heavy and 6 light.
 _Avoid_: worker (a Cloudflare Worker), agent, executor, host (the runner host is the daemon)
 
 **Runner adapter**
@@ -212,7 +260,8 @@ _Avoid_: driver, plugin, integration
 The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
 outbound over the signed channel, loads runner adapters, fetches into the checkout the machine
 already has for each repo (its own clone only when there is none, ADR 0260), and is the only thing
-that pushes: the run branch, with the job token (ADR 0250).
+that pushes: the run branch, with the job token (ADR 0250). Before a build it merges the project's
+default branch into the run branch, leaving any conflict for the session to resolve (ADR 0320).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
 **Capability**
@@ -224,7 +273,9 @@ restrict them. The known ones:
 - `own-hardware`: runs on a machine its owner controls (for client repos);
 - `hooks`: the harness runs session hooks (inject the live work item, block writes until claimed,
   heartbeat);
-- `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`).
+- `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`);
+- `work-item-attachments`: fetches the work item's attachments over the job channel into the run,
+  outside the git tree (ADR 0310).
 _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**

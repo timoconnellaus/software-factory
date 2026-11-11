@@ -17,6 +17,7 @@ import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import { assemblePacket, verifyCheckOutput } from "../verify/packet.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
+import { requireQueueHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
   cancelWorkItem,
@@ -240,7 +241,7 @@ export const reviewPacketRecord = defineOperation({
 export const ciRead = defineOperation({
   name: "ci.read",
   description:
-    "Read CI on GitHub for a work item's head SHA: the check runs other than the factory's own, and their state (success, failure, pending, missing). The Workflow waits on this before it assembles the review packet.",
+    "Read CI on GitHub for a work item's head SHA: the check runs other than the factory's own, and their state (success, failure, pending, missing). Also whether GitHub can merge the item's PR into the default branch (`mergeable`: false means conflicts, and GitHub then runs no `pull_request` CI at all; null means unknown or still computing). The Workflow waits on this before it assembles the review packet.",
   risk: "read",
   actors: ["agent", "human"],
   permission: "member",
@@ -257,12 +258,37 @@ export const ciRead = defineOperation({
         url: z.string().nullable(),
       }),
     ),
+    /** Added by ADR 0320; v2 Workflow instances ignore it. */
+    mergeable: z.boolean().nullable(),
+    mergeableState: z.string().nullable(),
   }),
   async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
     const repo = await repoRef(ctx, requireProject(ctx));
-    return readCi(ctx, repo, input.headSha);
+    const ci = await readCi(ctx, repo, input.headSha);
+    return { ...ci, ...(await readMergeability(ctx, repo, w.pr_number, input.headSha)) };
   },
 });
+
+/**
+ * Whether the item's PR can merge (ADR 0320). Unknown (null) when there's no PR, GitHub is still
+ * computing it, its head isn't `headSha` yet, or GitHub can't be read: never a guess.
+ */
+async function readMergeability(
+  ctx: HandlerContext,
+  repo: RepoRef,
+  prNumber: number | null,
+  headSha: string,
+): Promise<{ mergeable: boolean | null; mergeableState: string | null }> {
+  if (!prNumber) return { mergeable: null, mergeableState: null };
+  try {
+    const pr = await ctx.services.github.pullRequestMergeability(repo, prNumber);
+    if (pr.headSha && pr.headSha !== headSha) return { mergeable: null, mergeableState: "stale" };
+    return { mergeable: pr.mergeable, mergeableState: pr.mergeableState };
+  } catch {
+    return { mergeable: null, mergeableState: null };
+  }
+}
 
 export const verifyRefresh = defineOperation({
   name: "verify.refresh",
@@ -408,7 +434,12 @@ export const verifyRefresh = defineOperation({
       .executeTakeFirst();
 
     // Wake a Workflow that waits for CI on this SHA (v2 verify), once CI has settled.
-    if (ci.state !== "pending" && item.head_sha === input.headSha && item.stage === "verify") {
+    // ...and one in the merge queue waiting for CI after it brought the branch up to date (ADR 0330).
+    if (
+      ci.state !== "pending" &&
+      item.head_sha === input.headSha &&
+      (item.stage === "verify" || item.stage === "merge")
+    ) {
       ctx.emit({
         kind: "workflow.event",
         payload: {
@@ -556,6 +587,70 @@ async function moveAttachedHead(
   };
 }
 
+/**
+ * The merge queue brought a verified head up to date with the default branch by a clean merge
+ * (ADR 0330): the reviewed diff is unchanged, so the review packet carries over to the new head,
+ * marked with where it came from. `factory/verify` on the new head then passes only on green CI
+ * there, like any packet.
+ */
+export async function carryReviewPacket(
+  ctx: HandlerContext,
+  args: { item: WorkItemRow; project: ProjectRow; repo: RepoRef; fromSha: string; toSha: string },
+): Promise<{ packetId: string | null }> {
+  const from = await ctx.db
+    .selectFrom("core_review_packets")
+    .selectAll()
+    .where("work_item_id", "=", args.item.id)
+    .where("head_sha", "=", args.fromSha)
+    .orderBy("created_at", "desc")
+    .executeTakeFirst();
+  if (!from) return { packetId: null };
+  const sections: Record<string, unknown> = {
+    ...parseObject(from.sections),
+    carriedFrom: args.fromSha,
+  };
+  const id = newId("reviewPacket");
+  ctx.write(
+    ctx.db.insertInto("core_review_packets").values({
+      id,
+      work_item_id: args.item.id,
+      run_id: from.run_id,
+      head_sha: args.toSha,
+      verdict: from.verdict,
+      summary: from.summary,
+      criteria: from.criteria,
+      checks: from.checks,
+      reviewer: from.reviewer,
+      risk_flags: from.risk_flags,
+      sections: JSON.stringify(sections),
+      created_at: ctx.now,
+    }),
+  );
+  ctx.change({
+    entity: "review_packet",
+    id,
+    after: { headSha: args.toSha, carriedFrom: args.fromSha },
+  });
+  const ci = await readCi(ctx, args.repo, args.toSha);
+  await postVerify(ctx, {
+    project: args.project,
+    repo: args.repo,
+    headSha: args.toSha,
+    item: args.item,
+    prNumber: args.item.pr_number,
+    packetId: id,
+    output: verifyCheckOutput({
+      evidencePass: sections.evidencePass === true,
+      evidenceReasons: strings(sections.evidenceReasons),
+      warnings: strings(sections.warnings),
+      riskFlags: strings(parseJson(from.risk_flags)),
+      ci,
+      workItem: args.item,
+    }),
+  });
+  return { packetId: id };
+}
+
 export const prAutoMerge = defineOperation({
   name: "pr.autoMerge",
   description:
@@ -576,6 +671,7 @@ export const prAutoMerge = defineOperation({
     if (w.head_sha !== input.headSha) {
       throw new OperationError("conflict", "the branch moved since the review packet was made");
     }
+    await requireQueueHead(ctx, w, input.headSha);
     const project = requireProject(ctx);
     const repo = await repoRef(ctx, project);
     const files = await ctx.services.github.compareFiles(

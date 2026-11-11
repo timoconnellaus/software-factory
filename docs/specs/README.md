@@ -23,12 +23,20 @@ and the factory's own planning stage writes specs in this same format.
 | [03](03-runner-contract-and-orca.md) | Runner contract, signed channel, runner host, `runner-orca`, `harness-claude`, job tokens, scheduler | 01; the `spikes/` runner work |
 | [04](04-verify-and-pr.md) | Verify, holdout tests, review packet, PR through the GitHub connector, `factory/verify` check | 02, 03 |
 | [05](05-attach-a-pull-request.md) | Attach an outside PR (a local session's or a person's) to a work item: verify on its head, the merge gate, `/attach` | 04 |
+| [06](06-merge-queue.md) | The merge queue: approved merges land one at a time per project (Workflow v4) | 04 |
 | [10](10-r1-sign-in-and-org-switcher.md) | R1: sign-in and the org & account switcher | 01 |
 | [11](11-r1-new-work.md) | R1: New work | 02, 10 |
 | [12](12-r1-inbox.md) | R1: Inbox (grouped by project, runner health line) | 02, 10 |
 | [13](13-r1-work-item-detail.md) | R1: Work item detail | 02, 10 |
 | [14](14-r1-review-packet.md) | R1: Review packet (the merge gate) | 04, 13 |
 | [15](15-r1-notifications-backpressure-and-metrics.md) | R1: web push, WIP backpressure, early metrics | 01, 03, 12 |
+| [20](20-planning-loop.md) | Planning M1: the loop (a live session on a runner, hooks, questions, living spec, chat, light pool) | 02, 03, 13 |
+| [21](21-planning-visuals.md) | Planning M2: mockups, option cards, live controls, canvas, pinned comments | 20 |
+| [22](22-planning-system-designs.md) | Planning M3: system designs and `.kim/` write-back | 21 |
+| [23](23-triage-questions-and-critic.md) | Planning M4: triage questions, the readiness check and the spec critic | 20 |
+| [24](24-planning-splits.md) | Planning splits a work item | 20 |
+| [25](25-verify-drift-check.md) | Verify checks drift from the spec | 04 |
+| [wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md) | Work item attachments (picker, drag-and-drop, paste; R2; runs read them) | 01, 03, 13 |
 
 Specs 01–04 together are the **MVP backend slice**: CLI/chat intake → triage → implement (Claude
 Code via `runner-orca`) → verify (review packet) → PR in one repo. Specs 10–15 are UI release
@@ -48,3 +56,6 @@ spec splits its scope and acceptance criteria by milestone.
 
 Mockups for every R1 screen are in [`.kim/mockups/`](../../.kim/mockups/); the design system is in
 [`.kim/design-system/`](../../.kim/design-system/).
+
+## Planning
+Specs 20–25 make planning work the way kim does ([ADR 0300](../adr/0300-planning-is-a-live-session-on-a-runner.md), plan in [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)). Build them in order: 20 → 21 → 22, then 23; 24 and 25 can run alongside after 20 and 04.

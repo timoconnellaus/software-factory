@@ -37,3 +37,10 @@ export const ciEvent = (workItemId: string, sha: string) => `ci-${workItemId}-${
  * item's head after waking and waits again when it hasn't moved.
  */
 export const prHeadEvent = (workItemId: string) => `pr-head-${workItemId}`;
+
+/**
+ * A work item's merge queue entry may have reached the head of its project's queue (ADR 0330). Sent
+ * when the entry ahead leaves; the Workflow re-reads its position after it, so a missed or extra
+ * event only costs a timeout.
+ */
+export const mergeQueueEvent = (workItemId: string) => `mergeq-${workItemId}`;

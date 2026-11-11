@@ -196,6 +196,55 @@ CI:
 
 No `evals/regressions/` case: like the other bootstrap incidents, it has no `inc_` id.
 
+## 7. A factory PR that couldn't merge waited for CI that never came
+**What happened.** Work item #1 (attachments) built on a branch cut from `main` at #20 (06:11).
+While it built, #21, #22 and #24 landed on the same files (`harness-claude`, `runner-orca`,
+`docs/parallel-work.md`, `docs/adr/README.md`). The factory opened PR #23 at 07:10:35, 30 seconds
+after #24 merged, and it conflicted with `main` from the start.
+
+GitHub runs no `pull_request` workflows on a PR it can't build a merge commit for, so the head
+`510bc9d` never got an Actions check suite. The v2 Workflow waited, read CI as `missing`, failed the
+packet ("no CI has reported on 510bc9d") and posted `factory/verify` red at 07:25. It then sent the
+build back with that line as the thing to fix. The retry (run 6) pushed the same SHA and failed the
+same way, used up `retryLimit: 2`, and opened incident item #2 ("#1 had a run that failed"),
+blaming the run.
+
+Underneath, the build had also claimed block I (ADR 0260, migrations 0070–0079) on its stale base.
+#22 had already taken block I, and #26 used migration 0070, so the branch would collide on numbers
+even after the conflicts were resolved.
+
+**Root cause (`factory`: stale run branches + missing CI read as a build failure).** Three gaps:
+- **Nothing kept the run branch current.** A build started from the item branch as it was when the
+  item was created, and nothing merged the default branch in before the PR opened.
+- **"Can't merge" looked like "no CI".** The Workflow had no idea of mergeability, and GitHub's
+  silence on a conflicting PR read the same as a repo without CI.
+- **A cause outside the code was given to the builder to fix.** "No CI has reported" spent build
+  retries on something no commit could change.
+
+**Fix.** [ADR 0320](../adr/0320-factory-branches-stay-mergeable.md).
+- **The runner host merges the default branch into the run branch before every build.** It is
+  fetched with the job token and merged as a merge commit. A conflict is left for the agent, whose
+  prompt says how to resolve it. Unmerged paths at the end fail the run without a push.
+- **Workflow v3 reads the PR's `mergeable`** right after it opens and on every CI read. A conflict
+  sends the item back to build with an actionable note, without a verify run. The first three such
+  send-backs aren't failed attempts.
+- **Missing CI asks a person** (Re-check CI / Stop this work item) instead of retrying the build.
+- **Tests:**
+  - in the host, against a scratch GitHub: a clean merge, a conflict resolved by the session, an
+    unresolved conflict, and a clean merge with and without work of the branch's own;
+  - in the engine: a conflict at PR open, a conflict found while waiting for CI, a re-check after
+    the no-CI question, and stop with no incident.
+- PR #23 itself was unstuck by hand. `main` was merged in keeping both sides, and its ADR and
+  migration were renumbered into block N.
+
+**What would have caught it.** A rule for the Workflow: *every state a stage waits on must
+distinguish "the factory can't proceed" from "the work is wrong"*, and only the second may spend a
+build retry. A test of each verify wait against a PR GitHub won't run CI on (conflicting, Actions
+off) would have shown both. Both now exist in `apps/engine/test/verify-flow.test.ts`.
+
+No `evals/regressions/` case: like the other bootstrap incidents, it has no `inc_` id. Incident
+item #2 can be cancelled, because its cause is fixed here.
+
 ## Follow-ups (not done here)
 - ~~Add the spec-template rules from 1 and 3 when the stage-spec template is next touched.~~ Done
   with the onboarding rebuild (below).

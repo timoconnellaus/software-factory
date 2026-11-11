@@ -47,6 +47,7 @@ function detail(
     gates: [],
     runs: [],
     reviewPacket: null,
+    mergeQueue: null,
     policy: null,
     approvers: { rule: "org owners and admins", users: [] },
     viewer: { isApprover: true, isRequester: true },

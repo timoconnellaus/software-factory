@@ -1,5 +1,6 @@
 // New work (spec 11, mockup new-work): a chat-style box, a project picker and the routing preview.
-// Send calls workItem.create as the signed-in person and opens the work item.
+// Send calls workItem.create as the signed-in person, attaches any staged files (picked, dropped or
+// pasted), and opens the work item.
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Kbd } from "@software-factory/ui/components/kbd";
@@ -10,6 +11,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AttachButton } from "#/components/attach-button";
+import { StagedAttachments, uploadStaged } from "#/components/staged-attachments";
 import { op } from "#/lib/op";
 import { OpError, type OpOutput } from "#/lib/ops";
 import { openPullsQuery, projectsQuery, routingQuery } from "#/lib/queries";
@@ -53,6 +55,8 @@ function NewWorkPage() {
   const [body, setBody] = useState("");
   const [projectId, setProjectId] = useState<string | undefined>();
   const [sending, setSending] = useState(false);
+  // Files to attach once the item exists (picked, dropped or pasted on this form).
+  const [files, setFiles] = useState<File[]>([]);
   // One id per draft: a double send (or a retry after a dropped response) creates one item.
   const eventId = useRef(crypto.randomUUID());
   const selected = projectId ?? defaultProject(projects.data ?? [], search.project)?.id;
@@ -69,6 +73,10 @@ function NewWorkPage() {
         source: "app",
         eventId: eventId.current,
       });
+      if (files.length > 0) {
+        const failures = await uploadStaged(created.workItemId, files);
+        for (const failure of failures) toast.error(`Not attached: ${failure}`);
+      }
       await queryClient.invalidateQueries({ queryKey: ["inbox"] });
       toast.success(
         created.outcome === "created"
@@ -137,6 +145,9 @@ function NewWorkPage() {
             {sending ? "Sending…" : "Send to factory"}
             <Kbd className="bg-primary-foreground/15 text-primary-foreground">⌘↵</Kbd>
           </Button>
+        </div>
+        <div className="border-t px-3 py-2">
+          <StagedAttachments files={files} onChange={setFiles} />
         </div>
       </Card>
       {projects.data?.length === 0 && (

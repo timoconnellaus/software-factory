@@ -597,7 +597,44 @@ export interface CoreRunnerDeviceCodesTable {
   consumed_at: Iso | null;
 }
 
+// ---- 0090: work item attachments (ADR 0310) ----
+
+export interface CoreAttachmentsTable {
+  id: string;
+  work_item_id: string;
+  org_id: string;
+  project_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  /** `<org>/<work item>/<attachment id>` in the ATTACHMENTS bucket. */
+  blob_key: string;
+  uploader_type: string;
+  uploader_id: string;
+  created_at: Iso;
+}
+
 /** Every core table, for `Kysely<CoreDatabase>`. */
+// ---- 0100: the merge queue (ADR 0330) ----
+
+export type MergeQueueStatus = "queued" | "merged" | "left";
+
+export interface CoreMergeQueueTable {
+  id: string;
+  project_id: string;
+  work_item_id: string;
+  workflow_id: string | null;
+  pending_action_id: string | null;
+  approved_sha: string;
+  head_sha: string;
+  status: Generated<MergeQueueStatus>;
+  end_reason: string | null;
+  enqueued_at: Iso;
+  updated_at: Iso;
+  ended_at: Iso | null;
+}
+
 export interface CoreDatabase {
   core_meta: CoreMetaTable;
   core_user: CoreUserTable;
@@ -637,4 +674,6 @@ export interface CoreDatabase {
   core_github_installations: CoreGithubInstallationsTable;
   core_github_connect_states: CoreGithubConnectStatesTable;
   core_runner_device_codes: CoreRunnerDeviceCodesTable;
+  core_attachments: CoreAttachmentsTable;
+  core_merge_queue: CoreMergeQueueTable;
 }

@@ -46,6 +46,8 @@ export interface ClaudeSettings {
     deny: string[];
     /** File tools write only inside the working directories, whatever the mode. */
     blockWritesOutsideWorkingDirectories: true;
+    /** Readable directories outside the worktree (the run's attachments); never writable. */
+    additionalDirectories?: string[];
   };
   sandbox: {
     enabled: true;
@@ -100,6 +102,11 @@ export interface SettingsOptions {
    * permission decision: those events are refused.
    */
   hooks?: ClaudeHooks;
+  /**
+   * Where the run's attachments are written (ADR 0310), outside the worktree: the harness may read
+   * there, never write.
+   */
+  attachmentsDir?: string;
 }
 
 /** Hook events whose output can grant a permission or answer a dialog: a runner may not add them. */
@@ -393,6 +400,7 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
   const writeDeny = [...homeRules, `${abs(configDir)}`, `${abs(configDir)}/**`];
   const allow = [...stageAllow(job.stage, options.worktree, domains)];
   for (const rule of profile?.allow?.[job.stage] ?? []) if (!allow.includes(rule)) allow.push(rule);
+  if (options.attachmentsDir) allow.push(`Read(${abs(options.attachmentsDir)}/**)`);
   const deny = [
     ...bash(DENY_COMMANDS),
     ...readDeny.map((p) => `Read(${p})`),
@@ -404,6 +412,11 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
     // Bypass mode allows every tool: WebFetch isn't sandboxed, so it can't be held to the host
     // allowlist there. Builds fetch through sandboxed commands (to the allowlist) instead.
     ...(mode === "bypassPermissions" ? ["WebFetch"] : []),
+    // The attachments are the requester's, read only (additionalDirectories would otherwise make
+    // them writable for the file tools).
+    ...(options.attachmentsDir
+      ? [`Edit(${abs(options.attachmentsDir)}/**)`, `Write(${abs(options.attachmentsDir)}/**)`]
+      : []),
   ];
   const git = options.git;
   const gitWrite = git
@@ -422,6 +435,7 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
       allow,
       deny,
       blockWritesOutsideWorkingDirectories: true,
+      ...(options.attachmentsDir ? { additionalDirectories: [options.attachmentsDir] } : {}),
     },
     sandbox: {
       enabled: true,

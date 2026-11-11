@@ -19,6 +19,8 @@ export interface OpMap {
   "workItem.attachPr": Def<typeof operations.workItemAttachPr>;
   "workItem.previewAttach": Def<typeof operations.workItemPreviewAttach>;
   "github.openPullRequests": Def<typeof operations.githubOpenPullRequests>;
+  "workItem.attachment.list": Def<typeof operations.workItemAttachmentList>;
+  "workItem.attachment.remove": Def<typeof operations.workItemAttachmentRemove>;
   "spec.approve": Def<typeof operations.specApprove>;
   "spec.requestChanges": Def<typeof operations.specRequestChanges>;
   "review.merge": Def<typeof operations.reviewMerge>;
@@ -60,6 +62,8 @@ export const APP_OPERATIONS = [
   "workItem.attachPr",
   "workItem.previewAttach",
   "github.openPullRequests",
+  "workItem.attachment.list",
+  "workItem.attachment.remove",
   "spec.approve",
   "spec.requestChanges",
   "review.merge",
@@ -94,12 +98,19 @@ export const APP_READ_OPERATIONS = [
   "workItem.timeline",
   "workItem.previewAttach",
   "github.openPullRequests",
+  "workItem.attachment.list",
   "project.list",
   "github.repos",
   "setup.status",
   "runner.list",
 ] as const satisfies readonly OpName[];
 export type ReadOpName = (typeof APP_READ_OPERATIONS)[number];
+
+/**
+ * Reads that call GitHub (seconds, not milliseconds). They go in a request of their own: a batch
+ * answers when its slowest read does, and these would hold up the page's database reads.
+ */
+export const SLOW_READS: ReadonlySet<ReadOpName> = new Set(["setup.status", "github.repos"]);
 
 /** JSON as it crosses the server-function boundary (operation outputs are plain JSON). */
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
@@ -123,6 +134,7 @@ export class OpError extends Error {
 
 export type WorkItemDetail = OpOutput<"workItem.get">;
 export type Inbox = OpOutput<"inbox.list">;
+export type Attachment = OpOutput<"workItem.attachment.list">["attachments"][number];
 export type TimelineEntry = OpOutput<"workItem.timeline">["entries"][number];
 export type Project = OpOutput<"project.list">["projects"][number];
 export type SetupStatus = OpOutput<"setup.status">;
