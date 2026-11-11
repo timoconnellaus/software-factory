@@ -1,7 +1,15 @@
 // A fake GitHub App for tests and local dev (sf-engine uses it when GITHUB_FAKE=1). State lives in
 // D1 (one JSON row per repo, in a table it creates), so a Workflow and a test see the same repo.
 // Commits form a parent chain so fast-forwards are checked like the real thing.
-import type { ChangedFile, CheckRunInfo, GitHubService, RepoGuards, RepoRef } from "../services.ts";
+import type {
+  ChangedFile,
+  CheckRunInfo,
+  GitHubService,
+  InstallationInfo,
+  InstallationRepo,
+  RepoGuards,
+  RepoRef,
+} from "../services.ts";
 
 type Touch = string | { path: string; status: ChangedFile["status"] };
 
@@ -23,6 +31,21 @@ interface RepoState {
 }
 
 const TABLE = "fake_github_repos";
+const INSTALLATIONS = "fake_github_installations";
+
+/** An installation in the fake: what GitHub would tell the App, its repos, and who can see it. */
+export interface FakeInstallation {
+  installationId: string;
+  account: { login: string; type: "User" | "Organization" };
+  repositorySelection?: "all" | "selected";
+  suspended?: boolean;
+  repos?: InstallationRepo[];
+  /** GitHub logins (besides a User account's own login) whose `/user/installations` lists it. */
+  members?: string[];
+}
+
+/** The user token the fake accepts for `login` in `userInstallationIds`. */
+export const fakeUserToken = (login: string) => `ghu_fake_${login}`;
 
 export interface FakeGitHub extends GitHubService {
   /** Simulates a runner's push: a new commit on `branch` whose parent is the branch head (or `from`). */
@@ -38,6 +61,10 @@ export interface FakeGitHub extends GitHubService {
     repo: Pick<RepoRef, "owner" | "repo">,
     installationId: string | null,
   ): Promise<void>;
+  /** Creates or replaces an installation of the App (as `getInstallation` etc. will report it). */
+  putInstallation(installation: FakeInstallation): Promise<void>;
+  /** Removes an installation: GitHub then answers 404 for it. */
+  dropInstallation(installationId: string): Promise<void>;
 }
 
 export const FAKE_APP = { id: "1000", slug: "software-factory-test" } as const;
@@ -75,6 +102,27 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       pulls: [],
       tokens: 0,
     };
+  };
+  let readyInstallations: Promise<unknown> | null = null;
+  const loadInstallation = async (id: string): Promise<FakeInstallation | null> => {
+    readyInstallations ??= d1
+      .prepare(
+        `CREATE TABLE IF NOT EXISTS ${INSTALLATIONS} (id TEXT PRIMARY KEY, state TEXT NOT NULL)`,
+      )
+      .run();
+    await readyInstallations;
+    const row = await d1
+      .prepare(`SELECT state FROM ${INSTALLATIONS} WHERE id = ?`)
+      .bind(id)
+      .first<{ state: string }>();
+    return row ? (JSON.parse(row.state) as FakeInstallation) : null;
+  };
+  const allInstallations = async (): Promise<FakeInstallation[]> => {
+    await loadInstallation("0");
+    const { results } = await d1.prepare(`SELECT state FROM ${INSTALLATIONS}`).all<{
+      state: string;
+    }>();
+    return results.map((r) => JSON.parse(r.state) as FakeInstallation);
   };
   const save = async (r: RepoRef, state: RepoState) => {
     await d1
@@ -242,6 +290,51 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const state = await load(ref);
       state.installation = installationId;
       await save(ref, state);
+    },
+    async getInstallation(id) {
+      const i = await loadInstallation(id);
+      if (!i) return null;
+      const info: InstallationInfo = {
+        installationId: i.installationId,
+        account: i.account,
+        repositorySelection: i.repositorySelection ?? "selected",
+        suspended: i.suspended ?? false,
+      };
+      return info;
+    },
+    async listInstallationRepos(id) {
+      const i = await loadInstallation(id);
+      if (!i) throw new Error(`GitHub installation token: HTTP 404 (installation ${id})`);
+      return i.repos ?? [];
+    },
+    async getInstallationRepo(id, repoId) {
+      const i = await loadInstallation(id);
+      return i?.repos?.find((r) => r.id === repoId) ?? null;
+    },
+    async userInstallationIds(token) {
+      const login = token.startsWith("ghu_fake_") ? token.slice("ghu_fake_".length) : null;
+      if (!login) throw new Error("GitHub /user/installations: HTTP 401 Bad credentials");
+      const lower = login.toLowerCase();
+      return (await allInstallations())
+        .filter(
+          (i) =>
+            (i.account.type === "User" && i.account.login.toLowerCase() === lower) ||
+            (i.members ?? []).some((m) => m.toLowerCase() === lower),
+        )
+        .map((i) => i.installationId);
+    },
+    async putInstallation(installation) {
+      await loadInstallation("0");
+      await d1
+        .prepare(
+          `INSERT INTO ${INSTALLATIONS} (id, state) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET state = excluded.state`,
+        )
+        .bind(installation.installationId, JSON.stringify(installation))
+        .run();
+    },
+    async dropInstallation(id) {
+      await loadInstallation("0");
+      await d1.prepare(`DELETE FROM ${INSTALLATIONS} WHERE id = ?`).bind(id).run();
     },
     async repoGuards(r) {
       return (await load(r)).guards ?? { protection: null, rulesets: [] };

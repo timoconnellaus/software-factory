@@ -59,6 +59,24 @@ export interface RepoGuards {
   }[];
 }
 
+/** An installation of the factory's App, as GitHub reports it to the App (ADR 0055). */
+export interface InstallationInfo {
+  installationId: string;
+  account: { login: string; type: "User" | "Organization" };
+  repositorySelection: "all" | "selected";
+  suspended: boolean;
+}
+
+/** A repository an installation can reach. */
+export interface InstallationRepo {
+  /** GitHub's repo id: stable across renames and transfers. */
+  id: number;
+  owner: string;
+  name: string;
+  private: boolean;
+  defaultBranch: string;
+}
+
 /** The GitHub App, acting as the factory (ADR 0025, 0033). Never a user token. */
 export interface GitHubService {
   /** The App itself: its id (branch protection pins `factory/verify` to it) and slug (`<slug>[bot]`). */
@@ -106,6 +124,18 @@ export interface GitHubService {
     owner: string,
     repo: string,
   ): Promise<{ installationId: string; reason: null } | { installationId: null; reason: string }>;
+  /** An installation of the App, asked as the App (its JWT). Null when GitHub doesn't know it. */
+  getInstallation(installationId: string): Promise<InstallationInfo | null>;
+  /** Every repository the installation can reach (installation token, paged). */
+  listInstallationRepos(installationId: string): Promise<InstallationRepo[]>;
+  /** One repository by id, only if the installation can reach it; null otherwise. */
+  getInstallationRepo(installationId: string, repoId: number): Promise<InstallationRepo | null>;
+  /**
+   * The installation ids a person can see, asked with their own GitHub user token (`GET
+   * /user/installations`). Used only to prove a person may connect an installation (ADR 0055); the
+   * token is never stored and never used for repo access.
+   */
+  userInstallationIds(userToken: string): Promise<string[]>;
   /** Branch protection and rulesets on `branch` (project onboarding, spec 04). */
   repoGuards(repo: RepoRef, branch: string): Promise<RepoGuards>;
   /** Merges the PR if its head is still `sha`. */

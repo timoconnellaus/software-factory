@@ -7,7 +7,7 @@ import {
   invoke,
   OperationError,
 } from "../src/index.ts";
-import { fakeServices } from "../src/testing/index.ts";
+import { fakeServices, fakeUserToken } from "../src/testing/index.ts";
 
 export const services = fakeServices(env.DB);
 export const delivered: string[][] = [];
@@ -94,16 +94,11 @@ export async function world(policy: unknown = POLICY) {
   ]);
   const human: Actor = { type: "human", id: userId };
   const repoName = uid("repo-");
-  const project = await ok<{ id: string }>(
-    "project.create",
-    {
-      orgId,
-      name: "Software factory",
-      repoOwner: "timoconnellaus",
-      repoName,
-      githubInstallationId: "42",
-    },
+  const { installationId, project } = await onboard(
     human,
+    orgId,
+    { owner: "timoconnellaus", name: repoName },
+    "Software factory",
   );
   const policySha = sha40(uid("p"));
   if (policy !== null) {
@@ -118,8 +113,66 @@ export async function world(policy: unknown = POLICY) {
       human,
     );
   }
-  const repo = { installationId: "42", owner: "timoconnellaus", repo: repoName };
+  const repo = { installationId, owner: "timoconnellaus", repo: repoName };
   return { userId, orgId, human, projectId: project.id, policySha, repo };
+}
+
+let repoIds = 1000;
+/** A fresh numeric id (GitHub installation and repo ids are numbers). */
+export const numericId = () => `${Date.now() % 1_000_000_000}${repoIds++}`;
+
+/**
+ * Onboards a repo the way Setup does (ADR 0055): an installation of the App on an organization
+ * account the user belongs to, connected through github.connectStart → connectInstallation, then
+ * project.create from the repo picker's ids.
+ */
+export async function onboard(
+  human: Actor,
+  orgId: string,
+  repo: { owner: string; name: string; defaultBranch?: string },
+  name = repo.name,
+) {
+  const user = await first<{ github_login: string }>(
+    "SELECT github_login FROM core_user WHERE id = ?",
+    human.id,
+  );
+  const installationId = numericId();
+  const repoId = Number(numericId());
+  await services.github.putInstallation({
+    installationId,
+    account: { login: repo.owner, type: "Organization" },
+    repos: [
+      {
+        id: repoId,
+        owner: repo.owner,
+        name: repo.name,
+        private: false,
+        defaultBranch: repo.defaultBranch ?? "main",
+      },
+    ],
+    members: [user.github_login],
+  });
+  const start = await ok<{ state: string }>("github.connectStart", { orgId }, human);
+  const connected = await ok<{ installation: { id: string } }>(
+    "github.connectInstallation",
+    {
+      installationId,
+      state: start.state,
+      userAccessToken: fakeUserToken(user.github_login),
+    },
+    human,
+  );
+  const project = await ok<{ id: string }>(
+    "project.create",
+    {
+      orgId,
+      installationRecordId: connected.installation.id,
+      repoId,
+      name,
+    },
+    human,
+  );
+  return { installationId, installationRecordId: connected.installation.id, repoId, project };
 }
 
 export async function newItem(w: Awaited<ReturnType<typeof world>>, title = "Add dark mode") {
