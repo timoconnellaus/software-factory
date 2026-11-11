@@ -21,7 +21,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | J | — | 0270–0279 | The factory sets Claude's permission mode and sandbox (`harness-permission-mode`): incident 2026-11-11 #6. Used: ADR 0270, no migrations | merged |
 | K | 0070–0079 | 0280–0289 | Protect `main` (`protect-main-ruleset`): the default-branch ruleset generator, the Setup step, drift detection. Used: migration 0070; ADR 0280 | merged |
 | N | 0090–0099 | 0310–0319 | Work item attachments (`wi-1-attachments`, work item 1): R2 blobs, `workItem.attachment.*`, upload and serving routes, the runner channel's attachment calls, the app's Attachments section. Used: migration 0090; ADR 0310 | merged |
-| P | 0100–0109 | 0330–0339 | The merge queue (`merge-queue`): spec 06, `core_merge_queue`, `mergeQueue.*`, Workflow v4. Used: migration 0100; ADR 0330 | in review |
+| P | 0100–0109 | 0330–0339 | The merge queue (`merge-queue`): spec 06, `core_merge_queue`, `mergeQueue.*`, Workflow v4. Used: migration 0100; ADR 0330 | merged |
 | O | — | 0320–0329 | Unmergeable factory PRs (`stuck-work-item`): incident 2026-11-11 #7. Branches merge the default branch before build, `conflict` is its own verify state, missing CI asks a person instead of retrying the build | merged |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
