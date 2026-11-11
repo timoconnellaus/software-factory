@@ -1,0 +1,81 @@
+// The runner's configuration and its key (ADR 0016). The key is the runner's only secret: it signs
+// every channel call. It lives in a 0600 file in a 0700 directory, and the harness's settings deny
+// reading it. Paths follow XDG on every platform so the launchd service and a shell agree.
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { CAPABILITIES, type Capability, JOB_STAGES } from "@software-factory/runner-contract";
+import { z } from "zod";
+
+export const DEFAULT_BASE_URL = "https://sf-engine.zerobsai.com";
+
+export const configSchema = z.object({
+  baseUrl: z.string().url().default(DEFAULT_BASE_URL),
+  runnerId: z.string().regex(/^r_[a-z0-9]{6,32}$/),
+  key: z.string().min(20),
+  name: z.string().max(80).optional(),
+  maxConcurrent: z.number().int().min(1).max(16).default(2),
+  heartbeatMs: z.number().int().min(2_000).max(120_000).default(20_000),
+  /** Capabilities to declare (default: everything the adapter supports). */
+  capabilities: z.array(z.enum(CAPABILITIES)).optional(),
+  /** Claude permission mode per stage (default: `dontAsk` everywhere). */
+  permissionMode: z
+    .partialRecord(z.enum(JOB_STAGES), z.enum(["dontAsk", "acceptEdits", "auto", "plan"]))
+    .optional(),
+  identity: z.object({ name: z.string(), email: z.string() }).optional(),
+  orcaBin: z.string().optional(),
+  /** Test only: clone/push URL per canonical GitHub URL. */
+  repoUrlMap: z.record(z.string(), z.string()).optional(),
+});
+export type RunnerConfig = z.infer<typeof configSchema>;
+
+export interface Paths {
+  configFile: string;
+  configDir: string;
+  stateDir: string;
+  reposDir: string;
+  runsDir: string;
+  logDir: string;
+}
+
+export function paths(env: NodeJS.ProcessEnv = process.env): Paths {
+  const home = env.HOME ?? homedir();
+  const configDir = join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "software-factory");
+  const stateDir = join(
+    env.XDG_STATE_HOME ?? join(home, ".local", "state"),
+    "software-factory",
+    "runner",
+  );
+  return {
+    configFile: env.SF_RUNNER_CONFIG ?? join(configDir, "runner.json"),
+    configDir,
+    stateDir,
+    reposDir: join(stateDir, "repos"),
+    runsDir: join(stateDir, "runs"),
+    logDir: join(home, "Library", "Logs", "software-factory"),
+  };
+}
+
+export async function loadConfig(file: string): Promise<RunnerConfig | null> {
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch {
+    return null;
+  }
+  return configSchema.parse(JSON.parse(text));
+}
+
+export async function saveConfig(file: string, config: RunnerConfig): Promise<void> {
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  await chmod(dirname(file), 0o700).catch(() => {});
+  await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  await chmod(file, 0o600);
+}
+
+/** The config without its key, for `status`. */
+export function redacted(config: RunnerConfig): Omit<RunnerConfig, "key"> & { key: string } {
+  return { ...config, key: `${config.key.slice(0, 4)}…(redacted)` };
+}
+
+export type { Capability };

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The Claude Code harness adapter and its capability manifest.",
+  "description": "The Claude Code harness adapter: per-run settings projection, the credential-free environment, the stage permission profiles, and transcript and stream-json parsing.",
   "exports": {
     ".": "./src/index.ts"
   },
@@ -11,10 +11,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@software-factory/runner-contract": "workspace:*"
+  },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "1.5.1",
-    "@cloudflare/workers-types": "5.20261104.1",
     "@software-factory/config": "workspace:*",
+    "@types/node": "24.19.2",
     "typescript": "6.0.3",
     "vitest": "5.1.0"
   }

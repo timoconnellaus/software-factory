@@ -8,3 +8,4 @@ dist/
 playwright-report/
 test-results/
 WIP.md
+.wrangler-state/
