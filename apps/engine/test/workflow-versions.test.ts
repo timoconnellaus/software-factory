@@ -35,9 +35,23 @@ const V3_STEPS = [
   "verify #{b}: no ci",
 ].map((name) => `${name.replaceAll("{", "$" + "{")}`);
 
+// The steps v4 adds (ADR 0330): the merge queue. `{p}` is `merge #{b}: <queue|auto-merge|…>`.
+const V4_STEPS = [
+  "{p}: enqueue",
+  "{p}: position{sfx}",
+  "{p}: turn{sfx}",
+  "{p}: update{sfx}",
+  "{p}: update wait{sfx}",
+  "{p}: land",
+  "{p}: leave",
+  "merge #{b}: {tag}",
+].map((name) => `${name.replaceAll("{", "$" + "{")}`);
+// The tags v4 builds `{p}` from: frozen like the step names.
+const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
+
 describe("Workflow versions", () => {
-  it("starts new instances on version 3 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(3);
+  it("starts new instances on version 4 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(4);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -50,7 +64,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(3);
+    expect(row.workflow_version).toBe(4);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -83,6 +97,9 @@ describe("Workflow versions", () => {
     for (const name of V1_STEPS) expect(source, name).toContain(`"${name}"`);
     for (const name of V2_STEPS) expect(source, name).toContain(name);
     for (const name of V3_STEPS) expect(source, name).toContain(name);
+    for (const name of [...V4_STEPS, ...V4_TAGS]) expect(source, name).toContain(name);
+    // v3 instances still dispatch to the same flow, with v4's merge queue switched off.
+    expect(source).toContain("return flow.runV1(3);");
     // v2 instances still dispatch to the same flow, with v3's extra steps switched off.
     expect(source).toContain("return flow.runV1(2);");
     // v1 instances still dispatch to the same flow, with v2's extra steps switched off.

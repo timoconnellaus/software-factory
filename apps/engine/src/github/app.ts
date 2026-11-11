@@ -366,6 +366,36 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         headSha: pr.head?.sha ?? null,
       };
     },
+    async compareCommits(repo, base, head) {
+      const r = await api(
+        repo,
+        "GET",
+        `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`,
+      );
+      if (r.status !== 200) fail(`compare ${base}...${head}`, r);
+      const c = r.json as { ahead_by?: number; behind_by?: number };
+      return { aheadBy: c.ahead_by ?? 0, behindBy: c.behind_by ?? 0 };
+    },
+    async commitParents(repo, sha) {
+      const r = await api(repo, "GET", `/commits/${encodeURIComponent(sha)}`);
+      if (r.status !== 200) fail(`commit ${sha}`, r);
+      return ((r.json as { parents?: { sha: string }[] }).parents ?? []).map((p) => p.sha);
+    },
+    async updatePullRequestBranch(repo, { number, expectedHeadSha }) {
+      const r = await api(repo, "PUT", `/pulls/${number}/update-branch`, {
+        expected_head_sha: expectedHeadSha,
+      });
+      if (r.status === 202) return { status: "requested" };
+      const reason = (r.json as { message?: string })?.message ?? `HTTP ${r.status}`;
+      // 422: a merge conflict, or the head moved past expected_head_sha.
+      if (r.status === 422) {
+        return /conflict/i.test(reason)
+          ? { status: "conflict", reason }
+          : { status: "refused", reason };
+      }
+      if ([403, 405, 409].includes(r.status)) return { status: "refused", reason };
+      return fail(`update branch #${number}`, r);
+    },
     async mergePullRequest(repo, { number, sha, method }) {
       const r = await api(repo, "PUT", `/pulls/${number}/merge`, { sha, merge_method: method });
       if (r.status === 200) return { merged: true, sha: (r.json as { sha: string }).sha };
