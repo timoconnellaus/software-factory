@@ -27,13 +27,19 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   checks the signature, dedupes deliveries and maps them to operations: `verify.refresh` on PR and
   CI events, `push.observe` on pushes (branch confinement, the default-branch policy mirror),
   `github.installation` (ADR 0231), which keeps the org's **installation** records current (ADR
-  0055).
+  0055), and `protection.observe` on `repository_ruleset` / `branch_protection_rule` (ADR 0280).
 - **Onboarding** never asks for an id the factory can fetch (ADR 0055, 0056): Connect GitHub goes
   through GitHub's install flow back to sf-app's `/integrations/github/setup`
   (`github.connectInstallation` verifies the single-use state and the installation as the App), a
   project is picked from the repos an installation reaches (`github.repos`, `project.create`), the
   policy is read on create and on every default-branch push, and a runner connects by device login
   (`/runner/v1/device/*`, approved at `/runners/connect`). `setup.status` is the Setup checklist.
+- **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
+  protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
+  `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`
+  compare GitHub's rulesets and the rules in force on the branch with it. Verdicts live in
+  `core_project_protection`; drift (a red after an ok, from a webhook or the daily cron re-check)
+  notifies the org's admins and shows in the inbox. A policy may hold builds while it's red.
 - **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
   0231). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and

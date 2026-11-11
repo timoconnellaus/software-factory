@@ -313,7 +313,7 @@ export function verifyProtection(
 
   if (guards.protection) {
     warnings.push(
-      `classic branch protection is also on ${branch}; once the ruleset passes you can remove it (Settings → Branches)`,
+      `classic branch protection is also on ${branch}: the factory checks rulesets only, so import the ruleset; once it passes you can delete the classic rule (Settings → Branches)`,
     );
   }
   return { ok: problems.length === 0, problems, warnings, confined };

@@ -14,5 +14,8 @@ and then records the delivery with `connector.receive`.
 | `check_run` rerequested on `factory/verify` | `verify.refresh` |
 | `push` | `push.observe` (branch confinement for the App's pushes; `.factory/policy.json` mirror on the default branch) |
 | `installation`, `installation_repositories` | `github.installation` |
+| `repository_ruleset`, `branch_protection_rule` | `protection.observe` (re-check the default branch's protection: drift, ADR 0280) |
 
-`APP_REQUIREMENTS` lists the events and permissions the App needs.
+`APP_REQUIREMENTS` lists the events and permissions the App needs. `administration` stays `read`:
+write would let the App delete repositories, so the factory verifies protection and a person applies
+it (ADR 0280).
