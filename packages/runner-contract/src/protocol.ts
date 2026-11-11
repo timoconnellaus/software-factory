@@ -12,6 +12,7 @@
 //   release     rel:<job>
 //   attachments att:<job>:<uuid>               NOT stored: the job's work item's attachments (list)
 //   attachment  att:<job>:<uuid>               NOT stored: one attachment's bytes (ADR 0310)
+//   planning    plan:<job>:<uuid>              NOT stored: a planning operation (ADR 0340)
 //
 // Every job-scoped call carries the job's fencing token; after a takeover or a lost lease the cloud
 // answers 409 with code `fenced`, and the host must stop the run (ADR 0035).
@@ -26,6 +27,7 @@ import type {
   EventsRequest,
   HeartbeatRequest,
   HeartbeatResponse,
+  PlanningCallRequest,
   ReleaseRequest,
   TokenResponse,
 } from "./wire.ts";
@@ -40,6 +42,7 @@ export const PATHS = {
   release: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/release`,
   attachments: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/attachments`,
   attachment: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/attachment`,
+  planning: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/planning`,
 } as const;
 
 /**
@@ -64,6 +67,7 @@ export const JOB_CALLS = [
   "release",
   "attachments",
   "attachment",
+  "planning",
 ] as const;
 export type JobCall = (typeof JOB_CALLS)[number];
 
@@ -79,7 +83,7 @@ export function parseJobPath(path: string): { jobId: string; call: JobCall } | n
 /** Calls whose responses the cloud never stores (a secret, or a file's bytes). */
 export function isUnstoredPath(path: string): boolean {
   const call = parseJobPath(path)?.call;
-  return call === "token" || call === "attachments" || call === "attachment";
+  return call === "token" || call === "attachments" || call === "attachment" || call === "planning";
 }
 
 /** A refused channel call. `code` is the cloud's refusal code (`fenced`, `killed`, …). */
@@ -112,6 +116,11 @@ export interface ControlPlaneClient {
     fencingToken: number,
     attachmentId: string,
   ): Promise<AttachmentResponse>;
+  /**
+   * A planning job's operation (ADR 0340), relayed for its harness. Answers the operation's output;
+   * a refusal throws ChannelCallError (409 `fenced` means the session is over).
+   */
+  planning?(jobId: string, body: PlanningCallRequest): Promise<unknown>;
 }
 
 /** Content-hash id for an artifact, so uploading it twice is a no-op. */
@@ -196,5 +205,8 @@ export function httpControlPlane(config: {
         fencingToken,
         attachmentId,
       }),
+    // Not stored: a wait or news read moves the session's cursor, and a write refuses a repeat.
+    planning: (jobId, body) =>
+      call(PATHS.planning(jobId), `plan:${jobId}:${crypto.randomUUID()}`, body),
   };
 }

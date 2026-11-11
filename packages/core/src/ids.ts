@@ -18,6 +18,8 @@ export const ID_PREFIXES = {
   deviceCode: "dev",
   attachment: "att",
   mergeQueueEntry: "mq",
+  planningSession: "ps",
+  planningMessage: "pm",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

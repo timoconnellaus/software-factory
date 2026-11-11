@@ -13,6 +13,7 @@ import {
   toRefusal,
 } from "@software-factory/core";
 import { invokeDeps } from "./deps.ts";
+import { planningHub } from "./planning-hub.ts";
 
 /** `ms` is the time spent inside the engine, so the caller can tell it apart from the hop. */
 export type EngineInvokeResult<O = unknown> =
@@ -44,6 +45,24 @@ export class EngineApi extends WorkerEntrypoint<Env> {
       if (isOperationError(error)) return { ok: false, error: toRefusal(error), ms: ms() };
       throw error;
     }
+  }
+
+  /**
+   * A work item's planning changes as Server-Sent Events (spec 20, ADR 0340), for the Planning tab:
+   * one `changed` event per change, then the app re-reads `planning.get`. Only for a person who may
+   * read the planning view (checked with `planning.get`).
+   */
+  async planningStream(
+    workItemId: string,
+    options: EngineInvokeOptions,
+  ): Promise<{ ok: true; stream: ReadableStream<Uint8Array> } | { ok: false; error: Refusal }> {
+    try {
+      await invoke(invokeDeps(this.env), "planning.get", { workItemId }, options);
+    } catch (error) {
+      if (isOperationError(error)) return { ok: false, error: toRefusal(error) };
+      throw error;
+    }
+    return { ok: true, stream: await planningHub(this.env, workItemId).stream() };
   }
 
   /** Every operation with its description, risk, actors and permission (for help and MCP). */

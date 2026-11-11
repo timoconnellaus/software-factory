@@ -58,9 +58,15 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #28 | Attach an outside PR ([spec 05](specs/05-attach-a-pull-request.md), [ADR 0290](adr/0290-an-outside-pr-is-attached-and-verified.md)): `workItem.attachPr` gives a local session's or a person's PR a work item of kind `attached` (migration 0080); the Workflow's `runAttached` (kind-gated, no version bump) triages it, skips spec and build, verifies the PR's own head and opens the merge gate, never pushing to its branch; a push re-verifies and withdraws a pending merge, closing the PR cancels the item; the unattached `factory/verify` links to sf-app's `/attach`, and New work lists open unattached PRs. Merged with `factory/verify` red as the **last** bootstrap exception (it can't attach itself); every PR after it is attached instead. Merged with `factory/verify` red, the last bootstrap exception: it is what lets outside PRs pass `factory/verify` (the default-branch ruleset was switched off for #30 and #28, then back on) |
 
 ## In flight
-- **Planning design** (`planning-process`, block I): planning rebuilt as a live session on a runner,
+- **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
-  `.kim/plans/2026-11-11-factory-planning.md`. Next build: spec 20 (M1, the loop).
+  `.kim/plans/2026-11-11-factory-planning.md`.
+- **Spec 20, planning M1** (`planning-loop`, block Q, [ADR 0340](adr/0340-how-the-planning-loop-is-wired.md)),
+  landing as four PRs in order: (1) the planning log, sessions, chat, presence, the kim question
+  model, heavy/light pools and the planning operations, the channel's planning call and the
+  PlanningHub (migration 0110; inert until (3)); (2) the runner host's relay and pools, the
+  harness's planning MCP server and hooks, resumable sessions in runner-orca; (3) Workflow v5,
+  whose spec stage is the planning session; (4) the Planning tab, layout A.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

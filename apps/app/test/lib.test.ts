@@ -177,6 +177,7 @@ describe("the inbox", () => {
       ],
       running: [],
       runners: [],
+      planning: [],
       wipHolds: [{ projectId: "p2", waitingBuilds: 2 }],
       protection: [],
     };
@@ -195,6 +196,7 @@ describe("the inbox", () => {
       name: "m5",
       inUse: 0,
       max: 2,
+      light: null,
       rateLimitedUntil: null,
       lastSeenAt: null,
     };

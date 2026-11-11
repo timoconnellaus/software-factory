@@ -129,6 +129,17 @@ and always resumes on the same runner unless a person moves it; a move rebuilds 
 **planning record** (spec versions, questions, answers, chat, artifacts).
 _Avoid_: interview, run (a planning session spans several jobs), chat
 
+**Planning log**
+Every answer, revised answer, chat message, presence change and agent change on a work item's
+planning, in order (`core_planning_events`, ADR 0340). Its id is the **cursor**: a session's news is
+the log after the last event it was given, minus its own changes.
+_Avoid_: event stream, history
+
+**Presence**
+Who has a work item's Planning view open, from the app's heartbeat. The planning agent sees it in
+its news; a session yields only after nobody has been there for 5 minutes (ADR 0301).
+_Avoid_: online, attached (that is the session's state)
+
 **Provenance tag**
 The source of a statement in the living spec: `[Qn]`, `[request]`, `[repo]`, `[parent]` or
 `[assumption]` (ADR 0302). Always visible at the spec gate.
