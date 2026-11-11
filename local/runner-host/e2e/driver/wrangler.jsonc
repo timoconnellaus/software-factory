@@ -1,0 +1,16 @@
+// e2e only: a driver Worker run next to sf-engine under `wrangler dev` (see ../README in
+// local/runner-host). It seeds a world, invokes operations through EngineApi as a person, mirrors
+// real git pushes into the engine's fake GitHub, and proxies the runner channel to sf-engine.
+{
+  "name": "sf-e2e-driver",
+  "main": "driver.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "software-factory", "database_id": "local-e2e" }
+  ],
+  "services": [
+    { "binding": "ENGINE", "service": "sf-engine" },
+    { "binding": "API", "service": "sf-engine", "entrypoint": "EngineApi" }
+  ]
+}

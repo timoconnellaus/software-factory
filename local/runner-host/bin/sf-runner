@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the runner host's TypeScript directly on Node ≥ 24. Transform mode (not strip-only) because
+# the workspace packages use TypeScript parameter properties.
+here=$(cd "$(dirname "$0")/.." && pwd -P)
+exec "${SF_RUNNER_NODE:-node}" --experimental-transform-types --no-warnings "$here/src/cli.ts" "$@"

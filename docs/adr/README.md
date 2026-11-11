@@ -60,3 +60,4 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0054](0054-factory-policy-file.md) | `.factory/policy.json`: the project's autonomy policy file |
 | [0100](0100-runner-contract.md) | The runner contract (promoted from the spike) |
 | [0110](0110-work-item-workflow-and-gate.md) | A Workflow per work item, gated through the operation pipeline (promoted from the spike) |
+| [0250](0250-runner-host-pushes-and-harness-projection.md) | The runner host pushes; the harness gets a projected settings file and no credentials |

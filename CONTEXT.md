@@ -175,8 +175,9 @@ The code that implements the runner contract for one kind of runner: `runner-orc
 _Avoid_: driver, plugin, integration
 
 **Runner host**
-The generic daemon (`local/runner-host`) on a runner's machine. It connects outbound over the
-signed channel and loads runner adapters.
+The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
+outbound over the signed channel, loads runner adapters, keeps its own clone of each repo, and is the
+only thing that pushes: the run branch, with the job token (ADR 0250).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
 **Capability**

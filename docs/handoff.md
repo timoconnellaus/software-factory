@@ -43,7 +43,11 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #13 | V1 step 1, core + engine: `core_*` schema, operations + `invoke()` + gate, the work-item Workflow, the signed runner channel, GitHub App job tokens. ADRs 0050–0054; spike ADRs 0100 and 0110 promoted |
 
 ## In flight
-- Nothing recorded. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
+- V1 step 3, the runner (`v1-runner`): `local/runner-host` (`sf-runner`), `packages/runner-orca`,
+  `packages/harness-claude`, ADR 0250. Verified end to end against a local `wrangler dev` engine (fake
+  GitHub). Not yet run against the deployed engine: that needs a registered runner (the app's setup
+  screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`.
+- Nothing else recorded. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
 
 ## Contracts for the V1 sessions (from V1-1, core + engine)
@@ -158,4 +162,6 @@ Still open:
   `enforce_admins` on (spec 04).
 - The Mac mini set up as the first runner (Orca + Claude Code signed in), with no `gh`, SSH agent or
   cloud credentials visible to the harness (ADR 0033).
+- Pair the M5's runner once the app can register one: `pbpaste | local/runner-host/bin/sf-runner pair
+  --runner-id r_… --key-stdin` (the launchd service is installed and waits, unpaired, until then).
 - VAPID keys for web push as Worker secrets (spec 15).

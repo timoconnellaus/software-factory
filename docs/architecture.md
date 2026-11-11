@@ -27,7 +27,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   (ADR 0014–0016). A **runner host** on each machine loads **runner adapters** (`runner-orca` first),
   which drive **harnesses** (Claude Code first). Runners are owner-only unless shared through an
   allowlist (ADR 0038), each run pushes its own branch under a fencing token (ADR 0035), and the
-  harness runs without the owner's git or cloud credentials (ADR 0033).
+  harness runs without the owner's git or cloud credentials (ADR 0033): the runner host, not the
+  harness, pushes the run branch with the job token (ADR 0250).
 - **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
   without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
   0037).
@@ -44,13 +45,14 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
 | `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |
-| `packages/harness-claude` | Claude Code harness adapter |
+| `packages/harness-claude` | The Claude Code harness: the per-run `.claude/settings.local.json` (stage permission profiles, deny rules, a credential-free environment), the run's git config, transcript and stream-json parsing |
+| `packages/runner-orca` | The Orca runner adapter: an Orca worktree on the run branch, Claude Code in an Orca terminal, events from `orca worktree ps`, takeover in Orca (ADR 0100) |
 | `packages/connector-webhook` | Inbound webhook connector: verification and dedupe |
 | `packages/config` | Shared tsconfig, Biome preset, Vitest preset |
-| `local/runner-host` | The runner host daemon (Node, on a person's machine) |
+| `local/runner-host` | The runner host daemon `sf-runner` (Node, on a person's machine): heartbeat, claim, the job lifecycle, the host's own clone, the run-branch push with the job token (ADR 0250), launchd service |
 | `presets/` | The shipped autonomy policies, project templates and the floor (directory name kept) |
 | `evals/` | Eval suites for benchmarking factory configs |
 | `spikes/` | Throwaway spikes. Not in the workspace or Biome |
 
-`packages/runner-orca` arrives when the runner spike is promoted (spec 03). Build specs are in
-[`specs/`](specs/).
+`packages/runner-local` (a headless `claude -p` runner) stays a sketch in `spikes/runner-orca`. Build
+specs are in [`specs/`](specs/).
