@@ -1,0 +1,34 @@
+// Spike: the factory engine's control plane (operations, gate, audit, outbox, one Workflow per work
+// item) plus a plain-HTML inbox. Local only (`wrangler dev`); no account or resource ids committed.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "factory-spike-workflow-gate",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "factory",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // One instance per work item. Its id is derived from the intake event, so a redelivered event
+  // starts nothing new (ADR 0110).
+  "workflows": [
+    {
+      "binding": "WORK_ITEM_WORKFLOW",
+      "name": "factory-work-item",
+      "class_name": "WorkItemWorkflow"
+    }
+  ],
+  // Retries outbox rows whose post-commit delivery failed (CRM ADR 0171).
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    // The global floor: JSON, actor|"*" → risk|"*" → "auto"|"review"|"deny". It can only tighten
+    // the preset; anything malformed refuses every call. Empty = no floor.
+    "APPROVAL_FLOOR": ""
+  }
+}
