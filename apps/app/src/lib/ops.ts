@@ -85,6 +85,8 @@ export const APP_READ_OPERATIONS = [
   "workItem.list",
   "workItem.timeline",
   "project.list",
+  "github.repos",
+  "setup.status",
   "runner.list",
 ] as const satisfies readonly OpName[];
 export type ReadOpName = (typeof APP_READ_OPERATIONS)[number];

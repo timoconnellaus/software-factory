@@ -14,14 +14,14 @@ import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@software-factory/ui/components/tabs";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Planning } from "#/components/planning";
 import { ReviewPacket } from "#/components/review-packet";
 import { Timeline } from "#/components/timeline";
-import { ago, capitalise, duration, STAGE_LABEL } from "#/lib/format";
+import { ago, capitalise, duration, errorMessage, STAGE_LABEL } from "#/lib/format";
 import { op } from "#/lib/op";
 import { OpError, type WorkItemDetail } from "#/lib/ops";
 import { parsePacket } from "#/lib/packet";
@@ -35,49 +35,52 @@ type Tab = (typeof TABS)[number];
 export const Route = createFileRoute("/_app/work/$id/")({
   validateSearch: (s: Record<string, unknown>): { tab?: Tab } =>
     TABS.includes(s.tab as Tab) ? { tab: s.tab as Tab } : {},
-  loader: ({ context, params }) =>
+  // Everything the page renders, in one request: the item (with its spec, questions, gates, runs
+  // and packet), its timeline, and the runners (for runner names).
+  loader: ({ context: { queryClient }, params }) =>
     Promise.all([
-      context.queryClient.ensureQueryData(workItemQuery(params.id)),
-      context.queryClient.ensureQueryData(timelineQuery(params.id)),
-    ]).catch(() => null),
+      queryClient.ensureQueryData(workItemQuery(params.id)),
+      queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
+      queryClient.ensureQueryData(runnersQuery()).catch(() => null),
+    ]),
+  pendingComponent: () => (
+    <Page>
+      <Skeleton className="h-6 w-60" />
+      <Skeleton className="h-10 w-full" />
+      <Skeleton className="h-64 w-full" />
+    </Page>
+  ),
+  errorComponent: WorkItemError,
   component: WorkItemPage,
 });
+
+function WorkItemError({ error }: { error: unknown }) {
+  // An OpError keeps its code across the server render (it is an own property).
+  const code = (error as { code?: unknown } | null)?.code;
+  const notFound = code === "not_found" || code === "forbidden";
+  return (
+    <Page>
+      <h1 className="font-semibold text-2xl tracking-tight">
+        {notFound ? "Work item not found" : "Couldn't load this work item"}
+      </h1>
+      <p className="text-muted-foreground text-sm">
+        {notFound ? "It doesn't exist, or it isn't in one of your orgs." : errorMessage(error)}{" "}
+        <Link to="/" className="underline">
+          Back to the inbox
+        </Link>
+      </p>
+    </Page>
+  );
+}
 
 function WorkItemPage() {
   const { id } = Route.useParams();
   const { tab } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const detail = useQuery(workItemQuery(id));
+  const { data: d } = useSuspenseQuery(workItemQuery(id));
   const timeline = useQuery(timelineQuery(id));
   const me = useSessionId();
 
-  if (detail.isPending) {
-    return (
-      <Page>
-        <Skeleton className="h-6 w-60" />
-        <Skeleton className="h-10 w-full" />
-        <Skeleton className="h-64 w-full" />
-      </Page>
-    );
-  }
-  if (detail.isError) {
-    const notFound =
-      detail.error instanceof OpError && ["not_found", "forbidden"].includes(detail.error.code);
-    return (
-      <Page>
-        <h1 className="font-semibold text-2xl tracking-tight">
-          {notFound ? "Work item not found" : "Couldn't load this work item"}
-        </h1>
-        <p className="text-muted-foreground text-sm">
-          {notFound ? "It doesn't exist, or it isn't in one of your orgs." : detail.error.message}{" "}
-          <Link to="/" className="underline">
-            Back to the inbox
-          </Link>
-        </p>
-      </Page>
-    );
-  }
-  const d = detail.data;
   const hasQuestions =
     d.questions.some((q) => q.status === "open") ||
     d.gates.some((g) => g.kind === "spec" && g.status === "pending");

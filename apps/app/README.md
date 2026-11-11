@@ -16,7 +16,12 @@ Auth, and server functions that call operations on `sf-engine` (`EngineApi`, ADR
 - `src/server/` runs on the Worker: `auth.ts` (Better Auth on `core_*`, allowlist, Personal org),
   `app-api.ts` (what the server functions do, tested in workerd), `fns.ts` (the server functions).
 - `src/lib/ops.ts` types every operation the app calls from core's zod schemas; `op()` in
-  `src/lib/op.ts` is the typed client. Pages never touch D1.
+  `src/lib/op.ts` is the typed client; reads go through `read()`, which batches a tick's reads
+  into one `callReads` request. Pages never touch D1.
+- Loading (ADR 0241): each route's loader `ensureQueryData`s everything the page renders (the
+  shell's loader covers the sidebar), and pages read it with `useSuspenseQuery`. The session is in
+  the query cache, not fetched per navigation. `test/perf.test.ts` fails if a page renders a query
+  its loader doesn't load. Server functions send `Server-Timing` (`auth`, `opN`, `engineN`).
 
 ## Develop
 ```sh

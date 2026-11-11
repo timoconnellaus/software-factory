@@ -57,3 +57,8 @@ export function itemKey(projectSlug: string | undefined, number: number): string
     .toUpperCase();
   return `${prefix || "WI"}-${number}`;
 }
+
+/** A thrown value's message, for error screens. */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

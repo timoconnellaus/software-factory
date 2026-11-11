@@ -1,13 +1,7 @@
 import { Toaster } from "@software-factory/ui/components/sonner";
 import { TooltipProvider } from "@software-factory/ui/components/tooltip";
-import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  createRootRouteWithContext,
-  HeadContent,
-  Outlet,
-  Scripts,
-  useRouter,
-} from "@tanstack/react-router";
+import type { QueryClient } from "@tanstack/react-query";
+import { createRootRouteWithContext, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import appCss from "../styles.css?url";
 
@@ -37,17 +31,11 @@ function RootDocument({ children }: { children: ReactNode }) {
         <HeadContent />
       </head>
       <body className="min-h-svh antialiased">
-        <QueryProvider>
-          <TooltipProvider>{children}</TooltipProvider>
-        </QueryProvider>
+        {/* The QueryClientProvider comes from the router's SSR query integration (router.tsx). */}
+        <TooltipProvider>{children}</TooltipProvider>
         <Toaster position="bottom-right" closeButton />
         <Scripts />
       </body>
     </html>
   );
-}
-
-function QueryProvider({ children }: { children: ReactNode }) {
-  const { queryClient } = useRouter().options.context as RouterContext;
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }

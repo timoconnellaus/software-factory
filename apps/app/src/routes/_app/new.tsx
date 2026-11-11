@@ -11,12 +11,21 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { op } from "#/lib/op";
 import { OpError, type OpOutput } from "#/lib/ops";
-import { routingQuery } from "#/lib/queries";
+import { projectsQuery, routingQuery } from "#/lib/queries";
 import { useProjects, useSession } from "#/lib/session";
 
 export const Route = createFileRoute("/_app/new")({
   validateSearch: (s: Record<string, unknown>): { project?: string } =>
     typeof s.project === "string" ? { project: s.project } : {},
+  loaderDeps: ({ search }) => ({ project: search.project }),
+  // The project picker and the preselected project's routing preview.
+  loader: async ({ context: { queryClient, session }, deps }) => {
+    const projects = await queryClient
+      .ensureQueryData(projectsQuery(session.orgs.map((o) => o.id)))
+      .catch(() => []);
+    const project = defaultProject(projects, deps.project);
+    if (project) await queryClient.ensureQueryData(routingQuery(project.id)).catch(() => null);
+  },
   component: NewWorkPage,
 });
 

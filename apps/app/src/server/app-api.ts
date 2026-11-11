@@ -132,10 +132,10 @@ export async function sessionInfo(
   if (!user) return null;
   const { results } = await timings.time("orgs", () =>
     env.DB.prepare(
-    `SELECT o.id, o.name, o.kind, m.role FROM core_member m
+      `SELECT o.id, o.name, o.kind, m.role FROM core_member m
      JOIN core_organization o ON o.id = m.organization_id
      WHERE m.user_id = ? ORDER BY o.kind = 'personal' DESC, o.created_at`,
-  )
+    )
       .bind(user.id)
       .all<{ id: string; name: string; kind: string; role: string }>(),
   );
