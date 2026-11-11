@@ -3,7 +3,12 @@
 // offered from any other ref is ignored. A missing or malformed policy fails closed: every
 // non-human call on the project is denied until a valid one lands.
 
-import { CAPABILITIES, JOB_STAGES, MODEL_ROLES } from "@software-factory/runner-contract";
+import {
+  CAPABILITIES,
+  harnessProfileSchema,
+  JOB_STAGES,
+  MODEL_ROLES,
+} from "@software-factory/runner-contract";
 import { z } from "zod";
 import { AUTONOMY_POLICIES, type DecisionRules, rulesError } from "./gate.ts";
 
@@ -62,6 +67,12 @@ export const projectPolicySchema = z
     modelRoles: z.partialRecord(z.enum(MODEL_ROLES), z.string().min(1)).default({}),
     /** Capabilities each stage's job requires (`.factory/` limits placement, ADR 0015). */
     requires: z.partialRecord(z.enum(JOB_STAGES), z.array(z.enum(CAPABILITIES))).default({}),
+    /**
+     * The harness's permission mode and allowlists per stage (ADR 0270). It can only pick a mode
+     * and add allow rules and hosts; the deny rules and the sandbox are fixed in the harness. A
+     * change here is a `.factory/` change, so it reaches runs only after a person merges it.
+     */
+    harness: harnessProfileSchema.optional(),
     /** Review packet sections in order (ADR 0020, spec 14). */
     reviewPacket: z.object({ sections: z.array(z.string().min(1)).min(1) }).optional(),
   })

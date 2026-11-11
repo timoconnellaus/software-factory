@@ -3,3 +3,18 @@
 export * from "./adapter.ts";
 export * from "./exec.ts";
 export * from "./orca-cli.ts";
+
+export {
+  diagnose,
+  type Finding,
+  findRepoForJob,
+  isUnder,
+  jobIdOf,
+  type KeyedRepo,
+  keyedRepos,
+  type Migration,
+  migrateRunnerRepos,
+  pickRepo,
+  type RepoOwnership,
+  repoKey,
+} from "./workspace.ts";

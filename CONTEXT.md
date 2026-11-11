@@ -190,8 +190,9 @@ _Avoid_: driver, plugin, integration
 
 **Runner host**
 The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
-outbound over the signed channel, loads runner adapters, keeps its own clone of each repo, and is the
-only thing that pushes: the run branch, with the job token (ADR 0250).
+outbound over the signed channel, loads runner adapters, fetches into the checkout the machine
+already has for each repo (its own clone only when there is none, ADR 0260), and is the only thing
+that pushes: the run branch, with the job token (ADR 0250).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
 **Capability**
@@ -208,7 +209,8 @@ _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**
 An agent CLI the runner drives for a job, behind an adapter with a capability manifest. v1 is
-Claude Code (`harness-claude`).
+Claude Code (`harness-claude`). The harness owns its launch command and checks the live process against it
+before the job starts (ADR 0270); a difference is a `harness-config-mismatch`.
 _Avoid_: model (code asks for a model role), agent (too broad), tool
 
 **Engine**
