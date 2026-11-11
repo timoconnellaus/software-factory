@@ -17,6 +17,7 @@ import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import { assemblePacket, verifyCheckOutput } from "../verify/packet.ts";
 import { ciEvent } from "../workflow-events.ts";
+import { requireQueueHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
   projectForRepo,
@@ -371,7 +372,12 @@ export const verifyRefresh = defineOperation({
       .executeTakeFirst();
 
     // Wake a Workflow that waits for CI on this SHA (v2 verify), once CI has settled.
-    if (ci.state !== "pending" && item.head_sha === input.headSha && item.stage === "verify") {
+    // ...and one in the merge queue waiting for CI after it brought the branch up to date (ADR 0330).
+    if (
+      ci.state !== "pending" &&
+      item.head_sha === input.headSha &&
+      (item.stage === "verify" || item.stage === "merge")
+    ) {
       ctx.emit({
         kind: "workflow.event",
         payload: {
@@ -437,6 +443,70 @@ export const verifyRefresh = defineOperation({
   },
 });
 
+/**
+ * The merge queue brought a verified head up to date with the default branch by a clean merge
+ * (ADR 0330): the reviewed diff is unchanged, so the review packet carries over to the new head,
+ * marked with where it came from. `factory/verify` on the new head then passes only on green CI
+ * there, like any packet.
+ */
+export async function carryReviewPacket(
+  ctx: HandlerContext,
+  args: { item: WorkItemRow; project: ProjectRow; repo: RepoRef; fromSha: string; toSha: string },
+): Promise<{ packetId: string | null }> {
+  const from = await ctx.db
+    .selectFrom("core_review_packets")
+    .selectAll()
+    .where("work_item_id", "=", args.item.id)
+    .where("head_sha", "=", args.fromSha)
+    .orderBy("created_at", "desc")
+    .executeTakeFirst();
+  if (!from) return { packetId: null };
+  const sections: Record<string, unknown> = {
+    ...parseObject(from.sections),
+    carriedFrom: args.fromSha,
+  };
+  const id = newId("reviewPacket");
+  ctx.write(
+    ctx.db.insertInto("core_review_packets").values({
+      id,
+      work_item_id: args.item.id,
+      run_id: from.run_id,
+      head_sha: args.toSha,
+      verdict: from.verdict,
+      summary: from.summary,
+      criteria: from.criteria,
+      checks: from.checks,
+      reviewer: from.reviewer,
+      risk_flags: from.risk_flags,
+      sections: JSON.stringify(sections),
+      created_at: ctx.now,
+    }),
+  );
+  ctx.change({
+    entity: "review_packet",
+    id,
+    after: { headSha: args.toSha, carriedFrom: args.fromSha },
+  });
+  const ci = await readCi(ctx, args.repo, args.toSha);
+  await postVerify(ctx, {
+    project: args.project,
+    repo: args.repo,
+    headSha: args.toSha,
+    item: { ...args.item, head_sha: args.toSha },
+    prNumber: args.item.pr_number,
+    packetId: id,
+    output: verifyCheckOutput({
+      evidencePass: sections.evidencePass === true,
+      evidenceReasons: strings(sections.evidenceReasons),
+      warnings: strings(sections.warnings),
+      riskFlags: strings(parseJson(from.risk_flags)),
+      ci,
+      workItem: args.item,
+    }),
+  });
+  return { packetId: id };
+}
+
 export const prAutoMerge = defineOperation({
   name: "pr.autoMerge",
   description:
@@ -457,6 +527,7 @@ export const prAutoMerge = defineOperation({
     if (w.head_sha !== input.headSha) {
       throw new OperationError("conflict", "the branch moved since the review packet was made");
     }
+    await requireQueueHead(ctx, w, input.headSha);
     const project = requireProject(ctx);
     const repo = await repoRef(ctx, project);
     const files = await ctx.services.github.compareFiles(

@@ -8,6 +8,7 @@ import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
 import * as github from "./operations/github.ts";
 import * as incidents from "./operations/incidents.ts";
+import * as mergeQueue from "./operations/merge-queue.ts";
 import * as onboarding from "./operations/onboarding.ts";
 import * as projects from "./operations/projects.ts";
 import * as protection from "./operations/protection.ts";
@@ -63,6 +64,11 @@ export const OPERATIONS: readonly AnyOperation[] = [
   github.branchAdvance,
   github.prOpen,
   github.prMerge,
+  mergeQueue.mergeQueueEnter,
+  mergeQueue.mergeQueuePosition,
+  mergeQueue.mergeQueueList,
+  mergeQueue.mergeQueueUpdate,
+  mergeQueue.mergeQueueLeave,
   verify.reviewPacketRecord,
   verify.ciRead,
   verify.verifyRefresh,

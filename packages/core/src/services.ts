@@ -190,6 +190,27 @@ export interface GitHubService {
     repo: RepoRef,
     number: number,
   ): Promise<{ mergeable: boolean | null; mergeableState: string | null; headSha: string | null }>;
+  /**
+   * How two commits relate (`GET /compare/{base}...{head}`): `aheadBy` commits in `head` that
+   * aren't in `base`, `behindBy` commits in `base` that aren't in `head`. The merge queue uses
+   * `behindBy` to see whether a PR's head still lacks the default branch (ADR 0330).
+   */
+  compareCommits(
+    repo: RepoRef,
+    base: string,
+    head: string,
+  ): Promise<{ aheadBy: number; behindBy: number }>;
+  /** A commit's parents, in order (`GET /commits/{sha}`). */
+  commitParents(repo: RepoRef, sha: string): Promise<string[]>;
+  /**
+   * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
+   * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`
+   * means it accepted; read the PR's head afterwards. `conflict`: the base can't merge in cleanly.
+   */
+  updatePullRequestBranch(
+    repo: RepoRef,
+    input: { number: number; expectedHeadSha: string },
+  ): Promise<{ status: "requested" } | { status: "conflict" | "refused"; reason: string }>;
   /** Merges the PR if its head is still `sha`. */
   mergePullRequest(
     repo: RepoRef,

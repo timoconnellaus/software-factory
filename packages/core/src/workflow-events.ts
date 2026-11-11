@@ -29,3 +29,10 @@ export interface RunEventPayload {
  * `{ state }`. The Workflow re-reads CI after it, so a missed or early event only costs a timeout.
  */
 export const ciEvent = (workItemId: string, sha: string) => `ci-${workItemId}-${sha}`;
+
+/**
+ * A work item's merge queue entry may have reached the head of its project's queue (ADR 0330). Sent
+ * when the entry ahead leaves; the Workflow re-reads its position after it, so a missed or extra
+ * event only costs a timeout.
+ */
+export const mergeQueueEvent = (workItemId: string) => `mergeq-${workItemId}`;
