@@ -8,5 +8,14 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true
+  },
+  // Public hostname (Workers Custom Domain: Cloudflare creates the DNS record and certificate).
+  "routes": [{ "pattern": "software-factory.zerobsai.com", "custom_domain": true }],
+  "vars": {
+    "PUBLIC_BASE_URL": "https://software-factory.zerobsai.com",
+    "BETTER_AUTH_URL": "https://software-factory.zerobsai.com",
+    "GH_APP_ID": "5705909",
+    "GH_APP_CLIENT_ID": "Iv23li0zTckLOY2IO9aB",
+    "GH_APP_SLUG": "software-factory-zerobsai"
   }
 }
