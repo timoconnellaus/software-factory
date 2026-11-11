@@ -271,3 +271,78 @@ describe("installations and their repositories (ADR 0055)", () => {
     expect(seen[0]?.headers.get("authorization")).toBe("Bearer ghu_person");
   });
 });
+
+describe("reading protection (ADR 0280): read-only, always", () => {
+  it("reads rulesets, bypass lists and the rules in force with read tokens and GETs only", async () => {
+    const { pkcs1Pem } = await keyPair();
+    const tokenPermissions: Record<string, string>[] = [];
+    const methods: string[] = [];
+    const app = githubApp({
+      appId: "5705909",
+      appSlug: "software-factory-zerobsai",
+      privateKey: pkcs1Pem,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname.endsWith("/access_tokens")) {
+          const body = (await request.json()) as { permissions: Record<string, string> };
+          tokenPermissions.push(body.permissions);
+          return Response.json({ token: "ghs_x", expires_at: "2099-01-01T00:00:00Z" });
+        }
+        methods.push(request.method);
+        const path = url.pathname.replace("/repos/timoconnellaus/software-factory", "");
+        if (path === "/branches/main/protection") return new Response("{}", { status: 404 });
+        if (path === "/rulesets") {
+          expect(url.searchParams.get("includes_parents")).toBe("true");
+          return Response.json([{ id: 11 }, { id: 12 }]);
+        }
+        if (path === "/rulesets/11") {
+          return Response.json({
+            id: 11,
+            name: "factory: protect the default branch",
+            target: "branch",
+            enforcement: "active",
+            conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+            rules: [{ type: "deletion" }],
+            bypass_actors: [{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" }],
+          });
+        }
+        if (path === "/rulesets/12") {
+          // GitHub leaves bypass_actors out for callers it won't show them to.
+          return Response.json({
+            id: 12,
+            name: "org rules",
+            target: "branch",
+            enforcement: "active",
+            conditions: { ref_name: { include: ["~ALL"], exclude: [] } },
+            rules: [{ type: "non_fast_forward" }],
+          });
+        }
+        if (path === "/rules/branches/main") {
+          return Response.json([
+            { type: "deletion", ruleset_id: 11, ruleset_source_type: "Repository" },
+            { type: "non_fast_forward", ruleset_id: 12, ruleset_source_type: "Organization" },
+          ]);
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const guards = await app.repoGuards(
+      { installationId: "1", owner: "timoconnellaus", repo: "software-factory" },
+      "main",
+    );
+    expect(guards.protection).toBeNull();
+    expect(guards.rulesets.map((r) => [r.id, r.bypassActors])).toEqual([
+      [11, [{ actorType: "RepositoryRole", actorId: 5, bypassMode: "always" }]],
+      [12, null],
+    ]);
+    expect(guards.branchRules).toEqual([
+      { type: "deletion", rulesetId: 11 },
+      { type: "non_fast_forward", rulesetId: 12 },
+    ]);
+    expect(new Set(methods)).toEqual(new Set(["GET"]));
+    for (const p of tokenPermissions) {
+      expect(Object.values(p).every((v) => v === "read")).toBe(true);
+    }
+  });
+});

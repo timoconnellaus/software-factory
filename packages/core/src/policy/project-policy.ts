@@ -3,8 +3,14 @@
 // offered from any other ref is ignored. A missing or malformed policy fails closed: every
 // non-human call on the project is denied until a valid one lands.
 
-import { CAPABILITIES, JOB_STAGES, MODEL_ROLES } from "@software-factory/runner-contract";
+import {
+  CAPABILITIES,
+  harnessProfileSchema,
+  JOB_STAGES,
+  MODEL_ROLES,
+} from "@software-factory/runner-contract";
 import { z } from "zod";
+import { DEFAULT_REQUIRED_CHECKS } from "../verify/protection.ts";
 import { AUTONOMY_POLICIES, type DecisionRules, rulesError } from "./gate.ts";
 
 /** Where the policy lives in a project's repo. */
@@ -62,6 +68,27 @@ export const projectPolicySchema = z
     modelRoles: z.partialRecord(z.enum(MODEL_ROLES), z.string().min(1)).default({}),
     /** Capabilities each stage's job requires (`.factory/` limits placement, ADR 0015). */
     requires: z.partialRecord(z.enum(JOB_STAGES), z.array(z.enum(CAPABILITIES))).default({}),
+    /**
+     * The harness's permission mode and allowlists per stage (ADR 0270). It can only pick a mode
+     * and add allow rules and hosts; the deny rules and the sandbox are fixed in the harness. A
+     * change here is a `.factory/` change, so it reaches runs only after a person merges it.
+     */
+    harness: harnessProfileSchema.optional(),
+    /**
+     * The default branch's protection (ADR 0280). `onRed: "block"` keeps build jobs queued while the
+     * factory's check of the branch's rulesets is red; `warn` (the default) only shows it.
+     * `requiredChecks` are the CI checks the generated ruleset requires besides `factory/verify`.
+     */
+    protection: z
+      .object({
+        onRed: z.enum(["warn", "block"]).default("warn"),
+        requiredChecks: z
+          .array(z.string().min(1).max(200))
+          .max(20)
+          .default([...DEFAULT_REQUIRED_CHECKS]),
+      })
+      .strict()
+      .default({ onRed: "warn", requiredChecks: [...DEFAULT_REQUIRED_CHECKS] }),
     /** Review packet sections in order (ADR 0020, spec 14). */
     reviewPacket: z.object({ sections: z.array(z.string().min(1)).min(1) }).optional(),
   })

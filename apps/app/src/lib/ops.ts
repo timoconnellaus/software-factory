@@ -33,6 +33,7 @@ export interface OpMap {
   "policy.resync": Def<typeof operations.policyResync>;
   "policy.proposeTemplate": Def<typeof operations.policyProposeTemplate>;
   "setup.status": Def<typeof operations.setupStatus>;
+  "protection.check": Def<typeof operations.protectionCheck>;
   "runner.deviceLookup": Def<typeof operations.runnerDeviceLookup>;
   "runner.approveDevice": Def<typeof operations.runnerApproveDevice>;
   "runner.denyDevice": Def<typeof operations.runnerDenyDevice>;
@@ -72,6 +73,7 @@ export const APP_OPERATIONS = [
   "policy.resync",
   "policy.proposeTemplate",
   "setup.status",
+  "protection.check",
   "runner.deviceLookup",
   "runner.approveDevice",
   "runner.denyDevice",

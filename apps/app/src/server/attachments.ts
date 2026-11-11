@@ -1,4 +1,4 @@
-// Uploading and serving work item attachments (ADR 0260). Both go through operations on sf-engine
+// Uploading and serving work item attachments (ADR 0310). Both go through operations on sf-engine
 // as the signed-in person: the upload calls `workItem.attachment.add` (authz, limits, sniffing and
 // the audit row all live there), serving calls `workItem.attachment.get` and answers with headers
 // chosen here, never by the browser's guess. Neither is a public or long-lived URL: each request

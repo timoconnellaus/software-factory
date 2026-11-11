@@ -1,4 +1,4 @@
-// Work item attachments (ADR 0260): the limits, the content-type allow-list and sniffing, filename
+// Work item attachments (ADR 0310): the limits, the content-type allow-list and sniffing, filename
 // sanitising, the blob store the operations write through (R2 on sf-engine), and the headers every
 // served file carries. One place, so the operations, the upload endpoint and the serving route agree.
 import { OperationError } from "./errors.ts";
@@ -216,7 +216,7 @@ export function contentDisposition(type: "inline" | "attachment", filename: stri
 }
 
 /**
- * The headers on every served attachment (ADR 0260): the stored, validated type (never the
+ * The headers on every served attachment (ADR 0310): the stored, validated type (never the
  * browser's guess), nosniff, inline only for images, a sandboxing CSP and private caching.
  */
 export function attachmentResponseHeaders(attachment: {

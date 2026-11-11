@@ -56,7 +56,7 @@ _Avoid_: task, ticket, job (a job is one stage's assignment to a runner), issue 
 **Attachment**
 A file a person added to a work item (a screenshot, a log, a mockup), by picker, drag-and-drop or
 pasting from the clipboard. Its metadata is a D1 row and its bytes are in R2; the item's runs can
-read it over the job channel. Its name and content are untrusted data, never instructions (ADR 0260).
+read it over the job channel. Its name and content are untrusted data, never instructions (ADR 0310).
 _Avoid_: artifact (that is what a run produces), upload, file (in copy, when you mean this)
 
 **Stage**
@@ -132,6 +132,14 @@ notes, screenshots, risk flags, the diff and a preview link. Sections are set pe
 app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
 _Avoid_: PR summary, report
 
+**Default-branch ruleset**
+The repository ruleset that guards a project's default branch: a PR, the CI checks and
+`factory/verify` (pinned to the App, branch up to date), no force pushes, no deletion, **no bypass
+actors**. The factory generates it as a file (`<repo>-default-branch.json`); a person imports it on
+GitHub, because the App only reads repository settings. **Protection** is the factory's verdict on
+it: `ok`, or `red` with what's missing; a red after an ok is **drift** (ADR 0280).
+_Avoid_: branch protection (GitHub's older, classic mechanism), lock
+
 **Lease**
 A time-limited claim on a work item by a session or runner, kept alive by heartbeat. While a local
 session holds the lease, cloud runs back off.
@@ -196,8 +204,9 @@ _Avoid_: driver, plugin, integration
 
 **Runner host**
 The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
-outbound over the signed channel, loads runner adapters, keeps its own clone of each repo, and is the
-only thing that pushes: the run branch, with the job token (ADR 0250).
+outbound over the signed channel, loads runner adapters, fetches into the checkout the machine
+already has for each repo (its own clone only when there is none, ADR 0260), and is the only thing
+that pushes: the run branch, with the job token (ADR 0250).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
 **Capability**
@@ -211,12 +220,13 @@ restrict them. The known ones:
   heartbeat);
 - `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`);
 - `work-item-attachments`: fetches the work item's attachments over the job channel into the run,
-  outside the git tree (ADR 0260).
+  outside the git tree (ADR 0310).
 _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**
 An agent CLI the runner drives for a job, behind an adapter with a capability manifest. v1 is
-Claude Code (`harness-claude`).
+Claude Code (`harness-claude`). The harness owns its launch command and checks the live process against it
+before the job starts (ADR 0270); a difference is a `harness-config-mismatch`.
 _Avoid_: model (code asks for a model role), agent (too broad), tool
 
 **Engine**

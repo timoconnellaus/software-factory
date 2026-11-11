@@ -16,7 +16,7 @@ Read first: ADRs [0014](../adr/0014-runners-are-adapters.md),
 > runners. Criterion 2 is amended: a replayed request id is answered from the idempotency store,
 > not refused. Part of R1 milestone (a), except criterion 4 (milestone (c)).
 >
-> Amended 2026-11-11 ([spec wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md), [ADR 0260](../adr/0260-work-item-attachments.md)): the channel has two
+> Amended 2026-11-11 ([spec wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md), [ADR 0310](../adr/0310-work-item-attachments.md)): the channel has two
 > more job calls, `attachments` (list) and `attachment` (one file), never stored in the idempotency
 > store, behind the optional capability `work-item-attachments`. `runner-orca` declares it and puts
 > the files outside the worktree; adapters without it run unchanged.

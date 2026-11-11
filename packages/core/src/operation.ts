@@ -142,7 +142,7 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
   /** Which inbox card a `review` answer becomes. Default `approval`. */
   gateKind?: "spec" | "merge" | "approval";
   /**
-   * Hide what the caller may not see (ADR 0260): when set, a scope that can't be resolved and a human
+   * Hide what the caller may not see (ADR 0310): when set, a scope that can't be resolved and a human
    * without the permission both get `not_found` with this message, so a missing record and one in
    * an org the caller can't reach look the same.
    */

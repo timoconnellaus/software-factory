@@ -86,41 +86,58 @@ Then run the first deploy: `gh workflow run deploy.yml`, or push to `main`. The 
 `production` exists already; add protection rules to it (a required reviewer, say) in Settings →
 Environments if you want a human to approve each deploy.
 
-### Branch protection
+### Protecting `main`
 
-`main` requires the `ci` check. No reviews are required, so the owner merges their own PRs once
-`ci` is green. Admins are held to it too. To set it again (or on a fork):
+The factory never changes protection: its App has `administration: read` only (ADR 0280). Setup's
+**Protect `main`** step offers the generated ruleset (`<repo>-default-branch.json`: a PR, `ci` and
+`factory/verify` pinned to the App and up to date, no force pushes, no deletion, no bypass), a link
+to `https://github.com/<owner>/<repo>/settings/rules`, and **Check now**. On GitHub: **New ruleset →
+Import a ruleset → choose the file → Create**. If the repo has no ruleset confining the App to
+`factory/*` (ADR 0052), Setup offers `<repo>-factory-branches.json` too; import it the same way.
 
-```sh
-gh api -X PUT repos/{owner}/{repo}/branches/main/protection --input - <<'EOF'
-{
-  "required_status_checks": { "strict": false, "contexts": ["ci"] },
-  "enforce_admins": true,
-  "required_pull_request_reviews": null,
-  "restrictions": null,
-  "allow_force_pushes": false,
-  "allow_deletions": false
-}
-EOF
-```
+If the import page refuses a file, a repo admin can apply the same JSON with
+`gh api -X POST repos/{owner}/{repo}/rulesets --input <file>`.
 
-`factory/verify` joins the required checks at the bootstrap (V1 step 5), pinned to the App (ADR
-0037). Until then the App posts it but it isn't required: it fails every PR the factory didn't
-open, and would block the sessions still building V1. To require it (keeping `ci`):
+#### software-factory itself (as of 2026-11-11)
 
-```sh
-gh api -X PATCH repos/{owner}/{repo}/branches/main/protection/required_status_checks --input - <<'JSON'
-{ "strict": false, "checks": [{ "context": "ci", "app_id": 15368 }, { "context": "factory/verify", "app_id": 5705909 }] }
-JSON
-```
+What GitHub reports today (read with the owner's `gh`, nothing changed):
+- **Classic branch protection** on `main`: requires `ci` (pinned to GitHub Actions, 15368), not
+  strict, `enforce_admins` on, no PR required, force pushes and deletion blocked.
+- **Ruleset** `factory: confine App pushes to factory/*` (id 27006249): active, `~ALL` minus
+  `refs/heads/factory/**` and `~DEFAULT_BRANCH`, creation/update/deletion, admins bypass. This is
+  exactly `<repo>-factory-branches.json`, so Setup won't offer that file.
+- No ruleset applies to `main` (`GET /rules/branches/main` is empty), and `factory/verify` isn't
+  required anywhere.
 
-### The repository ruleset
+So Setup's Protect `main` step is red with: a pull request isn't required, `factory/verify` not
+required, `ci` not required, force pushes are allowed, the branch can be deleted (the classic rule
+blocks the last two, but the factory checks rulesets only; a warning says so).
 
-Only repo admins may create, update or delete branches other than `factory/**` and `main`, so the
-App (not a bypass actor) can push only `factory/*` (ADR 0052). The ruleset is `FACTORY_RULESET` in
-`packages/core/src/verify/onboarding.ts` (applied to software-factory on 2026-11-11); apply it with
-`gh api -X POST repos/{owner}/{repo}/rulesets --input <that JSON>`. `project.checkGitHub` reports
-whether a project's repo has both the ruleset and the required check.
+**When to switch:** once the factory opens its own PRs for software-factory (V1 step 5: the project
+has its policy and a runner is online) and the PRs built by hand-run sessions are merged. With no
+bypass, a PR that `factory/verify` hasn't passed can't merge, and `factory/verify` fails every PR
+the factory didn't open, so switching earlier blocks those sessions (#20, #22 and #24 merged with it
+red as bootstrap exceptions).
+
+**What to click, then:**
+1. In the GitHub App's settings (GitHub → Settings → Developer settings → GitHub Apps →
+   software-factory-zerobsai → **Permissions & events**), under **Subscribe to events**, tick
+   **Repository ruleset** and **Branch protection rule**. Leave **Administration** at **Read-only**.
+   Setup lists these two events until they're ticked.
+2. In Setup → **Protect `main`** → **Download ruleset** (`software-factory-default-branch.json`).
+3. **Open GitHub rulesets** → **New ruleset → Import a ruleset** → choose the file. Check what GitHub
+   shows: Enforcement **Active**, Bypass list **empty**, Target **Default branch**; rules **Restrict
+   deletions**, **Block force pushes**, **Require a pull request before merging** (0 approvals),
+   **Require status checks to pass** with **Require branches to be up to date** on and the checks
+   `ci` and `factory/verify` (source: the software-factory-zerobsai App). → **Create**.
+4. Back in Setup → **Check now** → ✓.
+5. Delete the classic rule: Settings → Branches → the `main` rule → **Delete**. The ruleset covers all
+   of it. Check now again: the classic-protection warning goes away.
+
+To protect `main` before the factory opens PRs, do steps 1–3 but remove `factory/verify` from the
+status checks before **Create**. Setup then stays red with "`factory/verify` not required", which is
+true. When it's time, edit the ruleset (Settings → Rules → Rulesets → `factory: protect the default
+branch` → Require status checks → **Add checks** → `factory/verify`, source the App) and Check now.
 
 ### The GitHub App
 
@@ -132,8 +149,9 @@ during installation" stays off (sign-in already authorizes).
 Webhook URL `https://software-factory.zerobsai.com/webhooks/github` (a Workers route on sf-engine in
 front of sf-app's domain; the deploy token needs Zone → Workers Routes: Edit), secret
 `GH_APP_WEBHOOK_SECRET` (synced to sf-engine). Permissions: contents and pull requests (write),
-checks (write), administration (read), metadata (read). Events: pull request, check suite, check
-run, push, installation, installation repositories (`APP_REQUIREMENTS` in
+checks (write), administration (**read only**: write would let the App delete repositories, ADR
+0280), metadata (read). Events: pull request, check suite, check run, push, installation,
+installation repositories, repository ruleset, branch protection rule (`APP_REQUIREMENTS` in
 `packages/connector-github`).
 
 ## Deploying by hand

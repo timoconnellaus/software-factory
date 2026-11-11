@@ -192,7 +192,7 @@ describe("the signed runner channel", () => {
   });
 });
 
-describe("attachments over the channel (ADR 0260)", () => {
+describe("attachments over the channel (ADR 0310)", () => {
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 
   async function claimed(w: Awaited<ReturnType<typeof world>>) {

@@ -45,6 +45,37 @@ export interface ChangedFile {
   previousPath?: string;
 }
 
+/** One rule of a repository ruleset, as GitHub reports it. */
+export interface RulesetRule {
+  type: string;
+  parameters?: Record<string, unknown>;
+}
+
+/** Who may bypass a ruleset. */
+export interface BypassActor {
+  actorType: string;
+  actorId: number | null;
+  bypassMode: string;
+}
+
+/** A repository ruleset (the repo's own or inherited from its org). */
+export interface RulesetInfo {
+  id: number;
+  name: string;
+  target: string;
+  enforcement: string;
+  include: string[];
+  exclude: string[];
+  rules: RulesetRule[];
+  /** Null when GitHub didn't say (it shows the list only to some callers). */
+  bypassActors: BypassActor[] | null;
+}
+
+/** A rule in force on one branch, with the ruleset it comes from (`GET /rules/branches/{b}`). */
+export interface BranchRule extends RulesetRule {
+  rulesetId: number;
+}
+
 /** What guards a repo's default branch: classic branch protection and repository rulesets. */
 export interface RepoGuards {
   /** Null when the branch has no classic protection (or it can't be read). */
@@ -52,13 +83,15 @@ export interface RepoGuards {
     requiredChecks: { context: string; appId: number | null }[];
     enforceAdmins: boolean;
   } | null;
-  rulesets: {
-    name: string;
-    enforcement: string;
-    include: string[];
-    exclude: string[];
-    rules: string[];
-  }[];
+  rulesets: RulesetInfo[];
+  /** GitHub's own list of rules in force on the branch; null: compute it from `rulesets`. */
+  branchRules: BranchRule[] | null;
+}
+
+/** What the App is set up to receive and do, as GitHub reports it (`GET /app`). */
+export interface AppSettings {
+  events: string[];
+  permissions: Record<string, string>;
 }
 
 /** An installation of the factory's App, as GitHub reports it to the App (ADR 0055). */
@@ -138,8 +171,16 @@ export interface GitHubService {
    * token is never stored and never used for repo access.
    */
   userInstallationIds(userToken: string): Promise<string[]>;
-  /** Branch protection and rulesets on `branch` (project onboarding, spec 04). */
+  /** Branch protection and rulesets on `branch` (project onboarding, spec 04; ADR 0280). */
   repoGuards(repo: RepoRef, branch: string): Promise<RepoGuards>;
+  /**
+   * A person's role on the repo (`GET /collaborators/{login}/permission`, as the App): `admin`,
+   * `maintain`, `write`, `triage`, `read`, or null when they aren't a collaborator. Only to choose
+   * between "apply this yourself" and "send it to the repo admin" (ADR 0280).
+   */
+  repoPermission(repo: RepoRef, login: string): Promise<string | null>;
+  /** The App's subscribed events and permissions (`GET /app`, its JWT). */
+  appSettings(): Promise<AppSettings>;
   /** Merges the PR if its head is still `sha`. */
   mergePullRequest(
     repo: RepoRef,
@@ -150,7 +191,7 @@ export interface GitHubService {
 export interface FactoryServices {
   github: GitHubService;
   /**
-   * Blob storage for work item attachments (ADR 0260): R2 on sf-engine. Absent where nothing
+   * Blob storage for work item attachments (ADR 0310): R2 on sf-engine. Absent where nothing
    * stores files; the attachment operations then refuse with `unavailable`.
    */
   attachments?: AttachmentBlobs;

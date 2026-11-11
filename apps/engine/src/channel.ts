@@ -105,7 +105,7 @@ async function route(env: Env, runner: string, path: string, body: unknown): Pro
 }
 
 /**
- * The run's view of its work item's attachments (ADR 0260): `workItem.attachment.list` / `.get`
+ * The run's view of its work item's attachments (ADR 0310): `workItem.attachment.list` / `.get`
  * as the runner, scoped by the job and its fencing token, answered in the wire shapes
  * (`attachmentsResponseSchema`, `attachmentResponseSchema`: the bytes as base64).
  */

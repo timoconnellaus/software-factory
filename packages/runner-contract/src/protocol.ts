@@ -11,7 +11,7 @@
 //   handback    hand:<job>
 //   release     rel:<job>
 //   attachments att:<job>:<uuid>               NOT stored: the job's work item's attachments (list)
-//   attachment  att:<job>:<uuid>               NOT stored: one attachment's bytes (ADR 0260)
+//   attachment  att:<job>:<uuid>               NOT stored: one attachment's bytes (ADR 0310)
 //
 // Every job-scoped call carries the job's fencing token; after a takeover or a lost lease the cloud
 // answers 409 with code `fenced`, and the host must stop the run (ADR 0035).
@@ -104,7 +104,7 @@ export interface ControlPlaneClient {
   artifact(jobId: string, fencingToken: number, artifact: StoredArtifact): Promise<void>;
   handback(body: Handback): Promise<void>;
   release(body: ReleaseRequest): Promise<void>;
-  /** The job's work item's attachments (ADR 0260). Optional: a test client may leave it out. */
+  /** The job's work item's attachments (ADR 0310). Optional: a test client may leave it out. */
   attachments?(jobId: string, fencingToken: number): Promise<AttachmentsResponse>;
   /** One of them, with its bytes (base64). */
   attachment?(

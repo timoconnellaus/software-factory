@@ -10,7 +10,7 @@ Read first: [`docs/ui-plan.md`](../ui-plan.md), mockup
 > skip reason, assumptions, and in milestone (c) a Questions tab with interview-session views and
 > delegation to a guest.
 >
-> Amended 2026-11-11 ([spec wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md), [ADR 0260](../adr/0260-work-item-attachments.md)): the
+> Amended 2026-11-11 ([spec wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md), [ADR 0310](../adr/0310-work-item-attachments.md)): the
 > sidebar has an Attachments section (thumbnails for images, size, uploader; add by picker,
 > drag-and-drop or pasting anywhere on the page; remove with confirmation), and New work can stage
 > attachments that are added once the item is created.

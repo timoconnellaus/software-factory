@@ -23,6 +23,12 @@ with the per-job App token.
 2. **The host owns the clone.** One clone per repo under the runner's state dir, fetched with the job
    token. Its `origin` push URL is disabled and it has no credential helper. The runner never uses
    the owner's own checkouts.
+
+   > Amended 2026-11-11 ([ADR 0260](0260-runners-attach-to-the-existing-checkout.md), incident
+   > 2026-11-11 bootstrap #5): superseded. Jobs run in the checkout the machine's Orca already has for
+   > the repo (found by canonical identity), as a worktree of their own; the host fetches into it by
+   > URL, into `refs/software-factory/*`, and never changes its config or working tree. The host's
+   > clone is only the fallback when Orca has none, registered once and kept.
 3. **The config check before a push.** The host snapshots the clone's push-relevant git config
    (remotes, `url.*.insteadOf`, credential helpers, `http.*`, includes, hooks path, filters) after
    preparing the workspace and compares it before pushing. If anything changed, it doesn't push and
@@ -40,6 +46,15 @@ with the per-job App token.
    - an environment that blanks credential variables and points git (`GIT_CONFIG_NOSYSTEM`,
      `GIT_CONFIG_GLOBAL` → a per-run config with no helper), `gh`, wrangler and cloud CLIs at empty
      per-run directories.
+
+   > Amended 2026-11-11 ([ADR 0270](0270-the-factory-launches-the-harness-and-verifies-it.md),
+   > incident 2026-11-11 bootstrap #6): a settings file loses to a launcher's CLI flag, and
+   > `orca agent launch` added the owner's `--permission-mode auto`. The harness now launches Claude
+   > itself, with its own `--permission-mode`, `--setting-sources project,local` and `--settings`
+   > (the same bytes as the local file), and verifies the live process before the prompt. Build
+   > defaults to `bypassPermissions` inside the sandbox; triage, spec and verify stay `dontAsk`. The
+   > runner owner's per-stage mode is gone: the project's `.factory/policy.json` (`harness`) sets
+   > modes and allowlists, from the default branch.
 5. **Completion.** A session is over when Orca reports the agent `done` after it was seen working,
    or when the result file exists and the agent has been quiet for three polls. A session waiting on
    a person for 15 minutes fails (it can be taken over in Orca before then).
@@ -50,12 +65,15 @@ with the per-job App token.
 - The settings file is defence in depth, not a sandbox. A determined harness process can still read
   files the owner can read (Bash `cat` is not the Read tool). An OS sandbox (Claude Code's `sandbox`
   setting, or Orca launch options) is the follow-up.
+  > Amended 2026-11-11 (ADR 0270): done. Every stage runs Bash in Claude Code's sandbox, with
+  > `allowUnsandboxedCommands: false`, writes limited to the worktree and temp, and a network allowlist.
 - Builds that leave changes uncommitted still produce a branch: the host commits the leftovers with a
   clear message and says so in the summary. A build with no commits fails.
 - Moving the projection into Orca launch arguments, once Orca has them, changes only `runner-orca`.
 
 ## Open questions
-- Whether to turn on Claude Code's Bash sandbox (network allowlist, filesystem scope) for runs.
+- ~~Whether to turn on Claude Code's Bash sandbox (network allowlist, filesystem scope) for runs.~~
+  Yes: ADR 0270.
 - Whether the runner key should move to the macOS keychain (it is a 0600 file today; the harness's
   Read tool is denied it).
 - Rate-limit detection (`rateLimitedUntil` in the heartbeat) from Claude's usage-limit message.

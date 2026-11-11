@@ -70,3 +70,5 @@ the system can fetch.**
 - Open: an organization member without admin rights can install the App only by request; that path
   records nothing until an owner approves, then `setup_action=update` arrives without a state, and
   the person must start Connect GitHub again to link it.
+
+> Amended 2026-11-11 ([ADR 0280](0280-protect-main-with-a-generated-ruleset.md)): the checklist's last step is **Protect `main`** (download the generated ruleset, open GitHub's rulesets page, Check now; a message for the repo admin when the viewer isn't one), checked against rulesets instead of classic branch protection.

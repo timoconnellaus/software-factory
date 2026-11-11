@@ -67,4 +67,7 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0100](0100-runner-contract.md) | The runner contract (promoted from the spike) |
 | [0110](0110-work-item-workflow-and-gate.md) | A Workflow per work item, gated through the operation pipeline (promoted from the spike) |
 | [0250](0250-runner-host-pushes-and-harness-projection.md) | The runner host pushes; the harness gets a projected settings file and no credentials |
-| [0260](0260-work-item-attachments.md) | Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel |
+| [0260](0260-runners-attach-to-the-existing-checkout.md) | Runners attach to the machine's existing checkout of a repo, by canonical identity |
+| [0270](0270-the-factory-launches-the-harness-and-verifies-it.md) | The factory launches the harness (its own permission mode, no user settings), sandboxes it, and verifies the live process |
+| [0280](0280-protect-main-with-a-generated-ruleset.md) | The factory generates the default-branch ruleset; a person applies it; the factory verifies it (the App stays `administration: read`) |
+| [0310](0310-work-item-attachments.md) | Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel |

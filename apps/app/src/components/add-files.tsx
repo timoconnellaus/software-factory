@@ -1,4 +1,4 @@
-// Adding files (spec wi-1, ADR 0260): the drop zone and picker, the paste listener and the pending
+// Adding files (spec wi-1, ADR 0310): the drop zone and picker, the paste listener and the pending
 // rows with per-file progress or the reason a file was refused. Shared by the work item's
 // Attachments card and the New work form.
 import { cn } from "@software-factory/ui/lib/utils";

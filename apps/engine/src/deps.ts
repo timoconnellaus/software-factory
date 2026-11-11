@@ -66,6 +66,8 @@ function unavailableGitHub(): FactoryServices["github"] {
     postCheckRun: no,
     findRepoInstallation: no,
     repoGuards: no,
+    repoPermission: no,
+    appSettings: no,
     getInstallation: no,
     listInstallationRepos: no,
     getInstallationRepo: no,

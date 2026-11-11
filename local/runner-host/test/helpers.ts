@@ -28,7 +28,7 @@ import {
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
 import { nodeExec } from "@software-factory/runner-orca";
-import { hostGit } from "../src/git.ts";
+import { FETCH_NAMESPACE, hostGit } from "../src/git.ts";
 
 export const RUNNER = "r_hosttest01";
 
@@ -53,7 +53,7 @@ export interface FakeCloud {
   tokens: number;
   /** Job ids whose next call is refused as fenced. */
   fenced: Set<string>;
-  /** Each job's work item attachments, as the channel serves them (ADR 0260). */
+  /** Each job's work item attachments, as the channel serves them (ADR 0310). */
   attachments: Map<string, { meta: AttachmentMeta; base64: string }[]>;
   attachmentCalls: number;
 }
@@ -240,7 +240,16 @@ export function fakeAdapter(
       calls.push("prepare");
       const clone = clonePath(j);
       const path = join(clone, "..", `wt-${j.jobId}`);
-      git(clone, "worktree", "add", "-q", "-b", j.branch, path, `origin/${j.repo.baseRef}`);
+      git(
+        clone,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        j.branch,
+        path,
+        `${FETCH_NAMESPACE}/${j.repo.baseRef}`,
+      );
       return {
         jobId: j.jobId,
         path,

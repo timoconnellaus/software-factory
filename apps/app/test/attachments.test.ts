@@ -1,4 +1,4 @@
-// Attachments end to end in the app (spec wi-1, ADR 0260): a pasted clipboard image goes through
+// Attachments end to end in the app (spec wi-1, ADR 0310): a pasted clipboard image goes through
 // the upload route to the real operations (core's invoke, D1 and a real R2 binding in workerd),
 // shows up in the list, and is served back with safe headers. Refusals store nothing, and anyone
 // without access gets the same 404 as for a missing file.

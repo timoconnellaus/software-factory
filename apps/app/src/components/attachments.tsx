@@ -1,4 +1,4 @@
-// The Attachments section of a work item (spec wi-1, ADR 0260): a list with thumbnails for images,
+// The Attachments section of a work item (spec wi-1, ADR 0310): a list with thumbnails for images,
 // size and uploader; add by picker, drag-and-drop or pasting a clipboard image anywhere on the page;
 // per-file progress and the server's reason for a rejected file; remove with confirmation.
 import { Button } from "@software-factory/ui/components/button";

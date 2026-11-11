@@ -1,4 +1,4 @@
-// A work item's attachments in a run (ADR 0260): the runner host fetches them over the job channel,
+// A work item's attachments in a run (ADR 0310): the runner host fetches them over the job channel,
 // this writes them into a per-run directory OUTSIDE the git tree (so they can't be committed) and
 // says where they are in the prompt, inside labelled untrusted-data blocks. Text files are also
 // quoted there (sanitised, clipped), so the agent sees them without trusting them.

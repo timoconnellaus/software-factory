@@ -200,7 +200,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   const notes: string[] = [];
 
   /**
-   * The work item's attachments (ADR 0260), when the adapter declares `work-item-attachments`:
+   * The work item's attachments (ADR 0310), when the adapter declares `work-item-attachments`:
    * fetched over the job channel with this job's fencing token, handed to the adapter to put
    * outside the git tree, and its note appended to the prompt. Any other runner skips this.
    */
@@ -270,7 +270,9 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       if (token.pushBranch !== job.branch) {
         throw new Error(`the job token is for ${token.pushBranch}, not ${job.branch}`);
       }
-      const clone = await git.ensureRepo(job, token.token);
+      // The checkout this machine already has for the repo (ADR 0260), else the host's own clone.
+      const existing = adapter.resolveCheckout ? await adapter.resolveCheckout(job) : null;
+      const clone = await git.ensureRepo(job, token.token, existing);
       if (signal.aborted) throw signal.reason;
       workspace = await adapter.prepareWorkspace(job, signal);
       if (workspace.branch !== job.branch) {

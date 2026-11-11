@@ -1,4 +1,7 @@
-# ADR 0260: Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel
+# ADR 0310: Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel
+
+> Renumbered 2026-11-11: built as ADR 0260 with migration 0070, both already taken on `main` by
+> #22 and #26 (a build can't see claims on unmerged branches). Now ADR 0310, migration 0090 (block N).
 
 Status: accepted, 2026-11-11 (work item 1, spec [wi-1](../specs/wi-1-let-s-also-make-it-so-work-items-can-hav.md)).
 
@@ -10,7 +13,7 @@ there), in storage (one org must never reach another's), and in the agent's prom
 carry instructions).
 
 ## Decision
-- **Storage.** D1 holds metadata only (`core_attachments`, migration 0070: id, work item, org,
+- **Storage.** D1 holds metadata only (`core_attachments`, migration 0090: id, work item, org,
   project, filename, content type, size, SHA-256, uploader, created). The bytes live in a private R2
   bucket, `sf-attachments`, bound as `ATTACHMENTS` on `sf-engine` only, keyed
   `<org>/<work item>/<attachment id>`, never by filename. No public bucket, no signed or long-lived

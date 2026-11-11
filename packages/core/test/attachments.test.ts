@@ -1,4 +1,4 @@
-// Work item attachments (spec wi-1, ADR 0260), against the real D1 and R2 bindings in workerd.
+// Work item attachments (spec wi-1, ADR 0310), against the real D1 and R2 bindings in workerd.
 import { env } from "cloudflare:workers";
 import { createDb } from "@software-factory/db";
 import type { CapabilityManifest, Job } from "@software-factory/runner-contract";

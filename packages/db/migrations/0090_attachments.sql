@@ -1,4 +1,4 @@
--- Migration 0070 (work item attachments, ADR 0260): metadata only. The bytes live in the R2 bucket
+-- Migration 0090 (work item attachments, ADR 0310): metadata only. The bytes live in the R2 bucket
 -- bound as ATTACHMENTS on sf-engine, keyed `<org>/<work item>/<attachment id>` (never by filename).
 -- A row exists only while its blob does: `add` writes the blob before the row, `remove` deletes the
 -- blob before the row, and the cron sweeps blobs with no row.
@@ -20,4 +20,4 @@ CREATE TABLE core_attachments (
 );
 CREATE INDEX core_attachments_work_item_idx ON core_attachments (work_item_id, created_at);
 
-UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 70) WHERE key = 'schema_version';
+UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 90) WHERE key = 'schema_version';

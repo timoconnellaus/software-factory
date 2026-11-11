@@ -1,4 +1,4 @@
-// Work item attachments (ADR 0260): metadata in D1, bytes in R2 through `ctx.services.attachments`.
+// Work item attachments (ADR 0310): metadata in D1, bytes in R2 through `ctx.services.attachments`.
 // People add and remove them from the app; a run lists and fetches its own work item's files over
 // the runner channel, authorized by its job (runner + job + current fencing token), never by a
 // standing credential or a public URL. Every refusal a caller without access could see reads as

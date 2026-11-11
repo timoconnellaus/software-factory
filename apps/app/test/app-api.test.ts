@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runOp, sessionInfo } from "#/server/app-api";
 import { handleGitHubSetup } from "#/server/github-setup";
+import { handleRulesetDownload, matchRulesetDownload } from "#/server/ruleset-download";
 import { recordingEngine, signIn, testEnv, uid } from "./helpers.ts";
 
 describe("calling operations from the app", () => {
@@ -170,5 +171,54 @@ describe("the GitHub App's Setup URL (/integrations/github/setup)", () => {
       await runOp(appEnv, headers, { name: "github.connectInstallation", input: {} }),
     ).toMatchObject({ ok: false, code: "invalid_input" });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("downloading a ruleset (ADR 0280)", () => {
+  const projectId = `prj_${"a".repeat(32)}`;
+  const path = `https://app.example/api/projects/${projectId}/rulesets/default-branch.json`;
+
+  it("serves the engine's file as an attachment, for the signed-in person", async () => {
+    const login = uid("gh-");
+    const { engine, calls } = recordingEngine(() => ({
+      ok: true,
+      result: {
+        status: "ok",
+        output: { filename: "software-factory-default-branch.json", json: '{"name":"x"}\n' },
+        auditId: null,
+      },
+    }));
+    const appEnv = testEnv(engine, login);
+    const { user, headers } = await signIn(appEnv, login);
+    const target = matchRulesetDownload(new URL(path).pathname);
+    expect(target).toEqual({ projectId, kind: "default-branch" });
+    const res = await handleRulesetDownload(
+      appEnv,
+      new Request(path, { headers }),
+      target as { projectId: string; kind: string },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toBe(
+      'attachment; filename="software-factory-default-branch.json"',
+    );
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+    expect(await res.text()).toBe('{"name":"x"}\n');
+    expect(calls[0]).toMatchObject({
+      name: "protection.ruleset",
+      input: { projectId, kind: "default-branch" },
+      options: { actor: { type: "human", id: user.id } },
+    });
+  });
+
+  it("needs a session, and matches only real project ids and kinds", async () => {
+    const { engine, calls } = recordingEngine();
+    const res = await handleRulesetDownload(testEnv(engine), new Request(path), {
+      projectId,
+      kind: "default-branch",
+    });
+    expect(res.status).toBe(401);
+    expect(calls).toHaveLength(0);
+    expect(matchRulesetDownload("/api/projects/prj_x/rulesets/default-branch.json")).toBeNull();
+    expect(matchRulesetDownload(`/api/projects/${projectId}/rulesets/../secrets.json`)).toBeNull();
   });
 });

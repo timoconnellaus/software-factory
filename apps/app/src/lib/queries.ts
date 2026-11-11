@@ -44,7 +44,7 @@ export const timelineQuery = (workItemId: string) =>
     refetchInterval: 10_000,
   });
 
-/** A work item's attachments (ADR 0260): metadata only; the files come from /api/attachments/<id>. */
+/** A work item's attachments (ADR 0310): metadata only; the files come from /api/attachments/<id>. */
 export const attachmentsQuery = (workItemId: string) =>
   queryOptions({
     queryKey: ["workItem", workItemId, "attachments"],

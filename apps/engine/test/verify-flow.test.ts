@@ -4,8 +4,9 @@
 // auto-merges.
 import { env } from "cloudflare:workers";
 import { sign } from "@software-factory/connector-webhook";
+import { protectedGuards } from "@software-factory/core/testing";
 import { describe, expect, it } from "vitest";
-import worker from "../src/index.ts";
+import worker, { recheckProtection } from "../src/index.ts";
 import {
   all,
   BALANCED,
@@ -262,5 +263,53 @@ describe("verify in the v2 Workflow", () => {
       touchesPolicy.workItemId,
     );
     expect(gate).toMatchObject({ operation: "pr.merge", risk: "self-modify" });
+  });
+});
+
+describe("protection drift (ADR 0280)", () => {
+  it("a repository_ruleset webhook re-checks main: ok, then red with the inbox card", async () => {
+    const w = await world();
+    await github.setGuards(w.repo, protectedGuards());
+    let res = await deliver("repository_ruleset", { action: "created", repository: repository(w) });
+    expect(res.status).toBe(200);
+    expect(
+      await first<{ state: string; trigger: string }>(
+        "SELECT state, trigger FROM core_project_protection WHERE project_id = ?",
+        w.projectId,
+      ),
+    ).toEqual({ state: "ok", trigger: "webhook" });
+
+    // The ruleset is deleted on GitHub.
+    await github.setGuards(w.repo, {
+      ...protectedGuards(),
+      rulesets: protectedGuards().rulesets.slice(1),
+    });
+    res = await deliver("repository_ruleset", { action: "deleted", repository: repository(w) });
+    const body = (await res.json()) as { results: { op: string; outcome: string }[] };
+    expect(body.results).toEqual([
+      expect.objectContaining({ op: "protection.observe", outcome: "ok" }),
+    ]);
+    const inbox = await ok<{ protection: { projectId: string; problems: string[] }[] }>(
+      "inbox.list",
+      { orgId: w.orgId },
+      w.human,
+    );
+    expect(inbox.protection).toEqual([
+      expect.objectContaining({
+        projectId: w.projectId,
+        problems: expect.arrayContaining(["`factory/verify` not required"]),
+      }),
+    ]);
+  });
+
+  it("the daily cron re-checks projects not checked for a day", async () => {
+    const w = await world();
+    await recheckProtection(env, new Date(Date.now() + 2 * 86_400_000), 1000);
+    expect(
+      await first<{ state: string; trigger: string }>(
+        "SELECT state, trigger FROM core_project_protection WHERE project_id = ?",
+        w.projectId,
+      ),
+    ).toEqual({ state: "red", trigger: "daily" });
   });
 });

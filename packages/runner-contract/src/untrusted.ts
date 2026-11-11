@@ -1,4 +1,4 @@
-// Requester-supplied data in an agent's prompt (ADR 0260): anything a person or an intake source
+// Requester-supplied data in an agent's prompt (ADR 0310): anything a person or an intake source
 // wrote (attachment filenames and contents, for a start) goes into a labelled block the agent is
 // told is data, never instructions. Sanitising keeps the block closed: the content can't end it
 // early, smuggle control characters, or carry a label that pretends to be something else.

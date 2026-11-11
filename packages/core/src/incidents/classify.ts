@@ -43,7 +43,11 @@ export function classifyIncident(input: {
   let rootCause: RootCause;
   if (has(reason, /outside (its|the run'?s?) (own )?branch|may only push|pushed .*factory\//i)) {
     rootCause = "confinement";
-  } else if (input.kind === "run_stalled" || has(reason, /stall|lease expired|no heartbeat/i)) {
+  } else if (
+    input.kind === "run_stalled" ||
+    // The live harness wasn't configured as the factory launched it (ADR 0270): the runner's launcher.
+    has(reason, /stall|lease expired|no heartbeat|harness-config-mismatch/i)
+  ) {
     rootCause = "runner";
   } else if (has(reason, /timed?[ _-]?out|timeout|retry limit|wip/i)) {
     rootCause = "policy";

@@ -1,0 +1,8 @@
+{
+  "name": "runner-adapter-resolves-existing-repo",
+  "description": "Incident 2026-11-11 bootstrap #5 (ADR 0260): runner-orca registered its own clone next to the owner's Orca repo and unregistered it after every job, so Orca showed two source repos for one project and churned a new repo id per job. The adapter must resolve the existing Orca repo by canonical identity, and it never unregisters a repo (only the startup migration in workspace.ts retires the runner's own earlier clone).",
+  "appliesTo": ["packages/runner-orca/src/adapter.ts"],
+  "forbid": ["repoForget\\("],
+  "require": ["findRepoForJob\\("],
+  "message": "Resolve the job's repo with findRepoForJob (canonical remote identity) before registering anything, register the runner's clone at most once and permanently, and never unregister a repo in prepareWorkspace or release. See .factory/checks/runner-adapters.md and ADR 0260."
+}

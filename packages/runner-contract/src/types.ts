@@ -35,7 +35,7 @@ export const CONTRACT_VERSION = "1" as const;
  * - `headless`: runs with no desktop UI (a server, CI, a dev box).
  * - `own-hardware`: the runner is a machine its owner controls (client repos may require it).
  * - `work-item-attachments`: fetches the work item's attachments over the channel into the run's
- *   workspace, outside the git tree, and tells the agent where they are (ADR 0260). A runner
+ *   workspace, outside the git tree, and tells the agent where they are (ADR 0310). A runner
  *   without it still runs every job; its agent just sees no attachments.
  */
 export const CAPABILITIES = [
@@ -61,6 +61,19 @@ export type ModelRole = (typeof MODEL_ROLES)[number];
 export const JOB_STAGES = ["triage", "spec", "build", "verify"] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
 
+/**
+ * Permission modes a project may give a stage's harness (ADR 0270). No mode that prompts a person
+ * (`default`/`manual`) and no `auto` (a model classifier decides, not the project's rules).
+ * `bypassPermissions` only ever runs inside the harness's OS sandbox.
+ */
+export const HARNESS_PERMISSION_MODES = [
+  "dontAsk",
+  "acceptEdits",
+  "bypassPermissions",
+  "plan",
+] as const;
+export type HarnessPermissionMode = (typeof HARNESS_PERMISSION_MODES)[number];
+
 export type CapabilityManifest = z.infer<typeof capabilityManifestSchema>;
 export type Capacity = z.infer<typeof capacitySchema>;
 export type Job = z.infer<typeof jobSchema>;
@@ -69,7 +82,7 @@ export type Artifact = z.infer<typeof artifactSchema>;
 export type StoredArtifact = z.infer<typeof storedArtifactSchema>;
 export type Handback = z.infer<typeof handbackSchema>;
 
-/** A work item attachment the host fetched for a run (ADR 0260). Untrusted data. */
+/** A work item attachment the host fetched for a run (ADR 0310). Untrusted data. */
 export interface AttachmentFile {
   meta: AttachmentMeta;
   bytes: Uint8Array;
@@ -126,21 +139,58 @@ export interface RunnerAdapter<
 > {
   manifest(): Promise<CapabilityManifest>;
   capacity(): Promise<Capacity>;
+  /**
+   * The workspace resolution rule (ADR 0260): the local checkout of `job.repo` this runner's
+   * machine already has, found by canonical identity (`canonicalRepoKey`), or null when there is
+   * none. The host fetches the job's base into that checkout (never writing the job token to its
+   * config) instead of cloning a second copy. Optional: an adapter without a registry of checkouts
+   * leaves it out and the host uses its own clone.
+   */
+  resolveCheckout?(job: Job): Promise<string | null>;
+  /**
+   * Makes the job's isolated workspace (its own worktree on `job.branch`) inside the checkout
+   * `resolveCheckout` named, or the host's clone when there was none. It never registers a second
+   * checkout for a repo the runner already has, and never touches the checkout's own working tree.
+   */
   prepareWorkspace(job: Job, signal: AbortSignal): Promise<W>;
   startSession(job: Job, workspace: W, signal: AbortSignal): Promise<S>;
   /** Yields until the session ends; the last event is `session.ended`. */
   events(job: Job, session: S, signal: AbortSignal): AsyncIterable<AdapterEvent>;
   collectArtifacts(job: Job, workspace: W, session: S | undefined): Promise<Artifact[]>;
-  /** Frees everything prepareWorkspace/startSession made. Must be safe to call twice. */
+  /**
+   * Frees everything prepareWorkspace/startSession made for this job (its worktree and branch).
+   * Never the checkout or its registration, which outlive the job. Must be safe to call twice.
+   */
   release(job: Job, workspace: W | undefined, session: S | undefined): Promise<void>;
   /**
-   * Optional, with the `work-item-attachments` capability (ADR 0260): put the work item's files
+   * Optional, with the `work-item-attachments` capability (ADR 0310): put the work item's files
    * into the run, outside the git tree, and return the text to add to the prompt (labelled
    * untrusted data). Called after prepareWorkspace and before startSession.
    */
   attachFiles?(job: Job, workspace: W, files: AttachmentFile[]): Promise<string>;
   /** Optional: send a person's message into the live session. */
   steer?(session: S, text: string): Promise<void>;
+}
+
+/**
+ * A repo's canonical identity, `github.com/<owner>/<name>`, lower-cased: the key runners match
+ * existing checkouts by (ADR 0260). GitHub owner and repo names are case-insensitive.
+ */
+export function canonicalRepoKey(repo: { owner: string; name: string }): string {
+  return `github.com/${repo.owner}/${repo.name.replace(/\.git$/, "")}`.toLowerCase();
+}
+
+/**
+ * The canonical identity of a git remote URL (https, ssh or scp-like), or null when it isn't a
+ * GitHub repo URL. `https://github.com/A/b.git`, `git@github.com:A/b` → `github.com/a/b`.
+ */
+export function canonicalKeyFromUrl(url: string): string | null {
+  const m = url
+    .trim()
+    .match(
+      /^(?:(?:https?|ssh|git):\/\/(?:[^@/]+@)?|[^@/]+@)?github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i,
+    );
+  return m?.[1] && m[2] ? canonicalRepoKey({ owner: m[1], name: m[2] }) : null;
 }
 
 /** Whether a manifest covers a job's needs; returns the missing capabilities. */

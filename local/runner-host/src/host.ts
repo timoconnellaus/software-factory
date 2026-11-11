@@ -13,6 +13,7 @@ import {
 } from "@software-factory/runner-contract";
 import type { HostGit } from "./git.ts";
 import { type JobReport, runJob } from "./job.ts";
+import { writeLiveJobs } from "./live-jobs.ts";
 
 export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle> {
   adapter: RunnerAdapter<W, S>;
@@ -27,6 +28,10 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
   fetch?: typeof fetch;
   /** Tidies up after a crash: jobs this adapter still holds that the host isn't running. */
   reapOrphans?: (running: Set<string>) => Promise<string[]>;
+  /** Runs once at start, after `reapOrphans` and before the first claim (the repo migration). */
+  onStart?: () => Promise<void>;
+  /** Where the host records the jobs it is running, for `sf-runner status` and `doctor`. */
+  liveJobsFile?: string;
 }
 
 interface Running {
@@ -65,6 +70,10 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       });
       if (reaped.length) this.log(`cleaned up after a previous run: ${reaped.join(", ")}`);
     }
+    await this.recordLive();
+    await this.options.onStart?.().catch((err) => {
+      this.log(`startup: ${err instanceof Error ? err.message : err}`);
+    });
     await this.tick();
   }
 
@@ -182,11 +191,20 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       })
       .finally(() => {
         this.running.delete(job.jobId);
+        void this.recordLive();
         // A slot came free: look for the next job now rather than at the next heartbeat.
         if (!this.stopped) this.schedule(1_000);
       });
     entry.done = done;
     this.running.set(job.jobId, entry);
+    void this.recordLive();
+  }
+
+  private async recordLive() {
+    if (!this.options.liveJobsFile) return;
+    await writeLiveJobs(this.options.liveJobsFile, this.activeJobs).catch((err) => {
+      this.log(`live jobs file: ${err instanceof Error ? err.message : err}`);
+    });
   }
 
   /** Waits for every running job to finish. */
@@ -210,5 +228,6 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       new Promise((resolve) => setTimeout(resolve, options.timeoutMs ?? 120_000)),
     ]);
     await this.ticking;
+    await this.recordLive();
   }
 }

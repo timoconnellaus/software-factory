@@ -5,17 +5,28 @@
 //                                  print a code, wait for approval in the app, save the key, install
 //   sf-runner pair --runner-id r_… --key-stdin   (fallback: a key registered in Setup)
 //   sf-runner run                  run in the foreground (what the service runs)
-//   sf-runner status               config (key redacted) and service state
-//   sf-runner doctor               check node, git, orca, claude and the channel
+//   sf-runner status               config (key redacted), service state and the jobs it is running
+//   sf-runner doctor [--fix]       check node, git, orca, claude, the channel, Orca's repos
+//                                  (duplicate source repos for one remote, job worktrees with no
+//                                  job), and that each running job's Claude runs exactly as the
+//                                  harness launched it (ADR 0270)
 //   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
-import { nodeExec } from "@software-factory/runner-orca";
+import {
+  checkRunningHarness,
+  diagnose,
+  jobIdOf,
+  migrateRunnerRepos,
+  nodeExec,
+  orcaCli,
+  reapOrphanWorktrees,
+} from "@software-factory/runner-orca";
 import type { RunnerConfig } from "./config.ts";
 import {
   configSchema,
@@ -28,8 +39,9 @@ import {
 } from "./config.ts";
 import { deviceLogin } from "./device-login.ts";
 import * as launchd from "./launchd.ts";
+import { readLiveJobs } from "./live-jobs.ts";
 import { parsePairingInput, serviceNode } from "./pairing.ts";
-import { buildRunner } from "./runner.ts";
+import { buildRunner, liveJobsFile } from "./runner.ts";
 
 const dirs = paths();
 
@@ -180,11 +192,42 @@ async function status() {
   console.log(
     config ? JSON.stringify(redacted(config), null, 2) : `not paired (${dirs.configFile})`,
   );
-  console.log(`service: ${(await launchd.status(nodeExec)) ?? "not installed"}`);
+  const service = await launchd.status(nodeExec);
+  console.log(`service: ${service ?? "not installed"}`);
+  const live = await readLiveJobs(liveJobsFile(dirs));
+  console.log(
+    live
+      ? `jobs running: ${live.jobs.length ? live.jobs.join(", ") : "none"} (host pid ${live.pid}, ${live.updatedAt})`
+      : service && /state = running/.test(service)
+        ? "jobs running: unknown (the service predates the live-jobs file; check Orca for sf-job: worktrees)"
+        : "jobs running: none (no host running)",
+  );
+  // What Orca holds, whichever host made it: wait for this to be empty before upgrading.
+  const rows = await orcaCli({ ...(config?.orcaBin ? { bin: config.orcaBin } : {}) })
+    .worktreePs()
+    .catch(() => null);
+  const jobRows = rows?.filter((r) => jobIdOf(r.comment)) ?? [];
+  console.log(
+    rows === null
+      ? "job worktrees in Orca: unknown (orca not reachable)"
+      : `job worktrees in Orca: ${jobRows.length ? jobRows.map((r) => `${jobIdOf(r.comment)} (${r.agents.map((a) => a.state).join(",") || "no agent"})`).join(", ") : "none"}`,
+  );
   console.log(`state: ${dirs.stateDir}\nlog: ${join(dirs.logDir, "runner.log")}`);
 }
 
-async function doctor() {
+/**
+ * The jobs a running host holds, for doctor. `null` when that can't be known: the service is up but
+ * wrote no live-jobs file (a host from before it existed), so nothing may be treated as an orphan.
+ */
+async function liveJobs(): Promise<Set<string> | null> {
+  const live = await readLiveJobs(liveJobsFile(dirs));
+  if (live) return new Set(live.jobs);
+  const service = await launchd.status(nodeExec);
+  return service && /state = running/.test(service) ? null : new Set();
+}
+
+async function doctor(args: string[]) {
+  const { values } = parseArgs({ args, options: { fix: { type: "boolean" } } });
   let ok = true;
   const check = async (what: string, fn: () => Promise<string>) => {
     try {
@@ -211,6 +254,78 @@ async function doctor() {
     if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim());
     return "yes";
   });
+  const orcaBin = (await loadConfig(dirs.configFile).catch(() => null))?.orcaBin;
+  const orcaOptions = { ...(orcaBin ? { bin: orcaBin } : {}), exec: nodeExec };
+  await check("orca repos (one source repo per remote, no orphaned job worktrees)", async () => {
+    const live = await liveJobs();
+    const findings = await diagnose({
+      ...orcaOptions,
+      ownReposDir: dirs.reposDir,
+      live: live ?? new Set(),
+    });
+    // Without a live-jobs list every job worktree would look orphaned: don't report or fix those.
+    const relevant = live ? findings : findings.filter((f) => f.kind !== "orphan-worktree");
+    if (relevant.length === 0) {
+      return live
+        ? "ok"
+        : "ok (job worktrees not checked: the running service doesn't report its jobs)";
+    }
+    for (const f of relevant)
+      console.log(`  - ${f.message}${f.fixable ? "" : " (not fixable here)"}`);
+    if (!values.fix) throw new Error(`${relevant.length} problem(s); run sf-runner doctor --fix`);
+    if (live) {
+      const reaped = await reapOrphanWorktrees(orcaOptions, live);
+      if (reaped.length) console.log(`  fixed: removed worktrees of ${reaped.join(", ")}`);
+    }
+    for (const m of await migrateRunnerRepos({
+      ...orcaOptions,
+      ownReposDir: dirs.reposDir,
+      live,
+    })) {
+      console.log(
+        m.skipped
+          ? `  not fixed: ${m.key}: ${m.skipped}`
+          : `  fixed: ${m.key} now uses ${m.kept.path}; unregistered and deleted ${m.retired.path}`,
+      );
+    }
+    const after = await diagnose({
+      ...orcaOptions,
+      ownReposDir: dirs.reposDir,
+      live: live ?? new Set(),
+    });
+    const left = live ? after : after.filter((f) => f.kind !== "orphan-worktree");
+    if (left.length) throw new Error(`${left.length} problem(s) left after --fix`);
+    return "fixed";
+  });
+  await check("running jobs' harness (permission mode, setting sources, settings)", async () => {
+    const live = await liveJobs();
+    // Unknown live set (an old host): check every run dir that has a launch record.
+    const jobs = live ? [...live] : await readdir(dirs.runsDir).catch(() => [] as string[]);
+    const lines: string[] = [];
+    let bad = 0;
+    for (const jobId of jobs) {
+      const checked = await checkRunningHarness(join(dirs.runsDir, jobId));
+      if (!checked) {
+        if (live) lines.push(`${jobId}: no launch record (started by an older runner?)`);
+        continue;
+      }
+      if (checked.problems.length) {
+        bad++;
+        lines.push(`${jobId}: harness-config-mismatch: ${checked.problems.join("; ")}`);
+      } else {
+        lines.push(`${jobId}: ${checked.record.mode}, as launched`);
+      }
+    }
+    for (const line of lines) console.log(`  - ${line}`);
+    if (bad) throw new Error(`${bad} job(s) not running as the harness launched them`);
+    return lines.length ? "ok" : "no jobs running";
+  });
+  const raw = await readFile(dirs.configFile, "utf8").catch(() => "");
+  if (/"permissionMode"/.test(raw)) {
+    console.log(
+      `! ${dirs.configFile} sets permissionMode, which is ignored: the project's policy sets it (ADR 0270)`,
+    );
+  }
   const config = await loadConfig(dirs.configFile).catch(() => null);
   if (!config) {
     console.log(`✗ paired: no ${dirs.configFile}`);
@@ -278,7 +393,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
 };
 const fn = command ? commands[command] : undefined;
 if (!fn) {
-  console.log("usage: sf-runner login|run|status|doctor|install|uninstall");
+  console.log("usage: sf-runner login|run|status|doctor [--fix]|install|uninstall");
   process.exit(command ? 2 : 0);
 }
 fn(rest).catch((err) => {

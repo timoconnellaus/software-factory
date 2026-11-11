@@ -21,7 +21,7 @@ export default mergeConfig(
       wrangler: { configPath: "./wrangler.jsonc" },
       main: "./test/worker.ts",
       miniflare: {
-        // Attachment tests run the real operations against a real R2 binding (ADR 0260).
+        // Attachment tests run the real operations against a real R2 binding (ADR 0310).
         r2Buckets: ["ATTACHMENTS"],
         bindings: {
           TEST_MIGRATIONS: await readD1Migrations("../../packages/db/migrations"),

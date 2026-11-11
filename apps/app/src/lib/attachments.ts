@@ -1,4 +1,4 @@
-// Attachments in the browser (ADR 0260): turning a paste, a drop or a picked file into uploads,
+// Attachments in the browser (ADR 0310): turning a paste, a drop or a picked file into uploads,
 // and uploading one file to the app's upload route (which calls `workItem.attachment.add`). The
 // server decides what is accepted; the checks here only give a quicker message.
 import {

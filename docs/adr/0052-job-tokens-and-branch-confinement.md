@@ -41,3 +41,5 @@ never be stored by the factory.
 - Items 1 and 4 are the GitHub connector's job (spec 04); until they land, item 2 is the check.
 
 > Amended 2026-11-11 (V1 step 4, [ADR 0231](0231-verify-verdict-and-the-github-connector.md)): items 1 and 4 are built. The ruleset is `FACTORY_RULESET` (repo admins bypass it; the App doesn't), applied to software-factory and checked by `project.checkGitHub`. The push webhook (`push.observe`) also accepts the App moving a work item's branch to a handed-back run's head, or while no run is active.
+
+> Amended 2026-11-11 ([ADR 0280](0280-protect-main-with-a-generated-ruleset.md)): `FACTORY_RULESET` is now `factoryBranchesRuleset()` in `packages/core/src/verify/protection.ts`, offered in Setup as `<repo>-factory-branches.json` for a person to import (the App keeps `administration: read`). The default branch is guarded by a second generated ruleset (`<repo>-default-branch.json`, no bypass) rather than classic branch protection, and both are checked by `protection.check`.

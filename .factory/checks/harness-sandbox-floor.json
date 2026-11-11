@@ -1,0 +1,12 @@
+{
+  "name": "harness-sandbox-floor",
+  "description": "ADR 0270: every run's Bash commands run in Claude Code's sandbox with no way out. The harness settings must keep the sandbox on, fail if it can't start, never allow unsandboxed commands, and never load the owner's user settings.",
+  "appliesTo": ["packages/harness-claude/src/**/*.ts"],
+  "exclude": ["packages/harness-claude/test/**"],
+  "forbid": [
+    "allowUnsandboxedCommands:\\s*true",
+    "--dangerously-skip-permissions",
+    "SETTING_SOURCES\\s*=\\s*\"[^\"]*user"
+  ],
+  "message": "The sandbox floor is code, not configuration: sandbox.enabled and failIfUnavailable stay true, allowUnsandboxedCommands stays false, and the setting sources never include `user`. See ADR 0270."
+}
