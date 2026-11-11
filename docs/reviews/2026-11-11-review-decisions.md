@@ -5,6 +5,9 @@
 - Deployed: `sf-app` and `sf-engine` are live, but they're **placeholders** (only `/api/health`). R1 isn't built yet.
 - Fable review: see the "Fable design review" doc.
 
+## Intent (confirmed)
+Ship across many projects with a light touch, **safely**. The workflow is controlled in our app, and building is as automated as possible. **When something goes wrong in a project's development, we fix that project's factory configuration (`.factory/`: checks, skills, context, review-packet patterns, policy) so it doesn't happen again.** Shared templates change only when the same cause recurs across projects. Self-improvement is the core loop, not a side feature.
+
 ## Decisions
 - **Runner credentials:** the cloud mints a per-job GitHub App token scoped to one repo, and the harness runs without the owner's git or cloud credentials. The model subscription stays the owner's. Branch protection allows no admin bypass.
 - **Pushing:** the runner pushes with that token to the work item's own branch only.
@@ -46,7 +49,24 @@
 - **Preview deploys:** later, with separate preview D1/KV/R2. Never against prod data.
 - **First projects:** crm (Relationship OS), software-factory (itself), channel-manager.
 
-_Open:_ how review should work on your first projects (crm, software-factory, channel-manager).
+- **Your projects today:** a light-touch review, and the factory exists to make that light touch *safe*. The biggest worry, beyond bugs, UX, security and data, is **bugs that become Cloudflare spend**.
+- **Review happens in the factory app.** The review packet is the gate, with the GitHub PR linked.
+
+- **Merge checks for the first projects:** tests/lint/typecheck, screenshots of changed screens, acceptance criteria with evidence, an independent agent review, and migrations/data changes called out and dry-run. Auto-merge is set per project in `.factory/`.
+- **Spend guards:**
+  - a spend-risk section in the review packet
+  - static spend checks in verify
+  - **spend as a decision domain**
+  - a 24h post-deploy usage watch with rollback
+
+- **Spend anomaly connector:** all six parts (usage → $/day, baseline outliers, deploy correlation, a spend work item + fix agent, a runaway guard, learning into checks). Ships in **R2**.
+- **Factory incidents:**
+  - **Triggers:** send-back, bug after merge, spend anomaly, stuck/failed run, a question it should have known, problems found despite verify passing.
+  - **Output:** a root-cause class, a fix PR to **that project's `.factory/`**, and a regression eval.
+  - **Approval:** check-only changes **auto-merge** once their eval passes, and anything that loosens policy needs you.
+  - **Release:** the loop is core and ships in **V1**.
+  - **Metric:** repeat-failure rate is a headline metric. Autonomy only loosens once failure classes stop recurring.
+- **V1 de-scoped to the dogfooding factory** (see `docs/v1-scope.md`). The factory builds itself, and everything else is delivered through it.
 
 ## Housekeeping I'll do without asking
 - Record the ADR number blocks 0100/0110/0120 in `docs/parallel-work.md`.

@@ -17,7 +17,7 @@ Decided 2026-11-11. This supersedes the R1 milestone order for what gets built f
 | Credentials | The cloud mints a **per-job GitHub App token** scoped to the repo and the work item's branch. The runner pushes with it. The harness runs without the owner's git/cloud credentials |
 | Verify | Tests/lint/typecheck in the worktree. Read CI from GitHub. An independent reviewer run (role `review`). Acceptance criteria checked one by one. `factory/verify` check run from the App, bound to the head SHA |
 | Review | **Review packet in the app is the merge gate**: verdict row, what changed, criteria + evidence, reviewer notes, risk flags, a link to the GitHub PR. Merge / send back from the app; the App performs the merge |
-| Improvement loop | A **factory incident** is opened automatically when a PR is sent back or a run fails/stalls. It's a work item in the same project that proposes a fix to **`.factory/`** (check, skill/prompt, context, policy) plus a regression case in `evals/`. In V1 these go through the normal gate (you approve) |
+| Improvement loop | A **factory incident** is opened automatically when a PR is sent back or a run fails/stalls. It's a work item in the same project that proposes a fix to **`.factory/`** (check, skill/prompt, context, policy) plus a regression case in `evals/`. Incident fixes that **only add** checks or evals auto-merge once their regression eval passes. Anything that loosens policy or permissions needs you |
 | Visibility | Inbox (waiting on you), work item detail with timeline, runner health line. The audit journal records gate time, send-backs and cycle time; there's no dashboard yet |
 
 ## Not in V1 (sequenced after, built *by* the factory)
@@ -25,7 +25,7 @@ Decided 2026-11-11. This supersedes the R1 milestone order for what gets built f
 - **Intake:** GitHub issues/labels, Linear, Slack, Sentry, cron, phone, local-session handoff
 - **Governed local sessions:** projection into AGENTS.md/CLAUDE.md, hooks, claim/lease from local Claude. The required `factory/verify` check already guards main
 - **Spend:** review-packet spend section, static checks, spend domain, 24h post-deploy watch, the spend anomaly connector
-- **Other:** web push and notifications, WIP backpressure, inbox grouping, the Metrics page, preview environments, holdout acceptance tests, other harnesses, dev boxes, other runners, auto-merge of check-only `.factory/` changes, the Jev injection check, passkeys, the native app
+- **Other:** web push and notifications, WIP backpressure, inbox grouping, the Metrics page, preview environments, holdout acceptance tests, other harnesses, dev boxes, other runners, the Jev injection check, passkeys, the native app
 
 ## Order after V1
 Notifications + backpressure, then holdout tests + spend guards, then GitHub-issue intake, then multi-session + orgs, then decision domains + clarification, then the rest. You can reorder by filing work items.
