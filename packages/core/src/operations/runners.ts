@@ -644,6 +644,14 @@ function finishRun(
       .set({ status: status === "handed_back" ? "done" : "failed", finished_at: ctx.now })
       .where("id", "=", run.job_id),
   );
+  // The run is over: free the lease (its fencing token stays, so it never goes down).
+  ctx.write(
+    ctx.db
+      .updateTable("core_leases")
+      .set({ holder_kind: null, holder_id: null, released_at: ctx.now })
+      .where("work_item_id", "=", run.work_item_id)
+      .where("holder_id", "=", run.id),
+  );
   ctx.emit({
     kind: "workflow.event",
     payload: { instanceId: workflowId, type: runEvent(run.job_id), payload: { runId: run.id, outcome, reason: fields.reason } },
