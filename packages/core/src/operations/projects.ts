@@ -408,6 +408,37 @@ export const projectUpdate = defineOperation({
   },
 });
 
+export const orgList = defineOperation({
+  name: "org.list",
+  description:
+    "The orgs you belong to, your Personal org first, with your role in each: what the CLI uses to find your projects (the app reads the same from your session).",
+  risk: "read",
+  actors: ["human"],
+  permission: "signed-in",
+  input: z.object({}),
+  output: z.object({
+    orgs: z.array(
+      z.object({ id: z.string(), name: z.string(), kind: z.string(), role: z.string() }),
+    ),
+  }),
+  async handler(_input, ctx) {
+    const rows = await ctx.db
+      .selectFrom("core_member as m")
+      .innerJoin("core_organization as o", "o.id", "m.organization_id")
+      .select(["o.id", "o.name", "o.kind", "m.role", "o.created_at"])
+      .where("m.user_id", "=", ctx.actor.id)
+      .execute();
+    rows.sort(
+      (a, b) =>
+        Number(b.kind === "personal") - Number(a.kind === "personal") ||
+        String(a.created_at).localeCompare(String(b.created_at)),
+    );
+    return {
+      orgs: rows.map((r) => ({ id: r.id, name: r.name, kind: String(r.kind), role: r.role })),
+    };
+  },
+});
+
 export const projectList = defineOperation({
   name: "project.list",
   description: "List the projects in an org the caller belongs to.",
@@ -511,6 +542,7 @@ export const killSwitchSet = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "member",
+  browserOnly: (input) => !input.on, // turning a kill switch on is fine from a terminal
   input: z.object({
     scope: z.enum(["org", "project"]),
     id: z.string().min(1),

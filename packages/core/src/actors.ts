@@ -13,6 +13,7 @@ export interface Actor {
 
 export const SURFACES = [
   "app",
+  "cli",
   "mcp",
   "runner-channel",
   "workflow",

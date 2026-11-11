@@ -4,6 +4,7 @@ import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
+import * as cli from "./operations/cli.ts";
 import * as connector from "./operations/connector.ts";
 import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
@@ -22,6 +23,7 @@ import * as workItems from "./operations/work-items.ts";
 export const OPERATIONS: readonly AnyOperation[] = [
   projects.projectCreate,
   projects.projectList,
+  projects.orgList,
   projects.projectUpdate,
   projects.policySync,
   projects.killSwitchSet,
@@ -60,6 +62,13 @@ export const OPERATIONS: readonly AnyOperation[] = [
   specs.specAccept,
   specs.specCommit,
   gates.approvalDecide,
+  cli.cliDeviceStart,
+  cli.cliDevicePoll,
+  cli.cliDeviceLookup,
+  cli.cliApproveDevice,
+  cli.cliDenyDevice,
+  cli.cliTokenList,
+  cli.cliTokenRevoke,
   gates.specApprove,
   gates.specRequestChanges,
   gates.reviewMerge,
@@ -129,5 +138,8 @@ export function describeOperations() {
     permission: op.permission,
     fenced: op.fenced ?? false,
     gateKind: op.gateKind ?? null,
+    /** Decided only in the app (ADR 0340); a function means "for some inputs". */
+    browserOnly:
+      op.browserOnly === undefined ? false : op.browserOnly === true ? true : "some inputs",
   }));
 }

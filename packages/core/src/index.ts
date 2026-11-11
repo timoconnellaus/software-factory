@@ -12,6 +12,12 @@ export {
   type AttachmentView,
   sweepStrayAttachmentBlobs,
 } from "./operations/attachments.ts";
+export {
+  CLI_APPROVE_PATH,
+  CLI_DEVICE_ACTOR,
+  CLI_TOKEN_PREFIX,
+  resolveCliToken,
+} from "./operations/cli.ts";
 export { DEVICE_LOGIN_ACTOR, normalizeUserCode } from "./operations/devices.ts";
 export * as operations from "./operations/index.ts";
 export { PROTECTION_RECHECK_MS } from "./operations/protection.ts";
