@@ -1,0 +1,73 @@
+# Personal software factory: v1 architecture
+# Cloud control plane on Cloudflare (storage/state). Execution through pluggable runner adapters; Orca is the first.
+direction: right
+
+intake: Intake sources {
+  gh: GitHub issues/PRs
+  linear: Linear
+  slack: Slack
+  phone: Phone capture
+  cron: Schedules
+  sentry: Sentry / logs
+  cli: Chat / CLI
+}
+
+cloud: Cloud control plane (Cloudflare, CRM pattern) {
+  hooks: Gatekeepers (intake webhooks + outbound)
+  store: Work-item store + audit journal
+  sm: Workflows: state machine + gates (enforced in code)
+  foreman: Foreman LLM (picks route within rules)
+  policy: Policy (presets + floor, reads .factory/)
+  sched: Scheduler + runtime pool (runners, capacity, capabilities)
+  dash: Web dashboard / inbox
+  push: Push notifications (outbox)
+  mcp: MCP surface (operations)
+}
+
+host: Runner host (generic daemon; e.g. Mac mini) {
+  contract: Runner contract (claim, prepare workspace, start session, stream, collect, hand back, capabilities)
+  orca: runner-orca adapter (v1) {
+    wt: Orca worktrees
+    term: Claude Code sessions (harness-claude)
+    browser: Embedded browser (browser capability)
+  }
+  local: runner-local (later: git worktree + headless claude)
+}
+
+later: Other runners (later) {
+  boxes: Dev boxes (e.g. Sprites)
+  sandbox: CF Sandbox / GitHub Actions
+}
+
+repos: Git repos {
+  factoryrepo: factory repo (presets + floor)
+  dotfactory: .factory/ per project (committed)
+}
+
+you: You {
+  web: Dashboard (browser / phone)
+  session: Local Claude session (projected config + hooks; must claim a work item to write)
+}
+
+out: Outputs {
+  pr: PRs (required factory/verify check)
+  content: Drafts / published content
+  reply: Status back to source thread
+}
+
+intake -> cloud.hooks
+cloud.hooks -> cloud.store: normalised work items
+cloud.sm -> cloud.sched: stage jobs
+cloud.sched -> host.contract: signed channel: assign job
+cloud.sched -> later: assign job (same contract)
+host.contract -> host.orca
+host.contract -> host.local
+host.contract -> cloud.store: events, artifacts, review packet
+repos -> cloud.policy: config
+cloud.dash -> you.web
+cloud.push -> you.web
+you.session -> cloud.mcp: create/claim work item, lease, stage, handoff
+host.orca -> out.pr
+host.orca -> out.content
+out.pr -> cloud.hooks: verify check + merge events
+cloud.hooks -> out.reply

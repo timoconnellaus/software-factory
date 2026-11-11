@@ -1,0 +1,96 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../design-system/tokens.css"><style>/* Factory design system: component styles (shadcn/ui equivalents). Needs tokens.css. */
+* { box-sizing: border-box; border-color: hsl(var(--border)); }
+body { margin: 0; font-family: var(--font-sans); background: hsl(var(--background)); color: hsl(var(--foreground)); font-size: var(--text-base); line-height: 1.45; -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-decoration: none; }
+.text-muted { color: hsl(var(--muted-foreground)); } .text-xs { font-size: var(--text-xs); } .text-sm { font-size: var(--text-sm); }
+.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
+.row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; } .grow { flex: 1; }
+h1 { font-size: var(--text-2xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tight); margin: 0 0 var(--space-1); }
+
+/* App shell (shadcn Sidebar + SidebarInset) */
+.shell { display: grid; grid-template-columns: var(--sidebar-width) 1fr; min-height: 100vh; }
+.sidebar { background: hsl(var(--sidebar)); border-right: 1px solid hsl(var(--border)); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-1); }
+.sb-brand { display: flex; align-items: center; gap: var(--space-2); padding: 6px 8px 14px; font-weight: var(--weight-semibold); }
+.sb-logo { width: 28px; height: 28px; border-radius: 6px; background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); display: grid; place-items: center; }
+.sb-label { font-size: var(--text-xs); color: hsl(var(--muted-foreground)); padding: 10px 8px 4px; font-weight: var(--weight-medium); }
+.sb-item { display: flex; align-items: center; gap: var(--space-2); padding: 6px 8px; border-radius: 6px; }
+.sb-item:hover, .sb-item.active { background: hsl(var(--sidebar-accent)); font-weight: var(--weight-medium); }
+.sb-item .count { margin-left: auto; font-size: var(--text-xs); color: hsl(var(--muted-foreground)); }
+.ic { width: 16px; text-align: center; opacity: .7; }
+.main { display: flex; flex-direction: column; min-width: 0; }
+.header { height: var(--header-height); display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-6); border-bottom: 1px solid hsl(var(--border)); }
+.crumb { color: hsl(var(--muted-foreground)); } .crumb b { color: hsl(var(--foreground)); font-weight: var(--weight-medium); }
+.content { padding: var(--space-6); max-width: var(--content-max); width: 100%; }
+
+/* Card */
+.card { background: hsl(var(--card)); color: hsl(var(--card-foreground)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); }
+.card.waiting { box-shadow: var(--shadow-ring-waiting); }
+.card-h { padding: var(--space-5) var(--space-5) 0; }
+.card-t { font-weight: var(--weight-semibold); font-size: var(--text-lg); letter-spacing: -.01em; margin: 0; }
+.card-d { font-size: var(--text-sm); color: hsl(var(--muted-foreground)); margin-top: var(--space-1); }
+.card-c { padding: var(--space-4) var(--space-5) var(--space-5); }
+.card-f { padding: var(--space-4) var(--space-5) var(--space-5); display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+/* Badge */
+.badge { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 2px 8px; font-size: var(--text-xs); font-weight: var(--weight-medium); border: 1px solid transparent; white-space: nowrap; }
+.b-default { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+.b-secondary { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); }
+.b-outline { border-color: hsl(var(--border)); }
+.b-destructive { background: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
+
+/* Status dot */
+.dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: none; }
+.s-waiting { background: hsl(var(--status-waiting)); } .s-running { background: hsl(var(--status-running)); }
+.s-done { background: hsl(var(--status-done)); } .s-failed { background: hsl(var(--status-failed)); }
+.s-idle { background: hsl(var(--status-idle)); } .s-local { background: hsl(var(--status-local)); }
+
+/* Button */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: var(--radius); font-size: var(--text-base); font-weight: var(--weight-medium); border: 1px solid transparent; cursor: pointer; white-space: nowrap; font-family: inherit; }
+.btn-sm { height: 32px; padding: 0 12px; font-size: var(--text-sm); }
+.btn-default { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+.btn-secondary { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); }
+.btn-outline { border-color: hsl(var(--input)); background: hsl(var(--background)); box-shadow: var(--shadow-xs); }
+.btn-ghost { background: transparent; } .btn-ghost:hover { background: hsl(var(--accent)); }
+.btn-destructive { background: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
+
+/* Table, Tabs, Input, Kbd, Progress, Separator */
+.table { width: 100%; border-collapse: collapse; }
+.table th { text-align: left; font-weight: var(--weight-medium); color: hsl(var(--muted-foreground)); font-size: var(--text-sm); padding: 10px 12px; border-bottom: 1px solid hsl(var(--border)); }
+.table td { padding: 12px; border-bottom: 1px solid hsl(var(--border)); } .table tr:last-child td { border-bottom: 0; }
+.tabs { display: inline-flex; background: hsl(var(--muted)); border-radius: var(--radius); padding: 3px; gap: 2px; }
+.tab { padding: 5px 12px; border-radius: 6px; font-size: var(--text-sm); font-weight: var(--weight-medium); color: hsl(var(--muted-foreground)); }
+.tab.on { background: hsl(var(--background)); color: hsl(var(--foreground)); box-shadow: var(--shadow-xs); }
+.input { height: 36px; border: 1px solid hsl(var(--input)); border-radius: var(--radius); padding: 0 12px; display: flex; align-items: center; color: hsl(var(--muted-foreground)); min-width: 220px; background: hsl(var(--background)); }
+.kbd { font-family: var(--font-mono); font-size: 11px; border: 1px solid hsl(var(--border)); border-radius: 4px; padding: 0 4px; color: hsl(var(--muted-foreground)); }
+.progress { height: 8px; background: hsl(var(--muted)); border-radius: 99px; overflow: hidden; } .progress > i { display: block; height: 100%; background: hsl(var(--primary)); }
+.sep { height: 1px; background: hsl(var(--border)); }
+
+/* Factory-specific */
+.stage-steps { display: flex; gap: 4px; align-items: center; font-size: var(--text-xs); }
+.stage-steps span { padding: 2px 8px; border-radius: 99px; border: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); }
+.stage-steps span.done { background: hsl(var(--secondary)); color: hsl(var(--foreground)); }
+.stage-steps span.now { border-color: hsl(var(--status-running)); color: hsl(var(--foreground)); font-weight: var(--weight-medium); }
+.stage-steps span.gate { border-style: dashed; }
+.criteria { display: grid; gap: 6px; } .criterion { display: flex; gap: 8px; align-items: flex-start; font-size: var(--text-sm); }
+
+@media (max-width: 820px) {
+  .shell { grid-template-columns: 1fr; } .sidebar { display: none; }
+  .header { padding: 0 var(--space-4); } .content { padding: var(--space-4); } .hide-sm { display: none !important; }
+}
+</style></head><body><div class="shell">
+<aside class="sidebar" data-name="sidebar"><a class="sb-brand" data-name="org switcher" style="border:1px solid hsl(var(--border));border-radius:8px;padding:6px 8px;margin-bottom:10px;background:hsl(var(--background))"><span class="sb-logo">⚙</span><span style="display:grid;line-height:1.2"><span>All factories</span><span class="text-xs text-muted" style="font-weight:400">3 orgs · 2 accounts</span></span><span class="grow"></span><span class="text-muted">⇅</span></a>
+<a class="btn btn-default btn-sm" style="margin:0 4px 8px" data-name="new work button">+ New work <span class="kbd" style="color:inherit;border-color:rgba(255,255,255,.3)">N</span></a>
+<div class="sb-label">Platform</div><a class="sb-item" data-name="nav inbox"><span class="ic">◉</span>Inbox<span class="count">3</span></a><a class="sb-item" data-name="nav work"><span class="ic">▤</span>Work<span class="count">12</span></a><a class="sb-item" data-name="nav projects"><span class="ic">◫</span>Projects<span class="count">4</span></a><a class="sb-item active" data-name="nav runners"><span class="ic">⚙</span>Runners<span class="count">2</span></a><a class="sb-item" data-name="nav metrics"><span class="ic">▲</span>Metrics<span class="count"></span></a><div class="sb-label">Projects</div><a class="sb-item text-sm" data-name="project relationship-os"><span class="dot s-done"></span>relationship-os</a><a class="sb-item text-sm" data-name="project client-acme/web"><span class="dot s-waiting"></span>client-acme/web</a><a class="sb-item text-sm" data-name="project blog-pipeline"><span class="dot s-idle"></span>blog-pipeline</a><a class="sb-item text-sm" data-name="project factory"><span class="dot s-done"></span>factory</a>
+<div class="grow"></div><div class="sep"></div><a class="sb-item text-sm" data-name="runner status"><span class="dot s-done"></span>mac-mini · 3/4 busy</a></aside>
+<div class="main"><header class="header" data-name="header"><span class="crumb">Factory / <b>Runners</b></span><span class="grow"></span></header>
+<main class="content">
+<div class="row" style="margin-bottom:16px;align-items:flex-start"><div><h1>Runners</h1><div class="text-muted">Where work executes. Runners belong to people and are shared into orgs.</div></div><span class="grow"></span><a class="btn btn-default btn-sm" data-name="connect runner">+ Connect a runner</a></div>
+<div class="tabs" style="margin-bottom:16px"><span class="tab on">All</span><span class="tab">Mine</span><span class="tab">Shared with me</span></div>
+<div class="card" data-name="runner table"><div class="card-c" style="padding-top:8px"><table class="table">
+<tr><th>Runner</th><th>Adapter</th><th>Capabilities</th><th>Load</th><th>Shared into</th></tr><tr><td><div class="row"><span class="dot s-done"></span><b>mac-mini</b></div><div class="text-xs text-muted">you</div></td><td><span class="badge b-secondary">runner-orca</span></td><td class="text-sm">claude · browser · takeover · hooks</td><td style="width:140px"><div class="text-xs text-muted">3/4</div><div class="progress" style="margin-top:4px"><i style="width:75%"></i></div></td><td class="text-sm text-muted">Personal, Work Co</td></tr><tr><td><div class="row"><span class="dot s-done"></span><b>laptop</b></div><div class="text-xs text-muted">you</div></td><td><span class="badge b-secondary">runner-orca</span></td><td class="text-sm">claude · browser · takeover · hooks</td><td style="width:140px"><div class="text-xs text-muted">1/2</div><div class="progress" style="margin-top:4px"><i style="width:50%"></i></div></td><td class="text-sm text-muted">Personal</td></tr><tr><td><div class="row"><span class="dot s-done"></span><b>sam-laptop</b></div><div class="text-xs text-muted">Sam</div></td><td><span class="badge b-secondary">runner-orca</span></td><td class="text-sm">claude · browser · takeover</td><td style="width:140px"><div class="text-xs text-muted">1/2</div><div class="progress" style="margin-top:4px"><i style="width:50%"></i></div></td><td class="text-sm text-muted">Acme (client)</td></tr><tr><td><div class="row"><span class="dot s-idle"></span><b>sam-codex-cloud</b></div><div class="text-xs text-muted">Sam</div></td><td><span class="badge b-secondary">runner-codex-cloud</span></td><td class="text-sm">codex · headless only</td><td style="width:140px"><div class="text-xs text-muted">0/3</div><div class="progress" style="margin-top:4px"><i style="width:0%"></i></div></td><td class="text-sm text-muted">Acme (client)</td></tr></table></div></div>
+<div class="card" style="margin-top:16px;max-width:640px" data-name="connect panel"><div class="card-h"><div class="card-t">Connect a runner</div><div class="card-d">Runs on your machine or account and uses your own subscriptions. The factory never stores them.</div></div><div class="card-c" style="display:grid;gap:10px">
+<div class="row"><span class="badge b-secondary">runner-orca</span><span class="text-sm">Install the runner host, then pair: <span class="mono">factory runner pair</span></span></div>
+<div class="row"><span class="badge b-secondary">runner-codex-cloud</span><span class="text-sm text-muted">Experimental · needs a published Codex environment</span></div>
+<div class="row"><span class="badge b-outline">runner-local</span><span class="text-sm text-muted">Plain git worktree + headless Claude (coming)</span></div></div></div></main></div></div></body></html>
