@@ -422,6 +422,8 @@ async function buildJob(
       role,
       model: resolveModel(role, policy?.modelRoles),
       prompt: job.prompt,
+      // From the default branch's policy only (ADR 0036, 0261), never the run's own branch.
+      ...(policy?.harness ? { profile: policy.harness } : {}),
     },
     context: parseJson<Record<string, unknown>>(job.context, {}),
     requires: parseJson<Capability[]>(job.requires, []),

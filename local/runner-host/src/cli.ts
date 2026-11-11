@@ -6,17 +6,20 @@
 //   sf-runner pair --runner-id r_… --key-stdin   (fallback: a key registered in Setup)
 //   sf-runner run                  run in the foreground (what the service runs)
 //   sf-runner status               config (key redacted), service state and the jobs it is running
-//   sf-runner doctor [--fix]       check node, git, orca, claude, the channel, and Orca's repos:
-//                                  duplicate source repos for one remote, job worktrees with no job
+//   sf-runner doctor [--fix]       check node, git, orca, claude, the channel, Orca's repos
+//                                  (duplicate source repos for one remote, job worktrees with no
+//                                  job), and that each running job's Claude runs exactly as the
+//                                  harness launched it (ADR 0261)
 //   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import {
+  checkRunningHarness,
   diagnose,
   jobIdOf,
   migrateRunnerRepos,
@@ -294,6 +297,35 @@ async function doctor(args: string[]) {
     if (left.length) throw new Error(`${left.length} problem(s) left after --fix`);
     return "fixed";
   });
+  await check("running jobs' harness (permission mode, setting sources, settings)", async () => {
+    const live = await liveJobs();
+    // Unknown live set (an old host): check every run dir that has a launch record.
+    const jobs = live ? [...live] : await readdir(dirs.runsDir).catch(() => [] as string[]);
+    const lines: string[] = [];
+    let bad = 0;
+    for (const jobId of jobs) {
+      const checked = await checkRunningHarness(join(dirs.runsDir, jobId));
+      if (!checked) {
+        if (live) lines.push(`${jobId}: no launch record (started by an older runner?)`);
+        continue;
+      }
+      if (checked.problems.length) {
+        bad++;
+        lines.push(`${jobId}: harness-config-mismatch: ${checked.problems.join("; ")}`);
+      } else {
+        lines.push(`${jobId}: ${checked.record.mode}, as launched`);
+      }
+    }
+    for (const line of lines) console.log(`  - ${line}`);
+    if (bad) throw new Error(`${bad} job(s) not running as the harness launched them`);
+    return lines.length ? "ok" : "no jobs running";
+  });
+  const raw = await readFile(dirs.configFile, "utf8").catch(() => "");
+  if (/"permissionMode"/.test(raw)) {
+    console.log(
+      `! ${dirs.configFile} sets permissionMode, which is ignored: the project's policy sets it (ADR 0261)`,
+    );
+  }
   const config = await loadConfig(dirs.configFile).catch(() => null);
   if (!config) {
     console.log(`✗ paired: no ${dirs.configFile}`);

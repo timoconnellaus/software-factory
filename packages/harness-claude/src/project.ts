@@ -1,15 +1,26 @@
-// Writes a run's harness files: the settings into the worktree, the git config and empty tool dirs
-// into the run's private directory (outside the worktree, removed when the job is released).
-import { mkdir, rm, writeFile } from "node:fs/promises";
+// Writes a run's harness files: the settings (into the run dir, passed with `--settings`, and the
+// same bytes into the worktree's `.claude/settings.local.json`), the git config and empty tool dirs
+// into the run's private directory, the run's temp dir, and the launch script and record (ADR 0261).
+import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Job } from "@software-factory/runner-contract";
 import {
+  claudeArgv,
+  type LaunchRecord,
+  launchPaths,
+  launchScript,
+  launchUnsets,
+  sha256,
+} from "./launch.ts";
+import {
   type ClaudeSettings,
   EMPTY_DIRS,
+  EMPTY_FILES,
   runGitConfig,
   runSettings,
-  SETTINGS_FILE,
   type SettingsOptions,
+  TMP_DIRS,
 } from "./settings.ts";
 
 export const DEFAULT_IDENTITY = {
@@ -19,29 +30,81 @@ export const DEFAULT_IDENTITY = {
 
 export interface ProjectedHarness {
   settingsPath: string;
+  localSettingsPath: string;
   gitConfigPath: string;
   settings: ClaudeSettings;
+  launch: LaunchRecord;
+  /** Run this with `/bin/sh` in the job's terminal. */
+  scriptPath: string;
+  runTmp: string;
+}
+
+/** The temp directories a run may write: the system's (symlinks resolved) and `/tmp`. */
+export async function systemTempDirs(): Promise<string[]> {
+  const dirs = new Set(["/tmp", "/private/tmp", tmpdir()]);
+  dirs.add(await realpath(tmpdir()).catch(() => tmpdir()));
+  return [...dirs];
 }
 
 export async function projectHarness(
-  job: Pick<Job, "stage">,
-  options: SettingsOptions & { identity?: { name: string; email: string } },
+  job: Pick<Job, "stage" | "jobId" | "harness">,
+  options: SettingsOptions & {
+    identity?: { name: string; email: string };
+    claudeBin?: string;
+  },
 ): Promise<ProjectedHarness> {
-  const settings = runSettings(job, options);
+  const runTmp = options.runTmp ?? join(await realpath(tmpdir()), "software-factory", job.jobId);
+  const settings = runSettings(job, {
+    ...options,
+    runTmp,
+    tempDirs: options.tempDirs ?? (await systemTempDirs()),
+    ...(job.harness.profile && !options.profile ? { profile: job.harness.profile } : {}),
+  });
   await mkdir(options.runDir, { recursive: true, mode: 0o700 });
   for (const dir of EMPTY_DIRS)
     await mkdir(join(options.runDir, "empty", dir), { recursive: true });
+  for (const file of EMPTY_FILES) await writeFile(join(options.runDir, "empty", file), "");
+  for (const dir of TMP_DIRS) await mkdir(join(runTmp, dir), { recursive: true, mode: 0o700 });
   const gitConfigPath = join(options.runDir, "gitconfig");
   await writeFile(gitConfigPath, runGitConfig(options.identity ?? DEFAULT_IDENTITY));
-  const settingsPath = join(options.worktree, SETTINGS_FILE);
-  await mkdir(dirname(settingsPath), { recursive: true });
-  await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
-  return { settingsPath, gitConfigPath, settings };
+
+  const paths = launchPaths(options.runDir, options.worktree);
+  const text = `${JSON.stringify(settings, null, 2)}\n`;
+  await writeFile(paths.runSettings, text, { mode: 0o600 });
+  await mkdir(dirname(paths.localSettings), { recursive: true });
+  await writeFile(paths.localSettings, text);
+  const launch: LaunchRecord = {
+    jobId: job.jobId,
+    stage: job.stage,
+    mode: settings.permissions.defaultMode,
+    argv: claudeArgv(job, {
+      settingsPath: paths.runSettings,
+      ...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
+      ...(options.profile ? { profile: options.profile } : {}),
+    }),
+    settingsHash: sha256(text),
+    settingsPaths: [paths.runSettings, paths.localSettings],
+    pidFile: paths.pidFile,
+    worktree: options.worktree,
+  };
+  await rm(paths.pidFile, { force: true });
+  await writeFile(paths.record, `${JSON.stringify(launch, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(paths.script, launchScript(launch, launchUnsets(settings.env)), { mode: 0o700 });
+  return {
+    settingsPath: paths.runSettings,
+    localSettingsPath: paths.localSettings,
+    gitConfigPath,
+    settings,
+    launch,
+    scriptPath: paths.script,
+    runTmp,
+  };
 }
 
-/** Removes the run's private directory. Safe to call twice. */
-export async function removeRunDir(runDir: string): Promise<void> {
+/** Removes the run's private directory and its temp dir. Safe to call twice. */
+export async function removeRunDir(runDir: string, runTmp?: string): Promise<void> {
   await rm(runDir, { recursive: true, force: true });
+  if (runTmp) await rm(runTmp, { recursive: true, force: true });
 }
 
 /**
