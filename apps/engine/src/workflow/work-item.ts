@@ -44,13 +44,25 @@ export type WorkItemOutcome =
  * - v2 (V1 step 4, spec 04): the PR opens before verify so CI runs on the head; verify waits for CI
  *   and the verdict is the review packet's (green CI + a complete packet); a factory incident's
  *   check-only fix may auto-merge (ADR 0230).
+ * - v3 (ADR 0320): a PR GitHub can't merge is its own state. It is checked right after the PR
+ *   opens and on every CI read, and sends the item back to build to merge the default branch,
+ *   without a verify run or a packet (it doesn't count as a failed attempt for MERGE_ROUNDS
+ *   rounds). CI that never reports asks a person (re-check or stop) instead of a build retry.
  */
-export const WORKFLOW_VERSION = 2;
+export const WORKFLOW_VERSION = 3;
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
 export const CI_WAIT = "10 minutes";
 export const CI_ROUNDS = 12;
 /** Rounds to wait when no CI has reported at all (a repo without CI fails after these). */
 export const CI_MISSING_ROUNDS = 3;
+/** v3: reads of a just-opened PR's mergeability while GitHub computes it, and the pause between. */
+export const MERGEABLE_READS = 3;
+export const MERGEABLE_WAIT = "20 seconds";
+/** v3: conflict send-backs that don't count against the retry limit (the default branch moved). */
+export const MERGE_ROUNDS = 3;
+/** v3: the answers to the no-CI question. */
+export const NO_CI_RECHECK = "Re-check CI";
+export const NO_CI_STOP = "Stop this work item";
 /** How long a step refused by a kill switch waits for it to be turned off. */
 export const PARK_TIMEOUT = "365 days";
 /** Slack on top of a job's session timeout before the run counts as stalled. */
@@ -122,6 +134,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(1);
       case 2:
         return flow.runV1(2);
+      case 3:
+        return flow.runV1(3);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -136,11 +150,12 @@ class ItemFlow {
     private readonly workflowId: string,
   ) {}
 
-  // ---- v1 and v2 ----
+  // ---- v1, v2 and v3 ----
   // v2 only adds steps (`verify #b: open PR`, `verify #b: ci…`, `merge #b: auto-merge`); with
-  // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged.
+  // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
+  // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       const meta = await this.meta();
@@ -232,6 +247,7 @@ class ItemFlow {
 
       // Build → verify → merge gate, looping back on failures and send-backs.
       let failures = 0;
+      let conflicts = 0;
       let note: string | null = null;
       const failed = async (b: number, reason: string, run: RunResult | null) => {
         failures++;
@@ -246,6 +262,25 @@ class ItemFlow {
           stage: "build",
           closeAs: "failed",
           reason,
+        });
+        return reason;
+      };
+      // v3: the PR can't merge into the default branch, so GitHub runs no CI on it. Back to build
+      // with what to do; the first MERGE_ROUNDS of these are the default branch moving, not a
+      // failed attempt.
+      const conflicted = async (b: number, run: RunResult | null) => {
+        const into = meta.defaultBranch ?? "the default branch";
+        const reason = [
+          `The pull request can't merge into \`${into}\`: it conflicts with work that landed there, so GitHub ran no CI on it.`,
+          `The runner has merged \`${into}\` into your branch: resolve the conflicts \`git status\` shows, keeping the intent of both sides, and commit the merge. Don't rebase.`,
+        ].join("\n");
+        conflicts++;
+        if (conflicts > MERGE_ROUNDS) return failed(b, reason, run);
+        await this.act(`build #${b}: conflict`, "workItem.enterStage", {
+          workItemId: id,
+          stage: "build",
+          closeAs: "failed",
+          reason: `the PR conflicts with ${into}`,
         });
         return reason;
       };
@@ -297,6 +332,10 @@ class ItemFlow {
           // carries a factory/verify that isn't passing until the packet below says so.
           await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
         }
+        if (version >= 3 && (await this.unmergeable(b, headSha))) {
+          note = await conflicted(b, build);
+          continue;
+        }
         const verify = await this.runJob(
           `verify #${b}`,
           "verify",
@@ -329,7 +368,18 @@ class ItemFlow {
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        if (version >= 2) await this.waitForCi(b, headSha);
+        if (version >= 2) {
+          let ci = await this.waitForCi(b, headSha, version);
+          for (let k = 1; version >= 3 && ci === "missing"; k++) {
+            // No CI at all is a setup problem the builder can't fix: ask a person (ADR 0320).
+            await this.askNoCi(meta, b, k, headSha);
+            ci = await this.waitForCi(b, headSha, version, k + 1);
+          }
+          if (ci === "conflict") {
+            note = await conflicted(b, verify);
+            continue;
+          }
+        }
         const packet = await this.act(`verify #${b}: packet`, "reviewPacket.record", {
           workItemId: id,
           runId: verify.runId,
@@ -442,7 +492,7 @@ class ItemFlow {
   private async meta(): Promise<Meta> {
     return this.step.do("meta: item", async () => {
       const row = await this.env.DB.prepare(
-        `SELECT w.number, w.title, w.body, w.branch, w.kind, p.raw FROM core_work_items w
+        `SELECT w.number, w.title, w.body, w.branch, w.kind, pr.default_branch, p.raw FROM core_work_items w
          JOIN core_projects pr ON pr.id = w.project_id
          LEFT JOIN core_project_policies p ON p.project_id = pr.id AND p.sha = pr.policy_sha
          WHERE w.id = ?`,
@@ -454,6 +504,7 @@ class ItemFlow {
           body: string;
           branch: string;
           kind: "change" | "incident";
+          default_branch: string | null;
           raw: string | null;
         }>();
       if (!row) throw new Error(`work item ${this.workItemId} not found`);
@@ -471,6 +522,7 @@ class ItemFlow {
         title: row.title,
         body: row.body,
         branch: row.branch,
+        ...(row.default_branch ? { defaultBranch: row.default_branch } : {}),
         kind: row.kind,
         retryLimit: policy.retryLimit ?? 2,
         gateTimeoutMs: (policy.timeouts?.gateHours ?? 72) * 3_600_000,
@@ -595,18 +647,26 @@ class ItemFlow {
    * v2: waits until CI on the head SHA has settled (the connector sends `ci-<item>-<sha>` when a
    * check suite completes; each timeout reads CI again), so the packet reads a final answer. Gives
    * up after CI_ROUNDS (or CI_MISSING_ROUNDS when no CI reports at all); the packet then fails.
+   * v3 also stops at once when GitHub says the PR can't merge (`conflict`), and says how it ended.
+   * `round` > 1 is a re-check after the no-CI question, under its own step names.
    */
-  async waitForCi(b: number, headSha: string): Promise<void> {
+  async waitForCi(
+    b: number,
+    headSha: string,
+    version: number = 2,
+    round = 1,
+  ): Promise<"settled" | "missing" | "pending" | "conflict" | "unreadable"> {
     for (let i = 1; i <= CI_ROUNDS; i++) {
-      const sfx = i === 1 ? "" : ` #${i}`;
+      const sfx = (round === 1 ? "" : ` r${round}`) + (i === 1 ? "" : ` #${i}`);
       const ci = await this.call(`verify #${b}: ci${sfx}`, "ci.read", {
         workItemId: this.workItemId,
         headSha,
       });
-      if (ci.status !== "ok") return; // unreadable: the packet records why and fails
+      if (ci.status !== "ok") return "unreadable"; // the packet records why and fails
+      if (version >= 3 && ci.output.mergeable === false) return "conflict";
       const state = String(ci.output.state);
-      if (state === "success" || state === "failure") return;
-      if (state === "missing" && i >= CI_MISSING_ROUNDS) return;
+      if (state === "success" || state === "failure") return "settled";
+      if (state === "missing" && i >= CI_MISSING_ROUNDS) return "missing";
       try {
         await this.step.waitForEvent(`verify #${b}: ci wait${sfx}`, {
           type: ciEvent(this.workItemId, headSha),
@@ -615,6 +675,68 @@ class ItemFlow {
       } catch (error) {
         if (!isWaitTimeout(error)) throw error;
       }
+    }
+    return "pending";
+  }
+
+  /**
+   * v3: whether GitHub says the just-opened PR can't merge into the default branch (ADR 0320). Reads
+   * a few times while GitHub computes it; still unknown counts as mergeable (the CI reads look again).
+   */
+  async unmergeable(b: number, headSha: string): Promise<boolean> {
+    for (let i = 1; i <= MERGEABLE_READS; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      const read = await this.call(`verify #${b}: mergeable${sfx}`, "ci.read", {
+        workItemId: this.workItemId,
+        headSha,
+      });
+      if (read.status !== "ok") return false;
+      if (read.output.mergeable === false) return true;
+      if (read.output.mergeable === true) return false;
+      if (i < MERGEABLE_READS)
+        await this.step.sleep(`verify #${b}: mergeable wait${sfx}`, MERGEABLE_WAIT);
+    }
+    return false;
+  }
+
+  /**
+   * v3: no CI has reported on the head at all. That's the repo's setup (Actions off, a run waiting
+   * for approval, no workflow on `pull_request`), not the build, so a person is asked to fix it and
+   * re-check, or to stop the item; no build retry is spent (ADR 0320).
+   */
+  async askNoCi(meta: Meta, b: number, k: number, headSha: string): Promise<void> {
+    const name = `verify #${b}: no ci${k === 1 ? "" : ` #${k}`}`;
+    const asked = await this.act(`${name}: ask`, "question.ask", {
+      workItemId: this.workItemId,
+      questions: [
+        {
+          domain: "operations",
+          prompt: `No CI has reported on ${headSha.slice(0, 7)}, the head of work item #${meta.number}'s pull request. Fix CI on GitHub, then re-check, or stop the item.`,
+          context: [
+            "The factory waited and GitHub shows no check run on this commit apart from the factory's own. Usual causes:",
+            "- GitHub Actions is off for the repository, or the workflow doesn't run on `pull_request`;",
+            "- the run is waiting for approval (the Actions tab: 'Approve and run', e.g. for a first-time contributor such as the App's bot);",
+            "- the CI provider is down.",
+            "A change to the code won't fix this, so no build retry was spent.",
+          ].join("\n"),
+          options: [NO_CI_RECHECK, NO_CI_STOP],
+          defaultAnswer: NO_CI_RECHECK,
+          recommendation: NO_CI_RECHECK,
+          recommendationReason: "Once CI runs on the head, verify carries on where it stopped.",
+          blocking: true,
+        },
+      ],
+    });
+    await this.waitForAnswers(meta, name);
+    const questionId = (asked.questionIds as string[])[0];
+    const answer = await this.step.do(`${name}: answer`, async () => {
+      const row = await this.env.DB.prepare("SELECT answer FROM core_questions WHERE id = ?")
+        .bind(questionId)
+        .first<{ answer: string | null }>();
+      return row?.answer ?? NO_CI_RECHECK;
+    });
+    if (answer === NO_CI_STOP) {
+      throw new Ended("failed", `stopped: no CI reported on ${headSha.slice(0, 7)}`);
     }
   }
 

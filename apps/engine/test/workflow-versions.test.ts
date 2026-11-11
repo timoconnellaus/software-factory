@@ -27,10 +27,17 @@ const V2_STEPS = [
   "verify #{b}: ci wait{sfx}",
   "merge #{b}: auto-merge",
 ].map((name) => `\`${name.replaceAll("{", "$" + "{")}\``);
+// The steps v3 adds (ADR 0320): the mergeability reads, the conflict send-back, the no-CI question.
+const V3_STEPS = [
+  "verify #{b}: mergeable{sfx}",
+  "verify #{b}: mergeable wait{sfx}",
+  "build #{b}: conflict",
+  "verify #{b}: no ci",
+].map((name) => `${name.replaceAll("{", "$" + "{")}`);
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 2 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(2);
+  it("starts new instances on version 3 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(3);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -43,7 +50,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(2);
+    expect(row.workflow_version).toBe(3);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -75,6 +82,9 @@ describe("Workflow versions", () => {
     const source = (await import("../src/workflow/work-item.ts?raw")).default as string;
     for (const name of V1_STEPS) expect(source, name).toContain(`"${name}"`);
     for (const name of V2_STEPS) expect(source, name).toContain(name);
+    for (const name of V3_STEPS) expect(source, name).toContain(name);
+    // v2 instances still dispatch to the same flow, with v3's extra steps switched off.
+    expect(source).toContain("return flow.runV1(2);");
     // v1 instances still dispatch to the same flow, with v2's extra steps switched off.
     expect(source).toContain("return flow.runV1(1);");
   });

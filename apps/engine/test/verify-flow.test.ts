@@ -2,6 +2,7 @@
 // v2 Workflow's verify: the PR opens before verify, CI on the head SHA decides the verdict, a
 // check-suite webhook wakes a Workflow waiting on CI, and an opted-in incident's check-only fix
 // auto-merges.
+import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { sign } from "@software-factory/connector-webhook";
 import { protectedGuards } from "@software-factory/core/testing";
@@ -311,5 +312,141 @@ describe("protection drift (ADR 0280)", () => {
         w.projectId,
       ),
     ).toEqual({ state: "red", trigger: "daily" });
+  });
+});
+
+describe("v3: a PR that can't merge, and CI that never reports (ADR 0320)", () => {
+  const green = [
+    {
+      name: "ci",
+      status: "completed" as const,
+      conclusion: "success",
+      appSlug: "github-actions",
+      url: null,
+    },
+  ];
+  const count = async (sql: string, id: string) => (await all(sql, id)).length;
+
+  it("sends a PR that conflicts with main back to build, without a verify run or a spent retry", async () => {
+    const w = await world(); // retryLimit 1
+    await github.setMergeable(w.repo, 1, false); // the item's PR will be #1
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Conflicts" },
+      w.human,
+    );
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    const first_ = await runStage(w, item.workItemId, "build", () => build());
+    expect(first_.repo.defaultBranch).toBe("main");
+    await runStage(w, item.workItemId, "build", async (job) => {
+      expect(job.harness.prompt).toMatch(/can't merge into `main`/);
+      expect(job.harness.prompt).toMatch(/resolve the conflicts/);
+      await github.setMergeable(w.repo, 1, true); // the build merged main in
+      return build(["src/merged.ts"]);
+    });
+    await runStage(w, item.workItemId, "verify", () => verifyPass);
+    await gateOpen(item.workItemId, "merge");
+    const verifies = "SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'verify'";
+    expect(await count(verifies, item.workItemId)).toBe(1);
+  });
+
+  it("notices a conflict while it waits for CI, and goes back to build", async () => {
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Main moved during verify" },
+      w.human,
+    );
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", () => build());
+    await runStage(w, item.workItemId, "verify", async (job) => {
+      await github.setChecks(w.repo, String(job.context.headSha), []);
+      await github.setMergeable(w.repo, 1, false);
+      return verifyPass;
+    });
+    await runStage(w, item.workItemId, "build", async (job) => {
+      expect(job.harness.prompt).toMatch(/conflicts with work that landed there/);
+      await github.setMergeable(w.repo, 1, true);
+      return build(["src/merged.ts"]);
+    });
+    await runStage(w, item.workItemId, "verify", () => verifyPass);
+    await gateOpen(item.workItemId, "merge");
+    expect(
+      await all("SELECT id FROM core_review_packets WHERE work_item_id = ?", item.workItemId),
+    ).toHaveLength(1);
+  });
+
+  it("asks a person when no CI reports, and carries on after a re-check without a build retry", async () => {
+    await using introspector = await introspectWorkflow(env.WORK_ITEM_WORKFLOW);
+    await introspector.modifyAll(async (m) => {
+      await m.forceEventTimeout({ name: "verify #1: ci wait" });
+      await m.forceEventTimeout({ name: "verify #1: ci wait #2" });
+    });
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "No CI" },
+      w.human,
+    );
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", () => build());
+    let head = "";
+    await runStage(w, item.workItemId, "verify", async (job) => {
+      head = String(job.context.headSha);
+      await github.setChecks(w.repo, head, []);
+      return verifyPass;
+    });
+    const q = await waitFor("the no-CI question", () =>
+      first<{ id: string; prompt: string; options: string }>(
+        "SELECT id, prompt, options FROM core_questions WHERE work_item_id = ? AND status = 'open'",
+        item.workItemId,
+      ),
+    );
+    expect(q.prompt).toContain(`No CI has reported on ${head.slice(0, 7)}`);
+    expect(JSON.parse(q.options)).toEqual(["Re-check CI", "Stop this work item"]);
+    await itemStatus(item.workItemId, "waiting");
+    const builds = "SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'build'";
+    expect(await count(builds, item.workItemId)).toBe(1);
+
+    await github.setChecks(w.repo, head, green); // someone approved the Actions run
+    await ok("question.answer", { questionId: q.id, answer: "Re-check CI" }, w.human);
+    await gateOpen(item.workItemId, "merge");
+    expect(await count(builds, item.workItemId)).toBe(1);
+    const packet = await first<{ verdict: string }>(
+      "SELECT verdict FROM core_review_packets WHERE work_item_id = ?",
+      item.workItemId,
+    );
+    expect(packet?.verdict).toBe("pass");
+  });
+
+  it("stops the item, with no incident, when the person says stop", async () => {
+    await using introspector = await introspectWorkflow(env.WORK_ITEM_WORKFLOW);
+    await introspector.modifyAll(async (m) => {
+      await m.forceEventTimeout({ name: "verify #1: ci wait" });
+      await m.forceEventTimeout({ name: "verify #1: ci wait #2" });
+    });
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "No CI, stop" },
+      w.human,
+    );
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", () => build());
+    await runStage(w, item.workItemId, "verify", async (job) => {
+      await github.setChecks(w.repo, String(job.context.headSha), []);
+      return verifyPass;
+    });
+    const q = await waitFor("the no-CI question", () =>
+      first<{ id: string }>(
+        "SELECT id FROM core_questions WHERE work_item_id = ? AND status = 'open'",
+        item.workItemId,
+      ),
+    );
+    await ok("question.answer", { questionId: q.id, answer: "Stop this work item" }, w.human);
+    await itemStatus(item.workItemId, "failed");
+    expect(
+      await all("SELECT id FROM core_incidents WHERE source_work_item_id = ?", item.workItemId),
+    ).toHaveLength(0);
   });
 });
