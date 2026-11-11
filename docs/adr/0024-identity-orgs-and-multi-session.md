@@ -18,3 +18,9 @@ uses Better Auth on D1.
 
 ## Consequences
 - Auth secrets are env-only.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): R1 keeps orgs and multi-session; they are R1's second internal milestone, after the
+> core loop works for one user and one repo ([ADR 0031](0031-dashboard-stack-and-inbox-first.md)).
+> Tables are CRM style (`core_*`, snake_case) with Better Auth mapped onto them. Spike ADR 0120
+> (`spikes/auth-multisession/docs/`) has the mechanics. A client is its own org
+> ([ADR 0043](0043-a-client-is-its-own-org.md)).

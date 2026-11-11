@@ -13,3 +13,8 @@ A runner starts an agent CLI inside a workspace. Agent CLIs differ in hooks, out
 ## Consequences
 - The factory never stores model provider keys or subscriptions.
 - Rules that need two harnesses (an independent reviewer, [ADR 0018](0018-model-roles.md)) only warn until a second harness exists.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): the harness runs **without the owner's git or cloud credentials**; only the model
+> subscription stays the owner's ([ADR 0033](0033-per-job-github-app-tokens.md)). For unattended
+> Claude permissions, `harness-claude` projects a **per-run `.claude/settings.json`** (allowed tools,
+> denied commands, hooks) into the workspace now; it moves to Orca launch args once Orca supports them.

@@ -1,9 +1,9 @@
 {
-  "name": "@software-factory/gatekeeper-webhook",
+  "name": "@software-factory/connector-webhook",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Inbound webhook gatekeeper: verifies signatures and deduplicates provider events into typed intake events.",
+  "description": "Inbound webhook connector: verifies signatures and deduplicates provider events into typed intake events.",
   "exports": {
     ".": "./src/index.ts"
   },

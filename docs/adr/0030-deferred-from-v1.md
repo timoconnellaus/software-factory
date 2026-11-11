@@ -20,3 +20,8 @@ erasure machinery, signed release bundles and the installer CLI.
 
 ## Consequences
 - Revisit each item with its own ADR when it is picked up.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): also deferred or cut: **content work is cut from v1**
+> ([ADR 0046](0046-content-cut-from-v1.md)); preview environments come later
+> ([ADR 0045](0045-preview-environments-later.md)); the Jev injection check is a follow-up
+> ([ADR 0047](0047-jev-injection-check-follow-up.md)).

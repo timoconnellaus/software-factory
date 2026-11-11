@@ -2,18 +2,24 @@
 
 Use these words exactly, in code, docs and UI copy. Add to this file when a new term earns its place.
 
+Renamed 2026-11-11 ([review decisions](docs/reviews/2026-11-11-review-decisions.md)): gatekeeper →
+**connector**; preset → **autonomy policy** or **project template**; `docs/stages/` → `docs/specs/`;
+planning session → **interview session**, now a view over **questions**.
+
 ## The organisation
 
 **Org**
 A group of users with members, roles and invitations (Better Auth organization plugin). Every user
-gets a **Personal** org. An org owns factories, a GitHub App installation and shared runners.
+gets a **Personal** org. An org owns factories and a GitHub App installation; runners are shared into
+it by their owners. A client is its own org (ADR 0043).
 _Avoid_: team (except the Team view in the UI), workspace, tenant, account (an account is a
 signed-in session)
 
 **Factory**
-One configured pipeline inside an org: its presets, floor, runners and projects. A client gets its
-own factory so its work and runners stay isolated. Also the product as a whole ("the factory").
-_Avoid_: pipeline (for the whole thing), instance
+The layer between org and project: a group of projects with their autonomy policies, floor and
+runners. In prose, "the software factory" is the product as a whole; don't use "factory" for the
+control plane, a Workflow or a gate.
+_Avoid_: pipeline (for the whole thing), instance, control plane (that is the Cloudflare side)
 
 **Project**
 One repo inside a factory, configured by its committed `.factory/` directory.
@@ -29,6 +35,12 @@ A user allowed to decide a gate on a project, set per project in `.factory/` (an
 domain where domains are declared).
 _Avoid_: reviewer (that is the independent review agent), admin
 
+**Backup owner**
+Who gets a question or gate when its owner doesn't answer before the timeout, or when a touched
+decision domain has no owner: the owner's named backup, else the project approver. Never an
+auto-accept.
+_Avoid_: delegate, fallback approver
+
 **Decision domain**
 An area of a project (product, architecture, security…) mapped to an owner in `.factory/`. Triage
 tags the domains a work item touches; planning questions and approvals are routed to that owner.
@@ -43,36 +55,58 @@ _Avoid_: task, ticket, job (a job is one stage's assignment to a runner), issue 
 
 **Stage**
 A step in a work item's pipeline: triage, planning/spec, implement, verify, and so on. Pipelines
-are configurable per project. Also the build unit of this repo (`docs/stages/`), which the factory
-writes in the same format.
-_Avoid_: phase, step (in code)
+are configurable per project.
+_Avoid_: phase, step (in code), stage spec (the build unit in `docs/specs/` is a **spec**)
 
 **Gate**
 A point where the Workflow stops until a decision is made: spec approval, a question, merge,
-deploy. Gates are enforced in code. A gate decision is recorded in the audit journal.
-_Avoid_: checkpoint, approval step
+deploy. Gates are enforced in code. A gate decision is recorded in the audit journal. The policy
+step inside `invoke()` that answers allow / review / deny is "the gate check"; a `review` answer
+opens a gate. `factory/verify` is a required **check**, not a gate.
+_Avoid_: checkpoint, approval step, gatekeeper (now **connector**), "factory gate" (say
+`factory/verify` or the merge gate)
 
 **Foreman**
-The LLM that picks a work item's route within the gates (which stage next, which runner, retry or
-escalate). It cannot open or skip a gate.
+The LLM that picks a work item's route within the gates. It cannot open or skip a gate the autonomy
+policy requires. Its decisions (ADR 0005):
+- **size** (`small | medium | large`), and so whether the spec stage is skipped: **binding**,
+  logged with its reason;
+- **domains touched**: **binding** for routing questions and approvals (during build it may only
+  add domains);
+- **route** (next stage, capabilities, whether to ask a question): **advisory**; the Workflow and
+  scheduler accept it only within the pipeline and `.factory/` limits;
+- **retry or escalate** after a failed run: **binding** up to the retry limit; escalating to a
+  person is always allowed.
 _Avoid_: coordinator, orchestrator, manager agent
 
 **Planning**
 The built-in stage that turns a request into a living spec: questions with defaults and
 recommendations, mockups and designs. Used at triage, spec, agent questions, design review and
 greenfield kickoff.
-_Avoid_: interview (that is the kim tool it is modelled on), grooming
+_Avoid_: interview (for the stage; that is the kim tool it is modelled on), grooming
 
-**Planning session**
-One session of planning on a work item, by type: planning (the owners), clarification (a guest who
-sees only their own questions), design review, or decision (a one-off question). A work item can
-have several. Owners delegate questions, never the whole feature.
-_Avoid_: interview, meeting, thread
+**Question**
+The one planning object (ADR 0042): a decision someone must make on a work item, with its decision
+domain, assignee, default, recommendation, whether it blocks, visibility, answer and status.
+Questions in the security & privacy domain, and irreversible ones, are never bulk-accepted.
+_Avoid_: prompt, ask, query, ticket
+
+**Assumption**
+A reversible choice the agent records on the living spec instead of asking a question. Visible and
+can be overturned.
+_Avoid_: default (that is a question's suggested answer), guess
+
+**Interview session**
+A **view** over a work item's questions for one audience: planning (the owners, full view),
+clarification (a guest sees only their questions and shared mockups), design review, or decision
+(one question). It holds no state beyond its filter and audience. Owners delegate questions, never
+the whole feature.
+_Avoid_: planning session (old name), meeting, thread
 
 **Living spec**
 A work item's spec, updated as planning answers arrive, with its acceptance criteria. Written in the
-stage-spec format (Goal / Scope / Out of scope / Acceptance criteria). Committed to
-`docs/stages/NN-*.md` when it is approved.
+spec format (Goal / Scope / Out of scope / Acceptance criteria). Committed to `docs/specs/NN-*.md`
+on the work item's branch when it is approved, never straight to main.
 _Avoid_: PRD, design doc, plan
 
 **Acceptance criterion**
@@ -80,10 +114,16 @@ One checkable statement in a spec. The verifier checks each one and attaches evi
 packet. The criteria together are the definition of done.
 _Avoid_: requirement, test case, AC (in UI copy)
 
+**Holdout test**
+An acceptance test written by the verify side from the approved criteria and never shown to the
+implementing run (ADR 0034). Its results are a section of the review packet.
+_Avoid_: hidden test, eval
+
 **Review packet**
 What a person reviews at a gate: a verdict row, what changed, criteria with evidence, reviewer
 notes, screenshots, risk flags, the diff and a preview link. Sections are set per project in
-`.factory/` (`reviewPacket.sections`). It also backs the `factory/verify` check.
+`.factory/` (`reviewPacket.sections`). It also backs the `factory/verify` check. The packet in the
+app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
 _Avoid_: PR summary, report
 
 **Lease**
@@ -91,11 +131,25 @@ A time-limited claim on a work item by a session or runner, kept alive by heartb
 session holds the lease, cloud runs back off.
 _Avoid_: lock, checkout
 
+**Fencing token**
+A number that only increases per work item, returned by every `lease.claim`. Every write from the
+lease holder carries it, and a write with a stale token is refused, so a holder whose lease was
+taken over can no longer change anything (ADR 0035).
+_Avoid_: lease id, version, epoch (the kill switch has one)
+
+**Run**
+One execution of a stage job on a runner. Each run pushes to its own branch
+(`factory/<id>-<slug>-run-<n>`); only the control plane moves the work item's branch
+(`factory/<id>-<slug>`) forward to an accepted run.
+_Avoid_: job (the assignment), session (the harness's), attempt
+
 ## Execution
 
 **Runner**
-Something that executes jobs: a machine or service with capacity and capabilities, owned by a user
-and shared into orgs or factories. Example: the Orca runner on the Mac mini, capacity 4.
+Something that executes jobs: a machine or service with capacity and capabilities, owned by a user.
+Owner-only by default; the owner shares it through an explicit allowlist of orgs, factories or
+projects (ADR 0038). It can report "rate-limited until T". Example: the Orca runner on the Mac mini,
+capacity 4.
 _Avoid_: worker (a Cloudflare Worker), agent, executor, host (the runner host is the daemon)
 
 **Runner adapter**
@@ -109,8 +163,15 @@ signed channel and loads runner adapters.
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
 **Capability**
-Something a runner or harness declares it can do (`browser`, `ui-takeover`, `auto-register`,
-`own-hardware`). Jobs ask for capabilities; `.factory/` can restrict them.
+Something a runner or harness declares it can do. Jobs ask for capabilities; `.factory/` can
+restrict them. The known ones:
+- `browser`: can drive a browser for screenshots and visual evidence;
+- `ui-takeover`: a person can take the session over in the runner's UI;
+- `auto-register`: sessions the runner launches attach to their work item by themselves;
+- `own-hardware`: runs on a machine its owner controls (for client repos);
+- `hooks`: the harness runs session hooks (inject the live work item, block writes until claimed,
+  heartbeat);
+- `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`).
 _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**
@@ -125,15 +186,37 @@ _Avoid_: runner (the CRM's name for this Worker), backend
 
 ## Policy and config
 
-**Preset**
-A named, shipped bundle of policy and repo practice (`minimal` → `product`; autonomy levels) in
-the global factory repo. A project's `.factory/` picks one and can override it.
-_Avoid_: template, profile, mode
+**Autonomy policy**
+How much a project's agents may do without a person: the gate check's answer for each actor × risk
+class, the spec threshold, timeouts, WIP limit. Shipped ones are Cautious, Balanced and Autonomous
+in the global factory repo; a project's `.factory/` picks one and can override it. Read only from
+the default branch (ADR 0036).
+_Avoid_: preset (old name), mode, level, profile
+
+**Project template**
+A shipped bundle of repo practice (`AGENTS.md`, `CONTEXT.md`, ADRs, specs, …) installed into a
+project, from `minimal` to `product` (ADR 0026).
+_Avoid_: preset (old name), scaffold, boilerplate
 
 **Floor**
-The global policy a preset or project override can only tighten, never loosen. Merge, deploy and
-self-modify always need a person regardless.
+The global policy an autonomy policy or project override can only tighten, never loosen. Merge,
+deploy and self-modify always need a person regardless. A client org has its own floor.
 _Avoid_: baseline, minimum policy, guardrails
+
+**Evidence policy**
+Per project in `.factory/`: which evidence (transcripts, logs, screenshots, diff) may leave the
+runner and be stored by the control plane, and for how long (ADR 0039).
+_Avoid_: retention policy, data policy
+
+**WIP limit**
+How many items may wait at human gates for a project or approver. At the limit the scheduler starts
+no new builds there: **backpressure** (ADR 0040).
+_Avoid_: queue size, concurrency (that is a runner's capacity)
+
+**Kill switch**
+A human-only switch per org and per project that pauses its work items at their next step, stops
+their runs and releases their slots (ADR 0044).
+_Avoid_: pause all, emergency stop
 
 ## Mechanics
 
@@ -142,11 +225,17 @@ A factory verb defined once in the registry with schemas, description, permissio
 The dashboard, MCP and the runner channel are generated from it.
 _Avoid_: endpoint, action (except outbound actions), command, API call
 
-**Gatekeeper**
-The boundary to an outside system. Inbound, it verifies and deduplicates webhooks into typed
-events that become work items. Outbound, it performs journaled actions (comments, PRs) so agents
-never hold raw tokens.
-_Avoid_: integration, connector, webhook handler
+**Connector**
+The boundary to an outside system (`packages/connector-*`). Inbound, it verifies and deduplicates
+webhooks into typed events that become work items. Outbound, it performs journaled actions
+(comments, PRs) so agents never hold standing tokens. The GitHub connector mints per-job repo
+tokens (ADR 0033).
+_Avoid_: gatekeeper (old name), integration, webhook handler
+
+**Job token**
+A short-lived GitHub App token scoped to one repo, minted for one job and pushed with only to the
+run's branch. The harness has no other git or cloud credentials (ADR 0033).
+_Avoid_: PAT, deploy key, user token
 
 **Audit journal**
 The append-only record of every operation: actor, origin, gate decision, diff. Metrics are SQL

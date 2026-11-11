@@ -15,3 +15,8 @@ Factory behaviour should be reviewable, versioned and portable, like code ("fact
 - Config changes go through the same gate as code ([ADR 0021](0021-governed-local-sessions.md)).
 - The control plane reads config from git; it caches but never owns it.
 - Open question: how the control plane learns that `.factory/` changed (push webhook vs read on each run).
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): the control plane reads `.factory/` and the global autonomy policies **only from the
+> default branch**, cached by commit SHA and refreshed by the push webhook; a diff to `.factory/` is
+> self-modify ([ADR 0036](0036-policy-from-the-default-branch.md)). That resolves the open question.
+> The global factory repo holds autonomy policies, project templates and the floor.

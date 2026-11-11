@@ -16,3 +16,12 @@ Review overload is a core pain. An approver should be able to decide on a PR fro
 
 ## Consequences
 - Projects can override the defaults but not drop below the floor ([ADR 0008](0008-autonomy-presets-and-floor.md)).
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): verification is less of a closed loop: **holdout acceptance tests**
+> ([ADR 0034](0034-holdout-acceptance-tests.md)) join the defaults; `factory/verify` is **pinned to
+> the App and bound to the head SHA**, and relies on CI the cloud can read
+> ([ADR 0037](0037-factory-verify-pinned-and-sha-bound.md)); the packet in the app **is the merge
+> gate** and links to the GitHub PR ([ADR 0041](0041-in-app-review-packet-is-the-merge-gate.md));
+> what evidence may be stored follows the project's **evidence policy**
+> ([ADR 0039](0039-per-project-evidence-policy.md)); the deploy preview link waits for preview
+> environments ([ADR 0045](0045-preview-environments-later.md)).

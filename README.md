@@ -9,7 +9,7 @@ pnpm i && pnpm lint && pnpm typecheck && pnpm test
 ```
 
 - Architecture overview: [`docs/architecture.md`](docs/architecture.md) · Glossary: [`CONTEXT.md`](CONTEXT.md)
-- Decisions: [`docs/adr/`](docs/adr/) · Stage specs: [`docs/stages/`](docs/stages/)
+- Decisions: [`docs/adr/`](docs/adr/) · Specs: [`docs/specs/`](docs/specs/)
 - Product plan: [`.kim/plans/2026-11-10-personal-software-factory-design.md`](.kim/plans/2026-11-10-personal-software-factory-design.md)
 - Architecture: [`.kim/designs/v1-architecture.d2`](.kim/designs/v1-architecture.d2)
 - UI plan (in progress): [`docs/ui-plan.md`](docs/ui-plan.md)

@@ -20,3 +20,10 @@ so it is tempting to build the factory inside Orca.
 ## Consequences
 - We own the whole stack and its upkeep, and can shape it to how we actually work.
 - Nothing in the core may assume Orca is present.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): the pains are now answered more directly. Away-time gets web push with deep links in R1
+> ([ADR 0040](0040-web-push-and-wip-backpressure.md)), and review load gets the in-app review packet
+> as the merge gate, which is where this factory differs from Warp Factories and Symphony
+> ([ADR 0041](0041-in-app-review-packet-is-the-merge-gate.md)). "Presets" is now two words:
+> **autonomy policies** ([ADR 0008](0008-autonomy-presets-and-floor.md)) and **project templates**
+> ([ADR 0026](0026-repo-practice-via-presets.md)).

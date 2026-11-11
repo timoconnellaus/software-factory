@@ -20,3 +20,8 @@ and a colleague's Codex Cloud should all be able to run jobs. The core must not 
 ## Consequences
 - The core never imports Orca. A plain `runner-local` sketch is the check that the contract stays Orca-free.
 - Adapters on a machine are loaded by the **runner host** (`local/runner-host`) ([ADR 0016](0016-signed-runner-channel.md)).
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): two capabilities join the list: **`hooks`** (the harness runs session hooks, so the
+> live work item can be injected and writes blocked until it is claimed) and **`headless`** (the
+> runner can run a session with no terminal or UI attached, like `claude -p`). Spike ADR 0100
+> (`spikes/runner-orca`) has the contract's types.

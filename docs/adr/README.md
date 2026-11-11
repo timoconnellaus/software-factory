@@ -2,7 +2,7 @@
 
 Each ADR is `NNNN-slug.md` with Status, Context, Decision and Consequences. ADRs are never deleted: when a decision changes, amend it with a dated note.
 
-Numbering: 0001–0099 is the scaffold block; spikes use 0100+. Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
+Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); spikes use 0100–0199 (0100 runner contract, 0110 Workflow and gate, 0120 auth, each still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
 
 | ADR | Title |
 | --- | --- |
@@ -13,9 +13,9 @@ Numbering: 0001–0099 is the scaffold block; spikes use 0100+. Claim a block in
 | [0005](0005-hybrid-coordinator.md) | Hybrid coordinator: state machine owns gates, foreman picks the route |
 | [0006](0006-work-item-workflows.md) | One Workflow per work item |
 | [0007](0007-human-gates-are-pending-actions.md) | Human gates are pending actions |
-| [0008](0008-autonomy-presets-and-floor.md) | Autonomy presets and the floor |
+| [0008](0008-autonomy-presets-and-floor.md) | Autonomy presets (now autonomy policies) and the floor |
 | [0009](0009-factory-config-in-git.md) | Factory config lives in git |
-| [0010](0010-gatekeepers-for-intake-and-outbound.md) | Gatekeepers for intake and outbound |
+| [0010](0010-gatekeepers-for-intake-and-outbound.md) | Gatekeepers (now connectors) for intake and outbound |
 | [0011](0011-audit-journal-is-the-metrics.md) | The audit journal is the metrics |
 | [0012](0012-outbox-and-notifications.md) | Outbox and notifications |
 | [0013](0013-triage-sizes-the-spec-gate.md) | Triage sizes the spec gate |
@@ -31,10 +31,25 @@ Numbering: 0001–0099 is the scaffold block; spikes use 0100+. Claim a block in
 | [0023](0023-runners-owned-by-users-and-requester-routing.md) | Runners are owned by users; requester-first routing |
 | [0024](0024-identity-orgs-and-multi-session.md) | Identity, orgs and multi-session |
 | [0025](0025-github-app-per-org.md) | A GitHub App per org |
-| [0026](0026-repo-practice-via-presets.md) | Repo practice, installed via presets |
+| [0026](0026-repo-practice-via-presets.md) | Repo practice, installed via presets (now project templates) |
 | [0027](0027-evals.md) | Evals |
 | [0028](0028-planning-built-in.md) | Planning is built in |
 | [0029](0029-decision-domains.md) | Decision domains |
 | [0030](0030-deferred-from-v1.md) | Deferred from v1 |
 | [0031](0031-dashboard-stack-and-inbox-first.md) | Dashboard stack and inbox-first home |
 | [0032](0032-scope-and-isolation.md) | Scope and isolation |
+| [0033](0033-per-job-github-app-tokens.md) | Per-job GitHub App tokens; runners run without the owner's credentials |
+| [0034](0034-holdout-acceptance-tests.md) | Holdout acceptance tests |
+| [0035](0035-lease-fencing-and-one-branch-per-run.md) | Lease fencing tokens and one branch per run |
+| [0036](0036-policy-from-the-default-branch.md) | Policy is read from the default branch only |
+| [0037](0037-factory-verify-pinned-and-sha-bound.md) | `factory/verify` is pinned to the App and bound to the head SHA |
+| [0038](0038-runner-sharing-is-an-owner-allowlist.md) | Runner sharing is an owner-only allowlist |
+| [0039](0039-per-project-evidence-policy.md) | Per-project evidence policy |
+| [0040](0040-web-push-and-wip-backpressure.md) | Notifications by web push, and WIP backpressure |
+| [0041](0041-in-app-review-packet-is-the-merge-gate.md) | The in-app review packet is the merge gate |
+| [0042](0042-one-question-object.md) | One Question object; interview sessions are views |
+| [0043](0043-a-client-is-its-own-org.md) | A client is its own org |
+| [0044](0044-kill-switch-scope.md) | Kill switch per org and per project |
+| [0045](0045-preview-environments-later.md) | Preview environments later, never against prod data |
+| [0046](0046-content-cut-from-v1.md) | Content is cut from v1 |
+| [0047](0047-jev-injection-check-follow-up.md) | A Jev prompt-injection check on intake (follow-up) |

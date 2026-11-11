@@ -2,5 +2,5 @@ import { expect, it } from "vitest";
 import { PACKAGE } from "../src/index.ts";
 
 it("exports its package name", () => {
-  expect(PACKAGE).toBe("@software-factory/gatekeeper-webhook");
+  expect(PACKAGE).toBe("@software-factory/connector-webhook");
 });

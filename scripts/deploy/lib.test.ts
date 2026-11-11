@@ -70,7 +70,7 @@ test("findWorkers finds every wrangler.jsonc under apps/, packages/ and local/",
   const base = mkdtempSync(join(tmpdir(), "sf-deploy-"));
   for (const [dir, name] of [
     ["apps/app", "sf-app"],
-    ["packages/gatekeeper-webhook", "sf-gk"],
+    ["packages/connector-webhook", "sf-conn"],
     ["packages/core", null],
   ] as const) {
     mkdirSync(join(base, dir), { recursive: true });
@@ -78,7 +78,7 @@ test("findWorkers finds every wrangler.jsonc under apps/, packages/ and local/",
   }
   assert.deepEqual(
     findWorkers(base).map((w) => w.dir),
-    ["apps/app", "packages/gatekeeper-webhook"],
+    ["apps/app", "packages/connector-webhook"],
   );
 });
 

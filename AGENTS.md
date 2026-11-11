@@ -9,7 +9,7 @@ Fresh session? Read [`docs/handoff.md`](docs/handoff.md), then [`docs/parallel-w
 
 ## Working in a stage
 
-- You will be pointed at a stage spec in `docs/stages/`. Build what it says. Its acceptance criteria
+- You will be pointed at a spec in `docs/specs/`. Build what it says. Its acceptance criteria
   are the definition of done.
 - If the spec turns out to be wrong or ambiguous, don't silently diverge. Stop and ask, or record the
   deviation and why in the PR description.
@@ -23,21 +23,24 @@ Fresh session? Read [`docs/handoff.md`](docs/handoff.md), then [`docs/parallel-w
   `pr.merge`) is an operation in the registry (`packages/core`) with zod schemas, a model-facing
   description, a permission and a risk class. The dashboard, MCP and the runner channel call
   operations. Nothing writes to D1 directly. (ADR 0003, 0004)
-- **No ambient authority.** Agents and runners never hold raw tokens. Outside access goes through
-  gatekeepers; repo access goes through the org's GitHub App. A run gets only what its work item
-  allows. (ADR 0010, 0025)
+- **No ambient authority.** Agents and runners never hold standing tokens. Outside access goes
+  through connectors; repo access goes through the org's GitHub App, as a per-job token scoped to
+  one repo. The harness runs without its owner's git or cloud credentials. A run gets only what its
+  work item allows. (ADR 0010, 0025, 0033)
 - **Policy is enforced in code and is not AI-configurable.** Gates live in the Workflow state
-  machine, never in a prompt. The foreman picks a route only within them. Loosening a preset or the
-  floor is a human-only change, and merge, deploy and self-modify always go to a human. A malformed
-  policy fails closed. (ADR 0005, 0008)
+  machine, never in a prompt. The foreman picks a route only within them. Loosening an autonomy policy
+  or the floor is a human-only change, and merge, deploy and self-modify always go to a human. Policy
+  is read from the default branch only; a diff to `.factory/` is self-modify. A malformed policy
+  fails closed. (ADR 0005, 0008, 0036)
 - **Code asks for a model role, never a model id.** (ADR 0018)
 - **Runners are adapters.** The core knows only the runner contract and capabilities. It never
   imports Orca or any other runner. Runner-specific features are optional capabilities the adapter
   declares. (ADR 0014)
-- **Nothing reaches main except through the factory gate.** Local sessions can do anything locally,
-  but every PR, whatever its source, needs the `factory/verify` check. (ADR 0020, 0021)
-- **Credentials stay with the runner's owner.** The factory never stores provider keys or
-  subscriptions. (ADR 0023)
+- **Nothing reaches main except through `factory/verify` and the merge gate.** Local sessions can do
+  anything locally, but every PR, whatever its source, needs the `factory/verify` check from the
+  org's App on its head SHA, with no admin bypass. (ADR 0020, 0021, 0037)
+- **Model credentials stay with the runner's owner.** The factory never stores provider keys or
+  subscriptions; repo access is the per-job token, nothing else. (ADR 0023, 0033)
 
 ## Tooling
 

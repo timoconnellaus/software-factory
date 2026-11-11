@@ -25,3 +25,9 @@ Specs are better when written with the approver than for them. The interviewer p
 > roll up), design review, and decision (a one-off question). The owner delegates questions, never
 > the whole feature. On approval the living spec is committed to `docs/stages/NN-*.md`. UI: a
 > Planning tab on the work item, inbox cards for single questions, and a full-screen canvas.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): the core object is now the **Question**, and interview sessions (planning,
+> clarification, design review, decision) are **views** over questions
+> ([ADR 0042](0042-one-question-object.md)). Reversible choices become assumptions instead of
+> questions. On approval the living spec is committed to `docs/specs/NN-*.md` **on the work item's
+> branch**, never directly to main. Clarification sessions stay in R1, in its third milestone.

@@ -15,3 +15,12 @@ The scarce resource is the approver's attention. Relationship OS uses TanStack S
 
 ## Consequences
 - Design tokens and components live in `.kim/design-system/`; mockups in `.kim/mockups/`.
+
+> Amended 2026-11-11 (review decisions, [`docs/reviews/2026-11-11-review-decisions.md`](../reviews/2026-11-11-review-decisions.md)): **R1 keeps everything** (orgs, multi-session, decision domains, clarification sessions,
+> shared runners) but is built in **three internal milestones**: (a) the core loop end to end for
+> one user and one repo, usable as soon as it lands; (b) orgs and multi-session; (c) decision
+> domains, clarification and shared runners. R1 also gains web push with deep links
+> ([ADR 0040](0040-web-push-and-wip-backpressure.md)), a WIP limit with backpressure, an **inbox
+> grouped by project**, a **runner health line**, and early metrics (gate time, send-back rate,
+> cycle time, "opened full diff?"). Web push needs a service worker but not an installable PWA, so
+> "no PWA" still holds.
