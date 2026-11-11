@@ -116,3 +116,9 @@ With that, `runner-orca` can go back to `agent launch`. The post-launch check st
 - Fail fast without retries on `harness-config-mismatch`. Today the engine retries the run up to the
   retry limit before the item fails and the incident opens; every retry fails the same way, before
   doing anything.
+
+> Amended 2026-11-12 (incident [2026-11-11 #8](../incidents/2026-11-11-bootstrap.md#8-agents-received-only-the-tail-of-their-prompts)):
+> the prompt is no longer typed into the terminal. A multi-kilobyte prompt sent with
+> `orca terminal send --text … --enter` arrived with only its tail. The adapter writes it to
+> `.factory-prompt.md` in the worktree (excluded from git) and, after the live-process check, sends
+> harness-claude's one-line `PROMPT_POINTER` to it.
