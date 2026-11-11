@@ -3,13 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Operations registry, the invoke() pipeline and gate, policy (presets + floor), the work-item state model.",
+  "description": "Operations registry, the invoke() pipeline and gate, autonomy policy + floor, model roles, the work-item model.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@software-factory/db": "workspace:*",
+    "@software-factory/runner-contract": "workspace:*",
+    "kysely": "0.29.8",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.5.1",

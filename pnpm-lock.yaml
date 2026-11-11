@@ -112,6 +112,19 @@ importers:
         version: 5.1.0(@types/node@24.19.2)(vite@8.3.7(@types/node@24.19.2)(esbuild@0.28.2))
 
   packages/core:
+    dependencies:
+      '@software-factory/db':
+        specifier: workspace:*
+        version: link:../db
+      '@software-factory/runner-contract':
+        specifier: workspace:*
+        version: link:../runner-contract
+      kysely:
+        specifier: 0.29.8
+        version: 0.29.8
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: 1.5.1
