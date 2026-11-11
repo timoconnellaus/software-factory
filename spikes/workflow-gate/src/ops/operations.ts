@@ -4,9 +4,10 @@ import { z } from "zod";
 import { defineOperation } from "./define";
 import { OperationError } from "./errors";
 import { PRESETS } from "./gate";
+import { readSettings } from "./invoke";
 
 const workItemId = z.string().regex(/^wi-[0-9a-f]{32}$/);
-const STATUSES = ["running", "done", "rejected", "stopped", "expired", "failed"] as const;
+const STATUSES = ["running", "paused", "done", "rejected", "expired", "failed"] as const;
 
 /**
  * Workflow (and work item) id derived from the intake event, so a redelivered event maps to the
@@ -155,12 +156,12 @@ export const prMerge = defineOperation({
 
 export const close = defineOperation({
   name: "workItem.close",
-  description: "End a work item without merging (rejected at a gate, expired, refused, stopped).",
+  description: "End a work item without merging (rejected at a gate, expired, or refused).",
   risk: "write",
   actors: ["agent", "human"],
   input: z.object({
     workItemId,
-    status: z.enum(STATUSES).exclude(["running", "done"]),
+    status: z.enum(STATUSES).exclude(["running", "paused", "done"]),
     reason: z.string().max(500),
   }),
   output: z.object({ status: z.string() }),
@@ -168,7 +169,7 @@ export const close = defineOperation({
     ctx.write(
       ctx.db
         .prepare(
-          `UPDATE work_items SET status = ?, updated_at = ? WHERE id = ? AND status = 'running'`,
+          `UPDATE work_items SET status = ?, updated_at = ? WHERE id = ? AND status IN ('running', 'paused')`,
         )
         .bind(input.status, ctx.now, input.workItemId),
     );
@@ -234,35 +235,45 @@ export const approvalDecide = defineOperation({
 export const setKillSwitch = defineOperation({
   name: "factory.setKillSwitch",
   description:
-    "Turn the kill switch on or off. On: every non-human write is refused, running work items stop and their Workflows are terminated.",
+    "Turn the kill switch on or off. On: every non-human write is refused and running work items' Workflows are paused. Off: they resume.",
   risk: "self-modify",
   actors: ["human"],
   input: z.object({ on: z.boolean() }),
-  output: z.object({ on: z.boolean(), stopped: z.number() }),
+  output: z.object({ on: z.boolean(), workItems: z.number() }),
   async handler(input, ctx) {
-    ctx.write(
-      ctx.db
-        .prepare(
-          `INSERT INTO settings (key, value) VALUES ('kill_switch', ?)
-           ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-        )
-        .bind(input.on ? "on" : "off"),
-    );
-    if (!input.on) return { on: false, stopped: 0 };
+    const settings = await readSettings(ctx.db);
+    if (settings.killSwitch === input.on) return { on: input.on, workItems: 0 };
+    const upsert = (key: string, value: string) =>
+      ctx.write(
+        ctx.db
+          .prepare(
+            `INSERT INTO settings (key, value) VALUES (?, ?)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+          )
+          .bind(key, value),
+      );
+    upsert("kill_switch", input.on ? "on" : "off");
+    const epoch = input.on ? settings.killEpoch + 1 : settings.killEpoch;
+    if (input.on) upsert("kill_epoch", String(epoch));
+
+    const [from, to] = input.on ? ["running", "paused"] : ["paused", "running"];
     const { results } = await ctx.db
-      .prepare(`SELECT id, workflow_id FROM work_items WHERE status = 'running'`)
-      .all<{ id: string; workflow_id: string }>();
+      .prepare(`SELECT workflow_id FROM work_items WHERE status = ?`)
+      .bind(from)
+      .all<{ workflow_id: string }>();
     ctx.write(
       ctx.db
-        .prepare(
-          `UPDATE work_items SET status = 'stopped', updated_at = ? WHERE status = 'running'`,
-        )
-        .bind(ctx.now),
+        .prepare(`UPDATE work_items SET status = ?, updated_at = ? WHERE status = ?`)
+        .bind(to, ctx.now, from),
     );
-    for (const row of results) {
-      ctx.emit({ kind: "workflow.terminate", payload: { instanceId: row.workflow_id } });
+    for (const { workflow_id: instanceId } of results) {
+      ctx.emit(
+        input.on
+          ? { kind: "workflow.pause", payload: { instanceId } }
+          : { kind: "workflow.resume", payload: { instanceId, killEpoch: epoch } },
+      );
     }
-    return { on: true, stopped: results.length };
+    return { on: input.on, workItems: results.length };
   },
 });
 

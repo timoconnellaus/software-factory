@@ -1,6 +1,6 @@
 # ADR 0110: A Workflow per work item, gated through the operation pipeline
 
-Status: proposed, 2026-11-11 (spike `spikes/workflow-gate`). Moves to `docs/adr/` when accepted.
+Status: proposed, 2026-11-11 (spike `spikes/workflow-gate`). Moves to `docs/adr/` when accepted. Fills in the mechanics of ADRs 0004, 0006, 0007, 0008, 0011, 0012 and 0013, and amends ADR 0004's risk classes.
 
 ## Context
 
@@ -14,14 +14,14 @@ The plan makes the coordinating agent a hybrid: a state machine owns the gates a
 
 **The gate decides where a work item pauses; the Workflow only reacts.**
 - Gate decisions come from `invoke()`: preset (Cautious, Balanced, Autonomous) for actor × risk class, `merge`/`deploy`/`self-modify` always reviewed for non-humans, then every matching floor rule (env `APPROVAL_FLOOR`; `actor|*` → `risk|*` → decision). The strictest wins, so the floor only tightens. A malformed floor denies every call; an unknown preset is Cautious.
-- Risk classes: `read`, `write`, **`plan`** (accepting a spec), `spend`, `outbound`, `merge`, `deploy`, `self-modify`. `plan` is reviewed in Cautious and Balanced and auto in Autonomous.
+- Risk classes: `read`, `write`, **`plan`** (accepting a spec), `spend`, `outbound`, `merge`, `deploy`, `self-modify`. `plan` is reviewed for agents in every preset, so a spec always needs an approver (ADR 0013). Small work skips it because triage routes it past the spec stage.
 - `review` records a pending action (with its audit row and a `notify` outbox row, in one D1 batch) and returns `pending`. The Workflow then waits on `step.waitForEvent({ type: "approval-<pendingActionId>", timeout: "7 days" })`.
 - `approval.decide` (humans only) records the decision and writes a `workflow.event` outbox row in the same batch. After commit the outbox sends the event.
 - Approved: the Workflow re-runs the operation with the approval. The pipeline checks it matches (operation, actor type, work item, status), re-evaluates the gate (`deny` still refuses), runs the handler and marks the action `applied` in the same batch. Rejected → the work item closes `rejected`. Timeout → `expired`.
 
 **Every change is one batch: writes + audit row + outbox rows.** The audit journal is append-only (triggers) and holds one row per write, refusal and failure, with actor, origin, risk, gate decision, outcome and the pending action or approval. Metrics are views over it. Workflow starts, gate events and terminations are outbox messages delivered after commit and retried by a minute cron with backoff.
 
-**Kill switch.** A setting, changed only by humans (`factory.setKillSwitch`, risk `self-modify`). While on, `invoke()` refuses every non-human write (`killed`), so no stage can advance and no intake is accepted. Turning it on also marks running work items `stopped` and terminates their instances through the outbox.
+**Kill switch.** A setting, changed only by humans (`factory.setKillSwitch`, risk `self-modify`). Turning it on bumps `kill_epoch`, moves running work items to `paused` and pauses their instances through the outbox (ADR 0006). While it is on, `invoke()` refuses every non-human write (`killed`), so nothing advances and no intake is accepted; humans can still decide gates. A step refused mid-flight parks on `waitForEvent("factory-resume-<epoch>")`. Turning it off moves the items back to `running`, resumes the instances and sends them that event; a parked step runs again under a new step name. The epoch in the event type stops a stale event from releasing a later park.
 
 ## Consequences
 
@@ -33,6 +33,7 @@ The plan makes the coordinating agent a hybrid: a state machine owns the gates a
 
 ## Open questions
 
-- Kill switch scope (factory, project or runner) and whether turning it off restarts stopped items.
+- Kill switch scope (factory, org or project).
+- Whether an unknown preset should deny every call (ADR 0008 "fails closed") rather than fall back to Cautious.
 - Escalation before a gate expires.
 - Whether the applied audit row should name the approver as well as the original actor.

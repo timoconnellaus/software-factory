@@ -14,7 +14,7 @@ CREATE TABLE work_items (
   size TEXT,
   stage TEXT NOT NULL DEFAULT 'intake',
   status TEXT NOT NULL DEFAULT 'running'
-    CHECK (status IN ('running', 'waiting', 'done', 'rejected', 'stopped', 'expired')),
+    CHECK (status IN ('running', 'paused', 'done', 'rejected', 'expired', 'failed')),
   workflow_id TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

@@ -87,6 +87,7 @@ export async function invoke(
       throw new OperationError(
         prior.outcome === "killed" ? "killed" : "denied",
         prior.reason ?? prior.outcome,
+        prior.result ? JSON.parse(prior.result) : undefined,
       );
     }
   }
@@ -117,8 +118,14 @@ export async function invoke(
   const settings = await readSettings(db);
   if (settings.killSwitch && actor.type !== "human" && op.risk !== "read") {
     return refuse(
-      { ...base, decision: "n/a", outcome: "killed", reason: "kill switch is on" },
-      new OperationError("killed", "the kill switch is on"),
+      {
+        ...base,
+        decision: "n/a",
+        outcome: "killed",
+        reason: "kill switch is on",
+        result: { killEpoch: settings.killEpoch },
+      },
+      new OperationError("killed", "the kill switch is on", { killEpoch: settings.killEpoch }),
     );
   }
   const gate = decide({
@@ -284,14 +291,20 @@ export async function invoke(
 interface Settings {
   preset: ReturnType<typeof parsePreset>;
   killSwitch: boolean;
+  /** Bumped each time the kill switch turns on; names the event that releases parked steps. */
+  killEpoch: number;
 }
 
 export async function readSettings(db: D1Database): Promise<Settings> {
   const { results } = await db
-    .prepare(`SELECT key, value FROM settings WHERE key IN ('preset', 'kill_switch')`)
+    .prepare(`SELECT key, value FROM settings WHERE key IN ('preset', 'kill_switch', 'kill_epoch')`)
     .all<{ key: string; value: string }>();
   const map = new Map(results.map((r) => [r.key, r.value]));
-  return { preset: parsePreset(map.get("preset")), killSwitch: map.get("kill_switch") === "on" };
+  return {
+    preset: parsePreset(map.get("preset")),
+    killSwitch: map.get("kill_switch") === "on",
+    killEpoch: Number(map.get("kill_epoch") ?? 0),
+  };
 }
 
 function auditStatement(

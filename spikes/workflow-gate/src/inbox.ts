@@ -28,7 +28,7 @@ export async function listPending(db: D1Database): Promise<PendingRow[]> {
     .prepare(
       `SELECT p.id, p.operation, p.risk, p.actor_type, p.actor_id, p.created_at, p.work_item_id, w.title
        FROM pending_actions p LEFT JOIN work_items w ON w.id = p.work_item_id
-       WHERE p.status = 'pending' AND (w.status IS NULL OR w.status = 'running')
+       WHERE p.status = 'pending' AND (w.status IS NULL OR w.status IN ('running', 'paused'))
        ORDER BY p.created_at`,
     )
     .all<PendingRow>();
@@ -112,7 +112,7 @@ export async function renderInbox(db: D1Database, flash?: string): Promise<strin
         .map((p) => `<option${p === settings.preset ? " selected" : ""}>${p}</option>`)
         .join("")}</select><button>Set</button></form>
     <form method="post" action="/kill-switch" class="row">Kill switch: <strong>${settings.killSwitch ? "ON" : "off"}</strong>
-      <button name="on" value="${settings.killSwitch ? "0" : "1"}">${settings.killSwitch ? "Turn off" : "Stop everything"}</button></form>
+      <button name="on" value="${settings.killSwitch ? "0" : "1"}">${settings.killSwitch ? "Turn off" : "Pause everything"}</button></form>
   </div>
   <h2>Needs you (${pending.length})</h2>
   ${pendingHtml}
@@ -129,6 +129,7 @@ export async function renderInbox(db: D1Database, flash?: string): Promise<strin
 
 function statusDot(status: string) {
   if (status === "running") return "running";
+  if (status === "paused") return "waiting";
   if (status === "done") return "done";
   if (status === "failed" || status === "rejected") return "failed";
   return "idle";

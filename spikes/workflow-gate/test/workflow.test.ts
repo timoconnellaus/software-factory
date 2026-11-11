@@ -129,20 +129,31 @@ describe("work item Workflow", () => {
     expect(await workItem(id)).toMatchObject({ status: "rejected" });
   });
 
-  it("skips the spec gate for small work, and Autonomous skips it for large work too", async () => {
+  it("skips the spec gate for small work; merge still needs a human under Autonomous", async () => {
     await setPreset("autonomous");
-    const { id, instance, intake } = await newWorkItem("large");
+    const { id, instance, intake } = await newWorkItem("small");
     await using _ = instance;
     await intake();
-    // `plan` is auto under Autonomous; `merge` never is.
-    expect(await instance.waitForStepResult({ name: "spec: request" })).toMatchObject({
-      status: "ok",
-    });
     const merge = (await instance.waitForStepResult({ name: "merge: request" })) as Pending;
     expect(merge.status).toBe("pending");
     await decide(merge.pendingActionId, "approved");
     await instance.waitForStatus("complete");
     expect(await workItem(id)).toMatchObject({ status: "done" });
+    const ops = await rows<{ operation: string }>(
+      "SELECT DISTINCT operation FROM audit WHERE work_item_id = ?",
+      id,
+    );
+    expect(ops.map((o) => o.operation)).not.toContain("spec.accept");
+  });
+
+  it("keeps the spec gate for large work even under Autonomous", async () => {
+    await setPreset("autonomous");
+    const { instance, intake } = await newWorkItem("large");
+    await using _ = instance;
+    await intake();
+    expect(await instance.waitForStepResult({ name: "spec: request" })).toMatchObject({
+      status: "pending",
+    });
   });
 
   it("expires the work item when nobody answers a gate", async () => {
@@ -157,20 +168,50 @@ describe("work item Workflow", () => {
     expect(await workItem(id)).toMatchObject({ status: "expired" });
   });
 
-  it("stops waiting work items with the kill switch, and refuses new intake", async () => {
+  it("pauses running work items with the kill switch and resumes them when it is off", async () => {
     const { id, instance, intake } = await newWorkItem("large");
     await using _ = instance;
     await intake();
-    await instance.waitForStepResult({ name: "spec: request" });
+    const spec = (await instance.waitForStepResult({ name: "spec: request" })) as Pending;
 
-    const result = await call("factory.setKillSwitch", { on: true }, HUMAN);
-    expect(result).toMatchObject({ status: "ok", output: { on: true } });
-    await instance.waitForStatus("terminated");
-    expect(await workItem(id)).toMatchObject({ status: "stopped" });
-
+    await call("factory.setKillSwitch", { on: true }, HUMAN);
+    expect(await workItem(id)).toMatchObject({ status: "paused" });
+    await instance.waitForStatus("paused");
     await expect(
       call("workItem.intake", { source: "github", externalId: "after-kill", title: "x" }, INTAKE),
     ).rejects.toMatchObject({ code: "killed" });
+
+    // Approving while paused is allowed (humans aren't stopped); the event waits for the resume.
+    await decide(spec.pendingActionId, "approved");
     await call("factory.setKillSwitch", { on: false }, HUMAN);
+    expect(await workItem(id)).toMatchObject({ status: "running" });
+    const merge = (await instance.waitForStepResult({ name: "merge: request" })) as Pending;
+    expect(merge.status).toBe("pending");
+  });
+
+  it("parks a step the kill switch refused mid-flight, and runs it again once it is off", async () => {
+    const { id, instance } = await newWorkItem("small");
+    await using _ = instance;
+    // Simulate the race: the work item exists and its Workflow starts after the switch went on.
+    await env.DB.prepare(
+      `INSERT INTO work_items (id, source, external_id, title, size, status, workflow_id, created_at, updated_at)
+       VALUES (?, 'github', ?, 'Raced the kill switch', 'small', 'running', ?, ?, ?)`,
+    )
+      .bind(id, id, id, new Date().toISOString(), new Date().toISOString())
+      .run();
+    await call("factory.setKillSwitch", { on: true }, HUMAN);
+    await env.WORK_ITEM_WORKFLOW.create({ id, params: { workItemId: id } });
+
+    expect(await instance.waitForStepResult({ name: "triage: record" })).toMatchObject({
+      status: "refused",
+      code: "killed",
+    });
+    await call("factory.setKillSwitch", { on: false }, HUMAN);
+    expect(await instance.waitForStepResult({ name: "triage: record #2" })).toMatchObject({
+      status: "ok",
+    });
+    expect(await instance.waitForStepResult({ name: "merge: request" })).toMatchObject({
+      status: "pending",
+    });
   });
 });

@@ -60,7 +60,8 @@ export const PRESET_TABLE: Record<PresetName, Record<NonHuman, Row>> = {
     "self-improve": row("auto", "auto", "review", "deny", "review", "review", "deny", "review"),
   },
   autonomous: {
-    agent: row("auto", "auto", "auto", "auto", "auto", "review", "review", "review"),
+    // `plan` stays review: a spec needs an approver whatever the preset (ADR 0013).
+    agent: row("auto", "auto", "review", "auto", "auto", "review", "review", "review"),
     runner: row("auto", "auto", "deny", "auto", "review", "deny", "deny", "deny"),
     intake: row("auto", "auto", "deny", "deny", "deny", "deny", "deny", "deny"),
     "self-improve": row("auto", "auto", "review", "review", "review", "review", "deny", "review"),

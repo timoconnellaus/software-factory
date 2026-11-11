@@ -22,7 +22,8 @@ export type OutboxMessage =
       kind: "workflow.event";
       payload: { instanceId: string; type: string; payload: Record<string, string> };
     }
-  | { kind: "workflow.terminate"; payload: { instanceId: string } }
+  | { kind: "workflow.pause"; payload: { instanceId: string } }
+  | { kind: "workflow.resume"; payload: { instanceId: string; killEpoch: number } }
   /** Stand-in for push notifications (the phone app plugs in here later). */
   | { kind: "notify"; payload: { event: string; [key: string]: string } };
 

@@ -34,7 +34,7 @@ describe("gate: presets", () => {
     ["cautious", "write", "review"],
     ["balanced", "write", "auto"],
     ["balanced", "plan", "review"],
-    ["autonomous", "plan", "auto"],
+    ["autonomous", "plan", "review"],
     ["autonomous", "outbound", "auto"],
     ["autonomous", "merge", "review"],
   ] as const)("agent in %s: %s → %s", (preset, risk, expected) => {

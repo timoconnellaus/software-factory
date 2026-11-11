@@ -13,20 +13,22 @@ export interface WorkItemParams {
 
 export type WorkItemOutcome =
   | { status: "done"; workItemId: string }
-  | { status: "rejected" | "expired" | "stopped" | "failed"; workItemId: string; reason: string };
+  | { status: "rejected" | "expired" | "failed"; workItemId: string; reason: string };
 
 /** A step's result is journaled, so it must be serializable. The spike's outputs are flat records. */
 type Json = Record<string, string | number | boolean | null>;
 type StepResult =
   | (Omit<Extract<InvokeResult, { status: "ok" }>, "output"> & { output: Json })
   | Extract<InvokeResult, { status: "pending" }>
-  | { status: "refused"; code: string; message: string };
+  | { status: "refused"; code: string; message: string; killEpoch: number | null };
 
 const FOREMAN: Actor = { type: "agent", id: "foreman" };
 const RUNNER: Actor = { type: "runner", id: "runner-stub" };
 
 /** How long a gate waits for a human before the work item expires. */
 export const GATE_TIMEOUT = "7 days";
+/** How long a step refused by the kill switch waits for it to be turned off. */
+export const PARK_TIMEOUT = "30 days";
 
 export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
   override async run(
@@ -36,44 +38,56 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
     const { workItemId } = event.payload;
     const workflowId = event.instanceId;
 
-    /** One journaled step = one operation call. Refusals are results, not retries. */
-    const call = (
+    /**
+     * One journaled step = one operation call. Refusals are results, not retries. A step the kill
+     * switch refused parks until the switch is turned off, then runs again under a new step name.
+     */
+    const call = async (
       name: string,
       op: string,
       input: unknown,
       actor = FOREMAN,
       approvalId?: string,
-    ): Promise<StepResult> =>
-      step.do<StepResult>(
-        name,
-        { retries: { limit: 3, delay: "1 second", backoff: "exponential" } },
-        async () => {
-          try {
-            return (await invoke(this.env, op, input, {
-              actor,
-              origin: { surface: "workflow", workflowId, step: name },
-              idempotencyKey: `${workflowId}:${name}`,
-              ...(approvalId ? { approvalId } : {}),
-            })) as StepResult;
-          } catch (error) {
-            if (isOperationError(error)) {
-              return { status: "refused", code: error.code, message: error.message } as StepResult;
+    ): Promise<StepResult> => {
+      for (let attempt = 1; ; attempt++) {
+        const stepName = attempt === 1 ? name : `${name} #${attempt}`;
+        const result = await step.do<StepResult>(
+          stepName,
+          { retries: { limit: 3, delay: "1 second", backoff: "exponential" } },
+          async () => {
+            try {
+              return (await invoke(this.env, op, input, {
+                actor,
+                origin: { surface: "workflow", workflowId, step: stepName },
+                idempotencyKey: `${workflowId}:${stepName}`,
+                ...(approvalId ? { approvalId } : {}),
+              })) as StepResult;
+            } catch (error) {
+              if (!isOperationError(error)) throw error;
+              const killEpoch = (error.details as { killEpoch?: number } | undefined)?.killEpoch;
+              return {
+                status: "refused",
+                code: error.code,
+                message: error.message,
+                killEpoch: killEpoch ?? null,
+              } as StepResult;
             }
-            throw error;
-          }
-        },
-      );
-
-    const end = async (status: "rejected" | "expired" | "stopped" | "failed", reason: string) => {
-      if (status !== "stopped") {
-        await call(`close: ${status}`, "workItem.close", { workItemId, status, reason });
+          },
+        );
+        if (result.status !== "refused" || result.code !== "killed") return result;
+        await step.waitForEvent(`${stepName}: parked`, {
+          type: `factory-resume-${result.killEpoch}`,
+          timeout: PARK_TIMEOUT,
+        });
       }
+    };
+
+    const end = async (status: "rejected" | "expired" | "failed", reason: string) => {
+      await call(`close: ${status}`, "workItem.close", { workItemId, status, reason });
       return { status, workItemId, reason } as WorkItemOutcome;
     };
     const refused = (result: StepResult) =>
-      result.status === "refused"
-        ? end(result.code === "killed" ? "stopped" : "failed", result.message)
-        : null;
+      result.status === "refused" ? end("failed", result.message) : null;
 
     /**
      * Calls an operation; when the gate says `review`, waits for `approval-<pendingActionId>` and
@@ -125,7 +139,7 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
     const stopTriage = refused(triaged);
     if (stopTriage) return stopTriage;
 
-    // Spec gate: only bigger work needs a spec, and the gate decides whether it needs a human.
+    // Spec gate: only bigger work needs a spec; `plan` is reviewed in every preset (ADR 0013).
     if (size === "large") {
       const spec = await gated("spec", "spec.accept", {
         workItemId,

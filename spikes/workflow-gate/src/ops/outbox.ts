@@ -69,11 +69,24 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       await instance.sendEvent({ type: message.payload.type, payload: message.payload.payload });
       return;
     }
-    case "workflow.terminate": {
+    case "workflow.pause": {
       const instance = await env.WORK_ITEM_WORKFLOW.get(message.payload.instanceId);
       const { status } = await instance.status();
+      if (status === "running" || status === "waiting" || status === "queued")
+        await instance.pause();
+      return;
+    }
+    case "workflow.resume": {
+      const instance = await env.WORK_ITEM_WORKFLOW.get(message.payload.instanceId);
+      const { status } = await instance.status();
+      if (status === "paused" || status === "waitingForPause") await instance.resume();
+      // Releases a step that the kill switch refused mid-flight (it parks on this event). The
+      // epoch in the type means a stale event can never release a later park.
       if (status !== "complete" && status !== "errored" && status !== "terminated") {
-        await instance.terminate();
+        await instance.sendEvent({
+          type: `factory-resume-${message.payload.killEpoch}`,
+          payload: {},
+        });
       }
       return;
     }
