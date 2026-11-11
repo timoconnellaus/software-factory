@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
   type AdapterEvent,
   type Artifact,
+  type AttachmentFile,
   artifactId,
   ChannelCallError,
   type ControlPlaneClient,
@@ -207,6 +208,59 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let stored: StoredArtifact[] = [];
   const notes: string[] = [];
 
+  /**
+   * The work item's attachments (ADR 0310), when the adapter declares `work-item-attachments`:
+   * fetched over the job channel with this job's fencing token, handed to the adapter to put
+   * outside the git tree, and its note appended to the prompt. Any other runner skips this.
+   */
+  const withAttachments = async (j: Job, w: W): Promise<Job> => {
+    const manifest = await adapter.manifest();
+    if (
+      !manifest.capabilities.includes("work-item-attachments") ||
+      !adapter.attachFiles ||
+      !cp.attachments ||
+      !cp.attachment
+    ) {
+      return j;
+    }
+    const list = cp.attachments.bind(cp);
+    const fetchOne = cp.attachment.bind(cp);
+    let files: AttachmentFile[];
+    try {
+      const { attachments } = await channel(() => list(j.jobId, fence));
+      if (attachments.length === 0) return j;
+      files = [];
+      for (const meta of attachments) {
+        const got = await channel(() => fetchOne(j.jobId, fence, meta.id));
+        files.push({
+          meta: got.attachment,
+          bytes: Uint8Array.from(Buffer.from(got.base64, "base64")),
+        });
+      }
+    } catch (error) {
+      if (error instanceof StopJob) throw error;
+      // The run goes on without them; the agent is told so.
+      log(
+        `attachments for ${j.jobId} not fetched: ${error instanceof Error ? error.message : error}`,
+      );
+      notes.push("attachments could not be fetched");
+      return {
+        ...j,
+        harness: {
+          ...j.harness,
+          prompt: `${j.harness.prompt}\n\n(The work item has attachments, but they could not be fetched for this run.)`,
+        },
+      };
+    }
+    const note = await adapter.attachFiles(j, w, files);
+    await stream.push({
+      type: "job.state",
+      state: "preparing",
+      detail: `${files.length} attachment(s) fetched`,
+    });
+    return note ? { ...j, harness: { ...j.harness, prompt: `${j.harness.prompt}\n${note}` } } : j;
+  };
+
   const abortedOutcome = (): SessionOutcome => {
     const reason = signal.reason;
     if (reason instanceof StopJob) return "cancelled";
@@ -263,7 +317,9 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       const configBefore = await git.sensitiveConfig(workspace.path);
 
       if (signal.aborted) throw signal.reason;
-      session = await adapter.startSession(job, workspace, signal);
+      const runJob = await withAttachments(job, workspace);
+      if (signal.aborted) throw signal.reason;
+      session = await adapter.startSession(runJob, workspace, signal);
       await stream.push({ type: "job.state", state: "running" });
       await stream.push({
         type: "session.started",

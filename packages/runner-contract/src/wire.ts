@@ -264,6 +264,25 @@ export const releaseRequestSchema = z.object({
   reason: z.string().max(2_000).optional(),
 });
 
+/** One work item attachment as a run sees it (ADR 0310). Its filename is untrusted data. */
+export const attachmentMetaSchema = z.object({
+  id: z.string(),
+  filename: z.string(),
+  contentType: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  sha256: z.string(),
+  createdAt: iso,
+});
+
+export const attachmentsRequestSchema = z.object({ fencingToken });
+export const attachmentsResponseSchema = z.object({ attachments: z.array(attachmentMetaSchema) });
+export const attachmentRequestSchema = z.object({ fencingToken, attachmentId: z.string() });
+export const attachmentResponseSchema = z.object({
+  attachment: attachmentMetaSchema,
+  /** The file's bytes, base64. */
+  base64: z.string(),
+});
+
 /** Every non-2xx answer from the channel carries this body. */
 export const channelErrorSchema = z.object({
   error: z.string(),
@@ -282,3 +301,6 @@ export type EventsRequest = z.infer<typeof eventsRequestSchema>;
 export type ArtifactRequest = z.infer<typeof artifactRequestSchema>;
 export type ReleaseRequest = z.infer<typeof releaseRequestSchema>;
 export type ChannelError = z.infer<typeof channelErrorSchema>;
+export type AttachmentMeta = z.infer<typeof attachmentMetaSchema>;
+export type AttachmentsResponse = z.infer<typeof attachmentsResponseSchema>;
+export type AttachmentResponse = z.infer<typeof attachmentResponseSchema>;

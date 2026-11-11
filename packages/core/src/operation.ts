@@ -141,6 +141,12 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
   bootstrapsPolicy?: boolean;
   /** Which inbox card a `review` answer becomes. Default `approval`. */
   gateKind?: "spec" | "merge" | "approval";
+  /**
+   * Hide what the caller may not see (ADR 0310): when set, a scope that can't be resolved and a human
+   * without the permission both get `not_found` with this message, so a missing record and one in
+   * an org the caller can't reach look the same.
+   */
+  concealAs?: (input: z.output<I>) => string;
   /** How to find the scope when the default (input field names) isn't enough. */
   scope?: (input: z.output<I>, db: Db) => Promise<ScopeRef>;
   /** Strip secrets before the input/output is written to the audit journal. */

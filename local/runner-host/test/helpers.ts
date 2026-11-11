@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   type AdapterEvent,
   type Artifact,
+  type AttachmentMeta,
   ChannelCallError,
   type ClaimRequest,
   CONTRACT_VERSION,
@@ -52,6 +53,9 @@ export interface FakeCloud {
   tokens: number;
   /** Job ids whose next call is refused as fenced. */
   fenced: Set<string>;
+  /** Each job's work item attachments, as the channel serves them (ADR 0310). */
+  attachments: Map<string, { meta: AttachmentMeta; base64: string }[]>;
+  attachmentCalls: number;
 }
 
 export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
@@ -67,6 +71,8 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
     commands: [],
     tokens: 0,
     fenced: new Set(),
+    attachments: new Map(),
+    attachmentCalls: 0,
     fetch: async (input, init) =>
       handleRunnerCall(
         new Request(input, init),
@@ -129,6 +135,19 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
             case "release":
               cloud.released.set(jobId, body as { finalState: string; reason?: string });
               return { body: { released: true } };
+            case "attachments":
+              cloud.attachmentCalls++;
+              return {
+                body: { attachments: (cloud.attachments.get(jobId) ?? []).map((a) => a.meta) },
+              };
+            case "attachment": {
+              cloud.attachmentCalls++;
+              const { attachmentId } = body as { attachmentId: string };
+              const found = cloud.attachments.get(jobId)?.find((a) => a.meta.id === attachmentId);
+              return found
+                ? { body: { attachment: found.meta, base64: found.base64 } }
+                : { status: 404, body: { error: "no attachment", code: "not_found" } };
+            }
           }
         },
       ),
@@ -200,10 +219,12 @@ export interface FakeWorkspace extends WorkspaceHandle {
 export function fakeAdapter(
   clonePath: (job: Job) => string,
   session: (worktree: string, job: Job, signal: AbortSignal) => Promise<AdapterEvent[]>,
-): RunnerAdapter<FakeWorkspace> & { calls: string[] } {
+): RunnerAdapter<FakeWorkspace> & { calls: string[]; prompts: string[] } {
   const calls: string[] = [];
+  const prompts: string[] = [];
   return {
     calls,
+    prompts,
     async manifest() {
       return {
         contractVersion: CONTRACT_VERSION,
@@ -239,6 +260,7 @@ export function fakeAdapter(
     },
     async startSession(j) {
       calls.push("start");
+      prompts.push(j.harness.prompt);
       return { jobId: j.jobId, sessionRef: "fake" };
     },
     async *events(j, _s, signal) {

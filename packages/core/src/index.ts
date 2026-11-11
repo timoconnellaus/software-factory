@@ -1,12 +1,17 @@
 // @software-factory/core: the operations registry, the invoke() pipeline and gate, autonomy policy
 // and the floor, model roles and the work-item model (ADR 0003, 0004, 0008, 0018).
 export * from "./actors.ts";
+export * from "./attachments.ts";
 export * from "./errors.ts";
 export * from "./ids.ts";
 export * from "./incidents/classify.ts";
 export * from "./invoke.ts";
 export * from "./model-roles.ts";
 export * from "./operation.ts";
+export {
+  type AttachmentView,
+  sweepStrayAttachmentBlobs,
+} from "./operations/attachments.ts";
 export { DEVICE_LOGIN_ACTOR, normalizeUserCode } from "./operations/devices.ts";
 export * as operations from "./operations/index.ts";
 export { PROTECTION_RECHECK_MS } from "./operations/protection.ts";

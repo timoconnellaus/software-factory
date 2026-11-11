@@ -23,10 +23,15 @@ a worktree and a branch; `release` never unregisters or deletes a checkout.
 3. `token(jobId, fencingToken)`: a fresh GitHub App token for the one repo, `contents: write`. Never
    cached by the cloud. Give the harness a git credential helper that serves only this token, in a
    scrubbed environment (no `GH_TOKEN`, SSH agent, cloud credentials). Revoke it when done.
-4. Run the adapter; send `events` and `artifact`s with the fencing token.
-5. Read the stage result from `RESULT_FILE` (`.factory-result.json`, never committed), push the run
+4. With the `work-item-attachments` capability (ADR 0310), after `prepareWorkspace`:
+   `attachments(jobId, fencingToken)` lists the work item's files and `attachment(jobId,
+   fencingToken, id)` fetches one (base64). Neither answer is stored by the cloud. The adapter's
+   `attachFiles` puts them outside the git tree and returns the prompt section (labelled
+   `untrustedData` blocks). Adapters without the capability skip this.
+5. Run the adapter; send `events` and `artifact`s with the fencing token.
+6. Read the stage result from `RESULT_FILE` (`.factory-result.json`, never committed), push the run
    branch, then `handback { branch, headSha, result }` and `release`.
-6. Any `409` with code `fenced` or `killed`: stop the session, release the workspace, drop the job.
+7. Any `409` with code `fenced` or `killed`: stop the session, release the workspace, drop the job.
 
 `httpControlPlane({ baseUrl: "https://sf-engine.zerobsai.com", runnerId, key })` implements all of
 these with signed requests and verified responses.

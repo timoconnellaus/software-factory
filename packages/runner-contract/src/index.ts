@@ -5,4 +5,5 @@ export * from "./channel.ts";
 export * from "./protocol.ts";
 export * from "./stage-results.ts";
 export * from "./types.ts";
+export * from "./untrusted.ts";
 export * from "./wire.ts";
