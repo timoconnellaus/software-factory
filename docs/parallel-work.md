@@ -18,7 +18,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | G | — | 0250–0259 | V1 step 3, the runner (`v1-runner`): `local/runner-host`, `runner-orca`, `harness-claude`. Used: ADR 0250, no migrations | merged |
 | H | 0060–0069 | 0055–0059 | Onboarding (`onboarding-connect-github`): Connect GitHub (installation records), repo picker, policy auto-sync and the policy PR, runner device login, the Setup checklist. Used: migration 0060; ADRs 0055, 0056 | merged |
 | I | — | 0260–0269 | Runner resolves the existing Orca repo (`runner-orca-resolve-repo`): incident 2026-11-11 #5. Used: ADR 0260, no migrations | merged |
-| J | — | 0270–0279 | The factory sets Claude's permission mode and sandbox (`harness-permission-mode`): incident 2026-11-11 #6. ADR 0270, no migrations | in progress |
+| J | — | 0270–0279 | The factory sets Claude's permission mode and sandbox (`harness-permission-mode`): incident 2026-11-11 #6. Used: ADR 0270, no migrations | merged |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
