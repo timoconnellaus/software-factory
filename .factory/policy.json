@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "autonomyPolicy": "balanced",
+  "overrides": { "agent": { "outbound": "allow" } },
+  "spec": { "requiredFrom": "medium" },
+  "timeouts": { "gateHours": 72, "questionHours": 48 },
+  "wipLimit": 5,
+  "retryLimit": 2,
+  "approvers": ["timoconnellaus"],
+  "backupOwner": "timoconnellaus",
+  "reviewPacket": { "sections": ["verdict", "changed", "criteria", "reviewer", "risk", "diff"] }
+}
