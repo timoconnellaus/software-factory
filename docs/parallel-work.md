@@ -16,7 +16,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | E | 0040–0049 | 0230–0239 | V1 step 4, verify + GitHub connector + incidents (`v1-verify-connector`): spec 04, the webhook connector, `factory/verify`, review-packet assembly, incidents, evals. Used: migration 0040; ADRs 0230, 0231 | merged |
 | F | 0050–0059 | 0240–0249 | V1 step 2, the app (`v1-app`): `apps/app` (TanStack Start + shadcn), `packages/ui`, Better Auth sign-in, Inbox, New work, work item detail + Planning, review packet. Used: ADR 0240, no migrations | merged |
 | G | — | 0250–0259 | V1 step 3, the runner (`v1-runner`): `local/runner-host`, `runner-orca`, `harness-claude`. Used: ADR 0250, no migrations | merged |
-| H | 0060–0069 | 0055–0059 | Onboarding (`onboarding-connect-github`): Connect GitHub (installation records), repo picker, policy auto-sync and the policy PR, runner device login, the Setup checklist. Used: migration 0060; ADRs 0055, 0056 | in progress |
+| H | 0060–0069 | 0055–0059 | Onboarding (`onboarding-connect-github`): Connect GitHub (installation records), repo picker, policy auto-sync and the policy PR, runner device login, the Setup checklist. Used: migration 0060; ADRs 0055, 0056 | merged |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
