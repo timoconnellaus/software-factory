@@ -12,8 +12,8 @@ import { dirname, join } from "node:path";
 import { runnerChannelKey } from "../src/contract/channel.ts";
 import { httpControlPlane } from "../src/contract/protocol.ts";
 import type { Job } from "../src/contract/types.ts";
-import { hostTick } from "../src/host/driver.ts";
 import { createFakeCloud } from "../src/host/fake-cloud.ts";
+import { hostTick } from "../src/host/runner-host.ts";
 import { createOrcaRunner, JOB_COMMENT_PREFIX } from "../src/runner-orca/adapter.ts";
 import { orcaCli } from "../src/runner-orca/orca-cli.ts";
 
@@ -44,7 +44,7 @@ const job: Job = {
     id: "claude-code",
     prompt: `Append the line '${LINE}' to README.md. Do not commit and do not change anything else. Then stop.`,
   },
-  requires: ["takeover"],
+  requires: ["ui-takeover", "browser"],
   evidence: { screenshotUrls: [`file://${repo}/index.html`] },
   output: "diff",
   limits: { sessionTimeoutMs: cutOff || 5 * 60_000 },

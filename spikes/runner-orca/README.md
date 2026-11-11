@@ -17,14 +17,14 @@ pnpm e2e:local                             # real run on runner-local: needs `cl
 | Path | What |
 |---|---|
 | `src/contract/types.ts` | The contract: `Job`, `CapabilityManifest`, `Capacity`, `WorkspaceHandle`, `SessionHandle`, events, artifacts, `Handback`, and the `RunnerAdapter` interface. |
-| `src/contract/channel.ts` | The signed channel: HMAC per-runner keys, sign/verify, a 5-minute window, and `handleRunnerCall` (verify → idempotency → handler). Web Crypto only, so it runs in Workers and Node. |
+| `src/contract/channel.ts` | The signed channel. It has per-runner HMAC keys with a version, so one runner can be revoked. Requests **and responses** are signed and verified within a 5-minute window. `handleRunnerCall` verifies, checks idempotency, runs the handler and signs the reply. Web Crypto only, so it runs in Workers and Node. |
 | `src/contract/protocol.ts` | Wire calls (heartbeat, claim, events, artifacts, handback, release), their idempotency keys, and `httpControlPlane`, a signed client. |
-| `src/host/driver.ts` | The generic runner host. `hostTick` sends a heartbeat, applies commands and claims a job. `runJob` takes it through prepare → start → stream → collect → hand back → release. Nothing here is Orca-specific. |
+| `src/host/runner-host.ts` | The generic runner host (`local/runner-host` later). `hostTick` sends a heartbeat, applies commands and claims a job. `runJob` takes it through prepare → start → stream → collect → hand back → release. Nothing here is Orca-specific. |
 | `src/host/fake-cloud.ts` | The cloud end of the channel, in memory. It serves the real signed protocol through a `fetch` function. |
 | `src/host/git.ts`, `exec.ts` | Shared host helpers: the diff artifact and branch deletion, plus an injectable `exec`. |
 | `src/runner-orca/` | `orca-cli.ts` (a typed `--json` wrapper) and `adapter.ts` (the adapter). |
 | `src/runner-local/adapter.ts` | A sketch that uses `git worktree` and headless `claude -p --output-format stream-json`. |
-| `test/` | Unit tests for the channel, idempotency, the driver lifecycle and failure paths, the Orca adapter against a scripted CLI, stream-json parsing, and a **boundary guard**. The guard checks that `src/contract` imports nothing outside itself, uses no `node:` modules, and names no runner in code. Biome enforces the same import rule. |
+| `test/` | Unit tests for the channel, idempotency, the runner host's lifecycle and failure paths, the Orca adapter against a scripted CLI, stream-json parsing, and a **boundary guard**. The guard checks that `src/contract` imports nothing outside itself, uses no `node:` modules, and names no runner in code. Biome enforces the same import rule. |
 | `scripts/e2e-*.ts` | End-to-end runs against a throwaway git repo. |
 
 ## What works (verified on this machine, 2026-11-11, Orca 1.4.256, Claude Code 2.1.322)
@@ -32,7 +32,7 @@ pnpm e2e:local                             # real run on runner-local: needs `cl
 - **`pnpm e2e:orca` passes**, about 11–15 s per job. The steps:
   1. A throwaway repo is created.
   2. The fake cloud queues a job.
-  3. The host heartbeats and claims it over the signed channel. Each run makes about 20 signed, verified calls.
+  3. The host heartbeats and claims it over the signed channel. Each run makes about 20 calls, with the request and the response both signed and verified.
   4. runner-orca registers the repo in Orca, creates a worktree tagged `sf-job:<id>`, and launches Claude Code in an Orca terminal with the prompt.
   5. It streams agent status, tool, log and done events, which arrive in seq order.
   6. It collects the `git diff` (`+hello from runner-orca`), the terminal screen, and a **screenshot from Orca's embedded browser** (the `browser` capability).
@@ -40,9 +40,9 @@ pnpm e2e:local                             # real run on runner-local: needs `cl
 
   The script then checks that **nothing is left**: no Orca worktree or terminal, the repo is unregistered from Orca, no git worktree, no branch, and no empty `~/orca/workspaces/<repo>/` folder.
 - **Timeout path against real Orca** (`E2E_TIMEOUT_MS=4000`): the job ends `timed_out`, the partial diff and screenshot are still collected, and everything is still cleaned up.
-- **`pnpm e2e:local` passes**: the same job, host and fake cloud, with runner-local in place of runner-orca. The adapter declares only `headless` and the contract is unchanged. This is the evidence that the contract has no Orca-specific parts.
+- **`pnpm e2e:local` passes**: the same job, host and fake cloud, with runner-local in place of runner-orca. The adapter declares only `headless` and `own-hardware`, and the contract is unchanged. This is the evidence that the contract has no Orca-specific parts.
 - Unit tests (29) cover:
-  - signature (tampered body, path or idempotency key; another runner's key; stale ±300 s);
+  - request and response signatures (tampered body, path or idempotency key; another runner's key; a revoked key version; stale ±300 s);
   - idempotency (a replay returns the stored answer, a different body under the same key gets 409, and a re-sent claim returns the same job);
   - lifecycle order;
   - refusal on missing capabilities;
@@ -91,7 +91,7 @@ The plan's rule is that the factory schedules and runners execute. The core must
   2. **Wire protocol** between the runner host (`local/runner-host`) and the engine. The host claims, numbers events, accounts for capacity, applies timeouts and always releases, so every adapter gets these for free.
 - **Capability manifest:**
   - The manifest is `{ contractVersion, runnerKind, harnesses, capabilities }`.
-  - The capabilities are `browser`, `takeover`, `hooks`, `autoRegisterSessions` and `headless`.
+  - The capabilities are `browser`, `ui-takeover`, `auto-register`, `hooks`, `headless` and `own-hardware`. The names come from the CONTEXT.md glossary; `hooks` and `headless` are new and should be added there.
   - A job lists `requires`. The scheduler only places it on a runner whose manifest covers it, and the host refuses it again on receipt (`canRun`).
   - `runnerKind` is informational: the core never branches on it, and a test enforces that.
 - **Lifecycle:** claimed → preparing → running → collecting → handed_back | failed → released. Artifacts are collected after a failure or timeout too, because a partial diff and logs are what a person needs. Release always runs.
@@ -100,10 +100,11 @@ The plan's rule is that the factory schedules and runners execute. The core must
   - Cloud → runner commands (`cancel`, `steer`, `drain`) ride back on the heartbeat response.
   - Claiming is **pull**: the host heartbeats with its manifest and capacity, then claims if it has room.
 - **Signing** (same construction as Relationship OS ADR 0250):
-  - Each runner's key is `base64url(HMAC-SHA256(RUNNER_CHANNEL_SECRET, "sf-runner-channel:" + runnerId))`. It is derived, not stored.
+  - Each runner's key is `base64url(HMAC-SHA256(RUNNER_CHANNEL_SECRET, "sf-runner-channel:<runnerId>:v<keyVersion>"))`. It is derived, not stored; only the key version is stored per runner. Bumping the version revokes that runner alone (ADR 0016: "revoked by rotating its key").
   - Each request carries the headers `x-sf-runner`, `x-sf-timestamp`, `x-sf-idempotency-key` and `x-sf-signature: v1=<hex HMAC(key, "v1\n<runner>\n<ts>\n<METHOD>\n<path>\n<sha256(body)>\n<idempotency key>")>`.
   - Requests more than 5 minutes off are refused, and the signature is compared in constant time.
   - The idempotency key is inside the signature, so it can't be swapped onto another body.
+  - **Responses are signed too** (ADR 0016: "every call in either direction"). The response signature is `v1=<hex HMAC(key, "v1-response\n<runner>\n<ts>\n<status>\n<path>\n<sha256(body)>\n<idempotency key>")>`, so a proxy can't hand the host a job or command the cloud never sent, or swap one call's answer onto another. Refusals (401) go out unsigned, and the host treats them as failures.
 - **Idempotency:** each call's key is derived from what it means, so a retry after a crash sends the same key:
   - `claim:<runner>:<claimId>`
   - `ev:<job>:<firstSeq>-<lastSeq>`
@@ -121,12 +122,19 @@ The plan's rule is that the factory schedules and runners execute. The core must
 - A new runner is one adapter file. runner-local is under 200 lines, with no contract changes, and passes the same end-to-end job.
 - Orca-only features stay as capabilities. Takeover is exposed as an opaque `{ label, hint }` on the session, so the UI never learns what an Orca terminal handle is.
 - Pull-based claiming adds up to one heartbeat interval of latency per job. That's acceptable for jobs that last minutes.
-- Rotating `RUNNER_CHANNEL_SECRET` re-keys every runner, as in CRM ADR 0250.
+- Rotating `RUNNER_CHANNEL_SECRET` re-keys every runner, as in CRM ADR 0250. To revoke one runner, bump its key version instead.
+
+### How this sits with the accepted ADRs
+- It **implements** ADR 0014 (runners are adapters), 0015 (capabilities on the manifest; capacity in the heartbeat) and 0016 (signed channel). It also answers 0016's open question about how jobs are assigned: **pull**, meaning heartbeat then claim. A WebSocket to a Durable Object can replace the polling later without changing the calls.
+- Stage 3 acceptance criterion 2 says a replayed request id is "refused". This spike instead **answers a replay from the idempotency store and never runs it twice**. Refusing it would break the host's retry after a lost response (for example a claim whose reply never arrived). A different body under the same key *is* refused (409). See open question 7.
+- Stage 3 criterion 6 (a `runner-local` sketch type-checks against the same contract) is met, and it also runs end to end.
 
 ### Open questions (picked a default; revisit)
 1. **Harness vs runner split.** The plan has a `harness-claude` package. In this spike, runner-orca hands the harness to Orca (`agent launch --agent claude`) and runner-local runs `claude -p` itself. Should a harness adapter produce the launch command or arguments and the event parser, with runners only hosting it? Orca's launch API doesn't take arbitrary arguments today (finding 7).
 2. **Leases.** The job carries a lease. My working proposal is that the heartbeat's `activeJobIds` renews every listed lease, so there's no separate renew call. Cloud side not built.
-3. **Response signing.** Cloud → host responses (jobs, commands) rely on TLS only. Should they also be signed, so a compromised proxy can't inject jobs?
+3. **Who issues a runner's id and key version.** Registration (owner, capacity) belongs in `local/runner-host` and an operation such as `runner.register`. Should the key be shown once at registration, as with an API token, or derived on the host from a one-time pairing code?
 4. **Concurrent duplicate calls.** The in-memory idempotency store does get then put. The engine should use a Durable Object per runner, or `INSERT … ON CONFLICT DO NOTHING`, so two simultaneous identical calls can't both run.
 5. **Large artifacts.** Screenshots and patches are inline base64 JSON. The real system should upload them to R2 via a signed upload URL returned by the artifacts call.
 6. **Diff vs PR.** Should the runner push and open the PR (runner owner's git credentials), or should the cloud do it through the GitHub App from the diff? The plan says "agents never hold raw tokens", which points to the cloud applying the diff.
+7. **Replay semantics vs stage 3.** Should the stage 3 wording change from "a replayed request id is refused" to "a replayed request id is answered from the store and never re-executed"? This spike recommends the change.
+8. **Capability names.** The task brief used `takeover` and `autoRegisterSessions`. The glossary says `ui-takeover` and `auto-register`, and the spike follows the glossary.

@@ -7,8 +7,8 @@ import {
   type Job,
   type RunnerAdapter,
 } from "../src/contract/types.ts";
-import { hostTick, runJob } from "../src/host/driver.ts";
 import { createFakeCloud } from "../src/host/fake-cloud.ts";
+import { hostTick, runJob } from "../src/host/runner-host.ts";
 
 const RUNNER = "r_testrunner";
 
@@ -85,7 +85,7 @@ async function setup() {
   return { cloud, cp };
 }
 
-describe("runner host driver", () => {
+describe("runner host", () => {
   it("claims a job over the signed channel and takes it through the lifecycle", async () => {
     const { cloud, cp } = await setup();
     cloud.queue.push(job());

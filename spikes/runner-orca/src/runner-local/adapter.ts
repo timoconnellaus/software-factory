@@ -1,7 +1,7 @@
 // runner-local (sketch): the same contract with no Orca at all. A job becomes a plain
 // `git worktree`, Claude Code runs headless (`claude -p --output-format stream-json`), events are
 // the parsed stream-json lines, and the diff comes from the same host/git.ts helper. It declares
-// only `headless`: no takeover UI, no browser, no session auto-registration.
+// only `headless` and `own-hardware`: no takeover UI, no browser, no session auto-registration.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdir, realpath } from "node:fs/promises";
@@ -92,7 +92,7 @@ export function createLocalRunner(
         contractVersion: CONTRACT_VERSION,
         runnerKind: "local",
         harnesses: ["claude-code"],
-        capabilities: ["headless"],
+        capabilities: ["headless", "own-hardware"],
       };
     },
 

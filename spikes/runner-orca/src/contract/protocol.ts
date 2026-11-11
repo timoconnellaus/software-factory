@@ -9,7 +9,7 @@
 //   handback    hand:<job>
 //   release     rel:<job>
 
-import { sha256Hex, signRunnerRequest } from "./channel.ts";
+import { sha256Hex, signRunnerRequest, verifyRunnerResponse } from "./channel.ts";
 import type {
   CapabilityManifest,
   Capacity,
@@ -103,7 +103,15 @@ export function httpControlPlane(config: {
       body,
     });
     if (!response.ok) throw new Error(`${path}: HTTP ${response.status} ${await response.text()}`);
-    return (await response.json()) as T;
+    const verified = await verifyRunnerResponse(response, {
+      key: config.key,
+      runner: config.runnerId,
+      path,
+      idempotencyKey,
+      ...(config.now ? { now: config.now() } : {}),
+    });
+    if (!verified.ok) throw new Error(`${path}: ${verified.reason}`);
+    return JSON.parse(verified.body) as T;
   }
   return {
     // A heartbeat is a report, not an action: each one is new, so each gets a fresh key.

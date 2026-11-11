@@ -57,11 +57,18 @@ export async function sha256Hex(text: string): Promise<string> {
   return hex(await crypto.subtle.digest("SHA-256", encoder.encode(text)));
 }
 
-/** A runner's channel key, derived from the cloud's master secret. */
-export async function runnerChannelKey(masterSecret: string, runnerId: string): Promise<string> {
+/**
+ * A runner's channel key, derived from the cloud's master secret. `version` is stored per runner
+ * (it starts at 1): bumping it revokes that one runner's key without touching the others.
+ */
+export async function runnerChannelKey(
+  masterSecret: string,
+  runnerId: string,
+  version = 1,
+): Promise<string> {
   if (!masterSecret) throw new Error("the runner channel needs RUNNER_CHANNEL_SECRET");
   if (!RUNNER_ID.test(runnerId)) throw new Error(`bad runner id: ${runnerId}`);
-  return base64url(await hmac(masterSecret, `sf-runner-channel:${runnerId}`));
+  return base64url(await hmac(masterSecret, `sf-runner-channel:${runnerId}:v${version}`));
 }
 
 interface SignedParts {
@@ -116,6 +123,8 @@ function safeEqual(a: string, b: string): boolean {
 export type VerifiedRequest = {
   ok: true;
   runner: string;
+  /** The runner's key, for signing the response. */
+  key: string;
   idempotencyKey: string;
   body: string;
 };
@@ -155,7 +164,83 @@ export async function verifyRunnerRequest(
     idempotencyKey,
   });
   if (!safeEqual(expected, given)) return { ok: false, status: 401, reason: "bad signature" };
-  return { ok: true, runner, idempotencyKey, body };
+  return { ok: true, runner, key, idempotencyKey, body };
+}
+
+// Responses are signed too (ADR 0016: "every call in either direction"), so a TLS-terminating
+// proxy can't hand the host a job or a command the cloud never sent. The response signature binds
+// the status and body to the request's path and idempotency key:
+//   x-sf-signature  v1=<hex HMAC(runnerKey, "v1-response\n<runner>\n<timestamp>\n<status>\n<path>\n<sha256 hex of body>\n<idempotency key>")>
+
+interface ResponseParts {
+  runner: string;
+  timestamp: string;
+  status: number;
+  path: string;
+  body: string;
+  idempotencyKey: string;
+}
+
+async function responseSignature(key: string, parts: ResponseParts): Promise<string> {
+  const message = [
+    "v1-response",
+    parts.runner,
+    parts.timestamp,
+    String(parts.status),
+    parts.path,
+    await sha256Hex(parts.body),
+    parts.idempotencyKey,
+  ].join("\n");
+  return `v1=${hex(await hmac(key, message))}`;
+}
+
+/** A signed JSON response from the cloud to one runner call. */
+export async function signedRunnerResponse(input: {
+  key: string;
+  runner: string;
+  path: string;
+  idempotencyKey: string;
+  status?: number;
+  body: string;
+  replayed?: boolean;
+  now?: Date;
+}): Promise<Response> {
+  const status = input.status ?? 200;
+  const timestamp = String(Math.floor((input.now ?? new Date()).getTime() / 1000));
+  return new Response(input.body, {
+    status,
+    headers: {
+      "content-type": "application/json",
+      [HEADER_TIMESTAMP]: timestamp,
+      [HEADER_SIGNATURE]: await responseSignature(input.key, { ...input, status, timestamp }),
+      ...(input.replayed ? { "x-sf-replayed": "1" } : {}),
+    },
+  });
+}
+
+/** Checks a response came from the cloud for this exact call. Returns its body text. */
+export async function verifyRunnerResponse(
+  response: Response,
+  expected: { key: string; runner: string; path: string; idempotencyKey: string; now?: Date },
+): Promise<{ ok: true; body: string } | { ok: false; reason: string }> {
+  const timestamp = response.headers.get(HEADER_TIMESTAMP) ?? "";
+  const given = response.headers.get(HEADER_SIGNATURE) ?? "";
+  if (!/^\d{1,12}$/.test(timestamp) || !given.startsWith("v1=")) {
+    return { ok: false, reason: "unsigned response" };
+  }
+  const now = Math.floor((expected.now ?? new Date()).getTime() / 1000);
+  if (Math.abs(now - Number(timestamp)) > CHANNEL_MAX_SKEW_SECONDS) {
+    return { ok: false, reason: "stale response" };
+  }
+  const body = await response.text();
+  const want = await responseSignature(expected.key, {
+    ...expected,
+    timestamp,
+    status: response.status,
+    body,
+  });
+  if (!safeEqual(want, given)) return { ok: false, reason: "bad response signature" };
+  return { ok: true, body };
 }
 
 /**
@@ -196,29 +281,37 @@ export async function handleRunnerCall(
     deps.keyFor,
     deps.now ? { now: deps.now } : {},
   );
+  // Refusals go out unsigned: there may be no key to sign with, and the host treats any
+  // non-2xx as a failure anyway.
   if (!verified.ok) return Response.json({ error: verified.reason }, { status: verified.status });
+  const path = new URL(request.url).pathname;
+  const reply = (body: string, status = 200, replayed = false) =>
+    signedRunnerResponse({
+      key: verified.key,
+      runner: verified.runner,
+      path,
+      idempotencyKey: verified.idempotencyKey,
+      status,
+      body,
+      replayed,
+      ...(deps.now ? { now: deps.now } : {}),
+    });
   const bodyHash = await sha256Hex(verified.body);
   const seen = await deps.store.get(verified.runner, verified.idempotencyKey);
   if (seen) {
     if (seen.bodyHash !== bodyHash) {
-      return Response.json({ error: "idempotency key reused with another body" }, { status: 409 });
+      return reply(JSON.stringify({ error: "idempotency key reused with another body" }), 409);
     }
-    return new Response(seen.response, {
-      headers: { "content-type": "application/json", "x-sf-replayed": "1" },
-    });
+    return reply(seen.response, 200, true);
   }
   let body: unknown;
   try {
     body = verified.body ? JSON.parse(verified.body) : null;
   } catch {
-    return Response.json({ error: "body is not JSON" }, { status: 400 });
+    return reply(JSON.stringify({ error: "body is not JSON" }), 400);
   }
-  const result = await handler({
-    runner: verified.runner,
-    path: new URL(request.url).pathname,
-    body,
-  });
+  const result = await handler({ runner: verified.runner, path, body });
   const response = JSON.stringify(result ?? null);
   await deps.store.put(verified.runner, verified.idempotencyKey, { bodyHash, response });
-  return new Response(response, { headers: { "content-type": "application/json" } });
+  return reply(response);
 }

@@ -1,7 +1,7 @@
 // The runner contract (ADR 0100, proposed). The factory schedules and runners execute: the core
 // knows only this file's shapes, never a particular runner. An adapter (runner-orca, runner-local,
 // later dev boxes, CF Sandbox, GitHub Actions) implements `RunnerAdapter`; the generic runner host
-// (`driver.ts`) claims jobs over the signed channel and drives the adapter through the lifecycle:
+// (`runner-host.ts`) claims jobs over the signed channel and drives the adapter through the lifecycle:
 //
 //   claim job → prepare workspace (repo + branch) → start harness session → stream events
 //             → collect artifacts → hand back → release
@@ -15,19 +15,21 @@
 export const CONTRACT_VERSION = "0.1" as const;
 
 /**
- * Optional things a runner can do beyond the core lifecycle.
+ * Optional things a runner can do beyond the core lifecycle (names from CONTEXT.md, Capability).
  * - `browser`: can open a URL in a browser it controls and take screenshots (visual evidence).
- * - `takeover`: a person can attach to the live session in the runner's own UI and steer it.
+ * - `ui-takeover`: a person can attach to the live session in the runner's own UI and steer it.
+ * - `auto-register`: sessions the runner starts outside the factory join it automatically.
  * - `hooks`: the harness session runs with the factory's hooks (claim-before-write, heartbeat).
- * - `autoRegisterSessions`: sessions the runner starts outside the factory join it automatically.
  * - `headless`: runs with no desktop UI (a server, CI, a dev box).
+ * - `own-hardware`: the runner is a machine its owner controls (client repos may require it).
  */
 export const CAPABILITIES = [
   "browser",
-  "takeover",
+  "ui-takeover",
+  "auto-register",
   "hooks",
-  "autoRegisterSessions",
   "headless",
+  "own-hardware",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -98,7 +100,7 @@ export interface SessionHandle {
   jobId: string;
   /** Opaque id meaningful to the adapter (a terminal handle, a pid, a box id…). */
   sessionRef: string;
-  /** How a person can attach, when the runner declares `takeover`. Shown as-is in the UI. */
+  /** How a person can attach, when the runner declares `ui-takeover`. Shown as-is in the UI. */
   takeover?: { label: string; hint: string };
 }
 
@@ -165,7 +167,7 @@ export interface Handback {
 
 /**
  * What a runner adapter implements. Claiming, signing, retries, seq numbering and capacity
- * accounting are the host's job (driver.ts), so an adapter is only "how to run one job here".
+ * accounting are the host's job (runner-host.ts), so an adapter is only "how to run one job here".
  */
 export interface RunnerAdapter<
   W extends WorkspaceHandle = WorkspaceHandle,
@@ -180,7 +182,7 @@ export interface RunnerAdapter<
   collectArtifacts(job: Job, workspace: W, session: S | undefined): Promise<Artifact[]>;
   /** Frees everything prepareWorkspace/startSession made. Must be safe to call twice. */
   release(job: Job, workspace: W | undefined, session: S | undefined): Promise<void>;
-  /** Optional: send a person's message into the live session (needs `takeover` or a harness that reads input). */
+  /** Optional: send a person's message into the live session (needs `ui-takeover` or a harness that reads input). */
   steer?(session: S, text: string): Promise<void>;
 }
 

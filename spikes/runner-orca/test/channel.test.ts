@@ -130,3 +130,52 @@ describe("idempotent calls", () => {
     expect(response.status).toBe(401);
   });
 });
+
+describe("signed responses and key versions", () => {
+  it("the host accepts only a response signed for its own call", async () => {
+    const { signedRunnerResponse, verifyRunnerResponse } = await import(
+      "../src/contract/channel.ts"
+    );
+    const key = await runnerChannelKey(MASTER, RUNNER);
+    const call = {
+      key,
+      runner: RUNNER,
+      path: "/runner/v1/claim",
+      idempotencyKey: "claim:r_macmini01:abc12345",
+    };
+    const good = await signedRunnerResponse({ ...call, body: '{"job":null}', now });
+    expect(await verifyRunnerResponse(good, { ...call, now })).toEqual({
+      ok: true,
+      body: '{"job":null}',
+    });
+
+    const forged = new Response('{"job":{"jobId":"evil"}}', { headers: good.headers });
+    expect(await verifyRunnerResponse(forged, { ...call, now })).toMatchObject({
+      reason: "bad response signature",
+    });
+
+    const otherCall = await signedRunnerResponse({
+      ...call,
+      idempotencyKey: "claim:r_macmini01:zzz99999",
+      body: '{"job":null}',
+      now,
+    });
+    expect(await verifyRunnerResponse(otherCall, { ...call, now })).toMatchObject({ ok: false });
+
+    expect(await verifyRunnerResponse(new Response("{}"), { ...call, now })).toMatchObject({
+      reason: "unsigned response",
+    });
+  });
+
+  it("bumping a runner's key version revokes only that runner's old key", async () => {
+    const v1 = await runnerChannelKey(MASTER, RUNNER, 1);
+    const v2 = await runnerChannelKey(MASTER, RUNNER, 2);
+    expect(v1).not.toBe(v2);
+    const keyForV2 = (runner: string) =>
+      runnerChannelKey(MASTER, runner, runner === RUNNER ? 2 : 1);
+    expect(await verifyRunnerRequest(await signed({ key: v1 }), keyForV2, { now })).toMatchObject({
+      reason: "bad signature",
+    });
+    expect((await verifyRunnerRequest(await signed({ key: v2 }), keyForV2, { now })).ok).toBe(true);
+  });
+});

@@ -10,8 +10,8 @@ import { join } from "node:path";
 import { runnerChannelKey } from "../src/contract/channel.ts";
 import { httpControlPlane } from "../src/contract/protocol.ts";
 import type { Job } from "../src/contract/types.ts";
-import { hostTick } from "../src/host/driver.ts";
 import { createFakeCloud } from "../src/host/fake-cloud.ts";
+import { hostTick } from "../src/host/runner-host.ts";
 import { createLocalRunner } from "../src/runner-local/adapter.ts";
 
 const RUNNER = "r_locale2e01";

@@ -51,7 +51,13 @@ export interface OrcaRunnerConfig extends OrcaCliOptions {
   exec?: Exec;
 }
 
-const DEFAULT_CAPABILITIES: Capability[] = ["browser", "takeover", "hooks", "autoRegisterSessions"];
+const DEFAULT_CAPABILITIES: Capability[] = [
+  "browser",
+  "ui-takeover",
+  "auto-register",
+  "hooks",
+  "own-hardware",
+];
 
 /** Orca agent states → contract statuses. Unknown states are reported as idle with the raw name. */
 export function agentStatus(state: string): AgentStatus {
