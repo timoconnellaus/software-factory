@@ -28,13 +28,18 @@ const pullRequestParams = z
     require_code_owner_review: z.boolean(),
     require_last_push_approval: z.boolean(),
     required_review_thread_resolution: z.boolean(),
-    allowed_merge_methods: z.array(z.enum(["merge", "squash", "rebase"])).min(1).optional(),
+    allowed_merge_methods: z
+      .array(z.enum(["merge", "squash", "rebase"]))
+      .min(1)
+      .optional(),
   })
   .strict();
 const statusCheckParams = z
   .object({
     required_status_checks: z
-      .array(z.object({ context: z.string(), integration_id: z.number().int().optional() }).strict())
+      .array(
+        z.object({ context: z.string(), integration_id: z.number().int().optional() }).strict(),
+      )
       .min(1),
     strict_required_status_checks_policy: z.boolean(),
     do_not_enforce_on_create: z.boolean().optional(),
@@ -110,11 +115,10 @@ describe("the ruleset generator", () => {
 
   it("takes the policy's CI checks, and keeps the factory/* confinement as its own ruleset", () => {
     const custom = defaultBranchRuleset({ appId: "7", requiredChecks: ["build", "lint"] });
-    const checks = custom.rules.find((r) => r.type === "required_status_checks");
-    expect(
-      (checks?.parameters as { required_status_checks: { context: string }[] })
-        .required_status_checks,
-    ).toEqual([
+    const checks = custom.rules.find((r) => r.type === "required_status_checks")?.parameters as {
+      required_status_checks: { context: string }[];
+    };
+    expect(checks.required_status_checks).toEqual([
       { context: "build" },
       { context: "lint" },
       { context: "factory/verify", integration_id: 7 },
@@ -324,9 +328,9 @@ describe("Check now and drift", () => {
 
     // Re-imported: green again, and the card goes away.
     await github.setGuards(w.repo, protectedGuards());
-    expect(
-      (await ok<Check>("protection.check", { projectId: w.projectId }, w.human)).state,
-    ).toBe("ok");
+    expect((await ok<Check>("protection.check", { projectId: w.projectId }, w.human)).state).toBe(
+      "ok",
+    );
     inbox = await ok<Inbox>("inbox.list", { orgId: w.orgId }, w.human);
     expect(inbox.protection).toEqual([]);
   });

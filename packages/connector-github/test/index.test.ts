@@ -180,9 +180,9 @@ describe("routing GitHub App webhooks", () => {
       }
     }
     // An org-level ruleset event names no repository.
-    expect(
-      routeGitHubEvent("repository_ruleset", { action: "edited" }, SLUG).ignored,
-    ).toMatch(/without a repository/);
+    expect(routeGitHubEvent("repository_ruleset", { action: "edited" }, SLUG).ignored).toMatch(
+      /without a repository/,
+    );
     expect(APP_REQUIREMENTS.events).toEqual(
       expect.arrayContaining(["repository_ruleset", "branch_protection_rule"]),
     );

@@ -1,7 +1,7 @@
 // Runners, the job queue, runs and leases (ADR 0014–0016, 0023, 0033, 0035, 0038, 0040). The runner
 // channel in sf-engine maps each signed call to one of these operations with actor
 // `{ type: "runner", id: <runner id> }`.
-import { protectionBlocksBuild } from "./protection.ts";
+
 import { json, parseJson } from "@software-factory/db";
 import {
   type artifactSchema,
@@ -31,6 +31,7 @@ import {
 import type { ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { runEvent } from "../workflow-events.ts";
+import { protectionBlocksBuild } from "./protection.ts";
 import { fencingToken, jobId, repoRef, requireWorkItem, sha, workItemId } from "./shared.ts";
 import { activeRunCount, RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./work-items.ts";
 
@@ -529,7 +530,10 @@ export const jobClaim = defineOperation({
         const waitReason = refusal.wip ? WIP_WAIT_REASON : (refusal.waitReason ?? null);
         if (waitReason && job.wait_reason !== waitReason) {
           ctx.write(
-            ctx.db.updateTable("core_jobs").set({ wait_reason: waitReason }).where("id", "=", job.id),
+            ctx.db
+              .updateTable("core_jobs")
+              .set({ wait_reason: waitReason })
+              .where("id", "=", job.id),
           );
         }
         continue;

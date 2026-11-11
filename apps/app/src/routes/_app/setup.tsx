@@ -1,5 +1,5 @@
-// Setup is a checklist with live state (ADR 0055, 0056): GitHub connected · a project · its policy
-// · a runner online · `factory/verify` required. Each step shows the one action that fixes it.
+// Setup is a checklist with live state (ADR 0055, 0056, 0280): GitHub connected · a project · its
+// policy · a runner online · `main` protected. Each step shows the one action that fixes it.
 // Nothing here asks for an id the factory can fetch (incident 2026-11-11-bootstrap): GitHub's install
 // flow brings the installation back, the repo is picked from what the App can reach, the policy
 // syncs itself, and a runner logs in with a code.
@@ -17,6 +17,7 @@ import { ago } from "#/lib/format";
 import { op, submitKey } from "#/lib/op";
 import { OpError, type SetupStatus } from "#/lib/ops";
 import { reposQuery, runnersQuery, setupStatusQuery } from "#/lib/queries";
+import { rulesetDownloadPath } from "#/lib/ruleset";
 import { LOGIN_COMMAND, pairCommand } from "#/lib/runner-pairing";
 import { useSession } from "#/lib/session";
 
@@ -43,7 +44,7 @@ const STEP_TITLE: Record<Step["key"], string> = {
   project: "A project",
   policy: "Factory policy",
   runner: "A runner online",
-  verify: "factory/verify required",
+  protect: "Protect main",
 };
 
 function errorText(error: unknown) {
@@ -197,8 +198,8 @@ function StepAction({ step, status, orgId }: { step: Step; status: SetupStatus; 
       );
     case "runner":
       return step.done ? null : <RunnerLogin />;
-    case "verify":
-      return step.done ? null : <VerifyAction status={status} />;
+    case "protect":
+      return <ProtectAction status={status} />;
   }
 }
 
@@ -442,24 +443,200 @@ function RunnerLogin() {
   );
 }
 
-function VerifyAction({ status }: { status: SetupStatus }) {
-  const refresh = useRefreshSetup();
+/**
+ * Protect `main` (ADR 0280). The factory's App can only read repository settings, so a person
+ * applies the ruleset: download the file, open GitHub's rulesets page, import it, then Check now.
+ * Someone who isn't a repo admin gets a message to send to one instead.
+ */
+function ProtectAction({ status }: { status: SetupStatus }) {
   const ready = status.steps.find((s) => s.key === "policy")?.done;
   if (!ready) return null;
+  const projects = status.projects.filter((p) => p.protection && p.policy.state === "valid");
   return (
-    <div className="flex flex-wrap items-center gap-2 text-sm">
-      <a
-        href="https://github.com/timoconnellaus/software-factory/blob/main/docs/deploying.md#branch-protection"
-        target="_blank"
-        rel="noreferrer"
-        className="underline"
-      >
-        How to require factory/verify
-      </a>
-      <Button size="sm" variant="ghost" onClick={() => void refresh()}>
-        Check again
-      </Button>
+    <div className="grid gap-3">
+      {status.missingEvents.length > 0 && (
+        <div className="text-sm" data-testid="missing-events">
+          So the factory notices when protection changes, tick these events in the GitHub App's{" "}
+          <span className="font-medium">Permissions &amp; events</span> settings:{" "}
+          {status.missingEvents.map((e, i) => (
+            <span key={e}>
+              {i ? ", " : ""}
+              <code className="font-mono text-xs">{e}</code>
+            </span>
+          ))}
+          . Until then it re-checks once a day.
+        </div>
+      )}
+      {projects.map((p) => (
+        <ProtectProject key={p.id} project={p} showName={projects.length > 1} />
+      ))}
     </div>
+  );
+}
+
+type Protection = NonNullable<ProjectState["protection"]>;
+
+function ProtectProject({ project, showName }: { project: ProjectState; showName: boolean }) {
+  const refresh = useRefreshSetup();
+  const [busy, setBusy] = useState(false);
+  const protection = project.protection as Protection;
+  async function check() {
+    setBusy(true);
+    try {
+      const r = await op(
+        "protection.check",
+        { projectId: project.id },
+        { idempotencyKey: submitKey() },
+      );
+      if (r.state === "ok") toast.success(`${protection.branch} is protected.`);
+      else toast.error(`Not yet: ${r.problems.length} thing(s) missing.`);
+      await refresh();
+    } catch (error) {
+      toast.error(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const ok = protection.state === "ok";
+  return (
+    <div className="grid gap-2 text-sm" data-testid={`protect-${project.slug}`}>
+      {showName && <div className="font-medium">{project.name}</div>}
+      {ok ? (
+        <div data-testid="protect-ok">
+          ✓ <span className="font-mono text-xs">{protection.branch}</span> needs a PR with ci and
+          factory/verify, up to date; no force pushes, no deletion, no bypass.
+        </div>
+      ) : (
+        <ul className="grid list-disc gap-0.5 pl-5" data-testid="protect-problems">
+          {protection.problems.map((p) => (
+            <li key={p}>
+              <Ticks text={p} />
+            </li>
+          ))}
+        </ul>
+      )}
+      {protection.warnings.length > 0 && (
+        <ul className="grid gap-0.5 text-muted-foreground text-xs">
+          {protection.warnings.map((w) => (
+            <li key={w}>
+              <Ticks text={w} />
+            </li>
+          ))}
+        </ul>
+      )}
+      {!ok && protection.viewerIsRepoAdmin !== false && (
+        <ApplyRuleset projectId={project.id} protection={protection} />
+      )}
+      {!ok && protection.viewerIsRepoAdmin !== true && (
+        <SendToAdmin
+          projectId={project.id}
+          protection={protection}
+          open={protection.viewerIsRepoAdmin === false}
+        />
+      )}
+      <div>
+        <Button
+          size="sm"
+          variant={ok ? "ghost" : "outline"}
+          disabled={busy}
+          onClick={check}
+          data-testid="protect-check"
+        >
+          {busy ? "Checking…" : "Check now"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Renders `code` spans in the verifier's messages. */
+function Ticks({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/(`[^`]+`)/).map((part, i) =>
+        part.startsWith("`") && part.endsWith("`") ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
+          <code key={i} className="font-mono text-xs">
+            {part.slice(1, -1)}
+          </code>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
+function DownloadLinks({ projectId, protection }: { projectId: string; protection: Protection }) {
+  return (
+    <>
+      {protection.files.map((f) => (
+        <Button key={f.kind} size="sm" asChild data-testid={`download-${f.kind}`}>
+          <a href={rulesetDownloadPath(projectId, f.kind)} download={f.filename}>
+            Download {f.kind === "default-branch" ? "ruleset" : "factory/* ruleset"}
+          </a>
+        </Button>
+      ))}
+    </>
+  );
+}
+
+function ApplyRuleset({ projectId, protection }: { projectId: string; protection: Protection }) {
+  return (
+    <div className="grid gap-1.5" data-testid="apply-ruleset">
+      <div className="flex flex-wrap items-center gap-2">
+        <DownloadLinks projectId={projectId} protection={protection} />
+        <Button size="sm" variant="outline" asChild data-testid="open-rulesets">
+          <a href={protection.rulesetsUrl} target="_blank" rel="noreferrer">
+            Open GitHub rulesets ↗
+          </a>
+        </Button>
+      </div>
+      <div className="text-muted-foreground text-xs">
+        On GitHub: New ruleset → Import a ruleset → choose the file → Create
+        {protection.files.length > 1 ? " (once for each file)" : ""}. Then Check now.
+      </div>
+    </div>
+  );
+}
+
+function SendToAdmin({
+  projectId,
+  protection,
+  open,
+}: {
+  projectId: string;
+  protection: Protection;
+  open: boolean;
+}) {
+  return (
+    <details className="grid gap-1.5" open={open} data-testid="send-to-admin">
+      <summary className="cursor-pointer text-xs">
+        {open
+          ? "You're not an admin of this repo: send this to the repo admin"
+          : "Not a repo admin? Send to the repo admin"}
+      </summary>
+      <div className="grid gap-2 pt-2">
+        <pre className="whitespace-pre-wrap rounded bg-muted px-3 py-2 font-mono text-xs">
+          {protection.adminMessage}
+        </pre>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              navigator.clipboard
+                .writeText(protection.adminMessage)
+                .then(() => toast.success("Message copied"))
+            }
+            data-testid="copy-admin-message"
+          >
+            Copy message
+          </Button>
+          <DownloadLinks projectId={projectId} protection={protection} />
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -552,9 +729,10 @@ function ProjectDetails({ project }: { project: ProjectState }) {
               {busy ? "Re-syncing…" : "Re-sync"}
             </Button>
           </div>
-          {project.verify && !project.verify.ok && (
+          {project.protection && project.protection.state !== "ok" && (
             <div className="text-muted-foreground text-xs">
-              Not yet guarded: {project.verify.problems.join("; ")}
+              {project.repo.defaultBranch} not yet protected:{" "}
+              {project.protection.problems.join("; ")}
             </div>
           )}
         </div>

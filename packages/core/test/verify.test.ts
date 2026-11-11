@@ -1,12 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import {
-  assemblePacket,
-  checkOnlyDiff,
-  FOREMAN,
-  riskFlags,
-  summarizeCi,
-} from "../src/index.ts";
+import { assemblePacket, checkOnlyDiff, FOREMAN, riskFlags, summarizeCi } from "../src/index.ts";
 import { FAKE_APP, protectedGuards } from "../src/testing/index.ts";
 import { first, newItem, ok, refusal, rows, services, world } from "./helpers.ts";
 

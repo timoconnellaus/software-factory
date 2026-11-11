@@ -107,7 +107,8 @@ export function rulesetFile(
   repoName: string,
   target: ProtectionTarget,
 ): { filename: string; ruleset: RulesetImport; json: string } {
-  const ruleset = kind === "default-branch" ? defaultBranchRuleset(target) : factoryBranchesRuleset();
+  const ruleset =
+    kind === "default-branch" ? defaultBranchRuleset(target) : factoryBranchesRuleset();
   const safe = repoName.replace(/[^A-Za-z0-9._-]/g, "-");
   return {
     filename: `${safe}-${kind}.json`,
@@ -317,4 +318,3 @@ export function verifyProtection(
   }
   return { ok: problems.length === 0, problems, warnings, confined };
 }
-

@@ -8,6 +8,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { FinishSetupCard } from "#/components/finish-setup";
 import { GateCard, QuestionCard } from "#/components/inbox-cards";
+import { ProtectionChangedCard } from "#/components/protection-card";
 import { RunnerHealth } from "#/components/runner-health";
 import { ago, errorMessage, STAGE_LABEL } from "#/lib/format";
 import { gateWorkItemIds, groupByProject } from "#/lib/inbox";
@@ -88,6 +89,9 @@ function InboxPage() {
       </div>
 
       <FinishSetupCard orgId={session.personalOrgId ?? ""} />
+      {data.protection.map((d) => (
+        <ProtectionChangedCard key={d.projectId} drift={d} />
+      ))}
 
       {highlightGone && (
         <div

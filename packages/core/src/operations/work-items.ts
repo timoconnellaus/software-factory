@@ -1,7 +1,6 @@
 // Work items: intake (with dedupe), reads for the app, stage bookkeeping for the Workflow, triage,
 // finishing and cancelling.
-import { protectionDrift } from "./protection.ts";
-import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
+
 import { parseJson } from "@software-factory/db";
 import { triageResultSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
@@ -11,6 +10,8 @@ import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
+import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
+import { protectionDrift } from "./protection.ts";
 import {
   createWorkItem,
   projectId,

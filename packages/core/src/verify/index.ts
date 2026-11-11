@@ -3,6 +3,6 @@
 // `operations/verify.ts` call GitHub and D1.
 export * from "./auto-merge.ts";
 export * from "./ci.ts";
-export * from "./protection.ts";
 export * from "./packet.ts";
+export * from "./protection.ts";
 export * from "./risk.ts";

@@ -277,7 +277,7 @@ export const protectionCheck = defineOperation({
 export const protectionObserve = defineOperation({
   name: "protection.observe",
   description:
-    "The GitHub connector saw a `repository_ruleset` or `branch_protection_rule` event, or the daily re-check came round (`event: \"daily\"`): re-check the project's default-branch protection (as protection.check) and record the verdict, so a ruleset changed or deleted on GitHub turns Setup red and raises the inbox card.",
+    'The GitHub connector saw a `repository_ruleset` or `branch_protection_rule` event, or the daily re-check came round (`event: "daily"`): re-check the project\'s default-branch protection (as protection.check) and record the verdict, so a ruleset changed or deleted on GitHub turns Setup red and raises the inbox card.',
   risk: "write",
   actors: ["intake"],
   permission: "signed-in",
@@ -329,4 +329,3 @@ export async function protectionBlocksBuild(
 
 /** The queued reason while policy blocks builds on red protection. */
 export const PROTECTION_WAIT_REASON = "default-branch protection is red";
-

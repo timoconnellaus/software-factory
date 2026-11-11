@@ -4,8 +4,8 @@
 // auto-merges.
 import { env } from "cloudflare:workers";
 import { sign } from "@software-factory/connector-webhook";
-import { describe, expect, it } from "vitest";
 import { protectedGuards } from "@software-factory/core/testing";
+import { describe, expect, it } from "vitest";
 import worker, { recheckProtection } from "../src/index.ts";
 import {
   all,
@@ -280,7 +280,10 @@ describe("protection drift (ADR 0280)", () => {
     ).toEqual({ state: "ok", trigger: "webhook" });
 
     // The ruleset is deleted on GitHub.
-    await github.setGuards(w.repo, { ...protectedGuards(), rulesets: protectedGuards().rulesets.slice(1) });
+    await github.setGuards(w.repo, {
+      ...protectedGuards(),
+      rulesets: protectedGuards().rulesets.slice(1),
+    });
     res = await deliver("repository_ruleset", { action: "deleted", repository: repository(w) });
     const body = (await res.json()) as { results: { op: string; outcome: string }[] };
     expect(body.results).toEqual([
