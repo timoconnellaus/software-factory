@@ -56,6 +56,28 @@ const claim = (
 ) => ok<{ job: Job | null }>("job.claim", { claimId, manifest: m, capacity: c }, actor);
 
 describe("runners and the scheduler", () => {
+  it("shows a runner's slots in use in the inbox, and narrows to the org asked for", async () => {
+    const { w, runner, item, actor } = await setup();
+    await enqueue(item.workItemId);
+    expect((await claim(actor)).job).not.toBeNull();
+    const inbox = await ok<{ runners: { id: string; inUse: number; state: string }[] }>(
+      "inbox.list",
+      {},
+      w.human,
+    );
+    expect(inbox.runners).toEqual([
+      expect.objectContaining({ id: runner.runnerId, inUse: 1, state: "busy" }),
+    ]);
+    const elsewhere = await ok<{ running: unknown[]; gates: unknown[] }>(
+      "inbox.list",
+      { orgId: uid("org_") },
+      w.human,
+    );
+    expect(elsewhere.running).toEqual([]);
+    const mine = await ok<{ running: unknown[] }>("inbox.list", { orgId: w.orgId }, w.human);
+    expect(mine.running.length).toBeGreaterThan(0);
+  });
+
   it("registers a runner and never writes its key to the audit journal", async () => {
     const { runner, w } = await setup();
     expect(runner.key).toBe(`test-key:${runner.runnerId}:v1`);

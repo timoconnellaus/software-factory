@@ -12,6 +12,7 @@ import {
   type OpOutput,
   type OpResult,
   type ReadOpName,
+  SLOW_READS,
 } from "./ops.ts";
 
 export async function op<N extends OpName>(
@@ -26,7 +27,8 @@ export async function op<N extends OpName>(
 export function read<N extends ReadOpName>(name: N, input: OpInput<N>): Promise<OpOutput<N>> {
   // On the server every request renders in the same isolate: a shared queue could put two
   // people's reads in one call. Server-side reads run on their own (in-process, no hop to batch).
-  if (typeof window === "undefined") {
+  // Slow reads (GitHub) go alone so they never hold up a batch.
+  if (typeof window === "undefined" || SLOW_READS.has(name)) {
     return callReads({ data: [{ name, input }] }).then(([r]) => unwrap<N>(r as OpResult));
   }
   return new Promise<OpResult>((resolve, reject) => {

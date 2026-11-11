@@ -43,8 +43,8 @@ interface QueueRow {
   title: string;
 }
 
-/** The project's open entries, head first. An entry whose work item ended is skipped. */
-export async function queuedEntries(ctx: HandlerContext, project: string): Promise<QueueRow[]> {
+/** The project's open entries, head first, as one query (for `readBatch`). An entry whose work item ended is skipped. */
+export function queuedEntriesQuery(ctx: HandlerContext, project: string) {
   return ctx.db
     .selectFrom("core_merge_queue as q")
     .innerJoin("core_work_items as w", "w.id", "q.work_item_id")
@@ -63,8 +63,12 @@ export async function queuedEntries(ctx: HandlerContext, project: string): Promi
     .where("q.status", "=", "queued")
     .where("w.status", "in", [...OPEN_ITEM])
     .orderBy("q.enqueued_at", "asc")
-    .orderBy("q.id", "asc")
-    .execute();
+    .orderBy("q.id", "asc");
+}
+
+/** The project's open entries, head first. */
+export async function queuedEntries(ctx: HandlerContext, project: string): Promise<QueueRow[]> {
+  return queuedEntriesQuery(ctx, project).execute();
 }
 
 /** The work item's open entry, if it has one. */

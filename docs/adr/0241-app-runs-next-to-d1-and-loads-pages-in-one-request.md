@@ -66,3 +66,11 @@ RPC callee runs where its caller runs.
 > lookups. `checkPermission` takes the role it read, and still refuses the same way.
 > `workItem.get` and `inbox.list` run their independent reads in parallel. Round trips:
 > `workItem.get` 7 → 3, `inbox.list` 7 → 3, `workItem.timeline` 5 → 2.
+
+> Amended 2026-11-11 (after deploying #21): within one `callReads`, each operation's engine time
+> rose with its position (18 → 51 → 66 → 116 → 153 ms). Concurrent D1 requests queue behind one
+> another, so the number of D1 **requests** is the cost, not how many run at once. Independent reads
+> now go as one `readBatch` (`packages/db`): `inbox.list` is a single D1 request (memberships and
+> runner slot counts as subqueries), and `workItem.get` reads the item's rows in one. Reads that call
+> GitHub (`setup.status`, `github.repos`, `SLOW_READS` in the app) are never batched with database
+> reads: a batch answers when its slowest read does, and a cold inbox had waited ~2 s for GitHub.

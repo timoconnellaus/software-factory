@@ -1,6 +1,8 @@
 // Protect `main` (ADR 0280): the factory generates the default-branch ruleset, a person imports it on
 // GitHub, and the factory checks it, on Check now, on GitHub's ruleset and branch-protection
 // webhooks, and daily. The App has `administration: read` only; nothing here writes to GitHub.
+import type { CoreDatabase } from "@software-factory/db";
+import type { SelectQueryBuilder } from "kysely";
 import { z } from "zod";
 import { defineOperation, type HandlerContext, type ProjectRow } from "../operation.ts";
 import { loadPolicy } from "../scope.ts";
@@ -294,6 +296,16 @@ export const protectionObserve = defineOperation({
 /** Projects with a red verdict after an ok one (drift), in these orgs: the inbox cards. */
 export async function protectionDrift(ctx: Pick<HandlerContext, "db">, orgIds: string[]) {
   if (!orgIds.length) return [];
+  return protectionDriftQuery(ctx, orgIds).execute();
+}
+
+/** `protectionDrift` as a query, for `readBatch`; `orgs` may be a subquery of org ids. */
+export function protectionDriftQuery(
+  ctx: Pick<HandlerContext, "db">,
+  orgs:
+    | readonly string[]
+    | SelectQueryBuilder<CoreDatabase, "core_member", { organization_id: string }>,
+) {
   return ctx.db
     .selectFrom("core_project_protection")
     .innerJoin("core_projects", "core_projects.id", "core_project_protection.project_id")
@@ -306,10 +318,9 @@ export async function protectionDrift(ctx: Pick<HandlerContext, "db">, orgIds: s
       "core_project_protection.problems as problems",
       "core_project_protection.changed_at as changedAt",
     ])
-    .where("core_projects.org_id", "in", orgIds)
+    .where("core_projects.org_id", "in", orgs)
     .where("core_project_protection.state", "=", "red")
-    .where("core_project_protection.last_ok_at", "is not", null)
-    .execute();
+    .where("core_project_protection.last_ok_at", "is not", null);
 }
 
 /** Whether policy blocks build work on this project now (`protection.onRed: "block"` and red). */
