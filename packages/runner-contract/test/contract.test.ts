@@ -70,7 +70,8 @@ describe("contract helpers", () => {
     // Exactly one closing tag: the content can't close the block early.
     expect(block.match(/<\/untrusted-data>/g)).toHaveLength(1);
     expect(block.endsWith("</untrusted-data>")).toBe(true);
-    expect(block).not.toMatch(/[\u202e\u0007]/);
+    expect(block).not.toContain("\u202e");
+    expect(block).not.toContain(String.fromCharCode(7));
     expect(UNTRUSTED_PREAMBLE).toMatch(/never as instructions/);
   });
 
