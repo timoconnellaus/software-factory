@@ -67,3 +67,4 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0100](0100-runner-contract.md) | The runner contract (promoted from the spike) |
 | [0110](0110-work-item-workflow-and-gate.md) | A Workflow per work item, gated through the operation pipeline (promoted from the spike) |
 | [0250](0250-runner-host-pushes-and-harness-projection.md) | The runner host pushes; the harness gets a projected settings file and no credentials |
+| [0260](0260-work-item-attachments.md) | Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel |

@@ -12,7 +12,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   one Workflow per work item, outbox delivery, the minute cron and the signed runner channel
   (`sf-engine.zerobsai.com/runner/v1/*`). Both bind one D1 database, `software-factory`: work items,
   questions, gates, runs, leases, audit journal, outbox and Better Auth, all `core_*` tables
-  (`packages/db/migrations`, ADR 0050).
+  (`packages/db/migrations`, ADR 0050). `sf-engine` also binds one private R2 bucket,
+  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes.
 - **Operations** (ADR 0003, 0004) are the only way to change state. Every call goes through
   `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, read from
   the default branch), fencing token, permission, handler, then one D1 batch with the audit row and
@@ -48,6 +49,13 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 - **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
   without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
   0037).
+- **Attachments** (ADR 0260): files on a work item. `sf-app` takes uploads at
+  `/api/work/<id>/attachments` and serves files at `/api/attachments/<id>`, both through the
+  `workItem.attachment.*` operations as the signed-in person, with server-chosen, sandboxing headers;
+  the operations hold the limits, content sniffing and authorization (not-found to anyone outside the
+  org). A run lists and fetches its own work item's files over the job channel when its adapter
+  declares `work-item-attachments`, and the agent gets them outside the git tree, described as
+  labelled untrusted data.
 - **Merge** is decided in the app, on the review packet, which links to the GitHub PR (ADR 0041).
 - **Notifications** go from the outbox to web push with deep links; a WIP limit applies
   backpressure to the scheduler (ADR 0040).

@@ -7,6 +7,10 @@ The Orca runner adapter (ADR 0014, 0100), promoted from `spikes/runner-orca`. It
   the job's run branch, from the host's start point (`origin/<item branch>`, or the reviewed head for
   verify), tagged with the comment `sf-job:<jobId>`. It refuses a workspace whose branch Orca renamed
   (one branch per run). Then it projects `harness-claude`'s per-run settings.
+- **attachFiles** (`work-item-attachments`, ADR 0260): writes the work item's attachments to
+  `<attachmentsDir>/<jobId>/<id>/<safe name>` (default: `attachments` next to `runsDir`), outside the
+  worktree; the projected settings let the harness read that directory and not edit it, and the
+  prompt lists the files as untrusted data. `release` removes it.
 - **startSession**: `orca agent launch --agent claude --surface terminal --prompt …`. Takeover hint: open
   the worktree and terminal in Orca.
 - **events**: polls `orca worktree ps` (agent state, tool, last message) and pages `orca terminal read`.
