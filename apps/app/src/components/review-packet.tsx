@@ -9,10 +9,12 @@ import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import type { WorkItemDetail } from "#/lib/ops";
 import {
+  checkCounts,
   keptOnRunner,
   type PacketSection,
   type ParsedPacket,
   packetCounts,
+  packetExtras,
   packetSections,
   parsePacket,
 } from "#/lib/packet";
@@ -209,6 +211,7 @@ function Section({
           ) : (
             <Empty>No summary.</Empty>
           )}
+          <ChangedFiles packet={packet} />
         </Panel>
       );
     case "criteria":
@@ -397,11 +400,19 @@ function Section({
 
 function VerdictRow({ packet }: { packet: ParsedPacket }) {
   const c = packetCounts(packet);
+  const checks = checkCounts(packet);
+  const extras = packetExtras(packet);
   const cells: { label: string; value: string; status: Status; extra?: string }[] = [
     {
-      label: "Checks",
-      value: c.checksTotal ? `${c.checksPassed}/${c.checksTotal} passed` : "none reported",
-      status: c.checksFailed ? "failed" : c.checksTotal ? "done" : "idle",
+      label: checks.source === "ci" ? "CI on the head SHA" : "Checks (runner)",
+      value: checks.total ? `${checks.passed}/${checks.total} passed` : "none reported",
+      status: checks.failed
+        ? "failed"
+        : checks.total && checks.passed === checks.total
+          ? "done"
+          : checks.total
+            ? "running"
+            : "idle",
     },
     {
       label: "Criteria",
@@ -443,8 +454,24 @@ function VerdictRow({ packet }: { packet: ParsedPacket }) {
       ))}
       <div className="col-span-full flex items-center gap-2 text-muted-foreground text-xs">
         Verdict: <StatusDot status={packet.verdict === "pass" ? "done" : "failed"} />
-        {packet.verdict === "pass" ? "pass" : "fail"} (from CI on the head SHA)
+        {packet.verdict === "pass" ? "pass" : "fail"} (from CI on the head SHA and the evidence)
       </div>
+      {(extras.reasons.length > 0 || extras.warnings.length > 0) && (
+        <ul className="col-span-full grid gap-1 text-sm" data-testid="verdict-reasons">
+          {extras.reasons.map((r) => (
+            <li key={r} className="flex items-start gap-2">
+              <StatusDot status="failed" className="mt-1.5" />
+              {r}
+            </li>
+          ))}
+          {extras.warnings.map((w) => (
+            <li key={w} className="flex items-start gap-2">
+              <StatusDot status="waiting" className="mt-1.5" />
+              {w}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -475,4 +502,23 @@ function Panel({
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="text-muted-foreground text-sm">{children}</div>;
+}
+
+function ChangedFiles({ packet }: { packet: ParsedPacket }) {
+  const { changed } = packetExtras(packet);
+  if (!changed || changed.files === null) return null;
+  return (
+    <details className="mt-2 text-sm">
+      <summary className="cursor-pointer text-muted-foreground">
+        {changed.files} {changed.files === 1 ? "file" : "files"} changed
+      </summary>
+      <ul className="mt-1 grid gap-0.5 font-mono text-xs">
+        {changed.paths.map((f) => (
+          <li key={f.path}>
+            <span className="text-muted-foreground">{f.status.padEnd(9, " ")}</span> {f.path}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
 }

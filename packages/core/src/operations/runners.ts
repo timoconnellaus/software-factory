@@ -35,7 +35,7 @@ import { activeRunCount, RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./work-items
 
 /** How long a lease lasts without a heartbeat (open question in ADR 0021; ADR 0052 picks this). */
 export const LEASE_TTL_MS = 10 * 60_000;
-const ACTIVE_RUN = ["claimed", "preparing", "running", "collecting"] as const;
+export const ACTIVE_RUN = ["claimed", "preparing", "running", "collecting"] as const;
 const MAX_ARTIFACT_BODY = 512 * 1024;
 const MAX_RESULT = 200 * 1024;
 
@@ -756,7 +756,7 @@ export const runAddArtifact = defineOperation({
   },
 });
 
-function finishRun(
+export function finishRun(
   ctx: HandlerContext,
   run: { id: string; job_id: string; work_item_id: string },
   workflowId: string,

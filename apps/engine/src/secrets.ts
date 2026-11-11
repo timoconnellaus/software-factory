@@ -7,6 +7,8 @@ export interface EngineSecrets {
   RUNNER_CHANNEL_SECRET?: string;
   /** The GitHub App's private key, PEM (ADR 0025, 0033). */
   GH_APP_PRIVATE_KEY?: string;
+  /** The GitHub App's webhook secret: every delivery's `x-hub-signature-256` is checked with it. */
+  GH_APP_WEBHOOK_SECRET?: string;
 }
 
 export function secrets(env: Env): EngineSecrets {

@@ -3,6 +3,7 @@
 export * from "./actors.ts";
 export * from "./errors.ts";
 export * from "./ids.ts";
+export * from "./incidents/classify.ts";
 export * from "./invoke.ts";
 export * from "./model-roles.ts";
 export * from "./operation.ts";
@@ -15,4 +16,5 @@ export * from "./policy/project-policy.ts";
 export * from "./registry.ts";
 export * from "./scope.ts";
 export * from "./services.ts";
+export * from "./verify/index.ts";
 export * from "./workflow-events.ts";

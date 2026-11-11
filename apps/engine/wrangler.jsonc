@@ -13,7 +13,12 @@
   },
   // Runner hosts reach the channel here (outbound HTTPS from the runner, ADR 0016). Nothing else on
   // this host is public: the operations API is RPC over a service binding (ADR 0051).
-  "routes": [{ "pattern": "sf-engine.zerobsai.com", "custom_domain": true }],
+  // The GitHub App's webhook (V1 step 4) is a Workers route on sf-app's hostname: routes run in front
+  // of a Custom Domain, so /webhooks/* reaches this Worker without sf-app forwarding it.
+  "routes": [
+    { "pattern": "sf-engine.zerobsai.com", "custom_domain": true },
+    { "pattern": "software-factory.zerobsai.com/webhooks/*", "zone_name": "zerobsai.com" }
+  ],
   "workers_dev": false,
   "preview_urls": false,
   // The factory's one database. Bound by name; created by scripts/deploy/provision.ts. Migrations
@@ -40,6 +45,8 @@
   "vars": {
     "PUBLIC_BASE_URL": "https://software-factory.zerobsai.com",
     "GH_APP_ID": "5705909",
+    // Its pushes show up as `<slug>[bot]` in push webhooks (ADR 0052, branch confinement).
+    "GH_APP_SLUG": "software-factory-zerobsai",
     // The global floor (ADR 0008): JSON, actor|"*" → risk|"*" → "allow"|"review"|"deny". It can only
     // tighten; anything malformed denies every call. Empty = no floor.
     "FACTORY_FLOOR": "",
@@ -47,7 +54,7 @@
     "GITHUB_FAKE": ""
   }
   // Secrets (set by the deploy workflow with `wrangler secret bulk`, never committed):
-  // RUNNER_CHANNEL_SECRET and GH_APP_PRIVATE_KEY. They are typed in src/secrets.ts rather than with
+  // RUNNER_CHANNEL_SECRET, GH_APP_PRIVATE_KEY and GH_APP_WEBHOOK_SECRET. They are typed in src/secrets.ts rather than with
   // `secrets.required`, which would make `wrangler deploy` fail until they exist. Without them the
   // runner channel answers 503 and GitHub calls are refused as `unavailable`.
 }

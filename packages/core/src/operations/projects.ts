@@ -2,7 +2,7 @@
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId, slugify } from "../ids.ts";
-import { defineOperation } from "../operation.ts";
+import { defineOperation, type HandlerContext, type ProjectRow } from "../operation.ts";
 import { POLICY_PATH, parseProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, approverIds, isOrgAdmin, resumeEventType } from "../scope.ts";
 import { projectId, requireProject } from "./shared.ts";
@@ -143,53 +143,64 @@ export const policySync = defineOperation({
     valid: z.boolean(),
     error: z.string().nullable(),
   }),
+  // The connector brings the policy in, so a missing or malformed one can't block it (ADR 0054).
+  bootstrapsPolicy: true,
+  allowWhenKilled: true,
   async handler(input, ctx) {
-    const project = requireProject(ctx);
-    const defaultRef = `refs/heads/${project.default_branch}`;
-    const fromDefault = input.ref === defaultRef || input.ref === project.default_branch;
-    if (!fromDefault) {
-      // Policy is read from the default branch only: an agent can't loosen its own policy from a
-      // branch (ADR 0036). The refusal is audited by this call's audit row.
-      return {
-        applied: false,
-        valid: false,
-        error: `ignored: ${input.ref} is not the default branch`,
-      };
-    }
-    const parsed =
-      input.content === null
-        ? { ok: false as const, error: `no ${POLICY_PATH} at ${input.sha}` }
-        : parseProjectPolicy(input.content);
-    const error = parsed.ok ? null : parsed.error;
-    ctx.write(
-      ctx.db
-        .insertInto("core_project_policies")
-        .values({
-          project_id: project.id,
-          sha: input.sha,
-          ref: input.ref,
-          raw: input.content ?? "",
-          valid: parsed.ok ? 1 : 0,
-          error,
-          received_at: ctx.now,
-        })
-        .onConflict((oc) => oc.columns(["project_id", "sha"]).doNothing()),
-    );
-    ctx.write(
-      ctx.db
-        .updateTable("core_projects")
-        .set({ policy_sha: input.sha })
-        .where("id", "=", project.id),
-    );
-    ctx.change({
-      entity: "project",
-      id: project.id,
-      before: { policySha: project.policy_sha },
-      after: { policySha: input.sha, valid: parsed.ok },
-    });
-    return { applied: true, valid: parsed.ok, error };
+    return recordPolicy(ctx, requireProject(ctx), input);
   },
 });
+
+/**
+ * Records `.factory/policy.json` as read from one commit, and applies it only when the ref is the
+ * default branch (ADR 0036). Shared by policy.sync and the connector's push.observe.
+ */
+export function recordPolicy(
+  ctx: HandlerContext,
+  project: ProjectRow,
+  input: { ref: string; sha: string; content: string | null },
+): { applied: boolean; valid: boolean; error: string | null } {
+  const defaultRef = `refs/heads/${project.default_branch}`;
+  const fromDefault = input.ref === defaultRef || input.ref === project.default_branch;
+  if (!fromDefault) {
+    // Policy is read from the default branch only: an agent can't loosen its own policy from a
+    // branch (ADR 0036). The refusal is audited by this call's audit row.
+    return {
+      applied: false,
+      valid: false,
+      error: `ignored: ${input.ref} is not the default branch`,
+    };
+  }
+  const parsed =
+    input.content === null
+      ? { ok: false as const, error: `no ${POLICY_PATH} at ${input.sha}` }
+      : parseProjectPolicy(input.content);
+  const error = parsed.ok ? null : parsed.error;
+  ctx.write(
+    ctx.db
+      .insertInto("core_project_policies")
+      .values({
+        project_id: project.id,
+        sha: input.sha,
+        ref: input.ref,
+        raw: input.content ?? "",
+        valid: parsed.ok ? 1 : 0,
+        error,
+        received_at: ctx.now,
+      })
+      .onConflict((oc) => oc.columns(["project_id", "sha"]).doNothing()),
+  );
+  ctx.write(
+    ctx.db.updateTable("core_projects").set({ policy_sha: input.sha }).where("id", "=", project.id),
+  );
+  ctx.change({
+    entity: "project",
+    id: project.id,
+    before: { policySha: project.policy_sha },
+    after: { policySha: input.sha, valid: parsed.ok },
+  });
+  return { applied: true, valid: parsed.ok, error };
+}
 
 export const killSwitchSet = defineOperation({
   name: "killSwitch.set",

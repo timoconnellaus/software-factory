@@ -22,12 +22,22 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   item holds no runner slot.
 - **Questions** are the planning object; interview sessions are views over them (ADR 0042).
 - **Connectors** are the only path to GitHub, Linear, Slack and other outside systems (ADR 0010).
-  The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033).
+  The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033). Its webhook
+  (`software-factory.zerobsai.com/webhooks/github`, served by `sf-engine` through a Workers route)
+  checks the signature, dedupes deliveries and maps them to operations: `verify.refresh` on PR and
+  CI events, `push.observe` on pushes (branch confinement, the default-branch policy mirror),
+  `github.installation` (ADR 0231).
+- **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
+  a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
+  0231). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
+  a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
+  auto-merge where policy opts in (ADR 0230).
 - **Runners** execute jobs through the runner contract over a signed, outbound-only channel
   (ADR 0014–0016). A **runner host** on each machine loads **runner adapters** (`runner-orca` first),
   which drive **harnesses** (Claude Code first). Runners are owner-only unless shared through an
   allowlist (ADR 0038), each run pushes its own branch under a fencing token (ADR 0035), and the
-  harness runs without the owner's git or cloud credentials (ADR 0033).
+  harness runs without the owner's git or cloud credentials (ADR 0033): the runner host, not the
+  harness, pushes the run branch with the job token (ADR 0250).
 - **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
   without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
   0037).
@@ -40,18 +50,20 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | --- | --- |
 | `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning, review packet, Setup. Calls operations on `sf-engine` (ADR 0240). MCP later |
 | `packages/ui` | shadcn/ui components and the factory theme (zinc, Geist, status dots) |
-| `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, GitHub App token minting, outbox, cron, `EngineApi` RPC |
-| `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, `.factory/policy.json` schema, model roles, Workflow event names, a fake GitHub for tests (`/testing`) |
+| `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC |
+| `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, `.factory/policy.json` schema, model roles, Workflow event names, verify logic (`verify/`: CI, packet assembly, risk flags, the check-only rule, onboarding), incident classes (`incidents/`), a fake GitHub for tests (`/testing`) |
 | `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
 | `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |
-| `packages/harness-claude` | Claude Code harness adapter |
-| `packages/connector-webhook` | Inbound webhook connector: verification and dedupe |
+| `packages/harness-claude` | The Claude Code harness: the per-run `.claude/settings.local.json` (stage permission profiles, deny rules, a credential-free environment), the run's git config, transcript and stream-json parsing |
+| `packages/runner-orca` | The Orca runner adapter: an Orca worktree on the run branch, Claude Code in an Orca terminal, events from `orca worktree ps`, takeover in Orca (ADR 0100) |
+| `packages/connector-webhook` | Inbound webhook connector, provider-neutral: signature check, delivery naming |
+| `packages/connector-github` | The GitHub App connector: App webhooks → operations |
 | `packages/config` | Shared tsconfig, Biome preset, Vitest preset |
-| `local/runner-host` | The runner host daemon (Node, on a person's machine) |
+| `local/runner-host` | The runner host daemon `sf-runner` (Node, on a person's machine): heartbeat, claim, the job lifecycle, the host's own clone, the run-branch push with the job token (ADR 0250), launchd service |
 | `presets/` | The shipped autonomy policies, project templates and the floor (directory name kept) |
-| `evals/` | Eval suites for benchmarking factory configs |
+| `evals/` | The `.factory/checks/` format, incident regression cases (`evals/regressions/`) and the suite CI runs over both; benchmarks later |
 | `spikes/` | Throwaway spikes. Not in the workspace or Biome |
 
-`packages/runner-orca` arrives when the runner spike is promoted (spec 03). Build specs are in
-[`specs/`](specs/).
+`packages/runner-local` (a headless `claude -p` runner) stays a sketch in `spikes/runner-orca`. Build
+specs are in [`specs/`](specs/).

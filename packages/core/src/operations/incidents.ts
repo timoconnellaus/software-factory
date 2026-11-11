@@ -4,6 +4,7 @@
 // Depth limit: an incident's own failures don't open further incidents.
 import { z } from "zod";
 import { newId } from "../ids.ts";
+import { classifyIncident, ROOT_CAUSES } from "../incidents/classify.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { createWorkItem, requireProject, requireWorkItem, workItemId } from "./shared.ts";
 
@@ -14,11 +15,12 @@ export async function openIncident(
     reason: string;
     runId: string | null;
   },
-): Promise<{ incidentId: string; fixWorkItemId: string } | null> {
+): Promise<{ incidentId: string; fixWorkItemId: string; rootCause: string } | null> {
   const w = requireWorkItem(ctx);
   if (w.kind === "incident") return null;
   const project = requireProject(ctx);
   const incidentId = newId("incident");
+  const { rootCause, proposedFix } = classifyIncident({ ...input, incidentId });
   const what =
     input.kind === "sent_back"
       ? "was sent back at review"
@@ -37,6 +39,10 @@ export async function openIncident(
       "",
       "Propose a fix to `.factory/` (a check, a skill or prompt, context, or policy) that would have",
       "prevented this, plus a regression case in `evals/`.",
+      "",
+      `Incident: ${incidentId}`,
+      "",
+      proposedFix,
     ].join("\n"),
     source: "incident",
     kind: "incident",
@@ -58,14 +64,16 @@ export async function openIncident(
       fix_work_item_id: fix.id,
       created_by: ctx.actor.id,
       created_at: ctx.now,
+      root_cause: rootCause,
+      proposed_fix: proposedFix,
     }),
   );
   ctx.change({
     entity: "incident",
     id: incidentId,
-    after: { kind: input.kind, fixWorkItemId: fix.id },
+    after: { kind: input.kind, fixWorkItemId: fix.id, rootCause },
   });
-  return { incidentId, fixWorkItemId: fix.id };
+  return { incidentId, fixWorkItemId: fix.id, rootCause };
 }
 
 export const incidentOpen = defineOperation({
@@ -81,9 +89,17 @@ export const incidentOpen = defineOperation({
     reason: z.string().min(1).max(8_000),
     runId: z.string().nullable().default(null),
   }),
-  output: z.object({ incidentId: z.string().nullable(), fixWorkItemId: z.string().nullable() }),
+  output: z.object({
+    incidentId: z.string().nullable(),
+    fixWorkItemId: z.string().nullable(),
+    rootCause: z.enum(ROOT_CAUSES).nullable(),
+  }),
   async handler(input, ctx) {
     const opened = await openIncident(ctx, input);
-    return { incidentId: opened?.incidentId ?? null, fixWorkItemId: opened?.fixWorkItemId ?? null };
+    return {
+      incidentId: opened?.incidentId ?? null,
+      fixWorkItemId: opened?.fixWorkItemId ?? null,
+      rootCause: (opened?.rootCause as (typeof ROOT_CAUSES)[number] | undefined) ?? null,
+    };
   },
 });

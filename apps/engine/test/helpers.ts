@@ -122,6 +122,8 @@ export async function all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
   ).results;
 }
 
+type Push = Parameters<typeof github.push>[3];
+
 /** Plays the runner host for one job: claim the next job of `stage`, then hand back. */
 export async function runStage(
   w: World,
@@ -130,8 +132,8 @@ export async function runStage(
   result: (
     job: Job,
   ) =>
-    | Promise<{ result?: unknown; outcome?: "completed" | "failed"; push?: string[] }>
-    | { result?: unknown; outcome?: "completed" | "failed"; push?: string[] },
+    | Promise<{ result?: unknown; outcome?: "completed" | "failed"; push?: Push }>
+    | { result?: unknown; outcome?: "completed" | "failed"; push?: Push },
 ): Promise<Job> {
   await waitFor(`a queued ${stage} job`, () =>
     first(
@@ -186,7 +188,10 @@ export const triage = (
     ...extra,
   },
 });
-export const build = (files = ["src/theme.ts"]) => ({ result: { notes: "done" }, push: files });
+export const build = (files: Push = ["src/theme.ts"]) => ({
+  result: { notes: "done" },
+  push: files,
+});
 export const verifyPass = {
   result: {
     summary: "All good",

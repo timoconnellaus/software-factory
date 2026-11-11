@@ -12,6 +12,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import {
   approvalEvent,
+  ciEvent,
   FOREMAN,
   type GateEventPayload,
   invoke,
@@ -37,8 +38,19 @@ export type WorkItemOutcome =
   | { status: "done"; workItemId: string }
   | { status: "failed" | "rejected"; workItemId: string; reason: string };
 
-/** The version new instances start on. Bump it (and add `runVn`) for any step-name change. */
-export const WORKFLOW_VERSION = 1;
+/**
+ * The version new instances start on. Bump it for any step-name change (ADR 0053).
+ * - v1: verify's verdict came from the runner's report; the PR opened after verify.
+ * - v2 (V1 step 4, spec 04): the PR opens before verify so CI runs on the head; verify waits for CI
+ *   and the verdict is the review packet's (green CI + a complete packet); a factory incident's
+ *   check-only fix may auto-merge (ADR 0230).
+ */
+export const WORKFLOW_VERSION = 2;
+/** How long verify waits for a CI event before it reads CI again, and how many times. */
+export const CI_WAIT = "10 minutes";
+export const CI_ROUNDS = 12;
+/** Rounds to wait when no CI has reported at all (a repo without CI fails after these). */
+export const CI_MISSING_ROUNDS = 3;
 /** How long a step refused by a kill switch waits for it to be turned off. */
 export const PARK_TIMEOUT = "365 days";
 /** Slack on top of a job's session timeout before the run counts as stalled. */
@@ -88,6 +100,8 @@ class Ended extends Error {
 }
 
 interface Meta extends ItemBrief {
+  /** `incident` items may auto-merge a check-only fix (v2). Missing in v1 instances' replays. */
+  kind?: "change" | "incident";
   retryLimit: number;
   gateTimeoutMs: number;
   questionTimeoutMs: number;
@@ -98,11 +112,16 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
     event: WorkflowEvent<WorkItemParams>,
     step: WorkflowStep,
   ): Promise<WorkItemOutcome> {
-    const version = await step.do("meta: version", async () => WORKFLOW_VERSION);
+    const version: number = await step.do(
+      "meta: version",
+      async (): Promise<number> => WORKFLOW_VERSION,
+    );
     const flow = new ItemFlow(this.env, step, event.payload.workItemId, event.instanceId);
     switch (version) {
       case 1:
-        return flow.runV1();
+        return flow.runV1(1);
+      case 2:
+        return flow.runV1(2);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -117,16 +136,18 @@ class ItemFlow {
     private readonly workflowId: string,
   ) {}
 
-  // ---- v1 ----
+  // ---- v1 and v2 ----
+  // v2 only adds steps (`verify #b: open PR`, `verify #b: ci…`, `merge #b: auto-merge`); with
+  // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged.
 
-  async runV1(): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       const meta = await this.meta();
       await this.act("triage: enter", "workItem.enterStage", {
         workItemId: id,
         stage: "triage",
-        workflowVersion: 1,
+        workflowVersion: version,
       });
       await this.act("branch: ensure", "branch.ensure", { workItemId: id });
 
@@ -271,6 +292,11 @@ class ItemFlow {
           workItemId: id,
           stage: "verify",
         });
+        if (version >= 2) {
+          // Open the PR first, so CI runs on this head while the reviewer works (spec 04). It
+          // carries a factory/verify that isn't passing until the packet below says so.
+          await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
+        }
         const verify = await this.runJob(
           `verify #${b}`,
           "verify",
@@ -299,21 +325,33 @@ class ItemFlow {
           continue;
         }
         const r = report.data;
-        const passed =
+        const runnerPassed =
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        await this.act(`verify #${b}: packet`, "reviewPacket.record", {
+        if (version >= 2) await this.waitForCi(b, headSha);
+        const packet = await this.act(`verify #${b}: packet`, "reviewPacket.record", {
           workItemId: id,
           runId: verify.runId,
           headSha,
-          verdict: passed ? "pass" : "fail",
+          verdict: runnerPassed ? "pass" : "fail",
           summary: r.summary,
           criteria: r.criteria,
           checks: r.checks,
           reviewer: r.reviewer ? { ...r.reviewer, sameModelAsImplementer: false } : null,
           riskFlags: r.riskFlags,
         });
+        // v2: the packet's verdict (green CI on the head SHA + a complete packet) decides.
+        const passed = version >= 2 ? packet.verdict === "pass" : runnerPassed;
+        if (!passed && version >= 2) {
+          const reasons = Array.isArray(packet.reasons) ? (packet.reasons as string[]) : [];
+          note = await failed(
+            b,
+            ["Verify found problems:", ...reasons.map((x) => `- ${x}`)].join("\n"),
+            verify,
+          );
+          continue;
+        }
         if (!passed) {
           const unmet = r.criteria.filter((c) => !c.met).map((c) => `- unmet: ${c.criterion}`);
           const failing = r.checks
@@ -337,7 +375,25 @@ class ItemFlow {
           workItemId: id,
           stage: "merge",
         });
-        const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", {
+        let decided: Awaited<ReturnType<ItemFlow["gate"]>> | null = null;
+        if (version >= 2 && meta.kind === "incident") {
+          // A check-only incident fix may merge without a person, if the project opted in and the
+          // rule holds (ADR 0230). Refused: the normal merge gate below.
+          const autoName = `merge #${b}: auto-merge`;
+          const auto = await this.call(autoName, "pr.autoMerge", { workItemId: id, headSha });
+          if (auto.status === "ok") {
+            await this.act("end: done", "workItem.finish", {
+              workItemId: id,
+              status: "done",
+              reason: "auto-merged: a check-only incident fix (ADR 0230)",
+            });
+            return { status: "done", workItemId: id };
+          }
+          if (auto.status === "pending") {
+            decided = await this.gate(meta, autoName, "pr.autoMerge", { workItemId: id, headSha });
+          }
+        }
+        decided ??= await this.gate(meta, `merge #${b}: gate`, "pr.merge", {
           workItemId: id,
           headSha,
           touchesFactoryConfig: pr.touchesFactoryConfig === true,
@@ -386,7 +442,7 @@ class ItemFlow {
   private async meta(): Promise<Meta> {
     return this.step.do("meta: item", async () => {
       const row = await this.env.DB.prepare(
-        `SELECT w.number, w.title, w.body, w.branch, p.raw FROM core_work_items w
+        `SELECT w.number, w.title, w.body, w.branch, w.kind, p.raw FROM core_work_items w
          JOIN core_projects pr ON pr.id = w.project_id
          LEFT JOIN core_project_policies p ON p.project_id = pr.id AND p.sha = pr.policy_sha
          WHERE w.id = ?`,
@@ -397,6 +453,7 @@ class ItemFlow {
           title: string;
           body: string;
           branch: string;
+          kind: "change" | "incident";
           raw: string | null;
         }>();
       if (!row) throw new Error(`work item ${this.workItemId} not found`);
@@ -414,6 +471,7 @@ class ItemFlow {
         title: row.title,
         body: row.body,
         branch: row.branch,
+        kind: row.kind,
         retryLimit: policy.retryLimit ?? 2,
         gateTimeoutMs: (policy.timeouts?.gateHours ?? 72) * 3_600_000,
         questionTimeoutMs: (policy.timeouts?.questionHours ?? 48) * 3_600_000,
@@ -530,6 +588,33 @@ class ItemFlow {
         );
       }
       return { decision: "approved", output: applied.output };
+    }
+  }
+
+  /**
+   * v2: waits until CI on the head SHA has settled (the connector sends `ci-<item>-<sha>` when a
+   * check suite completes; each timeout reads CI again), so the packet reads a final answer. Gives
+   * up after CI_ROUNDS (or CI_MISSING_ROUNDS when no CI reports at all); the packet then fails.
+   */
+  async waitForCi(b: number, headSha: string): Promise<void> {
+    for (let i = 1; i <= CI_ROUNDS; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      const ci = await this.call(`verify #${b}: ci${sfx}`, "ci.read", {
+        workItemId: this.workItemId,
+        headSha,
+      });
+      if (ci.status !== "ok") return; // unreadable: the packet records why and fails
+      const state = String(ci.output.state);
+      if (state === "success" || state === "failure") return;
+      if (state === "missing" && i >= CI_MISSING_ROUNDS) return;
+      try {
+        await this.step.waitForEvent(`verify #${b}: ci wait${sfx}`, {
+          type: ciEvent(this.workItemId, headSha),
+          timeout: CI_WAIT,
+        });
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+      }
     }
   }
 

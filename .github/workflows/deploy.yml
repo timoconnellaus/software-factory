@@ -97,15 +97,16 @@ jobs:
           pnpm exec wrangler secret bulk /tmp/sf-app-secrets.json
           rm -f /tmp/sf-app-secrets.json
       - name: Sync sf-engine secrets
-        # The runner channel's master secret and the GitHub App key (job tokens, branches, PRs,
-        # merges). Values never appear in logs; unset ones are skipped.
+        # The runner channel's master secret, the GitHub App key (job tokens, branches, PRs,
+        # merges, check runs) and its webhook secret. Values never appear in logs; unset ones are skipped.
         working-directory: apps/engine
         env:
           RUNNER_CHANNEL_SECRET: ${{ secrets.RUNNER_CHANNEL_SECRET }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GH_APP_WEBHOOK_SECRET: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
         run: |
           node -e '
-            const keys = ["RUNNER_CHANNEL_SECRET","GH_APP_PRIVATE_KEY"];
+            const keys = ["RUNNER_CHANNEL_SECRET","GH_APP_PRIVATE_KEY","GH_APP_WEBHOOK_SECRET"];
             const out = {};
             for (const k of keys) if (process.env[k]) out[k] = process.env[k];
             require("fs").writeFileSync("/tmp/sf-engine-secrets.json", JSON.stringify(out));

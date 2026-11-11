@@ -259,3 +259,35 @@ describe("work item detail", () => {
     expect(agentTime(detail({ runs: [run(1, 60_000), run(2, 120_000)] }))).toBe(180_000);
   });
 });
+
+describe("the verify stage's sections (spec 04)", () => {
+  it("counts CI on the head SHA, not the runner's checks, and surfaces why", async () => {
+    const { checkCounts, packetExtras } = await import("#/lib/packet");
+    const p = parsePacket({
+      id: "rp_1",
+      headSha: "a".repeat(40),
+      verdict: "fail",
+      summary: "",
+      criteria: [],
+      checks: [{ name: "local tests", status: "pass" }],
+      reviewer: null,
+      riskFlags: [],
+      sections: {
+        verdict: { verdict: "fail", reasons: ["CI failing on aaaaaaa: ci"], warnings: [] },
+        ci: {
+          state: "failure",
+          checks: [
+            { name: "ci", status: "completed", conclusion: "failure", url: null },
+            { name: "lint", status: "completed", conclusion: "success", url: null },
+          ],
+        },
+        changed: { files: 1, paths: [{ path: "a.ts", status: "modified" }] },
+      },
+      createdAt: NOW,
+    });
+    expect(checkCounts(p)).toEqual({ passed: 1, failed: 1, total: 2, source: "ci" });
+    expect(packetExtras(p).reasons).toEqual(["CI failing on aaaaaaa: ci"]);
+    expect(packetExtras(p).changed?.files).toBe(1);
+    expect(packetSections(["ci", "changed", "risk"])).toEqual(["verdict", "whatChanged", "risk"]);
+  });
+});

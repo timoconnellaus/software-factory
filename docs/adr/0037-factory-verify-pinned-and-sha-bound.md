@@ -20,3 +20,5 @@ commit it described.
 - Before a project joins the factory, the factory checks that branch protection with a required
   check is available for that repo (it is not on every private-repo plan) and refuses the project if not.
 - Client repos the org does not administer need the client to install the App and set protection.
+
+> Amended 2026-11-11 (V1 step 4, [ADR 0231](0231-verify-verdict-and-the-github-connector.md)): built. `factory/verify` is posted per SHA and updated in place; it is `in_progress` while CI runs. Making it required on software-factory waits for the bootstrap, so the PRs of the sessions building V1 aren't blocked.

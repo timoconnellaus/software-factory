@@ -331,6 +331,10 @@ export interface CoreIncidentsTable {
   fix_work_item_id: string | null;
   created_by: string;
   created_at: Iso;
+  /** 0040: the root-cause class (`packages/core` incidents/classify). */
+  root_cause: string | null;
+  /** 0040: the proposed `.factory/` fix, markdown. */
+  proposed_fix: string | null;
 }
 
 export type AuditDecision = "allow" | "review" | "deny" | "n/a";
@@ -495,6 +499,38 @@ export interface CoreChannelRequestsTable {
   at: Iso;
 }
 
+// ---- 0040: the GitHub connector and `factory/verify` ----
+
+export interface CoreConnectorEventsTable {
+  provider: string;
+  delivery_id: string;
+  event: string;
+  action: string | null;
+  repo: string | null;
+  received_at: Iso;
+}
+
+export type VerifyCheckStatus = "queued" | "in_progress" | "completed";
+export type VerifyCheckConclusion =
+  | "success"
+  | "failure"
+  | "neutral"
+  | "cancelled"
+  | "action_required";
+
+export interface CoreVerifyChecksTable {
+  project_id: string;
+  head_sha: string;
+  work_item_id: string | null;
+  pr_number: number | null;
+  github_check_run_id: string | null;
+  status: VerifyCheckStatus;
+  conclusion: VerifyCheckConclusion | null;
+  title: string;
+  review_packet_id: string | null;
+  updated_at: Iso;
+}
+
 /** Every core table, for `Kysely<CoreDatabase>`. */
 export interface CoreDatabase {
   core_meta: CoreMetaTable;
@@ -529,4 +565,6 @@ export interface CoreDatabase {
   core_artifacts: CoreArtifactsTable;
   core_leases: CoreLeasesTable;
   core_channel_requests: CoreChannelRequestsTable;
+  core_connector_events: CoreConnectorEventsTable;
+  core_verify_checks: CoreVerifyChecksTable;
 }

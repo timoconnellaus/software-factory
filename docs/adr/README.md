@@ -2,7 +2,7 @@
 
 Each ADR is `NNNN-slug.md` with Status, Context, Decision and Consequences. ADRs are never deleted: when a decision changes, amend it with a dated note.
 
-Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); 0048–0059 is the V1 core + engine build; spikes use 0100–0199 (0100 runner contract and 0110 Workflow and gate are accepted and promoted here; 0120 auth is still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
+Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); 0048–0059 is the V1 core + engine build; 0230–0239 is V1 step 4 (verify + connector + incidents); spikes use 0100–0199 (0100 runner contract and 0110 Workflow and gate are accepted and promoted here; 0120 auth is still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
 
 | ADR | Title |
 | --- | --- |
@@ -58,6 +58,9 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0052](0052-job-tokens-and-branch-confinement.md) | Minting job tokens, and confining pushes to the run branch |
 | [0053](0053-workflow-versioning.md) | Versioning the work-item Workflow across deploys |
 | [0054](0054-factory-policy-file.md) | `.factory/policy.json`: the project's autonomy policy file |
+| [0230](0230-check-only-incident-fixes-auto-merge.md) | A factory incident's check-only fix may merge without a person (amends 0008) |
+| [0231](0231-verify-verdict-and-the-github-connector.md) | The verify verdict, `factory/verify` and the GitHub App connector |
 | [0240](0240-v1-app-sign-in-and-server-functions.md) | V1 app: GitHub-only sign-in for one user, and one allowlisted server function to the engine |
 | [0100](0100-runner-contract.md) | The runner contract (promoted from the spike) |
 | [0110](0110-work-item-workflow-and-gate.md) | A Workflow per work item, gated through the operation pipeline (promoted from the spike) |
+| [0250](0250-runner-host-pushes-and-harness-projection.md) | The runner host pushes; the harness gets a projected settings file and no credentials |

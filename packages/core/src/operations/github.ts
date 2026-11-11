@@ -2,10 +2,8 @@
 // item branch `factory/<n>-<slug>` (created from the default branch, moved only as a fast-forward to
 // an accepted run's head), opens the PR and merges it after the merge gate. Runners only ever push
 // their own run branch.
-import { checkResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
-import { newId } from "../ids.ts";
 import { defineOperation } from "../operation.ts";
 import { repoRef, requireProject, requireWorkItem, sha, workItemId } from "./shared.ts";
 
@@ -163,65 +161,5 @@ export const prMerge = defineOperation({
     if (!merged.merged) throw new OperationError("conflict", `merge refused: ${merged.reason}`);
     ctx.change({ entity: "work_item", id: w.id, after: { merged: merged.sha } });
     return { merged: true as const, sha: merged.sha };
-  },
-});
-
-export const reviewPacketRecord = defineOperation({
-  name: "reviewPacket.record",
-  description:
-    "Store a review packet for the work item's head SHA (ADR 0020, 0041): verdict, what changed, each acceptance criterion with evidence, checks, reviewer notes, risk flags and the sections `.factory/` asks for. The packet in the app is the merge gate. The verify session assembles it; the verdict must come from CI on the head SHA (spec 04).",
-  risk: "write",
-  actors: ["agent"],
-  permission: "signed-in",
-  input: z.object({
-    workItemId,
-    runId: z.string().nullable().default(null),
-    headSha: sha,
-    verdict: z.enum(["pass", "fail"]),
-    summary: z.string().max(20_000).default(""),
-    criteria: z
-      .array(z.object({ criterion: z.string(), met: z.boolean(), evidence: z.string() }))
-      .max(50)
-      .default([]),
-    checks: z.array(checkResultSchema).max(100).default([]),
-    reviewer: z
-      .object({
-        role: z.literal("review"),
-        model: z.string().optional(),
-        verdict: z.enum(["approve", "request_changes"]),
-        notes: z.string(),
-        sameModelAsImplementer: z.boolean().default(false),
-      })
-      .nullable()
-      .default(null),
-    riskFlags: z.array(z.string().max(500)).max(50).default([]),
-    sections: z.record(z.string(), z.unknown()).default({}),
-  }),
-  output: z.object({ reviewPacketId: z.string() }),
-  async handler(input, ctx) {
-    const w = requireWorkItem(ctx);
-    const id = newId("reviewPacket");
-    ctx.write(
-      ctx.db.insertInto("core_review_packets").values({
-        id,
-        work_item_id: w.id,
-        run_id: input.runId,
-        head_sha: input.headSha,
-        verdict: input.verdict,
-        summary: input.summary,
-        criteria: JSON.stringify(input.criteria),
-        checks: JSON.stringify(input.checks),
-        reviewer: input.reviewer ? JSON.stringify(input.reviewer) : null,
-        risk_flags: JSON.stringify(input.riskFlags),
-        sections: JSON.stringify(input.sections),
-        created_at: ctx.now,
-      }),
-    );
-    ctx.change({
-      entity: "review_packet",
-      id,
-      after: { verdict: input.verdict, headSha: input.headSha },
-    });
-    return { reviewPacketId: id };
   },
 });

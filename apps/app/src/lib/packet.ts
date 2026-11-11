@@ -39,6 +39,8 @@ const ALIASES: Record<string, PacketSection> = {
   verdict: "verdict",
   "verdict-row": "verdict",
   whatchanged: "whatChanged",
+  changed: "whatChanged",
+  ci: "verdict",
   "what-changed": "whatChanged",
   summary: "whatChanged",
   criteria: "criteria",
@@ -119,4 +121,64 @@ export function packetCounts(p: ParsedPacket) {
     met,
     total: p.criteria.length,
   };
+}
+
+const ciSection = z.object({
+  state: z.string(),
+  checks: z.array(
+    z.object({
+      name: z.string(),
+      status: z.string(),
+      conclusion: z.string().nullable().optional(),
+      url: z.string().nullable().optional(),
+    }),
+  ),
+});
+const verdictSection = z.object({
+  reasons: z.array(z.string()).default([]),
+  warnings: z.array(z.string()).default([]),
+});
+const changedSection = z.object({
+  files: z.number().nullable(),
+  paths: z
+    .array(z.object({ path: z.string(), status: z.string(), previousPath: z.string().optional() }))
+    .default([]),
+});
+
+export type CiSection = z.infer<typeof ciSection>;
+
+/** The parts the verify stage adds under `sections` (spec 04): CI on the head SHA, why, what changed. */
+export function packetExtras(p: ParsedPacket) {
+  const ci = ciSection.safeParse(p.sections.ci);
+  const verdict = verdictSection.safeParse(p.sections.verdict);
+  const changed = changedSection.safeParse(p.sections.changed);
+  return {
+    ci: ci.success ? ci.data : null,
+    reasons: verdict.success ? verdict.data.reasons : [],
+    warnings: verdict.success ? verdict.data.warnings : [],
+    changed: changed.success ? changed.data : null,
+  };
+}
+
+const GREEN = new Set(["success", "neutral", "skipped"]);
+
+/** CI's own counts when the packet carries them, else the runner's checks (evidence only). */
+export function checkCounts(p: ParsedPacket): {
+  passed: number;
+  failed: number;
+  total: number;
+  source: "ci" | "runner";
+} {
+  const { ci } = packetExtras(p);
+  if (ci) {
+    const done = ci.checks.filter((c) => c.status === "completed");
+    return {
+      passed: done.filter((c) => GREEN.has(c.conclusion ?? "")).length,
+      failed: done.filter((c) => !GREEN.has(c.conclusion ?? "")).length,
+      total: ci.checks.length,
+      source: "ci",
+    };
+  }
+  const c = packetCounts(p);
+  return { passed: c.checksPassed, failed: c.checksFailed, total: c.checksTotal, source: "runner" };
 }

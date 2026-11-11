@@ -156,9 +156,23 @@ _Avoid_: approval request, ticket, task
 
 **Factory incident**
 A work item the factory opens on itself when a PR is sent back or a run fails or stalls: it proposes
-a fix to `.factory/` plus a regression case in `evals/`, and goes through the normal gates. An
-incident's own failures open no further incidents.
+a fix to `.factory/` plus a regression case in `evals/regressions/`, and goes through the normal
+gates. It carries a **root-cause class** (`missing-check`, `prompt-or-skill`, `missing-context`,
+`policy`, `runner`, `confinement`, `unknown`) saying which part of `.factory/` to change. An
+incident's own failures open no further incidents. A fix that only adds checks and regression cases
+may auto-merge where the project opts in (ADR 0230).
 _Avoid_: bug, postmortem, issue
+
+**Check (`.factory/checks/`)**
+A project's own static rule: files it applies to, and patterns that must or mustn't appear. CI runs
+every check over the repo (the evals suite), so `factory/verify` can't pass while one fails. The
+cheapest incident fix. Not to be confused with a GitHub **check run** (`ci`, `factory/verify`).
+_Avoid_: lint rule, guard
+
+**Regression case**
+`evals/regressions/<incident>.json`: the input that slipped through an incident and what the
+incident's check must say about it. CI runs them; never edited or deleted.
+_Avoid_: test case, fixture
 
 ## Execution
 
@@ -175,8 +189,9 @@ The code that implements the runner contract for one kind of runner: `runner-orc
 _Avoid_: driver, plugin, integration
 
 **Runner host**
-The generic daemon (`local/runner-host`) on a runner's machine. It connects outbound over the
-signed channel and loads runner adapters.
+The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
+outbound over the signed channel, loads runner adapters, keeps its own clone of each repo, and is the
+only thing that pushes: the run branch, with the job token (ADR 0250).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
 **Capability**
@@ -217,7 +232,8 @@ _Avoid_: preset (old name), scaffold, boilerplate
 
 **Floor**
 The global policy an autonomy policy or project override can only tighten, never loosen. Merge,
-deploy and self-modify always need a person regardless. A client org has its own floor.
+deploy and self-modify always need a person regardless (the one pre-approvable merge is
+`check-merge`, an incident's check-only fix, ADR 0230). A client org has its own floor.
 _Avoid_: baseline, minimum policy, guardrails
 
 **Evidence policy**
@@ -244,7 +260,8 @@ _Avoid_: endpoint, action (except outbound actions), command, API call
 
 **Connector**
 The boundary to an outside system (`packages/connector-*`). Inbound, it verifies and deduplicates
-webhooks into typed events that become work items. Outbound, it performs journaled actions
+webhooks into typed events and maps them to operations (the GitHub connector: `verify.refresh`,
+`push.observe`, `github.installation`). Outbound, it performs journaled actions
 (comments, PRs) so agents never hold standing tokens. The GitHub connector mints per-job repo
 tokens (ADR 0033).
 _Avoid_: gatekeeper (old name), integration, webhook handler

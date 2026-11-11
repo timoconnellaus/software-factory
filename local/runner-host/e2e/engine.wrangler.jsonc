@@ -1,0 +1,26 @@
+// e2e only: sf-engine's own code (apps/engine/src) under `wrangler dev`, with the in-D1 fake GitHub
+// and a throwaway channel secret. Not a deploy config.
+{
+  "name": "sf-engine",
+  "main": "../../../apps/engine/src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "software-factory",
+      "database_id": "local-e2e",
+      "migrations_dir": "../../../packages/db/migrations"
+    }
+  ],
+  "workflows": [
+    { "binding": "WORK_ITEM_WORKFLOW", "name": "sf-work-item", "class_name": "WorkItemWorkflow" }
+  ],
+  "vars": {
+    "PUBLIC_BASE_URL": "http://localhost",
+    "GH_APP_ID": "0",
+    "FACTORY_FLOOR": "",
+    "GITHUB_FAKE": "1",
+    "RUNNER_CHANNEL_SECRET": "e2e-local-only-not-a-secret"
+  }
+}

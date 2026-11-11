@@ -10,7 +10,7 @@ import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { ago } from "#/lib/format";
 import type { Inbox } from "#/lib/ops";
-import { packetCounts, parsePacket } from "#/lib/packet";
+import { checkCounts, packetCounts, parsePacket } from "#/lib/packet";
 import { workItemQuery } from "#/lib/queries";
 import { answerChoices } from "#/lib/questions";
 import { NoteDialog, useDecide } from "./decisions.tsx";
@@ -180,6 +180,7 @@ function MergeGateCard({
   const d = item.data;
   const packet = d?.reviewPacket ? parsePacket(d.reviewPacket) : null;
   const counts = packet ? packetCounts(packet) : null;
+  const checks = packet ? checkCounts(packet) : null;
   const canMerge = d?.viewer.isApprover ?? false;
   return (
     <CardShell highlighted={highlighted} testId={`card-${id}`}>
@@ -192,8 +193,9 @@ function MergeGateCard({
       >
         {packet && counts && (
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
-            <span className={counts.checksFailed ? "text-destructive" : undefined}>
-              {counts.checksFailed ? "✗" : "✓"} Checks {counts.checksPassed}/{counts.checksTotal}
+            <span className={checks?.failed ? "text-destructive" : undefined}>
+              {checks?.failed ? "✗" : "✓"} {checks?.source === "ci" ? "CI" : "Checks"}{" "}
+              {checks?.passed}/{checks?.total}
             </span>
             <span>
               {counts.met === counts.total ? "✓" : "✗"} {counts.met}/{counts.total} criteria
