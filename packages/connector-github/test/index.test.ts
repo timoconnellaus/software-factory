@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeGitHubEvent } from "../src/index.ts";
+import { APP_REQUIREMENTS, routeGitHubEvent } from "../src/index.ts";
 
 const SLUG = "software-factory-zerobsai";
 const repository = { name: "software-factory", owner: { login: "timoconnellaus" } };
@@ -168,6 +168,25 @@ describe("routing GitHub App webhooks", () => {
       ["added", ["a"]],
       ["removed", ["b"]],
     ]);
+  });
+
+  it("re-checks protection when a ruleset or branch protection changes (ADR 0280)", () => {
+    for (const event of ["repository_ruleset", "branch_protection_rule"]) {
+      for (const action of ["created", "edited", "deleted"]) {
+        const routed = routeGitHubEvent(event, { action, repository, ruleset: { id: 1 } }, SLUG);
+        expect(routed.calls).toEqual([
+          { op: "protection.observe", input: { repo, event, action } },
+        ]);
+      }
+    }
+    // An org-level ruleset event names no repository.
+    expect(
+      routeGitHubEvent("repository_ruleset", { action: "edited" }, SLUG).ignored,
+    ).toMatch(/without a repository/);
+    expect(APP_REQUIREMENTS.events).toEqual(
+      expect.arrayContaining(["repository_ruleset", "branch_protection_rule"]),
+    );
+    expect(APP_REQUIREMENTS.permissions.administration).toBe("read");
   });
 
   it("ignores pings, unknown events and unreadable payloads", () => {
