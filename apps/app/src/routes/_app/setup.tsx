@@ -12,10 +12,11 @@ import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import { ago } from "#/lib/format";
 import { op, submitKey } from "#/lib/op";
-import { OpError, type Project } from "#/lib/ops";
+import { OpError, type OpInput, type Project } from "#/lib/ops";
 import { runnersQuery } from "#/lib/queries";
+import { pairCommand } from "#/lib/runner-pairing";
 import { useProjects, useSession } from "#/lib/session";
-import { detectInstallation, syncPolicy } from "#/server/fns";
+import { syncPolicy } from "#/server/fns";
 
 export const Route = createFileRoute("/_app/setup")({ component: SetupPage });
 
@@ -55,15 +56,9 @@ function AddProject() {
     if (!orgId) return;
     setBusy(true);
     try {
-      let installation = String(f.get("installation") ?? "").trim();
-      if (!installation) {
-        const found = await detectInstallation({
-          data: { owner: String(f.get("owner")), name: String(f.get("repo")) },
-        });
-        if (found.installationId) installation = found.installationId;
-        else toast.warning(`No GitHub App installation found: ${found.reason}`);
-      }
-      await op(
+      // Left empty, the engine looks the installation up as the App (project.create).
+      const installation = String(f.get("installation") ?? "").trim();
+      const created = await op(
         "project.create",
         {
           orgId,
@@ -75,7 +70,11 @@ function AddProject() {
         },
         { idempotencyKey: submitKey() },
       );
-      toast.success("Project added. Now sync its policy.");
+      if (created.installationWarning) {
+        toast.warning(created.installationWarning, { duration: 15_000 });
+      } else {
+        toast.success("Project added. Now sync its policy.");
+      }
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
     } catch (error) {
       toast.error(errorText(error));
@@ -95,7 +94,7 @@ function AddProject() {
           name="installation"
           label="GitHub App installation id (optional)"
           defaultValue=""
-          hint="Leave empty to find it from your GitHub sign-in."
+          hint="Leave empty to look it up as the GitHub App."
         />
         <div className="flex items-end">
           <Button type="submit" disabled={busy}>
@@ -191,7 +190,122 @@ function ProjectCard({ project }: { project: Project }) {
           : ""}
       </div>
       {last && <div className="text-sm">{last}</div>}
+      <ProjectConnection project={project} />
     </Card>
+  );
+}
+
+/**
+ * The project's GitHub connection, editable (project.update): the App installation and the default
+ * branch. A project with no installation gets a warning and a Detect button instead of failing
+ * later, when the factory first needs a token (incident 2026-11-11-bootstrap).
+ */
+function ProjectConnection({ project }: { project: Project }) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [installation, setInstallation] = useState(project.githubInstallationId ?? "");
+  const [branch, setBranch] = useState(project.repo.defaultBranch);
+  const missing = !project.githubInstallationId;
+
+  async function update(input: Omit<OpInput<"project.update">, "projectId">) {
+    setBusy(true);
+    try {
+      const r = await op(
+        "project.update",
+        { projectId: project.id, ...input },
+        { idempotencyKey: submitKey() },
+      );
+      setProblem(null);
+      setInstallation(r.githubInstallationId ?? "");
+      setBranch(r.repo.defaultBranch);
+      toast.success(
+        r.githubInstallationId
+          ? `Connected: GitHub App installation ${r.githubInstallationId}.`
+          : "Project updated.",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+    } catch (error) {
+      // The engine's reason, word for word: it says what GitHub answered and how to fix it.
+      setProblem(errorText(error));
+      toast.error(errorText(error), { duration: 15_000 });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function save(e: FormEvent) {
+    e.preventDefault();
+    const id = installation.trim();
+    const changes: { githubInstallationId?: string | null; defaultBranch?: string } = {};
+    if (id !== (project.githubInstallationId ?? "")) changes.githubInstallationId = id || null;
+    if (branch.trim() && branch.trim() !== project.repo.defaultBranch) {
+      changes.defaultBranch = branch.trim();
+    }
+    if (Object.keys(changes).length === 0) return;
+    void update(changes);
+  }
+
+  return (
+    <div className="grid gap-2 border-t pt-3" data-testid="project-connection">
+      {missing && (
+        <div
+          role="alert"
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm"
+          data-testid="installation-warning"
+        >
+          <span className="font-medium">No GitHub App installation.</span> The factory can't read,
+          branch or push {project.repo.owner}/{project.repo.name} until one is set. Install the App
+          on the repo, then press Detect installation, or enter its id.
+        </div>
+      )}
+      {problem && (
+        <div className="text-destructive text-sm" data-testid="installation-problem">
+          {problem}
+        </div>
+      )}
+      <form onSubmit={save} className="flex flex-wrap items-end gap-2">
+        <div className="grid gap-1.5">
+          <Label htmlFor={`inst-${project.id}`}>GitHub App installation id</Label>
+          <Input
+            id={`inst-${project.id}`}
+            className="w-44 font-mono"
+            inputMode="numeric"
+            pattern="\d*"
+            placeholder="none"
+            value={installation}
+            onChange={(e) => setInstallation(e.target.value)}
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor={`branch-${project.id}`}>Default branch</Label>
+          <Input
+            id={`branch-${project.id}`}
+            className="w-36 font-mono"
+            value={branch}
+            onChange={(e) => setBranch(e.target.value)}
+          />
+        </div>
+        <Button type="submit" size="sm" variant="outline" disabled={busy}>
+          Save
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={missing ? "default" : "ghost"}
+          disabled={busy}
+          onClick={() => update({ detectInstallation: true })}
+          data-testid="detect-installation"
+        >
+          {busy ? "Working…" : "Detect installation"}
+        </Button>
+      </form>
+      {branch.trim() !== project.repo.defaultBranch && (
+        <div className="text-muted-foreground text-xs">
+          Changing the default branch clears the synced policy: sync it again from the new branch.
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -264,20 +378,33 @@ function Runners() {
         <div className="grid gap-1 rounded-md border px-3 py-2 text-sm" data-testid="runner-key">
           <div className="font-medium">Copy this now: it is shown once.</div>
           <div className="text-muted-foreground text-xs">
-            Give the runner host its id and key (channel{" "}
-            <span className="font-mono">https://sf-engine.zerobsai.com/runner/v1</span>).
+            On the runner's Mac, from the software-factory checkout: paste the command, copy the
+            key, then press Enter (the command reads the key from the clipboard).
           </div>
-          <code className="break-all font-mono text-xs">runner id: {key.runnerId}</code>
+          <code className="break-all font-mono text-xs" data-testid="pair-command">
+            {pairCommand(key.runnerId)}
+          </code>
           <code className="break-all font-mono text-xs">key: {key.key}</code>
-          <div>
+          <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
               variant="outline"
               onClick={() =>
-                navigator.clipboard.writeText(`runner id: ${key.runnerId}\nkey: ${key.key}`)
+                navigator.clipboard
+                  .writeText(pairCommand(key.runnerId))
+                  .then(() => toast.success("Command copied"))
               }
             >
-              Copy
+              1. Copy command
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                navigator.clipboard.writeText(key.key).then(() => toast.success("Key copied"))
+              }
+            >
+              2. Copy key
             </Button>
           </div>
         </div>

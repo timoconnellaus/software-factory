@@ -21,6 +21,7 @@ import {
   saveConfig,
 } from "./config.ts";
 import * as launchd from "./launchd.ts";
+import { parsePairingInput, serviceNode } from "./pairing.ts";
 import { buildRunner } from "./runner.ts";
 
 const dirs = paths();
@@ -56,11 +57,15 @@ async function pair(args: string[]) {
     },
   });
   const existing = await loadConfig(dirs.configFile).catch(() => null);
-  const key = values["key-stdin"] ? await readStdin() : (values.key ?? existing?.key);
+  // stdin takes the bare key or the app's `runner id: …` / `key: …` block.
+  const piped = values["key-stdin"]
+    ? parsePairingInput(await readStdin(), values["runner-id"])
+    : null;
+  const key = piped?.key ?? values.key ?? existing?.key;
   const config = configSchema.parse({
     ...(existing ?? {}),
     baseUrl: values.url ?? existing?.baseUrl ?? DEFAULT_BASE_URL,
-    runnerId: values["runner-id"] ?? existing?.runnerId,
+    runnerId: piped?.runnerId ?? values["runner-id"] ?? existing?.runnerId,
     key,
     ...(values.name ? { name: values.name } : {}),
     ...(values.max ? { maxConcurrent: Number(values.max) } : {}),
@@ -68,12 +73,22 @@ async function pair(args: string[]) {
   const { cp, adapter } = buildRunner(config, dirs);
   // Prove the pairing: one signed heartbeat with the real manifest, holding nothing.
   const manifest = await adapter.manifest();
-  await cp.heartbeat({
-    manifest,
-    capacity: { max: config.maxConcurrent, inUse: 0, accepting: false },
-    activeJobs: [],
-    rateLimitedUntil: null,
-  });
+  try {
+    await cp.heartbeat({
+      manifest,
+      capacity: { max: config.maxConcurrent, inUse: 0, accepting: false },
+      activeJobs: [],
+      rateLimitedUntil: null,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/401|signature/i.test(message)) {
+      throw new Error(
+        `${message}\nThe factory didn't accept this key for ${config.runnerId}. Check the runner id matches the key (Setup shows both), or rotate the key in the app and pair again.`,
+      );
+    }
+    throw err;
+  }
   await saveConfig(dirs.configFile, config);
   console.log(`Paired ${config.runnerId} with ${config.baseUrl}; config in ${dirs.configFile}`);
   if (await launchd.kickstart(nodeExec)) console.log("Restarted the launchd service.");
@@ -163,21 +178,29 @@ async function install(args: string[]) {
     ? resolve(values.from, "local/runner-host/src/cli.ts")
     : join(here, "cli.ts");
   const file = launchd.plistPath();
+  // Refuses Node < 24 and pins the service to this absolute Node (incident 2026-11-11-bootstrap).
+  const { node, path } = serviceNode({
+    execPath: process.execPath,
+    version: process.version,
+    path: process.env.PATH,
+  });
   await mkdir(dirs.logDir, { recursive: true });
   await launchd.install(
     nodeExec,
     file,
     launchd.plist({
-      node: process.execPath,
+      node,
       cli,
       workingDirectory: resolve(dirname(cli), ".."),
-      path: process.env.PATH ?? "/usr/bin:/bin",
+      path,
       home: process.env.HOME ?? "",
       logFile: join(dirs.logDir, "runner.log"),
       ...(process.env.SF_RUNNER_CONFIG ? { configFile: process.env.SF_RUNNER_CONFIG } : {}),
     }),
   );
-  console.log(`Installed ${launchd.LABEL} (${file}) running ${cli}`);
+  console.log(
+    `Installed ${launchd.LABEL} (${file}) running ${cli} on Node ${process.version} (${node})`,
+  );
   console.log(`Logs: ${join(dirs.logDir, "runner.log")}`);
 }
 

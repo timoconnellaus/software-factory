@@ -14,6 +14,8 @@ interface RepoState {
   /** Files by ref or SHA, for `readFile`. */
   blobs?: Record<string, Record<string, string>>;
   guards?: RepoGuards;
+  /** The App's installation on this repo; undefined reads as `"1"`, null as not installed. */
+  installation?: string | null;
   parents: Record<string, string | null>;
   files: Record<string, Record<string, string>>;
   pulls: { number: number; head: string; base: string; title: string; state: "open" | "merged" }[];
@@ -31,6 +33,11 @@ export interface FakeGitHub extends GitHubService {
   /** Puts a file at a ref (or SHA) for `readFile`. */
   setFile(repo: RepoRef, ref: string, path: string, content: string): Promise<void>;
   setGuards(repo: RepoRef, guards: RepoGuards): Promise<void>;
+  /** Sets the App's installation on a repo for `findRepoInstallation` (null: not installed). Default `"1"`. */
+  setInstallation(
+    repo: Pick<RepoRef, "owner" | "repo">,
+    installationId: string | null,
+  ): Promise<void>;
 }
 
 export const FAKE_APP = { id: "1000", slug: "software-factory-test" } as const;
@@ -219,6 +226,22 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.checks = { ...(state.checks ?? {}), [check.headSha]: runs };
       await save(r, state);
       return { id };
+    },
+    async findRepoInstallation(owner, repo) {
+      const state = await load({ owner, repo, installationId: "" });
+      const id = state.installation === undefined ? "1" : state.installation;
+      return id
+        ? { installationId: id, reason: null }
+        : {
+            installationId: null,
+            reason: `the GitHub App ${FAKE_APP.slug} isn't installed on ${owner}/${repo}`,
+          };
+    },
+    async setInstallation(r, installationId) {
+      const ref = { ...r, installationId: "" };
+      const state = await load(ref);
+      state.installation = installationId;
+      await save(ref, state);
     },
     async repoGuards(r) {
       return (await load(r)).guards ?? { protection: null, rulesets: [] };

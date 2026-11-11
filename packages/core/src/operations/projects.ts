@@ -5,6 +5,7 @@ import { newId, slugify } from "../ids.ts";
 import { defineOperation, type HandlerContext, type ProjectRow } from "../operation.ts";
 import { POLICY_PATH, parseProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, approverIds, isOrgAdmin, resumeEventType } from "../scope.ts";
+import type { FactoryServices } from "../services.ts";
 import { projectId, requireProject } from "./shared.ts";
 
 const projectView = z.object({
@@ -18,10 +19,44 @@ const projectView = z.object({
   githubInstallationId: z.string().nullable(),
 });
 
+const installationId = z.string().regex(/^\d+$/);
+
+/** Set when a project is saved without a GitHub App installation: why, and what to do. */
+const installationWarning = z.string().nullable();
+
+function toView(p: ProjectRow): z.input<typeof projectView> {
+  return {
+    id: p.id,
+    orgId: p.org_id,
+    factoryId: p.factory_id,
+    name: p.name,
+    slug: p.slug,
+    repo: { owner: p.repo_owner, name: p.repo_name, defaultBranch: p.default_branch },
+    policySha: p.policy_sha,
+    githubInstallationId: p.github_installation_id,
+  };
+}
+
+/** Asks GitHub, as the App, for its installation on the repo. Never throws: a failure is the reason. */
+async function detect(
+  services: FactoryServices,
+  owner: string,
+  repo: string,
+): Promise<{ installationId: string; reason: null } | { installationId: null; reason: string }> {
+  try {
+    return await services.github.findRepoInstallation(owner, repo);
+  } catch (err) {
+    return { installationId: null, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+const noInstallation = (reason: string) =>
+  `No GitHub App installation: ${reason}. The factory can't read or push this repo until one is set (Setup → Detect installation).`;
+
 export const projectCreate = defineOperation({
   name: "project.create",
   description:
-    "Add a project: one GitHub repo inside the org's factory. Needs an org owner or admin. Its policy is read from `.factory/policy.json` on the default branch (policy.sync); until one is synced, agents and runners can do nothing on it (fail closed).",
+    "Add a project: one GitHub repo inside the org's factory. Needs an org owner or admin. Without `githubInstallationId` the App's installation on the repo is looked up as the App; if there is none the project is still saved and `installationWarning` says why (fix it with project.update). Its policy is read from `.factory/policy.json` on the default branch (policy.sync); until one is synced, agents and runners can do nothing on it (fail closed).",
   risk: "write",
   actors: ["human"],
   permission: "admin",
@@ -31,9 +66,9 @@ export const projectCreate = defineOperation({
     repoOwner: z.string().regex(/^[A-Za-z0-9-]{1,39}$/),
     repoName: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
     defaultBranch: z.string().min(1).max(100).default("main"),
-    githubInstallationId: z.string().regex(/^\d+$/).optional(),
+    githubInstallationId: installationId.optional(),
   }),
-  output: projectView,
+  output: projectView.extend({ installationWarning }),
   async handler(input, ctx) {
     const org = await ctx.db
       .selectFrom("core_organization")
@@ -59,6 +94,13 @@ export const projectCreate = defineOperation({
         }),
       );
     }
+    let installation = input.githubInstallationId ?? null;
+    let warning: string | null = null;
+    if (!installation) {
+      const found = await detect(ctx.services, input.repoOwner, input.repoName);
+      installation = found.installationId;
+      if (!installation) warning = noInstallation(found.reason ?? "not found");
+    }
     const id = newId("project");
     const slug = slugify(input.name);
     ctx.write(
@@ -71,7 +113,7 @@ export const projectCreate = defineOperation({
         repo_owner: input.repoOwner,
         repo_name: input.repoName,
         default_branch: input.defaultBranch,
-        github_installation_id: input.githubInstallationId ?? null,
+        github_installation_id: installation,
         created_at: ctx.now,
         created_by: ctx.actor.id,
       }),
@@ -79,7 +121,11 @@ export const projectCreate = defineOperation({
     ctx.change({
       entity: "project",
       id,
-      after: { name: input.name, repo: `${input.repoOwner}/${input.repoName}` },
+      after: {
+        name: input.name,
+        repo: `${input.repoOwner}/${input.repoName}`,
+        githubInstallationId: installation,
+      },
     });
     ctx.subject({ projectId: id, orgId: input.orgId });
     return {
@@ -90,7 +136,96 @@ export const projectCreate = defineOperation({
       slug,
       repo: { owner: input.repoOwner, name: input.repoName, defaultBranch: input.defaultBranch },
       policySha: null,
-      githubInstallationId: input.githubInstallationId ?? null,
+      githubInstallationId: installation,
+      installationWarning: warning,
+    };
+  },
+});
+
+export const projectUpdate = defineOperation({
+  name: "project.update",
+  description:
+    "Fix a project's connection to GitHub: set its GitHub App installation id (or `detectInstallation: true` to look it up as the App), and/or its default branch. Needs an org owner or admin. Changing the default branch clears the synced policy: it is re-read from the new branch (policy.sync) and the project fails closed until then. Refuses with the reason when detection finds no installation.",
+  risk: "write",
+  actors: ["human"],
+  permission: "admin",
+  input: z
+    .object({
+      projectId,
+      githubInstallationId: installationId.nullable().optional(),
+      detectInstallation: z.boolean().optional(),
+      defaultBranch: z.string().min(1).max(100).optional(),
+    })
+    .refine((i) => !(i.detectInstallation && i.githubInstallationId !== undefined), {
+      message: "give githubInstallationId or detectInstallation, not both",
+    })
+    .refine(
+      (i) =>
+        i.detectInstallation ||
+        i.githubInstallationId !== undefined ||
+        i.defaultBranch !== undefined,
+      { message: "nothing to change" },
+    ),
+  output: projectView.extend({ installationWarning }),
+  // Scoped to the org, not the project: this is how a project gets connected, so it must work
+  // before (and regardless of) the project's own `.factory/` policy. The org admin check still holds.
+  scope: async (input, db) => {
+    const p = await db
+      .selectFrom("core_projects")
+      .select("org_id")
+      .where("id", "=", input.projectId)
+      .executeTakeFirst();
+    return { orgId: p?.org_id ?? null };
+  },
+  async handler(input, ctx) {
+    const project = await ctx.db
+      .selectFrom("core_projects")
+      .selectAll()
+      .where("id", "=", input.projectId)
+      .executeTakeFirst();
+    if (!project || project.org_id !== ctx.scope.orgId) {
+      throw new OperationError("not_found", "no such project");
+    }
+    const next = { ...project };
+    if (input.detectInstallation) {
+      const found = await detect(ctx.services, project.repo_owner, project.repo_name);
+      if (!found.installationId)
+        throw new OperationError("not_found", noInstallation(found.reason ?? "not found"));
+      next.github_installation_id = found.installationId;
+    } else if (input.githubInstallationId !== undefined) {
+      next.github_installation_id = input.githubInstallationId;
+    }
+    if (input.defaultBranch !== undefined && input.defaultBranch !== project.default_branch) {
+      next.default_branch = input.defaultBranch;
+      next.policy_sha = null;
+    }
+    const before = {
+      githubInstallationId: project.github_installation_id,
+      defaultBranch: project.default_branch,
+      policySha: project.policy_sha,
+    };
+    const after = {
+      githubInstallationId: next.github_installation_id,
+      defaultBranch: next.default_branch,
+      policySha: next.policy_sha,
+    };
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_projects")
+          .set({
+            github_installation_id: next.github_installation_id,
+            default_branch: next.default_branch,
+            policy_sha: next.policy_sha,
+          })
+          .where("id", "=", project.id),
+      );
+      ctx.change({ entity: "project", id: project.id, before, after });
+    }
+    ctx.subject({ projectId: project.id, orgId: project.org_id });
+    return {
+      ...toView(next),
+      installationWarning: next.github_installation_id ? null : noInstallation("none set"),
     };
   },
 });
@@ -110,18 +245,7 @@ export const projectList = defineOperation({
       .where("org_id", "=", input.orgId)
       .orderBy("name")
       .execute();
-    return {
-      projects: rows.map((p) => ({
-        id: p.id,
-        orgId: p.org_id,
-        factoryId: p.factory_id,
-        name: p.name,
-        slug: p.slug,
-        repo: { owner: p.repo_owner, name: p.repo_name, defaultBranch: p.default_branch },
-        policySha: p.policy_sha,
-        githubInstallationId: p.github_installation_id,
-      })),
-    };
+    return { projects: rows.map(toView) };
   },
 });
 

@@ -42,3 +42,13 @@ who can merge.
   `approvers` (with the rule) and `viewer` (`isApprover`, `isRequester`), additively, so the detail
   page and review packet can render the section order and disable what the server would refuse.
 - A private project repo needs the policy read through the App (the connector) instead.
+
+## Amendment, 2026-11-11 (incident [2026-11-11-bootstrap](../incidents/2026-11-11-bootstrap.md))
+The installation lookup no longer uses the user's token. `GET /user/installations` with the stored
+GitHub App user token failed on production, and Setup saved the project anyway with no installation
+and no way to fix it. The engine now asks GitHub **as the App** (its JWT,
+`GET /repos/{owner}/{repo}/installation`): `project.create` does this when no id is given and returns
+`installationWarning` when there is none, and the new `project.update` (admin, `write`, human only)
+sets the installation (by hand or `detectInstallation: true`) and the default branch. The app's
+`detectInstallation` server function and `findInstallation` are removed.
+

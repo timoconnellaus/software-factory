@@ -96,7 +96,13 @@ export async function world(policy: unknown = POLICY) {
   const repoName = uid("repo-");
   const project = await ok<{ id: string }>(
     "project.create",
-    { orgId, name: "Software factory", repoOwner: "timoconnellaus", repoName },
+    {
+      orgId,
+      name: "Software factory",
+      repoOwner: "timoconnellaus",
+      repoName,
+      githubInstallationId: "42",
+    },
     human,
   );
   const policySha = sha40(uid("p"));

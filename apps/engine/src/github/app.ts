@@ -129,6 +129,37 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
     appJwt,
     installationToken,
     mintRepoToken: (repo) => installationToken(repo, JOB_TOKEN_PERMISSIONS),
+    async findRepoInstallation(owner, repo) {
+      const response = await doFetch(
+        `${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
+        { headers: headers(`Bearer ${await appJwt()}`) },
+      );
+      if (response.ok) {
+        const body = (await response.json()) as { id: number };
+        return { installationId: String(body.id), reason: null };
+      }
+      const text = await response.text();
+      let message = text;
+      try {
+        message = (JSON.parse(text) as { message?: string }).message ?? text;
+      } catch {}
+      if (response.status === 404) {
+        return {
+          installationId: null,
+          reason: `the GitHub App ${config.appSlug} isn't installed on ${owner}/${repo} (or its installation doesn't include that repo). Install it: https://github.com/apps/${config.appSlug}/installations/new`,
+        };
+      }
+      if (response.status === 401) {
+        return {
+          installationId: null,
+          reason: `GitHub refused the App's own credentials (401 ${message}): check GH_APP_ID and GH_APP_PRIVATE_KEY on sf-engine`,
+        };
+      }
+      return {
+        installationId: null,
+        reason: `GitHub answered ${response.status} looking up the App's installation on ${owner}/${repo}: ${message}`,
+      };
+    },
     async getBranchSha(repo, branch) {
       const r = await api(repo, "GET", `/git/ref/heads/${ref(branch)}`);
       if (r.status === 404) return null;

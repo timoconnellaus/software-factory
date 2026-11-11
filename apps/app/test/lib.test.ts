@@ -291,3 +291,12 @@ describe("the verify stage's sections (spec 04)", () => {
     expect(packetSections(["ci", "changed", "risk"])).toEqual(["verdict", "whatChanged", "risk"]);
   });
 });
+
+describe("runner pairing (incident 2026-11-11-bootstrap)", () => {
+  it("copies a ready-to-run command that pipes only the key", async () => {
+    const { pairCommand } = await import("#/lib/runner-pairing");
+    expect(pairCommand("r_abc123")).toBe(
+      "pbpaste | local/runner-host/bin/sf-runner pair --runner-id r_abc123 --key-stdin",
+    );
+  });
+});

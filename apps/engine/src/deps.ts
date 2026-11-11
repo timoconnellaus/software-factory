@@ -58,6 +58,7 @@ function unavailableGitHub(): FactoryServices["github"] {
     readFile: no,
     listCheckRuns: no,
     postCheckRun: no,
+    findRepoInstallation: no,
     repoGuards: no,
   };
 }

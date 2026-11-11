@@ -44,6 +44,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #14 | V1 step 3, the runner: `local/runner-host` (`sf-runner`: heartbeat, claim, the job lifecycle, run-branch push with the job token, launchd), `packages/runner-orca`, `packages/harness-claude` (per-run settings, no owner credentials). ADR 0250. Verified end to end against a local engine |
 | #15 | V1 step 4, verify + GitHub connector + incidents: review-packet assembly from CI on the head SHA, `factory/verify` per SHA, the App webhook (`/webhooks/github`), branch confinement (ruleset + push validation), Workflow v2, incident root causes, the check-only auto-merge (ADR 0230), the evals regression suite. ADRs 0230–0231, migration 0040 |
 | #16 | V1 step 2, the app: `sf-app` on TanStack Start + shadcn (`packages/ui`), GitHub sign-in for the allowlisted login with a Personal org, Inbox + runner health line, New work, work item detail with the Planning tab, the review packet (Merge / Send back), Setup (project, policy sync, runner keys). ADR 0240 |
+| #18 | Bootstrap fixes, the first factory incidents ([write-up](incidents/2026-11-11-bootstrap.md)): `project.update` (installation id / detect, default branch), installation detection as the App (`GitHubService.findRepoInstallation`) with `installationWarning` on `project.create`, Setup's fix path and runner pairing command, `sf-runner pair` tolerant stdin, `sf-runner install` requires Node ≥ 24 |
 
 ## In flight
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
@@ -73,7 +74,7 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   it returns `{ ok: true, result }` or `{ ok: false, error: { code, message } }`. Pass an
   `idempotencyKey` for form submits.
 - Operations by screen:
-  - Setup: `project.create`, `project.list`, `policy.sync` (until the connector does it), `runner.register`
+  - Setup: `project.create` (finds the App installation itself; `installationWarning` when none), `project.update` (installation id or `detectInstallation`, default branch), `project.list`, `policy.sync` (until the connector does it), `runner.register`
     (returns the runner key once), `runner.rotateKey`, `runner.list`.
   - New work: `workItem.previewRouting { projectId }`, `workItem.create { projectId, title?, body, source: "app", eventId }`.
   - Inbox: `inbox.list { orgId? }` (gates and questions assigned to you, running items, your runners'

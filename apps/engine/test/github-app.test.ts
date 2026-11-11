@@ -120,3 +120,52 @@ describe("GitHub App token minting", () => {
     expect(minted).toBe(1);
   });
 });
+
+describe("finding the App's installation on a repo (incident 2026-11-11-bootstrap)", () => {
+  const repo = ["timoconnellaus", "software-factory"] as const;
+  async function appWith(respond: (url: string) => Response) {
+    const { pkcs1Pem } = await keyPair();
+    const seen: { url: string; auth: string }[] = [];
+    const app = githubApp({
+      appId: "5705909",
+      appSlug: "software-factory-zerobsai",
+      privateKey: pkcs1Pem,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        seen.push({ url: request.url, auth: request.headers.get("authorization") ?? "" });
+        return respond(request.url);
+      },
+    });
+    return { app, seen };
+  }
+
+  it("asks as the App (its JWT), not as a user", async () => {
+    const { app, seen } = await appWith(() => Response.json({ id: 12345 }));
+    expect(await app.findRepoInstallation(...repo)).toEqual({
+      installationId: "12345",
+      reason: null,
+    });
+    expect(seen[0]?.url).toBe(
+      "https://api.github.com/repos/timoconnellaus/software-factory/installation",
+    );
+    // A JWT (three base64url parts), never a user's ghu_ token.
+    expect(seen[0]?.auth).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/);
+  });
+
+  it("says why when there is none, with GitHub's own words", async () => {
+    const missing = await appWith(() => Response.json({ message: "Not Found" }, { status: 404 }));
+    expect((await missing.app.findRepoInstallation(...repo)).reason).toMatch(
+      /software-factory-zerobsai isn't installed on timoconnellaus\/software-factory.*installations\/new/,
+    );
+    const badKey = await appWith(() =>
+      Response.json({ message: "A JSON web token could not be decoded" }, { status: 401 }),
+    );
+    expect((await badKey.app.findRepoInstallation(...repo)).reason).toMatch(
+      /401 A JSON web token could not be decoded.*GH_APP_PRIVATE_KEY/,
+    );
+    const other = await appWith(() => Response.json({ message: "boom" }, { status: 502 }));
+    expect((await other.app.findRepoInstallation(...repo)).reason).toMatch(
+      /GitHub answered 502.*boom/,
+    );
+  });
+});
