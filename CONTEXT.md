@@ -50,8 +50,19 @@ _Avoid_: area, topic, scope
 
 **Work item**
 The unit of work the factory tracks from intake to done: a requester, a source, a stage, a living
-spec and acceptance criteria, runs and a review packet. Each one is driven by one Workflow.
+spec and acceptance criteria, runs and a review packet. Each one is driven by one Workflow. Its
+**kind** is `change` (work for the factory to build), `incident` (a factory incident) or `attached`
+(an attached PR).
 _Avoid_: task, ticket, job (a job is one stage's assignment to a runner), issue (the GitHub thing)
+
+**Attached PR**
+A pull request opened outside the factory (by a local session or a person) and attached to a work
+item of kind `attached` (`workItem.attachPr`, the `/attach` page that its failing `factory/verify`
+check links to, or New work's list of open PRs). Triage drafts criteria from the PR. Spec and build
+are skipped, and the factory never pushes to its branch. Verify runs on the PR's own head and a pass
+opens the merge gate. A failure or send-back waits for a push, a push withdraws a pending merge
+gate, and closing the PR cancels the item (spec 05, ADR 0290).
+_Avoid_: imported PR, adopted PR, external work item
 
 **Stage**
 A step in a work item's pipeline: triage, planning/spec, implement, verify, and so on. Pipelines
@@ -163,7 +174,8 @@ input until someone decides it (ADR 0007). Its kind says which inbox card it is:
 _Avoid_: approval request, ticket, task
 
 **Factory incident**
-A work item the factory opens on itself when a PR is sent back or a run fails or stalls: it proposes
+A work item the factory opens on itself when a PR is sent back or a run fails or stalls (an
+attached PR sent back at review opens none: the factory didn't build it): it proposes
 a fix to `.factory/` plus a regression case in `evals/regressions/`, and goes through the normal
 gates. It carries a **root-cause class** (`missing-check`, `prompt-or-skill`, `missing-context`,
 `policy`, `runner`, `confinement`, `unknown`) saying which part of `.factory/` to change. An

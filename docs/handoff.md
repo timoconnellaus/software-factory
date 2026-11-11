@@ -4,7 +4,7 @@ Where the build stands, for a fresh session. Read this first, then
 [`parallel-work.md`](parallel-work.md) if you are building alongside other sessions, then the spec
 of whatever you pick up.
 
-Last refreshed: 2026-11-11 (V1 step 4, verify + GitHub connector + incidents). V1 is defined in [`v1-scope.md`](v1-scope.md).
+Last refreshed: 2026-11-11 (spec 05, attach an outside PR). V1 is defined in [`v1-scope.md`](v1-scope.md).
 
 ## The product
 A software factory on Cloudflare. Work comes in from anywhere, agents take it through triage, spec,
@@ -88,7 +88,11 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
     `runner.deviceLookup` / `runner.approveDevice` / `runner.denyDevice` (`/runners/connect`), and the
     key fallback `runner.register`, `runner.rotateKey`, `runner.list`. `project.update` is an admin
     fix only; the UI never shows an installation id.
-  - New work: `workItem.previewRouting { projectId }`, `workItem.create { projectId, title?, body, source: "app", eventId }`.
+  - New work: `workItem.previewRouting { projectId }`, `workItem.create { projectId, title?, body, source: "app", eventId }`,
+    and the project's open unattached PRs `github.openPullRequests { projectId }`, each with Attach.
+  - Attach (spec 05, ADR 0290): `/attach?repo=<owner>/<repo>&pr=<n>` (the unattached
+    `factory/verify` check's Details link) reads `workItem.previewAttach { repo, prNumber }` and
+    attaches with `workItem.attachPr { projectId, prNumber }`, then opens the work item.
   - Inbox: `inbox.list { orgId? }` (gates and questions assigned to you, running items, your runners'
     health, WIP holds). Decide with `spec.approve`, `spec.requestChanges { note }`,
     `review.merge { openedFullDiff }`, `review.sendBack { note, openedFullDiff }`, `approval.decide`,
@@ -125,6 +129,19 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
 - Incidents carry `root_cause` and `proposed_fix`; `incident.open` returns `rootCause`.
 - Onboarding: `project.checkGitHub { projectId }` → `{ ok, problems }`, now the ADR 0280 ruleset verdict; `protection.check` records it.
 - Not built: holdout tests (spec 04 criterion 8, ADR 0034), the evidence policy (criterion 11).
+
+**Attach an outside PR (spec 05): built** (ADR 0290, migration 0080)
+- `workItem.attachPr { projectId, prNumber }` gives an open same-repo PR into the default branch a
+  work item of kind `attached` (branch = the PR's head ref, `pr_number`, `head_sha`; source `pr`;
+  dedupe key `github:<owner>/<repo>#<n>`). Forks, closed or merged PRs, `factory/*` branches and
+  projects without a valid policy are refused.
+- The Workflow's `runAttached` (chosen by kind, no version bump): triage, spec and build skipped
+  with "attached PR: built outside the factory", then verify on the PR's head → merge gate. No
+  `branch.ensure`/`branch.advance`, no build jobs. Fail or send-back → `workItem.awaitHead` (status
+  `waiting` with the reason) until a push; a push withdraws a pending merge gate (decision
+  `withdrawn`). `verify.refresh` records the new head and sends `pr-head-<item>`; `pull_request
+  closed` without a merge cancels the item.
+- `GitHubService.getPullRequest` / `listOpenPullRequests` (no new App permissions or events).
 
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):

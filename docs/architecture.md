@@ -25,7 +25,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033). Its webhook
   (`software-factory.zerobsai.com/webhooks/github`, served by `sf-engine` through a Workers route)
   checks the signature, dedupes deliveries and maps them to operations: `verify.refresh` on PR and
-  CI events, `push.observe` on pushes (branch confinement, the default-branch policy mirror),
+  CI events (and on a PR closing, for attached PRs), `push.observe` on pushes (branch confinement, the default-branch policy mirror),
   `github.installation` (ADR 0231), which keeps the org's **installation** records current (ADR
   0055), and `protection.observe` on `repository_ruleset` / `branch_protection_rule` (ADR 0280).
 - **Onboarding** never asks for an id the factory can fetch (ADR 0055, 0056): Connect GitHub goes
@@ -45,6 +45,12 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   0231). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
   auto-merge where policy opts in (ADR 0230).
+- **Attached PRs** (ADR 0290, spec 05): a PR opened outside the factory fails `factory/verify` with
+  a link to sf-app's `/attach`. `workItem.attachPr` gives it a work item of kind `attached`, whose
+  Workflow takes its own path (`runAttached`, chosen by kind): triage, spec and build skipped, the
+  factory never pushes to the PR's branch, then verify on the PR's head and the merge gate. A push
+  (`verify.refresh`) records the new head, withdraws a pending merge gate and wakes the Workflow
+  (`pr-head-<item>`). Closing the PR without merging cancels the item.
 - **Runners** execute jobs through the runner contract over a signed, outbound-only channel
   (ADR 0014–0016). A **runner host** on each machine loads **runner adapters** (`runner-orca` first),
   which drive **harnesses** (Claude Code first). Runners are owner-only unless shared through an
@@ -53,7 +59,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   harness, pushes the run branch with the job token (ADR 0250).
 - **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
   without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
-  0037).
+  0037). A session's PR that never joined is attached afterwards (ADR 0290).
 - **Merge** is decided in the app, on the review packet, which links to the GitHub PR (ADR 0041).
 - **Notifications** go from the outbox to web push with deep links; a WIP limit applies
   backpressure to the scheduler (ADR 0040).

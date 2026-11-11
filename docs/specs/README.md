@@ -22,6 +22,7 @@ and the factory's own planning stage writes specs in this same format.
 | [02](02-work-item-workflow.md) | CLI/chat intake, the work-item Workflow, triage, spec gate, questions | 01 |
 | [03](03-runner-contract-and-orca.md) | Runner contract, signed channel, runner host, `runner-orca`, `harness-claude`, job tokens, scheduler | 01; the `spikes/` runner work |
 | [04](04-verify-and-pr.md) | Verify, holdout tests, review packet, PR through the GitHub connector, `factory/verify` check | 02, 03 |
+| [05](05-attach-a-pull-request.md) | Attach an outside PR (a local session's or a person's) to a work item: verify on its head, the merge gate, `/attach` | 04 |
 | [10](10-r1-sign-in-and-org-switcher.md) | R1: sign-in and the org & account switcher | 01 |
 | [11](11-r1-new-work.md) | R1: New work | 02, 10 |
 | [12](12-r1-inbox.md) | R1: Inbox (grouped by project, runner health line) | 02, 10 |

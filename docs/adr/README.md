@@ -70,3 +70,4 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0260](0260-runners-attach-to-the-existing-checkout.md) | Runners attach to the machine's existing checkout of a repo, by canonical identity |
 | [0280](0280-protect-main-with-a-generated-ruleset.md) | The factory generates the default-branch ruleset; a person applies it; the factory verifies it (the App stays `administration: read`) |
 | [0270](0270-the-factory-launches-the-harness-and-verifies-it.md) | The factory launches the harness (its own permission mode, no user settings), sandboxes it, and verifies the live process |
+| [0290](0290-an-outside-pr-is-attached-and-verified.md) | An outside PR is attached to a work item and verified (amends 0021 and spec 04 criterion 3) |
