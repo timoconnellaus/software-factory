@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # The job name is the status check branch protection requires on main: keep it `ci`.
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Turborepo's local cache (.turbo/cache), keyed by commit and restored from the newest
+      # earlier entry, so unchanged packages replay their typecheck and test results.
+      - uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
+
+      - run: pnpm lint
+      - run: pnpm typecheck
+      # Capped like local runs (docs/parallel-work.md): workerd tests are CPU-heavy.
+      - run: pnpm test --concurrency=2
+      # The deploy scripts aren't a workspace package; their tests run on Node directly.
+      - run: node --test "scripts/deploy/*.test.ts"
+      # Every Worker must bundle; a dry run catches what typecheck can't (bad bindings, imports).
+      - run: pnpm build
