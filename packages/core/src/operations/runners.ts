@@ -422,6 +422,7 @@ async function buildJob(
       owner: project.repo_owner,
       name: project.repo_name,
       baseRef: item.branch,
+      defaultBranch: project.default_branch,
     },
     branch: run.branch,
     harness: {
