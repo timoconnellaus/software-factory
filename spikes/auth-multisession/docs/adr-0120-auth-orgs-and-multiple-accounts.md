@@ -2,6 +2,7 @@
 
 - **Status:** Proposed (from the `spikes/auth-multisession` spike)
 - **Date:** 2026-11-11
+- **Refines:** [ADR 0024](../../../docs/adr/0024-identity-orgs-and-multi-session.md) (identity, orgs and multi-session), with the mechanics the spike proved
 
 ## Context
 

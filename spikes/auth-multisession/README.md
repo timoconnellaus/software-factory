@@ -7,7 +7,7 @@ account, on Workers + D1?
 **Answer: yes.** Better Auth 1.7.16 (the CRM's version) with the `organization`, `multi-session`
 and `passkey` plugins runs on D1 as-is. The cross-account view and per-account actions need about
 150 lines of our own code (`src/server/accounts.ts`, `src/server/api.ts`). The proposed decision
-is in [`docs/adr-0120-auth-orgs-and-multiple-accounts.md`](docs/adr-0120-auth-orgs-and-multiple-accounts.md).
+refines the accepted [ADR 0024](../../docs/adr/0024-identity-orgs-and-multi-session.md) and is in [`docs/adr-0120-auth-orgs-and-multiple-accounts.md`](docs/adr-0120-auth-orgs-and-multiple-accounts.md).
 
 ![The switcher with two accounts](docs/switcher.png)
 
@@ -27,7 +27,7 @@ Hierarchy: **user → org (member + role) → factory → project**. Factory and
 ## Run it
 
 ```sh
-pnpm install
+pnpm install --ignore-workspace   # spikes/ is not a workspace member
 cp .dev.vars.example .dev.vars   # set BETTER_AUTH_SECRET (openssl rand -hex 32)
 pnpm db:migrate:local
 pnpm dev                         # http://localhost:5173
@@ -133,8 +133,9 @@ Nothing was deployed to Cloudflare; everything ran locally in workerd.
     reserving `personal-` slugs works only because Personal orgs bypass the API (raw batch).
 
 ### Stack
-18. The vitest preset is the CRM's (`@cloudflare/vitest-plugin`, D1 + `readD1Migrations`), copied
-    standalone because there's no workspace yet.
+18. The vitest setup is the CRM's (`@cloudflare/vitest-plugin`, D1 + `readD1Migrations`), copied
+    standalone because `spikes/` is outside the workspace. A plain `pnpm install` here resolves to
+    the repo root's workspace instead, so use `--ignore-workspace`.
 
 ## Open questions
 
