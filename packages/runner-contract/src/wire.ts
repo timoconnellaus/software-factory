@@ -2,7 +2,14 @@
 // the runner host builds its requests from the inferred types. Change them only with a contract
 // version bump (CONTRACT_VERSION in ./types.ts).
 import { z } from "zod";
-import { CAPABILITIES, CONTRACT_VERSION, HARNESSES, JOB_STAGES, MODEL_ROLES } from "./types.ts";
+import {
+  CAPABILITIES,
+  CONTRACT_VERSION,
+  HARNESS_PERMISSION_MODES,
+  HARNESSES,
+  JOB_STAGES,
+  MODEL_ROLES,
+} from "./types.ts";
 
 const iso = z.iso.datetime({ offset: true });
 const sha = z.string().regex(/^[0-9a-f]{7,64}$/);
@@ -28,6 +35,37 @@ export const capacitySchema = z.object({
   accepting: z.boolean(),
 });
 
+/** A host name a sandboxed command may reach: `example.com` or `*.example.com`, never `*`. */
+const allowedDomain = z
+  .string()
+  .max(253)
+  .regex(/^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, "a host name, or *.host");
+
+/** A Claude Code permission rule: `Tool` or `Tool(specifier)`. */
+const permissionRule = z
+  .string()
+  .max(500)
+  .regex(/^[A-Za-z][A-Za-z0-9_]*(\(.+\))?$/, "a permission rule like Bash(pnpm test:*)");
+
+/**
+ * The project's harness settings (ADR 0270), from `.factory/policy.json` on the default branch,
+ * carried on each job. They can only choose a mode and add to allowlists: the deny rules, the
+ * sandbox and its `allowUnsandboxedCommands: false` are the harness's floor and can't be changed.
+ */
+export const harnessProfileSchema = z
+  .object({
+    /** Permission mode per stage. Default: `bypassPermissions` (sandboxed) for build, else `dontAsk`. */
+    permissionMode: z
+      .partialRecord(z.enum(JOB_STAGES), z.enum(HARNESS_PERMISSION_MODES))
+      .optional(),
+    /** Extra allow rules per stage, on top of the stage's own. Deny rules still win. */
+    allow: z.partialRecord(z.enum(JOB_STAGES), z.array(permissionRule).max(100)).optional(),
+    /** Extra hosts sandboxed commands may reach, on top of the registry, GitHub and Cloudflare. */
+    allowedDomains: z.array(allowedDomain).max(100).optional(),
+  })
+  .strict();
+export type HarnessProfile = z.infer<typeof harnessProfileSchema>;
+
 /** One stage job the scheduler assigned to a runner. Everything a runner needs, nothing more. */
 export const jobSchema = z.object({
   jobId: id,
@@ -52,6 +90,11 @@ export const jobSchema = z.object({
     /** The model the role resolves to (ADR 0018); the harness may ignore it. */
     model: z.string().optional(),
     prompt: z.string(),
+    /**
+     * The project's harness settings (ADR 0270). Optional and additive: a runner that predates it
+     * ignores it, and a job without one gets the harness defaults.
+     */
+    profile: harnessProfileSchema.optional(),
   }),
   /** Stage input (spec, acceptance criteria, send-back notes). Never holdout tests (ADR 0034). */
   context: z.record(z.string(), z.unknown()),

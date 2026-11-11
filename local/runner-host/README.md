@@ -19,7 +19,8 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    credential helper), which the adapter registers once and keeps.
 3. runner-orca makes an Orca worktree, in that repo, on the run branch `factory/<n>-<slug>-run-<k>` and projects
    `harness-claude`'s per-run settings into it. Claude Code then starts in an Orca terminal (you can
-   take it over there).
+   take it over there), with the harness's own flags, and is checked before it gets the prompt
+   (ADR 0270).
 4. It streams events (state, agent status, tools, terminal output) with the fencing token.
 5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
 6. **Build only:** it commits any leftovers, then pushes `HEAD` to the run branch, and only there,
@@ -33,7 +34,14 @@ A `409 fenced|killed`, or a cancel command, stops the session at once: no push a
 - The harness never sees the job token or the owner's credentials. Git talks to GitHub only from the
   host, with no system or global git config, hooks off, and a credential helper that gives the token
   to `github.com` only. The token is passed in that one git process's environment.
-- The harness's settings (`.claude/settings.local.json`) do four things:
+- Claude starts with `--permission-mode <stage mode> --setting-sources project,local --settings <run
+  settings>`: never your user settings, so your own Claude mode, hooks and plugins don't apply to a
+  run. The runner checks the live process against that before sending the prompt; a difference kills
+  it and fails the job (`harness-config-mismatch`). The mode per stage comes from the project's
+  `.factory/policy.json` (`harness`), not from `runner.json`; an old `permissionMode` there is ignored.
+- Every Bash command runs in Claude Code's sandbox: writes only to the worktree and temp, network
+  only to the npm registry, GitHub, the Cloudflare API and the project's hosts.
+- The harness's settings also do four things:
   - blank or redirect every credential variable (`GH_TOKEN`, `SSH_AUTH_SOCK`, AWS, Cloudflare, …);
   - point `GIT_CONFIG_GLOBAL` at a per-run config with no credential helper, and set `GIT_CONFIG_NOSYSTEM` (on macOS that turns off the keychain helper);
   - deny `git push`, `gh`, `ssh`, `wrangler`, cloud CLIs, `orca`, `security` and similar;
@@ -41,8 +49,8 @@ A `409 fenced|killed`, or a cancel command, stops the session at once: no push a
 - Before pushing, the host compares the push-relevant git config (remotes, URL rewrites, credential
   helpers, `http.*`, includes, hooks path) with what it was before the session. If anything changed,
   it refuses to push and fails the run.
-- Orca starts Claude with Orca's own environment, so the settings file is defence in depth, not an
-  OS sandbox. See the open questions in ADR 0250.
+- Orca's terminal gives Claude Orca's environment. The launch script unsets the credential variables
+  and Orca's plugin dirs; the sandbox (ADR 0270) is what confines it.
 
 ## Connecting: `sf-runner login` (ADR 0056)
 From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
@@ -72,6 +80,8 @@ runner and approve. The CLI then receives its key (once), proves it with a signe
    retires a clone the runner registered next to your own checkout (ADR 0260). It never touches your
    own checkouts: two of yours for one remote are reported, not fixed. While a service is running that
    doesn't report its jobs (one from before this change), it treats every job worktree as live.
+   It also checks each running job's Claude against its launch record (permission mode, setting
+   sources, settings hash) and reports `harness-config-mismatch` (ADR 0270).
 
 The e2e driver below calls `runner.register` through `EngineApi` against a local engine.
 

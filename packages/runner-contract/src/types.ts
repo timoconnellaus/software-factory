@@ -56,6 +56,19 @@ export type ModelRole = (typeof MODEL_ROLES)[number];
 export const JOB_STAGES = ["triage", "spec", "build", "verify"] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
 
+/**
+ * Permission modes a project may give a stage's harness (ADR 0270). No mode that prompts a person
+ * (`default`/`manual`) and no `auto` (a model classifier decides, not the project's rules).
+ * `bypassPermissions` only ever runs inside the harness's OS sandbox.
+ */
+export const HARNESS_PERMISSION_MODES = [
+  "dontAsk",
+  "acceptEdits",
+  "bypassPermissions",
+  "plan",
+] as const;
+export type HarnessPermissionMode = (typeof HARNESS_PERMISSION_MODES)[number];
+
 export type CapabilityManifest = z.infer<typeof capabilityManifestSchema>;
 export type Capacity = z.infer<typeof capacitySchema>;
 export type Job = z.infer<typeof jobSchema>;

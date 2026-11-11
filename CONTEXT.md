@@ -209,7 +209,8 @@ _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**
 An agent CLI the runner drives for a job, behind an adapter with a capability manifest. v1 is
-Claude Code (`harness-claude`).
+Claude Code (`harness-claude`). The harness owns its launch command and checks the live process against it
+before the job starts (ADR 0270); a difference is a `harness-config-mismatch`.
 _Avoid_: model (code asks for a model role), agent (too broad), tool
 
 **Engine**

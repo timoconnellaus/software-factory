@@ -58,7 +58,6 @@ export function buildRunner(
     protectPaths: [dirs.configDir, dirs.runsDir, dirs.reposDir],
     identity,
     ...(config.capabilities ? { capabilities: config.capabilities } : {}),
-    ...(config.permissionMode ? { permissionMode: config.permissionMode } : {}),
     ...options.orca,
   });
   const log = options.log ?? ((m: string) => console.log(`[runner] ${m}`));

@@ -48,10 +48,11 @@ export interface OrcaWorktree {
   comment: string;
 }
 
-export interface OrcaLaunch {
-  outcome: { kind: "terminal" | "structured"; handle: string; paneKey?: string };
-  prompt?: { outcome: string };
-  receipt?: { detail: string };
+export interface OrcaTerminal {
+  handle: string;
+  paneKey?: string;
+  processId?: number;
+  worktreeId?: string;
 }
 
 export interface OrcaAgentRow {
@@ -159,29 +160,47 @@ export function orcaCli(options: OrcaCliOptions = {}) {
       call(["worktree", "rm", "--worktree", `id:${worktreeId}`, "--force"]),
     worktreePs: async () =>
       (await call<{ worktrees: OrcaPsRow[] }>(["worktree", "ps", "--limit", "10000"])).worktrees,
-    agentLaunch: async (input: {
-      worktreeId: string;
-      agent: string;
-      prompt: string;
-      model?: string;
-    }) => {
-      const result = await call<{ launch?: OrcaLaunch } & Partial<OrcaLaunch>>([
-        "agent",
-        "launch",
-        "--agent",
-        input.agent,
+    /**
+     * A visible terminal in the worktree running `command` (typed into the login shell). The runner
+     * starts the harness this way, not with `agent launch`, which adds the owner's own agent flags
+     * (incident 2026-11-11 bootstrap #6, ADR 0270).
+     */
+    terminalCreate: async (input: { worktreeId: string; title: string; command: string }) => {
+      const result = await call<{ terminal: OrcaTerminal }>([
+        "terminal",
+        "create",
         "--worktree",
         `id:${input.worktreeId}`,
-        "--surface",
-        "terminal",
-        "--prompt",
-        input.prompt,
-        ...(input.model ? ["--model", input.model] : []),
+        "--title",
+        input.title,
+        "--command",
+        input.command,
       ]);
-      const launch = result.launch ?? (result as OrcaLaunch);
-      if (!launch.outcome?.handle) throw new OrcaCliError("agent launch", "no_handle", "no handle");
-      return launch;
+      if (!result.terminal?.handle) {
+        throw new OrcaCliError("terminal create", "no_handle", "no terminal handle");
+      }
+      return result.terminal;
     },
+    terminalClose: (handle: string) => call(["terminal", "close", "--terminal", handle]),
+    /** Writes text to the terminal as is: no Enter, control bytes pass through (dialog keys). */
+    terminalWrite: (handle: string, text: string) =>
+      call(["terminal", "send", "--terminal", handle, "--text", text]),
+    /** Sends a prompt to the agent in the terminal and waits up to `waitSeconds` for its turn. */
+    terminalPrompt: (handle: string, text: string, waitSeconds = 30) =>
+      call(
+        [
+          "terminal",
+          "send",
+          "--terminal",
+          handle,
+          "--text",
+          text,
+          "--enter",
+          "--wait-submit",
+          String(waitSeconds),
+        ],
+        (waitSeconds + 60) * 1000,
+      ),
     terminalRead: async (handle: string, opts: { cursor?: string; screen?: boolean } = {}) =>
       (
         await call<{ terminal: OrcaTerminalRead }>([
@@ -193,8 +212,6 @@ export function orcaCli(options: OrcaCliOptions = {}) {
           ...(opts.cursor ? ["--cursor", opts.cursor, "--limit", "1000"] : []),
         ])
       ).terminal,
-    terminalSend: (handle: string, text: string) =>
-      call(["terminal", "send", "--terminal", handle, "--text", text, "--enter"]),
     terminalCloseAll: (worktreeId: string) =>
       call(["terminal", "close", "--worktree", `id:${worktreeId}`, "--all"]),
     tabCreate: async (worktreeId: string, url: string) =>

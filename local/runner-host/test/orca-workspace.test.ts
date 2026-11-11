@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { readLaunchRecord } from "@software-factory/harness-claude";
 import { canonicalKeyFromUrl, type Job, RESULT_FILE } from "@software-factory/runner-contract";
 import {
   createOrcaRunner,
@@ -173,11 +174,18 @@ function fakeOrca(root: string) {
             ],
           })),
         });
-      case "agent launch": {
+      case "terminal create": {
+        // Stands in for the launch script: it records the pid where the harness said, and the
+        // "agent" does its work in the worktree.
+        const script = /exec \/bin\/sh (\S+)/.exec(flag("--command") ?? "")?.[1];
+        if (!script) return fail("bad_command");
+        await writeFile(join(script, "..", "claude.pid"), "4242\n");
         const wt = worktrees.get((flag("--worktree") ?? "").replace(/^id:/, ""));
         if (wt && onLaunch) onLaunch(wt.path);
-        return ok({ launch: { outcome: { kind: "terminal", handle: "term_1", paneKey: "p:1" } } });
+        return ok({ terminal: { handle: "term_1", paneKey: "p:1", processId: 4242 } });
       }
+      case "terminal send":
+        return ok({ sent: true });
       case "terminal read":
         return ok({ terminal: { handle: "term_1", status: "running", tail: [] } });
       case "terminal close":
@@ -225,6 +233,13 @@ async function world(options: { ownerCheckout?: boolean } = {}) {
     ownReposDir: reposDir,
     startPoint: (j, path) => repo.host.startPoint(j, path),
     pollMs: 1,
+    // `ps` shows the launch record's argv: the launcher started the harness as set.
+    readCommand: async () => {
+      const [jobDir] = await readdir(join(repo.root, "runs"));
+      return (
+        (await readLaunchRecord(join(repo.root, "runs", jobDir ?? "")))?.argv.join(" ") ?? null
+      );
+    },
   });
   return { ...repo, reposDir, orca, owner, adapter };
 }
