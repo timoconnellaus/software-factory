@@ -103,6 +103,13 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   `policy.sync` on default-branch pushes, the repo ruleset and branch protection check at onboarding.
 - Incidents: `incident.open`, and `review.sendBack` opens one automatically. The Workflow opens one
   when a run's retries are exhausted.
+- **Open: auto-merge of check-only incident fixes** (review decisions, final; `v1-scope.md`). V1-1
+  keeps the floor strict: `pr.merge` is always reviewed for every actor. The incidents session should
+  add the exception in code, narrowly, with an ADR amending 0008: a new operation (e.g.
+  `pr.autoMerge`, risk `merge`) that the floor allows for the foreman only when the item is a factory
+  incident, the project's `.factory/policy.json` opts in, the diff (from GitHub's compare, not the
+  runner) only **adds** files under `.factory/checks/` and `evals/`, and the regression eval passed on
+  the head SHA. Anything else, including any change to `.factory/policy.json`, stays `self-modify`.
 
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):
