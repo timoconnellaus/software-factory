@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { type Actor, type InvokeResult, invoke } from "@software-factory/core";
-import { fakeGitHub } from "@software-factory/core/testing";
+import { fakeGitHub, fakeUserToken } from "@software-factory/core/testing";
 import {
   type CapabilityManifest,
   CONTRACT_VERSION,
@@ -68,9 +68,33 @@ export async function world(policy: unknown = BALANCED) {
   ]);
   const human: Actor = { type: "human", id: userId };
   const repoName = uid("repo-");
+  // Onboarded as Setup does it (ADR 0055): the App's installation, connected with a state, then
+  // the repo picked by id.
+  const installationId = `${Date.now() % 1_000_000_000}${n++}`;
+  const repoId = Number(`${Date.now() % 1_000_000}${n++}`);
+  await github.putInstallation({
+    installationId,
+    account: { login: "timoconnellaus", type: "Organization" },
+    repos: [
+      {
+        id: repoId,
+        owner: "timoconnellaus",
+        name: repoName,
+        private: false,
+        defaultBranch: "main",
+      },
+    ],
+    members: [`gh-${userId}`],
+  });
+  const started = await ok<{ state: string }>("github.connectStart", { orgId }, human);
+  const connected = await ok<{ installation: { id: string } }>(
+    "github.connectInstallation",
+    { installationId, state: started.state, userAccessToken: fakeUserToken(`gh-${userId}`) },
+    human,
+  );
   const project = await ok<{ id: string }>(
     "project.create",
-    { orgId, name: "Software factory", repoOwner: "timoconnellaus", repoName },
+    { orgId, name: "Software factory", installationRecordId: connected.installation.id, repoId },
     human,
   );
   await ok(
@@ -89,7 +113,7 @@ export async function world(policy: unknown = BALANCED) {
     human,
   );
   const runnerActor: Actor = { type: "runner", id: runner.runnerId };
-  const repo = { installationId: "42", owner: "timoconnellaus", repo: repoName };
+  const repo = { installationId, owner: "timoconnellaus", repo: repoName };
   return { userId, orgId, human, projectId: project.id, runner, runnerActor, repo };
 }
 export type World = Awaited<ReturnType<typeof world>>;

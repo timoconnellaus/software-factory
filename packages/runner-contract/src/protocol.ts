@@ -36,6 +36,19 @@ export const PATHS = {
   release: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/release`,
 } as const;
 
+/**
+ * Device login (ADR 0056): the two calls `sf-runner login` makes before it has a key. Unsigned;
+ * the device code in the body is the CLI's secret. Bodies: `{ name? }` → `{ deviceCode, userCode,
+ * expiresAt, interval }`, and `{ deviceCode }` → `{ status, runnerId, name, keyVersion, key }`.
+ */
+export const DEVICE_PATHS = {
+  start: "/runner/v1/device/start",
+  poll: "/runner/v1/device/poll",
+} as const;
+
+/** Where a person approves a device login code, on the app. */
+export const DEVICE_APPROVE_PATH = "/runners/connect";
+
 /** Job-scoped calls, as the path's last segment. */
 export const JOB_CALLS = ["token", "events", "artifacts", "handback", "release"] as const;
 export type JobCall = (typeof JOB_CALLS)[number];

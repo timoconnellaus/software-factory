@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import {
   ChannelCallError,
+  DEVICE_PATHS,
   httpControlPlane,
   PATHS,
   runnerChannelKey,
@@ -188,5 +189,55 @@ describe("the signed runner channel", () => {
     expect(fenced).toBeInstanceOf(ChannelCallError);
     expect((fenced as ChannelCallError).status).toBe(409);
     expect((fenced as ChannelCallError).code).toBe("fenced");
+  });
+});
+
+describe("device login over the channel (ADR 0056)", () => {
+  const post = (path: string, body: unknown) =>
+    engineFetch(`${base}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("starts and polls unsigned, and hands the key over once after approval", async () => {
+    const w = await world();
+    const start = await post(DEVICE_PATHS.start, { name: "m5" });
+    expect(start.status).toBe(200);
+    expect(start.headers.get("cache-control")).toBe("no-store");
+    const s = (await start.json()) as { deviceCode: string; userCode: string };
+    const pending = await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json();
+    expect(pending).toMatchObject({ status: "pending", key: null });
+
+    const approved = await ok<{ runnerId: string }>(
+      "runner.approveDevice",
+      { userCode: s.userCode, name: "m5" },
+      w.human,
+    );
+    const got = (await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json()) as {
+      status: string;
+      runnerId: string;
+      key: string;
+    };
+    expect(got.status).toBe("approved");
+    expect(got.runnerId).toBe(approved.runnerId);
+    expect(got.key).toBe(await runnerChannelKey("test-channel-secret", approved.runnerId, 1));
+    // The key works on the signed channel.
+    const c = await client(got.runnerId, { key: got.key });
+    await expect(
+      c.heartbeat({
+        manifest: MANIFEST,
+        capacity: { max: 1, inUse: 0, accepting: true },
+        activeJobs: [],
+      }),
+    ).resolves.toEqual({ commands: [], leases: [] });
+    expect(
+      await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json(),
+    ).toMatchObject({ status: "expired", key: null });
+  });
+
+  it("answers bad input as a refusal", async () => {
+    const r = await post(DEVICE_PATHS.poll, { deviceCode: "short" });
+    expect(r.status).toBe(400);
   });
 });

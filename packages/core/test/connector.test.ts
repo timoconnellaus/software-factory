@@ -179,7 +179,9 @@ describe("push validation (ADR 0052 item 4)", () => {
 describe("App installations", () => {
   it("points matching projects at the installation, and clears it on removal", async () => {
     const w = await world();
-    await env.DB.prepare("UPDATE core_projects SET github_installation_id = NULL WHERE id = ?")
+    await env.DB.prepare(
+      "UPDATE core_projects SET github_installation_id = NULL, installation_record_id = NULL WHERE id = ?",
+    )
       .bind(w.projectId)
       .run();
     const added = await ok<{ projects: number }>(

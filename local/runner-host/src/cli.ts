@@ -1,25 +1,32 @@
 #!/usr/bin/env node
-// `sf-runner`: pair this machine with the factory, run the runner, install it as a launchd service.
+// `sf-runner`: connect this machine to the factory, run the runner, install it as a launchd service.
 //
-//   sf-runner pair --runner-id r_… [--key-stdin] [--url https://sf-engine.zerobsai.com] [--max 2]
+//   sf-runner login [--name m5] [--url https://sf-engine.zerobsai.com] [--app https://…] [--no-install]
+//                                  print a code, wait for approval in the app, save the key, install
+//   sf-runner pair --runner-id r_… --key-stdin   (fallback: a key registered in Setup)
 //   sf-runner run                  run in the foreground (what the service runs)
 //   sf-runner status               config (key redacted) and service state
 //   sf-runner doctor               check node, git, orca, claude and the channel
 //   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
+import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import { nodeExec } from "@software-factory/runner-orca";
+import type { RunnerConfig } from "./config.ts";
 import {
   configSchema,
+  DEFAULT_APP_URL,
   DEFAULT_BASE_URL,
   loadConfig,
   paths,
   redacted,
   saveConfig,
 } from "./config.ts";
+import { deviceLogin } from "./device-login.ts";
 import * as launchd from "./launchd.ts";
 import { parsePairingInput, serviceNode } from "./pairing.ts";
 import { buildRunner } from "./runner.ts";
@@ -36,7 +43,7 @@ async function requireConfig() {
   const config = await loadConfig(dirs.configFile);
   if (!config) {
     console.error(
-      `Not paired: no ${dirs.configFile}. Register a runner in the app (runner.register), then run\n  sf-runner pair --runner-id <id> --key-stdin`,
+      `Not connected: no ${dirs.configFile}. Run\n  local/runner-host/bin/sf-runner login`,
     );
     // A clean exit, so launchd doesn't restart an unpaired runner in a loop.
     process.exit(0);
@@ -70,6 +77,11 @@ async function pair(args: string[]) {
     ...(values.name ? { name: values.name } : {}),
     ...(values.max ? { maxConcurrent: Number(values.max) } : {}),
   });
+  await adopt(config);
+}
+
+/** Proves the key with one signed heartbeat, then saves the config (0600) and restarts the service. */
+async function adopt(config: RunnerConfig) {
   const { cp, adapter } = buildRunner(config, dirs);
   // Prove the pairing: one signed heartbeat with the real manifest, holding nothing.
   const manifest = await adapter.manifest();
@@ -92,6 +104,53 @@ async function pair(args: string[]) {
   await saveConfig(dirs.configFile, config);
   console.log(`Paired ${config.runnerId} with ${config.baseUrl}; config in ${dirs.configFile}`);
   if (await launchd.kickstart(nodeExec)) console.log("Restarted the launchd service.");
+}
+
+/**
+ * Device login (ADR 0056): a code to approve in the app instead of a key to copy. Checks Node
+ * before asking for a code when it will install the service, so an approval isn't wasted.
+ */
+async function login(args: string[]) {
+  const { values } = parseArgs({
+    args,
+    options: {
+      name: { type: "string" },
+      url: { type: "string" },
+      app: { type: "string" },
+      max: { type: "string" },
+      "no-install": { type: "boolean" },
+      "no-open": { type: "boolean" },
+    },
+  });
+  const installing = !values["no-install"];
+  if (installing)
+    serviceNode({ execPath: process.execPath, version: process.version, path: process.env.PATH });
+  const existing = await loadConfig(dirs.configFile).catch(() => null);
+  const baseUrl = values.url ?? existing?.baseUrl ?? DEFAULT_BASE_URL;
+  const suggested = values.name ?? existing?.name ?? hostname().replace(/\.local$/, "");
+  const got = await deviceLogin({
+    baseUrl,
+    appUrl: values.app ?? DEFAULT_APP_URL,
+    name: suggested.slice(0, 80),
+    ...(values["no-open"] || process.platform !== "darwin"
+      ? {}
+      : {
+          open: (url: string) => {
+            spawn("open", [url], { stdio: "ignore", detached: true }).on("error", () => {});
+          },
+        }),
+  });
+  const config = configSchema.parse({
+    ...(existing ?? {}),
+    baseUrl,
+    runnerId: got.runnerId,
+    key: got.key,
+    ...(got.name ? { name: got.name } : {}),
+    ...(values.max ? { maxConcurrent: Number(values.max) } : {}),
+  });
+  console.log(`Approved: ${got.name ?? got.runnerId}.`);
+  await adopt(config);
+  if (installing) await install([]);
 }
 
 async function run() {
@@ -206,6 +265,7 @@ async function install(args: string[]) {
 
 const [command, ...rest] = process.argv.slice(2);
 const commands: Record<string, (args: string[]) => Promise<void>> = {
+  login,
   pair,
   run,
   status,
@@ -218,7 +278,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
 };
 const fn = command ? commands[command] : undefined;
 if (!fn) {
-  console.log("usage: sf-runner pair|run|status|doctor|install|uninstall");
+  console.log("usage: sf-runner login|run|status|doctor|install|uninstall");
   process.exit(command ? 2 : 0);
 }
 fn(rest).catch((err) => {

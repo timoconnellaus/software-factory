@@ -3,9 +3,11 @@
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
 import * as connector from "./operations/connector.ts";
+import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
 import * as github from "./operations/github.ts";
 import * as incidents from "./operations/incidents.ts";
+import * as onboarding from "./operations/onboarding.ts";
 import * as projects from "./operations/projects.ts";
 import * as questions from "./operations/questions.ts";
 import * as runners from "./operations/runners.ts";
@@ -19,6 +21,12 @@ export const OPERATIONS: readonly AnyOperation[] = [
   projects.projectUpdate,
   projects.policySync,
   projects.killSwitchSet,
+  onboarding.githubConnectStart,
+  onboarding.githubConnectInstallation,
+  onboarding.githubRepos,
+  onboarding.policyResync,
+  onboarding.policyProposeTemplate,
+  onboarding.setupStatus,
   workItems.workItemCreate,
   workItems.workItemList,
   workItems.workItemGet,
@@ -58,6 +66,11 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.runnerRegister,
   runners.runnerRotateKey,
   runners.runnerList,
+  devices.runnerDeviceStart,
+  devices.runnerDevicePoll,
+  devices.runnerDeviceLookup,
+  devices.runnerApproveDevice,
+  devices.runnerDenyDevice,
   runners.runnerHeartbeat,
   runners.jobEnqueue,
   runners.jobClaim,

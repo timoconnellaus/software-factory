@@ -26,6 +26,14 @@ export interface OpMap {
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;
+  "github.connectStart": Def<typeof operations.githubConnectStart>;
+  "github.repos": Def<typeof operations.githubRepos>;
+  "policy.resync": Def<typeof operations.policyResync>;
+  "policy.proposeTemplate": Def<typeof operations.policyProposeTemplate>;
+  "setup.status": Def<typeof operations.setupStatus>;
+  "runner.deviceLookup": Def<typeof operations.runnerDeviceLookup>;
+  "runner.approveDevice": Def<typeof operations.runnerApproveDevice>;
+  "runner.denyDevice": Def<typeof operations.runnerDenyDevice>;
   "runner.register": Def<typeof operations.runnerRegister>;
   "runner.rotateKey": Def<typeof operations.runnerRotateKey>;
   "runner.list": Def<typeof operations.runnerList>;
@@ -55,6 +63,14 @@ export const APP_OPERATIONS = [
   "project.create",
   "project.list",
   "project.update",
+  "github.connectStart",
+  "github.repos",
+  "policy.resync",
+  "policy.proposeTemplate",
+  "setup.status",
+  "runner.deviceLookup",
+  "runner.approveDevice",
+  "runner.denyDevice",
   "runner.register",
   "runner.rotateKey",
   "runner.list",
@@ -97,3 +113,5 @@ export type WorkItemDetail = OpOutput<"workItem.get">;
 export type Inbox = OpOutput<"inbox.list">;
 export type TimelineEntry = OpOutput<"workItem.timeline">["entries"][number];
 export type Project = OpOutput<"project.list">["projects"][number];
+export type SetupStatus = OpOutput<"setup.status">;
+export type RepoChoice = OpOutput<"github.repos">["repos"][number];

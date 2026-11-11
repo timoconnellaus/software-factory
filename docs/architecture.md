@@ -26,7 +26,14 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   (`software-factory.zerobsai.com/webhooks/github`, served by `sf-engine` through a Workers route)
   checks the signature, dedupes deliveries and maps them to operations: `verify.refresh` on PR and
   CI events, `push.observe` on pushes (branch confinement, the default-branch policy mirror),
-  `github.installation` (ADR 0231).
+  `github.installation` (ADR 0231), which keeps the org's **installation** records current (ADR
+  0055).
+- **Onboarding** never asks for an id the factory can fetch (ADR 0055, 0056): Connect GitHub goes
+  through GitHub's install flow back to sf-app's `/integrations/github/setup`
+  (`github.connectInstallation` verifies the single-use state and the installation as the App), a
+  project is picked from the repos an installation reaches (`github.repos`, `project.create`), the
+  policy is read on create and on every default-branch push, and a runner connects by device login
+  (`/runner/v1/device/*`, approved at `/runners/connect`). `setup.status` is the Setup checklist.
 - **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
   0231). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
@@ -48,7 +55,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 ## Repository layout
 | Path | What |
 | --- | --- |
-| `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning, review packet, Setup. Calls operations on `sf-engine` (ADR 0240). MCP later |
+| `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning, review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). MCP later |
 | `packages/ui` | shadcn/ui components and the factory theme (zinc, Geist, status dots) |
 | `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC |
 | `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, `.factory/policy.json` schema, model roles, Workflow event names, verify logic (`verify/`: CI, packet assembly, risk flags, the check-only rule, onboarding), incident classes (`incidents/`), a fake GitHub for tests (`/testing`) |

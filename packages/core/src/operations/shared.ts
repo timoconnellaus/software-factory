@@ -32,6 +32,19 @@ export function requireProject(ctx: HandlerContext): ProjectRow {
 
 /** The project's repo, as the GitHub App sees it. Refuses if no App installation covers it. */
 export async function repoRef(ctx: HandlerContext, project: ProjectRow): Promise<RepoRef> {
+  if (project.installation_record_id) {
+    const record = await ctx.db
+      .selectFrom("core_github_installations")
+      .select(["status", "account_login"])
+      .where("id", "=", project.installation_record_id)
+      .executeTakeFirst();
+    if (record && record.status !== "active") {
+      throw new OperationError(
+        "unavailable",
+        `the GitHub App's installation on ${record.account_login} is ${record.status}: reconnect it in Setup`,
+      );
+    }
+  }
   let installationId = project.github_installation_id;
   if (!installationId) {
     installationId =

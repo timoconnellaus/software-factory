@@ -124,6 +124,11 @@ whether a project's repo has both the ruleset and the required check.
 
 ### The GitHub App
 
+**Setup URL** `https://software-factory.zerobsai.com/integrations/github/setup`, with **Redirect on
+update** on (ADR 0055): GitHub sends people there after they install the App or change its
+repositories, and Setup's **Connect GitHub** depends on it. "Request user authorization (OAuth)
+during installation" stays off (sign-in already authorizes).
+
 Webhook URL `https://software-factory.zerobsai.com/webhooks/github` (a Workers route on sf-engine in
 front of sf-app's domain; the deploy token needs Zone → Workers Routes: Edit), secret
 `GH_APP_WEBHOOK_SECRET` (synced to sf-engine). Permissions: contents and pull requests (write),

@@ -9,7 +9,8 @@
 //   check_run rerequested (`factory/verify`)          → verify.refresh
 //   push                                              → push.observe (branch confinement; policy
 //                                                     mirror on the default branch)
-//   installation / installation_repositories          → github.installation
+//   installation / installation_repositories          → github.installation (record status,
+//                                                     repos added/removed, suspend, delete)
 import { z } from "zod";
 
 export const PACKAGE = "@software-factory/connector-github";
@@ -71,12 +72,18 @@ const push = z.object({
   sender: z.object({ login: z.string(), type: z.string().optional() }).optional(),
 });
 
+const repoEntry = z.object({ name: z.string(), id: z.number().optional() });
 const installation = z.object({
   action: z.string(),
-  installation: z.object({ id: z.number(), account: z.object({ login: z.string() }) }),
-  repositories: z.array(z.object({ name: z.string() })).optional(),
-  repositories_added: z.array(z.object({ name: z.string() })).optional(),
-  repositories_removed: z.array(z.object({ name: z.string() })).optional(),
+  installation: z.object({
+    id: z.number(),
+    account: z.object({ login: z.string(), type: z.string().optional() }),
+    repository_selection: z.enum(["all", "selected"]).optional(),
+  }),
+  repository_selection: z.enum(["all", "selected"]).optional(),
+  repositories: z.array(repoEntry).optional(),
+  repositories_added: z.array(repoEntry).optional(),
+  repositories_removed: z.array(repoEntry).optional(),
 });
 
 const PR_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
@@ -185,45 +192,45 @@ export function routeGitHubEvent(event: string, payload: unknown, appSlug: strin
       const p = installation.safeParse(payload);
       if (!p.success) return none(null, null, `unreadable ${event} payload`);
       const d = p.data;
+      const type = d.installation.account.type;
+      const selection = d.repository_selection ?? d.installation.repository_selection;
       const base = {
         installationId: String(d.installation.id),
         account: d.installation.account.login,
+        ...(type === "User" || type === "Organization" ? { accountType: type } : {}),
+        ...(selection ? { repositorySelection: selection } : {}),
       };
-      const names = (list?: { name: string }[]) => (list ? list.map((x) => x.name) : null);
+      const repos = (list?: z.infer<typeof repoEntry>[]) =>
+        list
+          ? {
+              repositories: list.map((x) => x.name),
+              ...(list.every((x) => x.id !== undefined)
+                ? { repositoryIds: list.map((x) => x.id as number) }
+                : {}),
+            }
+          : { repositories: null };
+      const one = (action: string, extra: Record<string, unknown> = { repositories: null }) => ({
+        op: "github.installation" as const,
+        input: { ...base, action, ...extra },
+      });
       let calls: OperationCall[] = [];
       if (event === "installation") {
-        if (
-          d.action === "created" ||
-          d.action === "new_permissions_accepted" ||
-          d.action === "unsuspend"
-        ) {
-          calls = [
-            {
-              op: "github.installation",
-              input: { ...base, action: "added", repositories: names(d.repositories) },
-            },
-          ];
-        } else if (d.action === "deleted" || d.action === "suspend") {
-          calls = [
-            {
-              op: "github.installation",
-              input: { ...base, action: "removed", repositories: null },
-            },
-          ];
+        if (d.action === "created" || d.action === "new_permissions_accepted") {
+          calls = [one("added", repos(d.repositories))];
+        } else if (d.action === "unsuspend") {
+          calls = [one("unsuspended")];
+        } else if (d.action === "suspend") {
+          calls = [one("suspended")];
+        } else if (d.action === "deleted") {
+          calls = [one("deleted")];
         }
       } else {
-        if (d.repositories_added?.length) {
-          calls.push({
-            op: "github.installation",
-            input: { ...base, action: "added", repositories: names(d.repositories_added) },
-          });
-        }
+        if (d.repositories_added?.length) calls.push(one("added", repos(d.repositories_added)));
         if (d.repositories_removed?.length) {
-          calls.push({
-            op: "github.installation",
-            input: { ...base, action: "removed", repositories: names(d.repositories_removed) },
-          });
+          calls.push(one("removed", repos(d.repositories_removed)));
         }
+        // A change of selection alone (e.g. "all" ↔ "selected") still updates the record.
+        if (!calls.length && selection) calls.push(one("added", { repositories: [] }));
       }
       return {
         repo: null,

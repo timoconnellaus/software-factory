@@ -4,15 +4,7 @@
 import { env } from "cloudflare:workers";
 import { createServerFn } from "@tanstack/react-start";
 import { appendResponseHeader, getRequest } from "@tanstack/react-start/server";
-import { z } from "zod";
-import {
-  appEnv,
-  runOp,
-  runReads,
-  sessionInfo,
-  syncPolicyFromGitHub,
-  Timings,
-} from "./app-api.ts";
+import { appEnv, runOp, runReads, sessionInfo, Timings } from "./app-api.ts";
 
 const headers = () => getRequest().headers;
 
@@ -42,8 +34,3 @@ export const callOperation = createServerFn({ method: "POST" })
 export const callReads = createServerFn({ method: "POST" })
   .validator((data: unknown) => data)
   .handler(({ data }) => timed((t) => runReads(appEnv(env), headers(), data, t)));
-
-/** Re-reads `.factory/policy.json` from the project's default branch and records it. */
-export const syncPolicy = createServerFn({ method: "POST" })
-  .validator((data: unknown) => z.object({ projectId: z.string().min(1) }).parse(data))
-  .handler(({ data }) => syncPolicyFromGitHub(appEnv(env), headers(), data.projectId));

@@ -52,3 +52,9 @@ and no way to fix it. The engine now asks GitHub **as the App** (its JWT,
 sets the installation (by hand or `detectInstallation: true`) and the default branch. The app's
 `detectInstallation` server function and `findInstallation` are removed.
 
+## Amendment, 2026-11-11 ([ADR 0055](0055-github-installations-are-org-records.md))
+Setup no longer takes a repo owner/name or an installation id. **Connect GitHub** goes through
+GitHub's install flow and back to `/integrations/github/setup`; projects are picked from the repos
+the installation reaches; the policy syncs itself through the App (the app's `syncPolicy` server
+function, which read public repos without a token, is removed). The Setup URL route is not an
+operation the browser can call: it calls `github.connectInstallation` server-side.

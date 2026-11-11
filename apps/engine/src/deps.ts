@@ -60,5 +60,9 @@ function unavailableGitHub(): FactoryServices["github"] {
     postCheckRun: no,
     findRepoInstallation: no,
     repoGuards: no,
+    getInstallation: no,
+    listInstallationRepos: no,
+    getInstallationRepo: no,
+    userInstallationIds: no,
   };
 }

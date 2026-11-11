@@ -6,6 +6,7 @@ import { sql } from "kysely";
 import { z } from "zod";
 import { defineOperation, type HandlerContext, type WorkItemRow } from "../operation.ts";
 import { POLICY_PATH } from "../policy/project-policy.ts";
+import { POLICY_PR_BRANCH } from "./onboarding.ts";
 import { recordPolicy } from "./projects.ts";
 import { ACTIVE_RUN, finishRun } from "./runners.ts";
 import { repoRef, requireProject } from "./shared.ts";
@@ -119,6 +120,9 @@ export const pushObserve = defineOperation({
       return { outcome: "ignored" as const, detail: `pushed by ${input.pusher}`, ...none };
     }
 
+    if (branch === POLICY_PR_BRANCH) {
+      return { outcome: "ok" as const, detail: "the template policy PR (Setup)", ...none };
+    }
     // A push by the App outside the default branch: a run branch, or a work item's branch.
     const runMatch = RUN_BRANCH.exec(branch);
     const itemMatch = runMatch ? null : ITEM_BRANCH.exec(branch);
@@ -229,49 +233,109 @@ function violation(ctx: HandlerContext, item: WorkItemRow, active: RunRow[], why
 export const githubInstallation = defineOperation({
   name: "github.installation",
   description:
-    "The factory's GitHub App was installed on, or removed from, an account's repositories (ADR 0025). Points matching projects at the installation, or clears it, so job tokens and PRs use the right one.",
+    "The factory's GitHub App installation changed on GitHub (ADR 0025, 0055): repositories added or removed, the installation suspended, unsuspended or deleted. Keeps the org's installation record current, and points projects at the installation (added) or disconnects them (removed, deleted) so job tokens and PRs use the right one. A suspended installation keeps its projects linked but refuses GitHub calls until it is unsuspended.",
   risk: "write",
   actors: ["intake"],
   permission: "signed-in",
   allowWhenKilled: true,
   input: z.object({
-    action: z.enum(["added", "removed"]),
+    action: z.enum(["added", "removed", "suspended", "unsuspended", "deleted"]),
     installationId: z.string().regex(/^\d+$/),
     account: z.string().min(1).max(100),
+    accountType: z.enum(["User", "Organization"]).optional(),
+    repositorySelection: z.enum(["all", "selected"]).optional(),
     /** Repo names; null means every repo of the account. */
     repositories: z.array(z.string()).nullable(),
+    /** GitHub's ids for `repositories`, in the same order, when the payload had them. */
+    repositoryIds: z.array(z.number()).optional(),
   }),
-  output: z.object({ projects: z.number() }),
+  output: z.object({ projects: z.number(), record: z.string().nullable() }),
   async handler(input, ctx) {
+    const record = await ctx.db
+      .selectFrom("core_github_installations")
+      .selectAll()
+      .where("installation_id", "=", input.installationId)
+      .executeTakeFirst();
+    if (record) {
+      const status =
+        input.action === "suspended"
+          ? "suspended"
+          : input.action === "deleted"
+            ? "deleted"
+            : input.action === "unsuspended"
+              ? "active"
+              : record.status === "deleted"
+                ? "deleted"
+                : record.status;
+      const selection = input.repositorySelection ?? record.repository_selection;
+      if (status !== record.status || selection !== record.repository_selection) {
+        ctx.write(
+          ctx.db
+            .updateTable("core_github_installations")
+            .set({
+              status,
+              repository_selection: selection,
+              account_login: input.account,
+              updated_at: ctx.now,
+            })
+            .where("id", "=", record.id),
+        );
+        ctx.change({
+          entity: "github_installation",
+          id: record.id,
+          before: { status: record.status, selection: record.repository_selection },
+          after: { status, selection },
+        });
+      }
+      ctx.subject({ orgId: record.org_id });
+    }
+    if (input.action === "suspended" || input.action === "unsuspended") {
+      return { projects: 0, record: record?.id ?? null };
+    }
+
     let q = ctx.db
       .selectFrom("core_projects")
-      .select(["id", "repo_name", "github_installation_id"])
+      .select(["id", "repo_name", "github_installation_id", "installation_record_id", "org_id"])
       .where(sql<string>`lower(repo_owner)`, "=", input.account.toLowerCase());
-    if (input.repositories) {
-      const names = input.repositories.map((r) => r.toLowerCase());
-      if (names.length === 0) return { projects: 0 };
+    // A connected installation only links its own org's projects.
+    if (record) q = q.where("org_id", "=", record.org_id);
+    const names = input.repositories?.map((r) => r.toLowerCase()) ?? null;
+    if (names) {
+      if (names.length === 0) return { projects: 0, record: record?.id ?? null };
       q = q.where(sql<string>`lower(repo_name)`, "in", names);
     }
     const projects = await q.execute();
     let n = 0;
     for (const p of projects) {
-      const next = input.action === "added" ? input.installationId : null;
-      if (input.action === "removed" && p.github_installation_id !== input.installationId) continue;
-      if (p.github_installation_id === next) continue;
+      const adding = input.action === "added";
+      if (!adding && p.github_installation_id !== input.installationId) continue;
+      // An installation no org has connected never takes over a project that has a connection.
+      if (adding && !record && p.installation_record_id) continue;
+      const i = names ? names.indexOf(p.repo_name.toLowerCase()) : -1;
+      const repoId = i >= 0 ? (input.repositoryIds?.[i] ?? null) : null;
+      const next = {
+        github_installation_id: adding ? input.installationId : null,
+        installation_record_id: adding ? (record?.id ?? null) : null,
+      };
+      if (
+        p.github_installation_id === next.github_installation_id &&
+        p.installation_record_id === next.installation_record_id
+      )
+        continue;
       ctx.write(
         ctx.db
           .updateTable("core_projects")
-          .set({ github_installation_id: next })
+          .set({ ...next, ...(repoId ? { github_repo_id: repoId } : {}) })
           .where("id", "=", p.id),
       );
       ctx.change({
         entity: "project",
         id: p.id,
         before: { installation: p.github_installation_id },
-        after: { installation: next },
+        after: { installation: next.github_installation_id },
       });
       n++;
     }
-    return { projects: n };
+    return { projects: n, record: record?.id ?? null };
   },
 });
