@@ -20,6 +20,8 @@ import type {
 import { RESULT_FILE } from "@software-factory/runner-contract";
 
 export const SETTINGS_FILE = ".claude/settings.local.json";
+/** The planning MCP server's name in a planning session's MCP config (tools `mcp__planning__*`). */
+export const PLANNING_MCP_SERVER = "planning";
 /** The authoritative copy, in the run's private directory, passed with `--settings`. */
 export const RUN_SETTINGS_FILE = "claude-settings.json";
 
@@ -334,6 +336,7 @@ export const TMP_DIRS = ["wrangler", "xdg-config", "xdg-cache", "npm-cache", "co
 export const DEFAULT_MODES: Record<JobStage, PermissionMode> = {
   triage: "dontAsk",
   spec: "dontAsk",
+  planning: "dontAsk",
   build: "bypassPermissions",
   verify: "dontAsk",
 };
@@ -348,7 +351,10 @@ export function allowedDomains(profile?: HarnessProfile): string[] {
   return [...new Set([...DEFAULT_ALLOWED_DOMAINS, ...(profile?.allowedDomains ?? [])])];
 }
 
-/** What each stage may do. Triage and spec only read and write the result; verify also runs checks. */
+/**
+ * What each stage may do. Triage and spec only read and write the result; verify also runs checks.
+ * A planning session (spec 20) only reads, and acts through its planning MCP server's tools.
+ */
 export function stageAllow(
   stage: JobStage,
   worktree: string,
@@ -366,6 +372,8 @@ export function stageAllow(
     case "triage":
     case "spec":
       return [...read, ...writeResult];
+    case "planning":
+      return [...read, `mcp__${PLANNING_MCP_SERVER}`];
     case "verify":
       return [...read, ...writeResult, ...bash(TOOLCHAIN)];
     case "build":

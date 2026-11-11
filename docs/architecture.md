@@ -26,7 +26,14 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   operations over the runner channel (a projected planning MCP server), and kim-style hooks
   (`PostToolUse`, `UserPromptSubmit`, `Stop`) bring answers and chat back from the planning log. It
   holds a light slot (ADR 0301). Mockups render on a sandboxed origin; kept artifacts land in `.kim/`
-  with the spec (ADR 0305). Specs 20–25.
+  with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
+  channel path, `/runner/v1/jobs/:id/planning`, scoped by the job and fenced by its lease; the
+  runner host relays them for the harness, so the runner key never leaves it. Every change is a row
+  in the **planning log** (`core_planning_events`, its id the agent's cursor) and a
+  `planning.changed` outbox message, which `sf-engine`'s **PlanningHub** Durable Object (one per work
+  item) turns into a Server-Sent Event for open Planning tabs (`EngineApi.planningStream`) and a
+  wake-up for the agent's held `planning.wait`. The scheduler places jobs by pool: light (triage,
+  spec, planning), heavy (build, verify); a resume is pinned to the session's runner.
 - **Connectors** are the only path to GitHub, Linear, Slack and other outside systems (ADR 0010).
   The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033). Its webhook
   (`software-factory.zerobsai.com/webhooks/github`, served by `sf-engine` through a Workers route)

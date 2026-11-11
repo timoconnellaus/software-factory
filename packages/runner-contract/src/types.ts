@@ -57,9 +57,21 @@ export type HarnessId = (typeof HARNESSES)[number];
 export const MODEL_ROLES = ["triage", "implement", "review", "summarise"] as const;
 export type ModelRole = (typeof MODEL_ROLES)[number];
 
-/** Stages that run on a runner. */
-export const JOB_STAGES = ["triage", "spec", "build", "verify"] as const;
+/**
+ * Stages that run on a runner. `spec` is V1's one-shot spec run (Workflow v1–v4); `planning` is the
+ * live, resumable planning session (ADR 0300, Workflow v5).
+ */
+export const JOB_STAGES = ["triage", "spec", "planning", "build", "verify"] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
+
+/** Runner capacity pools (ADR 0301): heavy runs the test suite, light mostly reads and waits. */
+export const POOLS = ["heavy", "light"] as const;
+export type Pool = (typeof POOLS)[number];
+
+/** The pool a stage's job takes a slot in (ADR 0301). */
+export function stagePool(stage: JobStage): Pool {
+  return stage === "build" || stage === "verify" ? "heavy" : "light";
+}
 
 /**
  * Permission modes a project may give a stage's harness (ADR 0270). No mode that prompts a person

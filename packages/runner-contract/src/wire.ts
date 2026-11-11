@@ -1,7 +1,9 @@
 // Wire shapes of the runner channel, as zod schemas: the engine validates every call with them and
 // the runner host builds its requests from the inferred types. Change them only with a contract
-// version bump (CONTRACT_VERSION in ./types.ts).
+// version bump (CONTRACT_VERSION in ./types.ts), except for optional, additive fields an older
+// runner never receives (ADR 0350: the light pool, the planning stage and the planning call).
 import { z } from "zod";
+import { PLANNING_OPS } from "./planning.ts";
 import {
   CAPABILITIES,
   CONTRACT_VERSION,
@@ -27,12 +29,22 @@ export const capabilityManifestSchema = z.object({
 });
 
 export const capacitySchema = z.object({
-  /** Concurrent jobs this runner will take. */
+  /**
+   * Concurrent jobs this runner will take. With `light` reported, this is the heavy pool (build,
+   * verify) only (ADR 0301); without it, one pool for every job.
+   */
   max: z.number().int().min(0).max(64),
-  /** Jobs currently holding a workspace on this runner. */
+  /** Jobs currently holding a workspace on this runner (in the heavy pool when `light` is set). */
   inUse: z.number().int().min(0),
   /** False while draining (the owner paused it); the scheduler sends nothing new. */
   accepting: z.boolean(),
+  /**
+   * The light pool (triage, spec, planning), ADR 0301. Optional: a runner that reports none
+   * shares one pool and takes no planning jobs.
+   */
+  light: z
+    .object({ max: z.number().int().min(0).max(64), inUse: z.number().int().min(0) })
+    .optional(),
 });
 
 /** A host name a sandboxed command may reach: `example.com` or `*.example.com`, never `*`. */
@@ -103,6 +115,18 @@ export const jobSchema = z.object({
   }),
   /** Stage input (spec, acceptance criteria, send-back notes). Never holdout tests (ADR 0034). */
   context: z.record(z.string(), z.unknown()),
+  /**
+   * A planning job (ADR 0300, 0350): the session it belongs to, the harness conversation to start
+   * (`--session-id`) or resume (`--resume`), and whether this is a resume. The workspace is the
+   * session's, kept across yields.
+   */
+  planning: z
+    .object({
+      sessionId: id,
+      sessionRef: z.string().regex(/^[0-9a-f-]{36}$/),
+      resume: z.boolean(),
+    })
+    .optional(),
   /** Capabilities the job needs. A runner refuses a job whose needs its manifest doesn't cover. */
   requires: z.array(capabilitySchema),
   /** Visual evidence to capture after the session, when the runner has `browser`. */
@@ -304,3 +328,14 @@ export type ChannelError = z.infer<typeof channelErrorSchema>;
 export type AttachmentMeta = z.infer<typeof attachmentMetaSchema>;
 export type AttachmentsResponse = z.infer<typeof attachmentsResponseSchema>;
 export type AttachmentResponse = z.infer<typeof attachmentResponseSchema>;
+
+/**
+ * A planning operation from a planning job's harness, relayed by the host (ADR 0350). The cloud adds
+ * the job id from the path and runs `op` as the runner, scoped to the job's work item.
+ */
+export const planningCallRequestSchema = z.object({
+  fencingToken,
+  op: z.enum(PLANNING_OPS),
+  input: z.record(z.string(), z.unknown()).default({}),
+});
+export type PlanningCallRequest = z.infer<typeof planningCallRequestSchema>;

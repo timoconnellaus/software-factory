@@ -56,6 +56,9 @@ export interface FakeCloud {
   /** Each job's work item attachments, as the channel serves them (ADR 0310). */
   attachments: Map<string, { meta: AttachmentMeta; base64: string }[]>;
   attachmentCalls: number;
+  /** Planning calls the host relayed (ADR 0350), and how the fake cloud answers them. */
+  planningCalls: { jobId: string; op: string; input: Record<string, unknown> }[];
+  planning: (call: { jobId: string; op: string; input: Record<string, unknown> }) => unknown;
 }
 
 export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
@@ -73,6 +76,8 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
     fenced: new Set(),
     attachments: new Map(),
     attachmentCalls: 0,
+    planningCalls: [],
+    planning: () => ({}),
     fetch: async (input, init) =>
       handleRunnerCall(
         new Request(input, init),
@@ -147,6 +152,12 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
               return found
                 ? { body: { attachment: found.meta, base64: found.base64 } }
                 : { status: 404, body: { error: "no attachment", code: "not_found" } };
+            }
+            case "planning": {
+              const { op, input } = body as { op: string; input: Record<string, unknown> };
+              const call = { jobId, op, input: input ?? {} };
+              cloud.planningCalls.push(call);
+              return { body: cloud.planning(call) as Record<string, unknown> };
             }
           }
         },

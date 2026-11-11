@@ -19,10 +19,13 @@ import {
   type IdempotencyStore,
   isUnstoredPath,
   PATHS,
+  PLANNING_WAIT_MAX_MS,
   parseJobPath,
+  planningCallRequestSchema,
   runnerChannelKey,
 } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
+import { planningHub } from "./planning-hub.ts";
 import { secrets } from "./secrets.ts";
 
 export const CHANNEL_PREFIX = "/runner/v1/";
@@ -93,6 +96,7 @@ async function route(env: Env, runner: string, path: string, body: unknown): Pro
     if (job.call === "attachments" || job.call === "attachment") {
       return attachmentReply(env, runner, job.call, input as Record<string, unknown>);
     }
+    if (job.call === "planning") return planningReply(env, runner, job.jobId, record);
     op = {
       token: "run.issueToken",
       events: "run.reportEvents",
@@ -155,6 +159,62 @@ function toBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
   return btoa(binary);
+}
+
+/**
+ * A planning job's operation (ADR 0350), relayed by the runner host for its harness: one operation
+ * from the allowlist, as the runner, with the job id from the path. `planning.wait` is held here: it
+ * is evaluated, then re-evaluated whenever the work item's PlanningHub hears of a change or a
+ * person's pause runs out, until news is due, the session must yield or end, or the wait's time is up.
+ */
+async function planningReply(
+  env: Env,
+  runner: string,
+  jobId: string,
+  record: Record<string, unknown>,
+): Promise<ChannelReply> {
+  const parsed = planningCallRequestSchema.safeParse(record);
+  if (!parsed.success) {
+    return {
+      status: 400,
+      body: { error: parsed.error.message, code: "invalid_input", details: parsed.error.issues },
+    };
+  }
+  const { op, fencingToken } = parsed.data;
+  const input: Record<string, unknown> = { ...parsed.data.input, jobId, fencingToken };
+  const actor: Actor = { type: "runner", id: runner };
+  if (op !== "planning.wait") return invokeReply(env, op, input, actor);
+
+  const timeout = Math.min(
+    typeof input.timeoutMs === "number" ? input.timeoutMs : PLANNING_WAIT_MAX_MS,
+    PLANNING_WAIT_MAX_MS,
+  );
+  const deadline = Date.now() + timeout;
+  let hub: ReturnType<typeof planningHub> | null = null;
+  let seen = 0;
+  for (;;) {
+    const reply = await invokeReply(env, op, input, actor);
+    if (reply.status && reply.status !== 200) return reply;
+    const body = reply.body as {
+      workItemId: string;
+      due: boolean;
+      yield: boolean;
+      ended: boolean;
+      recheckAt: string | null;
+    };
+    const left = deadline - Date.now();
+    if (body.due || body.yield || body.ended || left <= 0) return reply;
+    if (!hub) {
+      hub = planningHub(env, body.workItemId);
+      // Changes before this read were seen by the evaluation above or come after it: evaluate once
+      // more after taking the sequence, so nothing slips between the two.
+      seen = await hub.current();
+      continue;
+    }
+    const recheck = body.recheckAt ? Date.parse(body.recheckAt) - Date.now() : left;
+    const changed = await hub.waitForChange(seen, Math.max(0, Math.min(left, recheck)));
+    if (changed) seen = await hub.current();
+  }
 }
 
 /**

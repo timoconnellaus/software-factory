@@ -38,6 +38,11 @@ export type OutboxMessage =
   /** Resume, then send each event type (releases steps parked by a kill switch). */
   | { kind: "workflow.resume"; payload: { instanceId: string; events: string[] } }
   | { kind: "workflow.terminate"; payload: { instanceId: string } }
+  /**
+   * A work item's planning changed (spec 20, ADR 0350): sf-engine tells its PlanningHub, which
+   * pushes to open Planning tabs and wakes the agent's wait.
+   */
+  | { kind: "planning.changed"; payload: { workItemId: string } }
   /** A notification for a person (web push in spec 15). `url` is the deep link. */
   | {
       kind: "notify";

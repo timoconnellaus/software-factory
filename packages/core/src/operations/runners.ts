@@ -14,8 +14,11 @@ import {
   type Job,
   MODEL_ROLES,
   type ModelRole,
+  PLANNING_YIELD_AFTER_MS,
+  type Pool,
   runBranch,
   runnerEventSchema,
+  stagePool,
   storedArtifactSchema,
 } from "@software-factory/runner-contract";
 import { z } from "zod";
@@ -28,12 +31,13 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
+import { planningRunEnded, USER_EVENTS } from "../planning.ts";
 import type { ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
 import { fencingToken, jobId, repoRef, requireWorkItem, sha, workItemId } from "./shared.ts";
-import { activeRunCount, RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./work-items.ts";
+import { RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./work-items.ts";
 
 /** How long a lease lasts without a heartbeat (open question in ADR 0021; ADR 0052 picks this). */
 export const LEASE_TTL_MS = 10 * 60_000;
@@ -48,6 +52,8 @@ const runnerView = z.object({
   keyVersion: z.number(),
   manifest: capabilityManifestSchema.nullable(),
   capacityMax: z.number(),
+  /** The light pool (ADR 0301); null when the runner reports none. */
+  light: z.object({ max: z.number(), inUse: z.number() }).nullable(),
   accepting: z.boolean(),
   rateLimitedUntil: z.string().nullable(),
   lastSeenAt: z.string().nullable(),
@@ -154,6 +160,7 @@ export const runnerList = defineOperation({
         keyVersion: r.key_version,
         manifest: parseJson<CapabilityManifest | null>(r.manifest, null),
         capacityMax: r.capacity_max,
+        light: r.light_max === null ? null : { max: r.light_max, inUse: r.light_in_use },
         accepting: r.accepting === 1,
         rateLimitedUntil: r.rate_limited_until,
         lastSeenAt: r.last_seen_at,
@@ -178,6 +185,8 @@ function reportRunnerState(
         manifest: json(report.manifest),
         capacity_max: report.capacity.max,
         capacity_in_use: report.capacity.inUse,
+        light_max: report.capacity.light?.max ?? null,
+        light_in_use: report.capacity.light?.inUse ?? 0,
         accepting: report.capacity.accepting ? 1 : 0,
         ...(report.rateLimitedUntil !== undefined
           ? { rate_limited_until: report.rateLimitedUntil }
@@ -301,6 +310,7 @@ export const jobEnqueue = defineOperation({
         context: JSON.stringify(input.context),
         session_timeout_ms: input.sessionTimeoutMs,
         created_at: ctx.now,
+        pool: stagePool(input.stage),
       }),
     );
     ctx.change({ entity: "job", id, after: { stage: input.stage, role: input.role, requires } });
@@ -313,11 +323,24 @@ export async function placementRefusal(
   ctx: Pick<HandlerContext, "db" | "now">,
   runner: RunnerRow,
   manifest: CapabilityManifest | null,
-  job: { stage: string; requires: Capability[]; harness: string },
+  job: {
+    stage: string;
+    requires: Capability[];
+    harness: string;
+    pinnedRunnerId?: string | null;
+  },
   item: Pick<WorkItemRow, "id" | "org_id" | "project_id" | "requester_user_id">,
   project: Pick<ProjectRow, "id" | "factory_id" | "policy_sha">,
 ): Promise<{ reason: string; wip?: true; waitReason?: string } | null> {
   if (!manifest) return { reason: "runner has not reported a manifest" };
+  // A planning resume goes back to its session's runner (ADR 0300), and only a runner with a light
+  // pool takes planning at all (ADR 0301).
+  if (job.pinnedRunnerId && job.pinnedRunnerId !== runner.id) {
+    return { reason: "pinned to another runner" };
+  }
+  if (job.stage === "planning" && runner.light_max === null) {
+    return { reason: "runner reports no light pool" };
+  }
   const fit = canRun(manifest, {
     harness: { id: job.harness } as Job["harness"],
     requires: job.requires,
@@ -381,17 +404,119 @@ async function atWipLimit(
   return Number(row?.n ?? 0) >= policy.wipLimit;
 }
 
-/** Whether a runner can take any job right now (online, accepting, not rate-limited, a free slot). */
-async function runnerFree(
+/** Active runs on a runner per pool (ADR 0301). */
+async function activeRunsByPool(
+  ctx: Pick<HandlerContext, "db">,
+  runnerId: string,
+): Promise<Record<Pool, number>> {
+  const rows = await ctx.db
+    .selectFrom("core_runs")
+    .innerJoin("core_jobs", "core_jobs.id", "core_runs.job_id")
+    .select(["core_jobs.pool", (eb) => eb.fn.countAll().as("n")])
+    .where("core_runs.runner_id", "=", runnerId)
+    .where("core_runs.status", "in", [...ACTIVE_RUN])
+    .groupBy("core_jobs.pool")
+    .execute();
+  const out: Record<Pool, number> = { heavy: 0, light: 0 };
+  for (const r of rows) out[r.pool] = Number(r.n);
+  return out;
+}
+
+/**
+ * Which pools have a free slot on a runner right now (online, accepting, not rate-limited). With a
+ * light pool reported, heavy and light are counted apart (ADR 0301); without one, every job shares
+ * `capacity_max`.
+ */
+async function freePools(
   ctx: Pick<HandlerContext, "db" | "now">,
   runner: RunnerRow,
-  reportedInUse?: number,
-) {
+  reported?: z.infer<typeof capacitySchema>,
+): Promise<{ heavy: boolean; light: boolean; split: boolean } | null> {
   const nowMs = Date.parse(ctx.now);
-  if (!runner.accepting) return false;
-  if (runner.rate_limited_until && Date.parse(runner.rate_limited_until) > nowMs) return false;
-  const active = await activeRunCount(ctx, runner.id);
-  return Math.max(active, reportedInUse ?? 0) < runner.capacity_max;
+  if (!runner.accepting) return null;
+  if (runner.rate_limited_until && Date.parse(runner.rate_limited_until) > nowMs) return null;
+  const active = await activeRunsByPool(ctx, runner.id);
+  if (runner.light_max === null) {
+    const any = Math.max(active.heavy + active.light, reported?.inUse ?? 0) < runner.capacity_max;
+    return { heavy: any, light: any, split: false };
+  }
+  return {
+    heavy: Math.max(active.heavy, reported?.inUse ?? 0) < runner.capacity_max,
+    light: Math.max(active.light, reported?.light?.inUse ?? 0) < runner.light_max,
+    split: true,
+  };
+}
+
+/**
+ * The light pool is full and a light job is waiting that this runner could take: ask its oldest
+ * idle planning session to yield (ADR 0301). Only one with nobody present and nothing undelivered
+ * for PLANNING_YIELD_AFTER_MS, and only one request at a time per runner. An idle session never
+ * yields while the pool has room: this is only called when it hasn't.
+ */
+export async function requestYield(
+  ctx: Pick<HandlerContext, "db" | "now" | "write">,
+  runnerId: string,
+): Promise<string | null> {
+  const before = new Date(Date.parse(ctx.now) - PLANNING_YIELD_AFTER_MS).toISOString();
+  const pending = await ctx.db
+    .selectFrom("core_planning_sessions")
+    .select("id")
+    .where("runner_id", "=", runnerId)
+    .where("status", "in", ["idle", "yielding"])
+    .where("yield_requested_at", "is not", null)
+    .executeTakeFirst();
+  if (pending) return null;
+  const candidate = await ctx.db
+    .selectFrom("core_planning_sessions as s")
+    .select(["s.id", "s.work_item_id"])
+    .where("s.runner_id", "=", runnerId)
+    .where("s.status", "=", "idle")
+    .where("s.idle_since", "<=", before)
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom("core_planning_presence as p")
+            .select("p.user_id")
+            .whereRef("p.work_item_id", "=", "s.work_item_id")
+            .where("p.seen_at", ">", before),
+        ),
+      ),
+    )
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom("core_planning_events as e")
+            .select("e.id")
+            .whereRef("e.work_item_id", "=", "s.work_item_id")
+            .whereRef("e.id", ">", "s.delivered_cursor")
+            .where("e.type", "in", [...USER_EVENTS]),
+        ),
+      ),
+    )
+    .orderBy("s.idle_since")
+    .limit(1)
+    .executeTakeFirst();
+  if (!candidate) return null;
+  ctx.write(
+    ctx.db
+      .updateTable("core_planning_sessions")
+      .set({ yield_requested_at: ctx.now, updated_at: ctx.now })
+      .where("id", "=", candidate.id)
+      .where("status", "=", "idle"),
+  );
+  ctx.write(
+    ctx.db.insertInto("core_planning_events").values({
+      work_item_id: candidate.work_item_id,
+      type: "session.changed",
+      actor_type: "agent",
+      actor_id: "scheduler",
+      payload: JSON.stringify({ yieldRequested: true }),
+      at: ctx.now,
+    }),
+  );
+  return candidate.id;
 }
 
 async function buildJob(
@@ -413,6 +538,8 @@ async function buildJob(
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
   const role = job.role as ModelRole;
+  const context = parseJson<Record<string, unknown>>(job.context, {});
+  const planning = context.planning as Job["planning"] | undefined;
   return {
     jobId: job.id,
     runId: run.id,
@@ -435,7 +562,8 @@ async function buildJob(
       // From the default branch's policy only (ADR 0036, 0270), never the run's own branch.
       ...(policy?.harness ? { profile: policy.harness } : {}),
     },
-    context: parseJson<Record<string, unknown>>(job.context, {}),
+    context,
+    ...(job.stage === "planning" && planning ? { planning } : {}),
     requires: parseJson<Capability[]>(job.requires, []),
     limits: { sessionTimeoutMs: job.session_timeout_ms },
     lease: { fencingToken: run.fencing_token, expiresAt: leaseExpiresAt },
@@ -462,6 +590,7 @@ export const jobClaim = defineOperation({
       ...runner,
       accepting: input.capacity.accepting ? 1 : 0,
       capacity_max: input.capacity.max,
+      light_max: input.capacity.light?.max ?? null,
     };
 
     // A retried claim gets the job it already got.
@@ -495,7 +624,10 @@ export const jobClaim = defineOperation({
       return { job: await buildJob(ctx, prior, run, item, project, lease?.expires_at ?? ctx.now) };
     }
 
-    if (!(await runnerFree(ctx, current, input.capacity.inUse))) return { job: null };
+    const room = await freePools(ctx, current, input.capacity);
+    if (!room || (!room.heavy && !room.light && !room.split)) return { job: null };
+    // A light job this runner could take but for a full light pool: ask an idle session to yield.
+    let lightBlocked = false;
 
     const queued = await ctx.db
       .selectFrom("core_jobs")
@@ -517,6 +649,7 @@ export const jobClaim = defineOperation({
         .executeTakeFirst();
       if (!item || !project) continue;
       if (!["running", "waiting"].includes(item.status)) continue;
+      if (!room[job.pool] && (job.pool !== "light" || !room.split || lightBlocked)) continue;
       const refusal = await placementRefusal(
         ctx,
         current,
@@ -525,6 +658,7 @@ export const jobClaim = defineOperation({
           stage: job.stage,
           requires: parseJson<Capability[]>(job.requires, []),
           harness: job.harness,
+          pinnedRunnerId: job.pinned_runner_id,
         },
         item,
         project,
@@ -539,6 +673,10 @@ export const jobClaim = defineOperation({
               .where("id", "=", job.id),
           );
         }
+        continue;
+      }
+      if (!room[job.pool]) {
+        lightBlocked = true;
         continue;
       }
 
@@ -616,6 +754,27 @@ export const jobClaim = defineOperation({
           ),
       );
       ctx.guardChanged("fencing token unchanged");
+      if (job.stage === "planning" && job.planning_session_id) {
+        // The session lives on this runner from now on: a resume comes back here (ADR 0300).
+        ctx.write(
+          ctx.db
+            .updateTable("core_planning_sessions")
+            .set({ runner_id: runner.id, updated_at: ctx.now })
+            .where("id", "=", job.planning_session_id)
+            .where("current_job_id", "=", job.id),
+        );
+        ctx.write(
+          ctx.db.insertInto("core_planning_events").values({
+            work_item_id: item.id,
+            type: "session.changed",
+            actor_type: "runner",
+            actor_id: runner.id,
+            payload: JSON.stringify({ status: "claimed", runnerId: runner.id }),
+            at: ctx.now,
+          }),
+        );
+        ctx.emit({ kind: "planning.changed", payload: { workItemId: item.id } });
+      }
       ctx.subject({ workItemId: item.id, projectId: project.id, orgId: item.org_id });
       ctx.change({
         entity: "run",
@@ -633,6 +792,7 @@ export const jobClaim = defineOperation({
         ),
       };
     }
+    if (lightBlocked) await requestYield(ctx, runner.id);
     return { job: null };
   },
 });
@@ -771,7 +931,7 @@ export const runAddArtifact = defineOperation({
 
 export function finishRun(
   ctx: HandlerContext,
-  run: { id: string; job_id: string; work_item_id: string },
+  run: { id: string; job_id: string; work_item_id: string; stage?: string },
   workflowId: string,
   status: "handed_back" | "failed",
   outcome: "completed" | "failed" | "timed_out" | "cancelled" | "stalled",
@@ -810,6 +970,8 @@ export function finishRun(
       .where("work_item_id", "=", run.work_item_id)
       .where("holder_id", "=", run.id),
   );
+  // A planning run's session stops holding a slot: yielded, or interrupted (ADR 0350).
+  if (run.stage === "planning") planningRunEnded(ctx, run);
   ctx.emit({
     kind: "workflow.event",
     payload: {
@@ -1176,9 +1338,10 @@ export const workItemPreviewRouting = defineOperation({
         project,
       );
       if (refusal?.reason.startsWith("runner is not the requester")) continue;
-      const active = await activeRunCount(ctx, r.id);
+      // A build takes a heavy slot (ADR 0301).
+      const active = (await activeRunsByPool(ctx, r.id)).heavy;
       const offline = !r.last_seen_at || nowMs - Date.parse(r.last_seen_at) > RUNNER_OFFLINE_MS;
-      const busy = !(await runnerFree(ctx, r));
+      const busy = !(await freePools(ctx, r))?.heavy;
       candidates.push({
         id: r.id,
         name: r.name,
