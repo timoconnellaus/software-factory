@@ -74,3 +74,21 @@ jobs:
         run: node scripts/deploy/deploy.ts migrate
       - name: Deploy Workers
         run: node scripts/deploy/deploy.ts workers
+      - name: Sync sf-app secrets
+        # Pushes the repo secrets the dashboard needs into the Worker. Values never appear in logs.
+        working-directory: apps/app
+        env:
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          GH_APP_CLIENT_SECRET: ${{ secrets.GH_APP_CLIENT_SECRET }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GH_APP_WEBHOOK_SECRET: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
+        run: |
+          node -e '
+            const keys = ["BETTER_AUTH_SECRET","GH_APP_CLIENT_SECRET","GH_APP_PRIVATE_KEY","GH_APP_WEBHOOK_SECRET"];
+            const out = {};
+            for (const k of keys) if (process.env[k]) out[k] = process.env[k];
+            require("fs").writeFileSync("/tmp/sf-app-secrets.json", JSON.stringify(out));
+            console.log("secrets to sync:", Object.keys(out).join(", ") || "none");
+          '
+          pnpm exec wrangler secret bulk /tmp/sf-app-secrets.json
+          rm -f /tmp/sf-app-secrets.json
