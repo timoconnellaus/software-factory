@@ -118,12 +118,20 @@ describe("routing GitHub App webhooks", () => {
     expect(human.calls[0]?.input.pusherIsApp).toBe(false);
   });
 
-  it("tracks installations", () => {
-    const installation = { id: 99, account: { login: "timoconnellaus" } };
+  it("tracks installations: repos, suspend, unsuspend and delete", () => {
+    const installation = {
+      id: 99,
+      account: { login: "timoconnellaus", type: "User" },
+      repository_selection: "selected",
+    };
     expect(
       routeGitHubEvent(
         "installation",
-        { action: "created", installation, repositories: [{ name: "software-factory" }] },
+        {
+          action: "created",
+          installation,
+          repositories: [{ name: "software-factory", id: 5 }],
+        },
         SLUG,
       ).calls,
     ).toEqual([
@@ -132,28 +140,34 @@ describe("routing GitHub App webhooks", () => {
         input: {
           installationId: "99",
           account: "timoconnellaus",
+          accountType: "User",
+          repositorySelection: "selected",
           action: "added",
           repositories: ["software-factory"],
+          repositoryIds: [5],
         },
       },
     ]);
-    expect(
-      routeGitHubEvent("installation", { action: "deleted", installation }, SLUG).calls[0]?.input,
-    ).toMatchObject({
-      action: "removed",
-      repositories: null,
-    });
+    const action = (a: string) =>
+      routeGitHubEvent("installation", { action: a, installation }, SLUG).calls[0]?.input;
+    expect(action("deleted")).toMatchObject({ action: "deleted", repositories: null });
+    expect(action("suspend")).toMatchObject({ action: "suspended" });
+    expect(action("unsuspend")).toMatchObject({ action: "unsuspended" });
     const changed = routeGitHubEvent(
       "installation_repositories",
       {
         action: "added",
         installation,
-        repositories_added: [{ name: "a" }],
-        repositories_removed: [{ name: "b" }],
+        repository_selection: "selected",
+        repositories_added: [{ name: "a", id: 1 }],
+        repositories_removed: [{ name: "b", id: 2 }],
       },
       SLUG,
     );
-    expect(changed.calls.map((c) => c.input.action)).toEqual(["added", "removed"]);
+    expect(changed.calls.map((c) => [c.input.action, c.input.repositories])).toEqual([
+      ["added", ["a"]],
+      ["removed", ["b"]],
+    ]);
   });
 
   it("ignores pings, unknown events and unreadable payloads", () => {

@@ -2,9 +2,16 @@
 // (HMAC over method, path, body hash, timestamp and idempotency key; 5-minute window), answered from
 // the D1 idempotency store when it is a replay, and otherwise mapped to ONE operation invoked as
 // `{ type: "runner", id: <runner id> }`. The job token call is never stored.
-import { invoke, OperationError, type RefusalCode } from "@software-factory/core";
+import {
+  type Actor,
+  DEVICE_LOGIN_ACTOR,
+  invoke,
+  OperationError,
+  type RefusalCode,
+} from "@software-factory/core";
 import {
   type ChannelReply,
+  DEVICE_PATHS,
   handleRunnerCall,
   type IdempotencyBegin,
   type IdempotencyStore,
@@ -34,6 +41,10 @@ const STATUS: Record<RefusalCode, number> = {
 
 export async function handleChannel(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return Response.json({ error: "POST only" }, { status: 405 });
+  const { pathname } = new URL(request.url);
+  if (pathname === DEVICE_PATHS.start || pathname === DEVICE_PATHS.poll) {
+    return handleDeviceLogin(request, env, pathname);
+  }
   const secret = secrets(env).RUNNER_CHANNEL_SECRET;
   if (!secret) {
     return Response.json(
@@ -85,9 +96,37 @@ async function route(env: Env, runner: string, path: string, body: unknown): Pro
       release: "run.release",
     }[job.call];
   }
+  return invokeReply(env, op, input, { type: "runner", id: runner });
+}
+
+/**
+ * The two unsigned device-login calls (ADR 0056): the CLI has no key yet. They run as
+ * DEVICE_LOGIN_ACTOR, which no signed runner can be (runner ids are `r_…`).
+ */
+async function handleDeviceLogin(request: Request, env: Env, path: string): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "body is not JSON", code: "invalid_input" }, { status: 400 });
+  }
+  const op = path === DEVICE_PATHS.start ? "runner.deviceStart" : "runner.devicePoll";
+  const reply = await invokeReply(env, op, body, DEVICE_LOGIN_ACTOR);
+  return Response.json(reply.body, {
+    status: reply.status ?? 200,
+    headers: { "cache-control": "no-store" },
+  });
+}
+
+async function invokeReply(
+  env: Env,
+  op: string,
+  input: unknown,
+  actor: Actor,
+): Promise<ChannelReply> {
   try {
     const result = await invoke(invokeDeps(env), op, input, {
-      actor: { type: "runner", id: runner },
+      actor,
       origin: { surface: "runner-channel" },
     });
     if (result.status === "pending") {

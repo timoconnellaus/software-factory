@@ -60,10 +60,42 @@ export default {
             "INSERT INTO core_member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, 'owner', ?)",
           ).bind(`mem_e2e${id}`, orgId, userId, now),
         ]);
+        // Onboard as Setup does (ADR 0055): a fake installation on the user's own account that
+        // reaches the repo, connected with a state, then the repo picked by id.
+        const installationId = String(Date.now() % 1_000_000_000);
+        const repoId = Date.now() % 1_000_000;
+        await env.DB.prepare(
+          "CREATE TABLE IF NOT EXISTS fake_github_installations (id TEXT PRIMARY KEY, state TEXT NOT NULL)",
+        ).run();
+        await env.DB.prepare("INSERT INTO fake_github_installations (id, state) VALUES (?, ?)")
+          .bind(
+            installationId,
+            JSON.stringify({
+              installationId,
+              account: { login: body.owner, type: "Organization" },
+              repos: [
+                { id: repoId, owner: body.owner, name: body.name, private: false, defaultBranch: "main" },
+              ],
+              members: [`e2e-${id}`],
+            }),
+          )
+          .run();
+        const started = await invoke(env, "github.connectStart", { orgId }, userId);
+        const connected = await invoke(
+          env,
+          "github.connectInstallation",
+          { installationId, state: started.state, userAccessToken: `ghu_fake_e2e-${id}` },
+          userId,
+        );
         const project = await invoke(
           env,
           "project.create",
-          { orgId, name: "E2E scratch", repoOwner: body.owner, repoName: body.name },
+          {
+            orgId,
+            name: "E2E scratch",
+            installationRecordId: (connected.installation as { id: string }).id,
+            repoId,
+          },
           userId,
         );
         await invoke(
