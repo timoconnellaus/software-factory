@@ -49,6 +49,9 @@ environments (ADR 0045), auto-merge, content work (ADR 0046).
    verify runs again.
 3. A PR opened outside the factory (e.g. from a local session) gets a failing `factory/verify` check
    until it is attached to a work item and verified.
+   *(Amended 2026-11-11, [spec 05](05-attach-a-pull-request.md), [ADR 0290](../adr/0290-an-outside-pr-is-attached-and-verified.md):
+   attaching is `workItem.attachPr`, from the `/attach` page that the failing check's Details links
+   to. The factory then verifies the PR's own head and takes it through the merge gate.)*
 4. Each acceptance criterion in the review packet has met/unmet and a piece of evidence.
 5. When `review` and `implement` resolve to the same model, the packet shows a warning.
 6. Merging requires an approver's `pr.merge`; an agent's call returns `pending_approval`.

@@ -8,6 +8,7 @@ import type {
   GitHubService,
   InstallationInfo,
   InstallationRepo,
+  PullRequestInfo,
   RepoGuards,
   RepoRef,
 } from "../services.ts";
@@ -32,7 +33,7 @@ interface RepoState {
   installation?: string | null;
   parents: Record<string, string | null>;
   files: Record<string, Record<string, string>>;
-  pulls: { number: number; head: string; base: string; title: string; state: "open" | "merged" }[];
+  pulls: FakePull[];
   /** PRs GitHub can't merge (`false`) or is still computing (`null`), by number. Default mergeable. */
   mergeable?: Record<number, boolean | null>;
   /** Update-branch requests waiting for `completeUpdate` (`deferUpdates`), by PR number. */
@@ -41,6 +42,21 @@ interface RepoState {
   /** A merge commit's second parent (what `update-branch` merged in), by merge commit SHA. */
   merged?: Record<string, string>;
   tokens: number;
+}
+
+interface FakePull {
+  number: number;
+  head: string;
+  base: string;
+  title: string;
+  state: "open" | "merged" | "closed";
+  body?: string;
+  author?: string;
+  draft?: boolean;
+  /** A fork's `owner/name`; unset means the repo itself. */
+  headRepo?: string;
+  /** A fork's head SHA (a fork's branch isn't in this repo's refs). */
+  headSha?: string;
 }
 
 const TABLE = "fake_github_repos";
@@ -93,6 +109,24 @@ export interface FakeGitHub extends GitHubService {
   putInstallation(installation: FakeInstallation): Promise<void>;
   /** Removes an installation: GitHub then answers 404 for it. */
   dropInstallation(installationId: string): Promise<void>;
+  /**
+   * Opens a PR as a person would, outside the factory (spec 05): pushes a commit to `branch` unless
+   * it exists, then opens the PR into the default branch. `fork` makes the head another repo's.
+   */
+  openOutsidePull(
+    repo: RepoRef,
+    input: {
+      branch: string;
+      title: string;
+      body?: string;
+      author?: string;
+      draft?: boolean;
+      fork?: string;
+      files?: Touch[];
+    },
+  ): Promise<{ number: number; headSha: string }>;
+  /** Closes a PR without merging it. */
+  closePull(repo: RepoRef, number: number): Promise<void>;
 }
 
 export const FAKE_APP = { id: "1000", slug: "software-factory-test" } as const;
@@ -286,6 +320,47 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.pulls.push({ number, head, base, title, state: "open" });
       await save(r, state);
       return { number, url: pullUrl(r, number) };
+    },
+    async getPullRequest(r, number) {
+      const state = await load(r);
+      const pull = state.pulls.find((p) => p.number === number);
+      return pull ? pullInfo(r, state, pull) : null;
+    },
+    async listOpenPullRequests(r) {
+      const state = await load(r);
+      return state.pulls
+        .filter((p) => p.state === "open")
+        .reverse()
+        .map((p) => pullInfo(r, state, p));
+    },
+    async openOutsidePull(r, input) {
+      const state = await load(r);
+      let headSha = input.fork ? undefined : state.refs[input.branch];
+      if (!headSha) {
+        headSha = await commit(state, state.refs[defaultBranch] ?? null, input.branch);
+        state.touched = { ...(state.touched ?? {}), [headSha]: input.files ?? ["README.md"] };
+        if (!input.fork) state.refs[input.branch] = headSha;
+      }
+      const number = state.pulls.length + 1;
+      state.pulls.push({
+        number,
+        head: input.branch,
+        base: defaultBranch,
+        title: input.title,
+        state: "open",
+        body: input.body ?? "",
+        author: input.author ?? "timoconnellaus",
+        draft: input.draft ?? false,
+        ...(input.fork ? { headRepo: input.fork, headSha } : {}),
+      });
+      await save(r, state);
+      return { number, headSha };
+    },
+    async closePull(r, number) {
+      const state = await load(r);
+      const pull = state.pulls.find((p) => p.number === number);
+      if (pull && pull.state === "open") pull.state = "closed";
+      await save(r, state);
     },
     async pullRequestMergeability(r, number) {
       const state = await load(r);
@@ -533,4 +608,23 @@ const pullUrl = (r: RepoRef, n: number) => `https://github.com/${r.owner}/${r.re
 async function sha(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(text));
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function pullInfo(r: RepoRef, state: RepoState, p: FakePull): PullRequestInfo {
+  return {
+    number: p.number,
+    url: pullUrl(r, p.number),
+    title: p.title,
+    body: p.body ?? "",
+    state: p.state === "open" ? "open" : "closed",
+    merged: p.state === "merged",
+    draft: p.draft ?? false,
+    author: p.author ?? null,
+    head: {
+      ref: p.head,
+      sha: p.headSha ?? state.refs[p.head] ?? "",
+      repo: p.headRepo ?? `${r.owner}/${r.repo}`,
+    },
+    base: { ref: p.base },
+  };
 }

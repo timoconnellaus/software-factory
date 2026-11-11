@@ -1,6 +1,6 @@
 // Pieces several operations share: field schemas, work-item creation, stage transitions and the
 // GitHub repo reference for a project.
-import { json } from "@software-factory/db";
+import { json, type WorkItemKind } from "@software-factory/db";
 import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -76,8 +76,13 @@ export interface NewWorkItem {
   body: string;
   source: string;
   requesterUserId: string;
-  kind?: "change" | "incident";
+  kind?: WorkItemKind;
   parentWorkItemId?: string | null;
+  /**
+   * An attached PR (spec 05): its own head branch, number, URL and head SHA. Other items get
+   * `factory/<n>-<slug>` and no PR until the Workflow opens one.
+   */
+  pr?: { branch: string; number: number; url: string; headSha: string };
   /** Number to use; the caller read `next_number` and the batch guards it. */
   number: number;
 }
@@ -92,7 +97,7 @@ export function createWorkItem(
 ): { id: string; branch: string } {
   const id = newId("workItem");
   const slug = slugify(item.title);
-  const branch = itemBranch(item.number, slug);
+  const branch = item.pr?.branch ?? itemBranch(item.number, slug);
   ctx.write(
     ctx.db
       .updateTable("core_projects")
@@ -116,6 +121,9 @@ export function createWorkItem(
       stage: "intake",
       status: "running",
       branch,
+      head_sha: item.pr?.headSha ?? null,
+      pr_number: item.pr?.number ?? null,
+      pr_url: item.pr?.url ?? null,
       workflow_id: id,
       policy_sha: item.project.policy_sha,
       parent_work_item_id: item.parentWorkItemId ?? null,
@@ -162,6 +170,82 @@ export function setItemStatus(
 }
 
 export { json };
+
+/** Why an attached item skips spec and build (spec 05). */
+export const ATTACHED_SKIP_REASON = "attached PR: built outside the factory";
+
+/**
+ * Queues the writes that cancel a work item: its stages, queued jobs and live runs, its lease (the
+ * fencing token is bumped, so a run still going is fenced), its open gates and questions, and the
+ * Workflow. The caller has checked who may cancel and that the item is still open.
+ */
+export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: string): void {
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({ status: "cancelled", status_reason: reason, closed_at: ctx.now, updated_at: ctx.now })
+      .where("id", "=", w.id),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_stages")
+      .set({ status: "cancelled", ended_at: ctx.now, reason })
+      .where("work_item_id", "=", w.id)
+      .where("status", "=", "active"),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_jobs")
+      .set({ status: "cancelled", finished_at: ctx.now })
+      .where("work_item_id", "=", w.id)
+      .where("status", "in", ["queued", "claimed"]),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_runs")
+      .set({ status: "cancelled", outcome: "cancelled", ended_at: ctx.now })
+      .where("work_item_id", "=", w.id)
+      .where("status", "in", ["claimed", "preparing", "running", "collecting"]),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_leases")
+      .set((eb) => ({
+        fencing_token: eb("fencing_token", "+", 1),
+        holder_kind: null,
+        holder_id: null,
+        released_at: ctx.now,
+      }))
+      .where("work_item_id", "=", w.id),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_pending_actions")
+      .set({
+        status: "rejected",
+        decision: "rejected",
+        decided_at: ctx.now,
+        decided_by: ctx.actor.id,
+        note: "work item cancelled",
+      })
+      .where("work_item_id", "=", w.id)
+      .where("status", "=", "pending"),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_questions")
+      .set({ status: "withdrawn" })
+      .where("work_item_id", "=", w.id)
+      .where("status", "=", "open"),
+  );
+  ctx.emit({ kind: "workflow.terminate", payload: { instanceId: w.workflow_id } });
+  ctx.change({
+    entity: "work_item",
+    id: w.id,
+    before: { status: w.status },
+    after: { status: "cancelled", reason },
+  });
+}
 
 /** A repo as webhooks name it; operations that take one resolve the project from it. */
 export const repoName = z.object({

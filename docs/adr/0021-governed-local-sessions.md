@@ -33,3 +33,10 @@ Principle: **local sessions can do anything locally, but nothing reaches main ex
 > heartbeat (and `lease.heartbeat` for sessions); a run whose lease lapses is failed by the cron
 > (`run.expire`), which bumps the fencing token. A session's `lease.claim` is refused while another
 > holder's lease is live, unless a person passes `takeover`.
+
+> Amended 2026-11-11 (spec 05, [ADR 0290](0290-an-outside-pr-is-attached-and-verified.md)): a session
+> that didn't claim a work item can still reach main. Its PR is **attached** to a work item
+> (`workItem.attachPr`, or the `/attach` page that the failing `factory/verify` check links to). The
+> factory then triages it, verifies the PR's own head and takes it through the merge gate, and never
+> pushes to its branch. Remote enforcement stays the guarantee: an unattached PR's
+> `factory/verify` fails.

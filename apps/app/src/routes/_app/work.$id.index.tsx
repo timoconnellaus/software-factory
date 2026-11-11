@@ -176,6 +176,7 @@ function Header({ detail }: { detail: WorkItemDetail }) {
         {item.kind === "incident" && (
           <span className="rounded-md border px-1.5">factory incident</span>
         )}
+        {item.kind === "attached" && <span className="rounded-md border px-1.5">attached PR</span>}
         {detail.mergeQueue && (
           <span className="rounded-md border px-1.5" data-testid="merge-queue">
             {detail.mergeQueue.position === 1

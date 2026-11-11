@@ -17,6 +17,7 @@ export * as operations from "./operations/index.ts";
 export { PROTECTION_RECHECK_MS } from "./operations/protection.ts";
 export { NEVER_BULK_ACCEPTED_DOMAINS } from "./operations/questions.ts";
 export { LEASE_TTL_MS } from "./operations/runners.ts";
+export { ATTACHED_SKIP_REASON } from "./operations/shared.ts";
 export { RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./operations/work-items.ts";
 export * from "./policy/gate.ts";
 export * from "./policy/project-policy.ts";

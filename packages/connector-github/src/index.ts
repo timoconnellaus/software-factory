@@ -4,7 +4,10 @@
 // the calls it returns as `{ type: "intake", id: "github" }`.
 //
 //   pull_request opened/reopened/synchronize/ready_for_review → verify.refresh (a new head starts
-//                                                     without a passing `factory/verify`)
+//                                                     without a passing `factory/verify`; a push
+//                                                     to an attached PR re-verifies, spec 05)
+//   pull_request closed                               → verify.refresh `closed` (an attached PR
+//                                                     closed without merging cancels its item)
 //   check_suite completed (not the factory's own)     → verify.refresh (CI settled on a SHA)
 //   check_run rerequested (`factory/verify`)          → verify.refresh
 //   push                                              → push.observe (branch confinement; policy
@@ -47,6 +50,7 @@ const pullRequest = z.object({
   pull_request: z.object({
     number: z.number(),
     draft: z.boolean().optional(),
+    merged: z.boolean().optional(),
     head: z.object({ sha: z.string(), ref: z.string() }),
     base: z.object({ ref: z.string() }),
   }),
@@ -119,6 +123,25 @@ export function routeGitHubEvent(event: string, payload: unknown, appSlug: strin
       const p = pullRequest.safeParse(payload);
       if (!p.success) return none(null, null, "unreadable pull_request payload");
       const { action, pull_request: pr, repository: r } = p.data;
+      if (action === "closed") {
+        return {
+          repo: full(r),
+          action,
+          ignored: null,
+          calls: [
+            {
+              op: "verify.refresh",
+              input: {
+                repo: repoOf(r),
+                headSha: pr.head.sha,
+                prNumber: pr.number,
+                trigger: "closed",
+                merged: pr.merged === true,
+              },
+            },
+          ],
+        };
+      }
       if (!PR_ACTIONS.has(action)) return none(full(r), action, `pull_request ${action}`);
       return {
         repo: full(r),

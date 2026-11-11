@@ -9,8 +9,13 @@
 // instance started on, and `run()` dispatches to that version's implementation. A change that
 // renames, reorders or removes steps is a new version (`runV2`), and the old one stays until no
 // instance runs it. `test/workflow-versions.test.ts` locks v1's step names.
+//
+// An attached PR (spec 05, ADR 0290) takes its own path, `runAttached`, chosen by the item's kind
+// rather than by a version: no instance of another kind ever reaches it, and change and incident
+// items run exactly the steps they ran before.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import {
+  ATTACHED_SKIP_REASON,
   approvalEvent,
   ciEvent,
   FOREMAN,
@@ -29,7 +34,14 @@ import {
   verifyResultSchema,
 } from "@software-factory/runner-contract";
 import { invokeDeps } from "../deps.ts";
-import { buildPrompt, type ItemBrief, specPrompt, triagePrompt, verifyPrompt } from "./prompts.ts";
+import {
+  attachedTriagePrompt,
+  buildPrompt,
+  type ItemBrief,
+  specPrompt,
+  triagePrompt,
+  verifyPrompt,
+} from "./prompts.ts";
 
 export interface WorkItemParams {
   workItemId: string;
@@ -62,6 +74,8 @@ export const CI_WAIT = "10 minutes";
 export const CI_ROUNDS = 12;
 /** Rounds to wait when no CI has reported at all (a repo without CI fails after these). */
 export const CI_MISSING_ROUNDS = 3;
+/** How long an attached PR waits for a push before it re-reads its head (the webhook wakes it sooner). */
+export const HEAD_RECHECK = "12 hours";
 /** v3: reads of a just-opened PR's mergeability while GitHub computes it, and the pause between. */
 export const MERGEABLE_READS = 3;
 export const MERGEABLE_WAIT = "20 seconds";
@@ -125,7 +139,11 @@ class Ended extends Error {
 
 interface Meta extends ItemBrief {
   /** `incident` items may auto-merge a check-only fix (v2). Missing in v1 instances' replays. */
-  kind?: "change" | "incident";
+  kind?: "change" | "incident" | "attached";
+  /** The attached PR's number and head when the item was created (spec 05). */
+  prNumber?: number | null;
+  headSha?: string | null;
+  defaultBranch?: string;
   retryLimit: number;
   gateTimeoutMs: number;
   questionTimeoutMs: number;
@@ -141,6 +159,13 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
       async (): Promise<number> => WORKFLOW_VERSION,
     );
     const flow = new ItemFlow(this.env, step, event.payload.workItemId, event.instanceId);
+    if (version >= 1 && version <= WORKFLOW_VERSION) {
+      // An attached PR's own path (spec 05), chosen by kind, whatever version the item started on
+      // (it merges directly, not through the merge queue: the App can't update a person's branch). "meta: item" is runV1's first step
+      // anyway and is read once, so every other item runs exactly the steps it ran before.
+      const meta = await flow.meta();
+      if (meta.kind === "attached") return flow.runAttached(version, meta);
+    }
     switch (version) {
       case 1:
         return flow.runV1(1);
@@ -509,30 +534,233 @@ class ItemFlow {
         throw new Ended("rejected", `merge rejected${decided.note ? `: ${decided.note}` : ""}`);
       }
     } catch (error) {
-      if (!(error instanceof Ended)) throw error;
-      if (error.incident) {
-        await this.call("end: incident", "incident.open", {
-          workItemId: id,
-          kind: error.incident.kind,
-          reason: error.reason,
-          runId: error.incident.runId,
-        });
-      }
-      await this.call(`end: ${error.status}`, "workItem.finish", {
-        workItemId: id,
-        status: error.status,
-        reason: error.reason,
-      });
-      return { status: error.status, workItemId: id, reason: error.reason };
+      return this.ended(error);
     }
+  }
+
+  // ---- attached PRs (spec 05, ADR 0290) ----
+  // Triage drafts criteria from the PR; spec and build are skipped (the factory never pushes to the
+  // PR's branch, so no branch.ensure or branch.advance); then verify runs on the PR's head. A fail
+  // or a send-back waits for a new push; a push while the merge gate is open withdraws the gate
+  // (verify.refresh) and verifies the new head. No build retry limit: nothing is built.
+
+  async runAttached(version: number, meta: Meta): Promise<WorkItemOutcome> {
+    const id = this.workItemId;
+    try {
+      await this.act("triage: enter", "workItem.enterStage", {
+        workItemId: id,
+        stage: "triage",
+        workflowVersion: version,
+      });
+      const triageRun = await this.runWithRetries(
+        meta,
+        "triage",
+        "triage",
+        "triage",
+        attachedTriagePrompt(meta, {
+          prNumber: meta.prNumber ?? null,
+          headSha: meta.headSha ?? null,
+          defaultBranch: meta.defaultBranch ?? "main",
+        }),
+        { attached: true, prNumber: meta.prNumber ?? null, headSha: meta.headSha ?? null },
+        (r) => triageResultSchema.safeParse(r),
+      );
+      const triage = triageRun.parsed;
+      await this.act("triage: record", "workItem.triage", { workItemId: id, result: triage });
+      const criteria = triage.acceptanceCriteria;
+      await this.act("verify: enter", "workItem.enterStage", {
+        workItemId: id,
+        stage: "verify",
+        skipped: [
+          { stage: "spec", reason: ATTACHED_SKIP_REASON },
+          { stage: "build", reason: ATTACHED_SKIP_REASON },
+        ],
+      });
+
+      let runFailures = 0;
+      /** How the previous round's stage closes when the next round starts. */
+      let close: { as: "done" | "sent_back" | "failed"; reason: string } | null = null;
+      for (let b = 1; ; b++) {
+        const headSha = await this.head(`verify #${b}: head`);
+        if (close) {
+          await this.act(`verify #${b}: enter`, "workItem.enterStage", {
+            workItemId: id,
+            stage: "verify",
+            closeAs: close.as,
+            reason: close.reason,
+          });
+        }
+        // The PR is already open: pr.open returns it (and whether it touches `.factory/`).
+        const pr = await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id });
+        const verify = await this.runJob(
+          `verify #${b}`,
+          "verify",
+          "review",
+          verifyPrompt(meta, { criteria, headSha }),
+          { criteria, headSha },
+        );
+        if (verify.outcome === "cancelled") {
+          close = { as: "failed", reason: "verify run cancelled" };
+          continue; // stopped by a kill switch or a takeover: verify the head again
+        }
+        const report = verifyResultSchema.safeParse(verify.result);
+        if (verify.outcome !== "completed" || !report.success) {
+          // The runner failed, not the PR: try again on the same head, up to the retry limit.
+          runFailures++;
+          const reason = `the verify run ${verify.outcome}${report.success ? "" : " with an unreadable report"}`;
+          if (runFailures > meta.retryLimit) {
+            throw new Ended(
+              "failed",
+              `gave up after ${runFailures} failed verify runs: ${reason}`,
+              {
+                kind: verify.outcome === "stalled" ? "run_stalled" : "run_failed",
+                runId: verify.runId,
+              },
+            );
+          }
+          close = { as: "failed", reason };
+          continue;
+        }
+        runFailures = 0;
+        const r = report.data;
+        const runnerPassed =
+          r.checks.every((c) => c.status !== "fail") &&
+          r.criteria.every((c) => c.met) &&
+          r.reviewer?.verdict !== "request_changes";
+        await this.waitForCi(b, headSha);
+        const packet = await this.act(`verify #${b}: packet`, "reviewPacket.record", {
+          workItemId: id,
+          runId: verify.runId,
+          headSha,
+          verdict: runnerPassed ? "pass" : "fail",
+          summary: r.summary,
+          criteria: r.criteria,
+          checks: r.checks,
+          reviewer: r.reviewer ? { ...r.reviewer, sameModelAsImplementer: false } : null,
+          riskFlags: r.riskFlags,
+        });
+
+        if (packet.verdict !== "pass") {
+          const reason = "verify found problems: push a fix to the PR";
+          await this.waitForHead(b, headSha, reason);
+          close = { as: "failed", reason };
+          continue;
+        }
+        // A push while verify ran: verify the new head instead of gating the old one.
+        if ((await this.head(`merge #${b}: head`)) !== headSha) {
+          close = { as: "done", reason: "the pull request's head moved: verifying the new head" };
+          continue;
+        }
+        await this.act(`merge #${b}: enter`, "workItem.enterStage", {
+          workItemId: id,
+          stage: "merge",
+        });
+        const decided = await this.gate(
+          meta,
+          `merge #${b}: gate`,
+          "pr.merge",
+          { workItemId: id, headSha, touchesFactoryConfig: pr.touchesFactoryConfig === true },
+          { returnRefusedApply: true },
+        );
+        if (decided.decision === "approved") {
+          await this.act("end: done", "workItem.finish", {
+            workItemId: id,
+            status: "done",
+            reason: "merged",
+          });
+          return { status: "done", workItemId: id };
+        }
+        if (decided.decision === "rejected" || decided.decision === "changes_requested") {
+          throw new Ended("rejected", `merge rejected${decided.note ? `: ${decided.note}` : ""}`);
+        }
+        // Sent back, withdrawn (the head moved), or refused at merge (the head moved under the
+        // approval): wait for a push, which a withdrawal has already seen.
+        const reason =
+          decided.decision === "sent_back"
+            ? `Sent back at review: ${decided.note ?? ""}`.trim()
+            : decided.decision === "withdrawn"
+              ? (decided.note ?? "the pull request's head moved")
+              : `the merge was refused (${decided.note ?? "no reason"}): push a fix to the PR`;
+        await this.waitForHead(b, headSha, reason);
+        close = { as: "sent_back", reason };
+      }
+    } catch (error) {
+      return this.ended(error);
+    }
+  }
+
+  /** Ends the item for an `Ended` (opening an incident when it says so); rethrows anything else. */
+  private async ended(error: unknown): Promise<WorkItemOutcome> {
+    const id = this.workItemId;
+    if (!(error instanceof Ended)) throw error;
+    if (error.incident) {
+      await this.call("end: incident", "incident.open", {
+        workItemId: id,
+        kind: error.incident.kind,
+        reason: error.reason,
+        runId: error.incident.runId,
+      });
+    }
+    await this.call(`end: ${error.status}`, "workItem.finish", {
+      workItemId: id,
+      status: error.status,
+      reason: error.reason,
+    });
+    return { status: error.status, workItemId: id, reason: error.reason };
   }
 
   // ---- building blocks ----
 
-  private async meta(): Promise<Meta> {
+  /** The attached PR's head as the factory last recorded it (verify.refresh moves it on a push). */
+  private async head(name: string): Promise<string> {
+    return this.step.do(name, async () => {
+      const row = await this.env.DB.prepare("SELECT head_sha FROM core_work_items WHERE id = ?")
+        .bind(this.workItemId)
+        .first<{ head_sha: string | null }>();
+      if (!row?.head_sha) throw new Error(`work item ${this.workItemId} has no head`);
+      return row.head_sha;
+    });
+  }
+
+  /**
+   * Waits for a push to the attached PR past `headSha`: workItem.awaitHead puts the item in
+   * waiting with the reason (or says the head already moved), then `pr-head-<item>` wakes it. A
+   * repeated or early event only costs a re-read of the head.
+   */
+  async waitForHead(b: number, headSha: string, reason: string): Promise<void> {
+    const awaited = await this.act(`verify #${b}: await push`, "workItem.awaitHead", {
+      workItemId: this.workItemId,
+      headSha,
+      reason,
+    });
+    if (awaited.moved === true) return;
+    for (let i = 1; ; i++) {
+      const sfx = i === 1 ? "" : ` #${i}`;
+      try {
+        await this.step.waitForEvent(`verify #${b}: push${sfx}`, {
+          type: String(awaited.event),
+          timeout: HEAD_RECHECK,
+        });
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+      }
+      if ((await this.head(`verify #${b}: pushed head${sfx}`)) !== headSha) return;
+    }
+  }
+
+  private metaRead: Promise<Meta> | null = null;
+
+  /** The item and its policy's limits: one step, read once per run. */
+  async meta(): Promise<Meta> {
+    this.metaRead ??= this.readMeta();
+    return this.metaRead;
+  }
+
+  private async readMeta(): Promise<Meta> {
     return this.step.do("meta: item", async () => {
       const row = await this.env.DB.prepare(
-        `SELECT w.number, w.title, w.body, w.branch, w.kind, pr.default_branch, p.raw FROM core_work_items w
+        `SELECT w.number, w.title, w.body, w.branch, w.kind, w.pr_number, w.head_sha,
+                pr.default_branch, p.raw FROM core_work_items w
          JOIN core_projects pr ON pr.id = w.project_id
          LEFT JOIN core_project_policies p ON p.project_id = pr.id AND p.sha = pr.policy_sha
          WHERE w.id = ?`,
@@ -543,8 +771,10 @@ class ItemFlow {
           title: string;
           body: string;
           branch: string;
-          kind: "change" | "incident";
-          default_branch: string | null;
+          kind: "change" | "incident" | "attached";
+          pr_number: number | null;
+          head_sha: string | null;
+          default_branch: string;
           raw: string | null;
         }>();
       if (!row) throw new Error(`work item ${this.workItemId} not found`);
@@ -562,8 +792,10 @@ class ItemFlow {
         title: row.title,
         body: row.body,
         branch: row.branch,
-        ...(row.default_branch ? { defaultBranch: row.default_branch } : {}),
         kind: row.kind,
+        prNumber: row.pr_number,
+        headSha: row.head_sha,
+        defaultBranch: row.default_branch,
         retryLimit: policy.retryLimit ?? 2,
         gateTimeoutMs: (policy.timeouts?.gateHours ?? 72) * 3_600_000,
         questionTimeoutMs: (policy.timeouts?.questionHours ?? 48) * 3_600_000,
@@ -638,17 +870,21 @@ class ItemFlow {
   /**
    * Calls an operation; when the gate check says review, waits for `approval-<id>` (escalating to
    * the backup owner on each timeout, never auto-approving) and on approval re-runs it with the
-   * approval.
+   * approval. With `returnRefusedApply`, an approved re-run the operation refuses (an attached PR
+   * whose head moved under the approval) comes back as `refused` instead of ending the item.
    */
   async gate(
     meta: Meta | null,
     name: string,
     op: string,
     input: unknown,
-    apply = true,
+    options: { returnRefusedApply?: boolean; apply?: boolean } = {},
   ): Promise<
     | { decision: "approved"; output: Json; pendingActionId?: string }
-    | { decision: Exclude<GateEventPayload["decision"], "approved">; note: string | null }
+    | {
+        decision: Exclude<GateEventPayload["decision"], "approved"> | "refused";
+        note: string | null;
+      }
   > {
     const first = await this.call(name, op, input);
     if (first.status === "refused")
@@ -674,9 +910,12 @@ class ItemFlow {
       if (decided.decision !== "approved")
         return { decision: decided.decision, note: decided.note };
       // v4's merge: the approval is applied later, when the item is the head of the merge queue.
-      if (!apply)
+      if (options.apply === false)
         return { decision: "approved", output: {}, pendingActionId: first.pendingActionId };
       const applied = await this.call(`${name}: apply`, op, input, first.pendingActionId);
+      if (applied.status === "refused" && options.returnRefusedApply) {
+        return { decision: "refused", note: applied.message };
+      }
       if (applied.status !== "ok") {
         throw new Ended(
           "failed",
@@ -801,7 +1040,9 @@ class ItemFlow {
       headSha = auto.headSha; // refused (not check-only): the normal merge gate on the current head
     }
     const input = (at: string) => ({ workItemId: id, headSha: at, touchesFactoryConfig });
-    const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), false);
+    const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
+      apply: false,
+    });
     if (decided.decision !== "approved") return this.notApproved(decided);
     if (!decided.pendingActionId) {
       // pr.merge ran without a gate (never for `merge` risk; a policy can't loosen it): it merged.
@@ -820,7 +1061,9 @@ class ItemFlow {
   }
 
   private notApproved(decided: {
-    decision: Exclude<GateEventPayload["decision"], "approved">;
+    // `withdrawn` and `refused` are an attached PR's (its head moved); a factory item's head
+    // doesn't move while its merge gate is open, so they end it like a rejection.
+    decision: Exclude<GateEventPayload["decision"], "approved"> | "refused";
     note: string | null;
   }): { kind: "sent_back"; note: string | null } {
     if (decided.decision === "sent_back") return { kind: "sent_back", note: decided.note };

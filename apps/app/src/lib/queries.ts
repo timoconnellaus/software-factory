@@ -101,6 +101,23 @@ export const routingQuery = (projectId: string) =>
     staleTime: 10_000,
   });
 
+/** The project's open PRs no work item owns yet (New work's Attach list, spec 05). */
+export const openPullsQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["open-pulls", projectId],
+    queryFn: () => read("github.openPullRequests", { projectId }),
+    staleTime: 30_000,
+  });
+
+/** What `/attach` shows for one PR (spec 05). */
+export const attachPreviewQuery = (repo: { owner: string; name: string }, prNumber: number) =>
+  queryOptions({
+    queryKey: ["attach", repo.owner, repo.name, prNumber],
+    queryFn: () => read("workItem.previewAttach", { repo, prNumber }),
+    staleTime: 10_000,
+    retry: false,
+  });
+
 /** After a decision: everything that shows gates, items or counts. */
 export function useRefreshAfterDecision() {
   const queryClient = useQueryClient();

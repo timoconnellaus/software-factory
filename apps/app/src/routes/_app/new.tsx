@@ -10,10 +10,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { AttachButton } from "#/components/attach-button";
 import { StagedAttachments, uploadStaged } from "#/components/staged-attachments";
 import { op } from "#/lib/op";
 import { OpError, type OpOutput } from "#/lib/ops";
-import { projectsQuery, routingQuery } from "#/lib/queries";
+import { openPullsQuery, projectsQuery, routingQuery } from "#/lib/queries";
 import { useProjects, useSession } from "#/lib/session";
 
 export const Route = createFileRoute("/_app/new")({
@@ -26,7 +27,12 @@ export const Route = createFileRoute("/_app/new")({
       .ensureQueryData(projectsQuery(session.orgs.map((o) => o.id)))
       .catch(() => []);
     const project = defaultProject(projects, deps.project);
-    if (project) await queryClient.ensureQueryData(routingQuery(project.id)).catch(() => null);
+    if (project) {
+      await Promise.all([
+        queryClient.ensureQueryData(routingQuery(project.id)).catch(() => null),
+        queryClient.ensureQueryData(openPullsQuery(project.id)).catch(() => null),
+      ]);
+    }
   },
   component: NewWorkPage,
 });
@@ -154,11 +160,51 @@ function NewWorkPage() {
         </p>
       )}
       {selected && <RoutingPreview state={routing} />}
+      {selected && <OpenPulls projectId={selected} />}
       <p className="text-muted-foreground text-xs">
         Or from anywhere (after V1): <span className="font-mono">@factory</span> in Slack or Linear,
         a GitHub label, or a local Claude session.
       </p>
     </main>
+  );
+}
+
+/**
+ * The project's open pull requests that no work item owns (spec 05): a local session's or a
+ * person's PR can be attached here, so the factory verifies it and takes it to the merge gate.
+ */
+function OpenPulls({ projectId }: { projectId: string }) {
+  const pulls = useQuery(openPullsQuery(projectId));
+  const list = pulls.data?.pulls ?? [];
+  if (pulls.isPending || pulls.error || list.length === 0) return null;
+  return (
+    <section className="grid gap-2" data-testid="open-pulls">
+      <div>
+        <h2 className="font-medium text-sm">Open pull requests not in the factory</h2>
+        <p className="text-muted-foreground text-xs">
+          Built outside the factory? Attach it: the factory verifies its head and asks you to merge.
+        </p>
+      </div>
+      <Card className="gap-0 divide-y py-0">
+        {list.map((p) => (
+          <div key={p.number} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
+            <div className="min-w-0 grow">
+              <div className="truncate text-sm">
+                {p.title} <span className="text-muted-foreground">#{p.number}</span>
+              </div>
+              <div className="truncate text-muted-foreground text-xs">
+                {p.author ? `${p.author} · ` : ""}
+                <span className="font-mono">{p.branch}</span>
+                {p.refusal ? ` · can't attach: ${p.refusal}` : ""}
+              </div>
+            </div>
+            {!p.refusal && (
+              <AttachButton projectId={projectId} prNumber={p.number} label="Attach" size="sm" />
+            )}
+          </div>
+        ))}
+      </Card>
+    </section>
   );
 }
 

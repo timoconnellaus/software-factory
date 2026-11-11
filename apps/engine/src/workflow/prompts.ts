@@ -109,3 +109,26 @@ export function verifyPrompt(
     ),
   ].join("\n");
 }
+
+/**
+ * Triage for an attached PR (spec 05): the work is already built, so triage reads the PR's diff
+ * and drafts the acceptance criteria verify will check it against. The checkout is the PR's branch.
+ */
+export function attachedTriagePrompt(
+  item: ItemBrief,
+  input: { prNumber: number | null; headSha: string | null; defaultBranch: string },
+): string {
+  return [
+    `You are triaging work item #${item.number} for the software factory: pull request ${input.prNumber ? `#${input.prNumber}` : ""} on branch \`${item.branch}\`${input.headSha ? ` at ${input.headSha}` : ""}, opened outside the factory and attached to it. The work is already done; the factory will verify it, not build it. Read the repository (AGENTS.md, CONTEXT.md, docs/) and the PR's diff against \`${input.defaultBranch}\` (\`git diff origin/${input.defaultBranch}...HEAD\`, or the merge base with the default branch), but change nothing.`,
+    "",
+    `PR title: ${item.title}`,
+    "",
+    item.body,
+    "",
+    "Size it as if it were new work: small (one clear change, no design choices), medium (a few files or one real decision), large (new behaviour across the system, or several decisions).",
+    "Draft its acceptance criteria from the PR's title, body and diff: checkable statements of what the PR claims to do, which an independent reviewer will check. List the decision domains it touches (product, architecture, security, ...).",
+    footer(
+      '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "summary": "..." }',
+    ),
+  ].join("\n");
+}
