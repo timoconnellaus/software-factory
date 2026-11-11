@@ -41,6 +41,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #10 | Review decisions applied to the docs: ADRs 0033–0047, amendments to 0001–0032, vocabulary (connector, autonomy policy, project template, Question, `docs/specs/`), R1 specs split into milestones, spec 15 |
 | #11 | [V1 scope](v1-scope.md): the dogfooding factory |
 | #13 | V1 step 1, core + engine: `core_*` schema, operations + `invoke()` + gate, the work-item Workflow, the signed runner channel, GitHub App job tokens. ADRs 0050–0054; spike ADRs 0100 and 0110 promoted |
+| #15 | V1 step 4, verify + GitHub connector + incidents: review-packet assembly from CI on the head SHA, `factory/verify` per SHA, the App webhook (`/webhooks/github`), branch confinement (ruleset + push validation), Workflow v2, incident root causes, the check-only auto-merge (ADR 0230), the evals regression suite. ADRs 0230–0231, migration 0040 |
 
 ## In flight
 - Nothing recorded. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
