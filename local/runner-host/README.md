@@ -21,6 +21,9 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    `harness-claude`'s per-run settings into it. Claude Code then starts in an Orca terminal (you can
    take it over there), with the harness's own flags, and is checked before it gets the prompt
    (ADR 0270).
+   **Build only:** before the session the host fetches the job's `repo.defaultBranch` too and
+   merges it into the run branch (a merge commit, never a rebase, ADR 0320). A conflict is left in
+   progress for the session to resolve; unmerged paths at the end fail the run with no push.
 4. It streams events (state, agent status, tools, terminal output) with the fencing token.
 5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
 6. **Build only:** it commits any leftovers, then pushes `HEAD` to the run branch, and only there,

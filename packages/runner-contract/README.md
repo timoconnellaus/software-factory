@@ -18,7 +18,7 @@ a worktree and a branch; `release` never unregisters or deletes a checkout.
    (`{ jobId, fencingToken }`): renews each lease (10 min) and returns `cancel` commands for jobs the
    cloud stopped (cancelled, taken over, kill switch).
 2. `claim { claimId }` when there's room. The `Job` names the run branch (`job.branch`, the only
-   branch it may push), its base (`job.repo.baseRef`, the work item branch), the role and model, the
+   branch it may push), its base (`job.repo.baseRef`, the work item branch; `job.repo.defaultBranch`, optional, is merged into a build's run branch before the session, ADR 0320), the role and model, the
    prompt and context, and `lease.fencingToken`.
 3. `token(jobId, fencingToken)`: a fresh GitHub App token for the one repo, `contents: write`. Never
    cached by the cloud. Give the harness a git credential helper that serves only this token, in a

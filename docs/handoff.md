@@ -126,6 +126,14 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
 - Onboarding: `project.checkGitHub { projectId }` → `{ ok, problems }`, now the ADR 0280 ruleset verdict; `protection.check` records it.
 - Not built: holdout tests (spec 04 criterion 8, ADR 0034), the evidence policy (criterion 11).
 
+**Unmergeable PRs (ADR 0320, incident 2026-11-11 #7)**
+- Jobs carry `repo.defaultBranch`; the runner host merges it into the run branch before a build
+  (conflicts left for the session; unresolved ones fail without a push).
+- Workflow **v3** (`WORKFLOW_VERSION = 3`): `ci.read` also returns the PR's `mergeable`; a conflict
+  at PR open or during the CI wait sends the item back to build (3 free rounds); CI still missing
+  asks a blocking `operations` Question (Re-check CI / Stop this work item), no build retry.
+- Merge queue: not adopted (ADR 0320, "Merge queue").
+
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):
 1. **(a) Core loop**, one user and one repo: spec 01 first (everything builds on it), then 02 and 03
