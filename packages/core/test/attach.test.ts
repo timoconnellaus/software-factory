@@ -366,6 +366,17 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
       ),
     ).toHaveLength(1);
 
+    // Reopened, it reads as unattached again, and attaching it makes a new item.
+    const reopened = await refresh(w, {
+      headSha: pr.headSha,
+      prNumber: pr.number,
+      trigger: "pull_request",
+    });
+    expect(reopened.outcome).toBe("unattached");
+    const again = await attach(w, pr.number);
+    expect(again.outcome).toBe("created");
+    expect(again.workItemId).not.toBe(created.workItemId);
+
     // A factory PR closing is left to its Workflow.
     const own = await ok<{ workItemId: string }>(
       "workItem.create",

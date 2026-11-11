@@ -343,6 +343,11 @@ export const verifyRefresh = defineOperation({
           .executeTakeFirst()) ?? null;
     }
 
+    // An attached item that ended without merging (its PR closed, or it was cancelled) no longer
+    // owns the PR: reopened, it reads as unattached again and can be attached anew.
+    if (item?.kind === "attached" && ["cancelled", "failed", "rejected"].includes(item.status)) {
+      item = null;
+    }
     if (!item) {
       if (!input.prNumber && !existing) return { outcome: "ignored" as const, ...none };
       const output = {
