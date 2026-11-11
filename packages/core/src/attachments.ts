@@ -154,7 +154,8 @@ export function attachmentBlobKey(orgId: string, workItemId: string, attachmentI
 }
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  // The cast: every Uint8Array here is backed by an ArrayBuffer (DOM and workers typings disagree).
+  const digest = await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 

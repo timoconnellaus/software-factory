@@ -16,6 +16,8 @@ export interface OpMap {
   "workItem.list": Def<typeof operations.workItemList>;
   "workItem.timeline": Def<typeof operations.workItemTimeline>;
   "workItem.cancel": Def<typeof operations.workItemCancel>;
+  "workItem.attachment.list": Def<typeof operations.workItemAttachmentList>;
+  "workItem.attachment.remove": Def<typeof operations.workItemAttachmentRemove>;
   "spec.approve": Def<typeof operations.specApprove>;
   "spec.requestChanges": Def<typeof operations.specRequestChanges>;
   "review.merge": Def<typeof operations.reviewMerge>;
@@ -53,6 +55,8 @@ export const APP_OPERATIONS = [
   "workItem.list",
   "workItem.timeline",
   "workItem.cancel",
+  "workItem.attachment.list",
+  "workItem.attachment.remove",
   "spec.approve",
   "spec.requestChanges",
   "review.merge",
@@ -84,6 +88,7 @@ export const APP_READ_OPERATIONS = [
   "workItem.get",
   "workItem.list",
   "workItem.timeline",
+  "workItem.attachment.list",
   "project.list",
   "github.repos",
   "setup.status",
@@ -113,6 +118,7 @@ export class OpError extends Error {
 
 export type WorkItemDetail = OpOutput<"workItem.get">;
 export type Inbox = OpOutput<"inbox.list">;
+export type Attachment = OpOutput<"workItem.attachment.list">["attachments"][number];
 export type TimelineEntry = OpOutput<"workItem.timeline">["entries"][number];
 export type Project = OpOutput<"project.list">["projects"][number];
 export type SetupStatus = OpOutput<"setup.status">;
