@@ -105,6 +105,58 @@ describe("runJob", () => {
     expect(calls).toEqual([]);
   });
 
+  it("fetches the work item's attachments for an adapter that declares the capability", async () => {
+    const { repo, cloud, cp } = await world();
+    const j = job({ stage: "triage", harness: { id: "claude-code", role: "triage", prompt: "t" } });
+    cloud.claims.set("c", j);
+    const meta = {
+      id: "att_1",
+      filename: "notes.txt",
+      contentType: "text/plain",
+      sizeBytes: 5,
+      sha256: "0".repeat(64),
+      createdAt: new Date().toISOString(),
+    };
+    cloud.attachments.set(j.jobId, [{ meta, base64: btoa("hello") }]);
+    const triage = async (wt: string) => {
+      await writeFile(join(wt, RESULT_FILE), JSON.stringify({ size: "small", reason: "r" }));
+      return [{ type: "session.ended" as const, outcome: "completed" as const }];
+    };
+    const base = fakeAdapter((x) => repo.host.clonePath(x), triage);
+    const got: string[] = [];
+    const adapter = {
+      ...base,
+      async manifest() {
+        const m = await base.manifest();
+        return { ...m, capabilities: [...m.capabilities, "work-item-attachments" as const] };
+      },
+      async attachFiles(
+        _j: unknown,
+        _w: unknown,
+        files: { meta: { id: string }; bytes: Uint8Array }[],
+      ) {
+        for (const f of files) got.push(`${f.meta.id}:${new TextDecoder().decode(f.bytes)}`);
+        return '\n## Attachments\n<untrusted-data label="attachment 1">…</untrusted-data>';
+      },
+    };
+    const report = await runJob({ adapter, cp, git: repo.host, job: j });
+    expect(report.outcome).toBe("completed");
+    expect(got).toEqual(["att_1:hello"]);
+    expect(base.prompts[0]).toContain("## Attachments");
+
+    // A runner that doesn't declare the capability runs the same job and never asks.
+    const k = job({ stage: "triage", harness: { id: "claude-code", role: "triage", prompt: "t" } });
+    cloud.claims.set("d", k);
+    cloud.attachments.set(k.jobId, [{ meta, base64: btoa("hello") }]);
+    const calls = cloud.attachmentCalls;
+    const plain = fakeAdapter((x) => repo.host.clonePath(x), triage);
+    const plainReport = await runJob({ adapter: plain, cp, git: repo.host, job: k });
+    expect(plainReport.outcome).toBe("completed");
+    expect(plainReport.handedBack).toBe(true);
+    expect(cloud.attachmentCalls).toBe(calls);
+    expect(plain.prompts[0]).toBe("t");
+  });
+
   it("triage: pushes nothing and passes the result through", async () => {
     const { repo, cloud, cp } = await world();
     const j = job({ stage: "triage", harness: { id: "claude-code", role: "triage", prompt: "t" } });

@@ -5,6 +5,7 @@
 // read a session's transcript or stream back.
 import type { HarnessId, Job } from "@software-factory/runner-contract";
 
+export * from "./attachments.ts";
 export * from "./project.ts";
 export * from "./settings.ts";
 export * from "./transcript.ts";

@@ -14,6 +14,7 @@
 // zod schemas in ./wire.ts; the types here that cross the wire are inferred from them.
 import type { z } from "zod";
 import type {
+  AttachmentMeta,
   artifactSchema,
   capabilityManifestSchema,
   capacitySchema,
@@ -67,6 +68,12 @@ export type RunnerEvent = z.infer<typeof runnerEventSchema>;
 export type Artifact = z.infer<typeof artifactSchema>;
 export type StoredArtifact = z.infer<typeof storedArtifactSchema>;
 export type Handback = z.infer<typeof handbackSchema>;
+
+/** A work item attachment the host fetched for a run (ADR 0260). Untrusted data. */
+export interface AttachmentFile {
+  meta: AttachmentMeta;
+  bytes: Uint8Array;
+}
 
 /** What an adapter returns from prepareWorkspace. Adapters may extend it with private fields. */
 export interface WorkspaceHandle {
@@ -126,6 +133,12 @@ export interface RunnerAdapter<
   collectArtifacts(job: Job, workspace: W, session: S | undefined): Promise<Artifact[]>;
   /** Frees everything prepareWorkspace/startSession made. Must be safe to call twice. */
   release(job: Job, workspace: W | undefined, session: S | undefined): Promise<void>;
+  /**
+   * Optional, with the `work-item-attachments` capability (ADR 0260): put the work item's files
+   * into the run, outside the git tree, and return the text to add to the prompt (labelled
+   * untrusted data). Called after prepareWorkspace and before startSession.
+   */
+  attachFiles?(job: Job, workspace: W, files: AttachmentFile[]): Promise<string>;
   /** Optional: send a person's message into the live session. */
   steer?(session: S, text: string): Promise<void>;
 }

@@ -192,6 +192,35 @@ describe("runner-orca adapter", () => {
     await expect(runner.release(job, ws, session)).resolves.toBeUndefined();
   });
 
+  it("puts attachments outside the worktree, lets the harness read them, and removes them on release", async () => {
+    const { runner, wtPath, root } = await setup([{ state: "idle" }]);
+    const ws = await runner.prepareWorkspace(job, new AbortController().signal);
+    const dir = join(root, "attachments", "job_1");
+    expect(ws.attachmentsDir).toBe(dir);
+    const settings = JSON.parse(await readFile(join(wtPath, SETTINGS_FILE), "utf8"));
+    expect(settings.permissions.additionalDirectories).toEqual([dir]);
+    const note = await runner.attachFiles?.(job, ws, [
+      {
+        meta: {
+          id: "att_1",
+          filename: "log.txt",
+          contentType: "text/plain",
+          sizeBytes: 2,
+          sha256: "0".repeat(64),
+          createdAt: new Date().toISOString(),
+        },
+        bytes: new TextEncoder().encode("hi"),
+      },
+    ]);
+    const path = join(dir, "att_1", "log.txt");
+    expect(await readFile(path, "utf8")).toBe("hi");
+    expect(path.startsWith(wtPath)).toBe(false);
+    expect(note).toContain(`path: ${path}`);
+    expect(note).toContain("<untrusted-data");
+    await runner.release(job, ws, undefined);
+    await expect(readFile(path, "utf8")).rejects.toThrow();
+  });
+
   it("refuses a workspace whose branch Orca renamed (one branch per run)", async () => {
     const { runner, calls } = await setup([{ state: "idle" }], {}, `${job.branch}-2`);
     await expect(runner.prepareWorkspace(job, new AbortController().signal)).rejects.toThrow(

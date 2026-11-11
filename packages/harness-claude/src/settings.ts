@@ -39,6 +39,11 @@ export interface SettingsOptions {
   runDir: string;
   /** Extra absolute paths the harness must not read (the runner's own key file, its run dirs). */
   protectPaths?: string[];
+  /**
+   * Where the run's attachments are written (ADR 0260), outside the worktree: the harness may read
+   * there and nowhere else outside the worktree.
+   */
+  attachmentsDir?: string;
   /** Override the stage's permission mode (the runner owner's choice, e.g. `auto` for builds). */
   permissionMode?: Partial<Record<JobStage, PermissionMode>>;
 }
@@ -267,7 +272,12 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
     $schema: "https://json.schemastore.org/claude-code-settings.json",
     permissions: {
       defaultMode: mode,
-      allow: stageAllow(job.stage, options.worktree),
+      allow: [
+        ...stageAllow(job.stage, options.worktree),
+        ...(options.attachmentsDir
+          ? [`Read(//${options.attachmentsDir.replace(/^\/+/, "")}/**)`]
+          : []),
+      ],
       deny: [
         ...bash(DENY_COMMANDS),
         ...readDeny.map((p) => `Read(${p})`),
@@ -275,7 +285,12 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
         // The worktree's git internals are the host's (it pushes from them).
         "Edit(.git/**)",
         "Write(.git/**)",
+        // The attachments are the requester's, read only.
+        ...(options.attachmentsDir
+          ? [`Edit(//${options.attachmentsDir.replace(/^\/+/, "")}/**)`]
+          : []),
       ],
+      ...(options.attachmentsDir ? { additionalDirectories: [options.attachmentsDir] } : {}),
     },
     env: harnessEnv(options.runDir),
     includeCoAuthoredBy: false,
