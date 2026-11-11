@@ -8,13 +8,22 @@
 //   `factory/*` by repository rulesets and checked by the control plane (ADR 0052);
 // - the **control-plane token**: one repository, contents + pull requests, used here only, cached
 //   in memory until shortly before it expires.
-import { type GitHubService, OperationError, type RepoRef } from "@software-factory/core";
+import {
+  type ChangedFile,
+  type CheckRunInfo,
+  type GitHubService,
+  OperationError,
+  type RepoGuards,
+  type RepoRef,
+} from "@software-factory/core";
 
 const API = "https://api.github.com";
 const USER_AGENT = "software-factory-engine";
 
 export interface GitHubAppConfig {
   appId: string;
+  /** The App's slug: its pushes show up as `<slug>[bot]` (ADR 0052, the push webhook). */
+  appSlug: string;
   /** The App's private key, PEM (GitHub issues PKCS#1 "BEGIN RSA PRIVATE KEY"; PKCS#8 works too). */
   privateKey: string;
   fetch?: typeof fetch;
@@ -25,6 +34,11 @@ export interface GitHubAppConfig {
 export const JOB_TOKEN_PERMISSIONS = { contents: "write" } as const;
 /** Permissions the control plane uses for branches, spec commits, PRs and merges. */
 export const CONTROL_PLANE_PERMISSIONS = { contents: "write", pull_requests: "write" } as const;
+/** Posting and reading check runs (`factory/verify`, CI). A separate token, so an App installed
+ * without `checks` still opens and merges PRs, and the failure names what's missing. */
+export const CHECKS_PERMISSIONS = { checks: "write" } as const;
+/** Reading branch protection and rulesets at onboarding (spec 04). */
+export const ADMIN_READ_PERMISSIONS = { administration: "read" } as const;
 
 export function githubApp(config: GitHubAppConfig): GitHubService & {
   appJwt(): Promise<string>;
@@ -70,11 +84,14 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
     return { token: body.token, expiresAt: body.expires_at };
   }
 
-  async function controlToken(repo: RepoRef): Promise<string> {
-    const id = `${repo.installationId}/${repo.owner}/${repo.repo}`;
+  async function controlToken(
+    repo: RepoRef,
+    permissions: Record<string, string> = CONTROL_PLANE_PERMISSIONS,
+  ): Promise<string> {
+    const id = `${repo.installationId}/${repo.owner}/${repo.repo}/${Object.keys(permissions).join(",")}`;
     const cached = cache.get(id);
     if (cached && Date.parse(cached.expiresAt) - now().getTime() > 5 * 60_000) return cached.token;
-    const fresh = await installationToken(repo, CONTROL_PLANE_PERMISSIONS);
+    const fresh = await installationToken(repo, permissions);
     cache.set(id, fresh);
     return fresh.token;
   }
@@ -84,10 +101,11 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
     method: string,
     path: string,
     body?: unknown,
+    permissions: Record<string, string> = CONTROL_PLANE_PERMISSIONS,
   ): Promise<{ status: number; json: unknown }> {
     const response = await doFetch(`${API}/repos/${repo.owner}/${repo.repo}${path}`, {
       method,
-      headers: headers(`token ${await controlToken(repo)}`),
+      headers: headers(`token ${await controlToken(repo, permissions)}`),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await response.text();
@@ -104,7 +122,10 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
   };
   const ref = (branch: string) => branch.split("/").map(encodeURIComponent).join("/");
 
+  const enc = (path: string) => path.split("/").map(encodeURIComponent).join("/");
+
   return {
+    app: { id: config.appId, slug: config.appSlug },
     appJwt,
     installationToken,
     mintRepoToken: (repo) => installationToken(repo, JOB_TOKEN_PERMISSIONS),
@@ -177,6 +198,145 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       if (r.status !== 200) fail(`compare ${base}...${head}`, r);
       return ((r.json as { files?: { filename: string }[] }).files ?? []).map((f) => f.filename);
     },
+    async compareFiles(repo, base, head) {
+      // GitHub lists at most 300 files per compare; the auto-merge rule refuses a compare that big.
+      const r = await api(
+        repo,
+        "GET",
+        `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=300`,
+      );
+      if (r.status !== 200) fail(`compare ${base}...${head}`, r);
+      const files =
+        (
+          r.json as {
+            files?: {
+              filename: string;
+              status: ChangedFile["status"];
+              previous_filename?: string;
+            }[];
+          }
+        ).files ?? [];
+      return files.map((f) => ({
+        path: f.filename,
+        status: f.status,
+        ...(f.previous_filename ? { previousPath: f.previous_filename } : {}),
+      }));
+    },
+    async readFile(repo, path, at) {
+      const r = await api(repo, "GET", `/contents/${enc(path)}?ref=${encodeURIComponent(at)}`);
+      if (r.status === 404) return null;
+      if (r.status !== 200) fail(`read ${path}@${at}`, r);
+      const body = r.json as { content?: string; encoding?: string; type?: string };
+      if (body.type !== "file" || typeof body.content !== "string") return null;
+      return fromBase64Text(body.content);
+    },
+    async listCheckRuns(repo, at) {
+      const out: CheckRunInfo[] = [];
+      for (let page = 1; page <= 10; page++) {
+        const r = await api(
+          repo,
+          "GET",
+          `/commits/${encodeURIComponent(at)}/check-runs?per_page=100&page=${page}`,
+          undefined,
+          CHECKS_PERMISSIONS,
+        );
+        if (r.status !== 200) fail(`check runs ${at}`, r);
+        const body = r.json as {
+          total_count: number;
+          check_runs: {
+            id: number;
+            name: string;
+            status: CheckRunInfo["status"];
+            conclusion: string | null;
+            html_url: string | null;
+            app: { slug: string } | null;
+          }[];
+        };
+        for (const c of body.check_runs) {
+          out.push({
+            id: String(c.id),
+            name: c.name,
+            status: c.status,
+            conclusion: c.conclusion,
+            appSlug: c.app?.slug ?? null,
+            url: c.html_url,
+          });
+        }
+        if (out.length >= body.total_count || body.check_runs.length === 0) break;
+      }
+      return out;
+    },
+    async postCheckRun(repo, check) {
+      const body = {
+        name: check.name,
+        head_sha: check.headSha,
+        status: check.status,
+        ...(check.status === "completed" && check.conclusion
+          ? { conclusion: check.conclusion, completed_at: now().toISOString() }
+          : {}),
+        ...(check.detailsUrl ? { details_url: check.detailsUrl } : {}),
+        ...(check.externalId ? { external_id: check.externalId } : {}),
+        output: { title: check.title.slice(0, 250), summary: check.summary.slice(0, 65_000) },
+      };
+      const r = check.checkRunId
+        ? await api(repo, "PATCH", `/check-runs/${check.checkRunId}`, body, CHECKS_PERMISSIONS)
+        : await api(repo, "POST", "/check-runs", body, CHECKS_PERMISSIONS);
+      if (r.status !== 200 && r.status !== 201) fail(`check run ${check.name}`, r);
+      return { id: String((r.json as { id: number }).id) };
+    },
+    async repoGuards(repo, branch): Promise<RepoGuards> {
+      const p = await api(
+        repo,
+        "GET",
+        `/branches/${ref(branch)}/protection`,
+        undefined,
+        ADMIN_READ_PERMISSIONS,
+      );
+      if (p.status !== 200 && p.status !== 404) fail(`protection ${branch}`, p);
+      const raw = p.json as {
+        required_status_checks?: { checks?: { context: string; app_id: number | null }[] };
+        enforce_admins?: { enabled: boolean };
+      };
+      const protection =
+        p.status === 404
+          ? null
+          : {
+              requiredChecks: (raw.required_status_checks?.checks ?? []).map((c) => ({
+                context: c.context,
+                appId: c.app_id ?? null,
+              })),
+              enforceAdmins: raw.enforce_admins?.enabled === true,
+            };
+      const list = await api(repo, "GET", "/rulesets", undefined, ADMIN_READ_PERMISSIONS);
+      if (list.status !== 200) fail("rulesets", list);
+      const rulesets: RepoGuards["rulesets"] = [];
+      for (const item of (list.json as { id: number }[]) ?? []) {
+        const one = await api(
+          repo,
+          "GET",
+          `/rulesets/${item.id}`,
+          undefined,
+          ADMIN_READ_PERMISSIONS,
+        );
+        if (one.status !== 200) continue;
+        const rs = one.json as {
+          name: string;
+          enforcement: string;
+          target?: string;
+          conditions?: { ref_name?: { include?: string[]; exclude?: string[] } };
+          rules?: { type: string }[];
+        };
+        if (rs.target && rs.target !== "branch") continue;
+        rulesets.push({
+          name: rs.name,
+          enforcement: rs.enforcement,
+          include: rs.conditions?.ref_name?.include ?? [],
+          exclude: rs.conditions?.ref_name?.exclude ?? [],
+          rules: (rs.rules ?? []).map((x) => x.type),
+        });
+      }
+      return { protection, rulesets };
+    },
   };
 }
 
@@ -235,6 +395,10 @@ function fromBase64(text: string): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
   return out;
+}
+
+function fromBase64Text(text: string): string {
+  return new TextDecoder().decode(fromBase64(text.replace(/\s+/g, "")));
 }
 
 function b64(text: string): string {

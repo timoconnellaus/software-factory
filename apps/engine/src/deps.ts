@@ -13,10 +13,15 @@ export function services(env: Env): FactoryServices {
     env.GITHUB_FAKE === "1"
       ? fakeGitHub(env.DB)
       : GH_APP_PRIVATE_KEY
-        ? githubApp({ appId: env.GH_APP_ID, privateKey: GH_APP_PRIVATE_KEY })
+        ? githubApp({
+            appId: env.GH_APP_ID,
+            appSlug: env.GH_APP_SLUG,
+            privateKey: GH_APP_PRIVATE_KEY,
+          })
         : unavailableGitHub();
   return {
     github,
+    publicBaseUrl: env.PUBLIC_BASE_URL,
     runnerKey: async (runnerId, version) => {
       if (!RUNNER_CHANNEL_SECRET) {
         throw new OperationError("unavailable", "RUNNER_CHANNEL_SECRET is not set on sf-engine");
@@ -40,6 +45,7 @@ function unavailableGitHub(): FactoryServices["github"] {
     throw new OperationError("unavailable", "GH_APP_PRIVATE_KEY is not set on sf-engine");
   };
   return {
+    app: { id: "", slug: "" },
     mintRepoToken: no,
     getBranchSha: no,
     createBranch: no,
@@ -48,5 +54,10 @@ function unavailableGitHub(): FactoryServices["github"] {
     openPullRequest: no,
     changedFiles: no,
     mergePullRequest: no,
+    compareFiles: no,
+    readFile: no,
+    listCheckRuns: no,
+    postCheckRun: no,
+    repoGuards: no,
   };
 }

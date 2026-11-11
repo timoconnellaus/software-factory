@@ -9,8 +9,60 @@ export interface RepoRef {
   repo: string;
 }
 
+/** A check run on a commit, as GitHub reports it (CI, `factory/verify`, anything else). */
+export interface CheckRunInfo {
+  id: string;
+  name: string;
+  status: "queued" | "in_progress" | "completed" | "waiting" | "requested" | "pending";
+  /** Set once completed: success, failure, neutral, cancelled, skipped, timed_out, action_required, stale. */
+  conclusion: string | null;
+  /** The App that posted it (`github-actions` for Actions), when GitHub says. */
+  appSlug: string | null;
+  url: string | null;
+}
+
+/** What `factory/verify` (or any check the App posts) should say about one head SHA. */
+export interface CheckRunPost {
+  name: string;
+  headSha: string;
+  status: "queued" | "in_progress" | "completed";
+  conclusion?: "success" | "failure" | "neutral" | "cancelled" | "action_required";
+  title: string;
+  /** Markdown, at most 65 535 characters. */
+  summary: string;
+  detailsUrl?: string;
+  externalId?: string;
+  /** Update this check run instead of creating one. */
+  checkRunId?: string | null;
+}
+
+/** One file in a compare, with how it changed (for the check-only auto-merge rule, ADR 0230). */
+export interface ChangedFile {
+  path: string;
+  status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed" | "unchanged";
+  previousPath?: string;
+}
+
+/** What guards a repo's default branch: classic branch protection and repository rulesets. */
+export interface RepoGuards {
+  /** Null when the branch has no classic protection (or it can't be read). */
+  protection: {
+    requiredChecks: { context: string; appId: number | null }[];
+    enforceAdmins: boolean;
+  } | null;
+  rulesets: {
+    name: string;
+    enforcement: string;
+    include: string[];
+    exclude: string[];
+    rules: string[];
+  }[];
+}
+
 /** The GitHub App, acting as the factory (ADR 0025, 0033). Never a user token. */
 export interface GitHubService {
+  /** The App itself: its id (branch protection pins `factory/verify` to it) and slug (`<slug>[bot]`). */
+  readonly app: { id: string; slug: string };
   /**
    * A short-lived installation token scoped to this one repository, `contents: write` only
    * (ADR 0033). GitHub can't scope a token to a branch: see ADR 0052 for how pushes are confined.
@@ -38,6 +90,16 @@ export interface GitHubService {
   ): Promise<{ number: number; url: string }>;
   /** Paths changed between two refs (for the self-modify check on `.factory/`, ADR 0036). */
   changedFiles(repo: RepoRef, base: string, head: string): Promise<string[]>;
+  /** The same compare, with each file's status. Only GitHub's answer counts, never the runner's. */
+  compareFiles(repo: RepoRef, base: string, head: string): Promise<ChangedFile[]>;
+  /** A file's text at a ref (branch or SHA), or null when it doesn't exist there. */
+  readFile(repo: RepoRef, path: string, ref: string): Promise<string | null>;
+  /** Every check run on a commit (paged through). */
+  listCheckRuns(repo: RepoRef, sha: string): Promise<CheckRunInfo[]>;
+  /** Creates (or, with `checkRunId`, updates) a check run as the App. Needs `checks: write`. */
+  postCheckRun(repo: RepoRef, check: CheckRunPost): Promise<{ id: string }>;
+  /** Branch protection and rulesets on `branch` (project onboarding, spec 04). */
+  repoGuards(repo: RepoRef, branch: string): Promise<RepoGuards>;
   /** Merges the PR if its head is still `sha`. */
   mergePullRequest(
     repo: RepoRef,
@@ -47,6 +109,8 @@ export interface GitHubService {
 
 export interface FactoryServices {
   github: GitHubService;
+  /** The app's public URL (`PUBLIC_BASE_URL`), for links GitHub shows (the check's details). */
+  publicBaseUrl?: string;
   /**
    * A runner's channel key (spike ADR 0100): HMAC of the runner id and key version under
    * RUNNER_CHANNEL_SECRET. Throws an `unavailable` OperationError when the secret isn't set.

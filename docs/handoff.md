@@ -4,7 +4,7 @@ Where the build stands, for a fresh session. Read this first, then
 [`parallel-work.md`](parallel-work.md) if you are building alongside other sessions, then the spec
 of whatever you pick up.
 
-Last refreshed: 2026-11-11 (V1 step 1, core + engine). V1 is defined in [`v1-scope.md`](v1-scope.md).
+Last refreshed: 2026-11-11 (V1 step 4, verify + GitHub connector + incidents). V1 is defined in [`v1-scope.md`](v1-scope.md).
 
 ## The product
 A software factory on Cloudflare. Work comes in from anywhere, agents take it through triage, spec,
@@ -92,24 +92,21 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
 - Prompts already end with the result file and its JSON shape; the harness writes it, the host
   passes it through untouched and never commits it.
 
-**Verify + GitHub connector + incidents session (step 4)**
-- The Workflow runs a `verify` job (role `review`) and records the packet with
-  `reviewPacket.record` from the runner's `verifyResult`. Replace the verdict source with CI check
-  runs on the head SHA (spec 04), add holdout tests, and post `factory/verify`; keep calling
-  `reviewPacket.record` (extend its `sections`).
-- `pr.open` already opens the PR through the App and reports `touchesFactoryConfig`; `pr.merge` is the
-  merge gate (risk `merge`, or `self-modify` for `.factory/` diffs) and merges through the App.
-- Connector work left: the push webhook (fail a run on an App push outside its run branch, ADR 0052),
-  `policy.sync` on default-branch pushes, the repo ruleset and branch protection check at onboarding.
-- Incidents: `incident.open`, and `review.sendBack` opens one automatically. The Workflow opens one
-  when a run's retries are exhausted.
-- **Open: auto-merge of check-only incident fixes** (review decisions, final; `v1-scope.md`). V1-1
-  keeps the floor strict: `pr.merge` is always reviewed for every actor. The incidents session should
-  add the exception in code, narrowly, with an ADR amending 0008: a new operation (e.g.
-  `pr.autoMerge`, risk `merge`) that the floor allows for the foreman only when the item is a factory
-  incident, the project's `.factory/policy.json` opts in, the diff (from GitHub's compare, not the
-  runner) only **adds** files under `.factory/checks/` and `evals/`, and the regression eval passed on
-  the head SHA. Anything else, including any change to `.factory/policy.json`, stays `self-modify`.
+**Verify + GitHub connector + incidents (step 4): built** (ADRs 0230, 0231)
+- `reviewPacket.record` now assembles the packet and returns `{ verdict, ciState, reasons }`: it
+  passes only with green CI on the head SHA (from GitHub) and a complete packet. Its `sections`
+  carry `verdict { verdict, reasons, warnings }`, `ci`, `changed`, `risk`, `runner`, `warnings`; the
+  app's packet screen renders these. `risk_flags` are computed from GitHub's compare.
+- `factory/verify` is posted from the App per SHA (`core_verify_checks`); `verify.refresh`
+  re-evaluates it on PR, CI and re-run events. `ci.read` reads CI for a work item's head.
+- Workflow v2 opens the PR before verify, waits for CI, goes by the packet's verdict, and tries
+  `pr.autoMerge` for incident items (ADR 0230). v1 instances run unchanged.
+- The webhook is `sf-engine` `/webhooks/github`, on `software-factory.zerobsai.com/webhooks/*` by a
+  Workers route (sf-app untouched). `push.observe` does branch confinement and the default-branch
+  `policy.sync`; `github.installation` tracks the App's installations.
+- Incidents carry `root_cause` and `proposed_fix`; `incident.open` returns `rootCause`.
+- Onboarding: `project.checkGitHub { projectId }` → `{ ok, problems }` (the app can show it on setup).
+- Not built: holdout tests (spec 04 criterion 8, ADR 0034), the evidence policy (criterion 11).
 
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):
@@ -153,9 +150,14 @@ Still open:
 ## Needs the human
 - **`RUNNER_CHANNEL_SECRET`** as a repo secret (`openssl rand -base64 48 | gh secret set RUNNER_CHANNEL_SECRET`):
   the deploy syncs it to `sf-engine`. Until then the runner channel answers 503.
-- A repository ruleset on software-factory letting the App push only `factory/*` (ADR 0052).
-- A GitHub App per org, and branch protection requiring `factory/verify` from the App with
-  `enforce_admins` on (spec 04).
+- The GitHub App's settings (ADR 0231, `docs/deploying.md`): webhook URL
+  `https://software-factory.zerobsai.com/webhooks/github` with the `GH_APP_WEBHOOK_SECRET`; permissions
+  checks (write) and administration (read) on top of contents and pull requests; events pull request,
+  check suite, check run, push, installation, installation repositories.
+- At the bootstrap (V1 step 5): make `factory/verify` (App 5705909) a required check on `main`
+  (command in `docs/deploying.md`). Not done yet on purpose: it fails every PR the factory didn't
+  open, which would block the sessions still building V1. The repo ruleset confining App pushes to
+  `factory/*` is applied (2026-11-11).
 - The Mac mini set up as the first runner (Orca + Claude Code signed in), with no `gh`, SSH agent or
   cloud credentials visible to the harness (ADR 0033).
 - VAPID keys for web push as Worker secrets (spec 15).

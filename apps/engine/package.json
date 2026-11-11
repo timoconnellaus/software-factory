@@ -12,6 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@software-factory/connector-github": "workspace:*",
+    "@software-factory/connector-webhook": "workspace:*",
     "@software-factory/core": "workspace:*",
     "@software-factory/db": "workspace:*",
     "@software-factory/runner-contract": "workspace:*",

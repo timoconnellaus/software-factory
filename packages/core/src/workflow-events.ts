@@ -23,3 +23,9 @@ export interface RunEventPayload {
   outcome: "completed" | "failed" | "timed_out" | "cancelled" | "stalled";
   reason: string | null;
 }
+
+/**
+ * CI on a work item's head SHA settled (the GitHub connector saw a check suite complete): payload
+ * `{ state }`. The Workflow re-reads CI after it, so a missed or early event only costs a timeout.
+ */
+export const ciEvent = (workItemId: string, sha: string) => `ci-${workItemId}-${sha}`;

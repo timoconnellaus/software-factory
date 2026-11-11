@@ -2,6 +2,7 @@
 // available to every surface (the engine RPC the app calls, the runner channel, MCP later).
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
+import * as connector from "./operations/connector.ts";
 import * as gates from "./operations/gates.ts";
 import * as github from "./operations/github.ts";
 import * as incidents from "./operations/incidents.ts";
@@ -9,6 +10,7 @@ import * as projects from "./operations/projects.ts";
 import * as questions from "./operations/questions.ts";
 import * as runners from "./operations/runners.ts";
 import * as specs from "./operations/specs.ts";
+import * as verify from "./operations/verify.ts";
 import * as workItems from "./operations/work-items.ts";
 
 export const OPERATIONS: readonly AnyOperation[] = [
@@ -43,7 +45,14 @@ export const OPERATIONS: readonly AnyOperation[] = [
   github.branchAdvance,
   github.prOpen,
   github.prMerge,
-  github.reviewPacketRecord,
+  verify.reviewPacketRecord,
+  verify.ciRead,
+  verify.verifyRefresh,
+  verify.prAutoMerge,
+  verify.projectCheckGitHub,
+  connector.connectorReceive,
+  connector.pushObserve,
+  connector.githubInstallation,
   incidents.incidentOpen,
   runners.runnerRegister,
   runners.runnerRotateKey,

@@ -17,8 +17,9 @@ d1.batch([toStatement(env.DB, db.updateTable(...)), guardChanged(env.DB, "name")
 | 0010 | `core_meta`, Better Auth (`core_user`, `core_session`, `core_account`, `core_verification`, `core_organization`, `core_member`, `core_invitation`), `core_factories`, `core_projects`, `core_project_policies`, `core_kill_switches`, `core_batch_guard` |
 | 0020 | `core_work_items`, `core_intake_keys`, `core_intake_events`, `core_stages`, `core_questions`, `core_specs`, `core_pending_actions`, `core_review_packets`, `core_incidents`, `core_audit` (append-only), `core_outbox` |
 | 0030 | `core_runners`, `core_runner_shares`, `core_jobs`, `core_runs`, `core_run_events`, `core_artifacts`, `core_leases`, `core_channel_requests` |
+| 0040 | `core_connector_events` (webhook delivery dedupe), `core_verify_checks` (`factory/verify` per head SHA); `core_incidents.root_cause`, `proposed_fix` |
 
-`SCHEMA_VERSION` equals the highest migration on this branch (30). Parallel builds number their
+`SCHEMA_VERSION` equals the highest migration on this branch (40). Parallel builds number their
 migrations from the block they claim in `docs/parallel-work.md`.
 
 ## Better Auth mapping (for the app session)

@@ -200,8 +200,9 @@ export async function runOperation<O = unknown>(
   }
 
   // 6. Gate check: actor × risk class under the autonomy policy, overrides and floor. Calls with no
-  //    project (runner registration, the claim loop) are judged under Cautious + the floor.
-  const scoped = scope.project !== null;
+  //    project (runner registration, the claim loop) are judged under Cautious + the floor, and so
+  //    are calls that bring the policy in (`bootstrapsPolicy`).
+  const scoped = scope.project !== null && !op.bootstrapsPolicy;
   const gate = decide({
     actor: actor.type,
     risk,

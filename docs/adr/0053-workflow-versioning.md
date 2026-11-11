@@ -23,3 +23,5 @@ reordering or removing a step breaks the replay.
 ## Consequences
 - An instance started before a deploy finishes on the code path it started with.
 - Old versions accumulate until drained; that's the price of never migrating a running instance.
+
+> Amended 2026-11-11 (V1 step 4): v2 adds steps (`verify #b: open PR`, `verify #b: ci…`, `merge #b: auto-merge`) without renaming any. Both versions run the same flow with v2's steps switched off for v1, which is allowed because v1's step sequence is unchanged; `workflow-versions.test.ts` checks it.

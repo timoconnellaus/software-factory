@@ -49,6 +49,7 @@ describe("GitHub App token minting", () => {
     const calls: { url: string; auth: string; body: unknown }[] = [];
     const app = githubApp({
       appId: "5705909",
+      appSlug: "software-factory-zerobsai",
       privateKey: pkcs1Pem,
       fetch: async (input, init) => {
         const request = new Request(input, init);
@@ -96,6 +97,7 @@ describe("GitHub App token minting", () => {
     let minted = 0;
     const app = githubApp({
       appId: "1",
+      appSlug: "test-app",
       privateKey: pkcs8Pem,
       fetch: async (input, init) => {
         const request = new Request(input, init);

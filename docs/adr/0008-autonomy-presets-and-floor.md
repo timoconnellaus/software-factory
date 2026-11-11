@@ -23,3 +23,5 @@ client repo cannot. Borrowed from Relationship OS's Cautious, Balanced and Auton
 > floor ([ADR 0043](0043-a-client-is-its-own-org.md)). Policy is read from the default branch only
 > ([ADR 0036](0036-policy-from-the-default-branch.md)). Spike ADR 0110 asks whether an unknown
 > policy name should deny every call; this ADR's "fails closed" answers yes.
+
+> Amended 2026-11-11 (V1 step 4, [ADR 0230](0230-check-only-incident-fixes-auto-merge.md)): one exception to "merge always needs a person": a factory incident's fix that only **adds** checks under `.factory/checks/` and regression cases under `evals/regressions/` may merge through `pr.autoMerge` (risk class `check-merge`) once CI and `factory/verify` are green on its head, and only in a project whose `.factory/policy.json` opts in. Every shipped autonomy policy denies `check-merge`; the floor still applies.

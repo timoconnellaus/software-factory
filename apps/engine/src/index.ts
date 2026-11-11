@@ -1,9 +1,10 @@
-// sf-engine: one Workflow per work item, the signed runner channel, outbox delivery and the minute
-// cron. sf-app calls operations through the `EngineApi` RPC entrypoint (service binding).
+// sf-engine: one Workflow per work item, the signed runner channel, the GitHub App webhook, outbox
+// delivery and the minute cron. sf-app calls operations through the `EngineApi` RPC entrypoint (service binding).
 import { FOREMAN, invoke, isOperationError } from "@software-factory/core";
 import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
+import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
 export { EngineApi } from "./rpc.ts";
 export { WorkItemWorkflow } from "./workflow/work-item.ts";
@@ -15,6 +16,7 @@ export default {
       return Response.json({ ok: true, worker: "sf-engine" });
     }
     if (url.pathname.startsWith(CHANNEL_PREFIX)) return handleChannel(request, env);
+    if (url.pathname === WEBHOOK_PATH) return handleGitHubWebhook(request, env);
     return new Response("Not found", { status: 404 });
   },
 
