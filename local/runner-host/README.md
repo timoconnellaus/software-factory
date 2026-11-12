@@ -21,7 +21,7 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    matches does it clone, once, into `~/.local/state/software-factory/runner/repos/<owner>/<name>`
    (push URL disabled, no credential helper), and keeps it.
 3. runner-local adds a git worktree of that checkout at
-   `~/.local/state/software-factory/runner/worktrees/sf-<jobId>` on the run branch
+   `~/.local/share/software-factory/runner/worktrees/sf-<jobId>` (the data dir: the harness may not read the state dir, incident #9) on the run branch
    `factory/<n>-<slug>-run-<k>` (hooks off, no upstream written) and projects `harness-claude`'s
    per-run settings into it. Claude Code then starts in the tmux session `sf-<jobId>` on the
    factory's own tmux server (`tmux -L software-factory`, never your default one or your
