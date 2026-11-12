@@ -13,6 +13,9 @@
 // process signal only processes in the same sandbox (macOS `signal (target same-sandbox)`, a pid
 // namespace on Linux), so nothing the check runs can stop this process from reporting. The host
 // treats a missing or unreadable report as a failure.
+//
+// This process's own TMPDIR is a short private dir (the sandbox runtime puts its proxy sockets
+// there, and a unix socket's path is short); the command gets the check's own (`tmpdir` on stdin).
 import { spawn } from "node:child_process";
 import { writeSync } from "node:fs";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
@@ -41,11 +44,12 @@ async function readStdin() {
 }
 
 async function main() {
-  const { settings, command } = await readStdin();
+  const { settings, command, tmpdir } = await readStdin();
   if (typeof command !== "string" || !settings) throw new Error("no settings or command on stdin");
   await SandboxManager.initialize(settings);
   const wrapped = await SandboxManager.wrapWithSandbox(command);
-  const child = spawn(wrapped, { shell: true, stdio: ["ignore", "inherit", "inherit"] });
+  const env = typeof tmpdir === "string" ? { ...process.env, TMPDIR: tmpdir } : process.env;
+  const child = spawn(wrapped, { shell: true, env, stdio: ["ignore", "inherit", "inherit"] });
   child.on("error", (err) => {
     report({ error: `could not start: ${err.message}` });
     process.exit(1);

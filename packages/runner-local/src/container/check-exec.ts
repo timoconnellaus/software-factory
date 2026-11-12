@@ -4,11 +4,16 @@
 // process on the host: the project's code under test stays inside the isolation the agent had.
 //
 // It sees only the clean tree the host made of the commit under check (mounted at the agent's work
-// path, so paths look the same), the job's pnpm store (content-addressed, checked on read) and a
-// temporary HOME. Not the job repo, its git dir, the run dir or the agent's home: nothing the check
+// path, so paths look the same), a copy of the job's pnpm store made for this check alone (mounted
+// where the agent's store was, so an offline install finds it; never the agent's own store, which
+// the check could otherwise rewrite for the next session or check: third review) and a temporary
+// HOME. Not the job repo, its git dir, the run dir or the agent's home: nothing the check
 // runs can leave anything for the host's git or the next session (ADR 0501, amended 2026-11-12).
 //
 // The agent's container has stopped by then (its session ended), so this never shares it.
+import { constants } from "node:fs";
+import { cp, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ExecResult as CheckExecResult } from "@software-factory/runner-contract";
 import type { Exec } from "../exec.ts";
 import { type ContainerRuntime, type ContainerSpec, dockerRunArgs } from "./runtime.ts";
@@ -23,7 +28,27 @@ let seq = 0;
 export interface CheckTree {
   /** The host's clean copy of the commit under check. */
   dir: string;
+  /** Where the agent's pnpm store is (and where the check sees its copy). */
   pnpmStore?: string;
+  /** The check's own copy of it (default: the store itself, for a caller with no copy). */
+  pnpmStoreCopy?: string;
+}
+
+/**
+ * The check's own copy of the job's pnpm store, beside its tree (`<check dir>/store`): symlinks as
+ * they are, files cloned where the filesystem can. Null when the job has no store.
+ */
+export async function copyStoreForCheck(store: string, treeDir: string): Promise<string | null> {
+  if (!(await stat(store).catch(() => null))?.isDirectory()) return null;
+  const copy = join(dirname(treeDir), "store");
+  await cp(store, copy, {
+    recursive: true,
+    force: true,
+    dereference: false,
+    verbatimSymlinks: true,
+    mode: constants.COPYFILE_FICLONE,
+  });
+  return copy;
 }
 
 /** The spec a check runs in: the agent's image and limits, the clean tree, nothing else. */
@@ -45,7 +70,13 @@ export function checkSpec(
     mounts: [
       { source: tree.dir, target: agent.workdir, readOnly: false },
       ...(tree.pnpmStore
-        ? [{ source: tree.pnpmStore, target: tree.pnpmStore, readOnly: false }]
+        ? [
+            {
+              source: tree.pnpmStoreCopy ?? tree.pnpmStore,
+              target: tree.pnpmStore,
+              readOnly: false,
+            },
+          ]
         : []),
     ],
     env: {
@@ -74,9 +105,10 @@ export async function execInCheckContainer(
   signal: AbortSignal,
   pnpmStore?: string,
 ): Promise<CheckExecResult> {
+  const copy = pnpmStore ? await copyStoreForCheck(pnpmStore, command.dir) : null;
   const spec = checkSpec(agent, command.run, ++seq, {
     dir: command.dir,
-    ...(pnpmStore ? { pnpmStore } : {}),
+    ...(pnpmStore && copy ? { pnpmStore, pnpmStoreCopy: copy } : {}),
   });
   const [bin = "docker"] = runtime.runArgv(spec);
   const args = dockerRunArgs(spec).filter((a) => a !== "-d");

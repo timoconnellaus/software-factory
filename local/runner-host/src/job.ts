@@ -7,7 +7,7 @@
 // Any channel call refused with 409 `fenced` or `killed`, or a cancel command from the heartbeat,
 // stops the session at once; a fenced run hands nothing back and pushes nothing (ADR 0035).
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   type AdapterEvent,
@@ -423,7 +423,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
           (command, s) =>
             adapterExec(job, ws, { ...command, dir }, s)
       : sandbox
-        ? (dir: string) => sandbox(job, { root, dir })
+        ? // The check's own dir is its tree's parent (./checks.ts): `<root>/r<round>-<i>`.
+          (dir: string) => sandbox(job, { root: dirname(dir), dir })
         : null;
     const next = job.stage === "build" ? adapter.continueSession?.bind(adapter) : undefined;
     return checkLoop({

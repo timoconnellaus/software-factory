@@ -184,7 +184,14 @@ export function buildRunner(
     startPoint: (job, checkout) => git.startPoint(job, checkout),
     // The harness must not read the runner's key, its other runs, or the clones' git internals.
     // ADR 0501: nor the jobs' check trees (another job's agent could forge this job's evidence).
-    protectPaths: [dirs.configDir, dirs.runsDir, dirs.reposDir, dirs.checksDir],
+    // Nor the check sandbox's sockets (a check's network goes through them).
+    protectPaths: [
+      dirs.configDir,
+      dirs.runsDir,
+      dirs.reposDir,
+      dirs.checksDir,
+      dirs.checkSocketsDir,
+    ],
     identity,
     ...(config.capabilities ? { capabilities: config.capabilities } : {}),
     // tmux (default) or a stream-json session shown as a chat (ADR 0450).
@@ -258,6 +265,8 @@ export function buildRunner(
               dirs.worktreesDir,
               ...checkoutDirs(config),
             ],
+            socketsDir: dirs.checkSocketsDir,
+            checksDir: dirs.checksDir,
           }),
     checksDir: dirs.checksDir,
     heartbeatMs: config.heartbeatMs,

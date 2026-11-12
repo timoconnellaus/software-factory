@@ -6,16 +6,22 @@
 // SHA each ran on. The agent's own report of checks is never used.
 //
 // What makes the evidence worth something (ADR 0501, amended 2026-11-12):
-//   - A clean tree. Every round runs on a fresh copy of exactly the commit (`exportTree`): nothing
-//     the session left that git ignores (`node_modules`, `dist/`, caches) survives into it, and it
-//     has no git dir. A project declares its install as a check of its own.
+//   - A clean tree. Every round starts from a fresh copy of exactly the commit (`exportTree`):
+//     nothing the session left that git ignores (`node_modules`, `dist/`, caches) survives into it,
+//     and it has no git dir. A project declares its install as a check of its own, first.
+//   - A dir of its own per check (third review). Each check runs in `<root>/r<round>-<i>/tree`,
+//     with its own HOME, temp and pnpm store beside it. The first check of a round gets the export;
+//     each later one gets a copy of the tree the check before it left (its install), made only
+//     after that check ended and everything it started was killed. A process an earlier check left
+//     behind can write only that check's dir, never the one the next check runs in.
 //   - Isolation. The command runs through the adapter's `exec` (a container job: a check container),
 //     or under the host's OS sandbox with the harness's floor (./check-sandbox.ts). With neither,
 //     nothing runs: each check is reported "not run", which fails, so a person decides.
 //   - Guards. Before any host git that follows code the job ran (a fix round, a check), the git
 //     config and the adapter's own git dir check are run again (`guard`); a finding fails the job.
 //   - The checked head is the pushed head: the host never commits after the last round.
-import { mkdir, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { cp, mkdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type CapabilityManifest,
@@ -92,8 +98,8 @@ export async function runChecks(
 export interface CheckLoopOptions {
   checks: JobChecks;
   /**
-   * The isolated exec for a clean tree at `dir`; null when this runner has none (every check is
-   * then reported not run).
+   * The isolated exec for one check's tree at `dir` (`<root>/r<round>-<i>/tree`, the check's own
+   * dir being its parent); null when this runner has none (every check is then reported not run).
    */
   exec: ((dir: string) => Exec) | null;
   /** Commits what the session left (a build) and returns the head the checks run on. */
@@ -137,22 +143,62 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
     // The session (or a fix round) ran code in the worktree: guard before the host's git.
     await options.guard(round === 0 ? "after the session" : `after fix round ${round}`);
     const head = await options.commit();
-    const dir = join(options.root, `tree-${round}`);
-    await rm(dir, { recursive: true, force: true });
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    let ran: ExecutedCheck[];
+    const ran: ExecutedCheck[] = [];
+    /** The dir of the check before this one, removed once the next has its copy. */
+    let prev: string | undefined;
     try {
-      if (options.exec) await options.exportTree(head, dir);
-      ran = await runChecks(
-        checks.commands,
-        options.exec ? options.exec(dir) : null,
-        head,
-        round,
-        signal,
-        options.secrets,
-      );
+      for (const [i, c] of checks.commands.entries()) {
+        if (signal.aborted) break;
+        const at = join(options.root, `r${round}-${i}`);
+        const tree = join(at, "tree");
+        await rm(at, { recursive: true, force: true });
+        await mkdir(tree, { recursive: true, mode: 0o700 });
+        let prepared: string | null = null;
+        if (options.exec) {
+          try {
+            // The first check gets the commit; each later one, a copy of what the one before left
+            // (made now: that check has ended and everything it started was killed).
+            if (prev === undefined) await options.exportTree(head, tree);
+            else await carryTree(join(prev, "tree"), tree);
+          } catch (err) {
+            prepared = err instanceof Error ? err.message : String(err);
+          }
+        }
+        if (prev !== undefined) await rm(prev, { recursive: true, force: true }).catch(() => {});
+        prev = at;
+        // The export of the commit itself failed: the host's own problem, as before.
+        if (prepared !== null && i === 0) throw new Error(prepared);
+        ran.push(
+          ...(prepared !== null
+            ? [
+                {
+                  name: c.name,
+                  command: c.run,
+                  exitCode: null,
+                  timedOut: false,
+                  durationMs: 0,
+                  logTail: logTail(
+                    redactSecrets(
+                      `the runner couldn't copy the tree the check before left: ${prepared}`,
+                      options.secrets,
+                    ),
+                  ),
+                  headSha: head,
+                  round,
+                },
+              ]
+            : await runChecks(
+                [c],
+                options.exec ? options.exec(tree) : null,
+                head,
+                round,
+                signal,
+                options.secrets,
+              )),
+        );
+      }
     } finally {
-      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      if (prev !== undefined) await rm(prev, { recursive: true, force: true }).catch(() => {});
     }
     // The checks ran the project's code: guard again before anything else touches git.
     await options.guard(`after the checks of round ${round}`);
@@ -188,6 +234,24 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
       return end;
     }
   }
+}
+
+/**
+ * Copies a check's tree to the next check's (`dest`, empty): symlinks as they are (never followed,
+ * so nothing outside the tree is read), files cloned where the filesystem can (APFS, btrfs, XFS).
+ * A FIFO or socket the check left makes the copy fail, and the next check with it.
+ */
+export async function carryTree(src: string, dest: string): Promise<void> {
+  if (!(await stat(src).catch(() => null))?.isDirectory()) return;
+  await cp(src, dest, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+    dereference: false,
+    verbatimSymlinks: true,
+    preserveTimestamps: true,
+    mode: constants.COPYFILE_FICLONE,
+  });
 }
 
 /**

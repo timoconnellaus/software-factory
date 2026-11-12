@@ -145,6 +145,13 @@ export interface Paths {
    * then not read its own tree). Every harness's protectPaths names it, so no agent reaches it.
    */
   checksDir: string;
+  /**
+   * The check sandbox's own sockets (ADR 0501, amended 2026-11-12, third review): the sandbox
+   * runtime's proxy sockets go in a short private dir here (`<checkSocketsDir>/c…`), not in the
+   * check's temp, whose path is too long for a unix socket (104 bytes on macOS, 108 on Linux). No
+   * check can write it, and every harness's protectPaths names it, so no agent reaches it.
+   */
+  checkSocketsDir: string;
   /** Each run's attachments (`<attachmentsDir>/<jobId>`), which the agent reads: also not under state. */
   attachmentsDir: string;
   /**
@@ -194,6 +201,7 @@ export function paths(
     worktreesDir: join(dataDir, "worktrees"),
     attachmentsDir: join(dataDir, "attachments"),
     checksDir: join(dataDir, "checks"),
+    checkSocketsDir: join(dataDir, "s"),
     containersDir: join(dataDir, "containers"),
     spritesTokenFile: join(configDir, "sprites.token"),
     spritesDir: join(dataDir, "sprites"),

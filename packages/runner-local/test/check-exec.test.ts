@@ -1,9 +1,13 @@
 // The project's checks for a container job run in a fresh container, never on the host (ADR 0501).
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   type ContainerRuntime,
   type ContainerSpec,
   checkSpec,
+  copyStoreForCheck,
   dockerRunArgs,
   execInCheckContainer,
 } from "../src/container/index.ts";
@@ -64,6 +68,32 @@ describe("checks in a container (ADR 0501)", () => {
     const args = dockerRunArgs(spec);
     expect(args).not.toContain("--env-file");
     expect(args).not.toContain("-t");
+  });
+
+  it("gives each check its own copy of the job's pnpm store, never the agent's store itself", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sf-check-store-"));
+    try {
+      const store = join(root, "pnpm-store");
+      await mkdir(join(store, "v10"), { recursive: true });
+      await writeFile(join(store, "v10", "index"), "agent's");
+      const tree = join(root, "checks", "r0-0", "tree");
+      await mkdir(tree, { recursive: true });
+      const copy = await copyStoreForCheck(store, tree);
+      expect(copy).toBe(join(root, "checks", "r0-0", "store"));
+      expect(await readFile(join(copy ?? "", "v10", "index"), "utf8")).toBe("agent's");
+      // The check's writes land in its copy; the agent's store is untouched.
+      await writeFile(join(copy ?? "", "v10", "index"), "check's");
+      expect(await readFile(join(store, "v10", "index"), "utf8")).toBe("agent's");
+      const spec = checkSpec(agent, "pnpm install --offline", 1, {
+        dir: tree,
+        pnpmStore: store,
+        pnpmStoreCopy: copy ?? "",
+      });
+      expect(spec.mounts).toContainEqual({ source: copy, target: store, readOnly: false });
+      expect(await copyStoreForCheck(join(root, "none"), tree)).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("waits for the container in the foreground and reports its exit code and output", async () => {

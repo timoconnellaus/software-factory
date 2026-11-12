@@ -1,7 +1,19 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runSettings } from "@software-factory/harness-claude";
 import {
@@ -22,9 +34,13 @@ import {
   processesUnder,
   sandboxAvailable,
   sandboxedExec,
+  sandboxTrial,
+  socketPathProblem,
   spawnCheck,
+  toolchainPaths,
 } from "../src/check-sandbox.ts";
 import { checkLoop, type Exec, GuardTripped, runChecks } from "../src/checks.ts";
+import { paths } from "../src/config.ts";
 import { runJob } from "../src/job.ts";
 import { controlPlane, fakeAdapter, fakeCloud, git, job, scratchRepo } from "./helpers.ts";
 
@@ -39,6 +55,15 @@ async function scratch(prefix = "sf-checks-test-"): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), prefix));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   return dir;
+}
+
+/** A check's own dir as the host lays it out: `<checks dir>/<job>-…/r0-0/tree`. */
+async function checkDirsIn(checksDir: string, job = "job_1-x") {
+  const jobRoot = join(checksDir, job);
+  const root = join(jobRoot, "r0-0");
+  const dir = join(root, "tree");
+  await mkdir(dir, { recursive: true });
+  return { jobRoot, root, dir };
 }
 
 /** A test stand-in for the OS sandbox: a plain shell in the clean tree (the tests' own code). */
@@ -149,6 +174,15 @@ describe("a check process (ADR 0501)", () => {
  * SF_REQUIRE_SANDBOX (CI), so a runner without bubblewrap fails them instead of skipping.
  */
 const requireSandbox = process.env.SF_REQUIRE_SANDBOX === "1";
+
+/** corepack beside the node on PATH (Node ≤ 24 ships it), or null. */
+function corepackOnPath(): string | null {
+  for (const d of (process.env.PATH ?? "").split(":")) {
+    const c = join(d, "corepack");
+    if (d && existsSync(c) && existsSync(join(d, "node"))) return realpathSync(c) && c;
+  }
+  return null;
+}
 const realSandbox = requireSandbox || sandboxAvailable();
 
 describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
@@ -165,50 +199,110 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
     },
   });
 
-  it("takes the harness's floor: its home deny lists, the runner's dirs, the job's allowlist", () => {
+  it("takes the harness's floor and more: none of the home, the runner's dirs, other checks, the job's allowlist, no loopback", () => {
+    const root = "/t/sf-checks/job_1-x/r0-0";
     const s = checkSandboxSettings(
       j,
-      { root: "/t/sf-checks/job_1-x", dir: "/t/sf-checks/job_1-x/tree-0" },
-      { protectPaths: ["/runner/config", "/runner/runs"], platform: "darwin", home: "/Users/o" },
+      { root, dir: `${root}/tree`, sockets: "/r/s/c123" },
+      {
+        protectPaths: ["/runner/config", "/runner/runs"],
+        platform: "darwin",
+        home: "/Users/o",
+        env: { PATH: "/usr/bin:/bin" },
+      },
     );
     expect(s.filesystem.denyRead).toEqual(
       expect.arrayContaining([
+        // the whole home, not only its credential stores
+        "/Users/o",
         "/Users/o/.ssh",
-        "/Users/o/.config/gh",
         "/Users/o/Library/Keychains",
         "/runner/config",
         "/runner/runs",
-        // other jobs' checks; this job's root is re-allowed
+        // the job's other checks, and other jobs'; this check's own dir is re-allowed
+        "/t/sf-checks/job_1-x",
         "/t/sf-checks",
       ]),
     );
     expect(s.filesystem.allowRead).toEqual([
-      "/t/sf-checks/job_1-x/tree-0",
-      "/t/sf-checks/job_1-x/home",
-      "/t/sf-checks/job_1-x/tmp",
-      "/t/sf-checks/job_1-x/empty",
-      "/t/sf-checks/job_1-x/gitconfig",
+      `${root}/tree`,
+      `${root}/home`,
+      `${root}/tmp`,
+      `${root}/store`,
+      `${root}/empty`,
+      `${root}/gitconfig`,
+      "/r/s/c123",
     ]);
-    // Its own tree, home and temp: not the rest of its root (the host's empty tool dirs and git
-    // config, a later round's tree).
+    // Its own tree, home, temp and pnpm store: not the rest of its dir (the host's empty tool dirs
+    // and git config), and no other check's.
     expect(s.filesystem.allowWrite).toEqual([
-      "/t/sf-checks/job_1-x/tree-0",
-      "/t/sf-checks/job_1-x/home",
-      "/t/sf-checks/job_1-x/tmp",
+      `${root}/tree`,
+      `${root}/home`,
+      `${root}/tmp`,
+      `${root}/store`,
     ]);
     expect(s.filesystem.denyWrite).toEqual(
       expect.arrayContaining([
         "/Users/o/.ssh",
         "/runner/config",
         "/runner/runs",
-        "/t/sf-checks/job_1-x/empty",
-        "/t/sf-checks/job_1-x/gitconfig",
+        `${root}/empty`,
+        `${root}/gitconfig`,
       ]),
     );
     expect(s.network.allowedDomains).toEqual(
       expect.arrayContaining(["registry.npmjs.org", "example.org"]),
     );
     expect(s.network.strictAllowlist).toBe(true);
+    // No loopback but the sandbox's own proxy.
+    expect(s.network.allowLocalBinding).toBe(false);
+  });
+
+  it("re-allows only the toolchain under the home, never a dir that is, holds or sits in a denied one", async () => {
+    const home = realpathSync(await scratch("sf-home-"));
+    const nvm = join(home, ".nvm/versions/node/v24.1.0");
+    const pnpmPkg = join(home, "setup-pnpm/node_modules/.pnpm/pnpm@10/node_modules/pnpm");
+    const shims = join(home, "setup-pnpm/node_modules/.bin");
+    const local = join(home, ".local/bin");
+    for (const d of [
+      join(nvm, "bin"),
+      join(nvm, "lib/node_modules/corepack/dist"),
+      join(pnpmPkg, "bin"),
+      shims,
+      local,
+    ]) {
+      await mkdir(d, { recursive: true });
+    }
+    await writeFile(join(nvm, "bin/node"), "");
+    await writeFile(join(nvm, "lib/node_modules/corepack/dist/corepack.js"), "");
+    await symlink(
+      join(nvm, "lib/node_modules/corepack/dist/corepack.js"),
+      join(nvm, "bin/corepack"),
+    );
+    await writeFile(join(pnpmPkg, "bin/pnpm.cjs"), "");
+    await symlink(join(pnpmPkg, "bin/pnpm.cjs"), join(shims, "pnpm"));
+    // A git straight in ~/.local/bin: its install would be ~/.local, which holds the runner's dirs.
+    await writeFile(join(local, "git"), "");
+    const allowed = toolchainPaths([join(nvm, "bin"), shims, local, "/usr/bin"].join(":"), home, [
+      join(home, ".local/share/software-factory/runner"),
+      join(home, ".ssh"),
+    ]);
+    expect(allowed).toEqual(
+      [join(nvm, "bin"), nvm, join(nvm, "lib/node_modules/corepack"), shims, pnpmPkg, local].sort(),
+    );
+    expect(allowed).not.toContain(join(home, ".local"));
+    expect(allowed).not.toContain(home);
+  });
+
+  it("knows a socket dir too deep for the sandbox runtime's sockets", () => {
+    expect(
+      socketPathProblem("/Users/o/.local/share/software-factory/runner/s/cAbC123", "darwin"),
+    ).toBeNull();
+    // The check's own temp at the runner's real depth (what B1 of the third review hit).
+    const deep =
+      "/Users/someone/.local/share/software-factory/runner/checks/job_01JC0Z3V6Q4W8E2R5T7Y9U1I3O-AbC123/r0-0/tmp";
+    expect(socketPathProblem(deep, "darwin")).toMatch(/too deep/);
+    expect(socketPathProblem(deep.replace("/Users/", "/home/"), "linux")).toMatch(/too deep/);
   });
 
   it("gives the check a home and temp of its own and none of the owner's tokens", async () => {
@@ -244,19 +338,19 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       const outside = await scratch("sf-secret-");
       await writeFile(join(outside, "key"), "secret");
       const parent = await scratch("sf-checks-root-");
-      const root = join(parent, "job_1-x");
-      const dir = join(root, "tree-0");
-      await mkdir(dir, { recursive: true });
-      const sandbox = checkSandbox({ protectPaths: [outside] });
+      const { root, dir } = await checkDirsIn(parent);
+      const sandbox = checkSandbox({ protectPaths: [outside], checksDir: parent });
       expect(sandbox).not.toBeNull();
       const exec = (sandbox as NonNullable<typeof sandbox>)(j, { root, dir });
+      const probe = `.sf-check-probe-${process.pid}`;
+      cleanups.push(() => rm(join(homedir(), probe), { force: true }));
       const r = await exec(
         {
           run: [
             `cat ${outside}/key && echo READ-PROTECTED`,
             `echo x > ${outside}/w && echo WROTE-OUTSIDE`,
             "echo x > /tmp/sf-check-probe-$$ && echo WROTE-TMP",
-            `echo x > ${homedir()}/.sf-check-probe && echo WROTE-HOME`,
+            `echo x > ${homedir()}/${probe} && echo WROTE-HOME`,
             "curl -sS -m 5 https://example.com >/dev/null && echo REACHED-NETWORK",
             "echo ok > here && cat here",
           ].join("; "),
@@ -266,23 +360,22 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       );
       // On Linux a read-denied dir is an empty tmpfs inside the sandbox: a write there "works"
       // but never reaches the host. What counts is the host's files.
-      expect(r.output).not.toMatch(/READ-PROTECTED|WROTE-TMP|WROTE-HOME|REACHED-NETWORK/);
+      expect(r.output).not.toMatch(/READ-PROTECTED|WROTE-TMP|REACHED-NETWORK/);
       await expect(readFile(join(outside, "w"), "utf8")).rejects.toThrow();
+      await expect(readFile(join(homedir(), probe), "utf8")).rejects.toThrow();
       expect(r.output).toContain("ok");
       expect(await readFile(join(dir, "here"), "utf8")).toBe("ok\n");
     },
     60_000,
   );
 
-  /** A job's checks root in a scratch runner checks dir, and the real sandboxed exec for it. */
+  /** A check's dir in a scratch runner checks dir, and the real sandboxed exec for it. */
   async function realCheck(protectPaths: string[] = []) {
     const parent = await scratch("sf-checks-root-");
-    const root = join(parent, "job_1-x");
-    const dir = join(root, "tree-0");
-    await mkdir(dir, { recursive: true });
-    const sandbox = checkSandbox({ protectPaths });
+    const { jobRoot, root, dir } = await checkDirsIn(parent);
+    const sandbox = checkSandbox({ protectPaths, checksDir: parent });
     if (!sandbox) throw new Error("no sandbox");
-    return { parent, root, dir, exec: sandbox(j, { root, dir }) };
+    return { parent, jobRoot, root, dir, exec: sandbox(j, { root, dir }) };
   }
 
   it.runIf(realSandbox)(
@@ -347,7 +440,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
     async () => {
       const secret = await scratch("sf-secret-");
       await writeFile(join(secret, "key"), "secret");
-      const { parent, root, exec } = await realCheck([secret]);
+      const { parent, jobRoot, root, exec } = await realCheck([secret]);
       await writeFile(join(parent, "job_2-y"), "another job's");
       // The first check tries everything a previous review used to switch the sandbox off: the
       // settings file srt used to read (gone), the host's files in the root, another job's root,
@@ -356,7 +449,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
         {
           run: [
             "ls ..",
-            "for f in ../srt-settings.json ../gitconfig ../empty/npmrc ../tree-1 ../../job_2-y; do echo x > $f && echo WROTE $f; done",
+            "for f in ../srt-settings.json ../gitconfig ../empty/npmrc ../../r0-1 ../../../job_2-y; do echo x > $f && echo WROTE $f; done",
             "(while :; do echo '{}' > ../srt-settings.json; sleep 0.1; done) &",
             "echo done",
           ].join("\n"),
@@ -369,7 +462,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       expect(first.output).toContain("done");
       expect(await readFile(join(parent, "job_2-y"), "utf8")).toBe("another job's");
       expect(await readFile(join(root, "gitconfig"), "utf8")).toBe("");
-      await expect(readFile(join(root, "tree-1"), "utf8")).rejects.toThrow();
+      await expect(readFile(join(jobRoot, "r0-1"), "utf8")).rejects.toThrow();
       await expect(readFile(join(root, "empty", "npmrc"), "utf8")).resolves.toBe("");
       // The next check is as confined as the first.
       const next = await exec(
@@ -465,6 +558,249 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       expect(r.output).toContain("probe");
       expect(r.output).not.toMatch(/WROTE|READ/);
       expect(await readFile(join(victim, "test.sh"), "utf8")).toBe("original");
+    },
+    60_000,
+  );
+  it.runIf(realSandbox)(
+    "starts at the runner's real depth: the real paths() layout and a realistic job id, network through its proxy",
+    async () => {
+      // B1 of the third review: the check's temp under the real checks dir is too deep for the
+      // sandbox runtime's sockets, so they go in the runner's short sockets dir.
+      const real = paths();
+      await mkdir(real.checksDir, { recursive: true, mode: 0o700 });
+      const jobRoot = await mkdtemp(join(real.checksDir, "job_01JC0Z3V6Q4W8E2R5T7Y9U1I3O-"));
+      cleanups.push(() => rm(jobRoot, { recursive: true, force: true }));
+      const root = join(jobRoot, "r0-0");
+      const dir = join(root, "tree");
+      await mkdir(dir, { recursive: true });
+      expect(socketPathProblem(join(root, "tmp"))).toMatch(/too deep/);
+      const sandbox = checkSandbox({
+        protectPaths: [real.configDir, real.runsDir],
+        checksDir: real.checksDir,
+        socketsDir: real.checkSocketsDir,
+      });
+      if (!sandbox) throw new Error("no sandbox");
+      const r = await sandbox(j, { root, dir })(
+        {
+          run: `node -e "fetch('https://registry.npmjs.org/is-number').then((r) => console.log('registry', r.status), (e) => console.log('fetch failed', e.cause?.code ?? e.message))"`,
+          timeoutMs: 60_000,
+        },
+        never,
+      );
+      expect(r.notRun).toBeUndefined();
+      expect(r).toMatchObject({ exitCode: 0, output: expect.stringContaining("registry 200") });
+      // Nothing of the check's sockets is left behind.
+      expect(await readdir(real.checkSocketsDir)).toEqual([]);
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox)(
+    "keeps the home and the owner's loopback from a check: history, Claude's files, a project's .env, a local service",
+    async () => {
+      // Files like the ones the third review read from a check: in the real home, outside the
+      // harness's credential deny list.
+      const proj = await mkdtemp(join(homedir(), ".sf-check-home-probe-"));
+      cleanups.push(() => rm(proj, { recursive: true, force: true }));
+      await writeFile(join(proj, ".env"), "SECRET=from-the-owners-project");
+      await writeFile(join(proj, ".zsh_history"), "owner typed this");
+      const server = createServer((c) => c.end("owner's service")).listen(0, "127.0.0.1");
+      await new Promise((r) => server.once("listening", r));
+      cleanups.push(() => new Promise((r) => server.close(() => r())));
+      const port = (server.address() as { port: number }).port;
+      const { exec } = await realCheck();
+      const r = await exec(
+        {
+          run: [
+            `cat ${proj}/.env; cat ${proj}/.zsh_history`,
+            `ls ${homedir()} >/dev/null && echo LISTED-HOME`,
+            `node -e "require('net').connect(${port}, '127.0.0.1').on('data', (d) => { console.log('LOOPBACK ' + d); process.exit(0) }).on('error', (e) => console.log('loopback refused', e.code))"`,
+            // The toolchain is still there.
+            "node -e \"console.log('node ' + process.version)\"",
+            "git --version",
+          ].join("\n"),
+          timeoutMs: 60_000,
+        },
+        never,
+      );
+      expect(r.output).not.toMatch(
+        /from-the-owners-project|owner typed this|LOOPBACK|owner's service/,
+      );
+      expect(r.output).toContain("loopback refused");
+      expect(r.output).toMatch(/node v\d+/);
+      expect(r.output).toMatch(/git version/);
+      if (process.platform === "darwin") expect(r.output).not.toContain("LISTED-HOME");
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox)(
+    "never lets a check's leftover forge the next: a daemon that left the group and changed its cwd to /",
+    async () => {
+      // The third review's exploit: check 1 leaves a detached daemon (cwd /) that keeps writing PASS
+      // wherever it can, including where check 2 will run; check 2 writes FAIL, waits, and passes
+      // only if it reads PASS back.
+      const parent = await scratch("sf-checks-root-");
+      const jobRoot = join(parent, "job_1-x");
+      const marker = `sf-forger-${process.pid}-${Date.now()}`;
+      const forger = [
+        "const fs = require('fs'), path = require('path'), cp = require('child_process');",
+        "if (process.argv[2] !== 'child') {",
+        "  const targets = ['result', '../../r0-1/tree/result', '../../r0-1/home/result', '../home/result'].map((p) => path.resolve(p));",
+        `  cp.spawn(process.execPath, [__filename, 'child', '${marker}', ...targets], { detached: true, cwd: '/', stdio: 'ignore' }).unref();`,
+        "} else {",
+        "  setInterval(() => { for (const f of process.argv.slice(4)) { try { fs.writeFileSync(f, 'PASS'); } catch {} } }, 20);",
+        "}",
+      ].join("\n");
+      const sandbox = checkSandbox({ protectPaths: [], checksDir: parent });
+      if (!sandbox) throw new Error("no sandbox");
+      const out = await checkLoop({
+        ...loopBase(jobRoot),
+        checks: {
+          commands: [
+            {
+              name: "install",
+              run: "node forger.js && sleep 0.5 && echo left-a-daemon",
+              timeoutMs: 30_000,
+            },
+            {
+              name: "tests",
+              run: "echo FAIL > result; sleep 1.5; cat result; grep -q PASS result",
+              timeoutMs: 30_000,
+            },
+          ],
+          fixRounds: 0,
+        },
+        exportTree: async (_sha, dir) => writeFile(join(dir, "forger.js"), forger),
+        exec: (dir) => sandbox(j, { root: dirname(dir), dir }),
+        commit: async () => SHA,
+      });
+      const daemons = async () => {
+        const ps = await new Promise<string>((resolve) => {
+          const p = spawn("ps", ["-A", "-o", "pid=,command="], {
+            stdio: ["ignore", "pipe", "ignore"],
+          });
+          let t = "";
+          p.stdout.on("data", (c: Buffer) => {
+            t += c.toString();
+          });
+          p.on("close", () => resolve(t));
+        });
+        return ps
+          .split("\n")
+          .filter((l) => l.includes(marker))
+          .map((l) => Number(l.trim().split(/\s+/)[0]));
+      };
+      const left = await daemons();
+      cleanups.push(async () => {
+        for (const pid of await daemons()) process.kill(pid, "SIGKILL");
+      });
+      expect(out.final[0]).toMatchObject({ name: "install", exitCode: 0 });
+      // The forge failed: check 2's own FAIL stands.
+      expect(out.final[1]).toMatchObject({ name: "tests", exitCode: 1 });
+      expect(out.final[1]?.logTail).toContain("FAIL");
+      // Linux: the daemon died with the sandbox's pid namespace. macOS: the host's process tracker
+      // kills it when it saw it (defence in depth; the property above is what is guaranteed).
+      if (process.platform === "linux") expect(left).toEqual([]);
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox)(
+    "runs the documented install check end to end on a real pnpm workspace, with a store of its own",
+    async () => {
+      const fixture = fileURLToPath(new URL("./fixtures/pnpm-workspace", import.meta.url));
+      const parent = await scratch("sf-checks-root-");
+      const jobRoot = join(parent, "job_1-x");
+      const sandbox = checkSandbox({ protectPaths: [], checksDir: parent });
+      if (!sandbox) throw new Error("no sandbox");
+      const out = await checkLoop({
+        ...loopBase(jobRoot),
+        checks: {
+          commands: [
+            {
+              name: "install",
+              run: "pnpm install --frozen-lockfile && pnpm store path",
+              timeoutMs: 300_000,
+            },
+            { name: "tests", run: "pnpm test", timeoutMs: 120_000 },
+          ],
+          fixRounds: 0,
+        },
+        exportTree: (_sha, dir) => cp(fixture, dir, { recursive: true }),
+        exec: (dir) => sandbox(j, { root: dirname(dir), dir }),
+        commit: async () => SHA,
+      });
+      const [install, tests] = out.final;
+      expect(install, install?.logTail).toMatchObject({ exitCode: 0 });
+      // The store is the check's own, beside its tree: not the agent's, not another job's.
+      expect(install?.logTail).toContain(join(jobRoot, "r0-0", "store"));
+      expect(tests, tests?.logTail).toMatchObject({ exitCode: 0 });
+      expect(tests?.logTail).toContain("a: is-number works");
+    },
+    600_000,
+  );
+
+  it.runIf(realSandbox && corepackOnPath())(
+    "runs pnpm through corepack's shim inside the sandbox: corepack fetches pnpm through the proxy",
+    async () => {
+      const fixture = fileURLToPath(new URL("./fixtures/pnpm-workspace", import.meta.url));
+      const { root, dir } = await checkDirsIn(await scratch("sf-checks-root-"));
+      await cp(fixture, dir, { recursive: true });
+      const parent = dirname(dirname(root));
+      const sandbox = checkSandbox({ protectPaths: [], checksDir: parent });
+      if (!sandbox) throw new Error("no sandbox");
+      // corepack's own pnpm shim, first on the check's PATH.
+      const corepack = corepackOnPath() as string;
+      const r = await sandbox(j, { root, dir })(
+        {
+          run: `${corepack} pnpm --version && ${corepack} pnpm install --frozen-lockfile && ${corepack} pnpm test`,
+          timeoutMs: 300_000,
+        },
+        never,
+      );
+      expect(r, r.output).toMatchObject({ exitCode: 0 });
+      expect(r.output).toContain("10.23.0");
+      expect(r.output).toContain("a: is-number works");
+    },
+    600_000,
+  );
+
+  it.runIf(process.env.SF_EXPECT_SANDBOX_BLOCKED === "1")(
+    "reports every check not run where the kernel refuses the sandbox (AppArmor's restriction left on)",
+    async () => {
+      const parent = await scratch("sf-checks-root-");
+      const trial = await sandboxTrial({ protectPaths: [], checksDir: parent });
+      expect(trial.ok).toBe(false);
+      const sandbox = checkSandbox({ protectPaths: [], checksDir: parent });
+      if (!sandbox)
+        throw new Error("the binaries are installed: the trial is what must catch this");
+      const out = await checkLoop({
+        ...loopBase(join(parent, "job_1-x")),
+        checks: { commands: [{ name: "tests", run: "echo ran", timeoutMs: 30_000 }], fixRounds: 2 },
+        exec: (dir) => sandbox(j, { root: dirname(dir), dir }),
+        commit: async () => SHA,
+        continueSession: async () => {
+          throw new Error("a not-run check must never go to a fix round");
+        },
+      });
+      expect(out.rounds).toBe(0);
+      expect(out.final).toMatchObject([
+        { exitCode: null, notRun: expect.stringContaining("the sandbox could not start") },
+      ]);
+      expect(out.final[0]?.logTail).not.toContain("ran");
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox && process.env.SF_EXPECT_SANDBOX_BLOCKED !== "1")(
+    "passes its start-up trial where the sandbox works",
+    async () => {
+      expect(
+        await sandboxTrial({ protectPaths: [], checksDir: await scratch("sf-checks-root-") }),
+      ).toEqual({
+        ok: true,
+      });
     },
     60_000,
   );
@@ -582,7 +918,47 @@ describe("the host's checks (ADR 0501)", () => {
       commit: async () => SHA,
     });
     expect(exported).toEqual([SHA]);
-    expect(seen).toEqual([join(root, "tree-0")]);
+    expect(seen).toEqual([join(root, "r0-0", "tree")]);
+  });
+
+  it("gives each check a dir of its own: a copy of the tree the check before left, made after it ended", async () => {
+    const root = await scratch();
+    const seen: string[] = [];
+    const out = await checkLoop({
+      ...loopBase(root),
+      checks: {
+        commands: [
+          { name: "install", run: "install", timeoutMs: 1_000 },
+          { name: "tests", run: "tests", timeoutMs: 1_000 },
+        ],
+        fixRounds: 0,
+      },
+      exportTree: async (_sha, dir) => {
+        await writeFile(join(dir, "from-export"), "x");
+      },
+      exec: (dir) => async (c) => {
+        seen.push(dir);
+        if (c.run === "install") {
+          await mkdir(join(dir, "node_modules"), { recursive: true });
+          await writeFile(join(dir, "node_modules", "dep.js"), "installed");
+          await symlink("/etc/hosts", join(dir, "node_modules", "link"));
+          return { exitCode: 0, timedOut: false, output: "" };
+        }
+        const dep = await readFile(join(dir, "node_modules", "dep.js"), "utf8");
+        const link = await readlink(join(dir, "node_modules", "link"));
+        // The install's dir is gone: whatever it left running can't reach this one.
+        const prevGone = await readFile(join(root, "r0-0", "tree", "from-export"), "utf8").then(
+          () => false,
+          () => true,
+        );
+        return { exitCode: 0, timedOut: false, output: `${dep} ${link} ${prevGone}` };
+      },
+      commit: async () => SHA,
+    });
+    expect(seen).toEqual([join(root, "r0-0", "tree"), join(root, "r0-1", "tree")]);
+    // The symlink is copied as it is, never followed.
+    expect(out.final[1]?.logTail).toBe("installed /etc/hosts true");
+    expect(await readdir(root)).toEqual([]);
   });
 
   it("stops on a tripped guard", async () => {
