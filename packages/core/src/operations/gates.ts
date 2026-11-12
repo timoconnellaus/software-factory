@@ -15,6 +15,7 @@ import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
 import { openIncident } from "./incidents.ts";
 import { pendingActionId, requireWorkItem, sha, workItemId } from "./shared.ts";
 import { decideNotRun } from "./verify.ts";
+import { applyApprovedOrgConfig, ORG_CONFIG_WRITES } from "./workflows.ts";
 
 /** The commit a merge gate is for: the head SHA in its `pr.merge` input (ADR 0041). */
 export function mergeGateHead(pa: PendingActionRow): string | null {
@@ -200,6 +201,19 @@ export const approvalDecide = defineOperation({
     if (pa.kind === "spec" && pa.status === "pending" && input.decision === "approved") {
       await assertSpecGateCurrent(ctx, pa.work_item_id);
     }
+    // An org config proposal is decided in the app only (ADR 0516): not with a desktop device's
+    // presence proof, nor any other surface's token.
+    if (
+      (ORG_CONFIG_WRITES as readonly string[]).includes(pa.operation) &&
+      ctx.origin.surface !== "app" &&
+      ctx.origin.surface !== "test"
+    ) {
+      throw new OperationError(
+        "forbidden",
+        `an org config change is decided in the app, not from ${ctx.origin.surface}`,
+        { browserOnly: true },
+      );
+    }
     const decided = decidePending(ctx, pa, input.decision, input.note ?? null);
     // A project-level config proposal has no Workflow to re-run it: apply it here (ADR 0370).
     if (
@@ -208,6 +222,14 @@ export const approvalDecide = defineOperation({
       (CONFIG_WRITES as readonly string[]).includes(pa.operation)
     ) {
       await applyApprovedConfig(ctx, pa);
+    }
+    // So is an org config proposal (spec 52 PR (b)): an org admin approves it (Q6).
+    if (
+      input.decision === "approved" &&
+      !decided.alreadyDecided &&
+      (ORG_CONFIG_WRITES as readonly string[]).includes(pa.operation)
+    ) {
+      await applyApprovedOrgConfig(ctx, pa);
     }
     return decided;
   },

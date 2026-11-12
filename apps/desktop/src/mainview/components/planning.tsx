@@ -15,7 +15,9 @@ import {
   answerText,
   blocks,
   bulkAcceptable,
+  changedSpan,
   chipTag,
+  editAnswer,
   gateSummary,
   initialAnswer,
   isChanged,
@@ -40,6 +42,7 @@ import {
 } from "@software-factory/ui/components/dialog";
 import { Input } from "@software-factory/ui/components/input";
 import { Kbd } from "@software-factory/ui/components/kbd";
+import { Popover, PopoverContent, PopoverTrigger } from "@software-factory/ui/components/popover";
 import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
@@ -50,6 +53,7 @@ import {
   CheckIcon,
   Maximize2Icon,
   MessageSquareIcon,
+  MessageSquarePlusIcon,
   PauseIcon,
   PlayIcon,
   XIcon,
@@ -61,10 +65,12 @@ import { toast } from "sonner";
 import { onPlanningChanged } from "../bridge.ts";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { op, submitKey } from "../lib/op.ts";
+import { orphanedComments } from "../lib/plan-blocks.ts";
 import { planningQuery } from "../lib/queries.ts";
 import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
+import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
 
 /** How often an open Planning tab says it is still here. */
 const PRESENCE_MS = 20_000;
@@ -84,7 +90,7 @@ export function Planning({
   const focus = mode === "focus";
   // Docked, chat folds to a strip on the right; in focus it stays open.
   const [chatOpen, setChatOpen] = useState(false);
-  const [draft, setDraft] = useState<{ text: string; questionId?: string }>({ text: "" });
+  const [draft, setDraft] = useState<Draft>({ text: "" });
 
   // F gives planning the whole window, Esc gives it back (not while typing).
   useEffect(() => {
@@ -134,6 +140,11 @@ export function Planning({
         />
         <Spec
           view={view}
+          workItemId={item.id}
+          onComment={(anchor) => {
+            setDraft({ text: "", anchor });
+            setChatOpen(true);
+          }}
           onOverturn={(a) => {
             setDraft({ text: `Overturn this assumption and ask me instead: “${a}”` });
             setChatOpen(true);
@@ -418,20 +429,23 @@ function Questions({
               workItemId={workItemId}
               me={me}
               total={total}
+              edit={view.edits.find((e) => e.id === q.answeredViaEdit)}
             />
           ))}
         </div>
       )}
       {ordered.map((q) => (
-        <QuestionCard
-          key={`${q.id}:${q.revision}`}
-          question={q}
-          workItemId={workItemId}
-          focused={q.id === focused}
-          total={total}
-          messages={view.messages.filter((m) => m.questionId === q.id).length}
-          onDiscuss={() => onDiscuss(q.id)}
-        />
+        <div key={`${q.id}:${q.revision}`} className="grid gap-1.5">
+          <EditConfirm question={q} view={view} me={me} />
+          <QuestionCard
+            question={q}
+            workItemId={workItemId}
+            focused={q.id === focused}
+            total={total}
+            messages={view.messages.filter((m) => m.questionId === q.id).length}
+            onDiscuss={() => onDiscuss(q.id)}
+          />
+        </div>
       ))}
     </section>
   );
@@ -448,11 +462,14 @@ function AnsweredRow({
   workItemId,
   me,
   total,
+  edit,
 }: {
   question: PlanningQuestion;
   workItemId: string;
   me: string | null;
   total: number;
+  /** The edit the planner read this answer from (spec 27), shown beside it. */
+  edit?: PlanningView["edits"][number];
 }) {
   const [editing, setEditing] = useState(false);
   if (editing) {
@@ -469,9 +486,11 @@ function AnsweredRow({
   }
   const tag = q.skipped
     ? { label: "skipped · the planner decides", changed: true }
-    : q.acceptedAlone
-      ? { label: "default · finish alone", changed: false }
-      : answeredTag(q, me);
+    : q.answeredViaEdit
+      ? { label: q.answeredBy === me ? "from your edit" : "from an edit", changed: true }
+      : q.acceptedAlone
+        ? { label: "default · finish alone", changed: false }
+        : answeredTag(q, me);
   return (
     <button
       type="button"
@@ -507,6 +526,25 @@ function AnsweredRow({
           )}
           <ReadReceipt at={q.answerDeliveredAt} />
         </span>
+        {q.answeredViaEdit && (
+          // The planner's reading of a person's edit, not their own words (third review of #85):
+          // the edit as written beside it, and one click on the row to correct it.
+          <span
+            className="mt-1 block text-ink-muted text-xs"
+            data-testid={`answered-from-edit-${q.id}`}
+          >
+            The planner read this from {q.answeredBy === me ? "your" : "an"} edit
+            {edit ? (
+              <>
+                :{" "}
+                <q className="text-ink-3 italic">
+                  {edit.after.trim().replace(/^\s*([-*+]|\d+[.)])\s+/, "")}
+                </q>
+              </>
+            ) : null}
+            . <span className="text-status-running underline">Correct it</span>
+          </span>
+        )}
         {q.note && <span className="mt-0.5 block text-ink-muted text-xs">Note: {q.note}</span>}
       </span>
     </button>
@@ -792,14 +830,6 @@ function ReadReceipt({ at }: { at: string | null | undefined }) {
 
 // ---- the living spec ----
 
-/** A hast node's text, for comparing a block with the previous revision. */
-function hastText(node: unknown): string {
-  const n = node as { value?: string; children?: unknown[] } | undefined;
-  if (!n) return "";
-  if (typeof n.value === "string") return n.value;
-  return (n.children ?? []).map(hastText).join("");
-}
-
 function Chip({ tag }: { tag: string }) {
   return (
     <span
@@ -819,13 +849,45 @@ function Chip({ tag }: { tag: string }) {
   );
 }
 
+/** A chat draft: a message, maybe about a question, maybe a comment on plan lines (spec 27). */
+type Draft = { text: string; questionId?: string; anchor?: Anchor };
+
+/** Comments whose lines are no longer in the plan (review of #85): listed, never dropped. */
+function OrphanedComments({ view, bodyMd }: { view: PlanningView; bodyMd: string }) {
+  const orphaned = orphanedComments(view, bodyMd);
+  if (!orphaned.length) return null;
+  return (
+    <div
+      className="grid gap-1.5 rounded-lg bg-selected px-3 py-2 text-xs"
+      data-testid="orphaned-comments"
+    >
+      <b className="font-medium">Comments on parts no longer in the plan</b>
+      {orphaned.map((m) => (
+        <div key={m.id} className="grid gap-0.5">
+          <span className="truncate text-ink-muted italic">
+            {m.anchor?.quote.replace(/^\s*[-*+]\s+/, "")}
+          </span>
+          <span>
+            <b className="font-medium">{m.authorName}</b>: {m.text}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Spec({
   view,
+  workItemId,
+  onComment,
   onOverturn,
   className,
 }: {
   view: PlanningView;
   onOverturn: (assumption: string) => void;
+  workItemId: string;
+  /** Comment on plan lines (spec 27): opens the chat with the lines as the message's anchor. */
+  onComment: (anchor: Anchor) => void;
   className?: string;
 }) {
   const { spec, previousSpec } = view;
@@ -842,30 +904,12 @@ function Spec({
         : null,
     [previousSpec],
   );
-  const block =
-    (Tag: "p" | "li") =>
-    ({ node, children }: { node?: unknown; children?: ReactNode }) => {
-      const text = hastText(node);
-      return (
-        <Tag
-          className={cn(
-            text.includes("⟦assumption⟧") && "rounded bg-status-waiting/10 px-1",
-            isChanged(text, previous) && "border-status-running border-l-2 pl-2",
-          )}
-          data-changed={isChanged(text, previous) ? "true" : undefined}
-          data-assumption={text.includes("⟦assumption⟧") ? "true" : undefined}
-        >
-          {children}
-        </Tag>
-      );
-    };
+  const me = useMe();
   const components: Components = {
     code: ({ children }) => {
       const tag = chipTag(String(children));
       return tag ? <Chip tag={tag} /> : <code>{children}</code>;
     },
-    p: block("p"),
-    li: block("li"),
   };
   const inline = (text: string) => (
     <Markdown components={{ ...components, p: ({ children }) => <>{children}</> }}>
@@ -891,7 +935,16 @@ function Spec({
       ) : (
         <div className="mx-auto grid max-w-[760px] gap-4 px-8 py-6 leading-relaxed">
           <div className="[&_h1]:mb-3 [&_h1]:font-semibold [&_h1]:text-[20px] [&_h2]:mt-5 [&_h2]:mb-1 [&_h2]:font-medium [&_h2]:text-[11px] [&_h2]:text-ink-muted [&_h2]:uppercase [&_h2]:tracking-[0.06em] [&_h2]:mt-3 [&_h2]:font-semibold [&_li]:ml-4 [&_li]:list-disc [&_ol>li]:list-decimal [&_p]:my-1.5 [&_code]:font-mono [&_code]:text-xs">
-            <Markdown components={components}>{markTags(spec.bodyMd)}</Markdown>
+            <PlanBody
+              view={view}
+              bodyMd={spec.bodyMd}
+              specId={spec.id}
+              previous={previous}
+              components={components}
+              workItemId={workItemId}
+              me={me}
+              onComment={onComment}
+            />
           </div>
           {!/^#{1,4}\s*acceptance criteria/im.test(spec.bodyMd) && (
             <div>
@@ -911,6 +964,8 @@ function Spec({
               </ol>
             </div>
           )}
+          <OrphanedComments view={view} bodyMd={spec.bodyMd} />
+          <YourEdits view={view} workItemId={workItemId} me={me} components={components} />
           {spec.assumptions.length > 0 && (
             <div data-testid="assumptions">
               <b>Assumptions</b>
@@ -1007,8 +1062,8 @@ function Chat({
 }: {
   view: PlanningView;
   workItemId: string;
-  draft: { text: string; questionId?: string };
-  onDraft: (d: { text: string; questionId?: string }) => void;
+  draft: Draft;
+  onDraft: (d: Draft) => void;
   onClose?: (() => void) | undefined;
   className?: string;
 }) {
@@ -1034,6 +1089,7 @@ function Chat({
           workItemId,
           text,
           ...(draft.questionId ? { questionId: draft.questionId } : {}),
+          ...(draft.anchor ? { anchor: draft.anchor } : {}),
           ...(interrupt ? { interrupt: true } : {}),
         },
         { idempotencyKey: submitKey() },
@@ -1089,6 +1145,11 @@ function Chat({
               <span className="font-medium text-foreground">{m.authorName}</span>
               {m.kind === "gate" && <Badge variant="outline">spec gate: changes</Badge>}
               {m.questionId && <Chip tag={`Q${numbers.get(m.questionId) ?? "?"}`} />}
+              {m.anchor && (
+                <span className="flex items-center gap-0.5" title={m.anchor.quote}>
+                  <MessageSquarePlusIcon className="size-3" /> on the plan
+                </span>
+              )}
               <span className="grow" />
               {m.author === "person" && <ReadReceipt at={m.deliveredAt} />}
               <span>{ago(m.createdAt)}</span>
@@ -1116,6 +1177,24 @@ function Chat({
         <div ref={end} />
       </div>
       <div className="grid flex-none gap-1.5 border-line-soft border-t px-4 py-3">
+        {draft.anchor && (
+          <div
+            className="flex items-center gap-2 text-muted-foreground text-xs"
+            data-testid="comment-anchor"
+          >
+            <span className="truncate border-status-waiting border-l-2 pl-2 italic">
+              {draft.anchor.quote.replace(/^\s*[-*+]\s+/, "")}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 px-1 text-xs"
+              onClick={() => onDraft({ text: draft.text })}
+            >
+              ✕
+            </Button>
+          </div>
+        )}
         {draft.questionId && (
           <div className="flex items-center gap-2 text-muted-foreground text-xs">
             About <Chip tag={`Q${numbers.get(draft.questionId) ?? "?"}`} />
@@ -1314,6 +1393,7 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
       <span className="text-muted-foreground text-sm" data-testid="planning-progress">
         {gateSummary(view)}
       </span>
+      <EditsNotKept view={view} workItemId={item.id} />
       {specGate && partial && partial.length > 0 && (
         <span className="text-status-waiting text-xs">
           {partial.length} coverage categor{partial.length === 1 ? "y" : "ies"} still partial
@@ -1374,6 +1454,126 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         confirm="Send to the planning agent"
         onConfirm={(note) => decide({ kind: "spec.requestChanges", workItemId: item.id, note })}
       />
+    </div>
+  );
+}
+
+/**
+ * The edits the plan doesn't keep word for word, at the gate bar (review of #85, round 2). They hold
+ * the gate (`planning.ready` refuses), and no block of the plan shows them any more, so each is
+ * listed here with "Let it reword": a person can always let the planner go on.
+ */
+function EditsNotKept({ view, workItemId }: { view: PlanningView; workItemId: string }) {
+  const notKept = view.edits.filter((e) => !e.kept);
+  if (notKept.length === 0) return null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="link"
+          size="xs"
+          className="h-auto p-0 text-destructive"
+          data-testid="edits-not-kept"
+        >
+          {notKept.length} edit{notKept.length === 1 ? "" : "s"} not in the plan as written
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="grid w-96 gap-3" data-testid="edits-not-kept-list">
+        <div className="text-muted-foreground text-xs">
+          The planner can't ask for the gate until the plan keeps these edits word for word, or the
+          edit is released.
+        </div>
+        {notKept.map((e) => (
+          <div key={e.id} className="grid gap-1 text-sm">
+            <div className="text-muted-foreground text-xs">
+              {e.authorName}, {ago(e.createdAt)}
+            </div>
+            <div className="line-clamp-4 whitespace-pre-wrap rounded bg-selected px-2 py-1">
+              {e.after || <span className="text-muted-foreground">(deleted lines)</span>}
+            </div>
+            <Button
+              variant="outline"
+              size="xs"
+              className="justify-self-start"
+              onClick={() => releaseEdit(workItemId, e.id)}
+              data-testid={`edit-release-${e.id}`}
+            >
+              Let it reword
+            </Button>
+          </div>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * A person edited an open question's line in the plan (fourth review of #85): the planner records
+ * an answer from an edit only when the change is exactly an option, so the person is offered a
+ * one-tap confirm instead. Not for security, privacy or irreversible questions, which keep their
+ * own answer path.
+ */
+function EditConfirm({
+  question: q,
+  view,
+  me,
+}: {
+  question: PlanningQuestion;
+  view: PlanningView;
+  me: string | null;
+}) {
+  const [sending, setSending] = useState(false);
+  if (q.status !== "open" || isSensitiveQuestion(q) || q.number === null) return null;
+  const tag = `[Q${q.number}]`;
+  const edit = [...view.edits].reverse().find((e) => e.authorId === me && e.after.includes(tag));
+  const span = edit ? changedSpan(edit.before, edit.after, tag) : null;
+  if (!edit || !span) return null;
+  const line = (edit.after.split("\n").find((l) => l.includes(tag)) ?? "")
+    .replace(tag, "")
+    .replace(/^\s*([-*+]|\d+[.)])\s+/, "")
+    .trim();
+  const exact = editAnswer(span, q.options);
+  const record = async (answer: string) => {
+    setSending(true);
+    try {
+      await op(
+        "planning.answer",
+        { questionId: q.id, questionRevision: q.revision, answer },
+        { idempotencyKey: submitKey() },
+      );
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <div
+      className="grid gap-1.5 rounded-lg border border-status-running/30 bg-status-running/5 px-3 py-2 text-xs"
+      data-testid={`edit-confirm-${q.id}`}
+    >
+      <span>
+        You edited Q{q.number}'s line to “{line}”. Record that as your answer?
+      </span>
+      <span className="flex flex-wrap gap-1.5">
+        {q.options.length > 0 ? (
+          q.options.map((o) => (
+            <Button
+              key={o}
+              size="xs"
+              variant={o === exact ? "default" : "outline"}
+              disabled={sending}
+              onClick={() => record(o)}
+            >
+              {o}
+            </Button>
+          ))
+        ) : (
+          <Button size="xs" disabled={sending} onClick={() => record(span)}>
+            Record “{span}”
+          </Button>
+        )}
+      </span>
     </div>
   );
 }

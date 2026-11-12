@@ -48,6 +48,21 @@ export const SCREENS = [
     design: "PlanFocus.html",
     keys: ["f"],
   },
+  // Second review of #85: nested lists, a fence, kept edits and comments on each.
+  {
+    name: "plan-blocks",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "plan-block-comments",
+  },
+  {
+    name: "plan-edits-dropped",
+    path: "/work/wi_12?tab=plan&fixture=dropped",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "your-edits",
+  },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
@@ -55,21 +70,21 @@ export const SCREENS = [
     name: "item-review-criteria",
     path: "/work/wi_13?tab=review",
     design: "ItemReview.html",
-    scrollTo: '[data-testid="factory-checks"]',
+    scrollTo: "factory-checks",
   },
   // The runner could not run the checks (ADR 0501, third review): shown plainly, not passed.
   {
     name: "item-review-not-run",
     path: "/work/wi_13?tab=review&fixture=notrun",
     design: "ItemReview.html",
-    scrollTo: '[data-testid="factory-checks"]',
+    scrollTo: "factory-checks",
   },
   // Fourth review: the decision when checks were not run (merge only without them, recorded).
   {
     name: "item-review-not-run-decision",
     path: "/work/wi_13?tab=review&fixture=notrun",
     design: "ItemReview.html",
-    scrollTo: '[data-testid="decision"]',
+    scrollTo: "decision",
   },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
   { name: "new-item", path: "/new", design: "WorkNew.html" },
@@ -197,9 +212,9 @@ async function shoot(cdp, url, file, theme, keys = [], clicks = [], scrollTo = n
     await sleep(500);
   }
   if (scrollTo) {
-    // A screen below the fold: bring the element to the top of its scrolling pane.
+    // Bring a part of the view into sight (a test id), centred.
     await cdp.send("Runtime.evaluate", {
-      expression: `document.querySelector(${JSON.stringify(scrollTo)})?.scrollIntoView({ block: "start" })`,
+      expression: `document.querySelector('[data-testid="${scrollTo}"]')?.scrollIntoView({ block: "center" })`,
     });
     await sleep(300);
   }

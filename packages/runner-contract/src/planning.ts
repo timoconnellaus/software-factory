@@ -11,6 +11,7 @@ export const PLANNING_OPS = [
   "question.delete",
   "question.reorder",
   "question.focus",
+  "question.answerFromEdit",
   "spec.revise",
   "chat.reply",
   "planning.news",
@@ -169,6 +170,15 @@ export const questionFocusInputSchema = z.object({
   questionId: z.string().min(1).nullable(),
 });
 
+/** Record the answer a person's plan edit settled (spec 27, ADR 0471). */
+export const questionAnswerFromEditInputSchema = z.object({
+  questionId: z.string().min(1),
+  /** The answer the edit implies, in the question's terms (an option, Yes/No, a number, text). */
+  answer: z.string().trim().min(1).max(10_000),
+  /** The `spec.edited` event's editId. */
+  editId: z.string().min(1),
+});
+
 export const coverageItemSchema = z.object({
   category: z.string().trim().min(1).max(80),
   status: z.enum(["clear", "partial", "not-applicable"]),
@@ -254,6 +264,7 @@ export const PLANNING_TOOL_INPUTS = {
   "question.delete": questionDeleteInputSchema,
   "question.reorder": questionReorderInputSchema,
   "question.focus": questionFocusInputSchema,
+  "question.answerFromEdit": questionAnswerFromEditInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema.omit({ cursor: true, ack: true, hold: true }),
@@ -270,6 +281,7 @@ export const PLANNING_INPUTS = {
   "question.delete": questionDeleteInputSchema,
   "question.reorder": questionReorderInputSchema,
   "question.focus": questionFocusInputSchema,
+  "question.answerFromEdit": questionAnswerFromEditInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema,
@@ -287,10 +299,12 @@ export const PLANNING_TOOL_DESCRIPTIONS: Record<PlanningOp, string> = {
     "Edit a question (prompt, options, default, recommendation, kind…). Its answer, if any, stands.",
   "question.delete": "Withdraw a question that no longer matters. Say why.",
   "question.reorder": "Put the open questions in a new order, most important first.",
+  "question.answerFromEdit":
+    "A person's edit to the plan settled a question: record the answer it implies, as theirs (it shows as coming from their edit). Not for security, privacy or irreversible questions: ask the person instead.",
   "question.focus":
     "Bring a question to everyone's view (when you want an answer to it next). null clears.",
   "spec.revise":
-    "Replace the living spec with a new revision: the whole spec every time (body, criteria, assumptions, coverage, clarifications). Tag every statement with its source: [Qn], [request], [repo], [parent] or [assumption].",
+    "Replace the living spec with a new revision: the whole spec every time (body, criteria, assumptions, coverage, clarifications). Tag every statement with its source: [Qn], [request], [repo], [parent] or [assumption]. Keep every line a person edited word for word (refused otherwise): if one must change, ask them in the chat.",
   "chat.reply": "Reply in the planning chat, optionally about a question or to a message.",
   "planning.news":
     "Answers, revised answers, chat and presence since you last looked. The hooks bring news on their own; call this only to check now.",
@@ -329,6 +343,11 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     text: z.string(),
     from: z.string(),
     questionId: z.string().nullable(),
+    /** A comment on plan lines (spec 27): the lines it is about, as they read when it was written. */
+    anchor: z
+      .object({ lineStart: z.number(), lineEnd: z.number(), quote: z.string() })
+      .nullable()
+      .optional(),
     /** The question the message is about (kim's `about`), so the agent needn't look it up. */
     about: z
       .object({ questionId: z.string(), number: z.number().nullable(), prompt: z.string() })
@@ -348,6 +367,21 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     at: z.string(),
     on: z.boolean(),
     by: z.string(),
+  }),
+  z.object({
+    /**
+     * A person edited the plan (spec 27, ADR 0471): keep their wording word for word in every
+     * revision, and record any answer it settles with question_answerFromEdit.
+     */
+    type: z.literal("spec.edited"),
+    cursor: z.number(),
+    at: z.string(),
+    editId: z.string(),
+    by: z.string(),
+    lineStart: z.number(),
+    lineEnd: z.number(),
+    before: z.string(),
+    after: z.string(),
   }),
   z.object({
     type: z.literal("planning.resumed"),

@@ -24,3 +24,11 @@ Relationship OS ADR 0017.
 > **Autonomy rate** is defined as: the share of merged work items that needed no human action other
 > than the gates the autonomy policy requires (no send-back, no answered question, no takeover).
 > Every spec-gate skip is journaled with its reason ([ADR 0013](0013-triage-sizes-the-spec-gate.md)).
+
+> Amended 2026-11-12 ([ADR 0590](0590-the-audit-journal-records-changes-not-machine-chatter.md)):
+> "every operation writes one row" becomes **every operation that changed something**. Machine-
+> frequency operations (a heartbeat, an empty claim, a held wait that found nothing, presence, a
+> batch of log lines) declare `audit: { changesOnly }` and write a row only when they changed state;
+> refusals and failures are always written. None of the metrics above reads those rows: gate time,
+> send-back rate, cycle time and autonomy rate come from decisions and state changes, which are
+> still journaled. A runner's input is journaled as its digest, not its body.
