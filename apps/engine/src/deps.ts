@@ -9,6 +9,7 @@ import {
 import { fakeGitHub } from "@software-factory/core/testing";
 import { runnerChannelKey } from "@software-factory/runner-contract";
 import { githubApp } from "./github/app.ts";
+import { mobileAttestation, mobileTestSeams } from "./mobile.ts";
 import { deliverOutbox } from "./outbox.ts";
 import { secrets } from "./secrets.ts";
 
@@ -28,6 +29,7 @@ export function services(env: Env): FactoryServices {
     github,
     publicBaseUrl: env.PUBLIC_BASE_URL,
     allowSoftwareDeviceKeys: env.DESKTOP_ALLOW_SOFTWARE_KEYS === "1",
+    mobileAttestation: mobileAttestation(env),
     ...(env.DEPLOYED_SHA ? { deployedSha: env.DEPLOYED_SHA } : {}),
     ...(env.RUNNER_SHA ? { runnerSha: env.RUNNER_SHA } : {}),
     attachments: r2AttachmentBlobs(env.ATTACHMENTS),
@@ -46,6 +48,9 @@ export function invokeDeps(env: Env): InvokeDeps {
     services: services(env),
     floor: env.FACTORY_FLOOR,
     deliver: (ids) => deliverOutbox(env, ids),
+    beforeCommit: async (op) => {
+      await mobileTestSeams.beforeCommit?.(op);
+    },
   };
 }
 
@@ -68,6 +73,7 @@ function unavailableGitHub(): FactoryServices["github"] {
     pullRequestMergeability: no,
     compareCommits: no,
     commitParents: no,
+    commitTime: no,
     updatePullRequestBranch: no,
     compareFiles: no,
     readFile: no,

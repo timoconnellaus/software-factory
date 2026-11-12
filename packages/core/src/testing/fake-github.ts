@@ -38,11 +38,15 @@ interface RepoState {
   pulls: FakePull[];
   /** PRs GitHub can't merge (`false`) or is still computing (`null`), by number. Default mergeable. */
   mergeable?: Record<number, boolean | null>;
+  /** One-shot refusals of a PR's next merge, as GitHub gives one (a moved base, a merged PR). */
+  refuseMerge?: Record<number, string>;
   /** Update-branch requests waiting for `completeUpdate` (`deferUpdates`), by PR number. */
   pendingUpdates?: number[];
   deferUpdates?: boolean;
   /** A merge commit's second parent (what `update-branch` merged in), by merge commit SHA. */
   merged?: Record<string, string>;
+  /** When each commit was made (ISO), for `commitTime`; increasing in the order they were made. */
+  times?: Record<string, string>;
   tokens: number;
 }
 
@@ -98,6 +102,8 @@ export interface FakeGitHub extends GitHubService {
   deferUpdates(repo: RepoRef, on: boolean): Promise<void>;
   /** Sets what GitHub says about a PR's mergeability (false: conflicts; null: still computing). */
   setMergeable(repo: RepoRef, number: number, mergeable: boolean | null): Promise<void>;
+  /** GitHub refuses the PR's next merge with this reason (once). */
+  refuseNextMerge(repo: RepoRef, number: number, reason: string): Promise<void>;
   /** Sets a person's role on the repo (null: not a collaborator). */
   setPermission(repo: RepoRef, login: string, permission: string | null): Promise<void>;
   /** What `GET /app` reports (default: every event the factory needs). */
@@ -243,6 +249,10 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
   const commit = async (state: RepoState, parent: string | null, salt: string) => {
     const next = await sha(`${parent}:${salt}:${crypto.randomUUID()}`);
     state.parents[next] = parent;
+    // Strictly increasing, so the order commits were made in is the order their times say.
+    const last = Math.max(0, ...Object.values(state.times ?? {}).map((t) => Date.parse(t)));
+    const at = new Date(Math.max(Date.now(), last + 1000)).toISOString();
+    state.times = { ...(state.times ?? {}), [next]: at };
     return next;
   };
 
@@ -395,6 +405,11 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         headSha: state.refs[pull.head] ?? null,
       };
     },
+    async refuseNextMerge(r, number, reason) {
+      const state = await load(r);
+      state.refuseMerge = { ...(state.refuseMerge ?? {}), [number]: reason };
+      await save(r, state);
+    },
     async setMergeable(r, number, mergeable) {
       const state = await load(r);
       state.mergeable = { ...(state.mergeable ?? {}), [number]: mergeable };
@@ -408,6 +423,9 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         aheadBy: [...h].filter((c) => !b.has(c)).length,
         behindBy: [...b].filter((c) => !h.has(c)).length,
       };
+    },
+    async commitTime(r, at) {
+      return (await load(r)).times?.[at] ?? null;
     },
     async commitParents(r, at) {
       const state = await load(r);
@@ -455,6 +473,12 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const state = await load(r);
       const pull = state.pulls.find((p) => p.number === number);
       if (!pull) return { merged: false, reason: "no such pull request" };
+      const refused = state.refuseMerge?.[number];
+      if (refused) {
+        delete state.refuseMerge?.[number];
+        await save(r, state);
+        return { merged: false, reason: refused };
+      }
       if (pull.state === "merged") return { merged: true, sha: state.refs[pull.base] ?? expected };
       if (state.refs[pull.head] !== expected) return { merged: false, reason: "head moved" };
       const merge = await commit(state, expected, `merge-${number}`);

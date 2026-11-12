@@ -1,8 +1,9 @@
 -- Migration 0350 (spec 53, ADR 0580): the babysitter's deliverer lands approved merges per repository.
 --
--- core_delivery_state: one row per repository queue (the project, and the repository when the
--- item records one), the deliverer's bookkeeping. `rev` and `running_until` let only one pass run at
--- a time (a compare-and-set, as ADR 0511's reconciler does per item); `dirty` asks a running pass to
+-- core_delivery_state: one row per repository queue (key `<project>:<repository>`; an item with no
+-- repository is never the babysitter's), the deliverer's bookkeeping (ADR 0586). `rev` and `running_until` let only one pass run at
+-- a time (a compare-and-set, as ADR 0511's reconciler does per item), and `rev` is the pass's
+-- fencing token: every operation the pass calls is refused once `rev` moved on; `dirty` asks a running pass to
 -- go round again because something changed meanwhile; `next_check_at` is when the minute cron looks
 -- again without an event.
 CREATE TABLE core_delivery_state (
@@ -25,6 +26,9 @@ ALTER TABLE core_merge_queue ADD COLUMN driver TEXT NOT NULL DEFAULT 'workflow'
 ALTER TABLE core_merge_queue ADD COLUMN outcome TEXT
   CHECK (outcome IS NULL OR outcome IN ('merged', 'conflict', 'failed', 'withdrawn'));
 ALTER TABLE core_merge_queue ADD COLUMN update_asked_at TEXT;
+-- How many times GitHub was asked to update the entry's head: the deliverer stops asking after a
+-- few, so a default branch that keeps moving while CI runs can't keep a head updating for ever.
+ALTER TABLE core_merge_queue ADD COLUMN updates INTEGER NOT NULL DEFAULT 0;
 
 -- The minute cron's sweep (`deliverDue`) reads only open babysitter entries: a partial index, so it
 -- never scans the entries kept after they end.

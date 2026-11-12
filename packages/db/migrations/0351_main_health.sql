@@ -15,7 +15,16 @@ CREATE TABLE core_main_health (
   last_green_sha TEXT,
   red_since TEXT,
   first_red_sha TEXT,
-  checked_at TEXT NOT NULL
+  checked_at TEXT NOT NULL,
+  -- Where this observation sits in time, from GitHub: the head commit's committer date, then the
+  -- latest start or completion among the head's counted check runs. `main.observe` writes only an
+  -- observation newer than the row's (compared in SQL in the same batch), so a push and a check
+  -- suite arriving together, or a late read, never put an older state back.
+  head_at TEXT NOT NULL DEFAULT '',
+  event_at TEXT NOT NULL DEFAULT '',
+  -- Who is told about the open red episode (JSON user ids, fixed when it opens): the project's
+  -- approvers, owner question 4's recommendation. The Inbox card goes to them only.
+  audience TEXT NOT NULL DEFAULT '[]'
 );
 -- `delivery.status` reads a project's rows; the inbox reaches them through the caller's projects.
 CREATE INDEX core_main_health_project_idx ON core_main_health (project_id);

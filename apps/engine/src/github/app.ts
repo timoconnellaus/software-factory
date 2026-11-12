@@ -397,6 +397,13 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       if (r.status !== 200) fail(`commit ${sha}`, r);
       return ((r.json as { parents?: { sha: string }[] }).parents ?? []).map((p) => p.sha);
     },
+    async commitTime(repo, sha) {
+      // The git data API: no file list, unlike /commits/{sha}.
+      const r = await api(repo, "GET", `/git/commits/${encodeURIComponent(sha)}`);
+      if (r.status === 404) return null;
+      if (r.status !== 200) fail(`commit ${sha}`, r);
+      return (r.json as { committer?: { date?: string } }).committer?.date ?? null;
+    },
     async updatePullRequestBranch(repo, { number, expectedHeadSha }) {
       const r = await api(repo, "PUT", `/pulls/${number}/update-branch`, {
         expected_head_sha: expectedHeadSha,
@@ -488,6 +495,8 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
             conclusion: string | null;
             html_url: string | null;
             app: { slug: string } | null;
+            started_at?: string | null;
+            completed_at?: string | null;
           }[];
         };
         for (const c of body.check_runs) {
@@ -498,6 +507,8 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
             conclusion: c.conclusion,
             appSlug: c.app?.slug ?? null,
             url: c.html_url,
+            startedAt: c.started_at ?? null,
+            completedAt: c.completed_at ?? null,
           });
         }
         if (out.length >= body.total_count || body.check_runs.length === 0) break;

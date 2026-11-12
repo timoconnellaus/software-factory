@@ -6,7 +6,9 @@
 // update, takes the item out of the queue and back to build. pr.merge and pr.autoMerge refuse a
 // queued item that isn't the head, or a head the queue didn't bring there.
 import type { DeliveryOutcome, MergeQueueDriver, MergeQueueStatus } from "@software-factory/db";
+import { sql } from "kysely";
 import { z } from "zod";
+import { BABYSITTER } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import {
@@ -86,8 +88,12 @@ export function queuedEntriesQuery(
       )
       .where("q.status", "=", "queued")
       .where("w.status", "in", [...OPEN_ITEM])
-      // A repair of a red default branch goes first (spec 53, ADR 0581): it is what may land.
-      .orderBy("w.repairs_main", "desc")
+      // A repair of a red default branch goes first, only while it is red (spec 53, ADR 0581): it
+      // is what may land then. A primary-key lookup per open entry.
+      .orderBy(
+        sql`(w.repairs_main = 1 AND EXISTS (SELECT 1 FROM core_main_health h WHERE h.repository_id = w.repository_id AND h.red_since IS NOT NULL))`,
+        "desc",
+      )
       .orderBy("q.enqueued_at", "asc")
       .orderBy("q.id", "asc")
   );
@@ -184,6 +190,7 @@ export function wakeDelivery(
   ctx: HandlerContext,
   item: Pick<WorkItemRow, "project_id" | "repository_id">,
 ): void {
+  if (!item.repository_id) return; // never the babysitter's (ADR 0586)
   ctx.emit({
     kind: "delivery.wake",
     payload: { projectId: item.project_id, repositoryId: item.repository_id },
@@ -215,6 +222,41 @@ export async function requireQueueHead(
       `the merge queue's head for this item is ${entry.head_sha.slice(0, 7)}, not ${headSha.slice(0, 7)}`,
     );
   }
+}
+
+/**
+ * What pr.merge requires beyond the queue's head (spec 53 review): the item is still open, and a
+ * merge by the babysitter is of an entry still open in its queue. Read now, before GitHub is asked,
+ * and guarded in the call's batch, so a cancel, a finish or a leave that commits first refuses it.
+ */
+export async function requireOpenToMerge(ctx: HandlerContext, item: WorkItemRow): Promise<void> {
+  if (!(OPEN_ITEM as readonly string[]).includes(item.status)) {
+    throw new OperationError("conflict", `work item #${item.number} is ${item.status}: not merged`);
+  }
+  ctx.guardExists(
+    "item open",
+    ctx.db
+      .selectFrom("core_work_items")
+      .select("id")
+      .where("id", "=", item.id)
+      .where("status", "in", [...OPEN_ITEM]),
+  );
+  if (ctx.actor.type !== BABYSITTER.type || ctx.actor.id !== BABYSITTER.id) return;
+  const entry = await openEntry(ctx, item.id);
+  if (entry?.driver !== "babysitter") {
+    throw new OperationError(
+      "conflict",
+      `work item #${item.number} is not in the babysitter's queue`,
+    );
+  }
+  ctx.guardExists(
+    "entry open",
+    ctx.db
+      .selectFrom("core_merge_queue")
+      .select("id")
+      .where("id", "=", entry.id)
+      .where("status", "=", "queued"),
+  );
 }
 
 const position = z.object({
@@ -308,6 +350,11 @@ export const mergeQueueEnter = defineOperation({
     const w = requireWorkItem(ctx);
     if (input.driver === "babysitter" && !input.pendingActionId) {
       throw new OperationError("invalid_input", "the babysitter lands only an approved merge");
+    }
+    // The babysitter's queues are per repository (one lease each, ADR 0586); an item with no
+    // repository can't merge anyway (pr.merge needs one).
+    if (input.driver === "babysitter" && !w.repository_id) {
+      throw new OperationError("conflict", "the babysitter lands only an item with a repository");
     }
     if (!w.pr_number) throw new OperationError("conflict", "no pull request");
     if (w.head_sha !== input.headSha) {
@@ -417,13 +464,21 @@ export const mergeQueueUpdate = defineOperation({
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
-  input: z.object({ workItemId }),
+  input: z.object({
+    workItemId,
+    /**
+     * At most this many update-branch requests for the entry (spec 53 review: a default branch
+     * that keeps moving while CI runs must not keep the head updating). Past it, a head that is
+     * behind is `refused` without asking GitHub. Omitted: no bound (v4–v7's Workflows).
+     */
+    maxUpdates: z.number().int().positive().optional(),
+  }),
   output: z.object({
     state: z.enum(["current", "updating", "updated", "withdrawn", "conflict", "refused", "moved"]),
     headSha: z.string(),
     reason: z.string().nullable(),
   }),
-  async handler(_input, ctx) {
+  async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const project = requireProject(ctx);
     const entry = await openEntry(ctx, w.id);
@@ -461,6 +516,13 @@ export const mergeQueueUpdate = defineOperation({
         reason: `${repository.default_branch} can't merge into the branch cleanly`,
       };
     }
+    if (input.maxUpdates !== undefined && entry.updates >= input.maxUpdates) {
+      return {
+        state: "refused" as const,
+        headSha: at,
+        reason: `${repository.default_branch} moved again after ${entry.updates} updates of this branch`,
+      };
+    }
     const asked = await github.updatePullRequestBranch(repo, {
       number: w.pr_number,
       expectedHeadSha: at,
@@ -470,7 +532,7 @@ export const mergeQueueUpdate = defineOperation({
       ctx.write(
         ctx.db
           .updateTable("core_merge_queue")
-          .set({ update_asked_at: ctx.now })
+          .set((eb) => ({ update_asked_at: ctx.now, updates: eb("updates", "+", 1) }))
           .where("id", "=", entry.id),
       );
       // GitHub makes the merge commit asynchronously; it is often there already.

@@ -24,6 +24,8 @@ export const SURFACES = [
   "app",
   "cli",
   "desktop",
+  // The phone app (ADR 0541): a `mobile` token's kind sets it, nothing in a request does.
+  "mobile",
   "mcp",
   "runner-channel",
   "workflow",
@@ -32,6 +34,11 @@ export const SURFACES = [
   "test",
 ] as const;
 export type Surface = (typeof SURFACES)[number];
+/** The surfaces whose calls come from a person's own device with a key (ADR 0391, 0541). */
+export const DEVICE_SURFACES = ["desktop", "mobile"] as const;
+export type DeviceSurface = (typeof DEVICE_SURFACES)[number];
+export const isDeviceSurface = (s: Surface): s is DeviceSurface =>
+  (DEVICE_SURFACES as readonly string[]).includes(s);
 
 export interface Origin {
   surface: Surface;
@@ -39,11 +46,21 @@ export interface Origin {
   step?: string;
   /** Free-form request id from the surface, for correlating logs. */
   requestId?: string;
-  /** The desktop device behind a `desktop` call (ADR 0391). Set by the client door, never the caller. */
+  /**
+   * The device behind a `desktop` or `mobile` call (ADR 0391, 0541). Set by the client door, never
+   * the caller.
+   */
   deviceId?: string;
   /**
-   * A verified presence proof (ADR 0391): the client door redeemed a Touch ID signature for exactly
-   * this operation and the digest of this input. Set by the door, never the caller.
+   * Who is calling, by network: a hash of the address the door saw (an IPv4 address, or an IPv6
+   * /64), for the per-caller limits on the phone's unsigned sign-in (ADR 0541). Set by the door,
+   * never the caller.
+   */
+  caller?: string;
+  /**
+   * A verified presence proof (ADR 0391, 0541): the client door redeemed a Touch ID or fingerprint
+   * signature for exactly this operation and the digest of this input. Set by the door, never the
+   * caller.
    */
   presence?: { op: string; inputDigest: string; challengeId: string };
 }

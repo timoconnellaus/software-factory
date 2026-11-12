@@ -253,19 +253,24 @@ _Avoid_: client, install
 A one-time challenge, signed by a desktop device's Secure Enclave key after Touch ID, bound to one
 operation and the digest of its input. The client door checks it; `invoke()` needs it for a gate
 decision from the desktop (ADR 0391). On a phone device the key is a biometric-bound Keystore
-key and the person gives a fingerprint (ADR 0541, proposed).
+key and the person gives a fingerprint (ADR 0541). Which operations take one on which device, and
+which are one tap, is `deviceDecidable()`, pinned by a test.
 _Avoid_: 2FA, confirmation
 
-**Phone device** (proposed, spec 60)
+**Phone device** (spec 60)
 An Android phone running the phone app, registered by scanning a pairing offer's QR code or by a
 GitHub sign-in in the phone's browser (ADR 0541). It holds a per-use, fingerprint-bound Keystore
-key whose attestation the engine checked, plus a `mobile` token for the `mobile` surface. Plan
-approvals, merges and policy approvals take a fingerprint; ordinary answers are one tap.
+key whose attestation the engine checked, plus a `mobile` token (`sfm_`) for the `mobile` surface.
+Plan approvals, merges and policy approvals take a fingerprint; ordinary answers are one tap. A
+phone whose boot isn't verified or whose bootloader is unlocked registers with `key_storage =
+software` and can't approve. Stored in the same table as desktop devices, with `platform =
+android`; listed and revoked with `device.list` and `device.revoke`.
 _Avoid_: mobile client, handset
 
-**Pairing offer** (proposed, spec 60)
+**Pairing offer** (spec 60)
 A one-use, five-minute QR code (with a typed fallback) that a signed-in person shows on the desktop
-or website to add a phone. Showing it is the approval (ADR 0541).
+or website to add a phone (`mobile.pairOffer`). Showing it is the approval (ADR 0541); on the
+desktop it takes Touch ID. Five wrong typed codes close it.
 
 **Config proposal** (proposed, spec 60)
 A config change drafted by chat or a person that changes nothing until a human approver approves it
