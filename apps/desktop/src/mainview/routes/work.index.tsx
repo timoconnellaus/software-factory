@@ -10,11 +10,15 @@ import { ProjectPage } from "../components/work-project.tsx";
 import { boardsQuery, configQuery, workListsQuery } from "../lib/queries.ts";
 import type { WorkView } from "../lib/work-board.ts";
 import { workLayout } from "./_work.tsx";
+import { ItemPanel, loadItem, parseTab, type Tab } from "./work.$id.index.tsx";
 
 interface Search {
   view?: WorkView;
   project?: string;
   layout?: Layout;
+  /** The item open in the side panel, and its tab (spec 41 slice 7). */
+  item?: string;
+  itemTab?: Tab;
 }
 
 const VIEWS: WorkView[] = ["backlog", "planning", "ready", "active", "done"];
@@ -28,9 +32,11 @@ export const Route = createRoute({
     ...(s.view === "stopped" ? { view: "done" as const } : {}),
     ...(typeof s.project === "string" ? { project: s.project } : {}),
     ...(s.layout === "board" || s.layout === "list" ? { layout: s.layout } : {}),
+    ...(typeof s.item === "string" ? { item: s.item } : {}),
+    ...(parseTab(s.itemTab) ? { itemTab: parseTab(s.itemTab) } : {}),
   }),
-  loaderDeps: ({ search }) => ({ project: search.project, view: search.view }),
-  // The lists, and a project's config (its workflow) on its page.
+  loaderDeps: ({ search }) => ({ project: search.project, view: search.view, item: search.item }),
+  // The lists, a project's config (its workflow) on its page, and the item in the side panel.
   loader: ({ context: { queryClient, session }, deps }) => {
     const orgIds = session.orgs.map((o) => o.id);
     return Promise.all([
@@ -39,12 +45,42 @@ export const Route = createRoute({
       deps.project && !deps.view
         ? queryClient.ensureQueryData(configQuery(deps.project))
         : Promise.resolve(null),
+      ...(deps.item ? loadItem(queryClient, deps.item) : []),
     ]).catch(() => null);
   },
   component: WorkRoute,
 });
 
 function WorkRoute() {
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
+  return (
+    <div className="relative flex min-h-0 min-w-0 flex-1">
+      <SectionPage />
+      {search.item && (
+        <ItemPanel
+          key={search.item}
+          id={search.item}
+          tab={search.itemTab ?? "overview"}
+          onTab={(itemTab) => void navigate({ search: { ...search, itemTab }, replace: true })}
+          onClose={() =>
+            void navigate({ search: { ...search, item: undefined, itemTab: undefined } })
+          }
+          onExpand={() =>
+            void navigate({
+              to: "/work/$id",
+              params: { id: search.item as string },
+              search: search.itemTab ? { tab: search.itemTab } : {},
+            })
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+/** The view the search asks for, under the panel. */
+function SectionPage() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const project = search.project ?? null;

@@ -249,3 +249,27 @@ rather than shown empty:
   view is gone and `?view=stopped` lands on Done. It lists each org's 100 most recent items
   (`workItem.list`). Rounds and Usage need runs and usage on a list read; Last 30 days and Export are
   left out.
+
+## As built (slice 7: the item side panel)
+*Amended 2026-11-12.* Screenshots: `docs/screenshots/desktop-work/panel-*` and
+`docs/screenshots/desktop-terminal/board-panel-*` (the terminal docked in the panel, typed into).
+- A card on a board or a row in a Work list (Backlog, Ready, Planning, In the factory, Done, a
+  project's page) opens the item in a panel over the right of the list (`peekItem` in
+  `lib/places.ts`). Links from outside the Work lists (the inbox, details, crumbs, search) still
+  open the page (`openItem`).
+- The panel is the item page's own view (`ItemView` in `routes/work.$id.index.tsx`): the same
+  header, stage strip, tabs and tab bodies, with **Expand** and **Close** in the header. Nothing
+  is forked.
+- The URL carries it (`/work?…&item=<id>&itemTab=<tab>`): opening pushes history, so back closes
+  it and forward reopens it; Close and Esc push too. Expand (or ⌘↵) opens `/work/<id>` with the same
+  tab, and back returns to the list with the panel open. The board's loader reads the panel's item
+  with the list, in the same batch.
+- Esc closes it, except while typing in a field, while a dialog or menu is open, or while the
+  terminal has the keyboard (the dock takes Esc first, as on the page).
+- **Open terminal** in the panel docks the session's terminal (spec 42) over the panel, not the
+  page: a view can declare itself the dock's host (`data-terminal-host`).
+- Focus (F, or Focus on the Plan tab) from the panel expands to the page first, then focuses.
+- The card that is open is marked on the board (a ring) and in lists.
+- **Not in this slice**: the README's activity stream of hand-offs and agent cards and the composer
+  that messages the running agent are slice 8 (`ItemRunLive`, `run.live` and `run.steer` in the
+  panel). The panel shows the tabs the page has.

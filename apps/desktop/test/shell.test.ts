@@ -9,7 +9,7 @@ import { parsePacket } from "@software-factory/client/packet";
 import { describe, expect, it } from "vitest";
 import { ANSWERS, ITEMS } from "../screenshots/fixtures.ts";
 import { entryText, inboxEntries, selectedEntry } from "../src/mainview/lib/inbox-list.ts";
-import { matchItems, sectionOf, tabTitle } from "../src/mainview/lib/places.ts";
+import { matchItems, peekItem, sectionOf, tabTitle } from "../src/mainview/lib/places.ts";
 import { verdictChips, verdictHeadline } from "../src/mainview/lib/review.ts";
 import {
   orgInitial,
@@ -266,6 +266,17 @@ describe("places and search", () => {
     expect(tabTitle("/work/wi_13?tab=review", find)).toBe("#13 Guard the tests in verify");
     expect(tabTitle("/work/unknown", find)).toBe("Work item");
     expect(tabTitle("/settings", find)).toBe("This Mac");
+  });
+
+  it("opens a card in the side panel, keeping the list's search", () => {
+    const link = peekItem("wi_9");
+    expect(link.to).toBe("/work");
+    expect(link.search({ view: "active", project: "prj_factory", itemTab: "runs" })).toEqual({
+      view: "active",
+      project: "prj_factory",
+      item: "wi_9",
+      itemTab: undefined,
+    });
   });
 
   it("puts paths in sections", () => {

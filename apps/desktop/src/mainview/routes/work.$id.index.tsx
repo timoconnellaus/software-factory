@@ -24,10 +24,10 @@ import {
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { type QueryClient, useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
-import { PinIcon, PinOffIcon } from "lucide-react";
-import { useState } from "react";
+import { Maximize2Icon, PinIcon, PinOffIcon, XIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { Attachments } from "../components/attachments.tsx";
@@ -56,6 +56,7 @@ import {
   workItemQuery,
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
+import { isTypingTarget } from "../lib/shortcuts.ts";
 import { togglePin, updateViewState, useViewState } from "../lib/view-state.ts";
 import { workLayout } from "./_work.tsx";
 
@@ -75,6 +76,21 @@ export function parseTab(v: unknown): Tab | undefined {
   return OLD[v];
 }
 
+/**
+ * Everything an item's view renders, for a loader: the item (with its spec, questions, gates, runs
+ * and packet), its timeline, the runners (for runner names), attachments and planning (spec 20).
+ * The Work board's loader uses it for the side panel; the page's own loader spells it out.
+ */
+export function loadItem(queryClient: QueryClient, id: string) {
+  return [
+    queryClient.ensureQueryData(workItemQuery(id)),
+    queryClient.ensureQueryData(timelineQuery(id)).catch(() => null),
+    queryClient.ensureQueryData(runnersQuery()).catch(() => null),
+    queryClient.ensureQueryData(attachmentsQuery(id)).catch(() => null),
+    queryClient.ensureQueryData(planningQuery(id)).catch(() => null),
+  ];
+}
+
 export const Route = createRoute({
   getParentRoute: () => workLayout,
   path: "/work/$id",
@@ -88,6 +104,7 @@ export const Route = createRoute({
     Promise.all([
       // The org's board: what an item before release can wait for (its edit dialog).
       queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
+      // As `loadItem`, spelled out so the loader test sees each read.
       queryClient.ensureQueryData(workItemQuery(params.id)),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
@@ -130,23 +147,54 @@ function WorkItemPage() {
   const navigate = useNavigate({ from: Route.fullPath });
   const { data: d } = useSuspenseQuery(workItemQuery(id));
   const focus = useViewState((s) => s.focus);
-  const tab = tabsFor(d.item.status).includes(asked) ? asked : "overview";
+  const tab = asked;
 
   // Focus mode: the planning has the whole window (the shell hides its chrome).
   if (focus === id) return <Planning detail={d} mode="focus" />;
 
   const go = (t: Tab) => navigate({ search: { tab: t }, replace: true });
+  return <ItemView detail={d} tab={tab} onTab={go} />;
+}
+
+/** The side panel's own controls (spec 41 slice 7): back to full size, and close. */
+export interface PanelControls {
+  onExpand: () => void;
+  onClose: () => void;
+}
+
+/**
+ * A work item: its header, stage strip, tabs and the open tab. The page renders it full size; the
+ * Work board renders the same view in its side panel (`panel`), with Expand and Close in the header.
+ */
+export function ItemView({
+  detail: d,
+  tab: asked,
+  onTab,
+  panel,
+}: {
+  detail: WorkItemDetail;
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  panel?: PanelControls;
+}) {
+  const tab = tabsFor(d.item.status).includes(asked) ? asked : "overview";
   const head = (
-    <div className="flex flex-col gap-3 px-[22px] pt-[18px]">
-      <Header detail={d} />
+    <div className={cn("flex flex-col gap-3 pt-[18px]", panel ? "px-[18px]" : "px-[22px]")}>
+      <Header detail={d} panel={panel} />
       <StageStrip detail={d} />
-      <TabBar detail={d} tab={tab} onTab={go} />
+      <TabBar detail={d} tab={tab} onTab={onTab} />
     </div>
   );
+  // In the panel, the terminal docks over the panel rather than the page (TerminalDock's host).
+  const host = panel ? { "data-terminal-host": "" } : {};
 
   if (tab === "plan") {
     return (
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-page" data-testid="page">
+      <main
+        className="flex min-h-0 min-w-0 flex-1 flex-col bg-page"
+        data-testid={panel ? "panel-body" : "page"}
+        {...host}
+      >
         {head}
         <div className="flex min-h-0 flex-1 flex-col">
           <Planning detail={d} mode="docked" />
@@ -155,10 +203,14 @@ function WorkItemPage() {
     );
   }
   return (
-    <main className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-page" data-testid="page">
+    <main
+      className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-page"
+      data-testid={panel ? "panel-body" : "page"}
+      {...host}
+    >
       {head}
-      <div className="flex flex-col gap-4 px-[22px] pt-4 pb-7">
-        {tab === "overview" && <Overview detail={d} onTab={go} />}
+      <div className={cn("flex flex-col gap-4 pt-4 pb-7", panel ? "px-[18px]" : "px-[22px]")}>
+        {tab === "overview" && <Overview detail={d} onTab={onTab} />}
         {tab === "runs" && <Runs detail={d} />}
         {tab === "review" && <ReviewPacket detail={d} />}
         {tab === "activity" && <Activity detail={d} />}
@@ -167,7 +219,77 @@ function WorkItemPage() {
   );
 }
 
-function Header({ detail }: { detail: WorkItemDetail }) {
+/**
+ * The item side panel (spec 41 slice 7, design WorkActivePanel, README "The item side panel"): the
+ * same view as the page, over the right of the Work list. Esc closes it and ⌘↵ expands it to the
+ * page (neither while typing in a field, a dialog is open, or the terminal has the keyboard: the
+ * terminal dock takes Esc first). The list keeps it in the URL (`?item=`), so back and forward work.
+ */
+export function ItemPanel({
+  id,
+  tab,
+  onTab,
+  onClose,
+  onExpand,
+}: {
+  id: string;
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  onClose: () => void;
+  onExpand: () => void;
+}) {
+  const item = useQuery(workItemQuery(id));
+  // Focus mode (F, or Focus on the Plan tab) gives planning the whole window: from the panel, the
+  // page opens first and focus applies there.
+  const focus = useViewState((s) => s.focus);
+  const keys = useRef({ onClose, onExpand });
+  keys.current = { onClose, onExpand };
+  useEffect(() => {
+    if (focus === id) keys.current.onExpand();
+  }, [focus, id]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (document.querySelector("[role=dialog], [data-radix-popper-content-wrapper]")) return;
+      if (isTypingTarget(e.target as Element | null)) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        keys.current.onClose();
+      } else if (e.key === "Enter" && e.metaKey) {
+        e.preventDefault();
+        keys.current.onExpand();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return (
+    <aside
+      aria-label="Work item"
+      className="absolute inset-y-2 right-2 z-30 flex w-[min(640px,calc(100%-16px))] flex-col overflow-hidden rounded-xl bg-page shadow-[0_0_0_1px_var(--line),0_16px_48px_rgba(0,0,0,0.18)]"
+      data-testid="item-panel"
+    >
+      {item.data ? (
+        <ItemView detail={item.data} tab={tab} onTab={onTab} panel={{ onClose, onExpand }} />
+      ) : item.error ? (
+        <div className="flex flex-col gap-2 p-5">
+          <p className="m-0 text-ink-3">{errorMessage(item.error)}</p>
+          <Button variant="outline" size="md" className="w-fit" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 p-5">
+          <Skeleton className="h-6 w-60" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-48 w-full" />
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function Header({ detail, panel }: { detail: WorkItemDetail; panel?: PanelControls }) {
   const { item } = detail;
   const projects = useProjects();
   const project = projects.data?.find((p) => p.id === item.projectId);
@@ -216,6 +338,30 @@ function Header({ detail }: { detail: WorkItemDetail }) {
           {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
         </Button>
         <OpenTerminal detail={detail} />
+        {panel && (
+          <>
+            <Button
+              variant="outline"
+              size="md"
+              title="Open it full size (⌘↵)"
+              onClick={panel.onExpand}
+              data-testid="panel-expand"
+            >
+              <Maximize2Icon />
+              Expand
+            </Button>
+            <Button
+              variant="outline"
+              size="icon-md"
+              aria-label="Close the panel (Esc)"
+              title="Close (Esc)"
+              onClick={panel.onClose}
+              data-testid="panel-close"
+            >
+              <XIcon />
+            </Button>
+          </>
+        )}
         {(active || pre) && (detail.viewer.isRequester || detail.viewer.isApprover) && (
           <Button
             variant="outline"

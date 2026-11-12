@@ -90,6 +90,24 @@ export const SCREENS = [
   { name: "board-empty", path: "/work?view=active&project=prj_site", design: "WorkActive.html" },
   { name: "active-all", path: "/work", design: "WorkActiveAll.html" },
   { name: "done", path: "/work?view=done", design: "WorkDone.html" },
+  // The item side panel (spec 41 slice 7): over the board, over the All projects list, on the
+  // Plan tab, and on an item before release.
+  {
+    name: "panel-board",
+    path: "/work?view=active&project=prj_factory&item=wi_9",
+    design: "WorkActivePanel.html",
+  },
+  {
+    name: "panel-all-review",
+    path: "/work?item=wi_13&itemTab=review",
+    design: "WorkActivePanel.html",
+  },
+  {
+    name: "panel-plan",
+    path: "/work?view=active&project=prj_factory&item=wi_12&itemTab=plan",
+    design: "WorkActivePanel.html",
+  },
+  { name: "panel-backlog", path: "/work?view=backlog&item=wi_21", design: "WorkActivePanel.html" },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
   { name: "update-required-ready", path: "/", query: "?update=ready", design: "Main.html" },

@@ -230,7 +230,9 @@ export function TerminalPanel({
 
 /** Where the dock sits when not expanded: over the lower part of the page area, or the window. */
 function pageBox(): { left: number; right: number; top: number; bottom: number } {
-  const main = document.getElementById("main");
+  // A view that hosts its own terminal (the Work board's item panel) first, else the page.
+  const main =
+    document.querySelector<HTMLElement>("[data-terminal-host]") ?? document.getElementById("main");
   if (main) {
     const r = main.getBoundingClientRect();
     return { left: r.left, right: window.innerWidth - r.right, top: r.top, bottom: r.bottom };
@@ -265,7 +267,9 @@ export function TerminalDock({
   useEffect(() => {
     const update = () => setBox(pageBox());
     window.addEventListener("resize", update);
-    const main = document.getElementById("main");
+    const main =
+      document.querySelector<HTMLElement>("[data-terminal-host]") ??
+      document.getElementById("main");
     const observer = main ? new ResizeObserver(update) : null;
     if (main) observer?.observe(main);
     return () => {
