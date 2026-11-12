@@ -131,6 +131,46 @@ async function view(workItemId: string, runId: string, actor: Actor) {
   return { ...attached, end: end(res.webSocket) };
 }
 
+/** A token for the person, as the desktop app's sign-in (or `sf login`) would mint it. */
+async function token(userId: string, kind: "desktop" | "cli") {
+  const raw = `${kind === "desktop" ? "sfd_" : "sfc_"}${uid("")}${uid("")}`;
+  const hash = [
+    ...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw))),
+  ]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  const now = new Date().toISOString();
+  const later = new Date(Date.now() + 3_600_000).toISOString();
+  const deviceId = kind === "desktop" ? uid("dev_") : null;
+  const statements = [];
+  if (deviceId) {
+    statements.push(
+      env.DB.prepare(
+        "INSERT INTO core_desktop_devices (id, user_id, name, public_key, key_storage, created_at) VALUES (?, ?, 'Mac', '{}', 'secure-enclave', ?)",
+      ).bind(deviceId, userId, now),
+    );
+  }
+  statements.push(
+    env.DB.prepare(
+      "INSERT INTO core_cli_tokens (id, token_hash, user_id, name, scope, created_at, expires_at, kind, device_id) VALUES (?, ?, ?, 'test', 'write', ?, ?, ?, ?)",
+    ).bind(uid("tok_"), hash, userId, now, later, kind, deviceId),
+  );
+  await env.DB.batch(statements);
+  return { raw, deviceId };
+}
+
+/** The desktop app's way in (spec 42, ADR 0500): the client door's terminal socket. */
+const door = (workItemId: string, runId: string, bearer?: string, upgrade = true) =>
+  worker.fetch(
+    new Request(`${base}/client/v1/terminal/${workItemId}/${runId}`, {
+      headers: {
+        ...(upgrade ? { upgrade: "websocket" } : {}),
+        ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+      },
+    }),
+    env,
+  );
+
 /** The host connects with the URL its held call answered. */
 async function host(url: string) {
   const res = await worker.fetch(
@@ -341,5 +381,69 @@ describe("the web terminal relay", () => {
       origin: { surface: "app" },
     });
     expect(refused).toMatchObject({ ok: false, error: { code: "unavailable" } });
+  });
+
+  it("opens through the client door for a desktop token, with the same rule for who types (spec 42)", async () => {
+    const w = await world();
+    const { c, job, item, runId } = await running(w);
+    const owner = await token(w.userId, "desktop");
+
+    // The owner's desktop: `type`, recorded as the desktop surface with the device.
+    const waiting = c.terminal?.(job.jobId, { fencingToken: job.lease.fencingToken, waitMs: 20_000 });
+    await new Promise((r) => setTimeout(r, 200));
+    const res = await door(item.workItemId, runId, owner.raw);
+    expect(res.status).toBe(101);
+    if (!res.webSocket) throw new Error("no socket");
+    const mine = end(res.webSocket);
+    await mine.until("hello", has("hello"));
+    expect(mine.texts[0]).toMatchObject({ t: "hello", mode: "type", viewers: 1 });
+    const h = await host((await waiting)?.connect?.url ?? "");
+    await h.until("open", has("open"));
+    h.ws.send(new TextEncoder().encode("live"));
+    await mine.until("output", (e) => e.bytes.includes("live"));
+    mine.ws.send(JSON.stringify({ t: "input", data: "ok\r" }));
+    await h.until("input", (e) => e.texts.some((m) => m.t === "input"));
+    const audit = await all<{ origin: string }>(
+      "SELECT origin FROM core_audit WHERE operation = 'run.terminal.attach' AND actor_id = ? AND work_item_id = ?",
+      w.userId,
+      item.workItemId,
+    );
+    expect(audit).toHaveLength(1);
+    expect(JSON.parse(audit[0]?.origin ?? "{}")).toMatchObject({
+      surface: "desktop",
+      deviceId: owner.deviceId,
+    });
+
+    // Another member's desktop watches; the relay closes it if it types anyway.
+    const sam = await member(w.orgId);
+    const samToken = await token(sam.id, "desktop");
+    const watched = await door(item.workItemId, runId, samToken.raw);
+    expect(watched.status).toBe(101);
+    if (!watched.webSocket) throw new Error("no socket");
+    const theirs = end(watched.webSocket);
+    await theirs.until("hello", has("hello"));
+    expect(theirs.texts[0]).toMatchObject({ t: "hello", mode: "watch" });
+    const before = h.texts.length;
+    theirs.ws.send(JSON.stringify({ t: "input", data: "x" }));
+    await theirs.until("closed", (e) => e.closed !== null);
+    expect(theirs.closed?.code).toBe(1008);
+    expect(h.texts.slice(before).filter((m) => m.t === "input")).toEqual([]);
+
+    // Refusals come before any upgrade.
+    expect((await door(item.workItemId, runId)).status).toBe(401);
+    expect((await door(item.workItemId, runId, "sfd_not-a-token")).status).toBe(401);
+    const cli = await token(w.userId, "cli");
+    const byCli = await door(item.workItemId, runId, cli.raw);
+    expect(byCli.status).toBe(403);
+    expect(await byCli.json()).toMatchObject({ code: "forbidden" });
+    expect((await door(item.workItemId, runId, owner.raw, false)).status).toBe(426);
+    const w2 = await world();
+    const outsider = await token(w2.userId, "desktop");
+    expect([403, 404]).toContain((await door(item.workItemId, runId, outsider.raw)).status);
+    const old = await running(w2, [...MANIFEST.capabilities]);
+    const noTerminal = await door(old.item.workItemId, old.runId, outsider.raw);
+    expect(noTerminal.status).toBe(503);
+    expect(await noTerminal.json()).toMatchObject({ code: "unavailable" });
+    mine.ws.close(1000);
   });
 });

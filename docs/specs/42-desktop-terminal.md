@@ -62,7 +62,8 @@ owner types (which takes the session over, as typing in a `tmux attach` does); e
    input for a watcher, and a watch socket that sends input is closed with 1008).
 3. The door's socket runs `run.terminal.attach` as the token's person on the `desktop` surface with the
    device id; a missing or revoked token is refused `401` before any upgrade; a CLI token is refused
-   `403`; an ended run is `409`, a runner without `terminal` `503`, someone outside the org `404`.
+   `403`; an ended run is `409`, a runner without `terminal` `503`, someone outside the org `403` or `404` (as `call` answers
+   for them).
 4. The token never reaches the view: the RPC's terminal messages carry no token field (the RPC test
    checks), and the token is sent only in the socket's `Authorization` header.
 5. The terminal opens in place, resizes, expands to the window, and closes with Esc or the button
