@@ -583,6 +583,8 @@ export interface CoreRunSteersTable {
   text: string;
   created_at: Iso;
   delivered_at: Iso | null;
+  /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
+  kind: Generated<"message" | "takeover">;
 }
 
 /** A person opening a run's web terminal (spec 35, ADR 0440). */

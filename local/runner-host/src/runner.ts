@@ -117,6 +117,12 @@ export function buildRunner(
     ...(config.repoUrlMap ? { repoUrlMap: config.repoUrlMap } : {}),
   });
   const accounts = accountPaths(dirs);
+  const containers = config.isolation === "container";
+  // A stream-json session (ADR 0450) runs on the host only: a container job keeps tmux.
+  const sessionMode = containers ? "tmux" : config.session;
+  if (containers && config.session === "stream-json") {
+    log("session: stream-json is not available with container isolation yet; using tmux");
+  }
   const localConfig: LocalRunnerConfig = {
     exec,
     // Claude accounts (ADR 0410): a job takes the active one when its workspace is prepared.
@@ -142,9 +148,10 @@ export function buildRunner(
     protectPaths: [dirs.configDir, dirs.runsDir, dirs.reposDir],
     identity,
     ...(config.capabilities ? { capabilities: config.capabilities } : {}),
+    // tmux (default) or a stream-json session shown as a chat (ADR 0450).
+    session: sessionMode,
     ...options.local,
   };
-  const containers = config.isolation === "container";
   // ADR 0430: a container per job when the owner opts in; else the worktree and Claude's sandbox.
   const adapter = containers
     ? createContainerRunner({

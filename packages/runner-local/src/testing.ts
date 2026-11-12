@@ -188,3 +188,89 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
     },
   };
 }
+
+/** What the stand-in stream-json `claude` does (`fakeStreamClaude`). */
+export interface FakeStreamClaudeOptions {
+  /** Every stdin line is appended here, so a test can see the prompt and the steers. */
+  stdinLog: string;
+  /** ms the first turn takes before it answers (a steer can arrive meanwhile). */
+  firstTurnMs?: number;
+  /** Commit a change to README.md during the first turn (a build that made something). */
+  commit?: boolean;
+  /** Write the stage result file (`.factory-result.json`) during the first turn. */
+  writeResult?: boolean;
+  /** Exit after the first turn's result instead of waiting for more input. */
+  exitAfterFirst?: boolean;
+  /** The first turn's result is an error. */
+  failFirst?: boolean;
+  /** Ask for a permission once (as if `--permission-prompts none` were ignored). */
+  askPermission?: boolean;
+}
+
+/**
+ * A stand-in `claude` that speaks stream-json (ADR 0450), for runner-local's and the runner
+ * host's tests: an executable Node script the launch script `exec`s. It answers each JSON user
+ * message with a turn (system init first, assistant text, a tool call and its result, then a
+ * `result` with usage), answers an `interrupt`, and exits when stdin closes. Not used at runtime.
+ */
+export function fakeStreamClaude(options: FakeStreamClaudeOptions): string {
+  return `#!${process.execPath}
+// Written by runner-local's tests: a scripted stream-json Claude Code.
+import { execFileSync } from "node:child_process";
+import { appendFileSync, writeFileSync } from "node:fs";
+const opts = ${JSON.stringify(options)};
+const argv = process.argv.slice(2);
+const at = (flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : undefined; };
+const sessionId = at("--session-id") ?? at("--resume") ?? "no-session";
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+let n = 0, inited = false, busy = Promise.resolve(), interrupted = false, asked = false;
+let wake = () => {};
+const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
+async function turn(text) {
+  n++;
+  const k = n;
+  if (!inited) { inited = true; out({ type: "system", subtype: "init", session_id: sessionId, model: "claude-test" }); }
+  if (k === 1 && opts.askPermission && !asked) {
+    asked = true;
+    out({ type: "control_request", request_id: "perm-1", request: { subtype: "can_use_tool", tool_name: "Bash" } });
+  }
+  out({ type: "assistant", session_id: sessionId, message: { role: "assistant", content: [{ type: "text", text: "Turn " + k + ": " + text.slice(0, 40) }] } });
+  out({ type: "assistant", session_id: sessionId, message: { role: "assistant", content: [{ type: "tool_use", id: "tu_" + k, name: "Bash", input: { command: "echo " + k } }] } });
+  if (k === 1 && opts.firstTurnMs) await sleep(opts.firstTurnMs);
+  if (interrupted) { interrupted = false; out({ type: "result", subtype: "error_during_execution", is_error: true, session_id: sessionId, num_turns: k }); return; }
+  out({ type: "user", session_id: sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_" + k, content: "out " + k, is_error: false }] } });
+  if (k === 1 && opts.commit) {
+    appendFileSync("README.md", "hello from the stream\\n");
+    execFileSync("git", ["-c", "user.name=a", "-c", "user.email=a@x.invalid", "-c", "core.hooksPath=/dev/null", "commit", "-qam", "stream change"]);
+  }
+  if (k === 1 && opts.writeResult) writeFileSync(".factory-result.json", JSON.stringify({ ok: true }));
+  const fail = k === 1 && opts.failFirst;
+  out({ type: "result", subtype: fail ? "error_max_turns" : "success", is_error: !!fail, result: "Done with turn " + k, session_id: sessionId, duration_ms: 1200, num_turns: 2, total_cost_usd: 0.5, usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 } });
+  if (k === 1 && opts.exitAfterFirst) process.exit(0);
+}
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buf += chunk;
+  const lines = buf.split("\\n");
+  buf = lines.pop() ?? "";
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    appendFileSync(opts.stdinLog, line + "\\n");
+    let msg;
+    try { msg = JSON.parse(line); } catch { continue; }
+    if (msg.type === "control_request" && msg.request?.subtype === "interrupt") {
+      interrupted = true;
+      wake();
+      out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id } });
+      continue;
+    }
+    if (msg.type === "user") {
+      const text = typeof msg.message?.content === "string" ? msg.message.content : "";
+      busy = busy.then(() => turn(text));
+    }
+  }
+});
+process.stdin.on("end", () => { busy.then(() => process.exit(0)); });
+`;
+}
