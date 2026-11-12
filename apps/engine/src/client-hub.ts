@@ -1,4 +1,4 @@
-// The ClientHub (spec 40 M2b, ADR 0380): one Durable Object per person, holding the live
+// The ClientHub (spec 40 M2b, ADR 0390): one Durable Object per person, holding the live
 // connections of their desktop apps. The outbox delivers each `notify` here, and the hub pushes it
 // to every open socket, so the app updates its inbox count and shows a notification at once. It
 // keeps no state: a socket that reconnects re-reads `inbox.list`, so nothing is lost but the push.
