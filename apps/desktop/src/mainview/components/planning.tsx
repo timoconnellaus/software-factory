@@ -26,6 +26,7 @@ import {
 import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import { Checkbox } from "@software-factory/ui/components/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -36,17 +37,20 @@ import {
 } from "@software-factory/ui/components/dialog";
 import { Input } from "@software-factory/ui/components/input";
 import { Kbd } from "@software-factory/ui/components/kbd";
+import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Maximize2Icon, MessageSquareIcon, XIcon } from "lucide-react";
+import { useRouteContext } from "@tanstack/react-router";
+import { CheckIcon, Maximize2Icon, MessageSquareIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { toast } from "sonner";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { op, submitKey } from "../lib/op.ts";
 import { planningQuery } from "../lib/queries.ts";
+import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 
@@ -208,12 +212,13 @@ function SessionHeader({ view, detail }: { view: PlanningView; detail: WorkItemD
         </span>
       )}
       {canMove && (
-        <Button variant="outline" onClick={() => setMoving(true)}>
+        <Button variant="outline" size="md" onClick={() => setMoving(true)}>
           Continue on another runner…
         </Button>
       )}
       <OpenTerminal detail={detail} stage="spec" />
       <Button
+        size="md"
         onClick={() => updateViewState((s) => setFocus(s, detail.item.id))}
         data-testid="fullscreen"
       >
@@ -318,6 +323,10 @@ function MoveDialog({
 }
 
 // ---- questions ----
+// Design ItemPlan / PlanFocus: answered questions are compact rows on top (a tick, the answer and a
+// "default" or "changed by you" tag); each open question lists its options with the recommended one
+// already selected and badged, the reason beside it, and "Accept recommended" answers in one click.
+// The design's Skip has no operation on main, so it is left out.
 
 function Questions({
   view,
@@ -336,26 +345,39 @@ function Questions({
   const ordered = [...open].sort(
     (a, b) => Number(b.id === focused) - Number(a.id === focused) || a.position - b.position,
   );
+  const me = useMe();
+  const total = view.questions.length;
   return (
-    <section className={cn("flex flex-col gap-2.5", className)} data-testid="questions-pane">
-      <div className="flex items-center gap-2.5 px-1 font-semibold">
+    <section className={cn("flex flex-col gap-2", className)} data-testid="questions-pane">
+      <div className="flex items-center gap-2.5 px-1 pb-1 font-semibold">
         Questions
         <span className="h-1 flex-1 overflow-hidden rounded-full bg-line">
           <span
             className="block h-full rounded-full bg-status-running"
-            style={{
-              width: `${view.questions.length ? (100 * (view.questions.length - open.length)) / view.questions.length : 0}%`,
-            }}
+            style={{ width: `${total ? (100 * (total - open.length)) / total : 0}%` }}
           />
         </span>
         <span className="font-mono font-normal text-ink-muted text-xs">
-          {view.questions.length - open.length} of {view.questions.length}
+          {total - open.length} of {total}
         </span>
       </div>
-      {view.questions.length === 0 && (
+      {total === 0 && (
         <Card className="px-4 py-5 text-muted-foreground text-sm">
           No questions yet. The planning agent asks them as it drafts the spec.
         </Card>
+      )}
+      {answered.length > 0 && (
+        <div className="flex flex-col gap-1.5" data-testid="answered">
+          {answered.map((q) => (
+            <AnsweredRow
+              key={`${q.id}:${q.answerRevision}`}
+              question={q}
+              workItemId={workItemId}
+              me={me}
+              total={total}
+            />
+          ))}
+        </div>
       )}
       {ordered.map((q) => (
         <QuestionCard
@@ -363,62 +385,83 @@ function Questions({
           question={q}
           workItemId={workItemId}
           focused={q.id === focused}
+          total={total}
+          messages={view.messages.filter((m) => m.questionId === q.id).length}
           onDiscuss={() => onDiscuss(q.id)}
         />
       ))}
-      {answered.length > 0 && (
-        <Card className="gap-1.5 px-4 py-3" data-testid="answered">
-          <div className="font-semibold text-sm">Answered</div>
-          {answered.map((q) => (
-            <AnsweredRow key={`${q.id}:${q.answerRevision}`} question={q} workItemId={workItemId} />
-          ))}
-        </Card>
-      )}
     </section>
   );
 }
 
-function AnsweredRow({ question, workItemId }: { question: PlanningQuestion; workItemId: string }) {
+/** The signed-in user's id, from the shell's route context (for "changed by you"). */
+function useMe(): string | null {
+  const context = useRouteContext({ strict: false }) as { session?: { user: { id: string } } };
+  return context.session?.user.id ?? null;
+}
+
+function AnsweredRow({
+  question: q,
+  workItemId,
+  me,
+  total,
+}: {
+  question: PlanningQuestion;
+  workItemId: string;
+  me: string | null;
+  total: number;
+}) {
   const [editing, setEditing] = useState(false);
   if (editing) {
     return (
       <QuestionCard
-        question={question}
+        question={q}
         workItemId={workItemId}
         focused={false}
+        total={total}
+        messages={0}
         onDone={() => setEditing(false)}
       />
     );
   }
-  const changed = !question.acceptedDefault && question.answer !== question.defaultAnswer;
+  const tag = answeredTag(q, me);
   return (
-    <div className="flex items-start gap-2 text-sm" data-testid={`answered-${question.id}`}>
-      <StatusDot status="done" className="mt-1.5" />
-      <div className="grow">
-        <span className="text-muted-foreground">
-          {question.number ?? "·"}. {question.prompt}
-        </span>{" "}
-        <b className="font-medium">{question.answer ?? "—"}</b>
-        <span className="text-muted-foreground text-xs">
-          {" "}
-          · {changed ? "changed" : "default"}
-          {question.answerRevision > 1 ? " · revised" : ""}
+    <button
+      type="button"
+      disabled={!q.planning}
+      onClick={() => setEditing(true)}
+      title={q.planning ? "Change this answer" : undefined}
+      className="flex w-full items-start gap-2.5 rounded-lg bg-selected px-3 py-2 text-left enabled:hover:bg-line-soft"
+      data-testid={`answered-${q.id}`}
+      data-tag={tag.label}
+    >
+      <span className="mt-px flex size-4 flex-none items-center justify-center rounded-full bg-status-running text-white">
+        <CheckIcon className="size-2.5" strokeWidth={3.5} />
+      </span>
+      <span className="min-w-0 grow">
+        <span className="flex items-baseline gap-1.5">
+          <span className="font-mono text-[10.5px] text-ink-muted">Q{q.number ?? "·"}</span>
+          <span className="font-medium text-[13px]">{q.prompt}</span>
         </span>
-        {question.note && (
-          <div className="text-muted-foreground text-xs">Note: {question.note}</div>
-        )}
-      </div>
-      {question.planning && (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2 text-xs"
-          onClick={() => setEditing(true)}
-        >
-          Change
-        </Button>
-      )}
-    </div>
+        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12.5px] text-ink-3">
+          <span className="truncate">{q.answer ?? "—"}</span>
+          <span
+            className={cn(
+              "flex-none rounded-full px-1.5 py-px text-[10.5px]",
+              tag.changed
+                ? "bg-status-running/12 text-status-running"
+                : "bg-panel text-ink-3 shadow-[0_0_0_1px_var(--line)]",
+            )}
+          >
+            {tag.label}
+          </span>
+          {q.answerRevision > 1 && (
+            <span className="flex-none text-[10.5px] text-ink-muted">revised</span>
+          )}
+        </span>
+        {q.note && <span className="mt-0.5 block text-ink-muted text-xs">Note: {q.note}</span>}
+      </span>
+    </button>
   );
 }
 
@@ -426,85 +469,140 @@ function QuestionCard({
   question: q,
   workItemId,
   focused,
+  total,
+  messages,
   onDiscuss,
   onDone,
 }: {
   question: PlanningQuestion;
   workItemId: string;
   focused: boolean;
+  total: number;
+  /** Chat messages about this question. */
+  messages: number;
   onDiscuss?: () => void;
   onDone?: () => void;
 }) {
   const options = questionOptions(q);
-  const [values, setValues] = useState<string[]>(() => initialAnswer(q));
+  const recommended = recommendedValues(q);
+  const [values, setValues] = useState<string[]>(() =>
+    q.answer ? initialAnswer(q) : recommended.length ? recommended : initialAnswer(q),
+  );
   const [other, setOther] = useState("");
   const [note, setNote] = useState(q.note ?? "");
   const [noting, setNoting] = useState(!!q.note);
   const { decide, pending } = useDecide();
   const choice = q.kind === "single-choice" || q.kind === "multiple-choice" || q.kind === "yes-no";
+  const multiple = q.kind === "multiple-choice";
   const chosen = other.trim() ? [...values.filter((v) => options.includes(v)), other] : values;
-  const answer = answerText(
-    q.kind,
-    q.kind === "multiple-choice" ? chosen : other.trim() ? [other] : values,
-  );
+  const answer = answerText(q.kind, multiple ? chosen : other.trim() ? [other] : values);
+  const accepting = q.status === "open" && holdsRecommendation(q, values, other);
   const toggle = (option: string) =>
     setValues((v) =>
-      q.kind === "multiple-choice"
-        ? v.includes(option)
-          ? v.filter((x) => x !== option)
-          : [...v, option]
-        : [option],
+      multiple ? (v.includes(option) ? v.filter((x) => x !== option) : [...v, option]) : [option],
     );
+  const optionRow = (option: string, i: number, control: (id: string) => ReactNode) => {
+    const selected = values.includes(option);
+    const id = `${q.id}-option-${i}`;
+    return (
+      <label
+        key={option}
+        htmlFor={id}
+        className={cn(
+          "flex cursor-pointer items-center gap-2.5 rounded-lg border border-line bg-panel px-3 py-2.5 text-[13px]",
+          selected && "border-status-running ring-1 ring-status-running",
+        )}
+        data-testid="question-option"
+        data-selected={selected ? "true" : "false"}
+      >
+        {control(id)}
+        <span className="grow">{option}</span>
+        {recommended.includes(option) && (
+          <span className="flex-none rounded-full bg-status-waiting/18 px-2 py-0.5 font-medium text-[11px] text-status-waiting">
+            Recommended
+          </span>
+        )}
+      </label>
+    );
+  };
   return (
     <Card
       className={cn(
-        "gap-2.5 px-4 py-3",
+        "gap-3 px-3.5 py-3.5",
         q.status === "open" && "shadow-waiting",
-        focused && "ring-2 ring-status-running/50",
+        focused && "ring-2 ring-status-running/40",
       )}
       data-testid={`question-${q.id}`}
     >
-      <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-        <span>Q{q.number ?? "?"}</span>
+      <div className="flex flex-wrap items-center gap-2 text-ink-muted text-xs">
+        <span>
+          Question {q.number ?? "?"} of {total}
+        </span>
+        {focused && <span className="text-status-running">asked next</span>}
+        <span className="grow" />
         <Badge variant="outline">{q.domain}</Badge>
-        {q.blocking && <span>blocking</span>}
-        {q.irreversible && (
-          <span className="text-status-waiting">irreversible · answer it yourself</span>
+        {messages > 0 && onDiscuss && (
+          <button
+            type="button"
+            onClick={onDiscuss}
+            className="flex items-center gap-1 text-status-running hover:underline"
+          >
+            <MessageSquareIcon className="size-3" />
+            {messages} {messages === 1 ? "message" : "messages"}
+          </button>
         )}
-        {q.escalated && <span className="text-status-waiting">escalated</span>}
-        {focused && <span className="text-status-running">the agent asks this next</span>}
       </div>
-      <div className="font-semibold text-sm">{q.prompt}</div>
+      {(q.irreversible || q.escalated || !q.blocking) && (
+        <div className="-mt-1.5 flex flex-wrap gap-2 text-xs">
+          {!q.blocking && <span className="text-ink-muted">not blocking</span>}
+          {q.irreversible && (
+            <span className="text-status-waiting">irreversible · answer it yourself</span>
+          )}
+          {q.escalated && <span className="text-status-waiting">escalated</span>}
+        </div>
+      )}
+      <div className="font-semibold text-[14px] leading-snug">{q.prompt}</div>
       {q.context && (
-        <div className="text-muted-foreground text-xs [&_p]:my-1">
+        <div className="text-ink-3 text-xs [&_p]:my-1">
           <Markdown>{q.context}</Markdown>
         </div>
       )}
-      {choice && (
-        <fieldset className="grid gap-1.5">
+      {choice && !multiple && (
+        <RadioGroup
+          value={values[0] ?? ""}
+          onValueChange={(v) => setValues([v])}
+          aria-label={q.prompt}
+          className="gap-2"
+        >
+          {options.map((option, i) =>
+            optionRow(option, i, (id) => (
+              <RadioGroupItem
+                id={id}
+                value={option}
+                className="border-ink-muted data-[state=checked]:border-status-running data-[state=checked]:text-status-running [&_svg]:fill-status-running"
+              />
+            )),
+          )}
+        </RadioGroup>
+      )}
+      {multiple && (
+        <fieldset className="grid gap-2">
           <legend className="sr-only">{q.prompt}</legend>
-          {options.map((option) => {
-            const isDefault = q.defaultValues?.includes(option);
-            return (
-              <label
-                key={option}
-                className={cn(
-                  "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm",
-                  values.includes(option) && "border-foreground/40 bg-accent",
-                )}
-              >
-                <input
-                  type={q.kind === "multiple-choice" ? "checkbox" : "radio"}
-                  name={q.id}
-                  checked={values.includes(option)}
-                  onChange={() => toggle(option)}
-                />
-                <span className="grow">{option}</span>
-                {isDefault && <span className="text-muted-foreground text-xs">recommended</span>}
-              </label>
-            );
-          })}
+          {options.map((option, i) =>
+            optionRow(option, i, (id) => (
+              <Checkbox
+                id={id}
+                checked={values.includes(option)}
+                onCheckedChange={() => toggle(option)}
+              />
+            )),
+          )}
         </fieldset>
+      )}
+      {q.recommendationReason && (
+        <div className="border-status-waiting border-l-2 pl-3 text-[12.5px] text-ink-3 leading-relaxed [&_p]:my-0">
+          <Markdown>{q.recommendationReason}</Markdown>
+        </div>
       )}
       {q.kind === "number" && (
         <Input
@@ -514,21 +612,22 @@ function QuestionCard({
           aria-label={q.prompt}
         />
       )}
-      {(q.kind === "text" || choice) && (
+      {q.kind === "text" && (
         <Textarea
-          rows={q.kind === "text" ? 2 : 1}
-          placeholder={q.kind === "text" ? (q.defaultAnswer ?? "Your answer") : "Other…"}
-          value={q.kind === "text" ? (values[0] ?? "") : other}
-          onChange={(e) =>
-            q.kind === "text" ? setValues([e.target.value]) : setOther(e.target.value)
-          }
-          aria-label={q.kind === "text" ? q.prompt : "Another answer"}
+          rows={2}
+          placeholder={q.defaultAnswer ?? "Your answer"}
+          value={values[0] ?? ""}
+          onChange={(e) => setValues([e.target.value])}
+          aria-label={q.prompt}
         />
       )}
-      {q.recommendationReason && (
-        <div className="text-muted-foreground text-xs [&_p]:my-0.5">
-          <Markdown>{q.recommendationReason}</Markdown>
-        </div>
+      {choice && (
+        <Input
+          placeholder="Other…"
+          value={other}
+          onChange={(e) => setOther(e.target.value)}
+          aria-label="Another answer"
+        />
       )}
       {noting && (
         <Input
@@ -538,10 +637,11 @@ function QuestionCard({
           aria-label="Note"
         />
       )}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
         <Button
           size="sm"
           disabled={!answer || pending !== null}
+          className="bg-status-running text-white hover:bg-status-running/90"
           onClick={async () => {
             const done = await decide({
               kind: "question.answer",
@@ -554,14 +654,14 @@ function QuestionCard({
           }}
           data-testid={`answer-${q.id}`}
         >
-          {q.status === "answered" ? "Change answer" : "Answer"}
+          {accepting ? "Accept recommended" : q.status === "answered" ? "Change answer" : "Answer"}
         </Button>
         {!noting && (
           <Button size="sm" variant="ghost" onClick={() => setNoting(true)}>
             Add a note
           </Button>
         )}
-        {onDiscuss && (
+        {onDiscuss && messages === 0 && (
           <Button size="sm" variant="ghost" onClick={onDiscuss}>
             Discuss
           </Button>

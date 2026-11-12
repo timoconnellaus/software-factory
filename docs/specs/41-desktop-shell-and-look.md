@@ -70,7 +70,7 @@ new backend come in later slices, once that backend lands.
   has one Open terminal place. In this slice it shows what `main` has: the live run's takeover hint,
   the tmux attach command on its runner (ADR 0380), with Copy. With no live run that has a hint, the
   button isn't shown.
-  *Amended 2026-11-12 (spec 42, ADR 0500):* slice 8 is built. Open terminal shows for any live run
+  *Amended 2026-11-12 (spec 42, ADR 0500):* slice 9 is built. Open terminal shows for any live run
   and opens the session's web terminal in place; the tmux command is behind "Attach from a terminal
   instead".
 - **The plan is a document.** The Plan pane is a plain document in its pane, not a page on a canvas.
@@ -92,7 +92,11 @@ rather than shown empty:
 
 **Acceptance criteria**
 1. The window has no system title bar. The toolbar drags the window, and its buttons, tabs and
-   search still click.
+   search still click. Double-clicking the toolbar's empty space, or the session bar's in focus
+   mode, does what System Settings says for a title bar: zoom (the default), minimise or nothing.
+   A double-click on a button, tab, the search field or anything marked no-drag does not. The
+   traffic lights sit centred in the 44px toolbar. All of this is checked in the real window
+   (`screencapture` of the dev build), not only in the harness.
 2. At 1440×900, neither the window nor the chrome scrolls. Only the nested list and the page do.
 3. The toolbar, org rail, sidebar, panel and status bar match the design's sizes (44, 52, 196, 212,
    28px; panel radius 12).
@@ -115,6 +119,13 @@ rather than shown empty:
     design files, in `docs/screenshots/desktop-shell/`.
 13. `pnpm lint`, `pnpm typecheck` and the desktop tests pass. New tests cover the shell's pure logic:
     tabs, shortcuts, org scoping, status bar wording, the nested list's selection and routing.
+14. A header's actions are one button family from `packages/ui` (`size="md"` / `"icon-md"`): 28px
+    high, the same radius, ring and fill in light and dark, icon and label centred, 8px apart. A
+    destructive action differs only by its red text. This holds for a button inside a Radix
+    trigger (`asChild`) too.
+15. A planning question shows its options with the recommended one selected and badged, the
+    reason beside it, and "Accept recommended" answers it in one click. Answered questions are
+    compact rows with a tick and "default" or "changed by you".
 
 ## Later slices
 | Slice | What | Waits on |
@@ -124,9 +135,10 @@ rather than shown empty:
 | 4 | Chat: ask and tell, add to the backlog, release, draft a policy change (`Chat`, `ChatNew`) | A chat backend |
 | 5 | The Factory section: Overview, Workflows, Agents, Autopilots, Checks and incidents, Runners, Policy | Spec 09's config, and runner and incident reads exposed to the desktop |
 | 6 | Settings: members, connections, devices and notifications; the All orgs page; the budget and "update ready" in the status bar; sign-in restyled | Usage capture, spec 40 M4 (updates) |
-| 7 | A live run in the work item (`ItemRunLive`): the transcript and steering from spec 31 | `run.live` and `run.steer` on the client door |
-| 8 | Open terminal opens the session's web terminal in the app, not just the tmux command (built: spec 42) | The web terminal (spec 35, #66) reaching the client door: today it runs through sf-app's own server socket (`run.terminal.attach`), which the desktop can't open |
-| 9 | Planning as designed in `ItemPlan`, `PlanFocus`, `PlanFocusMockup`: edit a plan line directly, chat after the current step or as an interrupt, let the planner finish alone, mockups with pinned comments and option cards, stop and pause, Mockups, System and Canvas tabs | The planning build |
+| 7 | The item side panel (`WorkActivePanel`, the README's "The item side panel"): a running item opens in a panel over the board, expandable to full size, instead of a separate live-run page. Cards and list rows open items through one helper (`openItem` in `lib/places.ts`), so this slice changes that one place | Nothing new on the backend; the design on `factory-ui-design` (#61) |
+| 8 | A live run in the work item (`ItemRunLive`), in the side panel: the transcript and steering from spec 31 | `run.live` and `run.steer` on the client door |
+| 9 | Open terminal opens the session's web terminal in the app, not just the tmux command (built: spec 42) | The web terminal (spec 35, #66) reaching the client door: today it runs through sf-app's own server socket (`run.terminal.attach`), which the desktop can't open |
+| 10 | Planning as designed in `ItemPlan`, `PlanFocus`, `PlanFocusMockup`: edit a plan line directly, chat after the current step or as an interrupt, let the planner finish alone, mockups with pinned comments and option cards, stop and pause, Mockups, System and Canvas tabs | The planning build |
 
 ## As built (slice 1)
 - **Screenshots** are in [`docs/screenshots/desktop-shell/`](../screenshots/desktop-shell/), each
@@ -140,8 +152,11 @@ rather than shown empty:
 - **Work counts** in the nested list cover each org's 100 most recent items, the most
   `workItem.list` returns in one read.
 - **Setup** sits under Settings with the nested list showing. The design shows it without the list.
-- **Review**: the design's Checks table has a Where and a Time column from verify evidence (spec
-  51). Here it shows the packet's checks, with their detail as Where. The verdict's "Checks n of m"
+- **Review**: the design's Checks table has a Where and a Time column, and Proven / Not proven per
+  criterion, from checks the factory runs itself (spec 51 PR B, not on `main`). On `main` the
+  packet's checks and criteria are what the verify run reported (`verifyResultSchema`): so the
+  table's column is "Reported by" ("Verify run · <its detail>", or GitHub for CI), and each
+  criterion is Met or Not met with the run's evidence. The verdict's "Checks n of m"
   counts CI on the head SHA when the packet carries CI, as before. Send back takes its note in the
   decision panel instead of a dialog; it is the same `review.sendBack` through `decide()`.
 - **Inbox**: Running and "shipped this week" left the Inbox page. The status bar shows what's
@@ -149,3 +164,18 @@ rather than shown empty:
 - **New work**: the design's "What happens next" choices (backlog, triage, plan, release) need spec
   50. Here, Send to the factory is `workItem.create` as before, with the optional title it accepts.
 - **`/work/<id>/review`** redirects to the Review tab, so old links still land.
+- **Planning questions** show each open question's options inline, the recommended one (the
+  question's default values, else its recommendation) selected and badged, with the reason under
+  them. The primary button reads "Accept recommended" while the form holds it, else "Answer"; both
+  are `question.answer`. The design's Skip has no operation on `main`, so it isn't there.
+- **The real window**: a dev build started with `SF_VIEW_URL` (a local URL; canary and stable
+  ignore it) loads the harness's fixture view, so the title bar, traffic lights, drag region and
+  zoom can be shot with `screencapture` without an account. Shots are in
+  `docs/screenshots/desktop-shell/window/`. The traffic-light offset is `{ x: 5, y: 6 }`:
+  Electrobun adds its own inset, and `{ 14, 16 }` put the lights 10px low and 9px right.
+- **Double-click on the title bar**: the view reports a double-click on the drag region's empty
+  space (`lib/title-bar.ts`), and the main process reads `AppleActionOnDoubleClick` and zooms,
+  minimises or does nothing (`bun/title-bar.ts`). Electrobun's preload only handles the drag.
+- **Buttons in a Radix trigger**: the desktop look matched buttons by `data-slot="button"`, which a
+  trigger with `asChild` renames, so Open terminal fell back to shadcn's taller, filled outline.
+  Buttons now carry `data-button`, and the look keys on that.

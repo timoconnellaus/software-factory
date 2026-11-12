@@ -170,6 +170,14 @@ const INBOX: OpOutput<"inbox.list"> = {
   ],
 };
 
+// As main's verify run reports its checks (verifyResultSchema): the agent's own words in `detail`.
+// CI comes from GitHub, in the packet's sections.ci. Checks the factory runs itself are spec 51 PR B.
+const PACKET_CHECKS = [
+  { name: "pnpm lint", status: "pass", detail: "0 errors" },
+  { name: "pnpm typecheck", status: "pass", detail: "18 of 18 projects" },
+  { name: "pnpm test", status: "pass", detail: "214 passed" },
+];
+
 const CRITERIA = [
   "A removed or skipped test is flagged",
   "A new suppression is flagged",
@@ -323,17 +331,11 @@ function detail(id: string): OpOutput<"workItem.get"> {
             },
             {
               criterion: CRITERIA[3],
-              met: false,
-              evidence:
-                "No check that ran covers this. The reviewer read the gate code and agrees.",
+              met: true,
+              evidence: "review.ts › the merge gate reads the guard's findings (read, no test)",
             },
           ],
-          checks: [
-            { name: "pnpm lint", status: "pass", detail: "Runner M5 · 11s" },
-            { name: "pnpm typecheck", status: "pass", detail: "Runner M5 · 38s" },
-            { name: "pnpm test", status: "pass", detail: "Runner M5 · 2m 04s" },
-            { name: "ci", status: "pass", detail: "GitHub · 4m 51s" },
-          ],
+          checks: PACKET_CHECKS,
           reviewer: {
             role: "review",
             verdict: "approve",
@@ -347,7 +349,7 @@ function detail(id: string): OpOutput<"workItem.get"> {
               state: "success",
               checks: [{ name: "ci", status: "completed", conclusion: "success", url: null }],
             },
-            verdict: { reasons: [], warnings: ["1 criterion has no check covering it"] },
+            verdict: { verdict: "pass", reasons: [], warnings: [] },
             changed: {
               files: 4,
               paths: [
@@ -357,6 +359,10 @@ function detail(id: string): OpOutput<"workItem.get"> {
                 { path: "packages/verify/test/packet.test.ts", status: "modified" },
               ],
             },
+            risk: [],
+            runner: { verdict: "pass", checks: PACKET_CHECKS },
+            evidencePass: true,
+            evidenceReasons: [],
           },
           createdAt: ago(200),
         }
@@ -462,7 +468,7 @@ function question(n: number, prompt: string, extra: Partial<PlanningQ>): Plannin
   return {
     id: `pq_${n}`,
     number: n,
-    kind: "single",
+    kind: "single-choice",
     prompt,
     context: null,
     options: [],
@@ -487,6 +493,18 @@ function question(n: number, prompt: string, extra: Partial<PlanningQ>): Plannin
     planning: true,
     ...extra,
   };
+}
+
+/** A question answered with its default, written the way `planning.ask` stores one. */
+function kept(n: number, prompt: string, answer: string, options: string[]): PlanningQ {
+  return question(n, prompt, {
+    options,
+    defaultValues: [answer],
+    defaultAnswer: answer,
+    recommendation: answer,
+    answer,
+    acceptedDefault: true,
+  });
 }
 
 const PLAN_MD = `# Take work from GitHub issues
@@ -532,23 +550,29 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
       : null,
     questions: live
       ? [
-          question(1, "Which issues come in?", {
-            answer: "Only issues labelled factory",
-            acceptedDefault: true,
+          kept(1, "Which issues come in?", "Only issues labelled factory", [
+            "Only issues labelled factory",
+            "Every issue",
+          ]),
+          kept(2, "Who can file them?", "Org members and collaborators", [
+            "Org members and collaborators",
+            "Anyone",
+          ]),
+          question(3, "Where do they land?", {
+            options: ["The org inbox", "The project's inbox"],
+            defaultValues: ["The org inbox"],
+            defaultAnswer: "The org inbox",
+            recommendation: "The org inbox",
+            answer: "The project's inbox",
           }),
-          question(2, "Who can file them?", {
-            answer: "Org members and collaborators",
-            acceptedDefault: true,
-          }),
-          question(3, "Where do they land?", { answer: "The project's inbox" }),
-          question(4, "What goes back to the issue?", {
-            answer: "A link, then closed on merge",
-            acceptedDefault: true,
-          }),
-          question(5, "One item per issue?", {
-            answer: "Yes, edits update it",
-            acceptedDefault: true,
-          }),
+          kept(4, "What goes back to the issue?", "A link, then closed on merge", [
+            "A link, then closed on merge",
+            "Nothing",
+          ]),
+          kept(5, "One item per issue?", "Yes, edits update it", [
+            "Yes, edits update it",
+            "No, a new item per edit",
+          ]),
           question(6, "An issue is edited after its item was released. What happens?", {
             status: "open",
             answer: null,
@@ -559,6 +583,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
               "Send the item back to planning",
               "Update the plan without asking",
             ],
+            defaultValues: ["Show a notice on the item, change nothing"],
             defaultAnswer: "Show a notice on the item, change nothing",
             recommendation: "Show a notice on the item, change nothing",
             recommendationReason:

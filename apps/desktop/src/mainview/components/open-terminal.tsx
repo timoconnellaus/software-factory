@@ -30,6 +30,7 @@ export function OpenTerminal({
       {run && (
         <Button
           variant="outline"
+          size="md"
           className={className}
           aria-pressed={!!open}
           onClick={() => setOpen((o) => (o ? null : run))}

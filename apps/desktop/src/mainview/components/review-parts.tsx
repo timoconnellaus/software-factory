@@ -1,5 +1,5 @@
 // The merge gate's parts (spec 41, design InboxMerge/ItemReview), shared by the Inbox and the work
-// item's Review tab: the verdict, the criteria as proven or not, and Your decision. Merge and Send
+// item's Review tab: the verdict, the criteria met or not, and Your decision. Merge and Send
 // back go through `decide()`, so each asks for Touch ID once (ADR 0391); only the look changed.
 import type { WorkItemDetail } from "@software-factory/client/ops";
 import { keptOnRunner, type ParsedPacket } from "@software-factory/client/packet";
@@ -62,7 +62,10 @@ export function VerdictPanel({
   );
 }
 
-/** The acceptance criteria, each proven by a check that ran or not (from the packet's evidence). */
+/**
+ * The acceptance criteria as the verify run reported them: met or not, with its evidence. Main's
+ * packet carries the run's own claim (`met`); "proven by a check the factory ran" is spec 51 PR B.
+ */
 export function CriteriaList({ packet }: { packet: ParsedPacket }) {
   if (packet.criteria.length === 0) {
     return <Panel className="text-ink-muted">The packet has no criteria.</Panel>;
@@ -85,7 +88,7 @@ export function CriteriaList({ packet }: { packet: ParsedPacket }) {
             </div>
             <span className="flex flex-none items-center gap-1.5 self-start font-medium">
               <StatusDot status={c.met ? "done" : "waiting"} />
-              {c.met ? "Proven" : "Not proven"}
+              {c.met ? "Met" : "Not met"}
             </span>
           </div>
         );

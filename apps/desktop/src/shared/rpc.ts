@@ -76,6 +76,11 @@ export type AppRPC = {
       /** One text frame to the relay (keys or a size, as the shared client writes them). */
       terminalSend: { params: { id: string; data: string }; response: { ok: boolean } };
       terminalClose: { params: { id: string }; response: { ok: boolean } };
+      /** A double-click on the toolbar's empty space: the system's title-bar action (spec 41). */
+      titleBarDoubleClick: {
+        params: Record<string, never>;
+        response: { action: "zoom" | "minimize" | "none" };
+      };
       /** Saves a file to ~/Downloads (base64 bytes) and shows it in Finder. */
       saveDownload: {
         params: { filename: string; base64: string };
