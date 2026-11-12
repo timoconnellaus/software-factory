@@ -99,3 +99,22 @@ Routing triage questions by decision domain (R1 milestone (c)).
   and core `readiness.test.ts` (parking on a new generation; seeding needs an open session). The
   version test freezes v8's step names.
 
+### Part C: the spec critic (Workflow v9, provisional number)
+- Before each planning gate, `planning #k: critic`:
+  - `: spec` reads the plan;
+  - `: yield` asks the session at the gate to give up the item's lease (`planning.requestYield`);
+  - `: enqueue` queues a review-role spec-stage job (light pool) with `criticPrompt`;
+  - `: wait` waits for it, up to the policy's `timeouts.criticMinutes` (default 20);
+  - then `: result`, or `: expire` on a timeout;
+  - `: record` stores the notes with `spec.critique`.
+- The notes are stored on the plan version (migration 0372, `core_specs.critique`), shown in
+  `planning.get` and at the gate (the gate bar's "Critic: N notes"), and delivered to the planner as
+  `spec.critiqued` news. They are notes only: the result schema has no verdict, and the test where
+  the critic writes "approve the spec" finds the gate still pending a person (criterion 5).
+- The gate opens when the critic is done, or without notes after the timeout. A planner that
+  doesn't yield its lease just means the critic times out.
+- Tests: `apps/engine/test/spec-critic.test.ts` (notes at the gate, to the planner, can't open it;
+  a timeout opens the gate without notes) and `packages/core/test/spec-critic.test.ts`. Engine
+  tests that don't exercise the critic set `criticMinutes` near zero, so their gates open as before.
+- Screenshots: `docs/screenshots/planning/critic-*.png`.
+

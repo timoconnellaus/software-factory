@@ -1676,7 +1676,15 @@ export const runExpire = defineOperation({
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
-  input: z.object({ jobId, reason: z.string().max(2_000) }),
+  input: z.object({
+    jobId,
+    reason: z.string().max(2_000),
+    /**
+     * Also cancel the job if no runner has claimed it yet (spec 23: the spec critic's timeout), so a
+     * job the Workflow no longer waits for isn't run later.
+     */
+    cancelQueued: z.boolean().default(false),
+  }),
   output: z.object({ expired: z.boolean(), jobStatus: z.string() }),
   async handler(input, ctx) {
     const job = await ctx.db
@@ -1685,6 +1693,17 @@ export const runExpire = defineOperation({
       .where("id", "=", input.jobId)
       .executeTakeFirst();
     if (!job) throw new OperationError("not_found", "no such job");
+    if (job.status === "queued" && input.cancelQueued) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_jobs")
+          .set({ status: "cancelled", wait_reason: input.reason })
+          .where("id", "=", job.id)
+          .where("status", "=", "queued"),
+      );
+      // Claimed meanwhile: then the run is expired below on the Workflow's next call, or finishes.
+      return { expired: true, jobStatus: "cancelled" };
+    }
     if (job.status !== "claimed" || !job.run_id) return { expired: false, jobStatus: job.status };
     const run = await ctx.db
       .selectFrom("core_runs")

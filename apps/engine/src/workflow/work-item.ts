@@ -1691,6 +1691,7 @@ class ItemFlow {
       await this.act(`${name}: expire`, "run.expire", {
         jobId,
         reason: "the spec critic ran past its time",
+        cancelQueued: true,
       });
     }
     await this.act(`${name}: record`, "spec.critique", {

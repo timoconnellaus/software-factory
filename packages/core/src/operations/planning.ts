@@ -1964,12 +1964,15 @@ export const specCritique = defineOperation({
         .set({ critique: JSON.stringify(critique) })
         .where("id", "=", spec.id),
     );
-    logPlanning(ctx, w.id, "spec.critiqued", {
-      specId: spec.id,
-      status: input.status,
-      notes: input.notes,
-      summary: input.summary,
-    });
+    // The planner hears notes; a critic that timed out or failed with none is only recorded.
+    if (input.notes.length) {
+      logPlanning(ctx, w.id, "spec.critiqued", {
+        specId: spec.id,
+        status: input.status,
+        notes: input.notes,
+        summary: input.summary,
+      });
+    }
     ctx.change({
       entity: "spec",
       id: spec.id,
