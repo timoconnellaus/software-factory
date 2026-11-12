@@ -54,18 +54,28 @@ function render(data: LiveView, initialView?: "transcript" | "terminal") {
 }
 
 describe("an archived run that can't be read", () => {
-  const archived = (over: Partial<LiveView>) =>
-    view("run_a", [], {
-      run: { ...view("run_a", []).run!, active: false, status: "handed_back" },
+  const archived = (over: Partial<LiveView>) => {
+    const base = view("run_a", []);
+    return view("run_a", [], {
+      run: base.run ? { ...base.run, active: false, status: "handed_back" } : null,
       archived: true,
       ...over,
     });
+  };
 
-  it("says the log is missing, never that the run was empty", () => {
+  it("says the log is missing, never that the run was empty, and links its incident", () => {
     const html = render(archived({ archive: "missing" }));
     expect(html).toContain('data-testid="live-archive-missing"');
     expect(html).toContain("missing from the archive");
     expect(html).not.toContain("Nothing in the archive");
+    const reported = render(
+      archived({
+        archive: "missing",
+        archiveMissing: { firstSeq: 1, incident: { workItemId: "wi_x", number: 42 } },
+      }),
+    );
+    expect(reported).toContain("Reported as incident #42.");
+    expect(reported).toContain('href="/work/wi_x"');
   });
 
   it("says the archive couldn't be read, with a way to try again", () => {

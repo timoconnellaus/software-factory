@@ -1,8 +1,8 @@
 // Retention (AGENTS.md "Cloudflare cost", rule 3): expired rows go in bounded batches, an intake
 // event keeps its id forever, and nothing that isn't due is touched.
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
 import { invoke } from "@software-factory/core";
+import { describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
 import {
   ARCHIVE,
@@ -13,6 +13,7 @@ import {
   eventsChunkKey,
   pruneExpired,
   runArchivePrefix,
+  sampleArchive,
 } from "../src/retention.ts";
 import { all, first, MANIFEST, ok, uid, world } from "./helpers.ts";
 
@@ -538,7 +539,10 @@ describe("archiving safely", () => {
       ...deps,
       services: {
         ...deps.services,
-        runArchive: { get: async () => Promise.reject(new Error("R2 down")) },
+        runArchive: {
+          get: async () => Promise.reject(new Error("R2 down")),
+          exists: async () => true,
+        },
       },
     };
     const failed = await invoke<Live>(
@@ -560,7 +564,10 @@ describe("archiving safely", () => {
       ...deps,
       services: {
         ...deps.services,
-        runArchive: { get: async (key: string) => (await env.ARCHIVE.get(key))?.text() ?? null },
+        runArchive: {
+          get: async (key: string) => (await env.ARCHIVE.get(key))?.text() ?? null,
+          exists: async (key: string) => (await env.ARCHIVE.head(key)) !== null,
+        },
       },
     };
     const missing = await invoke<Live>(
@@ -572,6 +579,102 @@ describe("archiving safely", () => {
     expect(missing.status === "ok" && missing.output).toEqual(
       expect.objectContaining({ archive: "missing", events: [] }),
     );
+  });
+});
+
+describe("a lost archive object is an incident for a person", () => {
+  /** An archived run of 2 events (one chunk), with the chunk's rowid and key. */
+  async function archivedRun() {
+    const ctx = await claimedRun();
+    await seedEvents(ctx.runId, 2);
+    for (let i = 0; i < 30; i++) {
+      await archiveRunEvents(env, new Date(), { rows: 1000 });
+      const r = await first<{ a: string | null }>(
+        "SELECT events_archived_at AS a FROM core_runs WHERE id = ?",
+        ctx.runId,
+      );
+      if (r?.a) break;
+    }
+    const chunk = await first<{ rowid: number; r2_key: string; first_seq: number }>(
+      "SELECT rowid, r2_key, first_seq FROM core_run_archive_chunks WHERE run_id = ? AND first_seq >= 0",
+      ctx.runId,
+    );
+    if (!chunk) throw new Error("not archived");
+    return { ...ctx, chunk };
+  }
+  type Report = {
+    reported: boolean;
+    incident: { workItemId: string; number: number } | null;
+  };
+
+  it("checks for itself, opens one incident per run, and starts no agent work", async () => {
+    const { w, workItemId, runId, chunk } = await archivedRun();
+    const report = (firstSeq: number) =>
+      ok<Report>("run.reportArchiveMissing", { workItemId, runId, firstSeq }, w.human);
+    // The object is there: nothing happens, whatever the caller says.
+    expect(await report(chunk.first_seq)).toEqual({ reported: false, incident: null });
+    // A chunk the index doesn't name: nothing.
+    expect(await report(999)).toEqual({ reported: false, incident: null });
+    await env.ARCHIVE.delete(chunk.r2_key);
+    const opened = await report(chunk.first_seq);
+    expect(opened.reported).toBe(true);
+    const item = await first<{ kind: string; status: string; parent_work_item_id: string }>(
+      "SELECT kind, status, parent_work_item_id FROM core_work_items WHERE id = ?",
+      opened.incident?.workItemId,
+    );
+    // A record for a person: left in the backlog, so nothing runs until someone releases it.
+    expect(item).toEqual({ kind: "incident", status: "backlog", parent_work_item_id: workItemId });
+    expect(
+      await all("SELECT 1 FROM core_jobs WHERE work_item_id = ?", opened.incident?.workItemId),
+    ).toEqual([]);
+    expect(
+      await all<{ kind: string }>("SELECT kind FROM core_incidents WHERE run_id = ?", runId),
+    ).toEqual([{ kind: "archive_missing" }]);
+    // Again (another viewer): the same incident, no second one.
+    expect(await report(chunk.first_seq)).toEqual({ reported: false, incident: opened.incident });
+    expect((await all("SELECT 1 FROM core_incidents WHERE run_id = ?", runId)).length).toBe(1);
+    // run.live names it, past the isolate's cache.
+    const deps = invokeDeps(env);
+    const uncached = {
+      ...deps,
+      services: {
+        ...deps.services,
+        runArchive: {
+          get: async (key: string) => (await env.ARCHIVE.get(key))?.text() ?? null,
+          exists: async (key: string) => (await env.ARCHIVE.head(key)) !== null,
+        },
+      },
+    };
+    const live = await invoke<{ archiveMissing: unknown }>(
+      uncached,
+      "run.live",
+      { workItemId, afterSeq: 0 },
+      { actor: w.human, origin: { surface: "test" } },
+    );
+    expect(live.status === "ok" && live.output.archiveMissing).toEqual({
+      firstSeq: chunk.first_seq,
+      incident: opened.incident,
+    });
+  });
+
+  it("the daily sample finds a lost object with a HEAD and opens its incident", async () => {
+    const { runId, chunk } = await archivedRun();
+    await env.ARCHIVE.delete(chunk.r2_key);
+    const top = await first<{ top: number }>(
+      "SELECT max(rowid) AS top FROM core_run_archive_chunks",
+    );
+    const at = (chunk.rowid - 1 + 0.5) / (top?.top ?? 1);
+    expect(await sampleArchive(env, new Date(), 1, () => at)).toEqual([chunk.r2_key]);
+    expect(
+      await all<{ kind: string }>("SELECT kind FROM core_incidents WHERE run_id = ?", runId),
+    ).toEqual([{ kind: "archive_missing" }]);
+    // An object that is there is left alone.
+    const fine = await archivedRun();
+    const top2 = await first<{ top: number }>(
+      "SELECT max(rowid) AS top FROM core_run_archive_chunks",
+    );
+    const at2 = (fine.chunk.rowid - 1 + 0.5) / (top2?.top ?? 1);
+    expect(await sampleArchive(env, new Date(), 1, () => at2)).toEqual([]);
   });
 });
 

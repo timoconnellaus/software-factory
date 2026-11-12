@@ -459,7 +459,13 @@ export interface CoreReviewPacketsTable {
   created_at: Iso;
 }
 
-export type IncidentKind = "sent_back" | "run_failed" | "run_stalled" | "manual";
+export type IncidentKind =
+  | "sent_back"
+  | "run_failed"
+  | "run_stalled"
+  | "manual"
+  /** 0364: a run's archived log is lost; for a person, no agent fix. */
+  | "archive_missing";
 
 export interface CoreIncidentsTable {
   id: string;

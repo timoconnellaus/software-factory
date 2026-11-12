@@ -45,6 +45,7 @@ export interface OpMap {
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;
   "run.takeover": Def<typeof operations.runTakeover>;
+  "run.reportArchiveMissing": Def<typeof operations.runReportArchiveMissing>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;

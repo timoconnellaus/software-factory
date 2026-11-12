@@ -5,7 +5,7 @@ import { errorMessage } from "@software-factory/client/format";
 import { Card } from "@software-factory/ui/components/card";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { LiveRunView } from "#/components/live-run-view";
 import { op, submitKey } from "#/lib/op";
 import type { WorkItemDetail } from "#/lib/ops";
@@ -23,6 +23,23 @@ export function LiveRun({ detail }: { detail: WorkItemDetail }) {
   useEffect(() => {
     if (latest && shown && latest.id !== shown) void refetch();
   }, [latest, shown, refetch]);
+  // A lost archive object is reported once per run (run.reportArchiveMissing checks for itself
+  // with R2 and opens at most one incident per run); then the view shows its link.
+  const reported = useRef(new Set<string>());
+  const missing = live.data?.archiveMissing;
+  const missingRun = live.data?.run?.id;
+  const itemId = detail.item.id;
+  useEffect(() => {
+    if (!missing || missing.incident || !missingRun || reported.current.has(missingRun)) return;
+    reported.current.add(missingRun);
+    void op(
+      "run.reportArchiveMissing",
+      { workItemId: itemId, runId: missingRun, firstSeq: missing.firstSeq },
+      { idempotencyKey: submitKey() },
+    )
+      .then(() => queryClient.invalidateQueries({ queryKey: ["workItem", itemId, "live"] }))
+      .catch(() => {});
+  }, [missing, missingRun, itemId, queryClient]);
 
   if (!latest) {
     return <Card className="px-5 py-6 text-muted-foreground text-sm">No runs yet.</Card>;
