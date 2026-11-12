@@ -146,12 +146,27 @@ export interface StageType<S extends z.ZodType = z.ZodType> {
   /** The one exception to F3: a shaping stage that needs no person. Only `triage` (Q1). */
   shapingWithoutPerson?: true;
   reversibility: Reversibility;
+  /**
+   * The stage judges the work (its verdict passes or sends back): `code` when the judge is the
+   * factory's own reviewer, whose prompt and skills are code's and take no org agent (F10, Q16: org
+   * skills reach it only as additions, a policy change); `agent` when a named agent judges, so
+   * changing that agent or its instructions is a loosening.
+   */
+  judges?: "code" | "agent";
   /** For `irreversible` types: the outside action, its risk in `ALWAYS_REVIEW` (F6). */
   action?: (settings: z.infer<S>) => { operation: string; risk: RiskClass; on: ArtifactKind };
   /** The steps it runs for an item. Pure. */
   steps(settings: z.infer<S>, item: ItemFacts): readonly StepPlan[];
-  /** Classifies a settings change. Anything it doesn't classify must loosen. */
+  /**
+   * Classifies a settings change. `workflowImpact` treats any differing setting it returns no
+   * change for as a loosening (the classifier is an allow-list, ADR 0516).
+   */
   impact(before: z.infer<S>, after: z.infer<S>, stageId: string): readonly ImpactChange[];
+  /**
+   * Settings saved under an earlier `typeVersion`, in this version's shape, so a version bump is
+   * compared setting by setting. Absent, or returning null: the bump is a loosening (ADR 0516).
+   */
+  migrate?(settings: unknown, fromVersion: number): unknown | null;
 }
 
 /** Erases a type's settings parameter so different types fit one registry. */
