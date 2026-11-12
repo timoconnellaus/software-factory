@@ -342,6 +342,21 @@ describe("workItem.board (criterion 10)", () => {
     );
     expect(detail.item).toMatchObject({ priority: "high", status: "queued" });
   });
+
+  it("gives each item its phase: shaping before release, delivery from release on, whatever its stage", async () => {
+    const w = await world();
+    const idea = await create(w, "Idea");
+    const released = await create(w, "Small, released", { state: "queued" });
+    const board = await ok<{ items: { id: string; stage: string; phase: string }[] }>(
+      "workItem.board",
+      { orgId: w.orgId, projectId: w.projectId },
+      w.human,
+    );
+    const of = (id: string) => board.items.find((i) => i.id === id);
+    expect(of(idea.workItemId)?.phase).toBe("shaping");
+    // Released and pulled, it starts at intake (a shaping stage) yet is delivering.
+    expect(of(released.workItemId)?.phase).toBe("delivery");
+  });
 });
 
 describe("the pull under races and policy (review of #69)", () => {
@@ -609,17 +624,8 @@ describe("project.workflow", () => {
       builtIn: true,
     });
     expect(r.unavailable).toBeNull();
-    expect(r.stages.map((s) => s.stage)).toEqual([
-      "intake",
-      "triage",
-      "spec",
-      "build",
-      "verify",
-      "merge",
-      "done",
-    ]);
+    expect(r.stages.map((s) => s.stage)).toEqual(["triage", "spec", "build", "verify", "merge"]);
     expect(r.stages.filter((s) => s.phase === "shaping").map((s) => s.label)).toEqual([
-      "Intake",
       "Triage",
       "Spec",
     ]);

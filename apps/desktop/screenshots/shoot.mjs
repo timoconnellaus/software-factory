@@ -92,6 +92,7 @@ export const SCREENS = [
   },
   { name: "board-empty", path: "/work?view=active&project=prj_site", design: "WorkActive.html" },
   { name: "active-all", path: "/work", design: "WorkActiveAll.html" },
+  { name: "active-all-list", path: "/work?layout=list", design: "WorkActiveAll.html" },
   { name: "done", path: "/work?view=done", design: "WorkDone.html" },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).

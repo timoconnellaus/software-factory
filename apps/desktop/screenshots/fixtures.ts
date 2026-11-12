@@ -324,7 +324,8 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         status: i.status,
         statusReason: i.statusReason,
         stage: i.stage,
-        phase: (["intake", "triage", "spec"].includes(i.stage) ? "shaping" : "delivery") as
+        // The item's phase (core's itemPhase): shaping before release, delivery from release on.
+        phase: (["backlog", "shaping", "ready"].includes(i.status) ? "shaping" : "delivery") as
           | "shaping"
           | "delivery",
         priority: i.priority ?? "normal",
@@ -350,13 +351,11 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
 }
 
 const STAGES_IN_ORDER = [
-  ["intake", "Intake", "shaping"],
   ["triage", "Triage", "shaping"],
   ["spec", "Spec", "shaping"],
   ["build", "Build", "delivery"],
   ["verify", "Verify", "delivery"],
   ["merge", "Merge", "delivery"],
-  ["done", "Done", "delivery"],
 ] as const;
 
 /**

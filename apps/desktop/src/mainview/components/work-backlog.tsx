@@ -62,11 +62,16 @@ interface ViewProps {
   onProject: (id: string | null) => void;
 }
 
-/** The board's items and the projects, within the chosen org. */
-function useBoard() {
+/** The board's items (one project's, when one is chosen) and the projects, within the chosen org. */
+function useBoard(projectId: string | null) {
   const session = useSession();
   const orgId = useOrgScope();
-  const board = useQuery(boardsQuery(session.orgs.map((o) => o.id)));
+  const board = useQuery(
+    boardsQuery(
+      session.orgs.map((o) => o.id),
+      projectId,
+    ),
+  );
   const projects = useProjects();
   const scoped = (projects.data ?? []).filter((p) => orgId === null || p.orgId === orgId);
   const projectOf = (id: string) => projects.data?.find((p) => p.id === id);
@@ -81,6 +86,21 @@ function useRefresh() {
       client.invalidateQueries({ queryKey: ["work"] }),
       ...ids.map((id) => client.invalidateQueries({ queryKey: ["workItem", id] })),
     ]);
+}
+
+/** How long the server's pull takes to have run after a release commits, give or take. */
+const PULL_SETTLED_MS = 2_500;
+
+/**
+ * After a release: refresh now, and once more when the server's pull has run (it runs right after
+ * the release commits), so a card doesn't sit in Queued until the next poll.
+ */
+function useRefreshAfterRelease() {
+  const refresh = useRefresh();
+  return async (ids: string[]) => {
+    await refresh(ids);
+    if (ids.length) setTimeout(() => void refresh(ids), PULL_SETTLED_MS);
+  };
 }
 
 const message = (e: unknown, fallback: string) => (e instanceof OpError ? e.message : fallback);
@@ -249,12 +269,13 @@ function Empty({ children, testId }: { children: React.ReactNode; testId: string
 // —— Backlog ——————————————————————————————————————————————————————————————————————————————
 
 export function BacklogPage({ projectId, onProject }: ViewProps) {
-  const { orgId, board, projects, projectOf, loading } = useBoard();
+  const { orgId, board, projects, projectOf, loading } = useBoard(projectId);
   const refresh = useRefresh();
   const items = itemsIn(board.data?.items ?? [], ["backlog"], { orgId, projectId });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmCancel, setConfirmCancel] = useState(false);
   const bulk = useBulk();
+  const refreshAfterRelease = useRefreshAfterRelease();
   const chosen = items.filter((i) => selected.has(i.id));
   const allChosen = items.length > 0 && chosen.length === items.length;
   const toggle = (id: string, on: boolean) =>
@@ -431,7 +452,13 @@ export function BacklogPage({ projectId, onProject }: ViewProps) {
               size="md"
               disabled={!chosen.length || bulk.busy !== null}
               aria-busy={bulk.busy === "release"}
-              onClick={() => bulk.start("release", async () => after(await releaseAll(chosen)))}
+              onClick={() =>
+                bulk.start("release", async () => {
+                  const ok = await releaseAll(chosen);
+                  await after(ok);
+                  await refreshAfterRelease(ok);
+                })
+              }
               data-testid="release-selected"
             >
               {bulk.busy === "release" ? "Releasing…" : "Release"}
@@ -547,7 +574,7 @@ function QuickAdd({ projects, projectId }: { projects: Project[]; projectId: str
   );
 }
 
-/** Cancelling backlog work: it stops (and shows under Stopped); nothing ran, so nothing to undo. */
+/** Cancelling backlog work: it ends (Done shows it cancelled); nothing ran, so nothing to undo. */
 function CancelItems({
   open,
   onOpenChange,
@@ -604,9 +631,8 @@ function CancelItems({
 // —— Ready ————————————————————————————————————————————————————————————————————————————————
 
 export function ReadyPage({ projectId, onProject }: ViewProps) {
-  const { orgId, board, projects, projectOf, loading } = useBoard();
+  const { orgId, board, projects, projectOf, loading } = useBoard(projectId);
   const { inbox } = useScopedInbox();
-  const refresh = useRefresh();
   const { busy, start } = useBulk();
   const items = itemsIn(board.data?.items ?? [], ["ready"], { orgId, projectId });
   const free = releasable(items, projectOf);
@@ -615,8 +641,9 @@ export function ReadyPage({ projectId, onProject }: ViewProps) {
     (h) => projects.some((p) => p.id === h.projectId) && (!projectId || h.projectId === projectId),
   );
 
+  const refreshAfterRelease = useRefreshAfterRelease();
   const release = (list: BacklogItem[], key: string) =>
-    start(key, async () => refresh(await releaseAll(list)));
+    start(key, async () => refreshAfterRelease(await releaseAll(list)));
 
   return (
     <PageArea wide>
@@ -775,7 +802,7 @@ function useStageLabels(projectIds: string[]) {
 
 /** Items being shaped (spec 50 part C): their workflow's shaping stages run before release. */
 export function PlanningPage({ projectId, onProject }: ViewProps) {
-  const { orgId, board, projects, projectOf, loading } = useBoard();
+  const { orgId, board, projects, projectOf, loading } = useBoard(projectId);
   const items = itemsIn(board.data?.items ?? [], ["shaping"], { orgId, projectId });
   const stageLabel = useStageLabels([...new Set(items.map((i) => i.projectId))]);
   return (

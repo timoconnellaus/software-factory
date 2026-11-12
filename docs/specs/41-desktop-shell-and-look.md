@@ -263,3 +263,24 @@ rather than shown empty:
   view is gone and `?view=stopped` lands on Done. It lists each org's 100 most recent items
   (`workItem.list`). Rounds and Usage need runs and usage on a list read; Last 30 days and Export are
   left out.
+
+### Review fixes to the board, All projects and Done (2026-11-12)
+- **Phases are the item's, never a stage's.** `workItem.board`'s `phase` is now the item's: shaping
+  before release (backlog, shaping, ready), delivery from release on (the owner's decision: triage
+  and planning are shaping stages that run before release). A released item in its spec stage sits
+  in the Spec lane; no lane is labelled "shaping".
+- **A project's board** has Queued, then every stage of the project's workflow in the order
+  `project.workflow` reports them, labelled from the read; empty lanes stay, collapsed, so columns
+  don't move. An item at intake (the moment after the pull) shows in the first stage's lane. Lanes
+  share the width (about 160px each, four fit at 1200 wide), and the row scrolls sideways with a
+  fade and an arrow button at the edge that has more.
+- **All projects** is a board of six phase columns: Backlog, Shaping, Ready, Queued, Delivery,
+  Done (counts from the board's counts, at most 20 cards a column with a link to the rest), or a
+  list sorted by who each item waits on.
+- **One project's board reads one project** (`workItem.board` with `projectId`). When the server's
+  500-item cap cut the list, the board says "Showing 500 of N".
+- **Live refresh**: the live socket's events (through the inbox count) refresh the Work queries;
+  the board's poll is a 60 s fallback. After a release the view refetches once more when the
+  server's pull has run, so the card leaves Queued.
+- Done's column is **Last updated** (work items have no finish time). Who an item waits on is one
+  function (`waitingOn`). A project's board tab is the project's name.

@@ -108,50 +108,90 @@ export function countsByView(items: WorkItemSummary[], orgId: string | null) {
 export type ActiveItem = BoardItem & { orgId: string };
 
 export interface Lane {
-  /** `queued`, or the stage's name as the server reports it. */
+  /** `queued`, or the stage's name as the workflow read reports it. */
   key: string;
   label: string;
-  phase: "queued" | "shaping" | "delivery";
   items: ActiveItem[];
 }
 
+/** A workflow's stage as `project.workflow` reports it, in order. */
+export interface StageInfo {
+  stage: string;
+  label: string;
+}
+
 /**
- * The board's lanes (spec 50). Queued is the one lane every workflow has (released, not yet
- * pulled), so it is always first. The rest are the stages the server reports on the items, in
- * their phase (shaping before delivery); within a phase, in the order `STAGE_LABEL` lists the
- * stages it knows, and any other stage after them by name. No stage list is hardcoded here: a
- * workflow with other stages gets their lanes. Empty stages show only once the server reports a
- * workflow's stage list (needs a read: spec 41, slice 2).
+ * A project's board lanes (spec 50): Queued first (released, not yet pulled: the lane every
+ * workflow has), then every stage of the project's workflow in the order the server reports them,
+ * empty ones included so the columns don't move as items do. Lanes are labelled from the read,
+ * never from a stage name. An item in a stage the read doesn't list (intake, the engine's entry,
+ * for the moment after the pull) shows in the first stage's lane.
  */
-export function boardLanes(items: ActiveItem[], labels: Record<string, string>): Lane[] {
-  const known = Object.keys(labels);
-  const rank = (stage: string) => {
-    const i = known.indexOf(stage);
-    return i < 0 ? known.length : i;
-  };
-  const queued = items.filter((i) => i.status === "queued");
-  const byStage = new Map<string, ActiveItem[]>();
+export function boardLanes(items: ActiveItem[], stages: StageInfo[]): Lane[] {
+  const lanes: Lane[] = [
+    { key: "queued", label: "Queued", items: items.filter((i) => i.status === "queued") },
+    ...stages.map((s) => ({ key: s.stage, label: s.label, items: [] as ActiveItem[] })),
+  ];
   for (const i of items) {
     if (i.status === "queued") continue;
-    byStage.set(i.stage, [...(byStage.get(i.stage) ?? []), i]);
+    const lane = lanes.find((l) => l.key === i.stage) ?? lanes[1];
+    lane?.items.push(i);
   }
-  const phaseOf = (stage: string): "shaping" | "delivery" =>
-    byStage.get(stage)?.[0]?.phase === "shaping" ? "shaping" : "delivery";
-  const stages = [...byStage.keys()].sort(
-    (a, b) =>
-      (phaseOf(a) === phaseOf(b) ? 0 : phaseOf(a) === "shaping" ? -1 : 1) ||
-      rank(a) - rank(b) ||
-      a.localeCompare(b),
-  );
-  return [
-    { key: "queued", label: "Queued", phase: "queued", items: queued },
-    ...stages.map((stage) => ({
-      key: stage,
-      label: labels[stage] ?? stage[0]?.toUpperCase() + stage.slice(1),
-      phase: phaseOf(stage),
-      items: byStage.get(stage) ?? [],
-    })),
-  ];
+  return lanes;
+}
+
+/** An item's lane on its project's board, in words: "Queued", or its stage's label from the read. */
+export function laneLabel(item: { status: string; stage: string }, stages: StageInfo[]): string {
+  if (item.status === "queued") return "Queued";
+  return (stages.find((s) => s.stage === item.stage) ?? stages[0])?.label ?? "";
+}
+
+/**
+ * The All projects board's columns (the owner's decision, 2026-11-12): by phase, with release
+ * between them. Before release (the server's phase `shaping`): Backlog, Shaping, Ready; from
+ * release on (`delivery`): Queued, Delivery; then Done. Never from a stage name, so every
+ * workflow's items sit in the same six columns.
+ */
+export const PHASE_COLUMNS = [
+  { key: "backlog", label: "Backlog", view: "backlog" },
+  { key: "shaping", label: "Shaping", view: "planning" },
+  { key: "ready", label: "Ready", view: "ready" },
+  { key: "queued", label: "Queued", view: "active" },
+  { key: "delivery", label: "Delivery", view: "active" },
+  { key: "done", label: "Done", view: "done" },
+] as const satisfies readonly { key: string; label: string; view: WorkView }[];
+export type PhaseColumn = (typeof PHASE_COLUMNS)[number]["key"];
+
+/** Which phase column an item is in, from its phase (the server's) and its state. */
+export function phaseColumn(item: { status: string; phase?: string }): PhaseColumn {
+  if (FINISHED.includes(item.status)) return "done";
+  if (item.phase === "shaping" || ["backlog", "shaping", "ready"].includes(item.status)) {
+    return item.status === "ready" ? "ready" : item.status === "shaping" ? "shaping" : "backlog";
+  }
+  return item.status === "queued" ? "queued" : "delivery";
+}
+
+/** How an item ended: the statuses Done shows. */
+export const FINISHED = ["done", "failed", "rejected", "cancelled"];
+
+/**
+ * When `workItem.board` cut its list (at most 500 items): how many the asked-for states hold by
+ * its counts, against how many it returned. Null when nothing was cut.
+ */
+export function cutList(
+  counts: { status: string; projectId: string; orgId: string; n: number }[],
+  shown: number,
+  opts: { states: readonly string[]; orgId: string | null; projectId?: string | null },
+): { shown: number; of: number } | null {
+  const of = counts
+    .filter(
+      (c) =>
+        opts.states.includes(c.status) &&
+        (opts.orgId === null || c.orgId === opts.orgId) &&
+        (!opts.projectId || c.projectId === opts.projectId),
+    )
+    .reduce((n, c) => n + c.n, 0);
+  return of > shown ? { shown, of } : null;
 }
 
 /** Who an item in the factory waits on, in the design's words, with its dot. */

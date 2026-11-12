@@ -36,6 +36,12 @@ export const Route = createRoute({
     const orgIds = session.orgs.map((o) => o.id);
     const board = queryClient.ensureQueryData(boardsQuery(orgIds));
     return Promise.all([
+      // The page's own board: one project's when one is chosen.
+      deps.project ? queryClient.ensureQueryData(boardsQuery(orgIds, deps.project)) : null,
+      // Its board's lanes are the project's workflow's stages.
+      deps.project && deps.view === "active"
+        ? queryClient.ensureQueryData(workflowQuery(deps.project))
+        : null,
       queryClient.ensureQueryData(workListsQuery(orgIds)),
       board,
       deps.project && !deps.view
@@ -82,7 +88,10 @@ function WorkRoute() {
           onLayout={(layout) => void navigate({ search: { ...search, layout } })}
         />
       ) : (
-        <ActiveAll />
+        <ActiveAll
+          layout={search.layout ?? "board"}
+          onLayout={(layout) => void navigate({ search: { ...search, layout } })}
+        />
       );
   }
 }
