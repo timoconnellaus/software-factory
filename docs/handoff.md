@@ -85,6 +85,13 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   harness's per-platform deny lists, Linux doctor checks (bubblewrap, socat, linger), the install
   path in the runner-host README, and `local/runner-host/scripts/linux-check.sh` (the tests in a
   Debian container). Criteria 2–3, 6 and 8 need a live Linux host (README "Running on Linux").
+  Piece 4, **a container per job** (block AA, [spec 33](specs/33-container-per-job.md) /
+  [ADR 0430](adr/0430-a-container-per-job.md), branch `timoconnellaus/hosts-containers`):
+  `runner.json` `"isolation": "container"` runs each job's Claude in a Docker container
+  (`packages/runner-local/src/container/`, image `packages/runner-local/container/`). Each job gets a
+  self-contained job repo, an egress allowlist proxy, every stage `bypassPermissions`, and the launch
+  check inside the container. The host still pushes. Planning sessions stay on the host. Criteria 1
+  and 9 need a live run on the M5 with Docker Desktop (runner-host README, "A container per job").
 - **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
   versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals

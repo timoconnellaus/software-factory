@@ -83,6 +83,13 @@ export interface LocalWorkspace extends WorkspaceHandle {
   attachmentsDir: string;
   /** The Claude account the run uses (ADR 0410), taken when the workspace was prepared. */
   account: HarnessAccount;
+  /**
+   * How the live harness's command line is read, when `ps` on the host can't see it (a container
+   * job reads it with `docker exec`, ADR 0430). Default: the adapter's `readCommand`.
+   */
+  readCommand?: ReadCommand;
+  /** More checks before the prompt (a container job's own configuration, ADR 0430). */
+  launchChecks?: () => Promise<string[]>;
 }
 
 export interface LocalSession extends SessionHandle {
@@ -556,7 +563,10 @@ export function createLocalRunner(
 
       // Before the job does anything: the live process and its settings must be exactly what the
       // harness set. Otherwise kill it and fail the job (incident 2026-11-11 #6).
-      const problems = await verifyLaunch(workspace.launch, config.readCommand);
+      const problems = [
+        ...(await verifyLaunch(workspace.launch, workspace.readCommand ?? config.readCommand)),
+        ...((await workspace.launchChecks?.()) ?? []),
+      ];
       if (problems.length > 0) await fail(new HarnessConfigMismatch(problems));
 
       // The prompt goes in a file; the terminal gets one short line pointing at it. A long paste

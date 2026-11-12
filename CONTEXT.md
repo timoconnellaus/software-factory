@@ -292,7 +292,8 @@ The live harness for one job: under runner-local, Claude Code in the tmux sessio
 the factory's own tmux socket (`tmux -L software-factory`), in the job's worktree. Its status comes
 from the harness's status hook (`<runDir>/status.jsonl`), not the screen (ADR 0380). What the agent
 says comes from its transcript, as `message` events. People watch it on the work item page's
-**Live** tab (spec 31).
+**Live** tab (spec 31). On a container runner, the tmux session runs the job's container, and
+Claude runs inside it (ADR 0430).
 _Avoid_: terminal (the session may have no terminal attached), pane
 
 **Steer**
@@ -324,6 +325,16 @@ is prepared and keeps it. The owner switches it by hand, on the host or from Set
 (`runner.account.use`, which sends only the name). The factory sees names, never credentials.
 _Avoid_: profile (Orca's word), login (only one kind), key (only one kind)
 
+**Isolation**
+How a runner confines a job's harness, set per runner in `runner.json` (ADR 0430):
+- `sandbox`, the default: a git worktree with Claude Code's OS sandbox (ADR 0270);
+- `container`: a Docker container per job. It mounts only the **job repo** (a new repo per job, with
+  only the start point's history and the default branch), a fresh home and temp dirs. Egress goes
+  only through the job's **egress proxy** (the stage's allowed hosts and the model API). Every stage
+  runs `bypassPermissions`. The container gets the job's Claude account as its token, so it needs a
+  token account (or `default` with a token in `runner.json`). A login account can't be used.
+_Avoid_: sandbox (for the container: the sandbox is Claude's own)
+
 **Capability**
 Something a runner or harness declares it can do. Jobs ask for capabilities; `.factory/` can
 restrict them. The known ones:
@@ -336,6 +347,8 @@ restrict them. The known ones:
 - `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`);
 - `work-item-attachments`: fetches the work item's attachments over the job channel into the run,
   outside the git tree (ADR 0310);
+- `container-isolation`: each job's harness runs in its own container (ADR 0430); planning sessions
+  still run on the host;
 - `steer`: a person can message the live session from the dashboard (a **steer**, ADR 0400).
 _Avoid_: feature, permission (that is the operation's), skill
 

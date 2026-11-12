@@ -55,6 +55,49 @@ involved. The runner host (`local/runner-host`) wires it; nothing in the core im
   sessions and worktrees without a live job, and two checkouts of one remote.
 - `checkRunningHarness(runDir)`: the launch check for a running job, for `sf-runner doctor`.
 
+## A container per job (`src/container/`, ADR 0430, spec 33)
+`createContainerRunner(config)` is a second `RunnerAdapter` over the same tmux session, status hook,
+events and steering. A planning job goes to runner-local unchanged. For every other stage it changes:
+- **prepareWorkspace**:
+  - Builds the agent image if it's missing (`image.ts`: `container/Dockerfile` and
+    `egress-proxy.mjs`, tagged by their content hash).
+  - Makes the job repo (`job-repo.ts`): `git init --separate-git-dir`, then a fetch from the
+    checkout of only the start point (through `refs/software-factory/jobs/<jobId>`, deleted after)
+    and the host's item and default branches.
+  - Projects the harness with `isolation: "container"`, the image's Node for the status hook and
+    `claude` inside.
+  - Writes `container.json` (both container specs, the allowlist, the repo's `.git` and config hash)
+    and `container.sh` (`exec docker run -it … /bin/sh <runDir>/launch.sh`).
+- **startSession**:
+  - Creates the job's `--internal` network and starts the egress proxy on it (alias `egress`) and
+    on the bridge.
+  - Takes the credential from the job's Claude account (`credentialForAccount`, ADR 0410), which
+    was taken when the workspace was prepared. A token account gives its token; a login account is
+    refused while the workspace is prepared, before anything is made. The account's config dir is
+    never mounted: Claude uses the container home's `.claude`, and `workspace.account` points there
+    for the transcript.
+  - Writes the credential's 0600 env file and seeds the home's `.claude.json` (onboarding done, the
+    tree trusted).
+  - Runs runner-local's start with `container.sh` as the launch script. The launch check reads the
+    process with `docker exec … ps` and compares `docker inspect` with the spec (`spec.ts`
+    `containerProblems`).
+  - Deletes the env file.
+- **events**: on `session.ended`, keeps the proxy's log, removes both containers and the network,
+  then `checkJobGitDir` (repairs and reports redirects, alternates, hooks, config changes, symlinks)
+  and `scanForSecrets` (new objects, changes, untracked files). Any finding turns the end into
+  `failed`, so the host doesn't push.
+- **collectArtifacts** adds `egress-log`. **release** removes the containers, network, job dir, run
+  dir and attachments with file operations only. **manifest** adds `container-isolation`.
+- `reapContainers` / `diagnoseContainers` (`reap.ts`) find leftovers by the `software-factory.job`
+  label and the `sf-*` dirs. `checkRunningContainer(runDir)` is the check for `sf-runner doctor`.
+- `runtime.ts` is the `ContainerRuntime` interface and `dockerRuntime` over the CLI.
+
+For tests, `@software-factory/runner-local/testing` also has a scripted `docker`
+(`scriptedDocker`), which starts the agent container when the tmux pane runs `container.sh`.
+`test/container.integration.test.ts` builds the real image and runs a stand-in
+`claude` in a real container under tmux. It probes the home, the egress, the writes and a commit
+that the host then pushes. It is skipped without Docker or tmux.
+
 `src/testing.ts` (`@software-factory/runner-local/testing`) is a scripted tmux for tests. Git stays
 real. `test/tmux.integration.test.ts` runs the adapter on the real tmux, on its own socket, with a
 stand-in `claude`. It is skipped when tmux isn't installed.
