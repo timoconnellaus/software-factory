@@ -39,6 +39,7 @@ import {
   type CapabilityManifest,
   type Job,
   RESULT_FILE,
+  ReleaseIncomplete,
   type RunnerAdapter,
 } from "@software-factory/runner-contract";
 import {
@@ -85,6 +86,8 @@ export const SPRITE_RECORD = "sprite.json";
 export const SPRITE_SCRIPT = "sprite.sh";
 export const SPRITE_ENTRY = "sprite-entry.sh";
 export const SPRITE_TTY = "sprite-tty.json";
+/** What a failed destroy says: the sprite, and the job in it, may still be running. */
+const SPRITE_MAY_RUN = "it may still be running";
 /** The bridge the job's tmux pane runs, on the host's Node. */
 export const BRIDGE_SCRIPT = fileURLToPath(new URL("./tty-bridge.ts", import.meta.url));
 
@@ -497,7 +500,7 @@ export function createSpritesRunner(
     const name = record?.name ?? spriteName(prefix, job.jobId);
     if (record?.createRequested) {
       // It may exist: it must be destroyed, or this release fails (and says so).
-      await attempt(`destroy sprite ${name} (it may still be running)`, () => destroy(name));
+      await attempt(`destroy sprite ${name} (${SPRITE_MAY_RUN})`, () => destroy(name));
     } else {
       // Never created by this run; a crashed earlier run's, if any, goes too when it can.
       await destroy(name).catch(() => {});
@@ -971,6 +974,11 @@ export function createSpritesRunner(
         errors.push(`kill session: ${err instanceof Error ? err.message : err}`);
       });
       errors.push(...(await cleanUp(job, workspace)));
+      // A sprite that may still be running is a job that may still be running (ADR 0550): the host
+      // must not report it released.
+      if (errors.some((e) => e.includes(SPRITE_MAY_RUN))) {
+        throw new ReleaseIncomplete(errors.join("; "));
+      }
       if (errors.length > 0) throw new Error(errors.join("; "));
     },
 

@@ -917,6 +917,15 @@ describe("tokens, revocation and the door (criterion 6)", () => {
     expect(live.status).toBe(101);
     live.webSocket?.accept();
     live.webSocket?.close();
+    // The web terminal stays on the desktop (typing into a terminal is out of the phone's scope).
+    const terminal = await worker.fetch(
+      new Request(
+        `https://sf-engine.example/client/v1/terminal/wi_${"0".repeat(32)}/run_${"0".repeat(32)}`,
+        { headers: { upgrade: "websocket", authorization: `Bearer ${token}`, ...PROTOCOL } },
+      ),
+      env,
+    );
+    expect(terminal.status).toBe(403);
   });
 
   it("prunes old nonces, offers and typed-code tries", async () => {

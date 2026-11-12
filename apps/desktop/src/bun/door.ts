@@ -2,6 +2,7 @@
 // process only: the token never reaches the webview.
 import type { CallResult } from "../shared/rpc.ts";
 import { inputDigest, presenceMessage } from "./digest.ts";
+import { PROTOCOL_HEADERS, UpdateRequiredError } from "./protocol.ts";
 
 export type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 /**
@@ -17,6 +18,8 @@ export class Door {
     readonly baseUrl: string,
     private readonly token: () => string | null,
     private readonly fetchImpl: Fetch = fetch,
+    /** The door refused this build as too old (ADR 0393): check for an update now. */
+    private readonly onUpdateRequired?: () => void,
   ) {}
 
   private async post(
@@ -24,7 +27,10 @@ export class Door {
     body: unknown,
     auth = true,
   ): Promise<{ status: number; json: Record<string, unknown> }> {
-    const headers: Record<string, string> = { "content-type": "application/json" };
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      ...PROTOCOL_HEADERS,
+    };
     if (auth) {
       const t = this.token();
       if (!t) throw new UnauthenticatedError("not signed in");
@@ -38,6 +44,10 @@ export class Door {
     if (res.status === 401)
       throw new UnauthenticatedError("the desktop token expired or was revoked");
     const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (res.status === 426 && json.code === "update_required") {
+      this.onUpdateRequired?.();
+      throw new UpdateRequiredError(String(json.error ?? "this version of the app is too old"));
+    }
     return { status: res.status, json };
   }
 

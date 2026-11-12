@@ -2,3 +2,4 @@
 build/
 artifacts/
 vendor/
+.cottontail-tmp/

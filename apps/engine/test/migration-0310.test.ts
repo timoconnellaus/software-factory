@@ -84,9 +84,10 @@ describe("migration 0310", () => {
           .all()
       ).results,
     ).toEqual([{ id: "dar_1", status: "approved", platform: "macos", offer_id: null }]);
-    expect(
-      await db.prepare("SELECT value FROM core_meta WHERE key = 'schema_version'").first(),
-    ).toEqual({ value: "310" });
+    const version = await db
+      .prepare("SELECT value FROM core_meta WHERE key = 'schema_version'")
+      .first<{ value: string }>();
+    expect(Number(version?.value)).toBeGreaterThanOrEqual(310);
 
     // The rebuilt children point at the kept name, and the cascades still hold.
     const fks = await db

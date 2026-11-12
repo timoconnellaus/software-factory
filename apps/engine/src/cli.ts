@@ -14,7 +14,15 @@
 //   MOBILE_DEVICE_ACTOR, ADR 0541); a `mobile` token's calls run on the `mobile` surface, and a
 //   phone below MOBILE_MIN_PROTOCOL gets 426 (mobile.ts).
 // - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
+// - `terminal/<workItemId>/<runId>` (GET, WebSocket) is a run's web terminal for the desktop app
+//   (spec 42, ADR 0530): the same attach as sf-app's socket route, then the relay's viewer socket.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
+// - The version handshake (spec 40 M4, ADR 0393): the desktop app sends `x-sf-client-protocol`. A
+//   desktop sign-in or a desktop token's request below DESKTOP_MIN_PROTOCOL gets 426
+//   `update_required`, and the app updates. No header is protocol 0 (builds before the handshake).
+//   It is checked once, in `versionGate` at the top of `handleCli`, so every route and socket a
+//   desktop token can reach gets it, including routes added later. A client opening a WebSocket
+//   must send the protocol headers on the upgrade request too.
 // MCP is meant to come through the same door.
 import {
   type Actor,
@@ -40,9 +48,12 @@ import {
   mobileTooOld,
   mobileUpdateRequired,
 } from "./mobile.ts";
+import { attachTerminal, openViewerSocket } from "./terminal-attach.ts";
 import { decodeBytes, encodeBytes } from "./wire-bytes.ts";
 
 export const CLI_PREFIX = "/cli/v1/";
+/** The desktop app's terminal socket: `terminal/<workItemId>/<runId>` under the door. */
+const TERMINAL_ROUTE = /^terminal\/(wi_[0-9a-f]{32})\/(run_[0-9a-f]{32})$/;
 export const CLIENT_PREFIX = "/client/v1/";
 /** The most calls one `batch` may carry. */
 export const BATCH_LIMIT = 20;
@@ -59,10 +70,67 @@ const unauthenticated = () =>
     401,
   );
 
+/** The header the desktop app names its door protocol in (ADR 0393). */
+export const CLIENT_PROTOCOL_HEADER = "x-sf-client-protocol";
+
+/**
+ * The newest desktop door protocol this engine knows (apps/desktop's DOOR_PROTOCOL; bump them
+ * together). A DESKTOP_MIN_PROTOCOL above it is a mistake that would refuse every build, sign-in
+ * included, so it is ignored (and logged) instead of enforced.
+ */
+export const DESKTOP_PROTOCOL_LATEST = 1;
+
+/** The floor to enforce, or null (unset, 0, malformed or above DESKTOP_PROTOCOL_LATEST). */
+export function desktopMinProtocol(env: Pick<Env, "DESKTOP_MIN_PROTOCOL">): number | null {
+  const raw = env.DESKTOP_MIN_PROTOCOL ?? "";
+  if (!/^\d{1,6}$/.test(raw) || Number(raw) <= 0) return null;
+  const min = Number(raw);
+  if (min > DESKTOP_PROTOCOL_LATEST) {
+    console.error(
+      `DESKTOP_MIN_PROTOCOL=${min} is above the newest desktop protocol (${DESKTOP_PROTOCOL_LATEST}); not enforced`,
+    );
+    return null;
+  }
+  return min;
+}
+
+/** The desktop build speaks a door protocol older than the engine still serves (ADR 0393). */
+export function desktopTooOld(request: Request, env: Pick<Env, "DESKTOP_MIN_PROTOCOL">): boolean {
+  const min = desktopMinProtocol(env);
+  if (min === null) return false;
+  const sent = request.headers.get(CLIENT_PROTOCOL_HEADER) ?? "";
+  const protocol = /^\d{1,6}$/.test(sent) ? Number(sent) : 0;
+  return protocol < min;
+}
+
+const updateRequired = (env: Pick<Env, "DESKTOP_MIN_PROTOCOL">) =>
+  reply(
+    {
+      error:
+        "This version of the Software Factory app is too old for the factory. Update it: menu bar, Restart to update (or download it again).",
+      code: "update_required",
+      minProtocol: desktopMinProtocol(env),
+    },
+    426,
+  );
+
+/**
+ * The version handshake for every door route and socket, in one place (ADR 0393): a desktop
+ * sign-in, or any request with a desktop token, below the floor gets 426 `update_required`. CLI
+ * tokens and unauthenticated requests pass through to the route, which answers as usual. Costs
+ * nothing while no floor is set; with one, the token lookup is shared with the route's own.
+ */
+async function versionGate(request: Request, env: Env, path: string): Promise<Response | null> {
+  if (!desktopTooOld(request, env)) return null;
+  const desktop =
+    path.startsWith("desktop/") || (await authenticate(request, env))?.kind === "desktop";
+  return desktop ? updateRequired(env) : null;
+}
+
 /** Who a bearer token is: a CLI token (with its scope), or a desktop's or a phone's device token. */
 type Caller =
   | { kind: "cli"; userId: string; scope: "read" | "write" }
-  | { kind: "desktop" | "mobile"; userId: string; deviceId: string };
+  | { kind: "desktop" | "mobile"; userId: string; deviceId: string; tokenId: string };
 
 export async function handleCli(request: Request, env: Env): Promise<Response> {
   const pathname = new URL(request.url).pathname;
@@ -70,6 +138,8 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
     pathname.startsWith(CLIENT_PREFIX) ? CLIENT_PREFIX.length : CLI_PREFIX.length,
   );
   if (mobileTooOld(request, path)) return mobileUpdateRequired();
+  const tooOld = await versionGate(request, env, path);
+  if (tooOld) return tooOld;
   if (path === "ops" && request.method === "GET") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
@@ -84,6 +154,12 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
       return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
     }
     return clientHub(env, who.userId).fetch(request);
+  }
+  const terminal = TERMINAL_ROUTE.exec(path);
+  if (terminal?.[1] && terminal[2] && request.method === "GET") {
+    const who = await authenticate(request, env);
+    if (!who) return unauthenticated();
+    return openTerminal(env, who, terminal[1], terminal[2], request);
   }
   if (request.method !== "POST") return reply({ error: "not found", code: "not_found" }, 404);
   let body: Record<string, unknown>;
@@ -169,7 +245,55 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   return reply({ error: "not found", code: "not_found" }, 404);
 }
 
-async function authenticate(request: Request, env: Env): Promise<Caller | null> {
+/**
+ * A run's web terminal through the door (spec 42, ADR 0530): desktop tokens only. Refusals are plain
+ * door replies before any upgrade; the attach decides `type` or `watch` and is recorded with the
+ * device, exactly as sf-app's route records the browser's.
+ */
+async function openTerminal(
+  env: Env,
+  who: Caller,
+  workItemId: string,
+  runId: string,
+  request: Request,
+): Promise<Response> {
+  if (who.kind !== "desktop") {
+    return reply(
+      { error: "the web terminal opens in the desktop app or the website", code: "forbidden" },
+      STATUS.forbidden,
+    );
+  }
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
+  }
+  const attached = await attachTerminal(env, workItemId, runId, {
+    actor: { type: "human", id: who.userId },
+    origin: { surface: "desktop", deviceId: who.deviceId, requestId: crypto.randomUUID() },
+    // The relay re-checks the token (and the device) while the socket is open (ADR 0530).
+    tokenId: who.tokenId,
+  });
+  if (!attached.ok) {
+    return reply(
+      { error: attached.error.message, code: attached.error.code },
+      STATUS[attached.error.code],
+    );
+  }
+  return openViewerSocket(env, attached.jobId, attached.path);
+}
+
+/** One token lookup per request: the version gate and the route share it. */
+const callers = new WeakMap<Request, Promise<Caller | null>>();
+
+function authenticate(request: Request, env: Env): Promise<Caller | null> {
+  let caller = callers.get(request);
+  if (!caller) {
+    caller = lookUpCaller(request, env);
+    callers.set(request, caller);
+  }
+  return caller;
+}
+
+async function lookUpCaller(request: Request, env: Env): Promise<Caller | null> {
   const header = request.headers.get("authorization") ?? "";
   const match = /^Bearer\s+(\S+)$/i.exec(header);
   const token = match?.[1];
@@ -177,9 +301,18 @@ async function authenticate(request: Request, env: Env): Promise<Caller | null> 
   const db = createDb(env.DB);
   const now = new Date().toISOString();
   const desktop = await resolveDesktopToken(db, token, now);
-  if (desktop) return { kind: "desktop", userId: desktop.user_id, deviceId: desktop.device_id };
+  if (desktop) {
+    return {
+      kind: "desktop",
+      userId: desktop.user_id,
+      deviceId: desktop.device_id,
+      tokenId: desktop.id,
+    };
+  }
   const phone = await resolveMobileToken(db, token, now);
-  if (phone) return { kind: "mobile", userId: phone.user_id, deviceId: phone.device_id };
+  if (phone) {
+    return { kind: "mobile", userId: phone.user_id, deviceId: phone.device_id, tokenId: phone.id };
+  }
   const cli = await resolveCliToken(db, token, now);
   if (cli) return { kind: "cli", userId: cli.user_id, scope: cli.scope };
   return null;

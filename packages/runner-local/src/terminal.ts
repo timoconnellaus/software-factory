@@ -81,6 +81,8 @@ export class ControlParser {
       output: (pane: string, bytes: Uint8Array) => void;
       block: (block: Block) => void;
       exit: (reason: string) => void;
+      /** `%pause <pane>`: tmux stopped sending the pane (pause-after); it must be continued. */
+      pause?: (pane: string) => void;
     },
   ) {}
 
@@ -123,9 +125,33 @@ export class ControlParser {
       this.on.output(pane, decodeOutput(line.subarray(space + 1)));
       return;
     }
+    // With pause-after, output comes as `%extended-output %<pane> <age> … : <value>`.
+    if (head.startsWith("%extended-output ")) {
+      const space = line.indexOf(0x20, 17);
+      if (space < 0) return;
+      // The value starts after the first " : " (the fields before it have no spaces-colon).
+      let at = -1;
+      for (let i = space; i + 2 < line.length + 1; i++) {
+        if (line[i] === 0x20 && line[i + 1] === 0x3a && line[i + 2] === 0x20) {
+          at = i;
+          break;
+        }
+      }
+      if (at < 0) return;
+      const pane = new TextDecoder().decode(line.subarray(17, space));
+      this.on.output(pane, decodeOutput(line.subarray(at + 3)));
+      return;
+    }
+    if (head.startsWith("%pause ")) {
+      this.on.pause?.(head.slice(7).trim());
+      return;
+    }
     if (head.startsWith("%exit")) this.on.exit(head.slice(5).trim() || "detached");
   }
 }
+
+/** Seconds a control client may fall behind before tmux pauses its pane (`pause-after`). */
+export const PAUSE_AFTER_S = 60;
 
 export interface TmuxTerminalOptions extends OpenTerminalOptions {
   /** The job's tmux session (`sf-<jobId>`). */
@@ -156,25 +182,51 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
     "/dev/null",
     "-C",
     "attach-session",
+    // pause-after (tmux 3.2+): a client that falls behind gets its pane paused (`%pause`), which
+    // the bridge continues and redraws, instead of tmux's "too far behind" path through
+    // control_discard(), where tmux 3.5a and 3.6a crash (SIGSEGV, ADR 0440 note 2026-11-12).
+    "-f",
+    `pause-after=${PAUSE_AFTER_S}`,
     "-t",
     `=${options.session}`,
   ]);
-  const pending: { resolve: (b: Block) => void }[] = [];
+  let bridge: TerminalBridge | null = null;
+  /**
+   * Command lines waiting for their blocks, in order. A line of `count` commands gets one block per
+   * command, unless one fails: then tmux answers that one with `%error` and drops the rest of the
+   * line, so the `%error` ends the whole line (the commands after it read as failed).
+   */
+  const pending: { count: number; blocks: Block[]; resolve: (b: Block[]) => void }[] = [];
+  const failed = (n: number): Block[] =>
+    Array.from({ length: n }, () => ({ ok: false, lines: [] }));
   let pane: string | null = null;
   let exited = false;
   let stderr = "";
   const exit = (reason: string) => {
     if (exited) return;
     exited = true;
-    for (const p of pending.splice(0)) p.resolve({ ok: false, lines: [] });
+    for (const p of pending.splice(0))
+      p.resolve([...p.blocks, ...failed(p.count - p.blocks.length)]);
     options.onExit(reason);
   };
   const parser = new ControlParser({
     output: (id, bytes) => {
       if (id === pane && bytes.length > 0) options.onOutput(bytes);
     },
-    block: (block) => pending.shift()?.resolve(block),
+    block: (block) => {
+      const line = pending[0];
+      if (!line) return;
+      line.blocks.push(block);
+      if (block.ok && line.blocks.length < line.count) return;
+      pending.shift();
+      line.resolve([...line.blocks, ...failed(line.count - line.blocks.length)]);
+    },
     exit,
+    pause: (id) => {
+      if (id !== pane) return;
+      // Its output since the pause is gone: continue it and redraw the screen.
+      void command(`refresh-client -A '${id}:continue'`).then(() => bridge?.redraw());
+    },
   });
   child.stdout?.on("data", (chunk: Buffer) => parser.push(chunk));
   child.stderr?.on("data", (chunk: Buffer) => {
@@ -185,13 +237,20 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
   child.stdin?.on("error", () => {});
 
   /** One command line; resolves with its block. */
-  const command = (line: string): Promise<Block> => {
-    if (exited || !child.stdin?.writable) return Promise.resolve({ ok: false, lines: [] });
+  const command = async (line: string): Promise<Block> =>
+    (await commands(line, 1))[0] ?? { ok: false, lines: [] };
+  /**
+   * A command line of several `;`-separated commands: tmux answers each with its own block, all
+   * before any more output, so they are read together and in order with the output stream. One
+   * that fails ends the line (see `pending`).
+   */
+  function commands(line: string, count: number): Promise<Block[]> {
+    if (exited || !child.stdin?.writable) return Promise.resolve(failed(count));
     return new Promise((resolve) => {
-      pending.push({ resolve });
+      pending.push({ count, blocks: [], resolve });
       child.stdin?.write(`${line}\n`);
     });
-  };
+  }
   const text = (block: Block) => block.lines.map((l) => new TextDecoder().decode(l));
 
   let size: TerminalSize = { cols: 80, rows: 24 };
@@ -215,7 +274,7 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
   pane = id;
   size = { cols: Number(cols) || 80, rows: Number(rows) || 24 };
 
-  const bridge: TerminalBridge = {
+  bridge = {
     async write(data) {
       for (const keys of hexKeys(data)) {
         await command(`send-keys -t ${pane} -H ${keys.join(" ")}`);
@@ -232,12 +291,15 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
     },
     async redraw() {
       // One command line, so the screen and the cursor are read together, in order with the output.
-      const r = await command(
+      // It answers with two blocks, one per command (reading only one put the cursor at 1;1 and
+      // handed the second block to the next command).
+      const [screen, cursor] = await commands(
         `capture-pane -p -e -t ${pane} ; display-message -p -t ${pane} "#{cursor_x} #{cursor_y} #{pane_width} #{pane_height} #{cursor_flag}"`,
+        2,
       );
-      if (!r.ok) return;
-      const lines = text(r);
-      const [x, y, w, h, visible] = (lines.pop() ?? "").split(" ").map(Number);
+      if (!screen?.ok || !cursor?.ok) return;
+      const lines = text(screen);
+      const [x, y, w, h, visible] = (text(cursor)[0] ?? "").split(" ").map(Number);
       if (w && h) size = { cols: w, rows: h };
       options.onSize(size);
       options.onOutput(
@@ -246,6 +308,9 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
     },
     async close() {
       if (exited) return;
+      // Detach first, so tmux ends the client on its own terms (no output left queued for a
+      // client that has gone), then close its input; kill it only if it lingers.
+      if (child.stdin?.writable) child.stdin.write("detach-client\n");
       child.stdin?.end();
       const timer = setTimeout(() => child.kill(), 2_000);
       timer.unref?.();

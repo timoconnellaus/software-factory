@@ -4,6 +4,7 @@
 // room. Each job runs concurrently through `runJob`, which also takes the dashboard's steers for its
 // session on a held channel call (ADR 0400). Nothing here knows which runner adapter it drives.
 import {
+  type CapacityPaused,
   ChannelCallError,
   type ControlPlaneClient,
   type Job,
@@ -70,6 +71,11 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
     report(): Promise<RunnerAccounts>;
     use(name: string): Promise<void>;
   };
+  /**
+   * Back off claiming under load (ADR 0552): which pools take nothing new for now (`LoadGate`).
+   * Reported on the heartbeat as `capacity.paused`.
+   */
+  load?: { check(): CapacityPaused | null };
 }
 
 interface Running {
@@ -223,7 +229,9 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
           this.running.size === 0,
           minRunnerCompat ?? null,
         );
-        if (decision === "restart") {
+        // Not while draining: the restarted process wouldn't be, and would claim again before
+        // whoever drained it (the desktop app, a drain command) stops it.
+        if (decision === "restart" && !this.draining) {
           await this.stopForUpdate();
           return;
         }
@@ -246,7 +254,10 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       while (!this.stopped && !this.draining) {
         const room = await this.capacity();
         const light = room.light ?? { max: 0, inUse: 0 };
-        if (!room.accepting || (room.inUse >= room.max && light.inUse >= light.max)) break;
+        const paused = room.paused?.pools ?? [];
+        const heavyFull = room.inUse >= room.max || paused.includes("heavy");
+        const lightFull = light.inUse >= light.max || paused.includes("light");
+        if (!room.accepting || (heavyFull && lightFull)) break;
         this.pendingClaimId ??= crypto.randomUUID();
         const { job } = await this.options.cp.claim({
           claimId: this.pendingClaimId,
@@ -297,12 +308,24 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     // The adapter may see workspaces the host doesn't run (a crashed run): count them as heavy.
     const inUse = Math.max(heavyInUse, (reported?.inUse ?? 0) - lightInUse);
     const open = Math.min(this.options.maxConcurrent, reported?.max ?? this.options.maxConcurrent);
-    const max = this.heavyClosed ? Math.min(open, inUse) : open;
+    // Why it takes nothing new (ADR 0552): a drain first, then the adapter's own pause (its tmux
+    // not answering), else the load's.
+    const paused: CapacityPaused | undefined = this.draining
+      ? { reason: "draining", pools: ["heavy", "light"] }
+      : (reported?.paused ?? this.options.load?.check() ?? undefined);
+    // A paused heavy pool also reports full, as a closed one does (ADR 0520), so an engine that
+    // doesn't read `paused` sends no heavy job either.
+    const max = this.heavyClosed || paused?.pools.includes("heavy") ? Math.min(open, inUse) : open;
     return {
       max,
       inUse,
-      accepting: !this.draining && !this.stopped && (reported?.accepting ?? true),
+      accepting:
+        !this.draining &&
+        !this.stopped &&
+        (reported?.accepting ?? true) &&
+        (paused?.pools.length ?? 0) < 2,
       light: { max: this.options.maxLight ?? 6, inUse: lightInUse },
+      ...(paused ? { paused } : {}),
     };
   }
 
@@ -351,6 +374,18 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     await writeLiveJobs(this.options.liveJobsFile, this.activeJobs).catch((err) => {
       this.log(`live jobs file: ${err instanceof Error ? err.message : err}`);
     });
+  }
+
+  /**
+   * Stops claiming, locally (the desktop app's "Restart to update", spec 40 M4), and rewrites the
+   * live-jobs file once any claim in flight has landed, so a reader that sees the new `updatedAt`
+   * knows the job list is final. Running jobs carry on.
+   */
+  async drain(): Promise<void> {
+    if (!this.draining) this.log("drain: taking no new jobs (asked locally)");
+    this.draining = true;
+    await this.ticking;
+    await this.recordLive();
   }
 
   /** Waits for every running job to finish. */

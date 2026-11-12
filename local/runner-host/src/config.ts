@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { CAPABILITIES, type Capability } from "@software-factory/runner-contract";
 import { z } from "zod";
+import { loadPolicySchema } from "./load.ts";
 
 export const DEFAULT_BASE_URL = "https://sf-engine.zerobsai.com";
 /** The app, where a person approves `sf-runner login` (when the engine's link is relative). */
@@ -41,6 +42,12 @@ export const configSchema = z.object({
    * `false` turns it off; the runner then reports `blocked` when it is behind.
    */
   autoUpdate: z.boolean().default(true),
+  /**
+   * Back off claiming under load (ADR 0552), as multiples of the CPU count: heavy jobs stop when
+   * the 1-minute load average passes `heavyStop` (1.5), light ones too past `lightStop` (2.0), and
+   * each resumes below its stop × `resumeFactor` (0.8). On by default; `enabled: false` turns it off.
+   */
+  load: loadPolicySchema.optional(),
   /**
    * Test only: how long a pending update waits before the host takes light jobs only, and before it
    * takes nothing (ADR 0520; defaults 30 and 60 minutes). Leave it out of a real runner.json.

@@ -2,7 +2,7 @@
 // finishing and cancelling.
 
 import { parseJson, readBatch } from "@software-factory/db";
-import { triageResultSchema } from "@software-factory/runner-contract";
+import { capacityPausedSchema, triageResultSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -1100,6 +1100,11 @@ export const inboxList = defineOperation({
         rateLimitedUntil: z.string().nullable(),
         lastSeenAt: z.string().nullable(),
         /**
+         * Why it takes nothing new in some pools for now (ADR 0552): its load (with the numbers)
+         * or its tmux. Null when it takes work everywhere, or is offline.
+         */
+        paused: capacityPausedSchema.nullable(),
+        /**
          * Its code against the deployed commit (ADR 0360): null when it's current or doesn't
          * report a version. `behind`: updating on its own (`waiting`/`updating`); `blocked` and
          * `rolled_back` need a person, with the reason.
@@ -1292,6 +1297,9 @@ export const inboxList = defineOperation({
         light: r.light_max === null ? null : { inUse: lightActive, max: r.light_max },
         rateLimitedUntil: limited ? r.rate_limited_until : null,
         lastSeenAt: r.last_seen_at,
+        paused: offline
+          ? null
+          : (capacityPausedSchema.safeParse(parseJson<unknown>(r.paused, null)).data ?? null),
         update: runnerUpdate(r, desiredRunnerVersion(ctx.services)),
       };
     });
