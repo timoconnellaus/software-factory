@@ -29,6 +29,26 @@ export function appFor(
   return app.client;
 }
 
+/**
+ * Archived chunks read by run.live, kept in the isolate (they never change once written): a person
+ * paging through an old run reads each chunk from R2 once. At most 16 of about 1 MB.
+ */
+const chunkCache = new Map<string, string>();
+async function archivedChunk(bucket: R2Bucket, key: string): Promise<string | null> {
+  const hit = chunkCache.get(key);
+  if (hit !== undefined) {
+    chunkCache.delete(key);
+    chunkCache.set(key, hit);
+    return hit;
+  }
+  const object = await bucket.get(key);
+  if (!object) return null;
+  const text = await object.text();
+  chunkCache.set(key, text);
+  if (chunkCache.size > 16) chunkCache.delete(chunkCache.keys().next().value as string);
+  return text;
+}
+
 export function services(env: Env): FactoryServices {
   const { GH_APP_PRIVATE_KEY, RUNNER_CHANNEL_SECRET } = secrets(env);
   const github =
@@ -45,6 +65,7 @@ export function services(env: Env): FactoryServices {
     ...(env.DEPLOYED_SHA ? { deployedSha: env.DEPLOYED_SHA } : {}),
     ...(env.RUNNER_SHA ? { runnerSha: env.RUNNER_SHA } : {}),
     attachments: r2AttachmentBlobs(env.ATTACHMENTS),
+    runArchive: { get: (key) => archivedChunk(env.ARCHIVE, key) },
     runnerKey: async (runnerId, version) => {
       if (!RUNNER_CHANNEL_SECRET) {
         throw new OperationError("unavailable", "RUNNER_CHANNEL_SECRET is not set on sf-engine");

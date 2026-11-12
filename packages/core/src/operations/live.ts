@@ -54,6 +54,85 @@ function expandRows(
   return out;
 }
 
+type StoredEvent = {
+  seq: number;
+  last_seq: number | null;
+  at: string;
+  type: string;
+  payload: string;
+};
+
+/** One archived chunk's rows (NDJSON in sf-archive), or none when it can't be read. */
+async function readChunk<T>(ctx: HandlerContext, key: string): Promise<T[]> {
+  const text = await ctx.services.runArchive?.get(key);
+  if (!text) return [];
+  return text
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as T);
+}
+
+/**
+ * An archived run's page (AGENTS.md "Cloudflare cost", rule 3): the one chunk it needs, found in
+ * core_run_archive_chunks. The newest chunk for a first read; else the first chunk holding a seq
+ * after the cursor, so a poll walks the archive a chunk at a time.
+ */
+async function archivedPage(
+  ctx: HandlerContext,
+  runIdValue: string,
+  afterSeq: number | undefined,
+): Promise<{ seq: number; at: string; type: string; payload: string }[]> {
+  let q = ctx.db
+    .selectFrom("core_run_archive_chunks")
+    .select("r2_key")
+    .where("run_id", "=", runIdValue)
+    .where("first_seq", ">=", 0);
+  q =
+    afterSeq === undefined
+      ? q.orderBy("first_seq", "desc")
+      : q.where("last_seq", ">", afterSeq).orderBy("first_seq", "asc");
+  const chunk = await q.limit(1).executeTakeFirst();
+  if (!chunk) return [];
+  const events = expandRows(await readChunk<StoredEvent>(ctx, chunk.r2_key));
+  return afterSeq === undefined
+    ? events.slice(-LIVE_EVENTS_MAX)
+    : events.filter((e) => e.seq > afterSeq).slice(0, LIVE_EVENTS_MAX);
+}
+
+/** An archived run's steers (its one steers object), with their authors' names. */
+async function archivedSteers(ctx: HandlerContext, runIdValue: string) {
+  const chunk = await ctx.db
+    .selectFrom("core_run_archive_chunks")
+    .select("r2_key")
+    .where("run_id", "=", runIdValue)
+    .where("first_seq", "=", -1)
+    .executeTakeFirst();
+  const steers = chunk
+    ? await readChunk<{
+        id: string;
+        text: string;
+        created_at: string;
+        delivered_at: string | null;
+        author_user_id: string;
+        kind: string;
+      }>(ctx, chunk.r2_key)
+    : [];
+  const ids = [...new Set(steers.map((s) => s.author_user_id))];
+  const users = ids.length
+    ? await ctx.db
+        .selectFrom("core_user")
+        .select(["id", "name", "github_login"])
+        .where("id", "in", ids)
+        .execute()
+    : [];
+  const byId = new Map(users.map((u) => [u.id, u]));
+  return steers.slice(0, 200).map((s) => ({
+    ...s,
+    author_name: byId.get(s.author_user_id)?.name ?? null,
+    author_login: byId.get(s.author_user_id)?.github_login ?? null,
+  }));
+}
+
 function withinBudget<T extends { payload: string }>(rows: T[], keep: "newest" | "oldest"): T[] {
   let total = 0;
   const ordered = keep === "newest" ? [...rows].reverse() : rows;
@@ -104,6 +183,7 @@ export async function loadRunForItem(ctx: HandlerContext, workItem: string, id?:
       "core_runs.runner_id",
       "core_runs.started_at",
       "core_runs.ended_at",
+      "core_runs.events_archived_at",
       "core_runs.takeover",
       "core_runners.name as runner_name",
       "core_runners.owner_user_id as runner_owner",
@@ -279,6 +359,11 @@ export const runLive = defineOperation({
       })
       .nullable(),
     events: z.array(eventView),
+    /**
+     * The run's events were moved to the archive (30 days after it ended): they are read from
+     * there, a page at a time, and the view says so.
+     */
+    archived: z.boolean().optional(),
     /** The last seq in this answer (or `afterSeq` when none is new), for the next `afterSeq`. */
     lastSeq: z.number(),
     /** Whether events before the first one returned were left out. */
@@ -307,6 +392,7 @@ export const runLive = defineOperation({
       return {
         run: null,
         events: [],
+        archived: false,
         lastSeq: 0,
         truncated: false,
         steers: [],
@@ -316,49 +402,54 @@ export const runLive = defineOperation({
       };
     }
     const afterSeq = input.afterSeq;
+    const archived = run.events_archived_at !== null;
     const [rows, steers, mode] = await Promise.all([
-      afterSeq === undefined
-        ? ctx.db
-            .selectFrom("core_run_events")
-            .select(["seq", "last_seq", "at", "type", "payload"])
-            .where("run_id", "=", run.id)
-            .orderBy("seq", "desc")
-            .limit(LIVE_EVENTS_MAX)
-            .execute()
-            .then((rows) => expandRows(rows.reverse()).slice(-LIVE_EVENTS_MAX))
+      archived
+        ? archivedPage(ctx, run.id, afterSeq)
+        : afterSeq === undefined
+          ? ctx.db
+              .selectFrom("core_run_events")
+              .select(["seq", "last_seq", "at", "type", "payload"])
+              .where("run_id", "=", run.id)
+              .orderBy("seq", "desc")
+              .limit(LIVE_EVENTS_MAX)
+              .execute()
+              .then((rows) => expandRows(rows.reverse()).slice(-LIVE_EVENTS_MAX))
+          : ctx.db
+              .selectFrom("core_run_events")
+              .select(["seq", "last_seq", "at", "type", "payload"])
+              .where("run_id", "=", run.id)
+              // A batch row starts at most a batch before the lines it holds: the seq bound keeps
+              // the read on the primary key, the coalesce catches a batch straddling the cursor.
+              .where("seq", ">", afterSeq - RUN_EVENTS_BATCH_MAX)
+              .where(sql<boolean>`coalesce(last_seq, seq) > ${afterSeq}`)
+              .orderBy("seq", "asc")
+              .limit(LIVE_EVENTS_MAX)
+              .execute()
+              .then((rows) =>
+                expandRows(rows)
+                  .filter((e) => e.seq > afterSeq)
+                  .slice(0, LIVE_EVENTS_MAX),
+              ),
+      archived
+        ? archivedSteers(ctx, run.id)
         : ctx.db
-            .selectFrom("core_run_events")
-            .select(["seq", "last_seq", "at", "type", "payload"])
-            .where("run_id", "=", run.id)
-            // A batch row starts at most a batch before the lines it holds: the seq bound keeps
-            // the read on the primary key, the coalesce catches a batch straddling the cursor.
-            .where("seq", ">", afterSeq - RUN_EVENTS_BATCH_MAX)
-            .where(sql<boolean>`coalesce(last_seq, seq) > ${afterSeq}`)
-            .orderBy("seq", "asc")
-            .limit(LIVE_EVENTS_MAX)
-            .execute()
-            .then((rows) =>
-              expandRows(rows)
-                .filter((e) => e.seq > afterSeq)
-                .slice(0, LIVE_EVENTS_MAX),
-            ),
-      ctx.db
-        .selectFrom("core_run_steers")
-        .leftJoin("core_user", "core_user.id", "core_run_steers.author_user_id")
-        .select([
-          "core_run_steers.id",
-          "core_run_steers.text",
-          "core_run_steers.created_at",
-          "core_run_steers.delivered_at",
-          "core_run_steers.author_user_id",
-          "core_run_steers.kind",
-          "core_user.name as author_name",
-          "core_user.github_login as author_login",
-        ])
-        .where("core_run_steers.run_id", "=", run.id)
-        .orderBy("core_run_steers.created_at", "asc")
-        .limit(200)
-        .execute(),
+            .selectFrom("core_run_steers")
+            .leftJoin("core_user", "core_user.id", "core_run_steers.author_user_id")
+            .select([
+              "core_run_steers.id",
+              "core_run_steers.text",
+              "core_run_steers.created_at",
+              "core_run_steers.delivered_at",
+              "core_run_steers.author_user_id",
+              "core_run_steers.kind",
+              "core_user.name as author_name",
+              "core_user.github_login as author_login",
+            ])
+            .where("core_run_steers.run_id", "=", run.id)
+            .orderBy("core_run_steers.created_at", "asc")
+            .limit(200)
+            .execute(),
       sessionMode(ctx, run.id),
     ]);
     const requested = steers.some((s) => s.kind === "takeover");
@@ -384,6 +475,7 @@ export const runLive = defineOperation({
         takeover: parseTakeover(run.takeover),
         mode,
       },
+      archived,
       events: events.map((e) => ({
         seq: e.seq,
         at: e.at,

@@ -2,7 +2,7 @@
 // event keeps its id forever, and nothing that isn't due is touched.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { pruneExpired } from "../src/retention.ts";
+import { ARCHIVE, archiveBudget, archiveRunEvents, pruneExpired } from "../src/retention.ts";
 import { all, first, MANIFEST, ok, uid, world } from "./helpers.ts";
 
 const DAY = 86_400_000;
@@ -131,5 +131,116 @@ describe("pruneExpired rounds", () => {
     expect(await left()).toBe(1);
     await pruneExpired(env.DB, new Date(), 2, 3);
     expect(await left()).toBe(0);
+  });
+});
+
+describe("archiveRunEvents and the read path", () => {
+  it("moves an ended run's events and steers to R2, records each chunk, and run.live reads them back", async () => {
+    const { w, workItemId, runId } = await claimedRun();
+    const lines = (from: number, n: number) =>
+      JSON.stringify({
+        lines: Array.from({ length: n }, (_, i) => ({
+          seq: from + i,
+          at: iso(31 * DAY),
+          stream: "terminal",
+          text: `line ${from + i}`,
+        })),
+      });
+    await env.DB.batch([
+      env.DB.prepare("UPDATE core_runs SET status = 'handed_back', ended_at = ? WHERE id = ?").bind(
+        iso(31 * DAY),
+        runId,
+      ),
+      env.DB.prepare(
+        "INSERT INTO core_run_events (run_id, seq, at, type, payload) VALUES (?, 1, ?, 'job.state', ?)",
+      ).bind(runId, iso(31 * DAY), JSON.stringify({ state: "running" })),
+      env.DB.prepare(
+        "INSERT INTO core_run_events (run_id, seq, last_seq, at, type, payload) VALUES (?, 2, 4, ?, 'log', ?)",
+      ).bind(runId, iso(31 * DAY), lines(2, 3)),
+      env.DB.prepare(
+        "INSERT INTO core_run_events (run_id, seq, at, type, payload) VALUES (?, 5, ?, 'agent.status', ?)",
+      ).bind(runId, iso(31 * DAY), JSON.stringify({ status: "idle" })),
+      env.DB.prepare(
+        "INSERT INTO core_run_events (run_id, seq, last_seq, at, type, payload) VALUES (?, 6, 7, ?, 'log', ?)",
+      ).bind(runId, iso(31 * DAY), lines(6, 2)),
+      env.DB.prepare(
+        `INSERT INTO core_run_steers (id, run_id, work_item_id, author_user_id, text, created_at)
+         VALUES (?, ?, ?, ?, 'also add tests', ?)`,
+      ).bind(uid("st_"), runId, workItemId, w.userId, iso(31 * DAY)),
+    ]);
+    type Live = {
+      archived: boolean;
+      events: { seq: number; type: string; data: { text?: string } }[];
+      lastSeq: number;
+      steers: { text: string; authorName: string | null }[];
+    };
+    const before = await ok<Live>("run.live", { workItemId, runId }, w.human);
+    expect(before.archived).toBe(false);
+
+    // Not due 20 days back.
+    expect(
+      await archiveRunEvents(env, new Date(Date.now() - 20 * DAY), { rows: 100, chunkRows: 2 }),
+    ).toBe(0);
+    // Two stored rows a chunk: [1, 2-4], [5, 6-7], then the steers and the mark.
+    expect(await archiveRunEvents(env, new Date(), { rows: 100, chunkRows: 2 })).toBe(5);
+    expect(await all("SELECT 1 FROM core_run_events WHERE run_id = ?", runId)).toEqual([]);
+    expect(await all("SELECT 1 FROM core_run_steers WHERE run_id = ?", runId)).toEqual([]);
+    expect(
+      await all(
+        "SELECT first_seq, last_seq, rows FROM core_run_archive_chunks WHERE run_id = ? ORDER BY first_seq",
+        runId,
+      ),
+    ).toEqual([
+      { first_seq: -1, last_seq: -1, rows: 1 },
+      { first_seq: 1, last_seq: 4, rows: 2 },
+      { first_seq: 5, last_seq: 7, rows: 2 },
+    ]);
+    const mark = await first<{ events_archived_at: string | null }>(
+      "SELECT events_archived_at FROM core_runs WHERE id = ?",
+      runId,
+    );
+    expect(mark?.events_archived_at).not.toBeNull();
+
+    // run.live reads the archive: the newest chunk first, then a chunk a page from a cursor.
+    const newest = await ok<Live>("run.live", { workItemId, runId }, w.human);
+    expect(newest.archived).toBe(true);
+    expect(newest.events.map((e) => e.seq)).toEqual([5, 6, 7]);
+    expect(newest.steers).toEqual([
+      expect.objectContaining({ text: "also add tests", authorName: `gh-${w.userId}` }),
+    ]);
+    const page1 = await ok<Live>("run.live", { workItemId, runId, afterSeq: 0 }, w.human);
+    expect(page1.events.map((e) => [e.seq, e.type, e.data.text ?? null])).toEqual([
+      [1, "job.state", null],
+      [2, "log", "line 2"],
+      [3, "log", "line 3"],
+      [4, "log", "line 4"],
+    ]);
+    const page2 = await ok<Live>(
+      "run.live",
+      { workItemId, runId, afterSeq: page1.lastSeq },
+      w.human,
+    );
+    expect(page2.events.map((e) => e.seq)).toEqual([5, 6, 7]);
+    const mid = await ok<Live>("run.live", { workItemId, runId, afterSeq: 2 }, w.human);
+    expect(mid.events.map((e) => e.seq)).toEqual([3, 4]);
+    // Done: nothing left due.
+    expect(await archiveRunEvents(env, new Date(), { rows: 100, chunkRows: 2 })).toBe(0);
+  });
+
+  it("budgets each tick from the backlog's share and the rows coming due, so it always gains", async () => {
+    const quiet = await archiveBudget(env.DB, new Date(Date.now() + 365 * DAY));
+    expect(quiet).toBe(Math.ceil(ARCHIVE.backlogRowsPerDay / 1440));
+    // Runs that ended in the day before the cutoff raise the budget, by the rows a run has had.
+    await env.DB.prepare(
+      "INSERT INTO core_meta (key, value) VALUES ('archive:rows-per-run', '10000') ON CONFLICT (key) DO UPDATE SET value = '10000'",
+    ).run();
+    const { runId } = await claimedRun();
+    const now = new Date(Date.now() + 400 * DAY);
+    await env.DB.prepare("UPDATE core_runs SET status = 'failed', ended_at = ? WHERE id = ?")
+      .bind(new Date(now.getTime() - 30.5 * DAY).toISOString(), runId)
+      .run();
+    expect(await archiveBudget(env.DB, now)).toBe(
+      Math.ceil((ARCHIVE.backlogRowsPerDay + ARCHIVE.inflowFactor * 10_000) / 1440),
+    );
   });
 });

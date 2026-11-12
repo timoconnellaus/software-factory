@@ -117,7 +117,12 @@ export function LiveRunView({
       ) : shown === "terminal" ? (
         <Terminal text={terminalText(events)} />
       ) : (
-        <Transcript items={transcriptItems(events, steers)} me={me} truncated={data.truncated} />
+        <Transcript
+          items={transcriptItems(events, steers)}
+          me={me}
+          truncated={data.truncated}
+          archived={data.archived ?? false}
+        />
       )}
       {shown !== "chat" &&
         run.active &&
@@ -155,16 +160,27 @@ function Transcript({
   items,
   me,
   truncated,
+  archived,
 }: {
   items: TranscriptItem[];
   me: string;
   truncated: boolean;
+  archived: boolean;
 }) {
   const { ref, onScroll } = useStickToBottom(items.length);
   return (
     <div ref={ref} onScroll={onScroll} className={PANE} data-testid="live-stream">
+      {archived && (
+        <div className="text-zinc-500" data-testid="live-archived">
+          Archived: this run ended over 30 days ago, so its log is read from the archive.
+        </div>
+      )}
       {truncated && <div className="text-zinc-500">… earlier events not shown</div>}
-      {items.length === 0 && <div className="text-zinc-500">Nothing yet: the run is starting.</div>}
+      {items.length === 0 && (
+        <div className="text-zinc-500">
+          {archived ? "Nothing in the archive for this run." : "Nothing yet: the run is starting."}
+        </div>
+      )}
       {items.map((item) => (
         <TranscriptRow key={item.key} item={item} me={me} />
       ))}

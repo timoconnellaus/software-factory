@@ -626,6 +626,20 @@ export interface CoreRunsTable {
   last_event_at: Iso | null;
   ended_at: Iso | null;
   released_at: Iso | null;
+  /** When the run's events and steers were archived to R2 (migration 0362). */
+  events_archived_at: Iso | null;
+}
+
+/** One archived chunk of a run's events in sf-archive (migration 0362); steers are first_seq -1. */
+export interface CoreRunArchiveChunksTable {
+  run_id: string;
+  first_seq: number;
+  last_seq: number;
+  r2_key: string;
+  rows: number;
+  bytes: number;
+  sha256: string;
+  archived_at: Iso;
 }
 
 export interface CoreRunEventsTable {
@@ -1051,6 +1065,7 @@ export interface CoreDatabase {
   core_jobs: CoreJobsTable;
   core_runs: CoreRunsTable;
   core_run_events: CoreRunEventsTable;
+  core_run_archive_chunks: CoreRunArchiveChunksTable;
   core_run_steers: CoreRunSteersTable;
   core_run_terminal_attaches: CoreRunTerminalAttachesTable;
   core_artifacts: CoreArtifactsTable;
