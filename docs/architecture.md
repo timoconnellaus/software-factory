@@ -66,7 +66,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   `policyImpact` classifies each change. A loosening save is `self-modify` and is applied when an
   approver approves it. Workflows (ADR 0371) fill the skeleton's three slots, and Workflow v6 runs
   their steps (`workflow.gate`, `workflow.record`). Agents (ADR 0372) carry a role and tier that
-  the runner's claim resolves to a model.
+  the runner's claim resolves to a model. Spec 52 is replacing slots with **stage types**:
+  `@software-factory/core/stages` holds the registry (`STAGE_TYPES`), the `WorkflowDefinition`
+  schema, `validateWorkflow` (the S- and F-rules) and the built-in Software, Incident and Attached PR
+  workflows; `compileProjectWorkflow` expresses a project's slot workflow as a stage list. Nothing at
+  run time reads them yet (build plan PR (a)).
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`
