@@ -10,6 +10,8 @@ client repo cannot. Borrowed from Relationship OS's Cautious, Balanced and Auton
 - Each project picks a **preset** in its `.factory/` config and may override it.
 - The global factory config sets a **floor** that can only tighten what a project allows.
 - Merge, deploy and self-modify are `alwaysReview`: they always go to an approver, whatever the preset.
+  (Since amended: merge and deploy may be decided by dark factory mode's `auto-approve` actor; see the
+  ADR 0515 note below. Self-modify still always goes to a person.)
 - A malformed or missing policy fails closed.
 - Loosening policy is a human-only operation. Agents cannot configure policy.
 
@@ -27,3 +29,5 @@ client repo cannot. Borrowed from Relationship OS's Cautious, Balanced and Auton
 > Amended 2026-11-11 (V1 step 4, [ADR 0230](0230-check-only-incident-fixes-auto-merge.md)): one exception to "merge always needs a person": a factory incident's fix that only **adds** checks under `.factory/checks/` and regression cases under `evals/regressions/` may merge through `pr.autoMerge` (risk class `check-merge`) once CI and `factory/verify` are green on its head, and only in a project whose `.factory/policy.json` opts in. Every shipped autonomy policy denies `check-merge`; the floor still applies.
 
 > Amended 2026-11-12 ([ADR 0373](0373-the-factory-improves-its-own-practice.md), spec 09 M3): "agents cannot configure policy" still holds for **policy** (what's allowed). The factory may change **practice** (how work is done) itself, as trials with automatic rollback. Loosening stays human-only. The adjudicator ([ADR 0374](0374-the-adjudicator-earns-approval-in-shadow-mode.md)) may approve some gates once it has earned it in shadow mode, never merge, deploy or self-modify.
+
+> Amended 2026-11-12 ([ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md), the owner's "dark factory mode"): "merge, deploy and self-modify always go to an approver" now reads: **self-modify** always goes to a person; **merge** (and **deploy**, once a deploy stage with a health check exists) goes to a person unless the workflow's merge stage has `autoApprove` on and every one of its conditions holds for that exact SHA, checked in code (checks and proven criteria, tests intact, the adjudicator's earned approval, size and path limits, low risk). Turning it on or loosening it is a `self-modify` save an org admin approves; on an incident, a revert or red CI after its merge it puts a per-project hold on itself that an org admin lifts. An engine-made revert is auto-approved only under its own per-workflow switch, off by default, and never when it touches the built-in self-modify paths. `merge` and `deploy` stay in `ALWAYS_REVIEW`: what changes is that the review may be decided by the `auto-approve` actor under that setting. The `check-merge` exception of ADR 0230 is superseded by it.

@@ -15,6 +15,7 @@ export * from "./model-roles.ts";
 export * from "./operation.ts";
 export {
   type AttachmentView,
+  SWEEP_CURSOR_KEY,
   sweepStrayAttachmentBlobs,
 } from "./operations/attachments.ts";
 export {
@@ -70,3 +71,4 @@ export * from "./scope.ts";
 export * from "./services.ts";
 export * from "./verify/index.ts";
 export * from "./workflow-events.ts";
+export * from "./workflow-features.ts";
