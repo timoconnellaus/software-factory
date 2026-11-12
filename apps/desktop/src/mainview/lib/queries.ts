@@ -126,14 +126,19 @@ export const workListsQuery = (orgIds: string[]) =>
 /**
  * Every org's board (spec 50, `workItem.board`): backlog, shaping, ready, queued and active items in
  * pull order, each tagged with its org, and the counts per project and state (done and stopped
- * included), which the Work list shows. The rail's org scope filters this on the client.
+ * included), which the Work list shows. The rail's org scope filters this on the client. With a
+ * project, only that project's (the server filters by its index, and its 500 cap is the project's).
+ * The live socket's events refresh it (routes/root.tsx); the slow poll covers a dropped socket.
  */
-export const boardsQuery = (orgIds: string[]) =>
+export const boardsQuery = (orgIds: string[], projectId: string | null = null) =>
   queryOptions({
-    queryKey: ["work", "board", orgIds],
+    queryKey: ["work", "board", orgIds, projectId],
     queryFn: async () => {
       const boards = await Promise.all(
-        orgIds.map(async (orgId) => ({ orgId, board: await read("workItem.board", { orgId }) })),
+        orgIds.map(async (orgId) => ({
+          orgId,
+          board: await read("workItem.board", projectId ? { orgId, projectId } : { orgId }),
+        })),
       );
       return {
         items: boards.flatMap(({ orgId, board }) => board.items.map((i) => ({ ...i, orgId }))),
@@ -141,7 +146,7 @@ export const boardsQuery = (orgIds: string[]) =>
       };
     },
     staleTime: 10_000,
-    refetchInterval: 15_000,
+    refetchInterval: 60_000,
   });
 
 /**
