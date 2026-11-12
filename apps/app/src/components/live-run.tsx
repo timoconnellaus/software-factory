@@ -56,6 +56,8 @@ export function LiveRun({ detail }: { detail: WorkItemDetail }) {
       onSteer={onSteer}
       onTakeover={onTakeover}
       workItemId={workItemId}
+      archiveLoading={live.isFetching && (live.data.archived ?? false)}
+      onRetry={() => void refetch()}
     />
   );
 }
