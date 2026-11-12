@@ -31,7 +31,7 @@ jobs:
       # and socat on Linux, and Ubuntu 24.04 restricts the unprivileged user namespaces bwrap uses.
       - run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap socat
+          sudo apt-get install -y -qq bubblewrap socat ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       # Turborepo's local cache (.turbo/cache), keyed by commit and restored from the newest

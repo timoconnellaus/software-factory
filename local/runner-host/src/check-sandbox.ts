@@ -249,6 +249,7 @@ export function spawnCheck(
         code = verdict.code;
         notRun = verdict.notRun;
         if (verdict.note) output += `\n${verdict.note}`;
+        if (notRun) output += `\n${notRun}`;
       }
       if (options.reapUnder) {
         const left = await reapStrays(options.reapUnder);
