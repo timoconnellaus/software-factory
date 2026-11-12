@@ -1,4 +1,4 @@
-# ADR 0501: A reconciler runs the stage list
+# ADR 0511: A reconciler runs the stage list
 
 Status: **proposed**, 2026-11-12 (spec [52](../specs/52-workflows-from-stage-types.md)); awaiting
 the owner. Would amend [ADR 0006](0006-work-item-workflows.md), [ADR 0053](0053-workflow-versioning.md)
@@ -7,7 +7,7 @@ and [ADR 0110](0110-work-item-workflow-and-gate.md).
 ## Context
 Each work item is one Cloudflare Workflow instance that replays `run()` and matches steps by name
 (ADR 0006, 0053). Six versions now share one function in `work-item.ts`. With stage lists as data
-(ADR 0500), step names would depend on the data and on every stage type's code. Incident #7, an
+(ADR 0510), step names would depend on the data and on every stage type's code. Incident #7, an
 item waiting for CI that never reported, was a lost event between D1 and the instance's journal.
 The factory review (PR #61, item 4) suggested a reconciler, as Optio uses.
 

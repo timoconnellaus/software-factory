@@ -1,4 +1,4 @@
-# ADR 0503: Skills are shared by the org and attached where they are used
+# ADR 0513: Skills are shared by the org and attached where they are used
 
 Status: accepted, 2026-11-12 (the owner's addition to the workflow design; design
 `docs/design/factory-ui/FactorySkills.html` on PR #61). Not built: spec

@@ -1,4 +1,4 @@
-# ADR 0500: Workflows are ordered stages of stage types, defined once per org
+# ADR 0510: Workflows are ordered stages of stage types, defined once per org
 
 Status: accepted, 2026-11-12 (the owner's decision). Not built: spec [52](../specs/52-workflows-from-stage-types.md)
 says how, and when to start. Amends [ADR 0371](0371-workflows-are-presets-over-typed-slots.md),

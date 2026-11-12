@@ -1,4 +1,4 @@
-# ADR 0502: The review packet is an artifact, its evidence and a decision on its digest
+# ADR 0512: The review packet is an artifact, its evidence and a decision on its digest
 
 Status: **proposed**, 2026-11-12 (spec [52](../specs/52-workflows-from-stage-types.md)). Would amend
 [ADR 0020](0020-verification-and-review-packet.md), [ADR 0037](0037-factory-verify-pinned-and-sha-bound.md)

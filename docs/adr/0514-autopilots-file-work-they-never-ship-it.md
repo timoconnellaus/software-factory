@@ -1,4 +1,4 @@
-# ADR 0504: Autopilots file work; they never ship it
+# ADR 0514: Autopilots file work; they never ship it
 
 Status: accepted, 2026-11-12 (the owner's addition to the workflow design; design
 `docs/design/factory-ui/FactoryAutopilots.html` on PR #61). Not built: spec

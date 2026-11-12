@@ -32,4 +32,4 @@ can be talked out of a gate; a fixed state machine alone cannot choose sensible 
 
 > Amended 2026-11-12 ([ADR 0371](0371-workflows-are-presets-over-typed-slots.md), spec 09 M2): the state machine still owns the stages and gates, as a fixed skeleton with three typed slots. Projects fill the slots with named workflows. **Triage picks the workflow**: a binding foreman decision, logged with its reason, that a person can change until build. Workflows only add steps, so a wrong pick can't skip a gate.
 
-> Amended 2026-11-12 ([ADR 0500](0500-workflows-are-ordered-stages-of-stage-types.md), spec 52, not built yet): the state machine will own an item's pinned stage list instead of a fixed skeleton. Gates are part of stage types, in code; the foreman routes only within the list.
+> Amended 2026-11-12 ([ADR 0510](0510-workflows-are-ordered-stages-of-stage-types.md), spec 52, not built yet): the state machine will own an item's pinned stage list instead of a fixed skeleton. Gates are part of stage types, in code; the foreman routes only within the list.

@@ -37,4 +37,4 @@ reordering or removing a step breaks the replay.
 > the planning steps switched off below it, so v1–v4 replay their step sequences unchanged;
 > `workflow-versions.test.ts` locks v5's names.
 
-> Amended 2026-11-12 (proposed, [ADR 0501](0501-a-reconciler-runs-the-stage-list.md), spec [52](../specs/52-workflows-from-stage-types.md)): under the proposed reconciler, step names stop being an API. A work item pins its workflow definition (an org config version) at its first stage, and a stage type versions only its persisted step state; v1–v6 drain under this ADR and are then deleted.
+> Amended 2026-11-12 (proposed, [ADR 0511](0511-a-reconciler-runs-the-stage-list.md), spec [52](../specs/52-workflows-from-stage-types.md)): under the proposed reconciler, step names stop being an API. A work item pins its workflow definition (an org config version) at its first stage, and a stage type versions only its persisted step state; v1–v6 drain under this ADR and are then deleted.

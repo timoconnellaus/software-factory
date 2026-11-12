@@ -66,4 +66,4 @@ loosen permissions.
 > **Builder** agent. Trials are per project, one at a time, and items join when they're created.
 > Usage comes from the harness transcript as a `usage` artifact. The digest is a list in Settings.
 
-> Amended 2026-11-12 ([ADR 0503](0503-skills-are-shared-by-the-org-and-attached-where-used.md), spec 52, not built yet): skill edits are trialled like other practice changes, but the factory only **proposes** them; a person accepts. Edits to the Checks reviewer's skills are policy.
+> Amended 2026-11-12 ([ADR 0513](0513-skills-are-shared-by-the-org-and-attached-where-used.md), spec 52, not built yet): skill edits are trialled like other practice changes, but the factory only **proposes** them; a person accepts. Edits to the Checks reviewer's skills are policy.

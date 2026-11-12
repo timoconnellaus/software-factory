@@ -4,10 +4,10 @@ Status: **design, not to be built yet.** The owner decided the direction on 2026
 says how it would be built. Build it only once the software line runs well (see "When to start").
 
 Read first:
-- ADRs [0500](../adr/0500-workflows-are-ordered-stages-of-stage-types.md) (the model),
-  [0501](../adr/0501-a-reconciler-runs-the-stage-list.md) (the engine, proposed) and
-  [0502](../adr/0502-the-review-packet-is-artifact-evidence-and-decision.md) (the packet, proposed), [0503](../adr/0503-skills-are-shared-by-the-org-and-attached-where-used.md)
-  (skills) and [0504](../adr/0504-autopilots-file-work-they-never-ship-it.md) (autopilots).
+- ADRs [0510](../adr/0510-workflows-are-ordered-stages-of-stage-types.md) (the model),
+  [0511](../adr/0511-a-reconciler-runs-the-stage-list.md) (the engine, proposed) and
+  [0512](../adr/0512-the-review-packet-is-artifact-evidence-and-decision.md) (the packet, proposed), [0513](../adr/0513-skills-are-shared-by-the-org-and-attached-where-used.md)
+  (skills) and [0514](../adr/0514-autopilots-file-work-they-never-ship-it.md) (autopilots).
 - What they change: ADRs [0005](../adr/0005-hybrid-coordinator.md), [0006](../adr/0006-work-item-workflows.md),
   [0053](../adr/0053-workflow-versioning.md), [0370](../adr/0370-factory-config-lives-in-the-app.md),
   [0371](../adr/0371-workflows-are-presets-over-typed-slots.md), [0372](../adr/0372-agents-are-harness-neutral.md),
@@ -81,11 +81,11 @@ Read first:
   sha256 of the bytes). Evidence and decisions bind to the digest.
 - **Evidence**: a result that proves something about one artifact digest: a check, CI, criteria,
   a reviewer's notes, a screenshot, a live preview.
-- **Review packet**: an artifact, its evidence, and a person's decision on that exact digest (ADR 0502).
+- **Review packet**: an artifact, its evidence, and a person's decision on that exact digest (ADR 0512).
 - **Skill**: how the team does one thing, written once (instructions plus files), versioned, owned
-  by the org, attached to agents, stages and stage types (ADR 0503).
+  by the org, attached to agents, stages and stage types (ADR 0513).
 - **Autopilot**: a trigger, an agent, its skills, an instruction and an output target; work the
-  factory starts on its own, filed through the same backlog (ADR 0504).
+  factory starts on its own, filed through the same backlog (ADR 0514).
 - **Workflow template** / **stage template**: a ready-made workflow, or a stage type with default
   settings, shipped in code, copied into an org and edited there.
 
@@ -213,7 +213,7 @@ export interface StepPlan {
   role?: ModelRole;
 }
 
-/** The persisted state of one stage for one item, as the reconciler reads it (ADR 0501). */
+/** The persisted state of one stage for one item, as the reconciler reads it (ADR 0511). */
 export interface StageSnapshot<Settings> {
   stageId: string;
   typeVersion: number;
@@ -247,7 +247,7 @@ export type StageDecision =
 export interface StageType<S extends z.ZodType = z.ZodType> {
   /** Stable id: "triage", "interview-planning", "build", "checks", "preview", "publish", … */
   id: string;
-  /** Bumped when the persisted step state changes shape; old versions stay until drained (ADR 0501). */
+  /** Bumped when the persisted step state changes shape; old versions stay until drained (ADR 0511). */
   version: number;
   name: string;
   description: string;
@@ -369,7 +369,7 @@ current (ADR 0370 §2). The **floors** are F-rules: no setting, template or agen
 - **F6** **The irreversible floor.** A stage whose type is `irreversible` has an `action` with a
   risk in `ALWAYS_REVIEW` and a `required` person gate on the action's artifact kind, decided
   inside the stage before the action. At run time the action is refused unless an approved
-  decision exists on the **same digest** it acts on (ADR 0502); a newer digest needs a new decision.
+  decision exists on the **same digest** it acts on (ADR 0512); a newer digest needs a new decision.
 - **F7** No `when` on a stage whose gate is `required`, or whose type is `irreversible`. A
   conditional gate's condition lives in its typed setting, where the impact check reads it.
 - **F8** **Nothing reaches a default branch except through checks.** A `publish` stage whose
@@ -405,7 +405,7 @@ org floor may add more (open question 6).
 ## Where workflows and agents live
 - **An org config version** holds `agents` and `workflows`, with the same machinery as a project's
   config (ADR 0370): versions written only through operations, validation before save, the impact
-  summary on the server, rollback, export and import. Migration 0270 adds `core_org_configs`
+  summary on the server, rollback, export and import. Migration 0280 adds `core_org_configs`
   (org id, version, document, source, created_by, note, parent_version) and
   `core_orgs.config_version`.
 - **A project's config keeps policy**: autonomy and overrides, approvers, backup owner, timeouts,
@@ -416,7 +416,7 @@ org floor may add more (open question 6).
   unless a person moves it (below).
 
 ## How the engine runs a stage list
-Two ways were compared. The recommendation is the reconciler (ADR 0501, proposed until the owner
+Two ways were compared. The recommendation is the reconciler (ADR 0511, proposed until the owner
 confirms it).
 
 ### A. One replayed Workflow per item, interpreting the list
@@ -494,7 +494,7 @@ PR 7).
 ## The review packet: artifact, evidence, decision
 Today's packet (ADR 0020, 0037, 0041) is a verdict, what changed, criteria with evidence, the
 reviewer, checks, risk flags and drift, for one head SHA, and it backs `factory/verify`. The same
-shape serves any workflow (ADR 0502):
+shape serves any workflow (ADR 0512):
 
 ```ts
 export interface ReviewPacket {
@@ -727,7 +727,7 @@ and after.
   `work-item.ts` is deleted (ADR 0053's rule, applied one last time).
 
 ## Skills
-Added by the owner on 2026-11-12 (ADR [0503](../adr/0503-skills-are-shared-by-the-org-and-attached-where-used.md)).
+Added by the owner on 2026-11-12 (ADR [0513](../adr/0513-skills-are-shared-by-the-org-and-attached-where-used.md)).
 Design: `docs/design/factory-ui/FactorySkills.html` and FactoryAgents.html on PR #61.
 
 A **skill** is how the team does one thing, written once: instructions plus optional files,
@@ -848,7 +848,7 @@ and its impact check); `skill.propose`; `skill.accept` / `skill.reject` (human, 
 and files, scoped by the job and fenced by its lease.
 
 ## Autopilots
-Added by the owner on 2026-11-12 (ADR [0504](../adr/0504-autopilots-file-work-they-never-ship-it.md)).
+Added by the owner on 2026-11-12 (ADR [0514](../adr/0514-autopilots-file-work-they-never-ship-it.md)).
 Design: `docs/design/factory-ui/FactoryAutopilots.html` on PR #61.
 
 An **autopilot** is work the factory starts on its own: a **trigger** (a schedule or an event), an
@@ -971,7 +971,7 @@ Operations (all through the registry, ADR 0003):
 ## Build plan
 Small PRs, each leaving main working. Nothing starts before **When to start** holds.
 
-1. **This PR (docs).** Spec 52, ADRs 0500–0504, the amendments, the block claim.
+1. **This PR (docs).** Spec 52, ADRs 0510–0514, the amendments, the block claim.
 2. **The contract, the registry and validation** (`packages/core/src/stages/`). The types above;
    descriptors for `triage`, `interview-planning`, `written-spec`, `agent-check`, `decision`,
    `build`, `checks`, `publish` (with `next()` not yet used); `WorkflowDefinition`'s schema,
@@ -981,22 +981,22 @@ Small PRs, each leaving main working. Nothing starts before **When to start** ho
 3. **The generic review packet.** `ReviewPacket` gains `subject`, and evidence items carry their
    digest; today's packet rows read through an adapter; `factory/verify` and the packet screen
    unchanged. Tests: the existing verify and packet suites pass unchanged.
-4. **Org config: workflows and agents at the org** (migration 0270). `core_org_configs`,
+4. **Org config: workflows and agents at the org** (migration 0280). `core_org_configs`,
    `workflow.*`, `agent.*`, the migration above, project config's `workflow` by id. The engine's
    `planWorkflow()` reads the compiled org workflow and returns the same plan. Settings page: the
    Workflows and Agents pages move to the org (UI screenshots in the PR).
-5. **Skills** (migration 0271: `core_skill_versions`). The schema, the org config's `skills` map
+5. **Skills** (migration 0281: `core_skill_versions`). The schema, the org config's `skills` map
    and attachments on agents and slot steps, `resolveSkills`, `skill.*`, the trial path through
    ADR 0373's machinery with a person's accept, the `skills` job field and channel route, and the
    Claude adapter's projection (new files in `harness-claude` and the runner host, the smallest hook,
    said in the PR). It works on today's Workflow v6: a stage-type built-in skill waits for PR 2's
    registry, attachments to slot steps and agents don't. The Skills page (screenshots).
-6. **Autopilots** (migration 0272: `core_autopilot_runs`, the `autopilot` kind and actor). The
+6. **Autopilots** (migration 0282: `core_autopilot_runs`, the `autopilot` kind and actor). The
    config, `autopilot.*`, firing from the cron and the outbox with dedupe keys, the one-stage
    autopilot run on Workflow v6's job path (a fixed `runAutopilot`, chosen by kind like
    `runAttached`), the per-output allowlists and the `autopilot` actor's denies in `gate.ts`. Ships
    with "Backlog triage" and "Red CI on main". The Autopilots page (screenshots).
-7. **The reconciler in shadow** (migration 0273: `core_item_stages`, `core_item_steps`,
+7. **The reconciler in shadow** (migration 0283: `core_item_stages`, `core_item_steps`,
    `core_reconcile_shadow`, `core_work_items.reconcile_rev` and `next_check_at`). `reconcile()`,
    the snapshot loader and the type `next()`s for the Software types. It runs on the outbox and the
    cron for v6 items and **records** what it would do next to what the Workflow did. No item is
@@ -1060,7 +1060,7 @@ headline number and rising (the review's "Order"). The owner says when.
     decisions? (Publish never: `ALWAYS_REVIEW`.)
 13. **The improver (ADR 0373)** trials practice changes per project. With org workflows, is a trial
     per workflow across all its projects, or still per project?
-14. **The reconciler (ADR 0501)**: confirm it over keeping the replayed Workflow, and say how many
+14. **The reconciler (ADR 0511)**: confirm it over keeping the replayed Workflow, and say how many
     shadowed items with no divergence are enough to switch Software over.
 15. **Interview planning without a repository**: the planning session keeps its artifacts in
     `.kim/` in the repo (ADR 0305). For a Marketing brief, R2 attachments instead?

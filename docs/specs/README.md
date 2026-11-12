@@ -75,5 +75,5 @@ Specs 20–25 make planning work the way kim does ([ADR 0300](../adr/0300-planni
 ## Workflows from stage types
 [Spec 52](52-workflows-from-stage-types.md) is a design for later: workflows built from built-in
 stage types and defined per org, skills and autopilots, the generic review packet and a reconciler
-([ADRs 0500–0504](../adr/0500-workflows-are-ordered-stages-of-stage-types.md)). Don't build it until
+([ADRs 0510–0514](../adr/0510-workflows-are-ordered-stages-of-stage-types.md)). Don't build it until
 its "When to start" holds.
