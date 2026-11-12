@@ -17,7 +17,6 @@ import {
   blocks,
   bulkAcceptable,
   chipTag,
-  foldSpace,
   gateSummary,
   initialAnswer,
   isChanged,
@@ -25,7 +24,6 @@ import {
   markTags,
   type PlanningQuestion,
   type PlanningView,
-  planBlocks,
   questionOptions,
   sessionPill,
 } from "@software-factory/client/planning";
@@ -43,6 +41,7 @@ import {
 } from "@software-factory/ui/components/dialog";
 import { Input } from "@software-factory/ui/components/input";
 import { Kbd } from "@software-factory/ui/components/kbd";
+import { Popover, PopoverContent, PopoverTrigger } from "@software-factory/ui/components/popover";
 import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
 import { Slider } from "@software-factory/ui/components/slider";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
@@ -58,7 +57,6 @@ import {
   MessageSquareIcon,
   MessageSquarePlusIcon,
   PauseIcon,
-  PencilIcon,
   PlayIcon,
   XIcon,
   ZapIcon,
@@ -69,10 +67,12 @@ import { toast } from "sonner";
 import { onPlanningChanged } from "../bridge.ts";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { op, submitKey } from "../lib/op.ts";
+import { orphanedComments } from "../lib/plan-blocks.ts";
 import { planningQuery } from "../lib/queries.ts";
 import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
+import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
 import { CanvasPane, FullSize, MockupsPane, type Pin } from "./planning-visuals.tsx";
 
 /** How often an open Planning tab says it is still here. */
@@ -932,14 +932,6 @@ function ReadReceipt({ at }: { at: string | null | undefined }) {
 
 // ---- the living spec ----
 
-/** A hast node's text, for comparing a block with the previous revision. */
-function hastText(node: unknown): string {
-  const n = node as { value?: string; children?: unknown[] } | undefined;
-  if (!n) return "";
-  if (typeof n.value === "string") return n.value;
-  return (n.children ?? []).map(hastText).join("");
-}
-
 function Chip({ tag }: { tag: string }) {
   return (
     <span
@@ -1014,214 +1006,10 @@ function WorkspaceTabs({
     </div>
   );
 }
-type Anchor = { specId: string; lineStart: number; lineEnd: number; quote: string };
-
-/**
- * Whether a block is a person's edit: one of the blocks the edit wrote, exactly, as the server
- * compares them (ADR 0471, review of #85). Text the planner adds to it makes it the planner's.
- */
-const matchesEdit = (raw: string, after: string) =>
-  planBlocks(after).some((b) => b.text === foldSpace(raw));
-
-/**
- * The comments anchored to a block: the same text, and when several blocks read the same, the one
- * nearest the lines the comment was made on (review of #85).
- */
-function commentsOn(
-  view: PlanningView,
-  raw: string,
-  lineStart: number,
-  blocks: { text: string; lineStart: number }[],
-) {
-  const text = foldSpace(raw);
-  const same = blocks.filter((b) => b.text === text);
-  return view.messages.filter((m) => {
-    if (!m.anchor || foldSpace(m.anchor.quote) !== text) return false;
-    const nearest = same.reduce((best, b) =>
-      Math.abs(b.lineStart - (m.anchor?.lineStart ?? 0)) <
-      Math.abs(best.lineStart - (m.anchor?.lineStart ?? 0))
-        ? b
-        : best,
-    );
-    return nearest.lineStart === lineStart;
-  });
-}
-
-/**
- * One block of the plan, with Edit and Comment (spec 27, design PlanFocus): Edit opens its source
- * lines in place and saves them as the person's edit; Comment starts a chat message anchored to
- * them. An edited block says who edited it and that the planner keeps their wording.
- */
-function PlanBlock({
-  Tag,
-  className,
-  data,
-  raw,
-  anchor,
-  workItemId,
-  edit,
-  settled,
-  comments,
-  me,
-  onComment,
-  children,
-}: {
-  Tag: "li" | "div";
-  className: string;
-  data: Record<string, string | undefined>;
-  raw: string;
-  anchor: Anchor;
-  workItemId: string;
-  edit: PlanningView["edits"][number] | undefined;
-  settled: PlanningQuestion[];
-  comments: number;
-  me: string | null;
-  onComment: (anchor: Anchor) => void;
-  children: ReactNode;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(raw);
-  const [saving, setSaving] = useState(false);
-  const save = async () => {
-    setSaving(true);
-    try {
-      await op(
-        "spec.edit",
-        {
-          workItemId,
-          specId: anchor.specId,
-          lineStart: anchor.lineStart,
-          lineEnd: anchor.lineEnd,
-          before: raw,
-          after: value,
-        },
-        { idempotencyKey: submitKey() },
-      );
-      setEditing(false);
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setSaving(false);
-    }
-  };
-  const updated = edit ? settled.filter((q) => q.answeredViaEdit === edit.id) : [];
-  return (
-    <Tag
-      className={cn(
-        "group/block relative",
-        className,
-        edit && "-ml-2 rounded-md bg-status-running/8 pl-2 ring-1 ring-status-running/30",
-      )}
-      {...data}
-      data-edited={edit ? "true" : undefined}
-    >
-      {editing ? (
-        <span className="grid gap-1.5 py-1" data-testid="plan-block-editor">
-          <Textarea
-            rows={Math.max(1, value.split("\n").length)}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && e.metaKey) void save();
-              if (e.key === "Escape") setEditing(false);
-            }}
-            aria-label="Edit this part of the plan"
-            className="font-mono text-[12.5px]"
-            autoFocus
-          />
-          <span className="flex items-center gap-1.5 text-[11px] text-ink-muted">
-            The planner keeps your wording and updates the answers to match.
-            <span className="grow" />
-            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
-            <Button size="sm" disabled={saving || value === raw} onClick={save}>
-              Save <Kbd className="bg-transparent text-primary-foreground/70">⌘↵</Kbd>
-            </Button>
-          </span>
-        </span>
-      ) : (
-        children
-      )}
-      {!editing && (
-        <span className="absolute top-0 -right-1 hidden translate-x-full gap-0.5 pl-1 group-hover/block:flex">
-          <button
-            type="button"
-            title="Edit this line"
-            aria-label="Edit this line"
-            className="flex size-6 items-center justify-center rounded-md text-ink-3 hover:bg-selected"
-            onClick={() => {
-              setValue(raw);
-              setEditing(true);
-            }}
-            data-testid="plan-block-edit"
-          >
-            <PencilIcon className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            title="Comment on this line"
-            aria-label="Comment on this line"
-            className="flex size-6 items-center justify-center rounded-md text-ink-3 hover:bg-selected"
-            onClick={() => onComment(anchor)}
-            data-testid="plan-block-comment"
-          >
-            <MessageSquarePlusIcon className="size-3.5" />
-          </button>
-        </span>
-      )}
-      {comments > 0 && !editing && (
-        <button
-          type="button"
-          onClick={() => onComment(anchor)}
-          className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-status-waiting/15 px-1.5 align-middle text-[10.5px] text-status-waiting"
-          data-testid="plan-block-comments"
-        >
-          <MessageSquareIcon className="size-2.5" />
-          {comments}
-        </button>
-      )}
-      {edit && !editing && (
-        <span
-          className="mt-0.5 flex items-center gap-1 text-[11.5px] text-status-running"
-          data-testid="plan-block-edited"
-        >
-          <PencilIcon className="size-3" />
-          {edit.authorId === me ? "You" : edit.authorName} edited this line {ago(edit.createdAt)}.
-          The planner keeps the wording
-          {updated.length > 0
-            ? ` and updated ${updated.map((q) => `Q${q.number ?? "?"}`).join(", ")} to match`
-            : ""}
-          .
-          <button
-            type="button"
-            className="ml-1 underline"
-            title="Let the planner reword it"
-            onClick={async () => {
-              try {
-                await op(
-                  "spec.releaseEdit",
-                  { workItemId, editId: edit.id },
-                  { idempotencyKey: submitKey() },
-                );
-              } catch (error) {
-                toast.error(errorMessage(error));
-              }
-            }}
-            data-testid="plan-block-release"
-          >
-            Let it reword
-          </button>
-        </span>
-      )}
-    </Tag>
-  );
-}
 
 /** Comments whose lines are no longer in the plan (review of #85): listed, never dropped. */
 function OrphanedComments({ view, bodyMd }: { view: PlanningView; bodyMd: string }) {
-  const present = new Set(planBlocks(bodyMd).map((b) => b.text));
-  const orphaned = view.messages.filter((m) => m.anchor && !present.has(foldSpace(m.anchor.quote)));
+  const orphaned = orphanedComments(view, bodyMd);
   if (!orphaned.length) return null;
   return (
     <div
@@ -1272,64 +1060,11 @@ function Spec({
     [previousSpec],
   );
   const me = useMe();
-  const sourceLines = spec ? spec.bodyMd.split("\n") : [];
-  const block =
-    (Tag: "p" | "li") =>
-    ({ node, children }: { node?: unknown; children?: ReactNode }) => {
-      const text = hastText(node);
-      const className = cn(
-        Tag === "p" && "my-1.5",
-        text.includes("⟦assumption⟧") && "rounded bg-status-waiting/10 px-1",
-        isChanged(text, previous) && "border-status-running border-l-2 pl-2",
-      );
-      const data = {
-        "data-changed": isChanged(text, previous) ? "true" : undefined,
-        "data-assumption": text.includes("⟦assumption⟧") ? "true" : undefined,
-      };
-      // Spec 27: a block's own source lines, for editing and commenting. A paragraph inside a
-      // list item is the item's: only the item gets the controls.
-      const pos = (node as { position?: { start: { line: number }; end: { line: number } } })
-        ?.position;
-      const lineStart = pos ? pos.start.line - 1 : -1;
-      const lineEnd = pos ? pos.end.line - 1 : -1;
-      const raw = lineStart >= 0 ? sourceLines.slice(lineStart, lineEnd + 1).join("\n") : "";
-      const inItem = Tag === "p" && /^\s*([-*+]|\d+[.)])\s/.test(raw);
-      if (!spec || lineStart < 0 || inItem) {
-        return Tag === "li" ? (
-          <li className={className} {...data}>
-            {children}
-          </li>
-        ) : (
-          <div className={className} {...data}>
-            {children}
-          </div>
-        );
-      }
-      return (
-        <PlanBlock
-          Tag={Tag === "li" ? "li" : "div"}
-          className={className}
-          data={data}
-          raw={raw}
-          anchor={{ specId: spec.id, lineStart, lineEnd, quote: raw }}
-          workItemId={workItemId}
-          edit={view.edits.find((e) => matchesEdit(raw, e.after))}
-          settled={view.questions.filter((q) => q.answeredViaEdit !== null)}
-          comments={commentsOn(view, raw, lineStart, planBlocks(spec.bodyMd)).length}
-          me={me}
-          onComment={onComment}
-        >
-          {children}
-        </PlanBlock>
-      );
-    };
   const components: Components = {
     code: ({ children }) => {
       const tag = chipTag(String(children));
       return tag ? <Chip tag={tag} /> : <code>{children}</code>;
     },
-    p: block("p"),
-    li: block("li"),
   };
   const inline = (text: string) => (
     <Markdown components={{ ...components, p: ({ children }) => <>{children}</> }}>
@@ -1355,7 +1090,16 @@ function Spec({
       ) : (
         <div className="mx-auto grid max-w-[760px] gap-4 px-8 py-6 leading-relaxed">
           <div className="[&_h1]:mb-3 [&_h1]:font-semibold [&_h1]:text-[20px] [&_h2]:mt-5 [&_h2]:mb-1 [&_h2]:font-medium [&_h2]:text-[11px] [&_h2]:text-ink-muted [&_h2]:uppercase [&_h2]:tracking-[0.06em] [&_h2]:mt-3 [&_h2]:font-semibold [&_li]:ml-4 [&_li]:list-disc [&_ol>li]:list-decimal [&_p]:my-1.5 [&_code]:font-mono [&_code]:text-xs">
-            <Markdown components={components}>{markTags(spec.bodyMd)}</Markdown>
+            <PlanBody
+              view={view}
+              bodyMd={spec.bodyMd}
+              specId={spec.id}
+              previous={previous}
+              components={components}
+              workItemId={workItemId}
+              me={me}
+              onComment={onComment}
+            />
           </div>
           {!/^#{1,4}\s*acceptance criteria/im.test(spec.bodyMd) && (
             <div>
@@ -1376,6 +1120,7 @@ function Spec({
             </div>
           )}
           <OrphanedComments view={view} bodyMd={spec.bodyMd} />
+          <YourEdits view={view} workItemId={workItemId} me={me} />
           {spec.assumptions.length > 0 && (
             <div data-testid="assumptions">
               <b>Assumptions</b>
@@ -1833,11 +1578,7 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
       <span className="text-muted-foreground text-sm" data-testid="planning-progress">
         {gateSummary(view)}
       </span>
-      {view.edits.some((e) => !e.kept) && (
-        <span className="text-destructive text-xs" data-testid="edits-not-kept">
-          {view.edits.filter((e) => !e.kept).length} of your edits aren't in the plan as written
-        </span>
-      )}
+      <EditsNotKept view={view} workItemId={item.id} />
       {specGate && partial && partial.length > 0 && (
         <span className="text-status-waiting text-xs">
           {partial.length} coverage categor{partial.length === 1 ? "y" : "ies"} still partial
@@ -1929,5 +1670,54 @@ function PinLabel({
       <MapPinIcon className="size-3 flex-none" /> {prefix}
       {pin.element}
     </span>
+  );
+}
+
+/**
+ * The edits the plan doesn't keep word for word, at the gate bar (review of #85, round 2). They hold
+ * the gate (`planning.ready` refuses), and no block of the plan shows them any more, so each is
+ * listed here with "Let it reword": a person can always let the planner go on.
+ */
+function EditsNotKept({ view, workItemId }: { view: PlanningView; workItemId: string }) {
+  const notKept = view.edits.filter((e) => !e.kept);
+  if (notKept.length === 0) return null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="link"
+          size="xs"
+          className="h-auto p-0 text-destructive"
+          data-testid="edits-not-kept"
+        >
+          {notKept.length} edit{notKept.length === 1 ? "" : "s"} not in the plan as written
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="grid w-96 gap-3" data-testid="edits-not-kept-list">
+        <div className="text-muted-foreground text-xs">
+          The planner can't ask for the gate until the plan keeps these edits word for word, or the
+          edit is released.
+        </div>
+        {notKept.map((e) => (
+          <div key={e.id} className="grid gap-1 text-sm">
+            <div className="text-muted-foreground text-xs">
+              {e.authorName}, {ago(e.createdAt)}
+            </div>
+            <div className="line-clamp-4 whitespace-pre-wrap rounded bg-selected px-2 py-1">
+              {e.after || <span className="text-muted-foreground">(deleted lines)</span>}
+            </div>
+            <Button
+              variant="outline"
+              size="xs"
+              className="justify-self-start"
+              onClick={() => releaseEdit(workItemId, e.id)}
+              data-testid={`edit-release-${e.id}`}
+            >
+              Let it reword
+            </Button>
+          </div>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }

@@ -48,6 +48,21 @@ export const SCREENS = [
     design: "PlanFocus.html",
     keys: ["f"],
   },
+  // Second review of #85: nested lists, a fence, kept edits and comments on each.
+  {
+    name: "plan-blocks",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "plan-block-comments",
+  },
+  {
+    name: "plan-edits-dropped",
+    path: "/work/wi_12?tab=plan&fixture=dropped",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "your-edits",
+  },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
@@ -109,7 +124,7 @@ async function connect(port) {
   throw new Error("Chrome didn't start");
 }
 
-async function shoot(cdp, url, file, theme, keys = []) {
+async function shoot(cdp, url, file, theme, keys = [], scrollTo = null) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
@@ -123,6 +138,13 @@ async function shoot(cdp, url, file, theme, keys = []) {
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...ev });
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...ev });
     await sleep(500);
+  }
+  if (scrollTo) {
+    // Bring a part of the view into sight (a test id), centred.
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-testid="${scrollTo}"]')?.scrollIntoView({ block: "center" })`,
+    });
+    await sleep(300);
   }
   const shot = await cdp.send("Page.captureScreenshot", {
     format: "png",
@@ -171,6 +193,7 @@ try {
         resolve(out, `${s.name}-${theme}.png`),
         theme,
         s.keys,
+        s.scrollTo,
       );
     }
   }

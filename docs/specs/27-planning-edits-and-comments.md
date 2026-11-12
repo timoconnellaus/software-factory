@@ -91,10 +91,46 @@ on them), and sf-app's tab.
   - **Comments.** A comment is anchored to the block with its text (the nearest one when several
     read the same). One whose block is gone is listed under the plan, not dropped. `chat.send`
     checks the anchor's plan version belongs to the item.
-  - Migration 0242 adds `released_at` and `released_by`, and a unique index on `core_specs
-    (work_item_id, version)`.
+  - Migration 0242 adds `released_at` and `released_by`. (The unique index on `core_specs
+    (work_item_id, version)` it first added was dropped in round 2: the table has had that
+    `UNIQUE` since migration 0020, so no duplicate can exist and nothing needs de-duplicating.)
   - Tests cover edit against revise in both orders (`beforeCommit`), an edit after approval,
     appended text, a deletion, a covering edit, a release, stale, off-topic and unassigned
     `answerFromEdit`, and a tag on an open question.
+- After the second review (round 2 on #85):
+  - **One segmentation.** `planBlocks` (runner-contract `plan-blocks.ts`) is the only way the plan
+    is cut into blocks. The desktop renders the plan block by block from it (`PlanBody`): each
+    block's own source lines through Markdown, indented by its depth, so a block on screen is a
+    block on the server by construction. A nested list item, and a paragraph or fence inside an
+    item, are blocks of their own. Fences follow CommonMark (a longer fence isn't closed by a
+    shorter one, an unclosed one runs to the end, four spaces of indent isn't a fence). A comment
+    no block reads like is an orphan, never an error.
+  - **Section and count.** Each block knows its section (the heading path). An edit stores its
+    footprint (`core_spec_edits.footprint`): the blocks it wrote, by section, and for a deletion
+    the blocks it removed with how many copies were left. Edits are kept as a multiset, in order,
+    so moving a person's line to another section, or deleting their copy of a duplicated line,
+    doesn't count as keeping it. Fence content is compared exactly (trailing space aside); space
+    is folded only outside fences.
+  - **Edits the plan would misread are refused.** `spec.edit` takes whole blocks, and refuses an
+    edit whose lines the resulting plan reads differently from how they read alone: an unclosed
+    fence that swallows what follows, or a line that loses its list marker and joins the item
+    above.
+  - **A person's later word stands.** A person's edit retires every earlier standing edit it
+    makes the plan stop keeping (it rewrote part of it, or brought back what it deleted).
+  - **Release, always.** Under the plan, "Edits the planner keeps word for word" lists every
+    standing edit, kept or not, with Release; the gate bar lists the ones not kept.
+    `planning.ready` and `spec.revise` name each edit not kept, its section and its author.
+  - **`question.answerFromEdit` takes the edit's own words**: the answer must appear in what the
+    person wrote and not in what was there before (so a typo fix on a tagged line settles
+    nothing). Chosen over recording the planner's reading of the edit because it needs no new UI
+    and can't put words in the person's mouth.
+  - **`spec.propose`** is refused while a planning session writes the plan, refuses a spec that
+    drops a standing edit, and is guarded on the plan version it replaces.
+  - `chat.send` checks an anchor's quote is what those lines of that version say.
+  - Race tests prove each guard: the refused call's audit row must say a guard caught it, not the
+    version's `UNIQUE`. Edit against approval and against `planning.ready` both ways, and two
+    edits at once.
+  - Screenshots: `docs/screenshots/planning/blocks-*.png` (nested lists, a fence, kept edits and a
+    comment on each) and `edits-dropped-*.png` (the edits list with one not kept, and Release).
 - Deferred: resolving comments, editing the structured lists (acceptance criteria, assumptions,
   coverage), and sf-app.
