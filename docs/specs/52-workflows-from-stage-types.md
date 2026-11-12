@@ -1250,8 +1250,18 @@ screen needs).
    delivery will run on, and the start is guarded on the org still being at that version: an item
    released under v2 whose shaping changed in v3 before it started goes back to Ready, flagged. And
    `accept` refuses once the org has saved past the version the flag named, flagging the item again
-   against the current version so the person sees the new difference. Still to come in (d): the tightening re-pin at the next
-   boundary (Q3), and moving each project's slot workflow to the org.
+against the current version so the person sees the new difference.
+   (d4) `orgConfig.adoptProjectWorkflows` (an org admin, from the app; `dryRun` reports what it
+   would write) moves every project still on its own slot workflow, or the skeleton alone, onto an
+   org workflow: one per distinct compiled workflow (identical ones shared; a different one under a
+   taken name gets the project's slug), the agents its stages hand to added to the org's (a
+   same-named, different agent gets the project's slug), the overridable settings at Software's
+   values in the org workflow and each project's own values as its overrides, its looser ones
+   approved by the run for the version it writes. A project whose move doesn't classify neutral is
+   left as it is, with the reason; the run refuses an org change that would loosen. A project's
+   other, unused slot workflows and its agents stay in its config (deviation from "removed": removing
+   them would itself classify as loosening). Still to come in (d): the tightening re-pin at the next
+   boundary (Q3).
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the

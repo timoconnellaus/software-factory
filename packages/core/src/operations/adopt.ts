@@ -18,6 +18,7 @@ import {
 } from "../policy/project-policy.ts";
 import { BUILT_IN_WORKFLOWS, SOFTWARE } from "../stages/builtins.ts";
 import { CompileError, compileProjectWorkflow } from "../stages/compile.ts";
+import { summarise } from "../stages/impact.ts";
 import { type OrgConfig, orgConfigErrorText, parseOrgConfig } from "../stages/org-config.ts";
 import {
   configImpact,
@@ -197,6 +198,8 @@ export const orgConfigAdoptProjectWorkflows = defineOperation({
         from: z.string().nullable(),
         workflow: z.string(),
         overrides: z.record(z.string(), z.record(z.string(), z.unknown())),
+        /** Its overrides looser than the org workflow's value, approved by this run (an org admin's). */
+        approved: z.array(z.string()),
         version: z.number().nullable(),
         changes: z.array(changeView),
       }),
@@ -310,7 +313,13 @@ async function adopt(
       "invalid_input",
       `the org config this would write isn't valid: ${orgConfigErrorText(after.errors)}`,
     );
-  const orgImpact = orgConfigImpact(config, after.config);
+  // An agent new to the org judges only in the workflows this run adds (an org config only refers to
+  // agents it has), and those are compared with the Software floor stage by stage: its own "changed"
+  // line isn't a loosening of anything the org had.
+  const newAgent = new Set(addedAgents.map((a) => `agents.${a}`));
+  const orgImpact = summarise(
+    orgConfigImpact(config, after.config).changes.filter((c) => !newAgent.has(c.path)),
+  );
   if (orgImpact.class === "loosens")
     throw new OperationError(
       "conflict",
@@ -327,6 +336,8 @@ async function adopt(
     from: string | null;
     workflow: string;
     overrides: WorkflowOverrides;
+    approved: string[];
+    looser: { stageId: string; key: string; value: unknown }[];
     version: number | null;
     changes: { path: string; class: string; summary: string }[];
     raw: string;
@@ -350,11 +361,10 @@ async function adopt(
       skipped.push({ projectId: p.row.id, name: p.row.name, reason: draftPolicy.error });
       continue;
     }
-    // Its own values, approved by this run against the org version it writes: what it ran before.
-    const n = normaliseOverrides(draftPolicy.policy, after.config, nextVersion, null, true);
+    // Its own values; the looser ones are approved by this run (an org admin's) for the org version
+    // it writes, so the project runs what it ran before.
+    const n = normaliseOverrides(draftPolicy.policy, after.config);
     const stored: Record<string, unknown> = { ...draft, workflowOverrides: n.workflowOverrides };
-    if (Object.keys(n.workflowOverrideApprovals).length)
-      stored.workflowOverrideApprovals = n.workflowOverrideApprovals;
     const now = parseProjectPolicy(JSON.stringify(stored));
     if (!now.ok) {
       skipped.push({ projectId: p.row.id, name: p.row.name, reason: now.error });
@@ -388,6 +398,8 @@ async function adopt(
       from: p.from,
       workflow: p.id,
       overrides: n.workflowOverrides,
+      approved: n.looser.map((l) => `${l.stageId}.${l.key}`),
+      looser: n.looser,
       version: input.dryRun ? null : (p.row.latest ?? 0) + 1,
       changes: impact.changes,
       raw: formatPolicy(stored),
@@ -416,7 +428,7 @@ async function adopt(
         projects: (usedBy.get(w.id) ?? []).filter((name) => projects.some((p) => p.name === name)),
       })),
     agents: writtenAgents.filter((a) => addedAgents.includes(a.name)).map((a) => a.name),
-    projects: projects.map(({ raw: _r, row: _row, ...rest }) => rest),
+    projects: projects.map(({ raw: _r, row: _row, looser: _l, ...rest }) => rest),
     skipped,
   };
   // Software itself is a built-in: a project on it names `wf_software` with no org workflow.
@@ -442,7 +454,20 @@ async function adopt(
     before: config,
     note: `Adopted ${projects.length} project workflow${projects.length === 1 ? "" : "s"}`,
   });
-  for (const p of projects)
+  for (const p of projects) {
+    for (const l of p.looser)
+      ctx.write(
+        ctx.db.insertInto("core_override_approvals").values({
+          project_id: p.projectId,
+          org_id: input.orgId,
+          org_version: nextVersion,
+          stage_id: l.stageId,
+          setting: l.key,
+          value: JSON.stringify(l.value),
+          approved_by: ctx.actor.id,
+          approved_at: ctx.now,
+        }),
+      );
     await writeVersion(ctx, p.row, {
       raw: p.raw,
       valid: true,
@@ -451,5 +476,6 @@ async function adopt(
       note: `Moved onto the org workflow ${p.workflow}`,
       latest: p.row.latest,
     });
+  }
   return out;
 }

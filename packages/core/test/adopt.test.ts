@@ -36,13 +36,27 @@ async function saveConfig(w: W, projectId: string, policy: Record<string, unknow
     { projectId },
     w.human,
   );
-  return call("config.save", { projectId, baseVersion: got.current?.version ?? 0, policy }, w.human);
+  return call(
+    "config.save",
+    { projectId, baseVersion: got.current?.version ?? 0, policy },
+    w.human,
+  );
 }
 
 async function project(w: W, name: string, policy: Record<string, unknown>) {
-  const { project: p } = await onboard(w.human, w.orgId, { owner: "timoconnellaus", name: uid("r-") }, name);
+  const { project: p } = await onboard(
+    w.human,
+    w.orgId,
+    { owner: "timoconnellaus", name: uid("r-") },
+    name,
+  );
   const saved = await saveConfig(w, p.id, policy);
-  if (saved.status !== "ok") await ok("approval.decide", { pendingActionId: saved.pendingActionId, decision: "approved" }, w.human);
+  if (saved.status !== "ok")
+    await ok(
+      "approval.decide",
+      { pendingActionId: saved.pendingActionId, decision: "approved" },
+      w.human,
+    );
   return p.id;
 }
 
@@ -105,7 +119,12 @@ describe("orgConfig.adoptProjectWorkflows", () => {
       dryRun: true,
       orgVersion: 1,
       workflows: [
-        { id: "wf_ship_a_feature", name: "Ship a feature", added: true, projects: ["Software factory"] },
+        {
+          id: "wf_ship_a_feature",
+          name: "Ship a feature",
+          added: true,
+          projects: ["Software factory"],
+        },
       ],
       agents: ["Security"],
       projects: [
@@ -141,15 +160,21 @@ describe("orgConfig.adoptProjectWorkflows", () => {
 
     const done = await adopt(w, false);
     expect(done.skipped).toEqual([]);
-    expect(done.projects.map((p) => [p.name, p.workflow])).toEqual(
-      expect.arrayContaining([
-        ["Software factory", "wf_ship_a_feature"],
-        ["Twin", "wf_ship_a_feature"],
-        ["Plain", "wf_software"],
-      ]),
-    );
-    const otherOn = done.projects.find((p) => p.name === "Other")?.workflow;
-    expect(otherOn).toMatch(/^wf_ship_a_feature_/);
+    const on = (name: string) => done.projects.find((p) => p.name === name)?.workflow;
+    // The same workflow is shared; a different one under the same name gets its own id.
+    expect(on("Twin")).toBe(on("Software factory"));
+    expect(on("Other")).not.toBe(on("Software factory"));
+    expect([on("Other"), on("Software factory")]).toContain("wf_ship_a_feature");
+    expect(on("Plain")).toBe("wf_software");
+    // Each project's own values are its overrides: only where they differ from Software's (Twin's
+    // retry limit of 2 is Software's own, so it isn't one).
+    expect(done.projects.find((p) => p.name === "Twin")?.overrides).toEqual({
+      spec: { requiredFrom: "large" },
+    });
+    expect(done.projects.find((p) => p.name === "Software factory")?.overrides).toEqual({
+      spec: { requiredFrom: "large" },
+      build: { retryLimit: 4 },
+    });
     // The same behaviour after as before, project by project.
     expect(await Promise.all(ids.map(behaviour))).toEqual(before);
     // Each project's config names its org workflow; the org has one migrated version.
@@ -162,6 +187,13 @@ describe("orgConfig.adoptProjectWorkflows", () => {
       w.orgId,
     );
     expect(versions).toEqual([{ source: "migrated" }]);
+    // The looser values are approved by this run, as the factory's record, for the version written.
+    expect(
+      await rows(
+        "SELECT org_version, stage_id, setting, value FROM core_override_approvals WHERE project_id = ?",
+        w.projectId,
+      ),
+    ).toEqual([{ org_version: 1, stage_id: "spec", setting: "requiredFrom", value: '"large"' }]);
     // Run again: nothing left to adopt.
     const again = await adopt(w, false, 1);
     expect(again).toMatchObject({ orgVersion: null, projects: [] });
