@@ -87,3 +87,8 @@ Specs 20–25 make planning work the way kim does ([ADR 0300](../adr/0300-planni
 stage types and defined per org, skills and autopilots, the generic review packet and a reconciler
 ([ADRs 0510–0514](../adr/0510-workflows-are-ordered-stages-of-stage-types.md)). Don't build it until
 its "When to start" holds.
+
+## Delivery
+[Spec 53](53-the-babysitter-delivers-approved-work.md): an approval only says a head may merge;
+the babysitter (engine reconciler per repository plus a `babysit` job) merges it, keeps `main` green
+and later follows the deploy ([ADRs 0580–0585](../adr/0580-approval-and-delivery-are-separate.md)).

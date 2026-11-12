@@ -276,8 +276,37 @@ _Avoid_: draft policy
 A project's approved merges, waiting to land one at a time (ADR 0330). The **head** (the oldest
 open entry) is brought up to date with the default branch by GitHub's update-branch, CI runs on
 it once, and it merges; then the next head goes. The approval carries over that clean update. A
-conflict or red CI at the head sends the item back to build.
+conflict or red CI at the head sends the item back to build. From Workflow v11 the babysitter's deliverer runs it per
+repository, and the queue is its delivery table (spec 53).
 _Avoid_: merge train, landing queue
+
+**Babysitter** (proposed, spec 53)
+What delivers approved work in one repository, from approval to Done: the merge, `main` staying
+green and, later, the deploy (ADR 0580). Two halves: the **deliverer**, engine code with no model
+(a reconcile pass per repository woken by GitHub's events and the minute cron), and the **`babysit`
+job**, a factory job the deliverer starts only for judgement (a conflict, a failed check, a red
+`main`; ADR 0583). Not a routine, not a schedule, not a person.
+_Avoid_: merge bot, release manager, routine
+
+**Delivery** (proposed, spec 53)
+A work item's life after its merge is approved: waiting to merge, merging, **held**, merged (later
+deployed). An **approval** says "this head may merge"; it survives a clean merge of `main` whose
+**change digest** (the PR's diff against its merge base, read by the engine from GitHub) is unchanged,
+and is withdrawn by any other new commit (ADR 0582).
+_Avoid_: landing (fine in prose for the merge itself), shipping
+
+**Main health, red episode** (proposed, spec 53)
+Whether a repository's default branch head is `green`, `red` or `pending` by its required checks. A
+**red episode** runs from the first red head after a green one to the next green; its **suspects** are
+the landings since the last green SHA. While one is open the line stops: only **repairs** (a fix the
+`babysit` job wrote, or a revert the engine made) merge, and every other approved item is **held**
+(ADR 0581, 0584).
+_Avoid_: broken build, main-red issue (patientos's claim; here the episode is the claim)
+
+**Known flake** (proposed, spec 53)
+A check, or a test in one, that failed and then passed on a rerun of the same SHA, recorded in the
+repository's flake list. A failed check is rerun at most once per SHA (ADR 0583).
+_Avoid_: flaky test (as a label you add by hand)
 
 **Default-branch ruleset**
 The repository ruleset that guards a project's default branch: a PR, the CI checks and
