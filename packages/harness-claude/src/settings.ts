@@ -156,6 +156,17 @@ export const DECISION_HOOK_EVENTS = ["PreToolUse", "PermissionRequest", "Elicita
 /** Read-only exploration every stage gets. `WebFetch` is added per allowed domain. */
 const READ_TOOLS = ["Read", "Glob", "Grep", "LS", "TodoWrite", "Task", "WebSearch"];
 
+/**
+ * Shell commands the read-only stages (triage, spec, planning) may run without a prompt. None of them
+ * may start another program: `find -exec`/`-execdir`/`-ok`, `xargs`, `sort --compress-program`,
+ * `git grep -O` (open in a pager), `env`, `nice`, `time`, `awk system()`, `sed e`, `tar
+ * --to-command` all can, so they are left out (the Glob and Grep tools cover finding and searching),
+ * and `test/allowlist.test.ts` keeps them out. This is a convenience list, not the
+ * boundary: verify and build run the project's toolchain (`node`, `pnpm`, …), which runs anything,
+ * so for them the OS sandbox (filesystem `denyRead`/`denyWrite`, network allowlist) is the only
+ * floor, and on a Mac that floor does not stop a process reaching securityd for a keychain item
+ * whose access list trusts a binary the run can execute (ADR 0270 amendment, 2026-11-12).
+ */
 const SHELL_READ = [
   "ls",
   "cat",
@@ -164,8 +175,6 @@ const SHELL_READ = [
   "wc",
   "grep",
   "rg",
-  "find",
-  "sort",
   "uniq",
   "diff",
   "pwd",
@@ -177,7 +186,6 @@ const SHELL_READ = [
   "jq",
   "tr",
   "cut",
-  "xargs",
   "cd",
   "file",
   "stat",
@@ -194,7 +202,6 @@ const GIT_READ = [
   "git diff",
   "git rev-parse",
   "git ls-files",
-  "git grep",
   "git blame",
   "git merge-base",
   "git branch --show-current",
