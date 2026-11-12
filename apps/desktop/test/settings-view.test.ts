@@ -11,8 +11,10 @@ import {
   repoRows,
 } from "../src/mainview/lib/settings-view.ts";
 
-const projects = (ANSWERS["project.list"]?.({ orgId: "org_personal" }) as { projects: Project[] })
-  .projects;
+const listed = ANSWERS["project.list"]?.({ orgId: "org_personal" }) as
+  | { projects: Project[] }
+  | undefined;
+const projects = listed?.projects ?? [];
 const setup = ANSWERS["setup.status"]?.({ orgId: "org_personal" }) as SetupStatus;
 
 describe("repositories", () => {
