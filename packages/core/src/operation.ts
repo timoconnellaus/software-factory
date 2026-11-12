@@ -166,6 +166,12 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    */
   browserOnly?: true | ((input: z.output<I>) => boolean);
   /**
+   * A browser-only decision a person may also make from a desktop device with a presence proof for
+   * this exact call (ADR 0391): spec, merge, approval and question decisions. Never set on
+   * operations that grant authority (device logins, runner registration, kill switch off).
+   */
+  presenceDecidable?: true;
+  /**
    * The gate always asks a person, whatever the autonomy policy or overrides say (a workflow's gate
    * step, ADR 0371). `deny` still refuses.
    */

@@ -91,6 +91,13 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
   `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses
   off the app, so no token (the CLI's, MCP's) can approve anything.
+- **The desktop app** (`apps/desktop`, ADRs 0390–0392, spec 40) is the daily UI on macOS (Electrobun): it
+  supervises this Mac's `sf-runner` and calls operations through the same door (`/client/v1`) with a
+  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates
+  only with a per-call presence proof (Touch ID) the door verifies; nothing else on the Mac can make
+  one. The website (`sf-app`) shrinks to sign-in, device approval, Connect GitHub and the `/open/*`
+  trampoline. A `ClientHub` Durable Object per person holds the app's live socket
+  (`/client/v1/live`); the outbox's `notify` messages are pushed through it.
 - **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
   without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
   0037). A session's PR that never joined is attached afterwards (ADR 0290).

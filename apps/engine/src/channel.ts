@@ -320,8 +320,12 @@ export function d1IdempotencyStore(db: D1Database): IdempotencyStore {
 
 /** Stored answers are kept a day: far past the 5-minute window and any host retry. */
 export async function pruneChannelStore(db: D1Database, now = new Date()): Promise<void> {
-  await db
-    .prepare("DELETE FROM core_channel_requests WHERE at < ?")
-    .bind(new Date(now.getTime() - 24 * 3_600_000).toISOString())
-    .run();
+  const dayAgo = new Date(now.getTime() - 24 * 3_600_000).toISOString();
+  await db.batch([
+    db.prepare("DELETE FROM core_channel_requests WHERE at < ?").bind(dayAgo),
+    // The desktop app's sign-in requests and presence challenges (spec 40 M1): kept a day past
+    // their expiry for the audit's sake, then gone. Devices and tokens stay (they're revocable).
+    db.prepare("DELETE FROM core_desktop_auth_requests WHERE expires_at < ?").bind(dayAgo),
+    db.prepare("DELETE FROM core_presence_challenges WHERE expires_at < ?").bind(dayAgo),
+  ]);
 }

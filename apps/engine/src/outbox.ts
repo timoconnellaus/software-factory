@@ -2,6 +2,7 @@
 // right after commit, and retried by the minute cron with backoff. Delivery is at least once;
 // Workflow ids and one-shot event types make a second delivery harmless.
 import type { OutboxMessage } from "@software-factory/core";
+import { clientHub } from "./client-hub.ts";
 import { planningHub } from "./planning-hub.ts";
 
 interface OutboxRow {
@@ -110,8 +111,39 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       await planningHub(env, message.payload.workItemId).notify();
       return;
     case "notify":
-      // Web push arrives with spec 15; until then the inbox reads gates and questions from D1.
-      console.log("notify", JSON.stringify(message.payload));
+      // To the person's open desktop apps (spec 40 M2b). Web push arrives with spec 15; the inbox
+      // itself always reads gates and questions from D1.
+      await notifyClients(env, message.payload);
       return;
   }
+}
+
+type NotifyPayload = Extract<OutboxMessage, { kind: "notify" }>["payload"];
+
+/**
+ * Who hears a notification: its person, or, when it names nobody, the admins of the work item's
+ * org (the approvers a gate falls to when the policy names none). Returns the people pushed to.
+ */
+export async function notifyClients(env: Env, payload: NotifyPayload): Promise<string[]> {
+  let users: string[] = payload.userId ? [payload.userId] : [];
+  if (users.length === 0 && payload.workItemId) {
+    const { results } = await env.DB.prepare(
+      `SELECT m.user_id FROM core_member m JOIN core_work_items w ON w.org_id = m.organization_id
+       WHERE w.id = ? AND m.role IN ('owner', 'admin')`,
+    )
+      .bind(payload.workItemId)
+      .all<{ user_id: string }>();
+    users = results.map((r) => r.user_id);
+  }
+  await Promise.all(
+    users.map((u) =>
+      clientHub(env, u).broadcast({
+        type: "notify",
+        event: payload.event,
+        title: payload.title,
+        workItemId: payload.workItemId ?? null,
+      }),
+    ),
+  );
+  return users;
 }

@@ -27,6 +27,7 @@ export function services(env: Env): FactoryServices {
   return {
     github,
     publicBaseUrl: env.PUBLIC_BASE_URL,
+    allowSoftwareDeviceKeys: env.DESKTOP_ALLOW_SOFTWARE_KEYS === "1",
     ...(env.DEPLOYED_SHA ? { deployedSha: env.DEPLOYED_SHA } : {}),
     attachments: r2AttachmentBlobs(env.ATTACHMENTS),
     runnerKey: async (runnerId, version) => {

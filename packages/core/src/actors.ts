@@ -14,6 +14,7 @@ export interface Actor {
 export const SURFACES = [
   "app",
   "cli",
+  "desktop",
   "mcp",
   "runner-channel",
   "workflow",
@@ -29,6 +30,13 @@ export interface Origin {
   step?: string;
   /** Free-form request id from the surface, for correlating logs. */
   requestId?: string;
+  /** The desktop device behind a `desktop` call (ADR 0391). Set by the client door, never the caller. */
+  deviceId?: string;
+  /**
+   * A verified presence proof (ADR 0391): the client door redeemed a Touch ID signature for exactly
+   * this operation and the digest of this input. Set by the door, never the caller.
+   */
+  presence?: { op: string; inputDigest: string; challengeId: string };
 }
 
 export const FOREMAN: Actor = { type: "agent", id: "foreman" };

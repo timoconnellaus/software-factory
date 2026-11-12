@@ -1,6 +1,6 @@
 # 0130. The desktop app on Electrobun
 
-Status: proposed (spike `spikes/electrobun`; moves to `docs/adr/` when the desktop spec promotes it)
+Status: promoted to [ADR 0390](../../../docs/adr/0390-the-desktop-app-is-the-daily-ui.md) and [0391](../../../docs/adr/0391-the-client-door-desktop-devices-and-presence.md), 2026-11-12
 Date: 2026-11-12
 
 ## Context
