@@ -11,7 +11,8 @@ import {
   type TurnUsage,
 } from "@software-factory/runner-contract";
 
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+const clip = (text: string, max: number) =>
+  text.length > max ? `${text.slice(0, max - 1)}…` : text;
 /** Keeps the end of a long output: errors and summaries are at the bottom. */
 const clipTail = (text: string, max: number) =>
   text.length > max ? `…${text.slice(text.length - (max - 1))}` : text;
@@ -81,7 +82,8 @@ function resultText(content: Part["content"]): string {
 export function turnUsage(msg: StreamMessage): TurnUsage | undefined {
   const u = msg.usage;
   if (!u) return undefined;
-  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : 0);
+  const n = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : 0;
   return {
     inputTokens: n(u.input_tokens),
     outputTokens: n(u.output_tokens),
@@ -149,7 +151,11 @@ export function streamMessageEvents(msg: StreamMessage): AdapterEvent[] {
     const usage = turnUsage(msg);
     const error = ok
       ? null
-      : [msg.subtype, typeof msg.result === "string" ? msg.result : null, ...(msg.errors ?? []).map(String)]
+      : [
+          msg.subtype,
+          typeof msg.result === "string" ? msg.result : null,
+          ...(msg.errors ?? []).map(String),
+        ]
           .filter(Boolean)
           .join(": ");
     return [

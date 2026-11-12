@@ -339,7 +339,15 @@ describe("a stream session's chat and takeover (spec 37, ADR 0450)", () => {
         fencingToken: job.lease.fencingToken,
         events: [
           started(job.jobId, 1, "stream"),
-          { jobId: job.jobId, seq: 2, at: at(), type: "tool", name: "Bash", input: "{}", id: "tu_1" },
+          {
+            jobId: job.jobId,
+            seq: 2,
+            at: at(),
+            type: "tool",
+            name: "Bash",
+            input: "{}",
+            id: "tu_1",
+          },
           {
             jobId: job.jobId,
             seq: 3,
@@ -484,7 +492,9 @@ describe("a stream session's chat and takeover (spec 37, ADR 0450)", () => {
       steers: { kind: string; status: string }[];
       takeover: { allowed: boolean; requested: boolean };
     }>("run.live", { workItemId: item.workItemId }, w.human);
-    expect(view.steers).toEqual([expect.objectContaining({ kind: "takeover", status: "delivered" })]);
+    expect(view.steers).toEqual([
+      expect.objectContaining({ kind: "takeover", status: "delivered" }),
+    ]);
     expect(view.takeover).toMatchObject({ allowed: false, requested: true });
   });
 

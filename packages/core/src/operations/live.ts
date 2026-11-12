@@ -101,7 +101,10 @@ function canSteer(run: LiveRun, viewer: string): { allowed: boolean; reason: str
 }
 
 /** How the run's session runs (ADR 0450): its `session.started` says; null before it starts. */
-async function sessionMode(ctx: HandlerContext, runId: string): Promise<"terminal" | "stream" | null> {
+async function sessionMode(
+  ctx: HandlerContext,
+  runId: string,
+): Promise<"terminal" | "stream" | null> {
   const row = await ctx.db
     .selectFrom("core_run_events")
     .select("payload")

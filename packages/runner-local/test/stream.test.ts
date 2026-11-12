@@ -14,12 +14,7 @@ import {
   readLaunchRecord,
   STREAM_FLAGS,
 } from "@software-factory/harness-claude";
-import {
-  type AdapterEvent,
-
-  type Job,
-  RESULT_FILE,
-} from "@software-factory/runner-contract";
+import { type AdapterEvent, type Job, RESULT_FILE } from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createLocalRunner,
@@ -237,7 +232,11 @@ describe("runner-local stream-json sessions", { timeout: 30_000 }, () => {
     const session = await w.runner.startSession(j, ws, signal);
     const events = await drain(w.runner.events(j, session, signal));
     expect(events).toContainEqual(
-      expect.objectContaining({ type: "turn", outcome: "error", error: expect.stringMatching(/max_turns/) }),
+      expect.objectContaining({
+        type: "turn",
+        outcome: "error",
+        error: expect.stringMatching(/max_turns/),
+      }),
     );
     expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "failed" });
     await w.runner.release(j, ws, session);
@@ -369,7 +368,10 @@ describe("runner-local stream-json sessions", { timeout: 30_000 }, () => {
     });
     // The interrupt went in before stdin closed.
     const lines = await stdinLines(w.stdinLog);
-    expect(lines.at(-1)).toMatchObject({ type: "control_request", request: { subtype: "interrupt" } });
+    expect(lines.at(-1)).toMatchObject({
+      type: "control_request",
+      request: { subtype: "interrupt" },
+    });
     expect(session.stream?.exited).not.toBeNull();
 
     const takeover = events.find((e) => e.type === "takeover");
@@ -393,7 +395,11 @@ describe("runner-local stream-json sessions", { timeout: 30_000 }, () => {
       role: "assistant",
       text: "Picking up where we left off.",
     });
-    expect(after).toContainEqual({ type: "tool", name: "Edit", input: '{"file_path":"README.md"}' });
+    expect(after).toContainEqual({
+      type: "tool",
+      name: "Edit",
+      input: '{"file_path":"README.md"}',
+    });
     expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "completed" });
     await w.runner.release(j, ws, session);
   });

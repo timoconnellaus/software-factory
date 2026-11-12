@@ -527,4 +527,3 @@ async function transcriptFromStatus(statusFile: string): Promise<string | null> 
 export function streamAlive(session: LocalSession | undefined): boolean {
   return !!session?.stream && session.stream.exited === null;
 }
-

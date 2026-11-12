@@ -10,7 +10,11 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { PROMPT_POINTER, readLaunchRecord } from "@software-factory/harness-claude";
 import { type Job, RESULT_FILE } from "@software-factory/runner-contract";
-import { createLocalRunner, type Exec, type LocalRunnerConfig } from "@software-factory/runner-local";
+import {
+  createLocalRunner,
+  type Exec,
+  type LocalRunnerConfig,
+} from "@software-factory/runner-local";
 import {
   fakeStreamClaude,
   type ScriptedTmuxOptions,
@@ -254,7 +258,10 @@ describe("a stream-json session through runJob (spec 37, ADR 0450)", { timeout: 
     await appendFile(join(worktree, "README.md"), "by hand\n");
     git(worktree, "-c", "user.name=p", "-c", "user.email=p@x.invalid", "commit", "-qam", "by hand");
     const statusFile = join(w.root, "runs", j.jobId, "status.jsonl");
-    await appendFile(statusFile, `${JSON.stringify({ event: "SessionStart", time: Date.now() })}\n`);
+    await appendFile(
+      statusFile,
+      `${JSON.stringify({ event: "SessionStart", time: Date.now() })}\n`,
+    );
     await appendFile(statusFile, `${JSON.stringify({ event: "SessionEnd", time: Date.now() })}\n`);
     const report = await running;
     expect(report.outcome).toBe("completed");

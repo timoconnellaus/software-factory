@@ -9,9 +9,9 @@ import {
   CONTRACT_VERSION,
   HARNESS_PERMISSION_MODES,
   HARNESSES,
-  SESSION_MODES,
   JOB_STAGES,
   MODEL_ROLES,
+  SESSION_MODES,
 } from "./types.ts";
 
 const iso = z.iso.datetime({ offset: true });

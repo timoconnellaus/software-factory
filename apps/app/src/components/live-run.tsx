@@ -44,5 +44,9 @@ export function LiveRun({ detail }: { detail: WorkItemDetail }) {
     await op("run.steer", { workItemId, runId, text }, { idempotencyKey: submitKey() });
     await queryClient.invalidateQueries({ queryKey: ["workItem", workItemId, "live"] });
   };
-  return <LiveRunView data={live.data} me={me} onSteer={onSteer} />;
+  const onTakeover = async (runId: string) => {
+    await op("run.takeover", { workItemId, runId }, { idempotencyKey: submitKey() });
+    await queryClient.invalidateQueries({ queryKey: ["workItem", workItemId, "live"] });
+  };
+  return <LiveRunView data={live.data} me={me} onSteer={onSteer} onTakeover={onTakeover} />;
 }

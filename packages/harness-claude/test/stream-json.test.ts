@@ -28,7 +28,10 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
-const job = { stage: "build" as const, harness: { id: "claude-code" as const, role: "implement" as const, prompt: "p", model: "m-1" } };
+const job = {
+  stage: "build" as const,
+  harness: { id: "claude-code" as const, role: "implement" as const, prompt: "p", model: "m-1" },
+};
 
 describe("the stream-json launch (ADR 0450)", () => {
   it("adds the stream flags and its own session id after the factory's flags", () => {
@@ -161,7 +164,12 @@ describe("stream-json output → events (ADR 0450)", () => {
       "log",
     ]);
     expect(events[1]).toEqual({ type: "message", role: "assistant", text: "Reading." });
-    expect(events[2]).toEqual({ type: "tool", name: "Read", input: '{"file_path":"a.ts"}', id: "tu_1" });
+    expect(events[2]).toEqual({
+      type: "tool",
+      name: "Read",
+      input: '{"file_path":"a.ts"}',
+      id: "tu_1",
+    });
     const result = events[3] as { output: string; isError: boolean };
     expect(result.output.length).toBe(TOOL_OUTPUT_MAX);
     expect(result.output.startsWith("…")).toBe(true);
@@ -187,7 +195,10 @@ describe("stream-json output → events (ADR 0450)", () => {
 
   it("clips long assistant text and leaves out a subagent's own messages", () => {
     const [long] = streamLineEvents(
-      line({ type: "assistant", message: { content: [{ type: "text", text: "a".repeat(20_000) }] } }),
+      line({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "a".repeat(20_000) }] },
+      }),
     );
     expect((long as { text: string }).text.length).toBe(MESSAGE_MAX);
     expect(
