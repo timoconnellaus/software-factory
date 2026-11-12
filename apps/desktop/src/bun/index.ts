@@ -17,6 +17,8 @@ import { liveJobs } from "./runner-jobs.ts";
 import { saveTo } from "./save.ts";
 import { bunExec, runningAppPath } from "./update-verify.ts";
 import { type UpdaterLike, Updates } from "./updates.ts";
+import { titleBarDoubleClick } from "./title-bar.ts";
+import { viewUrl } from "./view-url.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
 /** The inbox count's fallback refresh; the live socket brings changes the moment they happen. */
@@ -53,6 +55,7 @@ const door = () => new Door(ENGINE_URL, () => auth.currentToken(), fetch, doorSa
 auth = new Auth(door, await deviceName());
 await auth.init();
 
+const VIEW_URL = viewUrl(await Updater.localInfo.channel(), process.env.SF_VIEW_URL);
 let win: BrowserWindow | null = null;
 let pendingPath: string | null = null;
 let inboxCount = 0;
@@ -113,6 +116,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       loginItem: ({ enable }) => ({
         enabled: enable === undefined ? loginItemEnabled() : setLoginItem(enable),
       }),
+      titleBarDoubleClick: async () => ({ action: await titleBarDoubleClick(win) }),
       openExternal: ({ url }) => ({ ok: /^https:\/\//.test(url) && Utils.openExternal(url) }),
       updateStatus: () => updateStatus(),
       updateAction: async ({ action }) => {
@@ -148,9 +152,12 @@ function openWindow(path?: string) {
   }
   win = new BrowserWindow({
     title: "Software Factory",
-    url: "views://mainview/index.html",
+    url: VIEW_URL,
     rpc,
     frame: { width: 1200, height: 800, x: 120, y: 80 },
+    // The view draws the toolbar under the traffic lights and marks it as the drag region (spec 41).
+    titleBarStyle: "hiddenInset",
+    trafficLightOffset: { x: 5, y: 6 },
   });
   // A link that launched the app arrives before the view listens: send it once the page is up.
   win.webview.on("dom-ready", () => {
