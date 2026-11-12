@@ -573,7 +573,7 @@ const answerOutput = z.object({
 async function answerQuestion(
   input: z.output<typeof answerInput>,
   ctx: HandlerContext,
-  options: { planningOnly?: boolean } = {},
+  options: { planningOnly?: boolean; proofForSensitive?: boolean } = {},
 ): Promise<z.input<typeof answerOutput>> {
   const q = await ctx.db
     .selectFrom("core_questions")
@@ -581,6 +581,20 @@ async function answerQuestion(
     .where("id", "=", input.questionId)
     .executeTakeFirst();
   if (!q) throw new OperationError("not_found", "no such question");
+  // Security, privacy and irreversible questions keep their presence proof on the desktop until the
+  // owner says otherwise (review of #71): only ordinary planning answers are proof-free.
+  if (
+    options.proofForSensitive &&
+    ctx.origin.surface === "desktop" &&
+    !ctx.presence &&
+    ((NEVER_BULK_ACCEPTED_DOMAINS as readonly string[]).includes(q.domain) || q.irreversible)
+  ) {
+    throw new OperationError(
+      "forbidden",
+      "a security, privacy or irreversible question is answered with Touch ID on the desktop",
+      { presenceRequired: true },
+    );
+  }
   if (options.planningOnly && !q.planning_session_id) {
     throw new OperationError(
       "invalid_input",
@@ -634,10 +648,11 @@ export const planningAnswer = defineOperation({
   permission: "member",
   browserOnly: true,
   desktopDecidable: true,
+  presenceDecidable: true,
   input: answerInput,
   output: answerOutput,
   async handler(input, ctx) {
-    return answerQuestion(input, ctx, { planningOnly: true });
+    return answerQuestion(input, ctx, { planningOnly: true, proofForSensitive: true });
   },
 });
 

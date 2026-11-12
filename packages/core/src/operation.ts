@@ -117,6 +117,11 @@ export interface HandlerContext {
   floor: FloorParse;
   /** Set when this call is the approved re-run of a pending action. */
   approval?: PendingActionRow;
+  /**
+   * The desktop sent a valid presence proof for exactly this call (ADR 0391). Lets a
+   * `desktopDecidable` operation still ask for one for some inputs (spec 26).
+   */
+  presence?: boolean;
   /** Queue a write. Writes, guards, the audit row and outbox rows commit in one D1 batch. */
   write(statement: Compilable | D1PreparedStatement): void;
   /** Abort the whole batch unless the previous write changed at least one row (ADR 0050). */

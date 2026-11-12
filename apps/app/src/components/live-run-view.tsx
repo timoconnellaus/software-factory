@@ -13,18 +13,20 @@ import { ToggleGroup, ToggleGroupItem } from "@software-factory/ui/components/to
 import { cn } from "@software-factory/ui/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { LiveChat } from "#/components/live-chat";
 import { latestStatus, type TranscriptItem, terminalText, transcriptItems } from "#/lib/live";
 import type { LiveView } from "#/lib/ops";
 import { WebTerminal } from "./web-terminal";
 
-export type View = "transcript" | "terminal" | "web";
+export type View = "chat" | "transcript" | "terminal" | "web";
 
 /** The live view itself, from a `run.live` answer (rendered on its own in tests). */
 export function LiveRunView({
   data,
   me,
   onSteer,
-  initialView = "transcript",
+  onTakeover = async () => {},
+  initialView,
   workItemId,
 }: {
   data: LiveView;
@@ -33,9 +35,14 @@ export function LiveRunView({
   workItemId?: string;
   /** Sends a message into the run (the runner's owner only; the operation checks). */
   onSteer: (runId: string, text: string) => Promise<void>;
+  /** Asks to take a stream session over in a terminal (spec 37; the owner only). */
+  onTakeover?: (runId: string) => Promise<void>;
   initialView?: View;
 }) {
-  const [view, setView] = useState<View>(initialView);
+  // A stream session (spec 37) is shown as a chat by default; a terminal one as its transcript.
+  const chat = data.run?.mode === "stream";
+  const [picked, setView] = useState<View | null>(initialView ?? null);
+  const view: View = picked ?? (chat ? "chat" : "transcript");
   const { run, events, steers, steer } = data;
   if (!run) {
     return <Card className="px-5 py-6 text-muted-foreground text-sm">No runs yet.</Card>;
@@ -43,7 +50,8 @@ export function LiveRunView({
   const status = latestStatus(events);
   // The real pane, while there is one to show (ADR 0440).
   const web = !!workItemId && run.active && !!data.terminal?.allowed;
-  const shown: View = view === "web" && !web ? "terminal" : view;
+  const shown: View =
+    view === "web" && !web ? "terminal" : view === "chat" && !chat ? "transcript" : view;
   return (
     <Card className="gap-3 px-5 py-4" data-testid="live-run">
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -75,6 +83,11 @@ export function LiveRunView({
           onValueChange={(v) => v && setView(v as View)}
           aria-label="Live view"
         >
+          {chat && (
+            <ToggleGroupItem value="chat" data-testid="live-chat-tab">
+              Chat
+            </ToggleGroupItem>
+          )}
           <ToggleGroupItem value="transcript" data-testid="live-transcript-tab">
             Transcript
           </ToggleGroupItem>
@@ -96,14 +109,18 @@ export function LiveRunView({
           )}
         </ToggleGroup>
       </div>
-      {shown === "transcript" ? (
-        <Transcript items={transcriptItems(events, steers)} me={me} truncated={data.truncated} />
+      {shown === "chat" ? (
+        // The chat has its own composer and takeover (spec 37).
+        <LiveChat data={data} me={me} onSteer={onSteer} onTakeover={onTakeover} />
       ) : shown === "web" && workItemId ? (
         <WebTerminal workItemId={workItemId} runId={run.id} />
-      ) : (
+      ) : shown === "terminal" ? (
         <Terminal text={terminalText(events)} />
+      ) : (
+        <Transcript items={transcriptItems(events, steers)} me={me} truncated={data.truncated} />
       )}
-      {run.active &&
+      {shown !== "chat" &&
+        run.active &&
         (steer.allowed ? (
           <SteerBox onSteer={(text) => onSteer(run.id, text)} max={steer.max} />
         ) : (

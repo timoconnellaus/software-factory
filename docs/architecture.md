@@ -85,6 +85,13 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   transcript; its tool calls and status; the terminal), polled every 2 s. The runner's owner can
   **steer** it: `run.steer` queues the message, and the runner host, which keeps a held `steer`
   call open on the channel per running job (woken through the work item's hub), types it into the
+  session. A runner can instead run sessions in **stream-json** mode (`runner.json` `session`, ADR
+  0450): Claude Code headless as a two-way JSON stream, the same launch script and check, the
+  prompt pointer and steers as JSON user messages, and events straight from the structured output
+  (tool results and turns with their token counts too). Such a runner declares `chat`, and the Live
+  tab shows its runs in a **Chat** view. Its owner can take a run over with `run.takeover`: the host
+  stops the stream and the run shows the `claude --resume <id>` command; the job keeps its worktree
+  and follows the resumed session by the status hook until it quits. Runners are owner-only unless shared through an
   session. The Live tab's **Web terminal** (spec 35, ADR 0440) is the job's real tmux pane in the
   browser: `run.terminal.attach` records the attach and decides the mode (`type` for the runner's
   owner, `watch` for everyone else), and a **TerminalRelay** Durable Object per job in `sf-engine`
@@ -136,7 +143,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 ## Repository layout
 | Path | What |
 | --- | --- |
-| `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning (layout A: questions | spec | chat with the gate bar, full screen, phone tabs; live from `/api/work/<id>/planning/live`, spec 20) and Live (the run as it goes, and steering, spec 31; the Web terminal over `/api/work/<id>/runs/<run>/terminal`, spec 35), review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). Pinned next to D1; loaders fetch a page's reads in one batched request (ADR 0241). MCP later |
+| `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning (layout A: questions | spec | chat with the gate bar, full screen, phone tabs; live from `/api/work/<id>/planning/live`, spec 20) and Live (the run as it goes, and steering, spec 31; the Web terminal over `/api/work/<id>/runs/<run>/terminal`, spec 35; a Chat view for stream-json runs with takeover by resume, spec 37), review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). Pinned next to D1; loaders fetch a page's reads in one batched request (ADR 0241). MCP later |
 | `packages/ui` | shadcn/ui components and the factory theme (zinc, Geist, status dots) |
 | `packages/timeline` | A work item's event log in words: `describeEntry` turns an audit entry into a label, detail, note, actor and dot. Pure, no dependencies; the dashboard's timeline and `sf timeline` both use it (spec wi-4) |
 | `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC, the Durable Objects (PlanningHub per work item, ClientHub per person, TerminalRelay per job for the web terminal, ADR 0440) |
@@ -145,7 +152,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
 | `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |
 | `packages/harness-claude` | The Claude Code harness: the per-run settings (permission mode and allowlist per stage, the OS sandbox, deny rules, a credential-free environment), the exact launch command and the post-launch check (ADR 0270), the run's Claude account in the launch (ADR 0410), the run's git config, transcript and stream-json parsing |
-| `packages/runner-local` | The local runner adapter (ADR 0380): a git worktree of the machine's checkout on the run branch, the harness's launch script in a tmux session on the factory's own socket (verified before the prompt, ADR 0270), status from the harness's hook file (`status.jsonl`), what the agent says from its transcript, steers typed with `send-keys` (ADR 0400), the web terminal bridge as a tmux control-mode client (ADR 0440), takeover by `tmux attach`, orphan reaping. `src/container/`: a container per job (ADR 0430): the job repo, the Docker runtime, the agent image and egress proxy (`container/`), the container check |
+| `packages/runner-local` | The local runner adapter (ADR 0380): a git worktree of the machine's checkout on the run branch, the harness's launch script in a tmux session on the factory's own socket (verified before the prompt, ADR 0270), status from the harness's hook file (`status.jsonl`), what the agent says from its transcript, steers typed with `send-keys` (ADR 0400), the web terminal bridge as a tmux control-mode client (ADR 0440), takeover by `tmux attach`, orphan reaping. `src/container/`: a container per job (ADR 0430): the job repo, the Docker runtime, the agent image and egress proxy (`container/`), the container check. `src/stream.ts`: the stream-json session mode (ADR 0450): the launch script as a child process with JSON in and out, events from the structured output, steers as JSON user messages, takeover by `claude --resume` |
 | `packages/connector-webhook` | Inbound webhook connector, provider-neutral: signature check, delivery naming |
 | `packages/connector-github` | The GitHub App connector: App webhooks → operations |
 | `packages/config` | Shared tsconfig, Biome preset, Vitest preset |

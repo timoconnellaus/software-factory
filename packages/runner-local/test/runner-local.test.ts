@@ -636,6 +636,25 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     await w.runner.release(job(), ws, session);
   });
 
+  it("closes Claude Code's Rewind menu before typing when the Escape opened it (review of #71)", async () => {
+    const w = await world();
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    const session = await w.runner.startSession(job(), ws, signal);
+    const fake = w.tmux.sessions.get("sf-job_1");
+    if (!fake) throw new Error("no session");
+    fake.screen =
+      " Rewind\n Restore the code and/or conversation to the point before…\n ❯ (current)";
+    const before = w.tmux.calls.length;
+    await w.runner.interrupt?.(session, "read your planning news");
+    const keys = w.tmux.calls
+      .slice(before)
+      .filter((c) => c.includes("send-keys"))
+      .map((c) => c.at(-1));
+    expect(keys).toEqual(["Escape", "Escape", "read your planning news", "Enter"]);
+    await w.runner.release(job(), ws, session);
+  });
+
   it("interrupts by pressing Escape, then typing the line and pressing Enter (ADR 0470)", async () => {
     const w = await world();
     const signal = new AbortController().signal;

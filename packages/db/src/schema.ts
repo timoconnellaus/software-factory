@@ -591,6 +591,8 @@ export interface CoreRunSteersTable {
   delivered_at: Iso | null;
   /** ADR 0470: stop the agent's current step before submitting the text. */
   interrupt: Generated<Bool>;
+  /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
+  kind: Generated<"message" | "takeover">;
 }
 
 /** A person opening a run's web terminal (spec 35, ADR 0440). */
@@ -784,6 +786,8 @@ export interface CorePlanningSessionsTable {
   /** ADR 0470: who told the planner to finish alone, and when; null while it's off. */
   finish_alone_by: string | null;
   finish_alone_at: Iso | null;
+  /** Spec 26: the last "away" notice, so questions and replies notify once per burst. */
+  notified_at: Iso | null;
   replaces_session_id: string | null;
   created_by: string;
   created_at: Iso;
@@ -813,6 +817,8 @@ export interface CorePlanningMessagesTable {
   kind: Generated<"chat" | "gate">;
   delivered_at: Iso | null;
   created_at: Iso;
+  /** Spec 26: the steer this message was typed as; delivered when the host takes it. */
+  steer_id: string | null;
 }
 
 export interface CorePlanningPresenceTable {
