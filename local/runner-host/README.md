@@ -30,6 +30,12 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    **Take a run over** with the hint the run shows:
    `tmux -L software-factory attach -t sf-<jobId>` (detach with `C-b d`; the job still ends and
    hands back normally).
+   **Or as a stream** (ADR 0450): with `"session": "stream-json"` in `runner.json` (then restart
+   the service), Claude runs headless as a two-way stream-json session instead (same launch script,
+   same check), the runner declares `chat`, and the Live tab shows the run as a chat. Take one over
+   with **Take over in a terminal** there: the session stops and the run shows a
+   `cd <worktree> && env -u … claude … --resume <id>` command to run on this machine; quit it to
+   hand the run back. `sf-runner` logs the mode it runs at start.
    **Build only:** before the session the host fetches the job's `repo.defaultBranch` too and
    merges it into the run branch (a merge commit, never a rebase, ADR 0320). A conflict is left in
    progress for the session to resolve; unmerged paths at the end fail the run with no push.

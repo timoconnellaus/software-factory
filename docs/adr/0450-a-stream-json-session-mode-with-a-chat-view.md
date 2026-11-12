@@ -51,8 +51,9 @@ replacement: tmux stays for people who attach.
    the exact interactive command, `cd <worktree> && env -u … claude --resume <session-id>` with the
    run's settings, mode, setting sources and model, and the job keeps its worktree and lease. The
    owner runs it on the host; the projected status hook reports the resumed session, its assistant
-   text keeps showing from the transcript, and quitting it (`SessionEnd`) ends the job, which hands
-   back and pushes as any other. A non-planning stream run starts with its own `--session-id`, so
+   text keeps showing from the transcript, and quitting it (`SessionEnd`) ends the job as completed
+   (the person decided), which hands back and pushes as any other (a build with no commits still
+   fails). A non-planning stream run starts with its own `--session-id`, so
    the id is known before the first turn. If nobody resumes within the waiting-input timeout, the job
    fails.
 6. **Not built: resuming back into the factory.** It would be a second `takeover`-kind row, `resume`,

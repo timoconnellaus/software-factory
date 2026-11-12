@@ -73,6 +73,11 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   (block X, migration 0170), is built on `timoconnellaus/hosts-watch-steer`: the Live tab (transcript
   and terminal from `run.live`, polled), `run.steer` for the runner's owner, the held `steer` call
   on the channel, `message` events from the transcript. Criteria 1 and 2 need a live run on the M5.
+  Piece 8, **a chat UI on a stream-json session** (block AC, [spec 37](specs/37-chat-ui-stream-json.md) /
+  [ADR 0450](adr/0450-a-stream-json-session-mode-with-a-chat-view.md), migration 0220, branch
+  `timoconnellaus/hosts-chat-ui`): `runner.json` `session: "stream-json"` runs Claude headless as a
+  two-way stream (runner-local `stream.ts`, the `chat` capability), the Live tab's Chat view, and
+  `run.takeover` (stop the stream, show `claude --resume <id>`). Criteria 1–4 need a live run on the M5.
   Piece 5, **Linux hosts** (block Z, [spec 34](specs/34-linux-hosts.md) /
   [ADR 0420](adr/0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md), branch
   `timoconnellaus/hosts-linux`): a systemd user service chosen by platform, Linux log path, the

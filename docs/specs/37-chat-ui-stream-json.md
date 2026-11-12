@@ -32,7 +32,8 @@ over in a terminal with `claude --resume`. tmux stays the default.
   - `run.takeover { workItemId, runId }`: human, `member`, risk `write`. Owner of the run's runner
     only (`forbidden`), an active run (`conflict`), a stream session on a runner with `chat`
     (`unavailable`), once per run (`conflict`). Queues a `takeover` row and wakes the host like
-    `run.steer`.
+    `run.steer`. The `takeover` event's command becomes the run's takeover hint (`core_runs.takeover`,
+    label "Resume in a terminal").
   - `run.takeSteers` returns each row's `kind`; `run.live` returns `run.mode` (from the run's
     `session.started`, null before it), each steer's `kind`, and `takeover: { allowed, reason,
     requested }` for the viewer.
@@ -58,14 +59,14 @@ over in a terminal with `claude --resume`. tmux stays the default.
   - `steer()`: one JSON user message on stdin;
   - `takeover()`: an `interrupt` control request, stdin closed, the process waited for (then
     killed); `events()` emits `takeover` with `resumeCommand`, then follows the resumed session by
-    the status hook and transcript (assistant `message`s, `tool`s) and ends at its `SessionEnd`
-    (`completed` with the result file, else `failed`), or fails if nobody resumes within the
-    waiting-input timeout;
+    the status hook and transcript (assistant `message`s, `tool`s) and ends `completed` at its
+    `SessionEnd` (the person decided; a build still needs its commits), or fails if nobody resumes
+    within the waiting-input timeout;
   - manifest adds `chat` in stream mode; `capacity` counts stream processes; `release` kills the
     process group. tmux mode is unchanged.
 - **runner-host**: `runner.json` `session: "tmux" | "stream-json"` (default `tmux`); `session.started`
   carries the session's mode; the steer loop calls `adapter.takeover` for a `takeover` row;
-  `status` prints the mode.
+  the host logs its mode at start.
 - **App**: on the Live tab, a run with `mode: "stream"` gets a **Chat** view (the default for it,
   next to Transcript and Terminal): assistant text as Markdown, each tool call collapsible with its
   input and output, status lines, a line per turn with its tokens and time, the owner's messages as
