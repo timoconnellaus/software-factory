@@ -12,8 +12,14 @@ import {
   type Refusal,
   toRefusal,
 } from "@software-factory/core";
+import {
+  parseTerminalPath,
+  TERMINAL_PATHS,
+  type TerminalMode,
+} from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
 import { planningHub } from "./planning-hub.ts";
+import { terminalRelay } from "./terminal-relay.ts";
 
 /** `ms` is the time spent inside the engine, so the caller can tell it apart from the hop. */
 export type EngineInvokeResult<O = unknown> =
@@ -63,6 +69,70 @@ export class EngineApi extends WorkerEntrypoint<Env> {
       throw error;
     }
     return { ok: true, stream: await planningHub(this.env, workItemId).stream() };
+  }
+
+  /**
+   * Opens a run's web terminal for a person (spec 35, ADR 0440): `run.terminal.attach` as them
+   * (which decides `type` or `watch` and records the attach), then a one-use viewer ticket from the
+   * job's relay. The caller opens the socket at `path` through this binding's `fetch`.
+   */
+  async terminalAttach(
+    workItemId: string,
+    runId: string,
+    options: EngineInvokeOptions,
+  ): Promise<
+    | { ok: true; jobId: string; mode: TerminalMode; attachId: string; path: string }
+    | { ok: false; error: Refusal }
+  > {
+    const deps = invokeDeps(this.env);
+    let attached: { attachId: string; jobId: string; mode: TerminalMode };
+    try {
+      const result = await invoke(deps, "run.terminal.attach", { workItemId, runId }, options);
+      if (result.status !== "ok") {
+        return {
+          ok: false,
+          error: { code: "unavailable", message: "the attach is held for review" },
+        };
+      }
+      attached = result.output as typeof attached;
+    } catch (error) {
+      if (isOperationError(error)) return { ok: false, error: toRefusal(error) };
+      throw error;
+    }
+    const relay = terminalRelay(this.env, attached.jobId);
+    const admitted = await relay.admit({
+      attachId: attached.attachId,
+      userId: options.actor.id,
+      workItemId,
+      mode: attached.mode,
+    });
+    if (!admitted.ok) {
+      // Refused for room: the attach closes at once.
+      await invoke(
+        deps,
+        "run.terminal.detach",
+        { workItemId, attachId: attached.attachId },
+        options,
+      ).catch(() => {});
+      return { ok: false, error: { code: "conflict", message: admitted.reason } };
+    }
+    return {
+      ok: true,
+      jobId: attached.jobId,
+      mode: attached.mode,
+      attachId: attached.attachId,
+      path: `${TERMINAL_PATHS.view(attached.jobId)}?ticket=${admitted.ticket}`,
+    };
+  }
+
+  /**
+   * Only through the service binding: a viewer's web terminal socket (`/terminal/v1/jobs/<id>/view`,
+   * with the ticket `terminalAttach` gave), handed to the job's relay. Nothing else.
+   */
+  override async fetch(request: Request): Promise<Response> {
+    const path = parseTerminalPath(new URL(request.url).pathname);
+    if (path?.role !== "view") return new Response("Not found", { status: 404 });
+    return terminalRelay(this.env, path.jobId).fetch(request);
   }
 
   /** Every operation with its description, risk, actors and permission (for help and MCP). */

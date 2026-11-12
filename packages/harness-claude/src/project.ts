@@ -151,11 +151,13 @@ export async function projectHarness(
     jobId: job.jobId,
     stage: job.stage,
     mode: settings.permissions.defaultMode,
+    ...(options.isolation ? { isolation: options.isolation } : {}),
     argv: claudeArgv(job, {
       settingsPath: paths.runSettings,
       ...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
       ...(options.profile ? { profile: options.profile } : {}),
       ...(planning ? { planning: planning.launch } : {}),
+      ...(options.isolation ? { isolation: options.isolation } : {}),
     }),
     settingsHash: sha256(text),
     settingsPaths: [paths.runSettings, paths.localSettings],

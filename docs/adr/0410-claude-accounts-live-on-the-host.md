@@ -51,3 +51,10 @@ and the run's environment must stay credential-free apart from the model credent
 - Orca's per-profile config dirs are no longer read anywhere.
 - Containers (piece 4) and sandboxes (piece 7) will need the same account, passed into the box. That
   is their specs' problem; this ADR keeps the account on the host that launches Claude.
+
+> Amended 2026-11-12 ([ADR 0430](0430-a-container-per-job.md)): on a runner with container isolation,
+> a job's container gets its account's token as an environment variable. A login account can't be
+> used there: the job fails before anything is made, and `sf-runner doctor` says so. Make a token
+> account active (`claude setup-token | sf-runner account add <name> --token-stdin`, then
+> `sf-runner account use <name>`). The `default` account uses `runner.json` `container.env`, else
+> sf-runner's environment.

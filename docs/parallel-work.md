@@ -34,6 +34,8 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | X | 0170–0179 | 0400–0409 | Watch and steer runs from the dashboard (`hosts-watch-steer`): spec 31. Used: migration 0170; ADR 0400 | in progress |
 | Y | 0180–0189 | 0410–0419 | Claude accounts on a host (`hosts-accounts`): spec 32, plan piece 3. Accounts on the host, manual switching from the host or the dashboard (`runner.account.use`), the account in the harness launch. Used: migration 0180; ADR 0410 | in progress |
 | Z | 0190–0199 | 0420–0429 | Linux hosts (`hosts-linux`): spec 34. The systemd user service, platform paths, the harness sandbox on Linux, Linux doctor checks, the install path. Used: ADR 0420, no migrations | in progress |
+| AA | 0200–0209 | 0430–0439 | Container per job (`hosts-containers`): spec 33, hosts plan piece 4. Used: ADR 0430, no migrations | in review |
+| AB | 0210–0219 | 0440–0449 | Web terminal in the dashboard (`hosts-web-terminal`): spec 35. The TerminalRelay Durable Object per job, the `terminal` held call and host socket, `run.terminal.*`, the tmux control-mode bridge, the Live tab's web terminal. Used: migration 0210; ADR 0440 | in progress |
 | AC | 0220–0229 | 0450–0459 | Verify from the factory's own evidence (`verify-evidence`): spec 51. PR A, the tests-intact guard (ADR 0450, no migrations); PR B, checks run by the runner host, proven criteria (ADR 0451, migration 0220). | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
