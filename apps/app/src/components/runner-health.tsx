@@ -16,6 +16,14 @@ const DOT: Record<Runner["state"], Status> = {
   draining: "idle",
 };
 
+/** How the runner's code stands (ADR 0360), or "" when it's current. */
+export function updateLabel(r: Runner): string {
+  if (!r.update) return "";
+  if (r.update.state === "behind") return "updating to the latest version";
+  const what = r.update.state === "blocked" ? "can't update" : "update rolled back";
+  return r.update.reason ? `${what}: ${r.update.reason}` : what;
+}
+
 export function runnerLabel(r: Runner): string {
   // With a light pool (ADR 0301): "heavy 1/2 · light 2/6".
   const slots = r.light
@@ -70,13 +78,25 @@ export function RunnerHealth({
           key={r.id}
           className={cn("inline-flex items-center gap-1.5", compact && "min-w-0")}
           data-state={r.state}
-          title={`${r.name}: ${runnerLabel(r)}`}
+          title={`${r.name}: ${runnerLabel(r)}${updateLabel(r) ? ` · ${updateLabel(r)}` : ""}`}
         >
           <StatusDot status={DOT[r.state]} />
           <span className="shrink-0 font-mono">{r.name}</span>
           <span className={cn("text-muted-foreground", compact && "truncate")}>
             {runnerLabel(r)}
           </span>
+          {r.update && (
+            <span
+              className={cn(
+                "text-xs",
+                r.update.state === "behind" ? "text-muted-foreground" : "text-destructive",
+                compact && "truncate",
+              )}
+              data-testid="runner-update"
+            >
+              · {updateLabel(r)}
+            </span>
+          )}
         </span>
       ))}
     </div>

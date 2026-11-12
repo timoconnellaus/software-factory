@@ -137,6 +137,7 @@ describe("the planning panes", () => {
       light: { inUse: 2, max: 6 },
       rateLimitedUntil: null,
       lastSeenAt: null,
+      update: null,
     };
     expect(runnerLabel(r)).toBe("busy · heavy 1/2 · light 2/6");
     expect(runnerLabel({ ...r, state: "online" })).toBe("online · heavy 1/2 · light 2/6");

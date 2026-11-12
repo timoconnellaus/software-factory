@@ -18,6 +18,7 @@ import {
   type Pool,
   runBranch,
   runnerEventSchema,
+  runnerVersionSchema,
   stagePool,
   storedArtifactSchema,
 } from "@software-factory/runner-contract";
@@ -57,7 +58,23 @@ const runnerView = z.object({
   accepting: z.boolean(),
   rateLimitedUntil: z.string().nullable(),
   lastSeenAt: z.string().nullable(),
+  /**
+   * The runner's code (ADR 0360): the commit it runs, the commit the factory wants it on, and where
+   * its self-update stands. `version` null: it hasn't reported one (an older runner).
+   */
+  version: z.string().nullable(),
+  desiredVersion: z.string().nullable(),
+  autoUpdate: z.boolean().nullable(),
+  update: z
+    .object({ state: z.string(), target: z.string().nullable(), reason: z.string().nullable() })
+    .nullable(),
 });
+
+/** The commit runners should run (ADR 0360), or null on an engine that doesn't know it. */
+const desiredVersion = (ctx: HandlerContext): string | null => {
+  const sha = ctx.services.deployedSha?.trim() ?? "";
+  return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+};
 
 async function loadRunner(ctx: HandlerContext, id: string) {
   const runner = await ctx.db
@@ -164,6 +181,12 @@ export const runnerList = defineOperation({
         accepting: r.accepting === 1,
         rateLimitedUntil: r.rate_limited_until,
         lastSeenAt: r.last_seen_at,
+        version: r.version,
+        desiredVersion: desiredVersion(ctx),
+        autoUpdate: r.auto_update === null ? null : r.auto_update === 1,
+        update: r.update_state
+          ? { state: r.update_state, target: r.update_target, reason: r.update_reason }
+          : null,
       })),
     };
   },
@@ -176,6 +199,7 @@ function reportRunnerState(
     manifest: CapabilityManifest;
     capacity: z.infer<typeof capacitySchema>;
     rateLimitedUntil?: string | null | undefined;
+    version?: z.infer<typeof runnerVersionSchema> | undefined;
   },
 ) {
   ctx.write(
@@ -192,6 +216,15 @@ function reportRunnerState(
           ? { rate_limited_until: report.rateLimitedUntil }
           : {}),
         last_seen_at: ctx.now,
+        ...(report.version
+          ? {
+              version: report.version.sha,
+              auto_update: report.version.autoUpdate ? 1 : 0,
+              update_state: report.version.update.state,
+              update_target: report.version.update.target,
+              update_reason: report.version.update.reason,
+            }
+          : {}),
       })
       .where("id", "=", runner.id),
   );
@@ -209,12 +242,16 @@ export const runnerHeartbeat = defineOperation({
     capacity: capacitySchema,
     activeJobs: z.array(z.object({ jobId: z.string(), fencingToken })),
     rateLimitedUntil: z.iso.datetime({ offset: true }).nullable().optional(),
+    /** The runner's own code and its self-update (ADR 0360); older runners omit it. */
+    version: runnerVersionSchema.optional(),
   }),
   output: z.object({
     commands: z.array(
       z.object({ kind: z.literal("cancel"), jobId: z.string(), reason: z.string() }),
     ),
     leases: z.array(z.object({ jobId: z.string(), expiresAt: z.string() })),
+    /** The commit the runner should run (ADR 0360); null when the engine doesn't know. */
+    desiredVersion: z.string().nullable(),
   }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
@@ -268,7 +305,7 @@ export const runnerHeartbeat = defineOperation({
       );
       leases.push({ jobId: held.jobId, expiresAt });
     }
-    return { commands, leases };
+    return { commands, leases, desiredVersion: desiredVersion(ctx) };
   },
 });
 
