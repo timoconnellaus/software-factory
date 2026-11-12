@@ -57,7 +57,15 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    container runner, or where the sandbox can't start, it runs nothing and reports the check
    **not run** (never failed, never a fix round). On a container runner the check container has no
    network: declare the install check as `pnpm install --offline --frozen-lockfile`, which installs
-   from the job's pnpm store. The host declares the `checks` capability, so only it gets jobs that
+   from a copy of the job's pnpm store made for that check. Each check runs in a dir of its own
+   (`r<round>-<i>/`: its tree, HOME, temp and pnpm store): the first on the export, each later one
+   on a copy of the tree the one before left, made after it was killed. So declare the install
+   first, and don't install again in later checks. Under the OS sandbox a check reads none of the
+   owner's home but the toolchain on its PATH, reaches no loopback but the sandbox's proxy (on macOS,
+   not even a server it starts itself), and fetches through the proxy (`NODE_USE_ENV_PROXY`, so
+   Node ≥ 24.5); srt's sockets go in `~/.local/share/software-factory/runner/s`. Before a job's
+   checks the host runs `sandboxTrial()`: where the sandbox can't start (Ubuntu's AppArmor
+   restriction on unprivileged user namespaces left on) every check is not run, with the reason. The host declares the `checks` capability, so only it gets jobs that
    carry checks. A failure is typed into the same session (the command, exit code and log tail,
    one steer) and the fix checked again, up to `fixRounds`. Before any host git after the session,
    a check or a fix round, the git config and the adapter's `checkWorkspace` are checked again. An

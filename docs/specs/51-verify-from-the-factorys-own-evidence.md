@@ -61,6 +61,18 @@ commands it ran on the head SHA, and CI. The reviewer's opinion stays, labelled 
   ≤ 8 KB), or **not run** with why (`notRun`: no isolation here, a job with no container, a sandbox
   that couldn't start), which never passes and never goes to a fix round. Only a runner that
   declares the `checks` capability is given a job that carries checks (ADR 0520's rule).
+  *Third review (2026-11-12):* each check runs in a dir of its own: the first on the export, each
+  later one on a copy of the tree the one before left, made after it was killed, so declare the
+  install first and let the later checks use what it installed (don't install again in them). The
+  check's pnpm store is its own. A not-run check is stored with its reason (migration 0271) and
+  the item goes on to verify and the merge gate, which say "these checks could not be run on this
+  runner: <reason>" and leave the criteria it would prove Not proven: a person decides. On macOS a
+  check can't reach loopback (so not a server it starts itself, such as a workerd test pool).
+  *Routing (deferred to the hosts session):* today the host declares `checks` for every adapter and
+  reports "not run" where it has no isolated exec. When the hosts session's follow-up makes the
+  manifest say a runner cannot run checks (the capability from `sandboxTrial()` and the adapter),
+  `job.enqueue`'s `requires: checks` keeps a v8 item that declares checks off that runner; no
+  Workflow change is needed for it.
 - **A failure goes back to the same session.** When a check fails and the adapter can steer, the
   host types the failure (command, exit code, log tail) into the same build session, waits for that
   turn to end, and runs the checks again: at most `retryLimit` rounds. Then it pushes and hands
@@ -70,7 +82,7 @@ commands it ran on the head SHA, and CI. The reviewer's opinion stays, labelled 
   A new head has no results until checks run on it.
 - **The Workflow (v8; v7 is spec 50 part C's)** reads the build's results for the pushed head: all passed → verify; any
   failed after the session's fixes → a question to a person (try another build, or stop), never a
-  cold retry. For an attached PR, the verify job runs the checks before its review session.
+  cold retry; any the runner could not run (and none failed) → on to verify, burning no build. For an attached PR, the verify job runs the checks before its review session.
 - **The verdict** (`reviewPacket.record`) uses the executed results for the head SHA, never the
   agent's report of checks: every declared check must have a passing result on the SHA, and CI must
   be green. A project with no declared checks is a warning in the packet.

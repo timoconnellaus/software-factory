@@ -145,3 +145,72 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 > is denied. A daemon that both leaves the check's process group and changes its cwd out of the
 > check's root before the check ends escapes the reaping on macOS; it stays inside the sandbox, which
 > lets it write only that check's own dirs, and the root is deleted when the job ends.
+
+> **Amended 2026-11-12 (third review).** The third independent review found the sandbox never
+> started with the runner's real paths, an install could not succeed in it, a "not run" check was a
+> dead end, and a check could still forge a later one. What is now true:
+>
+> 1. **The sandbox starts at the runner's real depth.** srt puts its proxy sockets in its process's
+>    temp; the check's temp under `paths().checksDir` made that path about 123 characters on macOS
+>    (limit 104) and 125 on Linux (limit 108). The sandbox child's own TMPDIR is now a short private
+>    dir made per check under `paths().checkSocketsDir` (`<data dir>/s/c…`), which no check can write
+>    and every harness's `protectPaths` names; the command still gets the check's own temp. A dir
+>    that would still be too deep is "not run" with the reason. Tested at the real `paths()` depth
+>    with a realistic job id, on both OSes.
+> 2. **Each check has a dir of its own.** `<checks root>/r<round>-<i>/` holds its tree, HOME, temp and
+>    pnpm store. The first check of a round gets the export of the commit; each later one gets a copy
+>    of the tree the check before it left (so the install, declared first, carries over), made only
+>    after that check ended and everything it started was killed; the earlier dir is then removed.
+>    Symlinks are copied as they are, never followed. A process an earlier check left can write only
+>    that check's dirs, never the one the next check runs in: that is the guarantee. The kill is
+>    defence in depth: the process group, every descendant the host saw from spawn (the process
+>    table read every 100 ms, a pid killed only with its recorded start time), then anything with a
+>    cwd under the check's dir; on Linux bubblewrap's pid namespace with `--die-with-parent` kills
+>    everything when the sandbox ends. Regression: a detached daemon with cwd `/` that keeps writing
+>    PASS can't make the next check pass, on both OSes.
+> 3. **None of the owner's home, no loopback.** The whole home is denied; only the toolchain on the
+>    check's PATH (each tool's PATH entry and the install it resolves to: a node prefix, a package
+>    such as `…/node_modules/pnpm`) is re-allowed, read-only, and never a path that is, holds or sits
+>    in a denied one. `allowLocalBinding` is off: no loopback but the sandbox's own proxy, so a
+>    service on the owner's 127.0.0.1 is unreachable. On Linux the check has a loopback of its own in
+>    its network namespace; **on macOS a check can't reach a server it starts itself** (a workerd test
+>    pool, a dev server): such a project's checks need a Linux or container runner.
+> 4. **The install runs in the sandbox.** The check's pnpm store is its own (`<check dir>/store`), not
+>    the agent's or another job's; `NODE_USE_ENV_PROXY=1` makes Node's own fetch (corepack fetching
+>    pnpm) go through the proxy, so the runner's Node must be ≥ 24.5. The documented install check
+>    (`pnpm install --frozen-lockfile`, then a check that runs the tests) passes end to end on a real
+>    pnpm workspace, through a plain pnpm and through corepack's shim, on macOS and in Linux CI.
+>    Lifecycle scripts run only there (and in a container check); the host never installs. A
+>    container check gets its own copy of the job's pnpm store, mounted where the agent's was.
+> 5. **"Not run" goes on to a person.** Stored with its reason (migration 0271,
+>    `core_check_results.not_run`), never a pass, never a failure. The build's checks step sends
+>    back only checks that failed; a not-run item goes on to verify and the merge gate, which say
+>    "these checks could not be run on this runner: <reason> (<names>)", show the criteria they would
+>    prove as Not proven, and refuse auto-merge. A not-run burns no build attempt.
+> 6. **A start-up trial.** `sandboxTrial()` (exported from `local/runner-host/src/check-sandbox.ts`
+>    for `sf-runner doctor` and the `checks` capability) runs a trivial command under a check's
+>    settings; the host runs it before a job's checks (a pass stands 10 minutes). Where it fails
+>    (Ubuntu's AppArmor restriction on unprivileged user namespaces, missing binaries) every check is
+>    "not run: the sandbox could not start: …". CI has a job that leaves the restriction on and
+>    asserts exactly that.
+> 7. **Proof.** A CI check run proves a criterion only when the project's config requires it
+>    (`protection.requiredChecks`, never `factory/verify`), not any job the PR added. The proof
+>    iterates the approved spec's criteria: one the reviewer left out is Not proven, one it repeated
+>    counts once, and the proven count is over the spec's criteria.
+> 8. **Names and commands.** `run.handBack` refuses a result whose name isn't one of the item's
+>    declared checks; the verdict ignores a stored result whose command differs from the current
+>    declaration ("didn't run as declared").
+> 9. **Gate files.** The tests-intact guard (ADR 0500) also flags lifecycle scripts and any other
+>    package.json script, `packageManager`, overrides and allowed build scripts, the package
+>    manager's config (`pnpm-workspace.yaml`, `.npmrc`, `.pnpmfile.cjs`, `.yarnrc*`, `bunfig.toml`),
+>    and a lockfile change that moves the test tooling (vitest, jest, playwright, typescript, biome,
+>    eslint, …); a lockfile GitHub didn't return is unreadable.
+>
+> **Known limits now.** On macOS the kill can miss a process that forks and exits between two reads
+> of the process table (100 ms); it stays in its check's sandbox and can write only that check's dirs,
+> which no later check uses, and it can reach only the allowlisted hosts through a proxy that ends
+> with its check. There is no API to list the processes holding a macOS sandbox profile, so that is
+> not done. A check can reach github.com and the other allowlisted hosts; on macOS it can talk to
+> securityd (the owner's keychains are denied). Within a round, a check sees what the check before
+> it left in the tree (that is how the install carries over), so an install's lifecycle scripts can
+> change what the tests run: the guard flags any change to them, and a person sees it at the gate.

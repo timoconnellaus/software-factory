@@ -65,3 +65,46 @@ jobs:
         run: node scripts/deploy/desktop-floor.ts
       # Every Worker must bundle; a dry run catches what typecheck can't (bad bindings, imports).
       - run: pnpm build
+
+  # The real check sandbox on macOS (ADR 0501, third review): sandbox-exec, the real home and its
+  # toolchain under it (hostedtoolcache, setup-pnpm), required.
+  check-sandbox-macos:
+    name: check sandbox (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @software-factory/runner-host exec vitest run test/checks.test.ts
+        env:
+          SF_REQUIRE_SANDBOX: "1"
+
+  # A Linux runner host with Ubuntu's AppArmor restriction on unprivileged user namespaces left ON
+  # (ADR 0501, third review, 6): the sandbox can't start, so the start-up trial must say so and every
+  # check must come back "not run", never a failure sent to a fix round.
+  check-sandbox-apparmor:
+    name: check sandbox (AppArmor restriction on)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat ripgrep
+          # On, whatever the image's default: this job is about a host that left it on.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+      - run: pnpm --filter @software-factory/runner-host exec vitest run test/checks.test.ts
+        env:
+          SF_EXPECT_SANDBOX_BLOCKED: "1"

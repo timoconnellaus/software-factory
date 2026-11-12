@@ -183,7 +183,9 @@ function corepackOnPath(): string | null {
   }
   return null;
 }
-const realSandbox = requireSandbox || sandboxAvailable();
+/** A host whose kernel refuses the sandbox (CI's AppArmor job): only the not-run test runs. */
+const blocked = process.env.SF_EXPECT_SANDBOX_BLOCKED === "1";
+const realSandbox = !blocked && (requireSandbox || sandboxAvailable());
 
 describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
   it.runIf(requireSandbox)("has the OS sandbox on this machine (required here)", () => {
@@ -766,7 +768,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
     600_000,
   );
 
-  it.runIf(process.env.SF_EXPECT_SANDBOX_BLOCKED === "1")(
+  it.runIf(blocked)(
     "reports every check not run where the kernel refuses the sandbox (AppArmor's restriction left on)",
     async () => {
       const parent = await scratch("sf-checks-root-");
@@ -793,7 +795,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
     120_000,
   );
 
-  it.runIf(realSandbox && process.env.SF_EXPECT_SANDBOX_BLOCKED !== "1")(
+  it.runIf(realSandbox)(
     "passes its start-up trial where the sandbox works",
     async () => {
       expect(
