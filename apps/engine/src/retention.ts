@@ -12,7 +12,8 @@
 //   core_run_events, _steers     30 days after the run ended      archived to sf-archive, read back
 //                                                                  by run.live, then deleted
 
-import { RUN_ARCHIVE_AFTER_DAYS } from "@software-factory/core";
+import { invoke, RUN_ARCHIVE_AFTER_DAYS, SCHEDULER } from "@software-factory/core";
+import { invokeDeps } from "./deps.ts";
 
 const DAY = 86_400_000;
 
@@ -648,3 +649,54 @@ export type ArchiveStatus = {
   /** Days to drain the backlog at today's rate; null while live traffic leaves the drain nothing. */
   expectedDrainDays: number | null;
 };
+
+/** Archived objects the daily sample checks with a HEAD. */
+export const ARCHIVE_SAMPLE = 5;
+
+/**
+ * Once a day: checks a few archived objects, picked at random, with a HEAD (no read), so a lost
+ * one is found without waiting for someone to open its run. Each one that is gone is reported
+ * through run.reportArchiveMissing as the scheduler, which checks again for itself and opens the
+ * run's one incident. Two queries (the table's top rowid, then the picks in one query with
+ * json_each, each on the rowid) and a HEAD each. Returns the keys found missing.
+ */
+export async function sampleArchive(
+  env: Env,
+  now = new Date(),
+  n = ARCHIVE_SAMPLE,
+  pick: () => number = Math.random,
+): Promise<string[]> {
+  const top = await env.DB.prepare("SELECT max(rowid) AS top FROM core_run_archive_chunks").first<
+    number | null
+  >("top");
+  if (!top) return [];
+  const rowids = Array.from({ length: n }, () => 1 + Math.floor(pick() * top));
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT c.run_id, c.first_seq, c.r2_key, r.work_item_id
+     FROM json_each(?) j
+     JOIN core_run_archive_chunks c ON c.rowid = (
+       SELECT rowid FROM core_run_archive_chunks WHERE rowid >= j.value ORDER BY rowid LIMIT 1)
+     JOIN core_runs r ON r.id = c.run_id`,
+  )
+    .bind(JSON.stringify(rowids))
+    .all<{ run_id: string; first_seq: number; r2_key: string; work_item_id: string }>();
+  const missing: string[] = [];
+  for (const c of results) {
+    if ((await env.ARCHIVE.head(c.r2_key)) !== null) continue;
+    missing.push(c.r2_key);
+    try {
+      await invoke(
+        invokeDeps(env),
+        "run.reportArchiveMissing",
+        { workItemId: c.work_item_id, runId: c.run_id, firstSeq: c.first_seq },
+        { actor: SCHEDULER, origin: { surface: "cron" } },
+      );
+    } catch (error) {
+      console.error(`archive sample: couldn't report ${c.r2_key}: ${String(error)}`);
+    }
+  }
+  if (missing.length > 0) {
+    console.error(`archive sample ${now.toISOString()}: missing ${missing.join(", ")}`);
+  }
+  return missing;
+}

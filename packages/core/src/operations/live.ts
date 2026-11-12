@@ -15,6 +15,7 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { logPlanning, takeBackFromGate } from "../planning.ts";
+import { openArchiveIncident } from "./incidents.ts";
 import {
   fencingToken,
   jobId,
@@ -107,7 +108,7 @@ async function pageEvents(
   ctx: HandlerContext,
   run: LiveRun,
   afterSeq: number | undefined,
-): Promise<{ rows: Event[]; archive: ArchiveRead | null }> {
+): Promise<{ rows: Event[]; archive: ArchiveRead | null; missingSeq?: number }> {
   const mayBeArchived =
     run.events_archived_at !== null ||
     (run.ended_at !== null &&
@@ -118,7 +119,7 @@ async function pageEvents(
   if (afterSeq === undefined && d1.length > 0) return { rows: d1, archive: null };
   let q = ctx.db
     .selectFrom("core_run_archive_chunks")
-    .select("r2_key")
+    .select(["r2_key", "first_seq"])
     .where("run_id", "=", run.id)
     .where("first_seq", ">=", 0);
   q =
@@ -128,6 +129,7 @@ async function pageEvents(
   const chunk = await q.limit(1).executeTakeFirst();
   if (!chunk) return { rows: d1, archive: null };
   const { rows, state } = await readChunk<StoredEvent>(ctx, chunk.r2_key);
+  if (state === "missing") return { rows: [], archive: state, missingSeq: chunk.first_seq };
   if (state !== "read") return { rows: [], archive: state };
   const events = expandRows(rows);
   return {
@@ -475,6 +477,17 @@ export const runLive = defineOperation({
      * the view says so and it is reported as an incident). Null when the answer came from D1 only.
      */
     archive: z.enum(["read", "failed", "missing"]).nullable().optional(),
+    /**
+     * When `missing`: which chunk (its first seq, -1 for the steers) for run.reportArchiveMissing,
+     * and the incident once one is open (one per run).
+     */
+    archiveMissing: z
+      .object({
+        firstSeq: z.number(),
+        incident: z.object({ workItemId: z.string(), number: z.number() }).nullable(),
+      })
+      .nullable()
+      .optional(),
     /** The last seq in this answer (or `afterSeq` when none is new), for the next `afterSeq`. */
     lastSeq: z.number(),
     /** Whether events before the first one returned were left out. */
@@ -547,6 +560,14 @@ export const runLive = defineOperation({
         : page.archive === "failed" || steerRead.state === "failed"
           ? "failed"
           : (page.archive ?? (archived ? "read" : null));
+    // Only when something is missing (rare): the run's incident, on core_incidents_run_idx.
+    const archiveMissing =
+      archive === "missing"
+        ? {
+            firstSeq: page.archive === "missing" ? (page.missingSeq ?? 0) : -1,
+            incident: await archiveIncident(ctx, run.id),
+          }
+        : null;
     const requested = steers.some((s) => s.kind === "takeover");
     const active = ACTIVE.includes(run.status);
     // At most LIVE_BYTES_MAX of payload: the newest events for a first read, the oldest new ones
@@ -572,6 +593,7 @@ export const runLive = defineOperation({
       },
       archived,
       archive,
+      archiveMissing,
       events: events.map((e) => ({
         seq: e.seq,
         at: e.at,
@@ -823,5 +845,60 @@ export const runTakeover = defineOperation({
     // The same wake as a steer: the host's held steer call takes it at once.
     ctx.emit({ kind: "run.steered", payload: { workItemId: item.id } });
     return { requestId: id, status: "queued" as const };
+  },
+});
+
+/** The run's archive incident (one per run), with its work item's number. */
+async function archiveIncident(
+  ctx: HandlerContext,
+  runIdValue: string,
+): Promise<{ workItemId: string; number: number } | null> {
+  const row = await ctx.db
+    .selectFrom("core_incidents")
+    .innerJoin("core_work_items", "core_work_items.id", "core_incidents.fix_work_item_id")
+    .select(["core_work_items.id", "core_work_items.number"])
+    .where("core_incidents.run_id", "=", runIdValue)
+    .where("core_incidents.kind", "=", "archive_missing")
+    .limit(1)
+    .executeTakeFirst();
+  return row ? { workItemId: row.id, number: row.number } : null;
+}
+
+export const runReportArchiveMissing = defineOperation({
+  name: "run.reportArchiveMissing",
+  description:
+    "Report that part of an archived run's log is missing from the archive (AGENTS.md \"Cloudflare cost\"): run.live answered `archive: missing` for this chunk. Trusts nothing it is told: it finds the chunk in the run's chunk index and checks with R2 (a HEAD) that the object isn't there, and does nothing otherwise. Opens one incident per run, for a person (a work item left in the backlog; no agent runs, since none could bring the object back). The website calls it when a viewer meets the gap; the archive's daily sample calls it as the scheduler.",
+  risk: "write",
+  actors: ["human", "scheduler"],
+  permission: "member",
+  input: z.object({ workItemId, runId, firstSeq: z.number().int().min(-1) }),
+  output: z.object({
+    reported: z.boolean(),
+    incident: z.object({ workItemId: z.string(), number: z.number() }).nullable(),
+  }),
+  async handler(input, ctx) {
+    const item = requireWorkItem(ctx);
+    const run = await loadRunForItem(ctx, item.id, input.runId);
+    if (!run) throw new OperationError("not_found", "no such run on this work item");
+    const [chunk, existing] = await Promise.all([
+      ctx.db
+        .selectFrom("core_run_archive_chunks")
+        .select("r2_key")
+        .where("run_id", "=", run.id)
+        .where("first_seq", "=", input.firstSeq)
+        .executeTakeFirst(),
+      archiveIncident(ctx, run.id),
+    ]);
+    if (existing) return { reported: false, incident: existing };
+    if (!chunk) return { reported: false, incident: null };
+    const archive = ctx.services.runArchive;
+    if (!archive) throw new OperationError("unavailable", "the archive isn't bound here");
+    if (await archive.exists(chunk.r2_key)) return { reported: false, incident: null };
+    const opened = openArchiveIncident(ctx, {
+      runId: run.id,
+      runNo: run.run_no,
+      key: chunk.r2_key,
+    });
+    return { reported: true, incident: { workItemId: opened.workItemId, number: opened.number } };
   },
 });

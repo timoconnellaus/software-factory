@@ -310,6 +310,8 @@ export interface CoreWorkItemsTable {
   workflow_version: number | null;
   policy_sha: string | null;
   parent_work_item_id: string | null;
+  /** 0370 (spec 23): a parked item's needs-info marker, JSON; null when not parked. */
+  needs_info: string | null;
   created_at: Iso;
   updated_at: Iso;
   closed_at: Iso | null;
@@ -500,7 +502,13 @@ export interface CoreReviewPacketsTable {
   created_at: Iso;
 }
 
-export type IncidentKind = "sent_back" | "run_failed" | "run_stalled" | "manual";
+export type IncidentKind =
+  | "sent_back"
+  | "run_failed"
+  | "run_stalled"
+  | "manual"
+  /** 0364: a run's archived log is lost; for a person, no agent fix. */
+  | "archive_missing";
 
 export interface CoreIncidentsTable {
   id: string;
