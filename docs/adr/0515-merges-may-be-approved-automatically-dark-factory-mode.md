@@ -64,13 +64,18 @@ just a config option. Nothing special."
      `**/wrangler.*`), CI and repository settings (`.github/**`), factory policy (`.factory/**`), and
      lock files changed without a matching manifest change (`pnpm-lock.yaml` and the like). A path
      list is globs over repository paths; matching is case-insensitive.
-   - For the factory's own repository, the workflow it runs should add the code that enforces
-     policy to `riskPaths` (`packages/core/src/policy/**`, `apps/engine/src/workflow/**`,
-     `AGENTS.md`, `docs/adr/**`). That is a workflow setting, not a floor rule, because other
-     repositories don't have those paths.
+   - **The factory's own policy code is protected in code, not by a setting** (working answer,
+     owner to confirm). A second built-in list, `SELF_MODIFY_PATHS` beside `RISK_PATHS`, holds the
+     paths that make a merge self-modify today: `.factory/**` and the code that enforces policy,
+     gates, the operation registry and workflows (`packages/core/src/policy/**`,
+     `packages/core/src/gate.ts`, `packages/core/src/registry.ts`,
+     `packages/core/src/operations/**`, `packages/core/src/stages/**`,
+     `apps/engine/src/workflow/**`, `AGENTS.md`, `docs/adr/**`). A merge touching any of them is
+     **always** excluded from auto-approval, in every workflow, on every repository. No workflow
+     setting can remove it, and nobody has to remember to add it: `riskPaths` only adds to it.
 5. **What it never covers.** Changes to the factory itself always need a person: any `self-modify`
    save (policy, autonomy, the floor, a workflow or its stages, agents, skills on the judge), and any
-   merge whose diff touches `.factory/` (the risk-path floor). The adjudicator still never decides
+   merge whose diff touches a path in `SELF_MODIFY_PATHS` (rule 4, built in, never removable). The adjudicator still never decides
    `self-modify`.
 6. **Merge and deploy.** It covers merges now, and deploys once the workflow has a deploy stage with
    a health check after it (spec 52's later build). Until then only merges are auto-approved. It does
@@ -84,10 +89,11 @@ just a config option. Nothing special."
    - a factory incident or a production incident is opened on the project;
    - a merge it approved is reverted on the default branch (a revert commit or PR naming its SHA);
    - CI goes red on the default branch's head after one of its merges, before the next green run.
-   It then puts a card in the inbox for the project's approvers: what went wrong, the merges it
-   approved since the last green, and **Lift the hold**. Lifting it is a person's project config save
-   and a loosening, so an org admin makes and approves it (rule 2). Other projects on the same
-   workflow are not affected.
+   It then puts a card in the inbox for the project's approvers and the org's admins: what went wrong, the merges it
+   approved since the last green, and **Lift the hold**. Lifting it is a project config save and a
+   loosening, so **an org admin** makes it and an org admin approves it (rule 2, spec 52 Q6; working
+   answer, owner to confirm). A project approver who is not an org admin sees the card and can't
+   lift it. Other projects on the same workflow are not affected.
 8. **The old exception goes.** ADR 0230's `pr.autoMerge` and the `check-merge` risk class are
    replaced by this setting: an incident's check-only fix merges with no person only when the mode is
    on and rules 3–5 hold, like any other change (in the owner's words, "where it merges too"). The
@@ -99,8 +105,21 @@ just a config option. Nothing special."
   setting, which only a person can turn on, holds for that exact SHA; self-modify always goes to a
   person.
 - The adjudicator gains `merge` as a gate kind it shadows (ADR 0374). Its approval is necessary and
-  never sufficient: the other conditions are checked in code. ADR 0374's "every fifth approval is
-  still left to a person" applies to merges too, so its precision stays measured.
+  never sufficient: the other conditions are checked in code.
+- **Sampling doesn't block** (working answer, owner to confirm). ADR 0374's "every fifth approval is
+  left to a person" would hold one eligible merge in five, which contradicts "just auto approving
+  merges". With `autoApprove` on, the sampled merge is **not held**: it is auto-approved like the
+  others and also put in front of a person afterwards as a **review-after-merge** inbox item. The
+  person's verdict feeds the adjudicator's precision as before; a "this should not have merged"
+  verdict trips the per-project hold (rule 7) like a revert.
+- **The `auto-approve` actor needs its own decision path.** `approval.decide` refuses merge approvals
+  today ("approve a merge with review.merge"), and `review.merge` is a person's operation. Build step
+  (e) adds an internal decision path for the Workflow (not an operation any token can call) that
+  records the verdict and its facts as the merge gate's decision, actor `auto-approve`.
+- **Preview approvals and Publish** (spec 52 Q2 × Q12; working answer, owner to confirm). A person's
+  Preview approval carries over to a directly following Publish. The adjudicator's Preview approval
+  carries over only in a workflow whose Publish gate has `autoApprove` on and whose conditions hold
+  for that digest; otherwise Publish asks a person.
 - Items an autopilot filed are eligible like any other: the autopilot never merges (ADR 0514), the
   item's own workflow does, under these conditions.
 - Stricter than ADR 0230 for incident fixes: they now also need the adjudicator's earned approval.
