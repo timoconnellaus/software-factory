@@ -115,10 +115,43 @@ Nothing changes for a user.
   head_sha)` to `(repository_id, head_sha)`: it can't change now, because code deployed before
   0260 upserts on the old key during the deploy.
 
+## States and stages: what is fixed and what belongs to the workflow
+Two separate things, which the schema and the operations keep apart:
+
+1. **Work-management states**, fixed, the same for every item whatever its workflow:
+   `backlog` → `ready` → (release) → `queued` → *(the workflow runs)* → `done`, with the endings
+   `failed`, `rejected` and `cancelled`. While the workflow runs the item's status says only whether
+   it is moving: `running`, `waiting` (on a person or an event) or `paused` (a kill switch), and,
+   before release, `shaping` while the workflow's shaping stages run (part C). These
+   are `core_work_items.status` (a CHECK), `ITEM_STATUSES`, the board read's states and counts, and
+   the operations that move between them (`workItem.create/update/move/release/link`,
+   `queue.pull`, `workItem.cancel`). None of them names a software stage.
+2. **Stages**, which belong to the **workflow**. Triage, spec, build, verify, review and merge are
+   the **Software** workflow's stages, not universal ones: a Marketing workflow might draft, review
+   and publish. A workflow's stages fall in two **phases** with release between them: **shaping**
+   stages (they need a person, hold no build slot and don't count as active) and **delivery**
+   stages. They are `core_work_items.stage` (free text since 0261), `core_stages` (free text) and
+   the board's `stage` field (a string).
+   - **Interview planning is one stage type**, not a universal state. How it runs is the workflow's
+     setting: whether it is required and from what size (today `spec.requiredFrom`), which agent
+     runs it, and who approves the plan (today the spec gate and its approvers).
+
+**Known limits** (because the engine's skeleton is fixed code, ADR 0371): the stages a workflow can
+use today are the skeleton's (`intake`, `triage`, `spec`, `build`, `verify`, `merge`, `done`; the
+operations validate against `STAGES`); `core_jobs.stage` and the planning tables keep CHECKs on the
+job kinds the runner contract knows (`triage`, `spec`, `planning`, `build`, `verify`); planning's
+settings live in config fields the skeleton reads (`spec.requiredFrom`, approvers) rather than in a
+workflow definition; and every workflow is assumed to need a repository
+(`workflowNeedsRepository`). Workflow-defined stages and per-workflow planning settings are the
+same follow-up as org-level workflows (out of scope below): the work-management states and the
+operations in this spec don't change for them, and only the job-kind CHECKs would need a migration.
+
 ## Part B: backlog, ready, queued (PR B)
 - **Migration 0261** (`0261_backlog.sql`):
-  - `core_work_items.status` gains `backlog`, `ready`, `queued` and `planning` (the CHECK is
-    rebuilt, as in 0080; `planning` is used from part C). `stage` stays `intake` until the item is pulled.
+  - `core_work_items.status` gains `backlog`, `ready`, `queued` and `shaping` (the CHECK is
+    rebuilt, as in 0080; `shaping` is used from part C). `stage` stays `intake` until the item is
+    pulled. The rebuild drops `stage`'s CHECK: stages are the workflow's (below), so a
+    workflow-defined stage needs no migration; the operations still validate it.
   - New columns: `priority` (0 urgent, 1 high, 2 normal, 3 low; default 2), `rank` (REAL, the
     order within a priority; lower first), `acceptance_criteria` (JSON, set while shaping),
     `released_at`, `released_by`, `pulled_at`. Existing items are left as they are: they are
@@ -143,15 +176,18 @@ Nothing changes for a user.
     (it is already built), and an incident is the factory's own fix. Both are created `queued` and
     pulled in the same call; neither is held by the active-item limit (they never were).
   - `workItem.update { workItemId, title?, body?, priority?, repositoryId?, size?,
-    acceptanceCriteria? }`: only before the pull.
+    acceptanceCriteria? }`: only before the pull; the repository only in backlog or ready (release
+    checked it).
   - `workItem.move { workItemId, to: "backlog" | "ready" }`: between backlog and ready, and from
     queued back to ready (un-release) before the pull.
   - `workItem.reorder { workItemId, before?: workItemId, after?: workItemId }`: sets `rank` between
-    two neighbours in the same project.
+    two neighbours in the same project; when the gap runs out of precision, the project's ranks are
+    renumbered 1, 2, 3… in their current order first.
   - `workItem.release { workItemId }` (`backlog` or `ready` → `queued`), then the pull for the
     item's project.
   - `workItem.link { workItemId, waitsFor }` / `workItem.unlink { workItemId, waitsFor }`: same
-    org, not itself, no cycle (refused `conflict`), only while the item isn't pulled.
+    org, not itself, no cycle (refused `conflict`), only while the item isn't pulled. The cycle
+    check is repeated inside the insert, so two links made at once can't close a cycle.
 - **Release rules** (in code, `releaseRefusal()`):
   1. The item is in `backlog` or `ready` (else `conflict`).
   2. The project has a valid config (else `unavailable`, as `workItem.create` today).
@@ -164,21 +200,41 @@ Nothing changes for a user.
      `policyImpact`, so it is a human-only change through `config.save` (ADR 0370, 0373).
   - The incident and attached-PR paths are code paths, not `workItem.release` calls, and are not
     governed by rule 4.
-- **The pull** (`pullQueued(ctx, projectId)` in core, and `queue.pull { projectId }`, foreman only,
-  for the cron):
+- **The pull** (`pullQueued` in core, run only by `queue.pull { projectId }`):
   - A project's **active items** are those in `running`, `waiting` or `paused`. The config's new
     `activeLimit` (default 10, at most 100) caps them. Raising it is `neutral`, like `wipLimit`.
-  - While active < `activeLimit`, pull the next queued item of the project whose every "waits for"
-    item is `done`, by `priority`, then `rank`, then `released_at`. Pulling sets `status = running`,
-    `pulled_at`, pins the project's current config version (`policy_sha`, and a running trial, ADR
-    0373) and its `workflow`, writes the intake stage and emits `workflow.create` (what
-    `createWorkItem` did at creation). An item that sat in the backlog for a month runs on the config
-    in force when it starts, not the one when it was written down. A queued item that waits on something not done stays queued; the read says why.
+  - While active < `activeLimit`, pull the next queued item of the project that has its repository
+    (when its workflow needs one) and whose every "waits for" item is `done`, by `priority`, then
+    `rank`, then `released_at`. Pulling sets `status = running`, `pulled_at`, pins the config
+    version in force (`policy_sha`; for an item joining a running trial, the trial's candidate, ADR
+    0373) and **that version's** `workflow`, writes the intake stage and emits `workflow.create`.
+    An item that sat in the backlog for a month runs on the config in force when it starts.
+  - **Never inside another call's batch.** Release, create-and-release, finish and cancel emit a
+    `queue.pull` outbox message; the engine delivers it right after their commit and runs the pull
+    in its own batch. So a pull that loses a race aborts only itself, never a finish (which would
+    record a merged item as failed), a cancel or New work.
+  - **One start, one conditional write.** Each start is an UPDATE that re-checks, in the same
+    statement, that the item is still queued, the project is still under `activeLimit` (a count
+    subquery), it has its repository and nothing it waits for is undone; anything else aborts the
+    pull's batch. D1 runs write batches one at a time, so two pulls can't both take the last slot.
+  - **The scheduler actor.** `queue.pull` is run only by `scheduler` (a new actor type): read and
+    write in every shipped autonomy policy, nothing else. It starts only work that was already
+    released, so it is never a reviewable decision; under `cautious` it doesn't open an approval a
+    minute. A floor that sends its writes to review still applies; the engine then skips a project
+    while its pull approval is pending.
   - A kill switch on the org or project holds the pull.
-  - Runs: inside `workItem.release` and `workItem.create { state: "queued" }`; after
-    `workItem.finish` and `workItem.cancel`; and from the engine's minute cron for every project
-    with queued items (the "waits for" item may be in another project).
+  - Runs: after release, create-and-release, finish (its own project, and the projects with queued
+    work waiting on it when it is done) and cancel; and from the engine's minute cron, which asks
+    only for projects where something can start now (a queued item with its waits-for done, under
+    the config's `activeLimit`), oldest released work first, so a project with nothing to start
+    costs no call and no audit row.
   - `wipLimit` keeps its meaning (ADR 0040): builds wait while that many items wait at gates.
+- **Existing projects on deploy** (migration 0261, ADR 0492): a project whose config defines
+  exactly one workflow gets a new config version (`source: migrated`) naming it, so its new items
+  keep that workflow's gate steps. A project whose config defines several and names none **fails
+  closed**: release is refused with the reason, the pull starts nothing, and Setup's config step
+  says to choose the project's workflow. Items started before 0261 (no `pulled_at`) keep triage's
+  pick, as ADR 0371 promised them.
 - **The workflow comes from the project** (ADR 0492). The config gains `workflow` (a workflow name
   or null). An item records its project's `workflow` when it is pulled. Triage no longer picks: its `workflow` field is ignored and the Workflow's
   `workflow: options` step returns none. `workItem.setWorkflow` is refused (`conflict`, "an item

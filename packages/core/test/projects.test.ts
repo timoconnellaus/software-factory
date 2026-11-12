@@ -101,7 +101,11 @@ describe("project.create from the repo picker", () => {
       approvers: [`gh-${w.userId}`],
     });
     // Work can start straight away.
-    await ok("workItem.create", { projectId: p.id, title: "x", body: "y" }, w.human);
+    await ok(
+      "workItem.create",
+      { state: "queued", projectId: p.id, title: "x", body: "y" },
+      w.human,
+    );
   });
 
   it("refuses a repo the installation can't reach, and saves nothing", async () => {

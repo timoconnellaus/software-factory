@@ -165,6 +165,7 @@ try {
       title: "Add a closing line to README.md",
       body: `Append one line to the end of README.md that reads exactly: "${LINE}". Change nothing else.`,
       source: "app",
+      state: "queued",
     },
   });
   workItemId = item.workItemId;

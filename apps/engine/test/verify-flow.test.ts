@@ -121,7 +121,7 @@ describe("verify in the v2 Workflow", () => {
     const w = await world({ ...BALANCED, retryLimit: 2 });
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Red CI" },
+      { state: "queued", projectId: w.projectId, title: "Red CI" },
       w.human,
     );
     await runStage(w, item.workItemId, "triage", () => triage("small"));
@@ -159,7 +159,7 @@ describe("verify in the v2 Workflow", () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Slow CI" },
+      { state: "queued", projectId: w.projectId, title: "Slow CI" },
       w.human,
     );
     await runStage(w, item.workItemId, "triage", () => triage("small"));
@@ -223,6 +223,7 @@ describe("verify in the v2 Workflow", () => {
       overrides: { agent: { outbound: "allow", "check-merge": "allow" } },
     });
     const make = async (title: string) => {
+      // In the backlog first, so it is an incident before its Workflow reads it (ADR 0491).
       const item = await ok<{ workItemId: string }>(
         "workItem.create",
         { projectId: w.projectId, title },
@@ -231,6 +232,7 @@ describe("verify in the v2 Workflow", () => {
       await env.DB.prepare("UPDATE core_work_items SET kind = 'incident' WHERE id = ?")
         .bind(item.workItemId)
         .run();
+      await ok("workItem.release", { workItemId: item.workItemId }, w.human);
       return item;
     };
     const checkOnly = await make("Factory incident: add a check");
@@ -365,7 +367,7 @@ describe("v3: a PR that can't merge, and CI that never reports (ADR 0320)", () =
     await github.setMergeable(w.repo, 1, false); // the item's PR will be #1
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Conflicts" },
+      { state: "queued", projectId: w.projectId, title: "Conflicts" },
       w.human,
     );
     await runStage(w, item.workItemId, "triage", () => triage("small"));
@@ -387,7 +389,7 @@ describe("v3: a PR that can't merge, and CI that never reports (ADR 0320)", () =
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Main moved during verify" },
+      { state: "queued", projectId: w.projectId, title: "Main moved during verify" },
       w.human,
     );
     await runStage(w, item.workItemId, "triage", () => triage("small"));
@@ -418,7 +420,7 @@ describe("v3: a PR that can't merge, and CI that never reports (ADR 0320)", () =
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "No CI" },
+      { state: "queued", projectId: w.projectId, title: "No CI" },
       w.human,
     );
     await runStage(w, item.workItemId, "triage", () => triage("small"));
@@ -461,7 +463,7 @@ describe("v3: a PR that can't merge, and CI that never reports (ADR 0320)", () =
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "No CI, stop" },
+      { state: "queued", projectId: w.projectId, title: "No CI, stop" },
       w.human,
     );
     await runStage(w, item.workItemId, "triage", () => triage("small"));
