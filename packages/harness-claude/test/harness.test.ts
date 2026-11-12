@@ -1,5 +1,4 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { lookup } from "node:dns/promises";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,13 +31,16 @@ import {
   writeAttachments,
 } from "../src/index.ts";
 
-// The factory's own verify runs these tests inside the harness's sandbox, which has no `ps` and
-// resolves only allowlisted hosts. Tests that need either skip there and still run in CI.
-const psWorks = (await psCommand(process.pid)) !== null;
-const githubResolves = await lookup("github.com").then(
-  () => true,
-  () => false,
-);
+// The factory's own verify runs these tests inside the harness's sandbox, where spawning `ps`
+// fails (EPERM, thrown, not returned) and github.com is reached only through the sandbox's proxy.
+// The two tests that need a real process table and a direct GitHub connection skip there. Never in
+// CI: a broken `ps` there must fail, not skip, the credential-push test (ADR 0010/0033).
+const inHarnessSandbox =
+  !process.env.CI &&
+  (await psCommand(process.pid).then(
+    (line) => line === null,
+    () => true,
+  ));
 
 const dirs: string[] = [];
 const temp = async (prefix: string) => {
@@ -396,7 +398,7 @@ describe("launch", () => {
 });
 
 describe("projection", () => {
-  it.skipIf(!psWorks)(
+  it.skipIf(inHarnessSandbox)(
     "writes the same settings to the run dir and the worktree, and a launch record that verifies",
     async () => {
       const worktree = await temp("sf-h-wt-");
@@ -437,7 +439,7 @@ describe("projection", () => {
     },
   );
 
-  it.skipIf(!githubResolves)(
+  it.skipIf(inHarnessSandbox)(
     "gives git no way to push with the owner's credentials (criterion 8)",
     async () => {
       // A repo whose remote needs credentials, run with the harness env: git must fail without
