@@ -2,7 +2,7 @@ import { MODEL_ROLES } from "@software-factory/runner-contract";
 import { z } from "zod";
 import type { StageType } from "../contract.ts";
 import { gateOf, gateStep, jobStep, latest } from "../reconcile.ts";
-import { instructionsSchema } from "../settings.ts";
+import { instructionsImpact, instructionsSchema } from "../settings.ts";
 import { decision } from "./decision.ts";
 
 const settings = z.object({ instructions: instructionsSchema }).strict();
@@ -66,7 +66,5 @@ export const agentCheck: StageType<typeof settings> = {
     return { kind: "complete", stageId: at };
   },
   impact: (before, after, stageId) =>
-    before.instructions === after.instructions
-      ? []
-      : [{ path: `${stageId}.instructions`, class: "neutral", summary: "Instructions changed." }],
+    instructionsImpact(`${stageId}.instructions`, before.instructions, after.instructions),
 };

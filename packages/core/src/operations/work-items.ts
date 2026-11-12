@@ -302,10 +302,14 @@ export const workItemList = defineOperation({
     .refine((v) => v.projectId || v.orgId, { message: "projectId or orgId" }),
   output: z.object({ items: z.array(itemSummary) }),
   async handler(input, ctx) {
+    // Newest first. Unfiltered, (project_id | org_id, updated_at) serves the order and the LIMIT
+    // stops the read. With a status filter, `+updated_at` keeps the planner off that walk (which
+    // would read every item to find the few in those statuses): it reads only the matching rows
+    // through core_work_items_status_idx and sorts those (AGENTS.md "Cloudflare cost", rule 2).
     let query = ctx.db
       .selectFrom("core_work_items")
       .selectAll()
-      .orderBy("updated_at", "desc")
+      .orderBy(input.status?.length ? sql`+updated_at` : sql`updated_at`, "desc")
       .limit(input.limit);
     if (input.projectId) query = query.where("project_id", "=", input.projectId);
     else if (input.orgId) query = query.where("org_id", "=", input.orgId);
