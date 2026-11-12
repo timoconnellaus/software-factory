@@ -223,14 +223,16 @@ describe("verify in the v2 Workflow", () => {
       overrides: { agent: { outbound: "allow", "check-merge": "allow" } },
     });
     const make = async (title: string) => {
+      // In the backlog first, so it is an incident before its Workflow reads it (ADR 0491).
       const item = await ok<{ workItemId: string }>(
         "workItem.create",
-        { state: "queued", projectId: w.projectId, title },
+        { projectId: w.projectId, title },
         w.human,
       );
       await env.DB.prepare("UPDATE core_work_items SET kind = 'incident' WHERE id = ?")
         .bind(item.workItemId)
         .run();
+      await ok("workItem.release", { workItemId: item.workItemId }, w.human);
       return item;
     };
     const checkOnly = await make("Factory incident: add a check");
