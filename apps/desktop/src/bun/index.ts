@@ -248,7 +248,11 @@ const gateLabel = (kind: string) =>
 
 // The live socket (spec 40 M2b): a gate opening reaches the badge and a notification at once.
 const live = new Live(liveUrl(ENGINE_URL), () => auth.currentToken(), {
-  connected: () => void pollInbox(),
+  connected: () => {
+    void pollInbox();
+    // Pushes may have been missed while the socket was down: open Planning views re-read (spec 26).
+    toView("planningChanged", { workItemId: "*" });
+  },
   event: (e) => {
     // A Planning view this person has open changed (spec 26): the view re-reads it.
     if (e.type === "planning.changed" && e.workItemId) {

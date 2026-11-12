@@ -275,6 +275,12 @@ export async function openQuestionCount(
  * message, and presence changes, in order (kim's batch summary). The agent's own events move the
  * cursor but aren't news.
  */
+/** What a piece of news carries, for read receipts: each answer at its revision, and messages. */
+export interface Delivered {
+  answers: { questionId: string; revision: number }[];
+  messageIds: string[];
+}
+
 export async function readNews(
   ctx: Pick<HandlerContext, "db" | "now">,
   workItemId: string,
@@ -286,7 +292,7 @@ export async function readNews(
   events: PlanningNewsEvent[];
   userEvents: LogRow[];
   /** The answered questions and people's messages this news carries (their read receipts). */
-  delivered: { questionIds: string[]; messageIds: string[] };
+  delivered: Delivered;
 }> {
   const rows = (await ctx.db
     .selectFrom("core_planning_events")
@@ -317,6 +323,7 @@ export async function readNews(
           "answer",
           "note",
           "skipped",
+          "answer_revision",
           "accepted_default",
           "answered_by",
           "status",
@@ -385,6 +392,7 @@ export async function readNews(
         number: q.number,
         prompt: q.prompt,
         answer: q.skipped === 1 ? null : q.answer,
+        revision: q.answer_revision,
         skipped: q.skipped === 1,
         note: q.note,
         acceptedDefault: q.accepted_default === 1,
@@ -462,8 +470,10 @@ export async function readNews(
     events,
     userEvents,
     delivered: {
-      questionIds: events.flatMap((e) =>
-        e.type === "answer.submitted" || e.type === "answer.revised" ? [e.questionId] : [],
+      answers: events.flatMap((e) =>
+        e.type === "answer.submitted" || e.type === "answer.revised"
+          ? [{ questionId: e.questionId, revision: e.revision }]
+          : [],
       ),
       messageIds: events.flatMap((e) => (e.type === "chat.message" ? [e.messageId] : [])),
     },
@@ -693,15 +703,16 @@ export async function withdrawSpecGate(ctx: HandlerContext, workItemId: string, 
  * - at the gate, the gate open: the gate is withdrawn, guarded on it still being pending;
  * - at the gate, the gate not opened yet: only the session moves on; the gate the Workflow opens
  *   next is stale (approving it is refused, and the planner's next `planning.ready` withdraws it).
- * Returns whether the spec was taken back.
+ * Returns `taken` (the spec left the gate), `decided` (its gate was decided a moment ago: what the
+ * person wrote won't reach the planner, so the caller says so), or `none` (not at the gate).
  */
 export async function takeBackFromGate(
   ctx: HandlerContext,
   w: WorkItemRow,
   why: string,
-): Promise<boolean> {
+): Promise<"taken" | "decided" | "none"> {
   const session = await openSession(ctx, w.id);
-  if (!session) return false;
+  if (!session) return "none";
   if (!session.at_gate) {
     ctx.guardExists(
       "the spec isn't at the gate",
@@ -711,7 +722,7 @@ export async function takeBackFromGate(
         .where("id", "=", session.id)
         .where("at_gate", "=", 0),
     );
-    return false;
+    return "none";
   }
   const gate = await ctx.db
     .selectFrom("core_pending_actions")
@@ -722,7 +733,7 @@ export async function takeBackFromGate(
     .orderBy("created_at", "desc")
     .limit(1)
     .executeTakeFirst();
-  if (gate && gate.status !== "pending") return false;
+  if (gate && gate.status !== "pending") return "decided";
   const note = `withdrawn: ${why}, so the planner revises before the gate`;
   ctx.write(
     ctx.db
@@ -748,7 +759,7 @@ export async function takeBackFromGate(
       .where("status", "=", "waiting"),
   );
   logPlanning(ctx, w.id, "gate.withdrawn", { round: session.round + 1, why });
-  return true;
+  return "taken";
 }
 
 /** Withdraws one pending spec gate, guarded on it still being pending (else the batch fails). */
@@ -904,6 +915,25 @@ export async function interruptPlanning(
         }
       : { interrupted: true, reason: null };
   }
+  // Check-then-insert, so guarded: two interrupts racing commit one (review of #71, H).
+  ctx.guardExists(
+    "no other interrupt is queued or just delivered",
+    ctx.db
+      .selectFrom("core_runs")
+      .select("id")
+      .where("id", "=", run.id)
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom("core_run_steers")
+              .select("id")
+              .where("run_id", "=", run.id)
+              .where("interrupt", "=", 1)
+              .where((x) => x.or([x("delivered_at", "is", null), x("delivered_at", ">", since)])),
+          ),
+        ),
+      ),
+  );
   ctx.write(
     ctx.db.insertInto("core_run_steers").values({
       id: newId("runSteer"),

@@ -988,7 +988,13 @@ export function createLocalRunner(
       await sleep(500);
       // A second Escape within a second opens Claude Code's Rewind menu, which would swallow the
       // line (and Enter there could rewind the conversation). Close it before typing.
-      if (REWIND_MENU.test((await tmux.capture(session.name)) ?? "")) {
+      // Only the bottom of the screen, where the menu renders: text the agent printed higher up
+      // can't trigger this (review of #71, D).
+      const bottom = ((await tmux.capture(session.name)) ?? "").trimEnd().split("\n").slice(-14);
+      if (
+        REWIND_MENU.test(bottom.join("\n")) &&
+        /Enter to continue · Esc to cancel/.test(bottom.join("\n"))
+      ) {
         await tmux.sendKeys(session.name, "Escape");
         await sleep(300);
       }

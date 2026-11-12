@@ -36,6 +36,8 @@ export type Decision =
       kind: "planning.answer";
       workItemId: string;
       questionId: string;
+      /** The question revision the person answered (a newer one is refused). */
+      questionRevision?: number;
       answer?: string;
       note?: string;
       skipped?: boolean;
@@ -103,6 +105,7 @@ export async function run(d: Decision): Promise<string> {
         "planning.answer",
         {
           questionId: d.questionId,
+          ...(d.questionRevision !== undefined ? { questionRevision: d.questionRevision } : {}),
           ...(d.answer !== undefined ? { answer: d.answer } : {}),
           ...(d.note ? { note: d.note } : {}),
           ...(d.skipped ? { skipped: true } : {}),

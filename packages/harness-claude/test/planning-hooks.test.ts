@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { PlanningNews, PlanningNewsEvent } from "@software-factory/runner-contract";
 import { PLANNING_NEWS_THROTTLE_MS } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
-import { fitNews, runNewsHook } from "../src/index.ts";
+import { fitNews, handleMcp, planningTools, runNewsHook } from "../src/index.ts";
 
 const message = (cursor: number, text: string): PlanningNewsEvent => ({
   type: "chat.message",
@@ -29,6 +29,7 @@ const answer = (cursor: number, text: string, prompt = "Which?"): PlanningNewsEv
   number: cursor,
   prompt,
   answer: text,
+  revision: 1,
   skipped: false,
   note: null,
   acceptedDefault: false,
@@ -146,9 +147,10 @@ describe("planning news in the agent's context (spec 26)", () => {
     expect(parsed.events.map((e) => e.cursor)).toEqual(
       events.slice(0, parsed.events.length).map((e) => e.cursor),
     );
-    expect(shown).toBe(parsed.events.at(-1)?.cursor);
+    // Shortened events aren't acknowledged: they stay unread until read whole (review of #67, B).
+    expect(shown).toBe(39);
     expect(parsed.more).toContain(`${12 - parsed.events.length} more events`);
-    expect(parsed.shortened).toContain("cursor 39");
+    expect(parsed.shortened).toContain("planning_news");
   });
 
   it("shows one huge answer shortened rather than dropping it", () => {
@@ -157,12 +159,40 @@ describe("planning news in the agent's context (spec 26)", () => {
     expect(json.length).toBeLessThanOrEqual(9_500);
     const parsed = JSON.parse(json) as { events: PlanningNewsEvent[] };
     expect(parsed.events).toEqual([expect.objectContaining({ cursor: 70, questionId: "q70" })]);
-    expect(shown).toBe(71);
+    // Shown shortened, so not acknowledged: it comes again until the agent reads it whole.
+    expect(shown).toBe(69);
   });
 
   it("leaves news that fits as it is", () => {
     const small = news([answer(5, "Yes")]);
     expect(JSON.parse(fitNews(small).json)).toEqual(small);
     expect(fitNews(small).shown).toBe(small.cursor);
+  });
+
+  it("never lets the model send ack, hold or cursor: they aren't in its tools, and the harness drops them (review of #67, A)", async () => {
+    const tools = planningTools();
+    for (const name of ["planning_news", "planning_ready"]) {
+      const schema = JSON.stringify(tools.find((t) => t.name === name)?.inputSchema);
+      expect(schema).not.toContain('"ack"');
+      expect(schema).not.toContain('"hold"');
+      expect(schema).not.toContain('"cursor"');
+    }
+    const dir = await mkdtemp(join(tmpdir(), "sf-mcp-"));
+    const sent: Record<string, unknown>[] = [];
+    const fetch = (async (_url: string, init: RequestInit) => {
+      sent.push((JSON.parse(String(init.body)) as { input: Record<string, unknown> }).input);
+      return new Response(JSON.stringify({ ok: true, result: {} }));
+    }) as typeof globalThis.fetch;
+    const call = (name: string, args: Record<string, unknown>) =>
+      handleMcp(
+        { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } },
+        relay,
+        { fetch, relayFile: join(dir, "planning.json") },
+      );
+    await call("planning_news", { cursor: 999_999, ack: 999_999, hold: true });
+    await call("planning_ready", { ack: 999_999, note: "ready" });
+    expect(sent[0]).toEqual({});
+    // Only the hooks' own record of what they showed is sent (none yet here).
+    expect(sent[1]).toEqual({ note: "ready" });
   });
 });

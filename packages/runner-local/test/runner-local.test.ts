@@ -644,7 +644,7 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     const fake = w.tmux.sessions.get("sf-job_1");
     if (!fake) throw new Error("no session");
     fake.screen =
-      " Rewind\n Restore the code and/or conversation to the point before…\n ❯ (current)";
+      " Rewind\n Restore the code and/or conversation to the point before…\n ❯ (current)\n Enter to continue · Esc to cancel";
     const before = w.tmux.calls.length;
     await w.runner.interrupt?.(session, "read your planning news");
     const keys = w.tmux.calls
@@ -652,6 +652,30 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
       .filter((c) => c.includes("send-keys"))
       .map((c) => c.at(-1));
     expect(keys).toEqual(["Escape", "Escape", "read your planning news", "Enter"]);
+    await w.runner.release(job(), ws, session);
+  });
+
+  it("isn't fooled by the agent's own text about Rewind higher up the screen (review of #71, D)", async () => {
+    const w = await world();
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    const session = await w.runner.startSession(job(), ws, signal);
+    const fake = w.tmux.sessions.get("sf-job_1");
+    if (!fake) throw new Error("no session");
+    fake.screen = [
+      " Rewind",
+      " Restore the code and/or conversation to the point before…",
+      " Enter to continue · Esc to cancel",
+      ...Array.from({ length: 30 }, (_, i) => `⏺ line ${i} of the agent's answer`),
+      "❯ ",
+    ].join("\n");
+    const before = w.tmux.calls.length;
+    await w.runner.interrupt?.(session, "read your planning news");
+    const keys = w.tmux.calls
+      .slice(before)
+      .filter((c) => c.includes("send-keys"))
+      .map((c) => c.at(-1));
+    expect(keys).toEqual(["Escape", "read your planning news", "Enter"]);
     await w.runner.release(job(), ws, session);
   });
 
