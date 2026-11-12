@@ -250,6 +250,8 @@ function reportRunnerState(
     signedAt?: number | undefined;
     /** Signed no later than the last accepted heartbeat: report nothing, write nothing. */
     stale?: boolean;
+    /** A claim signed in the same second as the heartbeat before it still reports (claims only). */
+    sameSecond?: boolean;
   },
 ): { pendingAccount: string | null } {
   // The owner's pick is done once the runner reports it active, and moot once the runner reports
@@ -268,7 +270,7 @@ function reportRunnerState(
   if (
     settled ||
     runner.accepting !== (report.capacity.accepting ? 1 : 0) ||
-    runner.paused !== paused ||
+    pauseKey(runnerPaused(runner)) !== pauseKey(report.capacity.paused ?? null) ||
     runner.capacity_max !== report.capacity.max ||
     runner.light_max !== (report.capacity.light?.max ?? null) ||
     json(report.manifest) !== runner.manifest ||
@@ -318,7 +320,7 @@ function reportRunnerState(
         q.where((eb) =>
           eb.or([
             eb("last_signed_at", "is", null),
-            eb("last_signed_at", "<", report.signedAt ?? 0),
+            eb("last_signed_at", report.sameSecond ? "<=" : "<", report.signedAt ?? 0),
           ]),
         ),
       ),
@@ -710,6 +712,11 @@ async function freePools(
 }
 
 /** The pause a runner last reported (ADR 0552), or null. */
+/** A pause as audited: why and which pools, not the load figures that change every beat. */
+function pauseKey(p: z.infer<typeof capacityPausedSchema> | null | undefined): string | null {
+  return p ? JSON.stringify({ reason: p.reason, pools: [...p.pools].sort() }) : null;
+}
+
 function runnerPaused(
   runner: Pick<RunnerRow, "paused">,
 ): z.infer<typeof capacityPausedSchema> | null {
@@ -878,7 +885,7 @@ export const jobClaim = defineOperation({
   output: z.object({ job: z.custom<Job>().nullable() }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
-    reportRunnerState(ctx, runner, input);
+    const signedAt = ctx.origin.signedAt;
     const current = {
       ...runner,
       accepting: input.capacity.accepting ? 1 : 0,
@@ -916,6 +923,19 @@ export const jobClaim = defineOperation({
         .executeTakeFirst();
       return { job: await buildJob(ctx, prior, run, item, project, lease?.expires_at ?? ctx.now) };
     }
+
+    // The claim isn't stored by the channel, so an old empty one could be replayed within the
+    // signing window and run the scheduler again for a runner that has moved on. One signed before
+    // the runner's last accepted heartbeat or claim gets an empty answer and writes nothing. (A
+    // retried claimId gets its job above, whenever it was signed.)
+    if (
+      signedAt !== undefined &&
+      runner.last_signed_at !== null &&
+      signedAt < runner.last_signed_at
+    ) {
+      return { job: null };
+    }
+    reportRunnerState(ctx, runner, { ...input, signedAt, sameSecond: true });
 
     // Code older than the engine's compatibility level gets nothing (ADR 0520), whatever the runner
     // decides itself: one from before RUNNER_COMPAT, or one that can't update, may still claim.
