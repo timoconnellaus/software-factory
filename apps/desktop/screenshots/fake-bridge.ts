@@ -108,6 +108,7 @@ export const onTerminal = (l: (e: TerminalEvent) => void) => {
 export const onSession = none;
 export const onRunner = none;
 export const onInbox = none;
+export const onPlanningChanged = none;
 export const onNavigate = none;
 
 // In the real window macOS draws the lights itself.
