@@ -102,6 +102,11 @@ export interface LocalWorkspace extends WorkspaceHandle {
   readCommand?: ReadCommand;
   /** More checks before the prompt (a container job's own configuration, ADR 0430). */
   launchChecks?: () => Promise<string[]>;
+  /**
+   * Writes a file the session reads (the prompt) where the session runs, when that isn't this
+   * machine (a sprite, ADR 0480). The host's copy is written as well.
+   */
+  writeRunFile?: (path: string, content: string) => Promise<void>;
 }
 
 export interface LocalSession extends SessionHandle {
@@ -632,6 +637,13 @@ export function createLocalRunner(
       // The prompt goes in a file; the terminal gets one short line pointing at it. A long paste
       // into the Claude terminal arrives truncated (incident 2026-11-11 #8).
       await writeFile(join(workspace.path, PROMPT_FILE), job.harness.prompt, { mode: 0o600 });
+      if (workspace.writeRunFile) {
+        await workspace
+          .writeRunFile(join(workspace.path, PROMPT_FILE), job.harness.prompt)
+          .catch((err) =>
+            fail(new Error(`writing the prompt: ${err instanceof Error ? err.message : err}`)),
+          );
+      }
       session.startedAt = Date.now();
       session.promptSentAt = session.startedAt;
       try {

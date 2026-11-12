@@ -97,6 +97,16 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   self-contained job repo, an egress allowlist proxy, every stage `bypassPermissions`, and the launch
   check inside the container. The host still pushes. Planning sessions stay on the host. Criteria 1
   and 9 need a live run on the M5 with Docker Desktop (runner-host README, "A container per job").
+  Piece 7, **Sprites sandboxes** (block AF, [spec 36](specs/36-sprites-sandboxes.md) /
+  [ADR 0480](adr/0480-a-sprite-per-job-provisioned-by-the-owners-host.md), branch
+  `timoconnellaus/hosts-sprites`): `runner.json` `"isolation": "sprites"` runs each job in a fresh
+  sprite made by the owner's host with its own Sprites token (`sf-runner sprites login`, 0600 on the
+  host). `packages/runner-local/src/sprites/` holds the API client, the pane-to-sprite TTY bridge,
+  the run-file mirror and the result bundle. Egress is Sprites' network policy. The host still pushes.
+  Tested against a fake Sprites API. **The mode must not be turned on until spec 36's live-check
+  gate has passed** (policy shapes and default deny, bypasses with `sudo`, Fly's internal network,
+  `/.sprite/api.sock`, checkpoints, exec framing, create's size, the image); criteria 1, 8
+  (`tmux attach`) and 11 (`doctor`) are part of it (runner-host README, "A sprite per job").
   Piece 6, **the web terminal** (block AB, [spec 35](specs/35-web-terminal.md) /
   [ADR 0440](adr/0440-a-web-terminal-relayed-through-a-durable-object-per-job.md), migration 0210,
   branch `timoconnellaus/hosts-web-terminal`): the Live tab's Web terminal view (xterm.js), the
