@@ -6,6 +6,7 @@ import {
   invoke,
   isOperationError,
   PROTECTION_RECHECK_MS,
+  parseProjectPolicy,
   r2AttachmentBlobs,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
@@ -37,6 +38,8 @@ export default {
     await expireQuietRuns(env, now);
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);
+    // Once an hour: the improver (ADR 0373) decides running trials and starts the next one.
+    if (now.getUTCMinutes() === 23) await runImprover(env, now);
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
       await sweepStrayAttachmentBlobs(env.DB, r2AttachmentBlobs(env.ATTACHMENTS), now);
@@ -103,4 +106,62 @@ export async function recheckProtection(env: Env, now: Date, limit = 5): Promise
     }
   }
   return results.length;
+}
+
+/** The improver's actor (ADR 0373): a practice change is its own, never a person's. */
+export const IMPROVER = { type: "self-improve" as const, id: "improver" };
+
+/**
+ * One improver pass (ADR 0373, spec 09 M3) over projects with self-improvement on: resolve each
+ * running trial (promote, disable or keep waiting), then start the drafted practice change, if
+ * any. A step the gate holds for review becomes an inbox approval for a person.
+ */
+export async function runImprover(env: Env, _now?: Date): Promise<number> {
+  const { results } = await env.DB.prepare(
+    `SELECT p.id, pp.raw FROM core_projects p
+     JOIN core_project_policies pp ON pp.project_id = p.id AND pp.sha = p.policy_sha
+     WHERE pp.valid = 1 AND pp.raw LIKE '%"improve"%'`,
+  ).all<{ id: string; raw: string }>();
+  const deps = invokeDeps(env);
+  const opts = { actor: IMPROVER, origin: { surface: "cron" as const } };
+  let acted = 0;
+  for (const p of results) {
+    const parsed = parseProjectPolicy(p.raw);
+    if (!parsed.ok || !parsed.policy.improve.enabled) continue;
+    try {
+      const scan = (await invoke(deps, "improve.scan", { projectId: p.id }, opts)) as {
+        status: string;
+        output?: {
+          running: { id: string }[];
+          candidate: { kind: string; summary: string; evidence: unknown; policy: unknown } | null;
+          baseVersion: number;
+        };
+      };
+      for (const t of scan.output?.running ?? []) {
+        await invoke(deps, "config.trial.resolve", { projectId: p.id, trialId: t.id }, opts);
+        acted++;
+      }
+      const c = scan.output?.candidate;
+      if (c && scan.output) {
+        await invoke(
+          deps,
+          "config.trial.start",
+          {
+            projectId: p.id,
+            baseVersion: scan.output.baseVersion,
+            kind: c.kind,
+            summary: c.summary,
+            evidence: c.evidence,
+            policy: c.policy,
+          },
+          { ...opts, idempotencyKey: `improver:${p.id}:${scan.output.baseVersion}:${c.summary}` },
+        );
+        acted++;
+      }
+    } catch (error) {
+      if (!isOperationError(error)) throw error;
+      console.warn(`improver ${p.id}: ${error.code} ${error.message}`);
+    }
+  }
+  return acted;
 }

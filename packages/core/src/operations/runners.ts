@@ -955,7 +955,7 @@ export const runReportEvents = defineOperation({
 export const runAddArtifact = defineOperation({
   name: "run.addArtifact",
   description:
-    "Store one artifact from a run (diff, log, screenshot, summary). Ids are content hashes, so a re-upload is a no-op. Bodies over 512 KB are truncated.",
+    "Store one artifact from a run (diff, log, screenshot, summary, usage). Ids are content hashes, so a re-upload is a no-op. Bodies over 512 KB are truncated.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -966,14 +966,23 @@ export const runAddArtifact = defineOperation({
   async handler(input, ctx) {
     const run = await loadRun(ctx, input.jobId);
     const a = input.artifact as z.infer<typeof artifactSchema> & { id: string };
-    const body = a.kind === "diff" ? a.patch : a.kind === "screenshot" ? a.base64 : a.text;
+    const body =
+      a.kind === "diff"
+        ? a.patch
+        : a.kind === "screenshot"
+          ? a.base64
+          : a.kind === "usage"
+            ? JSON.stringify({ harness: a.harness, entries: a.entries, wallMs: a.wallMs ?? null })
+            : a.text;
     const truncated = body.length > MAX_ARTIFACT_BODY;
     const meta =
       a.kind === "diff"
         ? { baseSha: a.baseSha, headSha: a.headSha, branch: a.branch, stats: a.stats }
         : a.kind === "screenshot"
           ? { url: a.url, contentType: a.contentType }
-          : {};
+          : a.kind === "usage"
+            ? { harness: a.harness, entries: a.entries, wallMs: a.wallMs ?? null }
+            : {};
     ctx.write(
       ctx.db
         .insertInto("core_artifacts")

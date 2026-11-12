@@ -44,6 +44,8 @@ export interface OpMap {
   "config.save": Def<typeof operations.configSave>;
   "config.rollback": Def<typeof operations.configRollback>;
   "config.export": Def<typeof operations.configExport>;
+  "config.trials": Def<typeof operations.configTrials>;
+  "config.trial.resolve": Def<typeof operations.configTrialResolve>;
   "setup.status": Def<typeof operations.setupStatus>;
   "protection.check": Def<typeof operations.protectionCheck>;
   "runner.deviceLookup": Def<typeof operations.runnerDeviceLookup>;
@@ -99,6 +101,8 @@ export const APP_OPERATIONS = [
   "config.save",
   "config.rollback",
   "config.export",
+  "config.trials",
+  "config.trial.resolve",
   "setup.status",
   "protection.check",
   "runner.deviceLookup",
@@ -130,6 +134,7 @@ export const APP_READ_OPERATIONS = [
   "runner.list",
   "config.get",
   "config.preview",
+  "config.trials",
 ] as const satisfies readonly OpName[];
 export type ReadOpName = (typeof APP_READ_OPERATIONS)[number];
 

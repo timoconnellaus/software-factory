@@ -10,6 +10,7 @@ import * as connector from "./operations/connector.ts";
 import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
 import * as github from "./operations/github.ts";
+import * as improve from "./operations/improve.ts";
 import * as incidents from "./operations/incidents.ts";
 import * as mergeQueue from "./operations/merge-queue.ts";
 import * as onboarding from "./operations/onboarding.ts";
@@ -34,6 +35,10 @@ export const OPERATIONS: readonly AnyOperation[] = [
   config.configSave,
   config.configRollback,
   config.configExport,
+  improve.improveScan,
+  improve.configTrialStart,
+  improve.configTrialResolve,
+  improve.configTrials,
   onboarding.githubConnectStart,
   onboarding.githubConnectInstallation,
   onboarding.githubRepos,

@@ -7,6 +7,7 @@ import { Card } from "@software-factory/ui/components/card";
 import { Input } from "@software-factory/ui/components/input";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -30,12 +31,15 @@ import {
 import { ago } from "#/lib/format";
 import { op, submitKey } from "#/lib/op";
 import { OpError } from "#/lib/ops";
-import { configQuery } from "#/lib/queries";
+import { configQuery, trialsQuery } from "#/lib/queries";
 import { useProjects } from "#/lib/session";
 
 export const Route = createFileRoute("/_app/projects/$projectId/settings")({
   loader: ({ context: { queryClient }, params }) =>
-    queryClient.ensureQueryData(configQuery(params.projectId)).catch(() => null),
+    Promise.all([
+      queryClient.ensureQueryData(configQuery(params.projectId)),
+      queryClient.ensureQueryData(trialsQuery(params.projectId)),
+    ]).catch(() => null),
   component: SettingsPage,
 });
 
@@ -455,6 +459,56 @@ function SettingsPage() {
         </Field>
       </Section>
 
+      <Section
+        title="Self-improvement"
+        changed={changedPaths.has("improve")}
+        description="The factory trials practice changes on its own (the builder's instructions and model tier), on the next few items, and keeps them only if those items do at least as well. Policy never changes this way."
+      >
+        <Field
+          label="Let the factory improve its practice"
+          help="Turning it on is a policy change: it waits for an approver."
+        >
+          <Segmented
+            options={["off", "on"]}
+            value={obj(doc.improve).enabled === true ? "on" : "off"}
+            onChange={(v) =>
+              set((d) => {
+                d.improve = { ...obj(d.improve), enabled: v === "on" };
+              })
+            }
+          />
+        </Field>
+        <Field
+          label="Trial size"
+          help="How many items a change is tried on before it's judged (3–20)."
+        >
+          <NumberInput
+            value={num(obj(doc.improve).trialSize, 5)}
+            min={3}
+            max={20}
+            suffix="items"
+            onChange={(v) =>
+              set((d) => {
+                d.improve = { ...obj(d.improve), trialSize: v };
+              })
+            }
+          />
+        </Field>
+        <Field label="Weekly cap" help="At most this many changes a week (1–10).">
+          <NumberInput
+            value={num(obj(doc.improve).weeklyCap, 3)}
+            min={1}
+            max={10}
+            onChange={(v) =>
+              set((d) => {
+                d.improve = { ...obj(d.improve), weeklyCap: v };
+              })
+            }
+          />
+        </Field>
+        <Trials projectId={projectId} currentVersion={currentVersion} onChanged={refresh} />
+      </Section>
+
       <SaveBar editor={editor} />
 
       <Section
@@ -648,5 +702,105 @@ function PacketEditor({
         );
       })}
     </ul>
+  );
+}
+
+/** The factory's own changes (ADR 0373): each trial, what decided it, and a revert. */
+function Trials({
+  projectId,
+  currentVersion,
+  onChanged,
+}: {
+  projectId: string;
+  currentVersion: number;
+  onChanged: () => Promise<void>;
+}) {
+  const trials = useQuery(trialsQuery(projectId));
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const list = trials.data?.trials ?? [];
+  async function act(fn: () => Promise<unknown>, done: string) {
+    setBusy(true);
+    try {
+      await fn();
+      toast.success(done);
+      await queryClient.invalidateQueries({ queryKey: ["config", projectId] });
+      await onChanged();
+    } catch (error) {
+      if (error instanceof OpError && error.code === "pending") {
+        toast.success("Reverting loosens the config, so it waits for an approver.");
+      } else toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="grid gap-1.5 pt-2" data-testid="trials">
+      <div className="font-medium text-sm">The factory's changes</div>
+      {list.length === 0 && (
+        <p className="text-muted-foreground text-sm">
+          None yet. With self-improvement on, the factory looks once an hour.
+        </p>
+      )}
+      <ul className="grid gap-1.5 text-sm">
+        {list.map((t) => (
+          <li
+            key={t.id}
+            className="flex flex-wrap items-center gap-2 border-b pb-1.5 last:border-b-0"
+          >
+            <Badge variant={t.status === "promoted" ? "default" : "outline"}>{t.status}</Badge>
+            <span className="font-medium">{t.summary}</span>
+            <span className="text-muted-foreground text-xs">
+              {t.status === "running"
+                ? `${t.itemsSoFar} of ${t.targetItems} items`
+                : (t.reason ?? "")}
+            </span>
+            <span className="grow" />
+            {t.status === "running" && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy}
+                onClick={() =>
+                  act(
+                    () => op("config.trial.resolve", { projectId, trialId: t.id, stop: true }),
+                    "Trial stopped.",
+                  )
+                }
+              >
+                Stop
+              </Button>
+            )}
+            {t.status === "promoted" &&
+              t.baseVersion !== null &&
+              t.candidateVersion === currentVersion && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() =>
+                    act(
+                      () =>
+                        op(
+                          "config.rollback",
+                          {
+                            projectId,
+                            baseVersion: currentVersion,
+                            toVersion: t.baseVersion as number,
+                            note: `Reverted the factory's change: ${t.summary}`,
+                          },
+                          { idempotencyKey: submitKey() },
+                        ),
+                      "Reverted.",
+                    )
+                  }
+                >
+                  Revert
+                </Button>
+              )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

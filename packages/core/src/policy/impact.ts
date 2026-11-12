@@ -50,6 +50,7 @@ const KNOWN = new Set([
   "reviewPacket",
   "agents",
   "workflows",
+  "improve",
 ]);
 
 /**
@@ -222,6 +223,27 @@ export function policyImpact(
 
   // The harness: a wider mode, more allow rules or more hosts widen what an agent may do.
   harnessChanges(before.harness, after.harness, add);
+
+  // Self-improvement (ADR 0373): letting the factory change its own practice is a person's call.
+  if (before.improve.enabled !== after.improve.enabled) {
+    add(
+      "improve.enabled",
+      after.improve.enabled ? "loosens" : "tightens",
+      after.improve.enabled
+        ? "The factory may trial practice changes itself (instructions, tiers), rolling back what doesn't hold up."
+        : "The factory stops trialling practice changes.",
+    );
+  }
+  if (
+    before.improve.trialSize !== after.improve.trialSize ||
+    before.improve.weeklyCap !== after.improve.weeklyCap
+  ) {
+    add(
+      "improve",
+      "neutral",
+      `Trials of ${after.improve.trialSize} items, at most ${after.improve.weeklyCap} a week.`,
+    );
+  }
 
   // Workflows and agents (ADR 0371, 0372): gate steps are policy, the rest is practice.
   workflowChanges(before, after, add);
