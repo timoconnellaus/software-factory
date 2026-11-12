@@ -450,6 +450,24 @@ _Avoid_: pipeline (the skeleton), stage list
 One entry in a workflow slot: a **work** step hands to an agent and is advisory; a **gate** step
 hands to a person and is enforced.
 
+**Stage type**, **workflow template**, **stage template** (designed, spec 52, not built)
+A stage type is built-in code with a fixed contract (what it runs, produces and needs, its evidence,
+screen, gate and reversibility); a workflow will be an org-level ordered list of stages, each an
+instance of a stage type, split into **shaping** stages (before release) and **delivery** stages.
+Templates are ready-made workflows (Software, Marketing) or stage types with default settings
+(ADR 0510).
+
+**Skill** (designed, spec 52, not built)
+How the team does one thing, written once (instructions plus files), versioned and owned by the
+org, attached to an agent, a stage, or built into a stage type. The factory may propose an edit;
+only a person accepts one (ADR 0513).
+_Avoid_: playbook, recipe
+
+**Autopilot** (designed, spec 52, not built)
+A trigger (schedule or event), an agent, its skills, an instruction and an output target: work the
+factory starts on its own. It files through the backlog, never merges or deploys (ADR 0514).
+_Avoid_: cron job, bot
+
 **Agent** (config)
 A harness-neutral profile: model role and tier, instructions, abstract permissions, capabilities.
 The runner that takes the job resolves the model (ADR 0372).
