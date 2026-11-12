@@ -22,8 +22,15 @@ control plane, a Workflow or a gate.
 _Avoid_: pipeline (for the whole thing), instance, control plane (that is the Cloudflare side)
 
 **Project**
-One repo inside a factory, configured by its committed `.factory/` directory.
-_Avoid_: repo (when you mean the configured unit), app
+A body of work inside a factory (a product, a launch, Marketing): org → project → work item → run.
+It has one config (versions in the app, ADR 0370) and zero or more repositories (ADR 0440).
+_Avoid_: repo (a project is not a repository), app
+
+**Repository**
+A GitHub repository of a project, reached through the org's GitHub App installation: owner, name,
+default branch. A GitHub repository is in at most one project. A work item uses one repository,
+chosen when it is created (the project's only one by default) and fixed once its pipeline starts.
+_Avoid_: project (when you mean the repo), repo record
 
 **Requester**
 The user a work item is for. Placement rules such as `route: requester-first` prefer the

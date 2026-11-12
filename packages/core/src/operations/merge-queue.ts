@@ -330,7 +330,15 @@ export const mergeQueueUpdate = defineOperation({
       // GitHub makes the merge commit asynchronously; it is often there already.
       const after = (await github.pullRequestMergeability(repo, w.pr_number)).headSha;
       if (after && after !== at) {
-        return acceptUpdate(ctx, { w, project, repository, repo, entryId: entry.id, at, prHead: after });
+        return acceptUpdate(ctx, {
+          w,
+          project,
+          repository,
+          repo,
+          entryId: entry.id,
+          at,
+          prHead: after,
+        });
       }
       ctx.change({
         entity: "work_item",

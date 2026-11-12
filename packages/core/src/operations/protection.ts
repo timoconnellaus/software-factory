@@ -92,11 +92,7 @@ export async function inspectProtection(
   }
 }
 
-export function adminMessage(
-  repository: RepositoryRow,
-  target: ProtectionTarget,
-  files: string[],
-) {
+export function adminMessage(repository: RepositoryRow, target: ProtectionTarget, files: string[]) {
   const checks = [...(target.requiredChecks ?? DEFAULT_REQUIRED_CHECKS), "factory/verify"];
   const repo = `${repository.owner}/${repository.name}`;
   return [
@@ -333,38 +329,40 @@ export function protectionDriftQuery(
     | readonly string[]
     | SelectQueryBuilder<CoreDatabase, "core_member", { organization_id: string }>,
 ) {
-  return ctx.db
-    .selectFrom("core_project_protection")
-    .innerJoin("core_projects", "core_projects.id", "core_project_protection.project_id")
-    // The project's first repository: protection is still recorded per project (ADR 0440).
-    .innerJoin("core_repositories", (join) =>
-      join
-        .onRef("core_repositories.project_id", "=", "core_projects.id")
-        .on(({ eb, selectFrom }) =>
-          eb(
-            "core_repositories.id",
-            "=",
-            selectFrom("core_repositories as r")
-              .select("r.id")
-              .whereRef("r.project_id", "=", "core_projects.id")
-              .orderBy("r.created_at")
-              .orderBy("r.id")
-              .limit(1),
+  return (
+    ctx.db
+      .selectFrom("core_project_protection")
+      .innerJoin("core_projects", "core_projects.id", "core_project_protection.project_id")
+      // The project's first repository: protection is still recorded per project (ADR 0440).
+      .innerJoin("core_repositories", (join) =>
+        join
+          .onRef("core_repositories.project_id", "=", "core_projects.id")
+          .on(({ eb, selectFrom }) =>
+            eb(
+              "core_repositories.id",
+              "=",
+              selectFrom("core_repositories as r")
+                .select("r.id")
+                .whereRef("r.project_id", "=", "core_projects.id")
+                .orderBy("r.created_at")
+                .orderBy("r.id")
+                .limit(1),
+            ),
           ),
-        ),
-    )
-    .select([
-      "core_projects.id as projectId",
-      "core_projects.name as name",
-      "core_repositories.owner as owner",
-      "core_repositories.name as repo",
-      "core_repositories.default_branch as branch",
-      "core_project_protection.problems as problems",
-      "core_project_protection.changed_at as changedAt",
-    ])
-    .where("core_projects.org_id", "in", orgs)
-    .where("core_project_protection.state", "=", "red")
-    .where("core_project_protection.last_ok_at", "is not", null);
+      )
+      .select([
+        "core_projects.id as projectId",
+        "core_projects.name as name",
+        "core_repositories.owner as owner",
+        "core_repositories.name as repo",
+        "core_repositories.default_branch as branch",
+        "core_project_protection.problems as problems",
+        "core_project_protection.changed_at as changedAt",
+      ])
+      .where("core_projects.org_id", "in", orgs)
+      .where("core_project_protection.state", "=", "red")
+      .where("core_project_protection.last_ok_at", "is not", null)
+  );
 }
 
 /** Whether policy blocks build work on this project now (`protection.onRed: "block"` and red). */

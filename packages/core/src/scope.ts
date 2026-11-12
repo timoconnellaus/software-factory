@@ -104,11 +104,7 @@ export async function resolveScope(
   }
 
   if (batch) {
-    return resolveBatched(
-      batch.d1,
-      { workItemId, projectId, orgId, repositoryId },
-      batch.userId,
-    );
+    return resolveBatched(batch.d1, { workItemId, projectId, orgId, repositoryId }, batch.userId);
   }
 
   let workItem: WorkItemRow | null = null;

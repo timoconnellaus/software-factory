@@ -10,10 +10,10 @@ import { prHeadEvent } from "../workflow-events.ts";
 import {
   createWorkItem,
   projectId,
-  repositoryForRepo,
-  repositoryId,
   repoName,
   repoRef,
+  repositoryForRepo,
+  repositoryId,
   requireProject,
   requireRepository,
   requireWorkItem,
@@ -50,11 +50,7 @@ export function attachRefusal(
 }
 
 /** The live work item already attached to a PR, if there is one. */
-async function attachedItem(
-  ctx: HandlerContext,
-  repository: RepositoryRow,
-  prNumber: number,
-) {
+async function attachedItem(ctx: HandlerContext, repository: RepositoryRow, prNumber: number) {
   return (
     (await ctx.db
       .selectFrom("core_intake_keys")

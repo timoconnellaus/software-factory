@@ -11,9 +11,7 @@ import type { RepoRef } from "../services.ts";
 
 export const workItemId = z.string().regex(idPattern("workItem"), "a work item id (wi_…)");
 export const projectId = z.string().regex(idPattern("project"), "a project id (prj_…)");
-export const repositoryId = z
-  .string()
-  .regex(idPattern("repository"), "a repository id (repo_…)");
+export const repositoryId = z.string().regex(idPattern("repository"), "a repository id (repo_…)");
 export const pendingActionId = z
   .string()
   .regex(idPattern("pendingAction"), "a pending action id (pa_…)");

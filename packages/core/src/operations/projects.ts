@@ -15,12 +15,7 @@ import { POLICY_PATH, parseProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, approverIds, isOrgAdmin, resumeEventType } from "../scope.ts";
 import type { FactoryServices, RepoRef } from "../services.ts";
 import { formatPolicy, versionOf, writeVersion } from "./config.ts";
-import {
-  projectId,
-  repositoryId,
-  requireProject,
-  requireRepository,
-} from "./shared.ts";
+import { projectId, repositoryId, requireProject, requireRepository } from "./shared.ts";
 
 const connectionView = z.object({
   /** `missing`: no installation reaches the repo; `suspended`/`deleted`: as GitHub reported. */
@@ -421,6 +416,8 @@ export const projectCreate = defineOperation({
       /** Defaults to the repo's name. Needed for a project with no repository. */
       name: z.string().min(1).max(100).optional(),
     })
+    // Strict: a repository is named only by GitHub's ids, never by free text (ADR 0055).
+    .strict()
     .refine((i) => (i.installationRecordId === undefined) === (i.repoId === undefined), {
       message: "give installationRecordId and repoId together, or neither",
     })
@@ -509,7 +506,11 @@ export const projectCreate = defineOperation({
       policySha: synced?.sha ?? null,
       configVersion: versionOf(synced?.sha ?? null),
       githubInstallationId: first?.githubInstallationId ?? null,
-      connection: first?.connection ?? { status: "missing" as const, account: null, manageUrl: null },
+      connection: first?.connection ?? {
+        status: "missing" as const,
+        account: null,
+        manageUrl: null,
+      },
       policy: { state: "valid" as const, error: null, prUrl: null },
     };
   },

@@ -22,10 +22,10 @@ import { inspectProtection } from "./protection.ts";
 import {
   cancelWorkItem,
   projectForRepo,
-  repositoryForRepo,
   projectId,
   repoName,
   repoRef,
+  repositoryForRepo,
   requireProject,
   requireRepository,
   requireWorkItem,
@@ -165,7 +165,11 @@ export const reviewPacketRecord = defineOperation({
     const ci = await readCi(ctx, repo, input.headSha);
     let files: ChangedFile[] | null = null;
     try {
-      files = await ctx.services.github.compareFiles(repo, repository.default_branch, input.headSha);
+      files = await ctx.services.github.compareFiles(
+        repo,
+        repository.default_branch,
+        input.headSha,
+      );
     } catch {
       files = null; // the packet is then incomplete, so it fails
     }
