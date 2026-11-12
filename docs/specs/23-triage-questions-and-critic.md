@@ -73,3 +73,29 @@ Routing triage questions by decision domain (R1 milestone (c)).
 - Tests: `packages/core/test/readiness.test.ts`, plus `packages/db/test/late-migrations.test.ts`
   (this branch's migration applies after everything on main and survives a fresh build).
 
+### Part B: triage's readiness (Workflow v8, provisional number)
+- `triageResultSchema` gains `readiness` (`ready`, `needs_answers`, `not_actionable`; default
+  `ready`), `readinessReason` and up to five `questions`. The triage prompt asks for them in v8
+  instances, with the answers to an earlier round. `workItem.triage` journals the readiness and its
+  reason with the size decision. It never touches the spec gate, which the autonomy policy decides
+  as before (criterion 6).
+- **`not_actionable`** (`triage: park`): `workItem.parkForInfo` parks the item in the Backlog with
+  a needs-info marker (`source: "triage"`) and triage's questions to its requester. It resets
+  the item for a fresh start and moves it to a new Workflow generation (`<id>-r2`, …), since an
+  instance id can't be reused. Every Workflow create and release event now uses `workflow_id`.
+  The instance ends (`parked`), and the slot is freed (a pull is requested). Answering re-releases
+  it (or re-shapes it, as it was heading), and triage runs again on the new generation with the
+  answers in the request (criterion 4).
+- **`needs_answers`, no spec required** (a small item): `triage #k: ask` asks triage's questions as
+  ordinary blocking questions, waits for the answers (escalating on timeouts as any question round),
+  and triages again with them (`triage #k`, `#k: record`), at most two rounds. Then it goes on as
+  triage last said (criterion 2). Deviation: the spec suggested a short planning session for this
+  round; ordinary questions do the same with no session to manage, and answering re-runs triage as
+  asked.
+- **`needs_answers`, spec required** (medium or large): the planning session opens with triage's
+  questions already asked (`planning: triage questions`, `planning.seedQuestions`), as the planner's
+  open questions in the Planning tab (criterion 3).
+- Tests: `apps/engine/test/triage-readiness.test.ts` (the three paths through the real Workflow),
+  and core `readiness.test.ts` (parking on a new generation; seeding needs an open session). The
+  version test freezes v8's step names.
+
