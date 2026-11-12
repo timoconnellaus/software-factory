@@ -837,8 +837,11 @@ and after.
 - **Release takes the current version (Q4)** when the item's shaping stages are unchanged in it (same
   ids, types and settings, in the same order). Otherwise release doesn't guess: the item is
   **flagged** on its card and in the inbox ("planned under v3; the shaping stages changed in v5"),
-  and the person releasing it chooses to release it under its pinned version or send it back to
-  shaping under the current one. `workItem.release` refuses without that choice.
+  and the person releasing it chooses to shape it again under the current workflow, or to accept
+  the shaping already done and deliver it under the current workflow (amended 2026-11-13 from the
+  owner's answer: delivery always runs on the current version, so no one can skip a tightening by
+  releasing under an older one). `workItem.release` doesn't release it without that choice; an
+  agent's release leaves it flagged. Only a person chooses.
 - **Stage-type code**: a type's `version` changes only when its persisted step state changes
   shape. Each stage entry records the version it started on; the registry keeps old versions'
   `next()` until `core_item_stages` has none open, then deletes them. Prompt and logic changes that
@@ -1233,8 +1236,26 @@ screen needs).
    projects. A slot workflow already named like an org id (`wf_x`) stays a slot workflow; only new
    ones may not take such a name. The org config is parsed once per isolate and version, and polled
    reads that use nothing it decides (`skipsOrgWorkflow`) don't resolve it.
-   Still to come in (d): the release flag when shaping stages changed (Q4), the tightening re-pin at
-   the next boundary (Q3), and moving each project's slot workflow to the org.
+   (d3) builds Q4 as the owner answered it: delivery always runs on the org's current version (the
+   pull pins it). The version an item was shaped under decides only whether its finished shaping
+   still counts: when the current version's shaping stages are the same (ids, types, settings with
+   defaults, conditions, agents, in order), release proceeds; when they changed, release doesn't
+   guess and doesn't release. It flags the item: `core_work_items.release_flag` (migration 0285, the
+   shape of `needs_info`) with the reason and both versions, and `release_flag_user_id`, the person
+   who chooses (the one who released it; for an agent's release, the requester, else the first
+   approver), who is notified. An agent's release leaves the item flagged with the reason rather
+   than failing. The flag shows on the board's card (Ready: "choose in the Inbox") and in that
+   person's Inbox (`inbox.releaseFlags`, read by the partial index on `release_flag_user_id`) with the
+   two choices, `workItem.releaseChoice` (a person only: browser or desktop, never a CLI or MCP
+   token): `reshape` shapes it again under the current workflow (the waiting Workflow instance is
+   terminated and a new instance, `<item>_r…`, runs the current shaping stages), and `accept` records
+   that the shaping done counts under the current version and releases it. Either way it is
+   delivered under the current workflow. The check runs again at the pull, against the version
+   delivery will run on, and the start is guarded on the org still being at that version: an item
+   released under v2 whose shaping changed in v3 before it started goes back to Ready, flagged. And
+   `accept` refuses once the org has saved past the version the flag named, flagging the item again
+   against the current version so the person sees the new difference. Still to come in (d): the tightening re-pin at the next
+   boundary (Q3), and moving each project's slot workflow to the org.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the

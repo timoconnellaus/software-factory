@@ -14,6 +14,7 @@ export type InboxEntry =
     }
   | { key: string; group: "Specs"; kind: "planning"; planning: Inbox["planning"][number] }
   | { key: string; group: "Questions"; kind: "question"; question: Inbox["questions"][number] }
+  | { key: string; group: "Approvals"; kind: "release"; flag: Inbox["releaseFlags"][number] }
   | { key: string; group: "Notices"; kind: "protection"; drift: Inbox["protection"][number] }
   | { key: string; group: "Notices"; kind: "setup"; setup: SetupStatus };
 
@@ -38,6 +39,10 @@ export function inboxEntries(inbox: Inbox, setup: SetupStatus | null | undefined
     // A second question on one item gets its own key, so each can be selected.
     const key = seen.has(question.workItemId) ? question.id : question.workItemId;
     add({ key, group: "Questions", kind: "question", question });
+  }
+  // Spec 52, Q4: a shaped item whose workflow's shaping changed waits on this person's choice.
+  for (const flag of inbox.releaseFlags ?? []) {
+    add({ key: flag.workItemId, group: "Approvals", kind: "release", flag });
   }
   for (const drift of inbox.protection) {
     add({ key: `protection-${drift.projectId}`, group: "Notices", kind: "protection", drift });
@@ -82,6 +87,12 @@ export function entryText(
       return {
         title: `${prefix(e.question.workItemId)}${e.question.prompt}`,
         sub: e.question.irreversible ? "Irreversible" : "Blocks the work",
+        status: "waiting",
+      };
+    case "release":
+      return {
+        title: `#${e.flag.number} ${e.flag.title}`,
+        sub: "Its workflow's shaping changed: choose before release",
         status: "waiting",
       };
     case "protection":

@@ -318,6 +318,10 @@ export interface CoreWorkItemsTable {
   parent_work_item_id: string | null;
   /** 0370 (spec 23): a parked item's needs-info marker, JSON; null when not parked. */
   needs_info: string | null;
+  /** A shaped item's release flag (spec 52 Q4, migration 0285): JSON, null when not flagged. */
+  release_flag: string | null;
+  /** Who must choose for a flagged item (migration 0285); null when not flagged. */
+  release_flag_user_id: string | null;
   created_at: Iso;
   updated_at: Iso;
   closed_at: Iso | null;

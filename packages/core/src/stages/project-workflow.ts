@@ -422,3 +422,23 @@ export function configImpact(
     });
   return summarise(changes);
 }
+
+/**
+ * A definition's shaping stages as release compares them (spec 52, Q4): id, type, settings (with
+ * defaults), condition and agent, in order. Equal lists mean an item shaped under one version may be
+ * released under the other.
+ */
+export function shapingStagesOf(def: WorkflowDefinition): unknown[] {
+  return def.stages
+    .filter((s) => s.phase === "shaping")
+    .map((s) => {
+      const parsed = stageType(s.type)?.settings.safeParse(s.settings ?? {});
+      return {
+        id: s.id,
+        type: s.type,
+        settings: parsed?.success ? parsed.data : s.settings,
+        when: s.when ?? null,
+        agent: s.agent ?? null,
+      };
+    });
+}

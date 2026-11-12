@@ -184,6 +184,10 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "desktop": "proof",
           "mobile": "one tap",
         },
+        "workItem.releaseChoice": {
+          "desktop": "one tap",
+          "mobile": "one tap",
+        },
         "workflow.archive": {
           "desktop": "refused",
           "mobile": "refused",

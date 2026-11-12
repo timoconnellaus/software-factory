@@ -256,7 +256,9 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    *   (`ctx.presence`);
    * - `planning.finishAlone`: the standing form of that bulk accept, within the same limits;
    * - `planning.stop`, `planning.pause`, `planning.resume` and `chat.send` with `interrupt`: steering
-   *   the planner, which changes nothing it has decided.
+   *   the planner, which changes nothing it has decided;
+   * - `workItem.releaseChoice`: a person's choice for an item flagged at release (spec 52, Q4),
+   *   which holds work back or releases it under the gates that apply anyway.
    */
   desktopDecidable?: true;
   /**
