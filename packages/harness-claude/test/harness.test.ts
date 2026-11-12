@@ -1,4 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { lookup } from "node:dns/promises";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +27,14 @@ import {
   verifyLaunch,
   writeAttachments,
 } from "../src/index.ts";
+
+// The factory's own verify runs these tests inside the harness's sandbox, which has no `ps` and
+// resolves only allowlisted hosts. Tests that need either skip there and still run in CI.
+const psWorks = (await psCommand(process.pid)) !== null;
+const githubResolves = await lookup("github.com").then(
+  () => true,
+  () => false,
+);
 
 const dirs: string[] = [];
 const temp = async (prefix: string) => {
@@ -305,70 +314,76 @@ describe("launch", () => {
 });
 
 describe("projection", () => {
-  it("writes the same settings to the run dir and the worktree, and a launch record that verifies", async () => {
-    const worktree = await temp("sf-h-wt-");
-    const runDir = join(await temp("sf-h-run-"), "job_1");
-    const runTmp = join(await temp("sf-h-tmp-"), "job_1");
-    const bin = await temp("sf-h-bin-");
-    const claudeBin = join(bin, "claude");
-    const projected = await projectHarness(job("build"), { worktree, runDir, runTmp, claudeBin });
-    const local = await readFile(join(worktree, SETTINGS_FILE), "utf8");
-    expect(await readFile(projected.settingsPath, "utf8")).toBe(local);
-    expect(JSON.parse(local).permissions.defaultMode).toBe("bypassPermissions");
-    expect(await readFile(projected.gitConfigPath, "utf8")).toContain("helper =");
-    expect(projected.launch.argv).toContain(projected.settingsPath);
-    expect(await readLaunchRecord(runDir)).toEqual(projected.launch);
+  it.skipIf(!psWorks)(
+    "writes the same settings to the run dir and the worktree, and a launch record that verifies",
+    async () => {
+      const worktree = await temp("sf-h-wt-");
+      const runDir = join(await temp("sf-h-run-"), "job_1");
+      const runTmp = join(await temp("sf-h-tmp-"), "job_1");
+      const bin = await temp("sf-h-bin-");
+      const claudeBin = join(bin, "claude");
+      const projected = await projectHarness(job("build"), { worktree, runDir, runTmp, claudeBin });
+      const local = await readFile(join(worktree, SETTINGS_FILE), "utf8");
+      expect(await readFile(projected.settingsPath, "utf8")).toBe(local);
+      expect(JSON.parse(local).permissions.defaultMode).toBe("bypassPermissions");
+      expect(await readFile(projected.gitConfigPath, "utf8")).toContain("helper =");
+      expect(projected.launch.argv).toContain(projected.settingsPath);
+      expect(await readLaunchRecord(runDir)).toEqual(projected.launch);
 
-    // Run the launch script with a stand-in `claude` that just sleeps: the check passes on the
-    // real process, then fails once the settings are touched.
-    await writeFile(claudeBin, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
-    const child = spawn("/bin/sh", [projected.scriptPath], { stdio: "ignore" });
-    try {
-      let problems: string[] = ["not started"];
-      for (let i = 0; i < 30 && problems.length; i++) {
-        await new Promise((r) => setTimeout(r, 100));
-        problems = await verifyLaunch(projected.launch, async (pid) => {
-          const real = await psCommand(pid);
-          // `sh` runs the stand-in script, so ps shows the interpreter first; strip it.
-          return real?.replace(/^\/bin\/sh /, "") ?? null;
-        });
+      // Run the launch script with a stand-in `claude` that just sleeps: the check passes on the
+      // real process, then fails once the settings are touched.
+      await writeFile(claudeBin, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+      const child = spawn("/bin/sh", [projected.scriptPath], { stdio: "ignore" });
+      try {
+        let problems: string[] = ["not started"];
+        for (let i = 0; i < 30 && problems.length; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          problems = await verifyLaunch(projected.launch, async (pid) => {
+            const real = await psCommand(pid);
+            // `sh` runs the stand-in script, so ps shows the interpreter first; strip it.
+            return real?.replace(/^\/bin\/sh /, "") ?? null;
+          });
+        }
+        expect(problems).toEqual([]);
+        await writeFile(join(worktree, SETTINGS_FILE), "{}\n");
+        expect(await verifyLaunch(projected.launch)).toContain(
+          `${join(worktree, SETTINGS_FILE)} changed since it was projected`,
+        );
+      } finally {
+        child.kill();
       }
-      expect(problems).toEqual([]);
-      await writeFile(join(worktree, SETTINGS_FILE), "{}\n");
-      expect(await verifyLaunch(projected.launch)).toContain(
-        `${join(worktree, SETTINGS_FILE)} changed since it was projected`,
-      );
-    } finally {
-      child.kill();
-    }
-  });
+    },
+  );
 
-  it("gives git no way to push with the owner's credentials (criterion 8)", async () => {
-    // A repo whose remote needs credentials, run with the harness env: git must fail without
-    // prompting and without consulting a credential helper or the keychain.
-    const worktree = await temp("sf-h-git-");
-    const runDir = join(await temp("sf-h-run-"), "job_2");
-    await projectHarness(job("build"), { worktree, runDir, runTmp: join(runDir, "tmp") });
-    const env = scrubbedProcessEnv(process.env, harnessEnv(runDir));
-    const git = (...args: string[]) =>
-      spawnSync("git", args, { cwd: worktree, env, encoding: "utf8", timeout: 30_000 });
-    expect(git("init", "-q", "-b", "main").status).toBe(0);
-    await writeFile(join(worktree, "a.txt"), "a\n");
-    expect(git("add", "a.txt").status).toBe(0);
-    const commit = git("commit", "-qm", "a");
-    expect(commit.status).toBe(0);
-    expect(git("log", "-1", "--format=%an <%ae>").stdout.trim()).toBe(
-      "Software Factory <software-factory@users.noreply.github.com>",
-    );
-    expect(git("config", "--get-all", "credential.helper").stdout.trim()).toBe("");
-    expect(git("config", "--show-origin", "--list").stdout).not.toMatch(/osxkeychain|gh auth/);
-    expect(env.GH_TOKEN).toBeUndefined();
-    expect(env.SSH_AUTH_SOCK).toBeUndefined();
-    const push = git("push", "https://github.com/timoconnellaus/software-factory.git", "HEAD:x");
-    expect(push.status).not.toBe(0);
-    // no credential helper ran, nothing was asked
-    expect(push.stderr).toMatch(/could not read Username|terminal prompts disabled|denied|403/i);
-  });
+  it.skipIf(!githubResolves)(
+    "gives git no way to push with the owner's credentials (criterion 8)",
+    async () => {
+      // A repo whose remote needs credentials, run with the harness env: git must fail without
+      // prompting and without consulting a credential helper or the keychain.
+      const worktree = await temp("sf-h-git-");
+      const runDir = join(await temp("sf-h-run-"), "job_2");
+      await projectHarness(job("build"), { worktree, runDir, runTmp: join(runDir, "tmp") });
+      const env = scrubbedProcessEnv(process.env, harnessEnv(runDir));
+      const git = (...args: string[]) =>
+        spawnSync("git", args, { cwd: worktree, env, encoding: "utf8", timeout: 30_000 });
+      expect(git("init", "-q", "-b", "main").status).toBe(0);
+      await writeFile(join(worktree, "a.txt"), "a\n");
+      expect(git("add", "a.txt").status).toBe(0);
+      const commit = git("commit", "-qm", "a");
+      expect(commit.status).toBe(0);
+      expect(git("log", "-1", "--format=%an <%ae>").stdout.trim()).toBe(
+        "Software Factory <software-factory@users.noreply.github.com>",
+      );
+      expect(git("config", "--get-all", "credential.helper").stdout.trim()).toBe("");
+      expect(git("config", "--show-origin", "--list").stdout).not.toMatch(/osxkeychain|gh auth/);
+      expect(env.GH_TOKEN).toBeUndefined();
+      expect(env.SSH_AUTH_SOCK).toBeUndefined();
+      const push = git("push", "https://github.com/timoconnellaus/software-factory.git", "HEAD:x");
+      expect(push.status).not.toBe(0);
+      // no credential helper ran, nothing was asked
+      expect(push.stderr).toMatch(/could not read Username|terminal prompts disabled|denied|403/i);
+    },
+  );
 
   it("keeps ANTHROPIC and CLAUDE variables but drops credentials", () => {
     const env = scrubbedProcessEnv(
