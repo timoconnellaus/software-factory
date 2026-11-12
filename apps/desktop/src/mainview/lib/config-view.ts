@@ -2,8 +2,20 @@
 // 5): `config.get`'s current document, worded. Read-only: changing the config is `config.save` on the
 // website, where a loosening waits for an approver (ADR 0370), so these pages link there and never
 // write. The document is the stored JSON, so a field it leaves out has the schema's default; the
-// defaults are here once, and a test pins them to `projectPolicySchema`. No model ids: a role maps
-// to the project's own choice, or "the default for the role" (ADR 0018). Pure.
+// defaults are here once, and a test pins them to `projectPolicySchema`. The autonomy wording comes
+// from the gate itself (`decide` over `AUTONOMY_TABLE` with the project's overrides), so the page
+// says what the code enforces. Code asks for a model role (ADR 0018); the Agents page shows the
+// model the owner configured for a role as config, or "the default for the role". Pure.
+import {
+  ALWAYS_REVIEW,
+  AUTONOMY_POLICIES,
+  type AutonomyPolicyName,
+  type Decision,
+  type DecisionRules,
+  decide,
+  type RiskClass,
+  rulesError,
+} from "@software-factory/core/policy-gate";
 
 /** The schema's defaults for the fields these pages show (test: config-view.test.ts). */
 export const POLICY_DEFAULTS = {
@@ -23,6 +35,7 @@ export const POLICY_DEFAULTS = {
   adjudicatorStep: "off",
 } as const;
 
+/** runner-contract's MODEL_ROLES (the view doesn't depend on it): config-view.test.ts pins them. */
 export const MODEL_ROLES = ["triage", "implement", "review", "summarise"] as const;
 
 type Doc = Record<string, unknown>;
@@ -40,27 +53,66 @@ export interface PolicyRow {
   note: string;
 }
 
-const AUTONOMY: Record<string, { title: string; text: string }> = {
-  cautious: {
-    title: "Cautious",
-    text: "A person approves every spec and every write an agent makes.",
-  },
-  balanced: {
-    title: "Balanced",
-    text: "Agents write; specs from medium work up, spending and reaching outside need a person.",
-  },
-  autonomous: {
-    title: "Autonomous",
-    text: "Agents may also spend and reach outside.",
-  },
+const AUTONOMY_TITLE: Record<AutonomyPolicyName, string> = {
+  cautious: "Cautious",
+  balanced: "Balanced",
+  autonomous: "Autonomous",
 };
+
+/** What an agent may do, by the risk classes a policy chooses between (ADR 0004). */
+const AGENT_RISKS: [RiskClass, string][] = [
+  ["write", "writing code"],
+  ["plan", "accepting a spec"],
+  ["spend", "spending"],
+  ["outbound", "reaching outside"],
+];
+
+const RISK_WORD: Partial<Record<RiskClass, string>> = {
+  merge: "Merge",
+  deploy: "deploy",
+  "self-modify": "self-modify",
+};
+
+const list = (xs: string[]) =>
+  xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+
+/**
+ * An agent's decisions under the project's policy and overrides, as the gate makes them before the
+ * floor (`decide` with no floor): what it does on its own, what a person approves, what it never
+ * does. Null when the policy names no shipped autonomy policy.
+ */
+export function autonomyText(doc: Doc): { title: string; text: string } | null {
+  const name = doc.autonomyPolicy;
+  if (!(AUTONOMY_POLICIES as readonly unknown[]).includes(name)) return null;
+  const overrides = rulesError(doc.overrides ?? {}) ? {} : (doc.overrides ?? {});
+  const policy = {
+    autonomyPolicy: name as AutonomyPolicyName,
+    overrides: overrides as DecisionRules,
+  };
+  const by: Record<Decision, string[]> = { allow: [], review: [], deny: [] };
+  for (const [risk, words] of AGENT_RISKS) {
+    const { decision } = decide({ actor: "agent", risk, policy, floor: { ok: true, floor: {} } });
+    by[decision].push(words);
+  }
+  const text = [
+    by.allow.length ? `Agents go ahead with ${list(by.allow)}.` : "Agents do nothing on their own.",
+    by.review.length ? `A person approves ${list(by.review)}.` : "",
+    by.deny.length ? `Agents never do ${list(by.deny)}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return { title: AUTONOMY_TITLE[name as AutonomyPolicyName], text };
+}
+
+/** "Merge, deploy, self-modify": what always goes to a person (ADR 0008). */
+export const ALWAYS_A_PERSON = ALWAYS_REVIEW.map((r) => RISK_WORD[r] ?? r).join(", ");
 
 const hours = (h: number) => (h % 24 === 0 ? `${h / 24} ${h === 24 ? "day" : "days"}` : `${h} h`);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** The rules the factory can't talk its way around, grouped as the design groups them. */
 export function policySections(doc: Doc): { title: string; rows: PolicyRow[] }[] {
-  const autonomy = AUTONOMY[str(doc.autonomyPolicy, "")];
+  const autonomy = autonomyText(doc);
   const spec = str(obj(doc.spec).requiredFrom, POLICY_DEFAULTS.specRequiredFrom);
   const timeouts = obj(doc.timeouts);
   const improve = obj(doc.improve);
@@ -98,9 +150,15 @@ export function policySections(doc: Doc): { title: string; rows: PolicyRow[] }[]
         },
         {
           key: "merge",
-          label: "Merge, deploy, self-modify",
+          label: ALWAYS_A_PERSON,
           value: "Always a person",
           note: "Fixed for every policy. No setting changes it.",
+        },
+        {
+          key: "floor",
+          label: "The factory's floor",
+          value: "Can only tighten this",
+          note: "A floor set for the whole factory applies on top of the project's policy and may make any of these stricter. The app can't read it yet.",
         },
         {
           key: "overrides",
@@ -379,4 +437,17 @@ export function versionLine(
   if (current.source) parts.push(`from ${current.source}`);
   if (current.createdBy) parts.push(`by ${current.createdBy}`);
   return `${parts.join(", ")}.`;
+}
+
+/**
+ * The project the config pages show: among the rail's org's projects, `?project=`, else the first.
+ * The page and its loader both choose with it, so the loader reads the config the page shows.
+ */
+export function configProject<P extends { id: string; orgId: string }>(
+  projects: P[],
+  orgId: string | null,
+  chosen: string | undefined,
+): { inScope: P[]; project: P | null } {
+  const inScope = projects.filter((p) => orgId === null || p.orgId === orgId);
+  return { inScope, project: inScope.find((p) => p.id === chosen) ?? inScope[0] ?? null };
 }

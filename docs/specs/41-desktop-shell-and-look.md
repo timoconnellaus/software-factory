@@ -221,13 +221,18 @@ the design beside them) are in [`docs/screenshots/desktop-factory/`](../screensh
   there. The design's Edit policy, Approve and Discard, New agent, Edit instructions, New workflow
   and Add a step are left out for that reason.
   - **Policy** words the document in four groups (autonomy, limits, people and time, safeguards),
-    with "Merge, deploy, self-modify: always a person" as a fixed row. A field the document leaves
-    out shows the schema's default; `lib/config-view.ts` holds those once and a test pins them to
-    `projectPolicySchema`. The design's budgets per item and per day have no config field yet.
+    with "Merge, deploy, self-modify: always a person" as a fixed row. The autonomy row's wording
+    comes from the gate itself (`decide` over `AUTONOMY_TABLE` with the project's overrides, from
+    core's `policy-gate` export), so it says what the code enforces. The factory's floor
+    (`FACTORY_FLOOR`) can only tighten that, and no read returns it, so a row says so. A field the
+    document leaves out shows the schema's default; `lib/config-view.ts` holds those once and a test
+    pins them to `projectPolicySchema`. The design's budgets per item and per day have no config
+    field yet. The project shown is the rail's org's, in the page and its loader alike.
   - **Agents** lists the project's agents (role, tier, instructions, which workflow steps use them)
-    and the chosen agent's instructions, then the model roles with the project's own choice or "the
-    default for the role": the view names no model ids (ADR 0018). Skills and per-agent usage (the
-    design's side panels) wait on spec 52 and a usage read.
+    and the chosen agent's instructions, then each model role with the model the owner configured
+    for it, labelled as the role's configured model, or "the default for the role". That is config
+    a person set, shown as set; code still asks for a role, never a model id (ADR 0018). Skills and
+    per-agent usage (the design's side panels) wait on spec 52 and a usage read.
   - **Workflows** lists the named workflows, marks the one the project runs (ADR 0492), and shows
     the chosen one's stages: the fixed skeleton (Spec, Build, Verify, Review, Merge) with the steps
     its three slots add (ADR 0371). Stage types and shaping stages (spec 52) are design only.

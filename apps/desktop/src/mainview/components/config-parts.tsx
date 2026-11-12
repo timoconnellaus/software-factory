@@ -13,12 +13,15 @@ import {
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { type QueryClient, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { versionLine } from "../lib/config-view.ts";
+import { configProject, versionLine } from "../lib/config-view.ts";
 import { ExternalLink, WEBSITE_URL } from "../lib/external.tsx";
 import { configQuery } from "../lib/factory-queries.ts";
 import { projectsQuery } from "../lib/queries.ts";
+import { orgScope } from "../lib/scope.ts";
 import { useProjects } from "../lib/session.ts";
+import { getViewState } from "../lib/view-state.ts";
 import { Empty } from "./data-table.tsx";
+import { type ReadQuery, Reads, readState } from "./read-state.tsx";
 import { Panel } from "./shell-list.tsx";
 import { useOrgScope } from "./shell-sidebar.tsx";
 
@@ -29,15 +32,19 @@ export interface ProjectSearch {
 export const projectSearch = (s: Record<string, unknown>): ProjectSearch =>
   typeof s.project === "string" ? { project: s.project } : {};
 
-/** The project the config pages show: `?project=`, else the first (loaders read its config). */
+/** The loaders' side of `configProject`: the rail's org from the view state. */
 export async function configProjectId(
-  context: { queryClient: QueryClient; session: { orgs: { id: string }[] } },
-  project: string | undefined,
+  context: {
+    queryClient: QueryClient;
+    session: { personalOrgId: string | null; orgs: { id: string }[] };
+  },
+  chosen: string | undefined,
 ): Promise<string | null> {
   const projects = await context.queryClient
     .ensureQueryData(projectsQuery(context.session.orgs.map((o) => o.id)))
     .catch(() => []);
-  return projects.find((p) => p.id === project)?.id ?? projects[0]?.id ?? null;
+  const orgId = orgScope(context.session, getViewState().orgId);
+  return configProject(projects, orgId, chosen).project?.id ?? null;
 }
 
 /** The website page where a project's config is changed. */
@@ -48,10 +55,9 @@ export const configUrl = (projectId: string, page: "settings" | "workflows") =>
 export function useProjectConfig(chosen: string | undefined) {
   const orgId = useOrgScope();
   const projects = useProjects();
-  const inScope = (projects.data ?? []).filter((p) => orgId === null || p.orgId === orgId);
-  const project = inScope.find((p) => p.id === chosen) ?? inScope[0] ?? null;
+  const { inScope, project } = configProject(projects.data ?? [], orgId, chosen);
   const config = useQuery({ ...configQuery(project?.id ?? ""), enabled: !!project });
-  return { projects: inScope, project, config };
+  return { projects: inScope, project, projectsRead: projects, config };
 }
 
 export function ProjectPicker({
@@ -149,16 +155,33 @@ export function ConfigFooter({
   );
 }
 
-/** What a page shows with no project, or a config that can't be read. */
+/**
+ * What a page shows until its config is there to show: a skeleton while the projects or the config
+ * load, the error with Retry when a read failed, and "no project" or "no config yet" only when the
+ * read answered so. Null once the config is ready (the page renders it).
+ */
 export function ConfigState({
+  projectsRead,
   project,
   config,
 }: {
+  projectsRead: ReadQuery;
   project: Project | null;
-  config: { isPending: boolean; error: Error | null; data?: ConfigView };
+  config: ReadQuery & { data?: ConfigView };
 }) {
+  if (readState([projectsRead]) !== "ready")
+    return (
+      <Reads queries={[projectsRead]} what="the projects">
+        {() => null}
+      </Reads>
+    );
   if (!project) return <Empty>No project in this org yet. Add one in Setup.</Empty>;
-  if (config.error) return <Empty>Couldn't read the config: {config.error.message}</Empty>;
+  if (readState([config]) !== "ready")
+    return (
+      <Reads queries={[config]} what="the project's config">
+        {() => null}
+      </Reads>
+    );
   if (config.data?.error) return <Empty>The current config isn't valid: {config.data.error}</Empty>;
   if (!config.data?.current?.policy) return <Empty>This project has no config yet.</Empty>;
   return null;

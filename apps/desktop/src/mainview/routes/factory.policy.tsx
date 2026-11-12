@@ -31,7 +31,7 @@ export const Route = createRoute({
 
 function PolicyPage() {
   const search = Route.useSearch();
-  const { projects, project, config } = useProjectConfig(search.project);
+  const { projects, project, projectsRead, config } = useProjectConfig(search.project);
   const doc = config.data?.current?.policy ?? null;
   return (
     <PageArea>
@@ -41,7 +41,7 @@ function PolicyPage() {
         sub="The rules the factory can't talk its way around. Gates live in code; the policy only chooses within them."
         actions={<ProjectPicker projects={projects} project={project} from="/factory/policy" />}
       />
-      <ConfigState project={project} config={config} />
+      <ConfigState projectsRead={projectsRead} project={project} config={config} />
       {project && config.data && <PendingChanges config={config.data} projectId={project.id} />}
       {doc &&
         policySections(doc).map((section) => (

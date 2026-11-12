@@ -1,6 +1,6 @@
 // Factory: Agents (spec 41, slice 5; design FactoryAgents). The project's agents (ADR 0372): each a
-// model role and tier with standing instructions, never a model or a harness; then the model roles
-// with the project's own choices. Read-only from `config.get`: agents are changed on the website.
+// model role and tier with standing instructions, never a model or a harness; then each model role
+// with the model the owner configured for it (config, shown as set; ADR 0018: code asks for a role). Read-only from `config.get`: agents are changed on the website.
 // The design's skills (spec 52) and per-agent usage have no operation yet, so they aren't here.
 import { cn } from "@software-factory/ui/lib/utils";
 import { createRoute, Link } from "@tanstack/react-router";
@@ -47,7 +47,7 @@ const ROLE_TEXT: Record<string, string> = {
 
 function AgentsPage() {
   const search = Route.useSearch();
-  const { projects, project, config } = useProjectConfig(search.project);
+  const { projects, project, projectsRead, config } = useProjectConfig(search.project);
   const doc = config.data?.current?.policy ?? null;
   const agents = doc ? agentRows(doc) : [];
   const chosen = agents.find((a) => a.name === search.agent) ?? agents[0];
@@ -59,7 +59,7 @@ function AgentsPage() {
         sub="An agent is a role in the workflow: a model role, a tier and standing instructions. The runner chooses the model for the role."
         actions={<ProjectPicker projects={projects} project={project} from="/factory/agents" />}
       />
-      <ConfigState project={project} config={config} />
+      <ConfigState projectsRead={projectsRead} project={project} config={config} />
       {doc && (
         <>
           {agents.length === 0 ? (
@@ -121,10 +121,13 @@ function AgentsPage() {
               </Panel>
             </section>
           )}
-          <SectionTitle note="Code asks for a role; the project may choose the model for each.">
+          <SectionTitle note="Code asks for a role, never a model. The owner may configure the model a role maps to.">
             Model roles
           </SectionTitle>
-          <TablePanel head={["Role", "Standard tier", "Light tier"]} data-testid="model-roles">
+          <TablePanel
+            head={["Role", "Configured model, standard tier", "Configured model, light tier"]}
+            data-testid="model-roles"
+          >
             {modelRoleRows(doc).map((r) => (
               <Row key={r.role}>
                 <Cell className="font-medium">{ROLE_TEXT[r.role] ?? r.role}</Cell>
