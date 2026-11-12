@@ -57,7 +57,11 @@
   // refused before the call reaches D1. The namespace id is ours to pick, not an account's: a
   // unique positive integer keeps these counters apart from any other binding on the account.
   "ratelimits": [
-    { "name": "MOBILE_NONCE_LIMIT", "namespace_id": "3110", "simple": { "limit": 10, "period": 60 } }
+    {
+      "name": "MOBILE_NONCE_LIMIT",
+      "namespace_id": "3110",
+      "simple": { "limit": 10, "period": 60 }
+    }
   ],
   "workflows": [
     {
