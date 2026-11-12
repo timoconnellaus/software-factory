@@ -12,7 +12,8 @@ checks that came from incidents are real.
 - An org has projects. A project runs on one workflow. A workflow uses repositories when a stage
   needs code. A project is not a repository.
 - One object runs through the app, the **work item**: org → project → work item → run.
-- A work item goes Backlog → Ready → (release) Queued → the workflow's stages → Done. A work item
+- A work item goes Backlog → Planning (optional) → Ready → (release) Queued → the workflow's stages
+  → Done. Planning before release is proposed and awaits the owner (spec 50, part C). A work item
   always uses its project's workflow.
 
 ## Sections
@@ -71,7 +72,9 @@ way the app already does.
 | [WorkProject.html](WorkProject.html) | Work: a project | 1440 × 980 |
 | [ItemBacklog.html](ItemBacklog.html) | Work item: in the backlog | 1440 × 980 |
 | [ItemOverview.html](ItemOverview.html) | Work item: overview | 1440 × 1000 |
-| [ItemPlan.html](ItemPlan.html) | Work item: plan | 1440 × 1000 |
+| [ItemPlan.html](ItemPlan.html) | Work item: plan, docked (questions and the plan; chat collapsed; Focus opens the full window) | 1440 × 900 |
+| [PlanFocus.html](PlanFocus.html) | Planning: focus mode (the whole window: questions, plan, chat, the gate bar) | 1440 × 900 |
+| [PlanFocusMockup.html](PlanFocusMockup.html) | Planning: comparing mockups for a question, with a pinned comment | 1440 × 900 |
 | [ItemRuns.html](ItemRuns.html) | Work item: runs | 1440 × 1040 |
 | [ItemRunLive.html](ItemRunLive.html) | Work item: a live run | 1440 × 1040 |
 | [ItemReview.html](ItemReview.html) | Work item: review | 1440 × 1400 |
@@ -89,3 +92,16 @@ way the app already does.
 | [SettingsDevices.html](SettingsDevices.html) | Settings: devices and notifications | 1440 × 900 |
 
 The phone screen (`PhoneReview.html`) predates the approved look and has not been restyled.
+
+## Planning
+Planning follows kim: questions with a recommended answer already picked, a living plan, chat, and
+mockups. The three planning screens show the ways a person steers the planner:
+- answer a question, accept the recommended ones in bulk, or let the planner finish alone;
+- edit a line of the plan directly (the planner keeps the wording and updates the answers to match);
+- chat, delivered after the planner's current step, or as an interrupt;
+- pin a comment to a mockup; choose between option cards; ask for another option;
+- stop or pause the planner, and open its terminal.
+
+Docked, the Plan tab shows questions and the plan with chat collapsed. **Focus** (F, Esc to leave)
+gives planning the whole window: the org rail, sidebar and nested list go, the toolbar becomes the
+session bar, and the status bar stays.
