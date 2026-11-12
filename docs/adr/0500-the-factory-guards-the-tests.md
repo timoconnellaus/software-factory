@@ -26,9 +26,22 @@ may agree with it. CI on the head then passes because the bar was lowered.
   the merge gate, which is always a person, and the packet and `factory/verify`'s summary show the
   findings first. `pr.autoMerge` refuses any head whose packet has a finding, so the check-only
   auto-merge class (ADR 0230) can't take them.
+- **Unknown is never intact.** A compare with no files, or one that reaches GitHub's 300-file limit
+  (files past it weren't checked), is a finding; so is any code, test or gate file whose patch
+  GitHub didn't return. A pure rename between two test paths the run still picks up is clean; a
+  test moved under a parked path (`disabled/`, `spikes/`, `fixtures/`, …) is a finding.
+- **Gate changes include the indirect ones**: the `test`/`lint`/`typecheck`/`check` scripts or a
+  test-runner key in `package.json`, `include`/`exclude` in a `tsconfig`, `.github/actions/`, any
+  `vitest*`/`jest*`/`playwright*` config file, `.eslintignore`.
 - **Findings belong to one SHA.** They live on that SHA's packet; a new head has none until verify
   records its own, so a push can neither carry stale findings nor clear them without verify running.
   The merge queue's carried packet (ADR 0330) keeps them: its diff is unchanged.
+
+## What "no findings" does not mean
+The guard reads the diff's shape. It does not see a test weakened from inside while keeping its
+shape: `expect(true)`, an assertion deleted from a body that stays, an emptied body, `if (false)`,
+a mock that makes the code under test irrelevant. The packet says "No findings" and what was
+checked, never "the tests are intact", and the reviewer and the person still read the diff.
 
 ## Consequences
 - Legitimate changes (a workflow edit the work item is about, a test deliberately removed with the
@@ -37,3 +50,5 @@ may agree with it. CI on the head then passes because the bar was lowered.
   are reported as unreadable when they are tests or gate files.
 - The patterns are heuristics for the languages the factory builds now (TypeScript, JavaScript,
   some Python). They only add findings; missing a pattern is no worse than before.
+- Findings are kept up to 100 per packet, with the total; titles of removed cases are matched only
+  within their own file, so a test moved to another file is a finding a person clears.

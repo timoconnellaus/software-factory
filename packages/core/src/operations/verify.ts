@@ -217,7 +217,7 @@ export const reviewPacketRecord = defineOperation({
         headSha: input.headSha,
         ci: ci.state,
         testsIntact: packet.testsIntact.intact,
-        testFindings: packet.testsIntact.findings.length,
+        testFindings: packet.testsIntact.total,
       },
     });
     const posted = await postVerify(ctx, {
@@ -234,7 +234,8 @@ export const reviewPacketRecord = defineOperation({
         riskFlags: packet.riskFlags,
         ci,
         workItem: w,
-        testFindings: testFindingLines(packet.testsIntact.findings),
+        testFindings: testFindingLines(packet.testsIntact.findings, packet.testsIntact.total),
+        testFindingsTotal: packet.testsIntact.total,
       }),
     });
     return {
@@ -244,7 +245,7 @@ export const reviewPacketRecord = defineOperation({
       reasons: packet.reasons,
       checkRunId: posted.checkRunId,
       checkError: posted.error,
-      testFindings: testFindingLines(packet.testsIntact.findings),
+      testFindings: testFindingLines(packet.testsIntact.findings, packet.testsIntact.total),
     };
   },
 });
@@ -471,7 +472,7 @@ export const verifyRefresh = defineOperation({
         riskFlags: strings(parseJson(packet.risk_flags)),
         ci,
         workItem: item,
-        testFindings: storedTestFindings(sections),
+        ...storedTestFindings(sections),
       });
     } else if (input.trigger === "ci" && existing) {
       // CI moved, but verify hasn't run on this SHA yet: the check already says so.
@@ -658,7 +659,7 @@ export async function carryReviewPacket(
       riskFlags: strings(parseJson(from.risk_flags)),
       ci,
       workItem: args.item,
-      testFindings: storedTestFindings(sections),
+      ...storedTestFindings(sections),
     }),
   });
   return { packetId: id };

@@ -148,7 +148,7 @@ export function ReviewPacket({ detail, full = false }: { detail: WorkItemDetail;
       </div>
 
       {/* Always shown, whatever sections the project picks: it's for a person (ADR 0500). */}
-      <TestsIntact packet={packet} />
+      <TestsIntact packet={packet} currentHead={item.headSha} />
 
       {packetSections(detail.policy?.reviewPacketSections).map((section) => (
         <Section
@@ -416,49 +416,77 @@ function Section({
 }
 
 /** The tests-intact guard (ADR 0500): found in code from the diff, for a person, not the reviewer. */
-function TestsIntact({ packet }: { packet: ParsedPacket }) {
+function TestsIntact({
+  packet,
+  currentHead,
+}: {
+  packet: ParsedPacket;
+  currentHead: string | null;
+}) {
   const t = packetTestsIntact(packet);
+  const sha = packet.headSha.slice(0, 7);
+  const total = t ? (t.total ?? t.findings.length) : 0;
   return (
     <Panel
       title="Tests intact"
       subtitle="Checked by the factory from the diff on GitHub, not by an agent"
       testId="section-testsIntact"
     >
-      {!t ? (
-        <Empty>Not checked: this packet is from before the guard.</Empty>
-      ) : t.intact ? (
-        <div className="flex items-center gap-2 text-sm" data-testid="tests-intact">
-          <StatusDot status="done" />
-          Intact: no test was removed, skipped or weakened, and no gate file changed.
-        </div>
-      ) : (
-        <div className="grid gap-2 text-sm">
-          <div className="text-muted-foreground text-xs">
-            {t.findings.length} finding{t.findings.length === 1 ? "" : "s"} on{" "}
-            <span className="font-mono">{t.headSha.slice(0, 7)}</span>. They don't fail verify; you
-            decide whether each is right. The factory never merges this on its own.
+      <div className="grid gap-2 text-sm">
+        {currentHead && currentHead !== packet.headSha && (
+          <div className="flex items-start gap-2 text-xs" data-testid="tests-intact-stale">
+            <StatusDot status="waiting" className="mt-1" />
+            This was checked on <span className="font-mono">{sha}</span>, but the branch is now at{" "}
+            <span className="font-mono">{currentHead.slice(0, 7)}</span>, which hasn't been checked
+            yet.
           </div>
-          <ul className="grid gap-1.5" data-testid="test-findings">
-            {t.findings.map((f, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: stored list, never reordered.
-              <li key={i} className="flex items-start gap-2">
-                <StatusDot status="waiting" className="mt-1.5" />
-                <div className="min-w-0">
-                  {/* The message is Markdown for factory/verify; here its backticks are noise. */}
-                  <div>{f.message.replaceAll("`", "")}</div>
-                  {f.path && (
-                    <div className="font-mono text-muted-foreground text-xs">
-                      {f.path}
-                      {f.line ? `:${f.line}` : ""}
-                      {f.text ? ` · ${f.text}` : ""}
-                    </div>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+        )}
+        {!t ? (
+          <Empty>Not checked: this packet is from before the guard.</Empty>
+        ) : t.intact ? (
+          <div className="grid gap-1" data-testid="tests-intact">
+            <div className="flex items-center gap-2">
+              <StatusDot status="done" />
+              No findings on <span className="font-mono">{sha}</span>: no test deleted, removed,
+              skipped or commented out, no suppression added, no threshold lowered, no gate file
+              changed.
+            </div>
+            <div className="text-muted-foreground text-xs">
+              This checks the diff's shape only. It can't see a test weakened from inside, such as
+              <code className="font-mono"> expect(true)</code>, an emptied body or{" "}
+              <code className="font-mono">if (false)</code>.
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="text-muted-foreground text-xs">
+              {total} finding{total === 1 ? "" : "s"} on <span className="font-mono">{sha}</span>
+              {total > t.findings.length ? ` (the first ${t.findings.length} are listed)` : ""}.
+              They don't fail verify; you decide whether each is right. The factory never merges
+              this on its own.
+            </div>
+            <ul className="grid gap-1.5" data-testid="test-findings">
+              {t.findings.map((f, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: stored list, never reordered.
+                <li key={i} className="flex items-start gap-2">
+                  <StatusDot status="waiting" className="mt-1.5" />
+                  <div className="min-w-0">
+                    {/* The message is Markdown for factory/verify; here its backticks are noise. */}
+                    <div>{f.message.replaceAll("`", "")}</div>
+                    {f.path && (
+                      <div className="font-mono text-muted-foreground text-xs">
+                        {f.path}
+                        {f.line ? `:${f.line}` : ""}
+                        {f.text ? ` · ${f.text}` : ""}
+                      </div>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
     </Panel>
   );
 }

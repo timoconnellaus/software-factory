@@ -197,6 +197,8 @@ const testsIntactSection = z.object({
       }),
     )
     .default([]),
+  /** How many findings there were in all; the list stops at 100. */
+  total: z.number().optional(),
 });
 export type TestsIntactSection = z.infer<typeof testsIntactSection>;
 

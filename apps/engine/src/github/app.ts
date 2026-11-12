@@ -448,6 +448,7 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
               status: ChangedFile["status"];
               previous_filename?: string;
               patch?: string;
+              changes?: number;
             }[];
           }
         ).files ?? [];
@@ -456,6 +457,7 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         status: f.status,
         ...(f.previous_filename ? { previousPath: f.previous_filename } : {}),
         ...(typeof f.patch === "string" ? { patch: f.patch } : {}),
+        ...(typeof f.changes === "number" ? { changes: f.changes } : {}),
       }));
     },
     async readFile(repo, path, at) {

@@ -111,6 +111,7 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
             message: "the diff couldn't be read from GitHub, so nothing says the tests are intact",
           },
         ],
+        total: 1,
       };
   const verdict = evidencePass && ci.state === "success" ? "pass" : "fail";
   const evidenceReasons = [...missing.map((m) => `incomplete: ${m}`), ...reasons];
@@ -150,6 +151,8 @@ export function verifyCheckOutput(args: {
   workItem: { number: number; title: string };
   /** The tests-intact findings for this SHA (ADR 0500): shown first, for a person. */
   testFindings?: string[];
+  /** How many findings there were in all (the lines may stop at MAX_FINDINGS). */
+  testFindingsTotal?: number;
 }): {
   status: "in_progress" | "completed";
   conclusion?: "success" | "failure";
@@ -165,6 +168,7 @@ export function verifyCheckOutput(args: {
       : ""
   }`;
   const findings = args.testFindings ?? [];
+  const findingCount = args.testFindingsTotal ?? findings.length;
   const summary = [
     `Work item #${args.workItem.number}: ${args.workItem.title}`,
     "",
@@ -199,8 +203,8 @@ export function verifyCheckOutput(args: {
   return {
     status: "completed",
     conclusion: "success",
-    title: findings.length
-      ? `Verified by the factory; ${findings.length} test finding${findings.length === 1 ? "" : "s"} for a person`
+    title: findingCount
+      ? `Verified by the factory; ${findingCount} test finding${findingCount === 1 ? "" : "s"} for a person`
       : "Verified by the factory",
     summary,
   };
@@ -209,7 +213,12 @@ export function verifyCheckOutput(args: {
 const short = (sha: string) => sha.slice(0, 7);
 
 /** The tests-intact finding lines stored in a packet's sections (for `verifyCheckOutput`). */
-export function storedTestFindings(sections: Record<string, unknown>): string[] {
+export function storedTestFindings(sections: Record<string, unknown>): {
+  testFindings: string[];
+  testFindingsTotal: number;
+} {
   const t = sections.testsIntact as Partial<TestsIntact> | undefined;
-  return Array.isArray(t?.findings) ? testFindingLines(t.findings) : [];
+  if (!Array.isArray(t?.findings)) return { testFindings: [], testFindingsTotal: 0 };
+  const total = typeof t.total === "number" ? t.total : t.findings.length;
+  return { testFindings: testFindingLines(t.findings, total), testFindingsTotal: total };
 }
