@@ -88,6 +88,27 @@ const V8_STEPS = [
   "verify #{b}: check names",
   "build #{b}: checks failing",
 ].map((name) => `\`${name.replaceAll("{", "$" + "{")}\``);
+// The steps v9 adds (spec 23 part B, ADR 0304): triage's readiness, its quick rounds and parking.
+const V9_STEPS = [
+  '"triage: park"',
+  "`triage #${k - 1}: park`",
+  "`triage #${k}: ask`",
+  "`triage #${k}: answers`",
+  "`triage #${k}`",
+  "`triage #${k}: record`",
+  '"planning: triage questions"',
+];
+// The steps v10 adds (spec 23 part C): the spec critic before each planning gate.
+const V10_STEPS = [
+  "`planning #${k}: critic`",
+  "`${name}: spec`",
+  "`${name}: yield`",
+  "`${name}: enqueue`",
+  "`${name}: wait`",
+  "`${name}: result`",
+  "`${name}: expire`",
+  "`${name}: record`",
+];
 // The tags v4 builds `{p}` from: frozen like the step names.
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
@@ -128,13 +149,15 @@ describe("Workflow versions", () => {
   });
 
   // v1–v7's rows are proven equal to the old `version >= N` switches in core's
-  // workflow-features.test.ts; v11 is v8 plus the babysitter's delivery (spec 53).
-  it("v11 is v8 plus the babysitter's delivery, and is the newest version", () => {
-    for (let v = 1; v <= 7; v++) expect(has(v, "babysitter-delivery"), `v${v}`).toBe(false);
+  // workflow-features.test.ts; v11 is v10 plus the babysitter's delivery (spec 53).
+  it("v11 is v10 plus the babysitter's delivery, and is the newest version", () => {
+    for (let v = 1; v <= 10; v++) expect(has(v, "babysitter-delivery"), `v${v}`).toBe(false);
     expect([...(WORKFLOW_VERSION_FEATURES[11] ?? [])].sort()).toEqual(
-      [...(WORKFLOW_VERSION_FEATURES[8] ?? []), "babysitter-delivery"].sort(),
+      [...(WORKFLOW_VERSION_FEATURES[10] ?? []), "babysitter-delivery"].sort(),
     );
-    for (const v of [9, 10]) expect(Object.hasOwn(WORKFLOW_VERSION_FEATURES, v)).toBe(false);
+    // A new item keeps v9's triage readiness and v10's spec critic.
+    expect(has(11, "triage-readiness")).toBe(true);
+    expect(has(11, "spec-critic")).toBe(true);
     expect(Math.max(...Object.keys(WORKFLOW_VERSION_FEATURES).map(Number))).toBe(WORKFLOW_VERSION);
   });
 
@@ -164,5 +187,7 @@ describe("Workflow versions", () => {
     // No feature is switched by comparing version numbers (spec 53, Workflow versions).
     expect(source).not.toMatch(/version\s*(>=|<=|>|<)\s*\d/);
     for (const name of V8_STEPS) expect(source, name).toContain(name);
+    for (const name of V9_STEPS) expect(source, name).toContain(name);
+    for (const name of V10_STEPS) expect(source, name).toContain(name);
   });
 });

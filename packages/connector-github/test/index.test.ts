@@ -42,7 +42,7 @@ describe("routing GitHub App webhooks", () => {
   });
 
   it("tells verify.refresh when a PR closes, and whether it merged (spec 05)", () => {
-    const close = (merged: boolean) =>
+    const close = (merged: boolean, by?: string) =>
       routeGitHubEvent(
         "pull_request",
         {
@@ -51,6 +51,7 @@ describe("routing GitHub App webhooks", () => {
           pull_request: {
             number: 7,
             merged,
+            merged_by: by ? { login: by } : null,
             head: { sha: sha("a"), ref: "tim/x" },
             base: { ref: "main" },
           },
@@ -60,10 +61,28 @@ describe("routing GitHub App webhooks", () => {
     expect(close(false)).toEqual([
       {
         op: "verify.refresh",
-        input: { repo, headSha: sha("a"), prNumber: 7, trigger: "closed", merged: false },
+        input: {
+          repo,
+          headSha: sha("a"),
+          prNumber: 7,
+          trigger: "closed",
+          merged: false,
+          mergedBy: null,
+          mergedByApp: false,
+        },
       },
     ]);
-    expect(close(true)[0]?.input).toMatchObject({ trigger: "closed", merged: true });
+    expect(close(true, "octo")[0]?.input).toMatchObject({
+      trigger: "closed",
+      merged: true,
+      mergedBy: "octo",
+      mergedByApp: false,
+    });
+    // The factory's own App merged it: the Workflow finishes the item, not the webhook.
+    expect(close(true, `${SLUG}[bot]`)[0]?.input).toMatchObject({
+      merged: true,
+      mergedByApp: true,
+    });
   });
 
   it("re-evaluates when CI's check suite completes, but never for the factory's own checks", () => {

@@ -23,6 +23,11 @@ export type Decision =
       kind: "review.merge";
       workItemId: string;
       openedFullDiff: boolean;
+      /**
+       * The commit the person is looking at (the review packet's head). The approval and its proof
+       * are for that commit only: a push in between is refused (spec 40 M4b, spec 60).
+       */
+      headSha: string;
       /** The person merges without the checks the runner could not run (ADR 0501): recorded. */
       mergeWithoutChecks?: boolean;
     }
@@ -69,6 +74,7 @@ async function run(d: Decision): Promise<string> {
         {
           workItemId: d.workItemId,
           openedFullDiff: d.openedFullDiff,
+          headSha: d.headSha,
           ...(d.mergeWithoutChecks ? { mergeWithoutChecks: true } : {}),
         },
         key,

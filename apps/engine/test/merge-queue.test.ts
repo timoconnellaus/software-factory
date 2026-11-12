@@ -17,6 +17,7 @@ import {
   build,
   call,
   first,
+  gateHead,
   gateOpen,
   github,
   itemStatus,
@@ -86,8 +87,12 @@ async function toMergeGate(w: World, title: string, file: string) {
   return { id: item.workItemId, number: Number(row?.number), pr: Number(row?.pr_number) };
 }
 
-const approve = (w: World, workItemId: string) =>
-  ok("review.merge", { workItemId, openedFullDiff: true }, w.human);
+const approve = async (w: World, workItemId: string) =>
+  ok(
+    "review.merge",
+    { workItemId, openedFullDiff: true, headSha: await gateHead(workItemId) },
+    w.human,
+  );
 
 const entry = (workItemId: string, where = "") =>
   first<{ head_sha: string; approved_sha: string; status: string; end_reason: string | null }>(
