@@ -365,6 +365,14 @@ export interface ExecResult {
    */
   notRun?: string;
   /**
+   * Set when the check failed on one of the runner's own limits, read from outside what it runs
+   * (the Docker daemon's OOMKilled, the host's measure of its dir), never from its output: "the
+   * check hit the runner's memory limit (4 GB). The code under check may be the cause; raise the
+   * limit in the runner's config or fix the code". A failure (the code under check can cause it),
+   * not a check not run: no fix round, a person decides (ADR 0501, amended 2026-11-13).
+   */
+  limit?: string;
+  /**
    * Where it ran (ADR 0501, fourth review): a check container, the OS sandbox, or the weaker OS
    * sandbox of a Mac runner whose owner opted in. Reported with the check; the gate names the last.
    */

@@ -90,10 +90,11 @@ export const hostDirs = (dirs: Paths, exec: Exec = nodeExec) => ({
 
 /** A container runner's dirs and runtime, for reaping and `doctor` (ADR 0430). */
 export const containerDirs = (
-  config: Pick<RunnerConfig, "container">,
+  config: Pick<RunnerConfig, "container" | "runnerId">,
   dirs: Paths,
   exec: Exec = nodeExec,
 ) => ({
+  runnerId: config.runnerId,
   containersDir: dirs.containersDir,
   runsDir: dirs.runsDir,
   runtime: dockerRuntime({ exec, bin: dockerBin(config) }),
@@ -252,7 +253,9 @@ export function buildRunner(
       ? (options.container?.runtime ?? dockerRuntime({ exec, bin: dockerBin(config) }))
       : null;
   const reapChecks = (running: Set<string>) =>
-    checkRuntime ? reapCheckContainers(checkRuntime, running) : Promise.resolve([] as string[]);
+    checkRuntime
+      ? reapCheckContainers(checkRuntime, running, config.runnerId)
+      : Promise.resolve([] as string[]);
   // Claim nothing heavy, then nothing at all, while the machine is overloaded (ADR 0552). Checks
   // wait on the same gate before they start (fifth review).
   const load = new LoadGate(
@@ -330,6 +333,7 @@ export function buildRunner(
           ...localConfig,
           container: {
             containersDir: dirs.containersDir,
+            runnerId: config.runnerId,
             bin: dockerBin(config),
             modelCredential: hostModelCredential(config),
             fetchNamespace: FETCH_NAMESPACE,
@@ -365,6 +369,7 @@ export function buildRunner(
         ? null
         : localChecks({
             weakerMacSandbox: checkSettings.weakerMacSandbox,
+            runnerId: config.runnerId,
             limits: {
               cpus: checkSettings.cpus,
               memory: `${Math.round(checkSettings.memoryGb * 1024)}m`,

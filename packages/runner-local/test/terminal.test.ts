@@ -1,9 +1,10 @@
 // The web terminal's tmux bridge (spec 35, ADR 0440): the control-mode parser, and the bridge on the
 // real tmux (skipped when tmux isn't installed) on its own socket.
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { TerminalBridge, TerminalSize } from "@software-factory/runner-contract";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   ControlParser,
   decodeOutput,
@@ -94,12 +95,47 @@ describe("tmux control mode, parsed", () => {
 });
 
 const hasTmux = spawnSync("tmux", ["-V"]).status === 0;
-const SOCKET = `sf-term-test-${process.pid}`;
+// A server of this file's own (never another test file's, run beside it), kept up for the whole
+// file: tmux's server exits when its last session goes, and a test that starts a session while the
+// one before's server is still exiting got "server exited unexpectedly" (CI, five PRs).
+const SOCKET = `sf-term-test-${process.pid}-${randomBytes(4).toString("hex")}`;
 const tmux = tmuxCli({ socket: SOCKET });
 
+beforeAll(async () => {
+  if (!hasTmux || skipTmuxControlTests()) return;
+  const started = await tmux.call(["start-server", ";", "set-option", "-g", "exit-empty", "off"]);
+  if (started.code !== 0) throw new Error(`tmux start-server: ${started.stderr}`);
+  // It answers before any test uses it.
+  await until("the test's tmux server answers", async () => {
+    const r = await tmux.call(["display-message", "-p", "#{pid}"]);
+    return r.code === 0 && /^\d+$/.test(r.stdout.trim());
+  });
+});
+
 afterAll(() => {
+  // Only this file's own server.
   spawnSync("tmux", ["-L", SOCKET, "kill-server"]);
 });
+
+/** Waits until the pane has stopped changing: its cursor and the bytes the bridge has seen. */
+async function settled(name: string, seen: () => number) {
+  let last = "";
+  let stable = 0;
+  await until("the pane to settle", async () => {
+    const r = await tmux.call([
+      "display-message",
+      "-p",
+      "-t",
+      `=${name}:`,
+      "#{cursor_x} #{cursor_y}",
+    ]);
+    const now = `${r.stdout.trim()} ${seen()}`;
+    stable = now === last ? stable + 1 : 0;
+    last = now;
+    if (stable < 3) await sleep(50);
+    return stable >= 3;
+  });
+}
 
 async function until(what: string, test: () => boolean | Promise<boolean>, ms = 10_000) {
   const end = Date.now() + ms;
@@ -118,6 +154,8 @@ describe.skipIf(!hasTmux || skipTmuxControlTests())(
       // `cat -v` shows control characters as text, so typing them is visible.
       await tmux.newSession({ name, cwd: "/", command: "cat -v", width: 100, height: 30 });
       let out = "";
+      let all = "";
+      const chunks: string[] = [];
       const sizes: TerminalSize[] = [];
       const exits: string[] = [];
       const bridge: TerminalBridge = await openTmuxTerminal({
@@ -125,7 +163,10 @@ describe.skipIf(!hasTmux || skipTmuxControlTests())(
         socket: SOCKET,
         size: null,
         onOutput: (bytes) => {
-          out += dec(bytes);
+          const text = dec(bytes);
+          out += text;
+          all += text;
+          chunks.push(text);
         },
         onSize: (s) => sizes.push(s),
         onExit: (r) => exits.push(r),
@@ -151,9 +192,17 @@ describe.skipIf(!hasTmux || skipTmuxControlTests())(
       ]);
       expect(real.stdout.trim()).toBe("90x20");
 
+      // Nothing still on its way from the pane (the echo of the Enter, the resize's own redraw), so
+      // the redraw below is the screen as it is and the cursor read after it is the one it drew.
+      await settled(name, () => all.length);
       out = "";
+      const before = chunks.length;
       await bridge.redraw();
-      expect(out.startsWith("\x1b[?25l\x1b[0m\x1b[H\x1b[2J")).toBe(true);
+      // The redraw is one write of its own: clear, the screen, the cursor.
+      const redrawn = chunks
+        .slice(before)
+        .find((c) => c.startsWith("\x1b[?25l\x1b[0m\x1b[H\x1b[2J"));
+      expect(redrawn, JSON.stringify(chunks.slice(before))).toBeDefined();
       // The cursor goes where tmux has it, not the top left (spec 42 found it at 1;1).
       const cursor = await tmux.call([
         "display-message",
@@ -163,7 +212,7 @@ describe.skipIf(!hasTmux || skipTmuxControlTests())(
         "#{cursor_x} #{cursor_y}",
       ]);
       const [cx, cy] = cursor.stdout.trim().split(" ").map(Number);
-      expect(out).toContain(`\x1b[${(cy ?? 0) + 1};${(cx ?? 0) + 1}H`);
+      expect(redrawn).toContain(`\x1b[${(cy ?? 0) + 1};${(cx ?? 0) + 1}H`);
       expect(cy).toBeGreaterThan(0);
       // The next command still gets its own answer.
       await bridge.resize({ cols: 91, rows: 21 });

@@ -66,9 +66,16 @@ for (const [net, prefix] of [
   NOT_PUBLIC.addSubnet(net, prefix, "ipv4");
 }
 for (const [net, prefix] of [
-  ["::", 128],
-  ["::1", 128],
+  // IPv4-compatible (deprecated; ::127.0.0.1), and with it :: and ::1.
+  ["::", 96],
+  // The forms that carry an IPv4 address inside: NAT64 (64:ff9b::127.0.0.1), local-use NAT64,
+  // SIIT's IPv4-translated (::ffff:0:a.b.c.d), 6to4 (2002:7f00:1::) and Teredo. Refused whole: the
+  // IPv4 inside them is whatever the sender chose.
   ["64:ff9b::", 96],
+  ["64:ff9b:1::", 48],
+  ["::ffff:0:0:0", 96],
+  ["2002::", 16],
+  ["2001::", 32],
   ["100::", 64],
   ["2001:db8::", 32],
   ["fc00::", 7], // unique local (Tailscale's IPv6 too)
@@ -83,9 +90,21 @@ export function notPublic(address, extra = []) {
   let a = String(address)
     .replace(/^\[|\]$/g, "")
     .toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a);
-  if (mapped) a = mapped[1];
-  else if (/^::ffff:[0-9a-f]{1,4}:[0-9a-f]{1,4}$/.test(a)) return true; // mapped, hex form
+  if (isIP(a) === 6) {
+    // One spelling for every IPv6 form (0:0:0:0:0:ffff:7f00:1, ::ffff:127.0.0.1, …), then the
+    // IPv4-mapped one checked as the IPv4 address it is.
+    try {
+      a = new URL(`http://[${a}]`).hostname.slice(1, -1);
+    } catch {
+      return true;
+    }
+    const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(a);
+    if (mapped) {
+      const hi = Number.parseInt(mapped[1], 16);
+      const lo = Number.parseInt(mapped[2], 16);
+      a = [hi >> 8, hi & 255, lo >> 8, lo & 255].join(".");
+    }
+  }
   const family = isIP(a);
   if (!family) return true;
   if (extra.includes(a)) return true;
