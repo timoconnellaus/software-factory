@@ -586,11 +586,16 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
       "agent.status",
       "session.ended",
     ]);
-    const said = events.filter((e) => e.type === "message").map((e) => (e.type === "message" ? e.text : ""));
+    const said = events
+      .filter((e) => e.type === "message")
+      .map((e) => (e.type === "message" ? e.text : ""));
     expect(said[0]).toBe("I'll read the spec first.");
     expect(said[1]?.length).toBeLessThanOrEqual(8_000);
     expect(said[2]).toBe("Done: added the line.");
-    expect(events.at(-1)).toMatchObject({ type: "session.ended", summary: "Done: added the line." });
+    expect(events.at(-1)).toMatchObject({
+      type: "session.ended",
+      summary: "Done: added the line.",
+    });
     await w.runner.release(job(), ws, session);
   });
 
@@ -606,7 +611,7 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     expect(typed.every((c) => (c.at(-1) ?? "").length <= 200)).toBe(true);
     const submitted = w.tmux.sessions.get("sf-job_1")?.submitted.at(-1) ?? "";
     expect(submitted.startsWith("first line second[2J y")).toBe(true);
-    expect(submitted).not.toMatch(/[\n\u001b]/);
+    expect(submitted.includes("\n") || submitted.includes(String.fromCharCode(27))).toBe(false);
     await w.runner.release(job(), ws, session);
   });
 

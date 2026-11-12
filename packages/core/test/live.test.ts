@@ -121,19 +121,50 @@ describe("watching and steering a run", () => {
     expect(all.steer.allowed).toBe(false);
     expect(all.steer.reason).toMatch(/runner's owner/);
 
-    const after = await ok<Live>(
-      "run.live",
-      { workItemId: item.workItemId, afterSeq: 3 },
-      w.human,
-    );
+    const after = await ok<Live>("run.live", { workItemId: item.workItemId, afterSeq: 3 }, w.human);
     expect(after.events.map((e) => e.seq)).toEqual([4, 5]);
     expect(after.steer.allowed).toBe(true);
 
     // Someone outside the org can't watch.
     const stranger = { type: "human" as const, id: uid("usr_") };
-    expect(
-      (await refusal(ok("run.live", { workItemId: item.workItemId }, stranger))).code,
-    ).toMatch(/forbidden|not_found/);
+    expect((await refusal(ok("run.live", { workItemId: item.workItemId }, stranger))).code).toMatch(
+      /forbidden|not_found/,
+    );
+  });
+
+  it("keeps an answer within its size budget: the newest first, then onward from a cursor", async () => {
+    const { w, actor, item, job } = await running();
+    const big = "x".repeat(60_000);
+    await ok(
+      "run.reportEvents",
+      {
+        jobId: job.jobId,
+        fencingToken: job.lease.fencingToken,
+        events: Array.from({ length: 10 }, (_, i) => ({
+          jobId: job.jobId,
+          seq: i + 1,
+          at: at(),
+          type: "log",
+          stream: "terminal",
+          text: big,
+        })),
+      },
+      actor,
+    );
+    type Live = { events: { seq: number }[]; lastSeq: number; truncated: boolean };
+    const firstRead = await ok<Live>("run.live", { workItemId: item.workItemId }, w.human);
+    expect(firstRead.events.length).toBeLessThan(10);
+    expect(firstRead.events.at(-1)?.seq).toBe(10);
+    expect(firstRead.lastSeq).toBe(10);
+    expect(firstRead.truncated).toBe(true);
+    const onward = await ok<Live>(
+      "run.live",
+      { workItemId: item.workItemId, afterSeq: 0 },
+      w.human,
+    );
+    expect(onward.events[0]?.seq).toBe(1);
+    expect(onward.lastSeq).toBe(onward.events.at(-1)?.seq);
+    expect(onward.lastSeq).toBeLessThan(10);
   });
 
   it("lets only the runner's owner steer, journals it, and hands it to the host once", async () => {
@@ -167,11 +198,8 @@ describe("watching and steering a run", () => {
     // A member who doesn't own the runner is refused.
     const watcher = await member(w.orgId);
     expect(
-      (
-        await refusal(
-          ok("run.steer", { workItemId: item.workItemId, runId, text: "hi" }, watcher),
-        )
-      ).code,
+      (await refusal(ok("run.steer", { workItemId: item.workItemId, runId, text: "hi" }, watcher)))
+        .code,
     ).toBe("forbidden");
 
     // The host takes it once.

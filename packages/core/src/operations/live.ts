@@ -13,6 +13,21 @@ import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 const ACTIVE = ["claimed", "preparing", "running", "collecting"];
 /** Most events one `run.live` answer carries. */
 export const LIVE_EVENTS_MAX = 300;
+/** Most payload characters one `run.live` answer carries (terminal screens are the big ones). */
+export const LIVE_BYTES_MAX = 300_000;
+
+/** The run of events that fits the budget, keeping the newest or the oldest end (at least one). */
+function withinBudget<T extends { payload: string }>(rows: T[], keep: "newest" | "oldest"): T[] {
+  let total = 0;
+  const ordered = keep === "newest" ? [...rows].reverse() : rows;
+  const kept: T[] = [];
+  for (const row of ordered) {
+    total += row.payload.length;
+    if (kept.length > 0 && total > LIVE_BYTES_MAX) break;
+    kept.push(row);
+  }
+  return keep === "newest" ? kept.reverse() : kept;
+}
 
 const runId = z.string().regex(/^run_[0-9a-f]{32}$/, "a run id (run_…)");
 
@@ -71,9 +86,7 @@ function canSteer(run: LiveRun, viewer: string): { allowed: boolean; reason: str
   if (!ACTIVE.includes(run.status)) return { allowed: false, reason: "The run has ended." };
   let manifest: CapabilityManifest | null = null;
   try {
-    manifest = run.runner_manifest
-      ? (JSON.parse(run.runner_manifest) as CapabilityManifest)
-      : null;
+    manifest = run.runner_manifest ? (JSON.parse(run.runner_manifest) as CapabilityManifest) : null;
   } catch {
     manifest = null;
   }
@@ -113,7 +126,7 @@ export const runLive = defineOperation({
       })
       .nullable(),
     events: z.array(eventView),
-    /** The highest seq the run has, for the next `afterSeq`. */
+    /** The last seq in this answer (or `afterSeq` when none is new), for the next `afterSeq`. */
     lastSeq: z.number(),
     /** Whether events before the first one returned were left out. */
     truncated: z.boolean(),
@@ -134,7 +147,7 @@ export const runLive = defineOperation({
         steer: { allowed: false, reason: "No run yet.", max: STEER_MAX },
       };
     }
-    const [events, last, steers] = await Promise.all([
+    const [rows, steers] = await Promise.all([
       input.afterSeq === undefined
         ? ctx.db
             .selectFrom("core_run_events")
@@ -153,11 +166,6 @@ export const runLive = defineOperation({
             .limit(LIVE_EVENTS_MAX)
             .execute(),
       ctx.db
-        .selectFrom("core_run_events")
-        .select((eb) => eb.fn.max("seq").as("seq"))
-        .where("run_id", "=", run.id)
-        .executeTakeFirst(),
-      ctx.db
         .selectFrom("core_run_steers")
         .leftJoin("core_user", "core_user.id", "core_run_steers.author_user_id")
         .select([
@@ -175,7 +183,10 @@ export const runLive = defineOperation({
         .execute(),
     ]);
     const active = ACTIVE.includes(run.status);
-    const lastSeq = Number(last?.seq ?? 0);
+    // At most LIVE_BYTES_MAX of payload: the newest events for a first read, the oldest new ones
+    // after a cursor (the next poll carries on from the last one returned).
+    const events = withinBudget(rows, input.afterSeq === undefined ? "newest" : "oldest");
+    const lastSeq = events.at(-1)?.seq ?? input.afterSeq ?? 0;
     const first = events[0]?.seq;
     return {
       run: {
@@ -257,7 +268,10 @@ export const runSteer = defineOperation({
     workItemId,
     runId,
     // Generous before sanitising: the stored text is capped at STEER_MAX.
-    text: z.string().min(1).max(STEER_MAX * 4),
+    text: z
+      .string()
+      .min(1)
+      .max(STEER_MAX * 4),
   }),
   output: z.object({ steerId: z.string(), text: z.string(), status: z.literal("queued") }),
   async handler(input, ctx) {

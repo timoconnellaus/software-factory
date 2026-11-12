@@ -94,10 +94,21 @@ describe("contract helpers", () => {
       runnerEventSchema.parse({ ...base, type: "message", role: "assistant", text: "Done." }),
     ).toMatchObject({ type: "message", role: "assistant" });
     expect(
-      runnerEventSchema.parse({ ...base, type: "log", stream: "terminal", text: "$", screen: true }),
+      runnerEventSchema.parse({
+        ...base,
+        type: "log",
+        stream: "terminal",
+        text: "$",
+        screen: true,
+      }),
     ).toMatchObject({ screen: true });
     expect(() =>
-      runnerEventSchema.parse({ ...base, type: "message", role: "assistant", text: "x".repeat(9_000) }),
+      runnerEventSchema.parse({
+        ...base,
+        type: "message",
+        role: "assistant",
+        text: "x".repeat(9_000),
+      }),
     ).toThrow();
   });
 

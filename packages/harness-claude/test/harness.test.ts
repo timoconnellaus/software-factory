@@ -567,7 +567,10 @@ describe("transcripts", () => {
     ]);
     expect((await readTranscriptFrom(path, next.offset)).messages).toEqual([]);
     // A missing file reads as nothing yet.
-    expect(await readTranscriptFrom(join(root, "none.jsonl"), 0)).toEqual({ messages: [], offset: 0 });
+    expect(await readTranscriptFrom(join(root, "none.jsonl"), 0)).toEqual({
+      messages: [],
+      offset: 0,
+    });
   });
 
   it("maps stream-json to contract events", () => {
