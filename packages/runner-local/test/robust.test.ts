@@ -305,6 +305,11 @@ describe("a job while tmux doesn't answer", { timeout: 30_000 }, () => {
     });
     // tmux comes back; the agent finishes.
     w.fl.state.broken = false;
+    const until = Date.now() + 5_000;
+    while (!events.some((e) => e.type === "log" && e.text === "runner: tmux answers again")) {
+      if (Date.now() > until) throw new Error("tmux never answered again");
+      await sleep(5);
+    }
     w.tmux.append("sf-job_1", { event: "Stop" });
     await run;
     const notes = events.filter((e) => e.type === "log" && e.stream === "stderr");

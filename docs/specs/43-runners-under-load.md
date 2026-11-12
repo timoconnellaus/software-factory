@@ -101,7 +101,7 @@ overloaded.
 10. The heartbeat reports `paused: { reason: "load", pools, load1, cores }`. Past both thresholds,
     `accepting` is false and nothing is claimed. Past heavy only, `accepting` stays true with heavy
     paused. Under the thresholds there's no pause and the host claims.
-11. The scheduler gives a paused pool nothing, and the inbox's runner line reads "runner busy:
+11. The scheduler gives a paused pool nothing (`core/test/runner-paused.test.ts`), and the inbox's runner line reads "runner busy:
     load …" (`packages/client` test).
 12. An attached PR's `<pr-branch>-run-<k>` is marked and deleted on release. A stale copy left by a
     crash is taken over. One checked out elsewhere is refused and left alone. The reaper and doctor
