@@ -13,9 +13,9 @@ import {
   XIcon,
 } from "lucide-react";
 import { useEffect } from "react";
+import { type ItemRef, tabTitle } from "../lib/places.ts";
 import { workListsQuery } from "../lib/queries.ts";
 import { useSession } from "../lib/session.ts";
-import { type ItemRef, tabTitle } from "../lib/places.ts";
 import { shortcutLabel } from "../lib/shortcuts.ts";
 import {
   activateTab,

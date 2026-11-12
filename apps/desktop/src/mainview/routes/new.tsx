@@ -7,7 +7,20 @@
 import type { OpOutput } from "@software-factory/client/ops";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@software-factory/ui/components/collapsible";
+import { Input } from "@software-factory/ui/components/input";
 import { Kbd } from "@software-factory/ui/components/kbd";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@software-factory/ui/components/select";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,6 +28,7 @@ import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AttachButton } from "../components/attach-button.tsx";
+import { Field, PageArea, PageHeader, SectionTitle } from "../components/shell-list.tsx";
 import { StagedAttachments, uploadStaged } from "../components/staged-attachments.tsx";
 import { OpError, op } from "../lib/op.ts";
 import { openPullsQuery, projectsQuery, routingQuery } from "../lib/queries.ts";
@@ -58,6 +72,7 @@ function NewWorkPage() {
   const projects = useProjects();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [projectId, setProjectId] = useState<string | undefined>();
   const [sending, setSending] = useState(false);
@@ -75,6 +90,7 @@ function NewWorkPage() {
     try {
       const created = await op("workItem.create", {
         projectId: selected,
+        ...(title.trim() ? { title: title.trim() } : {}),
         body: body.trim(),
         source: "app",
         eventId: eventId.current,
@@ -102,16 +118,31 @@ function NewWorkPage() {
   }, [body]);
 
   return (
-    <main className="mx-auto grid w-full grid-cols-[minmax(0,1fr)] max-w-[860px] gap-4 p-4 md:p-6">
-      <div>
-        <h1 className="font-semibold text-2xl tracking-tight">New work</h1>
-        <p className="text-muted-foreground text-sm">
-          Describe it like you would to a colleague. Triage will size it, ask questions and decide
-          if it needs a spec.
-        </p>
-      </div>
-      <Card className="gap-0 py-0">
+    <PageArea className="max-w-[760px]">
+      <PageHeader
+        above={
+          <>
+            <Link to="/work" className="underline">
+              Work
+            </Link>{" "}
+            / New
+          </>
+        }
+        title="New work item"
+        sub="Write it the way you would tell a colleague. Triage sizes it, asks what's unclear and decides whether it needs a spec."
+      />
+      <Field htmlFor="new-title" label="Title">
+        <Input
+          id="new-title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Optional: triage writes one if you leave it empty"
+          data-testid="new-work-title"
+        />
+      </Field>
+      <Field htmlFor="new-body" label="What should change, and why">
         <Textarea
+          id="new-body"
           autoFocus
           value={body}
           onChange={(e) => setBody(e.target.value)}
@@ -122,56 +153,58 @@ function NewWorkPage() {
             }
           }}
           placeholder="What should the factory build or fix?"
-          className="min-h-40 resize-y rounded-b-none border-0 px-4 py-3 text-[15px] shadow-none focus-visible:ring-0"
+          className="min-h-[120px] resize-y"
           aria-label="Describe the work"
           data-testid="new-work-body"
         />
-        <div className="flex flex-wrap items-center gap-2 border-t px-3 py-2">
-          <label className="inline-flex items-center gap-2 text-sm">
-            <span className="sr-only">Project</span>
-            <select
-              className="h-8 rounded-md border bg-background px-2 text-sm"
-              value={selected ?? ""}
-              onChange={(e) => setProjectId(e.target.value)}
-              data-testid="project-picker"
-            >
+      </Field>
+      <div className="flex flex-wrap items-end gap-3">
+        <Field htmlFor="new-project" label="Project" className="min-w-[200px]">
+          <Select value={selected ?? ""} onValueChange={setProjectId}>
+            <SelectTrigger id="new-project" className="w-full" data-testid="project-picker">
+              <SelectValue placeholder="No projects" />
+            </SelectTrigger>
+            <SelectContent>
               {(projects.data ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
+                <SelectItem key={p.id} value={p.id}>
                   {p.name}
-                </option>
+                  <span className="text-ink-muted">
+                    {" "}
+                    · {session.orgs.find((o) => o.id === p.orgId)?.name ?? ""}
+                  </span>
+                </SelectItem>
               ))}
-              {projects.data?.length === 0 && <option value="">No projects</option>}
-            </select>
-          </label>
-          <span className="text-muted-foreground text-xs">
-            {session.orgs.find((o) => o.id === session.personalOrgId)?.name ?? "Personal"}
-          </span>
-          <span className="grow" />
-          <Button onClick={send} disabled={!canSend} data-testid="send-to-factory">
-            {sending ? "Sending…" : "Send to factory"}
-            <Kbd className="bg-primary-foreground/15 text-primary-foreground">⌘↵</Kbd>
-          </Button>
-        </div>
-        <div className="border-t px-3 py-2">
-          <StagedAttachments files={files} onChange={setFiles} />
-        </div>
-      </Card>
+            </SelectContent>
+          </Select>
+        </Field>
+      </div>
+      <StagedAttachments files={files} onChange={setFiles} />
       {projects.data?.length === 0 && (
-        <p className="text-muted-foreground text-sm">
+        <p className="text-ink-muted">
           There are no projects yet.{" "}
-          <Link to="/setup" className="underline">
-            Add software-factory
+          <Link to="/setup" className="text-ink underline">
+            Add one in Setup
           </Link>{" "}
           first.
         </p>
       )}
-      {selected && <RoutingPreview state={routing} />}
+      {selected && (
+        <section className="flex flex-col gap-2">
+          <SectionTitle>What happens next</SectionTitle>
+          <RoutingPreview state={routing} />
+        </section>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={send} disabled={!canSend} data-testid="send-to-factory">
+          {sending ? "Sending…" : "Send to the factory"}
+          <Kbd className="bg-primary-foreground/15 text-primary-foreground">⌘↵</Kbd>
+        </Button>
+        <Button variant="outline" onClick={() => window.history.back()}>
+          Cancel
+        </Button>
+      </div>
       {selected && <OpenPulls projectId={selected} />}
-      <p className="text-muted-foreground text-xs">
-        Or from anywhere (after V1): <span className="font-mono">@factory</span> in Slack or Linear,
-        a GitHub label, or a local Claude session.
-      </p>
-    </main>
+    </PageArea>
   );
 }
 
@@ -186,7 +219,7 @@ function OpenPulls({ projectId }: { projectId: string }) {
   return (
     <section className="grid gap-2" data-testid="open-pulls">
       <div>
-        <h2 className="font-medium text-sm">Open pull requests not in the factory</h2>
+        <SectionTitle>Open pull requests not in the factory</SectionTitle>
         <p className="text-muted-foreground text-xs">
           Built outside the factory? Attach it: the factory verifies its head and asks you to merge.
         </p>
@@ -241,71 +274,73 @@ function RoutingPreview({
     )
     .join(" · ");
   return (
-    <details
-      className="group min-w-0 rounded-lg border px-4 py-3 text-sm"
+    <Collapsible
+      className="group min-w-0 rounded-[10px] bg-panel px-3.5 py-3 shadow-panel"
       data-testid="routing-preview"
     >
-      <summary className="flex cursor-pointer list-none items-center gap-2 truncate">
+      <CollapsibleTrigger className="flex w-full items-center gap-2 truncate text-left">
         <StatusDot status={runner && !r.waitReason ? "done" : "waiting"} />
         <span className="min-w-0 truncate">
           Runs on {runner ? <span className="font-mono">{runner.name}</span> : "no runner yet"} ·
           Claude Code · {r.waitReason ? `${r.waitReason} · ` : ""}
           {shortGates}
         </span>
-        <span className="ml-auto shrink-0 text-muted-foreground text-xs group-open:hidden">
+        <span className="ml-auto shrink-0 text-ink-muted text-xs group-data-[state=open]:hidden">
           Details ▾
         </span>
-        <span className="ml-auto hidden shrink-0 text-muted-foreground text-xs group-open:inline">
+        <span className="ml-auto hidden shrink-0 text-ink-muted text-xs group-data-[state=open]:inline">
           Details ▴
         </span>
-      </summary>
-      <table className="mt-3 w-full text-sm">
-        <tbody className="[&_td]:py-1.5 [&_td:first-child]:w-28 [&_td:first-child]:text-muted-foreground">
-          <tr>
-            <td>Requester</td>
-            <td>you ({session.user.githubLogin ?? session.user.name})</td>
-          </tr>
-          <tr>
-            <td>Runner</td>
-            <td>
-              {runner ? (
-                <>
-                  <span className="font-mono">{runner.name}</span> ·{" "}
-                  {runner.ownerUserId === session.user.id ? "yours" : "shared"} · {runner.freeSlots}{" "}
-                  of {runner.max} slots free
-                </>
-              ) : (
-                "none can take it now"
-              )}
-              <span className="text-muted-foreground"> · fallback: queue</span>
-              {r.candidates.some((c) => c.refusal) && (
-                <div className="text-muted-foreground text-xs">
-                  {r.candidates
-                    .filter((c) => c.refusal)
-                    .map((c) => `${c.name}: ${c.refusal}`)
-                    .join(" · ")}
-                </div>
-              )}
-            </td>
-          </tr>
-          <tr>
-            <td>Harness</td>
-            <td>
-              Claude Code (role implement: <span className="font-mono">{r.models.implement}</span>)
-              · reviewer: role review (<span className="font-mono">{r.models.review}</span>)
-              {r.models.sameModel ? (
-                <span className="text-status-waiting"> · same model as the implementer</span>
-              ) : (
-                " · a different model"
-              )}
-            </td>
-          </tr>
-          <tr>
-            <td>Gates</td>
-            <td>{gateSummary}</td>
-          </tr>
-        </tbody>
-      </table>
-    </details>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <table className="mt-3 w-full">
+          <tbody className="[&_td]:py-1.5 [&_td:first-child]:w-28 [&_td:first-child]:text-muted-foreground">
+            <tr>
+              <td>Requester</td>
+              <td>you ({session.user.githubLogin ?? session.user.name})</td>
+            </tr>
+            <tr>
+              <td>Runner</td>
+              <td>
+                {runner ? (
+                  <>
+                    <span className="font-mono">{runner.name}</span> ·{" "}
+                    {runner.ownerUserId === session.user.id ? "yours" : "shared"} ·{" "}
+                    {runner.freeSlots} of {runner.max} slots free
+                  </>
+                ) : (
+                  "none can take it now"
+                )}
+                <span className="text-muted-foreground"> · fallback: queue</span>
+                {r.candidates.some((c) => c.refusal) && (
+                  <div className="text-muted-foreground text-xs">
+                    {r.candidates
+                      .filter((c) => c.refusal)
+                      .map((c) => `${c.name}: ${c.refusal}`)
+                      .join(" · ")}
+                  </div>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td>Harness</td>
+              <td>
+                Claude Code (role implement: <span className="font-mono">{r.models.implement}</span>
+                ) · reviewer: role review (<span className="font-mono">{r.models.review}</span>)
+                {r.models.sameModel ? (
+                  <span className="text-status-waiting"> · same model as the implementer</span>
+                ) : (
+                  " · a different model"
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td>Gates</td>
+              <td>{gateSummary}</td>
+            </tr>
+          </tbody>
+        </table>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

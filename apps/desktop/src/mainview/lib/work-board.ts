@@ -56,5 +56,9 @@ export function cardState(
   if (item.status === "waiting") return { label: "Waiting", tone: "neutral", needsYou: false };
   if (item.status === "paused") return { label: "Paused", tone: "neutral", needsYou: false };
   if (item.status === "done") return { label: "Done", tone: "green", needsYou: false };
-  return { label: item.status[0]?.toUpperCase() + item.status.slice(1), tone: "neutral", needsYou: false };
+  return {
+    label: item.status[0]?.toUpperCase() + item.status.slice(1),
+    tone: "neutral",
+    needsYou: false,
+  };
 }

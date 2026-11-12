@@ -17,6 +17,11 @@ export interface ViewState {
   /** The chosen org, or null for All. Undefined until the shell picks a default. */
   orgId: string | null | undefined;
   sidebar: boolean;
+  /**
+   * The work item whose planning has the whole window (focus mode, spec 41), or null. Not kept
+   * across launches: the window opens in the normal layout.
+   */
+  focus: string | null;
 }
 
 const KEY = "sf:view-state:v1";
@@ -25,7 +30,14 @@ const newTabId = () => `tab-${Date.now().toString(36)}-${nextId++}`;
 
 export function initialState(): ViewState {
   const id = newTabId();
-  return { tabs: [{ id, path: "/" }], activeTab: id, pins: [], orgId: undefined, sidebar: true };
+  return {
+    tabs: [{ id, path: "/" }],
+    activeTab: id,
+    pins: [],
+    orgId: undefined,
+    sidebar: true,
+    focus: null,
+  };
 }
 
 // ---- Tabs ---------------------------------------------------------------------------------------
@@ -63,7 +75,10 @@ export function closeTab(s: ViewState, id: string): { state: ViewState; navigate
 }
 
 /** Switches to a tab. Returns its path to navigate to. */
-export function activateTab(s: ViewState, id: string): { state: ViewState; navigate: string | null } {
+export function activateTab(
+  s: ViewState,
+  id: string,
+): { state: ViewState; navigate: string | null } {
   const tab = s.tabs.find((t) => t.id === id);
   if (!tab) return { state: s, navigate: null };
   return { state: { ...s, activeTab: id }, navigate: tab.path };
@@ -78,6 +93,8 @@ export function togglePin(s: ViewState, workItemId: string): ViewState {
 }
 
 export const chooseOrg = (s: ViewState, orgId: string | null): ViewState => ({ ...s, orgId });
+export const setFocus = (s: ViewState, workItemId: string | null): ViewState =>
+  s.focus === workItemId ? s : { ...s, focus: workItemId };
 export const toggleSidebar = (s: ViewState): ViewState => ({ ...s, sidebar: !s.sidebar });
 
 // ---- Persistence --------------------------------------------------------------------------------
@@ -95,13 +112,16 @@ export function parseStored(raw: string | null): ViewState {
         )
       : [];
     const pins = Array.isArray(v.pins) ? v.pins.filter((p) => typeof p === "string") : [];
-    const activeTab = tabs.some((t) => t.id === v.activeTab) ? (v.activeTab as string) : tabs[0]?.id;
+    const activeTab = tabs.some((t) => t.id === v.activeTab)
+      ? (v.activeTab as string)
+      : tabs[0]?.id;
     return {
       tabs: tabs.length && activeTab ? tabs : base.tabs,
       activeTab: tabs.length && activeTab ? activeTab : base.activeTab,
       pins,
       orgId: typeof v.orgId === "string" || v.orgId === null ? v.orgId : undefined,
       sidebar: v.sidebar !== false,
+      focus: null,
     };
   } catch {
     return base;

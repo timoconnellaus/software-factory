@@ -6,7 +6,12 @@ import type { Inbox, SetupStatus } from "@software-factory/client/ops";
 import type { Status } from "@software-factory/ui/components/status-dot";
 
 export type InboxEntry =
-  | { key: string; group: "Merges" | "Specs" | "Approvals"; kind: "gate"; gate: Inbox["gates"][number] }
+  | {
+      key: string;
+      group: "Merges" | "Specs" | "Approvals";
+      kind: "gate";
+      gate: Inbox["gates"][number];
+    }
   | { key: string; group: "Specs"; kind: "planning"; planning: Inbox["planning"][number] }
   | { key: string; group: "Questions"; kind: "question"; question: Inbox["questions"][number] }
   | { key: string; group: "Notices"; kind: "protection"; drift: Inbox["protection"][number] }

@@ -10,6 +10,7 @@ import { Card } from "@software-factory/ui/components/card";
 import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
 import { AttachButton, parseRepo } from "../components/attach-button.tsx";
+import { PageArea } from "../components/shell-list.tsx";
 import { ExternalLink } from "../lib/external.tsx";
 import { OpError } from "../lib/op.ts";
 import { attachPreviewQuery } from "../lib/queries.ts";
@@ -44,10 +45,10 @@ function AttachPage() {
   const search = Route.useSearch();
   const repo = parseRepo(search.repo);
   return (
-    <main className="mx-auto grid w-full grid-cols-[minmax(0,1fr)] max-w-[640px] gap-4 p-4 md:p-6">
+    <PageArea className="max-w-[640px]">
       <div>
-        <h1 className="font-semibold text-2xl tracking-tight">Attach a pull request</h1>
-        <p className="text-muted-foreground text-sm">
+        <h1 className="m-0 font-semibold text-[18px] tracking-[-0.015em]">Attach a pull request</h1>
+        <p className="text-ink-3">
           A pull request opened outside the factory reaches the default branch only through{" "}
           <span className="font-mono text-xs">factory/verify</span> and the merge gate. Attaching it
           gives it a work item: the factory verifies its head (it never pushes to the branch) and
@@ -67,7 +68,7 @@ function AttachPage() {
           .
         </Card>
       )}
-    </main>
+    </PageArea>
   );
 }
 

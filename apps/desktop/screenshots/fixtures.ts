@@ -36,7 +36,10 @@ function item(
     size: "medium",
     requesterUserId: ME,
     source: "app",
-    branch: `factory/${n}-${title.toLowerCase().replace(/[^a-z]+/g, "-").slice(0, 24)}`,
+    branch: `factory/${n}-${title
+      .toLowerCase()
+      .replace(/[^a-z]+/g, "-")
+      .slice(0, 24)}`,
     prUrl: null,
     createdAt: ago(60 * 26),
     updatedAt: ago(n),
@@ -181,7 +184,10 @@ function detail(id: string): OpOutput<"workItem.get"> {
   const stages: OpOutput<"workItem.get">["stages"] = (
     ["intake", "triage", "spec", "build", "verify", "merge"] as const
   )
-    .slice(0, ["intake", "triage", "spec", "build", "verify", "merge", "done"].indexOf(base.stage) + 1)
+    .slice(
+      0,
+      ["intake", "triage", "spec", "build", "verify", "merge", "done"].indexOf(base.stage) + 1,
+    )
     .map((stage, i, all) => ({
       stage,
       attempt: 1,
@@ -275,7 +281,17 @@ function detail(id: string): OpOutput<"workItem.get"> {
       run(1, "triage", 60 * 26, 60 * 26 - 3, "succeeded", "Sized medium; spec required"),
       run(2, "spec", 60 * 25, 60 * 23, "succeeded", "Spec approved after one round"),
       ...(base.stage === "build" || base.stage === "verify" || atMerge
-        ? [run(3, "build", 60 * 20, atMerge ? 60 * 6 : null, atMerge ? "succeeded" : null, null, base.status === "running")]
+        ? [
+            run(
+              3,
+              "build",
+              60 * 20,
+              atMerge ? 60 * 6 : null,
+              atMerge ? "succeeded" : null,
+              null,
+              base.status === "running",
+            ),
+          ]
         : []),
       ...(atMerge ? [run(4, "verify", 60 * 6, 60 * 3.5, "succeeded", "Packet ready")] : []),
     ],
@@ -287,10 +303,27 @@ function detail(id: string): OpOutput<"workItem.get"> {
           summary:
             "Adds a **test guard** to verify: removed or skipped tests and new `biome-ignore` / `ts-expect-error` suppressions are flagged in the packet.",
           criteria: [
-            { criterion: CRITERIA[0], met: true, evidence: "guard.test.ts › flags removed and skipped tests" },
-            { criterion: CRITERIA[1], met: true, evidence: "guard.test.ts › flags biome-ignore and ts-expect-error" },
-            { criterion: CRITERIA[2], met: true, evidence: "packet.test.ts › includes guard findings" },
-            { criterion: CRITERIA[3], met: false, evidence: "No check that ran covers this. The reviewer read the gate code and agrees." },
+            {
+              criterion: CRITERIA[0],
+              met: true,
+              evidence: "guard.test.ts › flags removed and skipped tests",
+            },
+            {
+              criterion: CRITERIA[1],
+              met: true,
+              evidence: "guard.test.ts › flags biome-ignore and ts-expect-error",
+            },
+            {
+              criterion: CRITERIA[2],
+              met: true,
+              evidence: "packet.test.ts › includes guard findings",
+            },
+            {
+              criterion: CRITERIA[3],
+              met: false,
+              evidence:
+                "No check that ran covers this. The reviewer read the gate code and agrees.",
+            },
           ],
           checks: [
             { name: "pnpm lint", status: "pass", detail: "Runner M5 · 11s" },
@@ -301,7 +334,8 @@ function detail(id: string): OpOutput<"workItem.get"> {
           reviewer: {
             role: "review",
             verdict: "approve",
-            notes: "The guard is small and well tested. The last criterion is enforced by the gate code, which I read; no test covers it.",
+            notes:
+              "The guard is small and well tested. The last criterion is enforced by the gate code, which I read; no test covers it.",
             sameModelAsImplementer: false,
           },
           riskFlags: [],
@@ -326,7 +360,10 @@ function detail(id: string): OpOutput<"workItem.get"> {
       : null,
     mergeQueue: null,
     policy: { autonomyPolicy: "balanced", specRequiredFrom: "medium", reviewPacketSections: null },
-    approvers: { rule: "project approver", users: [{ id: ME, name: "Owner", githubLogin: "owner" }] },
+    approvers: {
+      rule: "project approver",
+      users: [{ id: ME, name: "Owner", githubLogin: "owner" }],
+    },
     viewer: { isApprover: true, isRequester: true },
   };
 }
@@ -352,7 +389,10 @@ function run(
     summary,
     headSha: null,
     takeover: takeover
-      ? { label: "Attach to the session on M5", hint: "tmux -L software-factory attach -t sf-job_3" }
+      ? {
+          label: "Attach to the session on M5",
+          hint: "tmux -L software-factory attach -t sf-job_3",
+        }
       : null,
     startedAt: ago(startedMin),
     endedAt: endedMin === null ? null : ago(endedMin),
@@ -383,11 +423,20 @@ const TIMELINE: OpOutput<"workItem.timeline"> = {
 const SETUP: OpOutput<"setup.status"> = {
   complete: false,
   steps: [
-    { key: "github", done: true, detail: "The software-factory app is installed on example and can reach 3 repositories." },
+    {
+      key: "github",
+      done: true,
+      detail: "The software-factory app is installed on example and can reach 3 repositories.",
+    },
     { key: "project", done: true, detail: "software-factory, on the main branch." },
     { key: "policy", done: true, detail: "The policy is valid." },
     { key: "runner", done: true, detail: "M5 is online." },
-    { key: "protect", done: false, detail: "The ruleset has not been imported, so a pull request could merge without the factory check." },
+    {
+      key: "protect",
+      done: false,
+      detail:
+        "The ruleset has not been imported, so a pull request could merge without the factory check.",
+    },
   ],
   installations: [
     {
@@ -403,6 +452,162 @@ const SETUP: OpOutput<"setup.status"> = {
   missingEvents: [],
   runners: { total: 1, online: 1 },
 };
+
+type PlanningQ = OpOutput<"planning.get">["questions"][number];
+
+function question(n: number, prompt: string, extra: Partial<PlanningQ>): PlanningQ {
+  return {
+    id: `pq_${n}`,
+    number: n,
+    kind: "single",
+    prompt,
+    context: null,
+    options: [],
+    defaultValues: null,
+    defaultAnswer: null,
+    recommendation: null,
+    recommendationReason: null,
+    domain: "product",
+    blocking: true,
+    irreversible: false,
+    status: "answered",
+    answer: null,
+    note: null,
+    acceptedDefault: false,
+    answeredBy: ME,
+    answeredAt: ago(30),
+    answerRevision: 1,
+    revision: 1,
+    position: n,
+    assignee: ME,
+    escalated: false,
+    planning: true,
+    ...extra,
+  };
+}
+
+const PLAN_MD = `# Take work from GitHub issues
+
+## Goal
+A labelled GitHub issue from a trusted author becomes a work item in the backlog, and the issue shows where that work got to. [request]
+
+## Scope
+- The GitHub App webhook takes \`issues\` events for connected repositories [repo]
+- Only issues with the \`factory\` label come in [Q1]
+- Authors must be org members or collaborators; anything else is ignored and logged [Q2]
+- New items land in the inbox of the project that owns the repository [Q3]
+- The issue gets one comment with a link to the item, and is closed when the item merges [Q4]
+
+## Out of scope
+- Issues from repositories that are not connected, pull request comments [request]
+
+## Acceptance criteria
+- A labelled issue from a member becomes a work item within a minute [Q1] [Q3]
+- An issue from an outside author creates nothing and writes one audit entry [Q2]
+- Editing an issue after release changes nothing on the item [assumption]
+`;
+
+function planning(workItemId: string): OpOutput<"planning.get"> {
+  const live = workItemId === "wi_12";
+  return {
+    cursor: 42,
+    session: live
+      ? {
+          id: "ps_12",
+          status: "working",
+          activity: "Revising the acceptance criteria",
+          idleSince: null,
+          agentSeenAt: ago(0),
+          atGate: false,
+          ready: true,
+          yieldRequested: false,
+          focusedQuestionId: "pq_6",
+          runner: { id: RUNNER, name: "M5", online: true, lastSeenAt: ago(0) },
+          waitingForRunner: false,
+          createdAt: ago(80),
+        }
+      : null,
+    questions: live
+      ? [
+          question(1, "Which issues come in?", {
+            answer: "Only issues labelled factory",
+            acceptedDefault: true,
+          }),
+          question(2, "Who can file them?", {
+            answer: "Org members and collaborators",
+            acceptedDefault: true,
+          }),
+          question(3, "Where do they land?", { answer: "The project's inbox" }),
+          question(4, "What goes back to the issue?", {
+            answer: "A link, then closed on merge",
+            acceptedDefault: true,
+          }),
+          question(5, "One item per issue?", {
+            answer: "Yes, edits update it",
+            acceptedDefault: true,
+          }),
+          question(6, "An issue is edited after its item was released. What happens?", {
+            status: "open",
+            answer: null,
+            answeredBy: null,
+            answeredAt: null,
+            options: [
+              "Show a notice on the item, change nothing",
+              "Send the item back to planning",
+              "Update the plan without asking",
+            ],
+            defaultAnswer: "Show a notice on the item, change nothing",
+            recommendation: "Show a notice on the item, change nothing",
+            recommendationReason:
+              "A released item has an approved plan. Changing it silently would break what you approved, and sending it back would stall a build for a typo fix.",
+          }),
+        ]
+      : [],
+    spec: {
+      id: `spec_${workItemId}`,
+      version: 6,
+      bodyMd: live ? PLAN_MD : "## Goal\nVerify flags a change that weakens the tests.\n",
+      acceptanceCriteria: live ? [] : CRITERIA,
+      assumptions: live ? ["Edits after release are ignored"] : [],
+      coverage: [],
+      clarifications: [],
+      summary: null,
+      status: live ? "draft" : "approved",
+      createdAt: ago(1),
+      createdBy: "agent",
+    },
+    previousSpec: null,
+    messages: live
+      ? [
+          {
+            id: "m1",
+            author: "agent",
+            authorId: "planner",
+            authorName: "Planner",
+            text: "I read the webhook handler. It already checks GitHub's signature, so issue events can go through `webhooks.ts` with no new endpoint.",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(20),
+            createdAt: ago(20),
+          },
+          {
+            id: "m2",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Don't release new issues straight away. I want to look at them first.",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(12),
+            createdAt: ago(12),
+          },
+        ]
+      : [],
+    present: live ? [{ userId: ME, name: "You" }] : [],
+  };
+}
 
 type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
 
@@ -422,27 +627,7 @@ export const ANSWERS: Answers = {
   "workItem.get": (input) => detail(input.workItemId),
   "workItem.timeline": () => TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
-  "planning.get": (input) => ({
-    cursor: 1,
-    session: null,
-    questions: [],
-    spec: {
-      id: `spec_${input.workItemId}`,
-      version: 2,
-      bodyMd: "## Goal\nVerify flags a change that weakens the tests.\n\n## Acceptance criteria\n- A removed or skipped test is flagged\n- A new suppression is flagged\n",
-      acceptanceCriteria: CRITERIA,
-      assumptions: [],
-      coverage: [],
-      clarifications: [],
-      summary: null,
-      status: "approved",
-      createdAt: ago(60 * 23),
-      createdBy: "agent",
-    },
-    previousSpec: null,
-    messages: [],
-    present: [],
-  }),
+  "planning.get": (input) => planning(input.workItemId),
   "runner.list": () => ({
     runners: [
       {

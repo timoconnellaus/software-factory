@@ -5,26 +5,25 @@ import { createRoute, Link, Outlet, useRouterState } from "@tanstack/react-route
 import { FolderIcon, PlusIcon } from "lucide-react";
 import { ListGroup, ListItem, NestedList } from "../components/shell-list.tsx";
 import { useOrgScope } from "../components/shell-sidebar.tsx";
-import { workItemQuery, workListsQuery } from "../lib/queries.ts";
+import { workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { countsByView, VIEW_LABEL, type WorkView } from "../lib/work-board.ts";
-import { appRoute } from "./_app.tsx";
+import { appRoute, useFocused } from "./_app.tsx";
 
 export const workLayout = createRoute({
   getParentRoute: () => appRoute,
   id: "_work",
   // The list's counts come from the shell's work lists; this keeps them loaded with the page.
   loader: ({ context: { queryClient, session } }) =>
-    queryClient
-      .ensureQueryData(workListsQuery(session.orgs.map((o) => o.id)))
-      .catch(() => null),
+    queryClient.ensureQueryData(workListsQuery(session.orgs.map((o) => o.id))).catch(() => null),
   component: WorkSection,
 });
 
 function WorkSection() {
+  const focused = useFocused();
   return (
     <>
-      <WorkNav />
+      {!focused && <WorkNav />}
       <Outlet />
     </>
   );
@@ -33,17 +32,16 @@ function WorkSection() {
 /** Where the Work list is: the view and project from `/work`'s search, or the open item's project. */
 function useWorkPlace(): { view: WorkView | null; projectId: string | null } {
   const loc = useRouterState({ select: (s) => s.location });
+  const session = useSession();
+  const items = useQuery(workListsQuery(session.orgs.map((o) => o.id)));
   const itemId = /^\/work\/([^/]+)/.exec(loc.pathname)?.[1];
-  const item = useQuery({
-    ...workItemQuery(itemId ?? ""),
-    enabled: !!itemId,
-    refetchInterval: false,
-  });
   if (loc.pathname === "/work") {
     const s = loc.search as { view?: WorkView; project?: string };
     return { view: s.project ? null : (s.view ?? "active"), projectId: s.project ?? null };
   }
-  if (itemId) return { view: null, projectId: item.data?.item.projectId ?? null };
+  if (itemId) {
+    return { view: null, projectId: items.data?.find((i) => i.id === itemId)?.projectId ?? null };
+  }
   return { view: null, projectId: null };
 }
 

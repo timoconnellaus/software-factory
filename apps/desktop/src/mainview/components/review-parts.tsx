@@ -9,7 +9,7 @@ import { Textarea } from "@software-factory/ui/components/textarea";
 import { useEffect, useState } from "react";
 import { useDecide } from "../lib/decisions.tsx";
 import { verdictChips, verdictHeadline } from "../lib/review.ts";
-import { Chip, Panel } from "./shell-list.tsx";
+import { Chip, Field, Panel } from "./shell-list.tsx";
 
 const OPENED_KEY = (id: string) => `sf:opened-diff:${id}`;
 
@@ -114,20 +114,26 @@ export function MergeDecision({
   return (
     <Panel needsYou className="gap-2.5" data-testid="decision">
       <h2 className="m-0 font-semibold text-[13px]">Your decision</h2>
-      <label className="flex flex-col gap-[5px]">
-        <span className="font-medium text-ink-3 text-xs">Note, required when sending back</span>
+      <Field htmlFor="merge-note" label="Note, required when sending back">
         <Textarea
+          id="merge-note"
           rows={3}
           value={note}
           onChange={(e) => setNote(e.target.value)}
           className="min-h-[68px] resize-y"
           data-testid="note-input"
         />
-      </label>
+      </Field>
       <Button
         disabled={!canDecide || pending !== null}
-        title={detail.viewer.isApprover ? "Asks for Touch ID" : "Only an approver on this project can merge"}
-        onClick={() => decide({ kind: "review.merge", workItemId: item.id, openedFullDiff: opened })}
+        title={
+          detail.viewer.isApprover
+            ? "Asks for Touch ID"
+            : "Only an approver on this project can merge"
+        }
+        onClick={() =>
+          decide({ kind: "review.merge", workItemId: item.id, openedFullDiff: opened })
+        }
         data-testid="merge"
       >
         {pending === "review.merge" ? "Merging…" : `Merge ${sha}`}

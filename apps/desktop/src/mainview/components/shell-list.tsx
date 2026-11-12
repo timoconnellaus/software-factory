@@ -77,9 +77,7 @@ export function ListItem({
       ) : (
         <>
           {icon && <span className="flex text-ink-3 [&_svg]:size-3.5">{icon}</span>}
-          <span className={cn("min-w-0 flex-1 truncate", active && "font-medium")}>
-            {children}
-          </span>
+          <span className={cn("min-w-0 flex-1 truncate", active && "font-medium")}>{children}</span>
           {count !== undefined && count !== null && (
             <span className="font-mono text-[11.5px] text-ink-muted tabular-nums">{count}</span>
           )}
@@ -190,5 +188,27 @@ export function Chip({
       )}
       {...props}
     />
+  );
+}
+
+/** A form field: its label above the control (`htmlFor` names the control's id). */
+export function Field({
+  label,
+  htmlFor,
+  className,
+  children,
+}: {
+  label: React.ReactNode;
+  htmlFor: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={cn("flex flex-col gap-[5px]", className)}>
+      <label htmlFor={htmlFor} className="font-medium text-ink-3 text-xs">
+        {label}
+      </label>
+      {children}
+    </div>
   );
 }

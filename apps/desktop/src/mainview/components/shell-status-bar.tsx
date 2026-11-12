@@ -19,7 +19,8 @@ export function StatusBar() {
   const slot = slots(runners);
   const sync = syncText(query, now);
   return (
-    <div
+    <section
+      role="status"
       aria-label="Status bar"
       className="flex h-7 flex-none items-center gap-3.5 overflow-hidden whitespace-nowrap px-3.5 text-ink-3 text-xs"
       data-testid="status-bar"
@@ -68,6 +69,6 @@ export function StatusBar() {
       <span className={cn(!sync.ok && "text-destructive")} data-testid="status-sync">
         {sync.text}
       </span>
-    </div>
+    </section>
   );
 }

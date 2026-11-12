@@ -46,7 +46,11 @@ backend (specs 50 and 51).
      waiting, the sync state.
    - The budget and "update ready" wait for usage capture and spec 40 M4.
    - Sections with no backend aren't in the navigation. Spec 41 lists them as later slices.
-7. **Screenshots come from a fixture door.**
+7. **Focus mode is shell state.**
+   - `focus` names the work item whose planning has the whole window. The shell reads it to swap
+     the toolbar for the session bar and to hide the rail, sidebar and nested list.
+   - It is never restored on launch, and leaving the item clears it.
+8. **Screenshots come from a fixture door.**
    - The view takes its transport through `connect()` already. The screenshot harness
      (`apps/desktop/screenshots/`) builds the view with a bridge that answers operations from typed
      fixtures (`OpOutput<…>`), then drives Chrome over CDP at 1440×900 in light and dark.

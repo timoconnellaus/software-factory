@@ -13,8 +13,7 @@ import { createServer } from "vite";
 const here = import.meta.dirname;
 const repo = resolve(here, "../../..");
 const out = resolve(repo, "docs/screenshots/desktop-shell");
-const CHROME =
-  process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const W = 1440;
 const H = 900;
 
@@ -27,14 +26,15 @@ export const SCREENS = [
   { name: "work-project", path: "/work?project=prj_factory", design: "WorkActive.html" },
   { name: "work-done", path: "/work?view=done", design: "WorkDone.html" },
   { name: "item-overview", path: "/work/wi_13", design: "ItemOverview.html" },
-  { name: "item-plan", path: "/work/wi_13?tab=plan", design: "ItemPlan.html" },
+  { name: "item-plan", path: "/work/wi_12?tab=plan", design: "ItemPlan.html" },
+  { name: "plan-focus", path: "/work/wi_12?tab=plan", design: "PlanFocus.html", keys: ["f"] },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
   { name: "new-item", path: "/new", design: "WorkNew.html" },
   { name: "setup", path: "/setup", design: "Setup.html" },
   { name: "this-mac", path: "/settings", design: "SettingsDevices.html" },
-  { name: "search", path: "/work", design: "Main.html", keys: ["k"] },
+  { name: "search", path: "/work", design: "Main.html", keys: ["meta+k"] },
 ];
 
 const args = process.argv.slice(2);
@@ -90,7 +90,10 @@ async function shoot(cdp, url, file, theme, keys = []) {
   await cdp.send("Page.navigate", { url });
   await sleep(1600);
   for (const k of keys) {
-    const ev = { key: k, code: `Key${k.toUpperCase()}`, modifiers: 4, text: "" };
+    // "meta+k" holds ⌘; a bare key is typed as is.
+    const meta = k.startsWith("meta+");
+    const key = meta ? k.slice(5) : k;
+    const ev = { key, code: `Key${key.toUpperCase()}`, modifiers: meta ? 4 : 0 };
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...ev });
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...ev });
     await sleep(500);

@@ -38,9 +38,7 @@ export const Route = createRoute({
     ...(s.layout === "board" || s.layout === "list" ? { layout: s.layout } : {}),
   }),
   loader: ({ context: { queryClient, session } }) =>
-    queryClient
-      .ensureQueryData(workListsQuery(session.orgs.map((o) => o.id)))
-      .catch(() => null),
+    queryClient.ensureQueryData(workListsQuery(session.orgs.map((o) => o.id))).catch(() => null),
   component: WorkPage,
 });
 
@@ -87,13 +85,21 @@ function WorkPage() {
             <ToggleGroup
               type="single"
               value={layout}
-              onValueChange={(v) => v && void navigate({ search: { ...search, layout: v as Layout } })}
+              onValueChange={(v) =>
+                v && void navigate({ search: { ...search, layout: v as Layout } })
+              }
               className="rounded-[7px] bg-selected p-0.5"
             >
-              <ToggleGroupItem value="board" className="h-6 rounded-[6px] px-2.5 text-[13px] data-[state=on]:bg-panel data-[state=on]:shadow-panel">
+              <ToggleGroupItem
+                value="board"
+                className="h-6 rounded-[6px] px-2.5 text-[13px] data-[state=on]:bg-panel data-[state=on]:shadow-panel"
+              >
                 Board
               </ToggleGroupItem>
-              <ToggleGroupItem value="list" className="h-6 rounded-[6px] px-2.5 text-[13px] data-[state=on]:bg-panel data-[state=on]:shadow-panel">
+              <ToggleGroupItem
+                value="list"
+                className="h-6 rounded-[6px] px-2.5 text-[13px] data-[state=on]:bg-panel data-[state=on]:shadow-panel"
+              >
                 List
               </ToggleGroupItem>
             </ToggleGroup>
@@ -175,7 +181,9 @@ function BoardCard({ item, needsYou }: { item: WorkItemSummary; needsYou: Set<st
       <div className="flex items-center gap-2">
         <span className="font-mono text-[11.5px] text-ink-muted">#{item.number}</span>
         {item.kind !== "change" && (
-          <span className="text-ink-muted text-xs">{item.kind === "incident" ? "incident" : "attached PR"}</span>
+          <span className="text-ink-muted text-xs">
+            {item.kind === "incident" ? "incident" : "attached PR"}
+          </span>
         )}
         <Chip tone={state.tone} className="ml-auto">
           {state.tone === "blue" && <StatusDot status="running" />}
@@ -211,9 +219,15 @@ function List({
               const state = cardState(i, needsYou);
               return (
                 <tr key={i.id} className="border-line-soft border-t first:border-t-0 hover:bg-page">
-                  <td className="w-14 py-2.5 pl-3.5 font-mono text-[12px] text-ink-muted">#{i.number}</td>
+                  <td className="w-14 py-2.5 pl-3.5 font-mono text-[12px] text-ink-muted">
+                    #{i.number}
+                  </td>
                   <td className="py-2.5 pr-3">
-                    <Link to="/work/$id" params={{ id: i.id }} className="font-medium hover:underline">
+                    <Link
+                      to="/work/$id"
+                      params={{ id: i.id }}
+                      className="font-medium hover:underline"
+                    >
                       {i.title}
                     </Link>
                     {i.kind === "incident" && (
@@ -227,7 +241,9 @@ function List({
                     <Chip tone={state.tone}>{state.label}</Chip>
                   </td>
                   {showProject && (
-                    <td className="whitespace-nowrap py-2.5 pr-3 text-ink-3">{projectName(i.projectId)}</td>
+                    <td className="whitespace-nowrap py-2.5 pr-3 text-ink-3">
+                      {projectName(i.projectId)}
+                    </td>
                   )}
                   <td className="whitespace-nowrap py-2.5 pr-3.5 text-right text-ink-muted text-xs">
                     {ago(i.updatedAt)}

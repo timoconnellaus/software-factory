@@ -67,7 +67,7 @@
 
 /* The components in the desktop look. Unlayered, so they apply over the components' own utility
    classes for these few properties (shape, ring, size); layout classes a screen sets still apply. */
-[data-slot="card"] {
+[data-slot="card"]:not([data-flat]) {
   border: 0;
   border-radius: 10px;
   box-shadow: var(--shadow-panel);

@@ -19,7 +19,7 @@ import { useState } from "react";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { workItemQuery } from "../lib/queries.ts";
 import { CriteriaList, MergeDecision, useOpenedFullDiff, VerdictPanel } from "./review-parts.tsx";
-import { Chip, PageHeader, Panel, SectionTitle } from "./shell-list.tsx";
+import { Chip, Field, PageHeader, Panel, SectionTitle } from "./shell-list.tsx";
 
 type Gate = Inbox["gates"][number];
 type Question = Inbox["questions"][number];
@@ -30,8 +30,7 @@ function Above({ kind, meta }: { kind: string; meta: string }) {
   return (
     <>
       <Chip>{kind}</Chip>
-      &nbsp;{" "}
-      <span className="font-mono text-[11.5px] text-ink-muted">{meta}</span>
+      &nbsp; <span className="font-mono text-[11.5px] text-ink-muted">{meta}</span>
     </>
   );
 }
@@ -145,7 +144,9 @@ function SpecDetail({
       <TwoColumns
         main={
           <section className="flex flex-col gap-2">
-            <SectionTitle note="Set in the spec, proven in verify">Acceptance criteria</SectionTitle>
+            <SectionTitle note="Set in the spec, proven in verify">
+              Acceptance criteria
+            </SectionTitle>
             {criteria.length === 0 ? (
               <Panel className="text-ink-muted">The spec has no criteria yet.</Panel>
             ) : (
@@ -229,7 +230,11 @@ function ApprovalDetail({ gate, projectName }: { gate: Gate; projectName: string
             <Button disabled={pending !== null} onClick={() => decideAs("approved")}>
               Approve
             </Button>
-            <Button variant="outline" disabled={pending !== null} onClick={() => decideAs("rejected")}>
+            <Button
+              variant="outline"
+              disabled={pending !== null}
+              onClick={() => decideAs("rejected")}
+            >
               Reject
             </Button>
           </Panel>
@@ -291,17 +296,18 @@ export function QuestionDetail({
                 </Label>
               ))}
             </RadioGroup>
-            <label className="flex flex-col gap-[5px]">
-              <span className="font-medium text-ink-3 text-xs">
-                {choice === ELSE ? "Your answer" : "Add a note for the agent"}
-              </span>
+            <Field
+              htmlFor="question-note"
+              label={choice === ELSE ? "Your answer" : "Add a note for the agent"}
+            >
               <Textarea
+                id="question-note"
                 rows={2}
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 data-testid="note-input"
               />
-            </label>
+            </Field>
             <div className="flex flex-wrap gap-2">
               <Button
                 disabled={pending !== null || !answer}
@@ -358,7 +364,13 @@ export function QuestionDetail({
   );
 }
 
-export function PlanningDetail({ planning, projectName }: { planning: Planning; projectName: string }) {
+export function PlanningDetail({
+  planning,
+  projectName,
+}: {
+  planning: Planning;
+  projectName: string;
+}) {
   return (
     <div className="flex flex-col gap-4" data-testid={`planning-${planning.workItemId}`}>
       <PageHeader

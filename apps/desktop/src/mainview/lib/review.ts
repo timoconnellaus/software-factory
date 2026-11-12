@@ -1,6 +1,6 @@
 // How the merge gate words a review packet (spec 41, design InboxMerge/ItemReview): the headline,
 // the chips under it and each criterion as proven or not. Pure, from the stored packet only.
-import { checkCounts, packetCounts, type ParsedPacket } from "@software-factory/client/packet";
+import { checkCounts, type ParsedPacket, packetCounts } from "@software-factory/client/packet";
 import type { Status } from "@software-factory/ui/components/status-dot";
 
 const WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];

@@ -47,7 +47,8 @@ new backend come in later slices, once that backend lands.
   - ⌘[ and ⌘] back and forward;
   - ⌃⌘S the sidebar;
   - ⌘T a new tab, ⌘W close the tab;
-  - ↑ and ↓ move through a nested list.
+  - ↑ and ↓ move through a nested list;
+  - F focus mode on the Plan tab, Esc to leave it.
 - **The look.** The README's tokens become design-system tokens in `packages/ui`, in light and dark.
   The desktop app uses them; `apps/app` keeps its look.
 - **The screens, moved into the shell and restyled to their design counterparts:**
@@ -60,6 +61,19 @@ new backend come in later slices, once that backend lands.
   | New work | `WorkNew.html` |
   | Setup | `Setup.html` |
   | Settings: Setup, This Mac | `SettingsProjects.html`, `SettingsDevices.html` |
+  | Plan, docked in the work item and in focus mode | `ItemPlan.html`, `PlanFocus.html` |
+- **Focus mode.** F on the Plan tab gives planning the whole window, and Esc gives it back. The org
+  rail, the sidebar and the nested list are hidden, and a session bar replaces the toolbar: Exit
+  focus, the item, the planner's state and Open terminal. The status bar stays. Leaving the item
+  leaves focus.
+- **Open terminal.** Every session view (the work item header and the Plan tab, docked or in focus)
+  has one Open terminal place. In this slice it shows what `main` has: the live run's takeover hint,
+  the tmux attach command on its runner (ADR 0380), with Copy. With no live run that has a hint, the
+  button isn't shown.
+- **The plan is a document.** The Plan pane is a plain document in its pane, not a page on a canvas.
+- The Plan tab is restyled over what the planning operations support today: questions, the plan,
+  chat, accept defaults, request changes, approve. New ways to steer the planner belong to the
+  planning build.
 - **Gate decisions** still go through `decide()` and Touch ID (ADR 0391). Only how the screen looks
   changes.
 
@@ -92,9 +106,11 @@ rather than shown empty:
    still go through `decide()`.
 10. No nav entry leads to an empty or placeholder screen, and no screen shows data that isn't from an
     operation or this Mac.
-11. There are screenshots of every restyled screen, in light and dark at 1440×900, beside their
+11. F on the Plan tab hides the rail, sidebar and nested list and shows the session bar. Esc
+    restores them. Open terminal shows only when a live run has a takeover hint.
+12. There are screenshots of every restyled screen, in light and dark at 1440×900, beside their
     design files, in `docs/screenshots/desktop-shell/`.
-12. `pnpm lint`, `pnpm typecheck` and the desktop tests pass. New tests cover the shell's pure logic:
+13. `pnpm lint`, `pnpm typecheck` and the desktop tests pass. New tests cover the shell's pure logic:
     tabs, shortcuts, org scoping, status bar wording, the nested list's selection and routing.
 
 ## Later slices
@@ -106,3 +122,27 @@ rather than shown empty:
 | 5 | The Factory section: Overview, Workflows, Agents, Autopilots, Checks and incidents, Runners, Policy | Spec 09's config, and runner and incident reads exposed to the desktop |
 | 6 | Settings: members, connections, devices and notifications; the All orgs page; the budget and "update ready" in the status bar; sign-in restyled | Usage capture, spec 40 M4 (updates) |
 | 7 | A live run in the work item (`ItemRunLive`): the transcript and steering from spec 31 | `run.live` and `run.steer` on the client door |
+| 8 | Open terminal opens the session's web terminal in the app, not just the tmux command | The hosts build's web terminal (piece 6) |
+| 9 | Planning as designed in `ItemPlan`, `PlanFocus`, `PlanFocusMockup`: edit a plan line directly, chat after the current step or as an interrupt, let the planner finish alone, mockups with pinned comments and option cards, stop and pause, Mockups, System and Canvas tabs | The planning build |
+
+## As built (slice 1)
+- **Screenshots** are in [`docs/screenshots/desktop-shell/`](../screenshots/desktop-shell/), each
+  screen in light and dark, and the design files in `design/`. They come from the harness in
+  `apps/desktop/screenshots/` (`node apps/desktop/screenshots/shoot.mjs --design`), which serves the
+  real view over a fixture door (ADR 0460).
+- **Work board lanes** are the factory's stages (Intake to Merge). The design's lanes (Queued, Plan,
+  Build, Verify, Review, Merge, with who decides each) are the project's workflow, which comes with
+  spec 50. Work has a **Stopped** view when anything failed or was cancelled. The design has none,
+  but without it those items would show nowhere.
+- **Work counts** in the nested list cover each org's 100 most recent items, the most
+  `workItem.list` returns in one read.
+- **Setup** sits under Settings with the nested list showing. The design shows it without the list.
+- **Review**: the design's Checks table has a Where and a Time column from verify evidence (spec
+  51). Here it shows the packet's checks, with their detail as Where. The verdict's "Checks n of m"
+  counts CI on the head SHA when the packet carries CI, as before. Send back takes its note in the
+  decision panel instead of a dialog; it is the same `review.sendBack` through `decide()`.
+- **Inbox**: Running and "shipped this week" left the Inbox page. The status bar shows what's
+  running. The design's "Runner updated itself" notice has no event on `main`, so it isn't there.
+- **New work**: the design's "What happens next" choices (backlog, triage, plan, release) need spec
+  50. Here, Send to the factory is `workItem.create` as before, with the optional title it accepts.
+- **`/work/<id>/review`** redirects to the Review tab, so old links still land.

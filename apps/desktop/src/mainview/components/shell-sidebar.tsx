@@ -12,7 +12,13 @@ import {
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { InboxIcon, LayoutGridIcon, LogOutIcon, SlidersHorizontalIcon, SquareCheckIcon } from "lucide-react";
+import {
+  InboxIcon,
+  LayoutGridIcon,
+  LogOutIcon,
+  SlidersHorizontalIcon,
+  SquareCheckIcon,
+} from "lucide-react";
 import { bun } from "../bridge.ts";
 import { sectionOf } from "../lib/places.ts";
 import { inboxQuery, projectsQuery, workListsQuery } from "../lib/queries.ts";
@@ -155,7 +161,8 @@ export function Sidebar() {
   const pinned = pins
     .map((id) => items.data?.find((i) => i.id === id))
     .filter((i): i is NonNullable<typeof i> => !!i && (orgId === null || i.orgId === orgId));
-  const orgName = orgId === null ? "All orgs" : (session.orgs.find((o) => o.id === orgId)?.name ?? "");
+  const orgName =
+    orgId === null ? "All orgs" : (session.orgs.find((o) => o.id === orgId)?.name ?? "");
 
   return (
     <nav

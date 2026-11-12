@@ -257,7 +257,9 @@ function Section({
                   // biome-ignore lint/suspicious/noArrayIndexKey: stored list, never reordered.
                   <li key={i} className="flex items-center gap-2">
                     <StatusDot
-                      status={t.status === "pass" ? "done" : t.status === "fail" ? "failed" : "idle"}
+                      status={
+                        t.status === "pass" ? "done" : t.status === "fail" ? "failed" : "idle"
+                      }
                     />
                     {t.name ?? JSON.stringify(h)}
                   </li>
@@ -289,7 +291,9 @@ function Section({
                   The reviewer ran on the same model as the implementer: it is less independent.
                 </div>
               ) : (
-                <div className="text-ink-muted text-xs">A different model from the implementer.</div>
+                <div className="text-ink-muted text-xs">
+                  A different model from the implementer.
+                </div>
               )}
               <div className="flex items-center gap-2 font-medium">
                 <StatusDot status={packet.reviewer.verdict === "approve" ? "done" : "failed"} />
@@ -305,7 +309,11 @@ function Section({
     case "visual": {
       const shots = packet.sections.visual ?? packet.sections.screenshots;
       return (
-        <Block title="Visual evidence" note="Captured by the runner's browser" testId="section-visual">
+        <Block
+          title="Visual evidence"
+          note="Captured by the runner's browser"
+          testId="section-visual"
+        >
           {Array.isArray(shots) && shots.length ? (
             <ul className="m-0 flex list-none flex-col gap-1 p-0">
               {shots.map((s, i) => {
@@ -345,7 +353,10 @@ function Section({
     case "diff": {
       const diff = packet.sections.diff;
       return (
-        <Collapsible onOpenChange={(o) => (o ? onOpenDiff() : undefined)} data-testid="section-diff">
+        <Collapsible
+          onOpenChange={(o) => (o ? onOpenDiff() : undefined)}
+          data-testid="section-diff"
+        >
           <Panel>
             <CollapsibleTrigger className="group flex items-center gap-1.5 text-left font-semibold">
               <ChevronRightIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />

@@ -26,22 +26,22 @@ export function CommandPalette({
   const orgId = useOrgScope();
   const navigate = useNavigate();
   const items = useQuery(workListsQuery(session.orgs.map((o) => o.id)));
-  const [query, setQuery] = useState("");
+  const [text, setText] = useState("");
   const [at, setAt] = useState(0);
   useEffect(() => {
     if (open) {
-      setQuery("");
+      setText("");
       setAt(0);
     }
   }, [open]);
 
   const rows = useMemo<Row[]>(() => {
-    const q = query.trim().toLowerCase();
+    const q = text.trim().toLowerCase();
     const places: Row[] = PLACE_COMMANDS.filter(
       (p) => !q || p.label.toLowerCase().includes(q) || p.keywords.includes(q),
     ).map((p) => ({ kind: "place", ...p }));
     const scoped = (items.data ?? []).filter((i) => orgId === null || i.orgId === orgId);
-    const found: Row[] = matchItems(scoped, query).map((i) => ({
+    const found: Row[] = matchItems(scoped, text).map((i) => ({
       kind: "item",
       id: i.id,
       label: i.title,
@@ -49,7 +49,7 @@ export function CommandPalette({
       status: i.status,
     }));
     return /^#?\d+$/.test(q) ? [...found, ...places] : [...places, ...found];
-  }, [query, items.data, orgId]);
+  }, [text, items.data, orgId]);
 
   function go(row: Row | undefined) {
     if (!row) return;
@@ -69,14 +69,13 @@ export function CommandPalette({
         <div className="flex h-11 items-center gap-2 border-line border-b px-3.5">
           <SearchIcon className="size-4 text-ink-muted" />
           <input
-            // biome-ignore lint/a11y/noAutofocus: the palette exists to be typed into.
             autoFocus
             role="combobox"
             aria-expanded
             aria-controls="palette-results"
-            value={query}
+            value={text}
             onChange={(e) => {
-              setQuery(e.target.value);
+              setText(e.target.value);
               setAt(0);
             }}
             onKeyDown={(e) => {
