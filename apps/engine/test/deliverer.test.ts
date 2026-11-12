@@ -10,6 +10,7 @@ import { deliverRepository, deliverTestSeams } from "../src/deliver/deliverer.ts
 import { mobileTestSeams } from "../src/mobile.ts";
 import {
   all,
+  BALANCED,
   build,
   call,
   first,
@@ -613,6 +614,45 @@ describe("the approval across a merge of main (ADR 0582)", () => {
       ended.pending_action_id,
     );
     expect(approval?.status).toBe("rejected");
+  });
+
+  // With #73 the project's checks are what proves a head: a head no build ran on runs them again.
+  it("re-verifying the new head runs the project's checks there before the approval carries", async () => {
+    const w = await world({ ...BALANCED, checks: [{ name: "tests", run: "pnpm test" }] });
+    const a = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Checked again" },
+      w.human,
+    ).then((r) => r.workItemId);
+    await runStage(w, a, "triage", () => triage("small"));
+    await runStage(w, a, "build", () => ({
+      ...build(["src/a.ts"]),
+      checks: [{ name: "tests", exitCode: 0 }],
+    }));
+    await runStage(w, a, "verify", (j) => {
+      expect(j.checks).toBeUndefined(); // the build's results prove the built head
+      return verifyPass;
+    });
+    await gateOpen(a, "merge");
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await approve(w, a);
+    const ended = await waitFor("sent to verify", () =>
+      first<{ head_sha: string }>(
+        "SELECT head_sha FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
+        a,
+      ),
+    );
+    await runStage(w, a, "verify", (j) => {
+      expect(j.checks?.commands.map((c) => c.name)).toEqual(["tests"]);
+      return { ...verifyPass, checks: [{ name: "tests", exitCode: 0, headSha: ended.head_sha }] };
+    });
+    await itemStatus(a, "done");
+    const ran = await first<{ name: string }>(
+      "SELECT name FROM core_check_results WHERE work_item_id = ? AND head_sha = ?",
+      a,
+      ended.head_sha,
+    );
+    expect(ran?.name).toBe("tests");
   });
 
   it("a carried approval re-enters only for the change it approved", async () => {
