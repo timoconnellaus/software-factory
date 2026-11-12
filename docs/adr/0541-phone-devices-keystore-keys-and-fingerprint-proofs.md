@@ -150,3 +150,55 @@ describes the key.
   which is off in every deployed config. A test checks the default refuses.
 - ADR 0392's consequence ("approving a gate from a phone would need its own presence proof
   (WebAuthn)") is answered by this ADR instead: the phone app's own key, not WebAuthn in a browser.
+
+## Amendment, 2026-11-12: as built in spec 60 PR 1a
+The owner accepted spec 60's three loosenings and its six defaults (package `com.zerobsai.factory`;
+no app lock; fingerprint only; an unlocked or unverified phone registers but can't approve; canary
+and stable; one tap for answers on the phone only). Building PR 1a settled these details:
+- **A software security level is refused, not stored as `software`.** Decision 4 said a phone that
+  fails the security-level check registers as `software`; spec 60's acceptance criterion 1 says "a
+  key from a software level" is refused. The stricter one is built. Only the boot state (not
+  `Verified`, or the bootloader unlocked) registers a phone as `software`.
+- **The challenge** is SHA-256 of the nonce's UTF-8 bytes (32 bytes). The nonce is stored only as
+  its hash and spent by the sign-in that uses it.
+- **The key checks** are made on the hardware-enforced list: EC P-256, `SIGN`, `origin` generated,
+  `userAuthType` with the fingerprint bit and *without* the password bit (so the PIN can't stand in),
+  no `authTimeout` (or 0), no `noAuthRequired` on either list. The app check needs exactly one
+  package, ours, and every signature digest in `MOBILE_SIGNING_CERTS`. The key description must be
+  in the leaf and nowhere else in the chain. Intermediates must be in date; the leaf's dates (often
+  1970–2106) and the root's are not judged, because roots are pinned by key, not by certificate
+  (Google has re-issued the RSA root's certificate with the same key several times).
+- **The pinned roots** are Google's RSA-4096 hardware attestation root key and the ECDSA P-384 "Key
+  Attestation CA1" key, as published on 2026-11-12 (`packages/core/src/attestation/roots.ts`).
+- **The revocation list** is held in the engine's memory for a day; every listed serial refuses,
+  whatever its status. If it can't be fetched and no copy younger than a day is held, sign-in is
+  refused as `unavailable`.
+- **The typed code** is ten Crockford base32 characters: the first two name the offer (unique among
+  live offers) so a wrong code counts against that offer only, and the other eight are the secret
+  (40 bits against five tries). Every try, right or wrong, counts toward the cap of 30 an hour.
+- **The QR code** holds the App Link `https://<site>/mobile/pair?offer=<id>#secret=<secret>`: the
+  secret stays in the fragment, which no server sees. The website's `/mobile/pair` and
+  `/mobile/callback` only bounce to the app (an `intent://` link) when the App Link didn't catch
+  them; the intent carries the fragment's values in its query, so the app reads them from either.
+- **`mobile.pairOfferStatus`** is new: the Add a phone screen watches the offer with it and shows
+  the paired phone's name and key storage with **Not my phone? Remove**.
+- **`deviceDecidable(op, surface, input)`** is a function in `invoke()` over the existing
+  `desktopDecidable` flag and a new `mobileDecidable` (true, or a function of the input), rather
+  than a replacement of the flag, so planning PRs in flight that set `desktopDecidable` keep
+  compiling. Everything desktop-decidable is also one tap on the phone. The gate decisions keep
+  `presenceDecidable` (a proof on either device). The three operations that take a proof without
+  being gate decisions set `presenceSurfaces` instead: `mobile.pairOffer` (`desktop` only),
+  `mobile.renew` (`mobile` only) and `device.update` (both, when turning approvals on). So the
+  desktop's own list of gate decisions, which mirrors `presenceDecidable`, is unchanged.
+  `packages/core/test/decidability.test.ts` pins the table.
+- **`review.merge`'s `headSha`** is compared with the head SHA in the merge gate's `pr.merge` input.
+  A call from the `mobile` surface without one is refused as `invalid_input`.
+- **`MOBILE_MIN_PROTOCOL`** is a constant in `apps/engine/src/mobile.ts`, starting at 1: no phone
+  build predates the handshake, so a phone request without `x-sf-client-protocol` gets 426. It is
+  recognised by the route (`mobile/*`) or the token's `sfm_` prefix, without a lookup.
+- **Migration 0310** carries only what PR 1a uses. The push tables (`core_push_registrations`,
+  `core_device_notification_settings`) and `core_project_policies.content_digest` come with PRs 2
+  and 8, in the next migrations of block AL.
+- **Not in PR 1a:** the desktop app's Add a phone dialog. The engine side is built and tested
+  (`mobile.pairOffer` with a Touch ID proof); the dialog is a new component and a route hook in
+  `apps/desktop`, which the desktop sessions own.

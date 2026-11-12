@@ -40,8 +40,8 @@ function table() {
       const browserOnly =
         op.browserOnly === true ||
         (typeof op.browserOnly === "function" && op.browserOnly(input as never));
-      // Presence-decidable operations that aren't browser-only check the proof themselves.
-      if (!browserOnly && !op.presenceDecidable) continue;
+      // Operations that take a proof without being browser-only check it themselves.
+      if (!browserOnly && !op.presenceDecidable && !op.presenceSurfaces) continue;
       const key =
         inputs.length > 1 || INPUTS[op.name] ? `${op.name} ${JSON.stringify(input)}` : op.name;
       rows[key] = {

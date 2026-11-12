@@ -679,9 +679,8 @@ export const mobilePairOffer = defineOperation({
   actors: ["human"],
   permission: "signed-in",
   browserOnly: true,
-  presenceDecidable: true,
   // Offering from a device that already proves presence is the one exception ADR 0541 makes; a
-  // phone can't offer a pairing.
+  // phone can't offer a pairing. Not a gate decision, so not `presenceDecidable`.
   presenceSurfaces: ["desktop"],
   input: z.object({}),
   output: z.object({
@@ -826,7 +825,6 @@ export const mobileRenew = defineOperation({
   actors: ["human"],
   permission: "signed-in",
   browserOnly: true,
-  presenceDecidable: true,
   presenceSurfaces: ["mobile"],
   input: z.object({}),
   output: z.object({ token: z.string(), tokenId: z.string(), expiresAt: z.string() }),

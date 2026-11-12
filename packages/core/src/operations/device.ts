@@ -159,7 +159,8 @@ export const deviceUpdate = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
-  presenceDecidable: true,
+  // Turning approvals on takes a proof from the device itself (checked in the handler).
+  presenceSurfaces: ["desktop", "mobile"],
   input: z.object({
     deviceId: deviceId.optional(),
     name: name.optional(),

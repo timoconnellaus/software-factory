@@ -111,7 +111,8 @@ export function canonicalJson(value: unknown): string {
 
 /** Whether a device surface's presence proof may decide `op` at all (ADR 0391, 0541). */
 export function presenceSurfaceAllowed(op: AnyOperation, surface: DeviceSurface): boolean {
-  return !!op.presenceDecidable && (op.presenceSurfaces ?? ["desktop", "mobile"]).includes(surface);
+  const surfaces = op.presenceSurfaces ?? (op.presenceDecidable ? ["desktop", "mobile"] : []);
+  return surfaces.includes(surface);
 }
 
 async function presenceAllows(op: AnyOperation, origin: Origin, rawInput: unknown) {

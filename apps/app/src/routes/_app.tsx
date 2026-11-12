@@ -74,17 +74,21 @@ function Breadcrumb() {
           ? ["Factory", "Setup"]
           : path === "/runners/connect"
             ? ["Factory", "Connect a runner"]
-            : path === "/attach"
-              ? ["Work", "Attach a pull request"]
-              : path === "/work"
-                ? ["Factory", "Work"]
-                : path.endsWith("/review")
-                  ? ["Work", "Review packet"]
-                  : path.startsWith("/projects/") && path.endsWith("/settings")
-                    ? ["Project", "Settings"]
-                    : path.startsWith("/projects/") && path.endsWith("/workflows")
-                      ? ["Project", "Workflows and agents"]
-                      : ["Factory", "Work item"];
+            : path === "/settings/devices"
+              ? ["Settings", "Devices"]
+              : path === "/mobile/connect"
+                ? ["Settings", "Sign in a phone"]
+                : path === "/attach"
+                  ? ["Work", "Attach a pull request"]
+                  : path === "/work"
+                    ? ["Factory", "Work"]
+                    : path.endsWith("/review")
+                      ? ["Work", "Review packet"]
+                      : path.startsWith("/projects/") && path.endsWith("/settings")
+                        ? ["Project", "Settings"]
+                        : path.startsWith("/projects/") && path.endsWith("/workflows")
+                          ? ["Project", "Workflows and agents"]
+                          : ["Factory", "Work item"];
   return (
     <span className="text-muted-foreground text-sm" data-testid="breadcrumb">
       {crumbs[0]} / <b className="font-medium text-foreground">{crumbs[1]}</b>

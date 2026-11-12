@@ -195,8 +195,11 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    */
   presenceDecidable?: true;
   /**
-   * The device surfaces whose presence proof decides it (default both). `mobile.pairOffer` is
-   * `desktop` only and `mobile.renew` is `mobile` only (ADR 0541).
+   * The device surfaces whose presence proof the operation takes (ADR 0541). Defaults to both for
+   * a `presenceDecidable` gate decision, and to none otherwise. Set on its own, it marks an
+   * operation that isn't a gate decision but takes a proof on those devices: adding a phone from
+   * the desktop (`mobile.pairOffer`), renewing a phone's token (`mobile.renew`), turning a device's
+   * approvals back on (`device.update`).
    */
   presenceSurfaces?: readonly DeviceSurface[];
   /**
