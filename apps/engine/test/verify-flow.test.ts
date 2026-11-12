@@ -92,8 +92,12 @@ describe("the GitHub App webhook", () => {
     ).toHaveLength(1);
   });
 
-  it("mirrors the policy from a default-branch push", async () => {
+  it("leaves the config alone on a default-branch push: config lives in the app (ADR 0370)", async () => {
     const w = await world();
+    const before = await first<{ policy_sha: string }>(
+      "SELECT policy_sha FROM core_projects WHERE id = ?",
+      w.projectId,
+    );
     const sha = sha40(uid("p"));
     await github.setFile(w.repo, sha, ".factory/policy.json", JSON.stringify(BALANCED));
     const res = await deliver("push", {
@@ -108,7 +112,7 @@ describe("the GitHub App webhook", () => {
       "SELECT policy_sha FROM core_projects WHERE id = ?",
       w.projectId,
     );
-    expect(project?.policy_sha).toBe(sha);
+    expect(project?.policy_sha).toBe(before?.policy_sha);
   });
 });
 

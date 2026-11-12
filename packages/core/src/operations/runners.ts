@@ -32,8 +32,8 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import { policyImpact } from "../policy/impact.ts";
 import { planningRunEnded, USER_EVENTS } from "../planning.ts";
+import { policyImpact } from "../policy/impact.ts";
 import type { ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { runEvent } from "../workflow-events.ts";

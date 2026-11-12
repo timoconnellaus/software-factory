@@ -46,21 +46,29 @@ This spec is built in four milestones, each its own PR.
     - Its risk comes from `riskOf`: `self-modify` when the impact loosens, else `write`. A
       loosening save becomes a pending action for an approver, judged under the current version.
     - On apply, it writes version N+1 and points the project at it.
-  - **`config.rollback`** (human, member): saves an earlier version's document as a new version
-    (source `rollback`), with the same risk rule.
-  - **`config.export`** (read, member): the `.factory/` bundle `{ "policy.json": … }`.
-  - **`config.import`** (human, member): a save with source `import`.
-  - **`config.importFromRepo`** (human, admin): reads `.factory/policy.json` at the default
-    branch's head through the App and imports it. Replaces `policy.resync`.
+  - **`config.rollback`** (human, member): `{projectId, baseVersion, toVersion}`. Saves an
+    earlier version's stored document as a new version (source `rollback`), with the same risk rule.
+    `riskOf` reads the stored version, so the gate judges the real document.
+  - **`config.export`** (read, member): the `.factory/` bundle `{ ".factory/policy.json": … }`.
+  - **Import** is `config.save` with `source: "import"`: the app reads an exported bundle (or a bare
+    `policy.json`) into the form, and the person checks the diff and saves it.
+  - **Applying an approved loosening:** `approval.decide` on a `config.save` or `config.rollback`
+    pending action applies it in the same call. A project-level gate has no Workflow to re-run it.
+    The proposer stays the author, and a stale base is refused without deciding.
+  - **`policy.resync`** becomes "import from repo": it reads `.factory/policy.json` at the default
+    branch's head through the App, imports it as a new version, and refuses a missing or invalid
+    file.
 - **Git stops feeding the gate:**
   - `push.observe` no longer reads `.factory/policy.json`.
   - `project.create` imports the repo's file as v1 if there is one, else writes the template policy
     as v1.
   - `policy.proposeTemplate` and the Setup step's "Create policy PR" are removed.
-  - `policy.sync` becomes human-only and writes a version (it's kept for tests and as an import
-    path).
+  - `policy.sync` becomes human-only and writes a version. It is kept for tests and as a raw import
+    path; unlike `config.save`, an invalid document it receives still becomes current and fails
+    closed.
 - **Pinning (ADR 0370 §5):** the gate in `invoke()` and the harness profile in `buildJob` use the
-  stricter of the work item's recorded version and the current one.
+  stricter of the work item's recorded version and the current one. `riskOf` receives the resolved
+  scope, the floor and the database, so a config save's risk depends on the current version.
 - **App:** `/projects/$projectId/settings`, as in the mockup:
   - sections for Autonomy + overrides, Timeouts + backup owner, Throughput (WIP, default retry),
     Approvers, Review packet (show/hide + order) and Protection on main;
