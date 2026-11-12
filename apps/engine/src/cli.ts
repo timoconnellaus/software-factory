@@ -10,6 +10,9 @@
 // - `batch` runs up to 20 `read`-risk calls in parallel (the desktop app's page loads).
 // - Bytes travel as `{ "$bytes": "<base64>" }` in `call` and `batch` (wire-bytes.ts): an attachment
 //   upload's input, an attachment's output.
+// - `mobile/nonce`, `mobile/start` and `mobile/exchange` are the phone app's unsigned sign-in (as
+//   MOBILE_DEVICE_ACTOR, ADR 0541); a `mobile` token's calls run on the `mobile` surface, and a
+//   phone below MOBILE_MIN_PROTOCOL gets 426 (mobile.ts).
 // - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
 // - `terminal/<workItemId>/<runId>` (GET, WebSocket) is a run's web terminal for the desktop app
 //   (spec 42, ADR 0530): the same attach as sf-app's socket route, then the relay's viewer socket.
@@ -33,11 +36,20 @@ import {
   type Origin,
   resolveCliToken,
   resolveDesktopToken,
+  resolveMobileToken,
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
 import { STATUS } from "./channel.ts";
-import { clientHub } from "./client-hub.ts";
+import { clientHub, DEVICE_HEADER } from "./client-hub.ts";
 import { invokeDeps } from "./deps.ts";
+import {
+  MOBILE_DEVICE_ACTOR,
+  mobileCaller,
+  mobileSignInConflict,
+  mobileSignInRoute,
+  mobileTooOld,
+  mobileUpdateRequired,
+} from "./mobile.ts";
 import { attachTerminal, openViewerSocket } from "./terminal-attach.ts";
 import { decodeBytes, encodeBytes } from "./wire-bytes.ts";
 
@@ -117,16 +129,17 @@ async function versionGate(request: Request, env: Env, path: string): Promise<Re
   return desktop ? updateRequired(env) : null;
 }
 
-/** Who a bearer token is: a CLI token (with its scope) or a desktop device's token. */
+/** Who a bearer token is: a CLI token (with its scope), or a desktop's or a phone's device token. */
 type Caller =
   | { kind: "cli"; userId: string; scope: "read" | "write" }
-  | { kind: "desktop"; userId: string; deviceId: string; tokenId: string };
+  | { kind: "desktop" | "mobile"; userId: string; deviceId: string; tokenId: string };
 
 export async function handleCli(request: Request, env: Env): Promise<Response> {
   const pathname = new URL(request.url).pathname;
   const path = pathname.slice(
     pathname.startsWith(CLIENT_PREFIX) ? CLIENT_PREFIX.length : CLI_PREFIX.length,
   );
+  if (mobileTooOld(request, path)) return mobileUpdateRequired();
   const tooOld = await versionGate(request, env, path);
   if (tooOld) return tooOld;
   if (path === "ops" && request.method === "GET") {
@@ -142,7 +155,11 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
     }
-    return clientHub(env, who.userId).fetch(request);
+    // The hub tags a device's socket with its id, so revoking the device closes it (ADR 0541).
+    const headers = new Headers(request.headers);
+    headers.delete(DEVICE_HEADER);
+    if (who.kind !== "cli") headers.set(DEVICE_HEADER, who.deviceId);
+    return clientHub(env, who.userId).fetch(new Request(request, { headers }));
   }
   const terminal = TERMINAL_ROUTE.exec(path);
   if (terminal?.[1] && terminal[2] && request.method === "GET") {
@@ -169,6 +186,28 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (path === "desktop/start" || path === "desktop/exchange") {
     const op = path === "desktop/start" ? "desktop.authStart" : "desktop.authExchange";
     return respond(() => run(env, op, body, DESKTOP_DEVICE_ACTOR, { surface: "desktop" }), true);
+  }
+  const phoneSignIn = mobileSignInRoute(path);
+  if (phoneSignIn) {
+    return respond(async () => {
+      const caller = await mobileCaller(request, env);
+      let r: Awaited<ReturnType<typeof run>>;
+      try {
+        r = await run(env, phoneSignIn, body, MOBILE_DEVICE_ACTOR, { surface: "mobile", caller });
+      } catch (error) {
+        throw mobileSignInConflict(phoneSignIn, error);
+      }
+      // A refusal after the nonce was found commits (the nonce spent, a typed code counted), then
+      // is answered as an error.
+      const out = r.pending
+        ? null
+        : (r.output as { status?: string; code?: string; error?: string });
+      if (out?.status === "refused") {
+        const code = out.code === "denied" || out.code === "unavailable" ? out.code : "forbidden";
+        throw new OperationError(code, out.error ?? "refused", out);
+      }
+      return r;
+    }, true);
   }
   if (path === "call") {
     const who = await authenticate(request, env);
@@ -286,6 +325,10 @@ async function lookUpCaller(request: Request, env: Env): Promise<Caller | null> 
       tokenId: desktop.id,
     };
   }
+  const phone = await resolveMobileToken(db, token, now);
+  if (phone) {
+    return { kind: "mobile", userId: phone.user_id, deviceId: phone.device_id, tokenId: phone.id };
+  }
   const cli = await resolveCliToken(db, token, now);
   if (cli) return { kind: "cli", userId: cli.user_id, scope: cli.scope };
   return null;
@@ -313,7 +356,8 @@ async function callAs(
     }
     return run(env, name, decodeBytes(input), actor, { surface: "cli" }, idempotencyKey);
   }
-  const origin: Origin = { surface: "desktop", deviceId: who.deviceId };
+  // The token's kind sets the surface; nothing in the request does (ADR 0391, 0541).
+  const origin: Origin = { surface: who.kind, deviceId: who.deviceId };
   if (presence !== undefined) {
     const proof = (presence && typeof presence === "object" ? presence : {}) as Record<
       string,
