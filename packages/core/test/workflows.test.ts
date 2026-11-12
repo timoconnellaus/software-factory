@@ -166,6 +166,66 @@ describe("workflows in the config", () => {
       expect(policyImpact(p(doc()), p(told), floor).class).toBe("loosens");
     });
 
+    // Spec 52, fourth review: two holes the reviewer's probes found neutral.
+    it("switching the project's workflow to one without a judging step loosens", () => {
+      const lax = { name: "Lax", slots: { afterVerify: feature.slots.afterVerify } };
+      const both = doc({ workflows: [feature, lax], workflow: "Ship a feature" });
+      const impact = policyImpact(p(both), p({ ...both, workflow: "Lax" }), floor);
+      expect(impact.class).toBe("loosens");
+      expect(impact.changes.find((c) => c.path === "workflow")?.summary).toMatch(
+        /the agent check Security review/,
+      );
+      // A same-named judge whose agent is told to pass everything is not the same check.
+      const twin = {
+        name: "Twin",
+        slots: {
+          ...feature.slots,
+          beforeVerify: [
+            { id: "security", kind: "work", name: "Security review", agent: "Lenient" },
+          ],
+        },
+      };
+      const lenient = [...agents, { name: "Lenient", role: "review", instructions: PASS }];
+      const withTwin = doc({
+        agents: lenient,
+        workflows: [feature, twin],
+        workflow: "Ship a feature",
+      });
+      expect(policyImpact(p(withTwin), p({ ...withTwin, workflow: "Twin" }), floor).class).toBe(
+        "loosens",
+      );
+      // A workflow that judges an item exactly the same way is neutral; one that adds a check tightens.
+      const copy = { ...feature, name: "Copy" };
+      const withCopy = doc({ workflows: [feature, copy], workflow: "Ship a feature" });
+      expect(policyImpact(p(withCopy), p({ ...withCopy, workflow: "Copy" }), floor).class).toBe(
+        "neutral",
+      );
+      const laxFirst = doc({ workflows: [feature, lax], workflow: "Lax" });
+      expect(
+        policyImpact(p(laxFirst), p({ ...laxFirst, workflow: "Ship a feature" }), floor).class,
+      ).toBe("tightens");
+    });
+
+    it("moving a judging step to another slot loosens, either way", () => {
+      const moveTo = (from: "beforeVerify" | "afterVerify", to: string) => {
+        const step = feature.slots[from][0];
+        const slots: Record<string, unknown[]> = { ...feature.slots, [from]: [] };
+        slots[to] = [...((slots[to] as unknown[]) ?? []), step];
+        return doc({ workflows: [{ ...feature, slots }], workflow: "Ship a feature" });
+      };
+      const base = doc({ workflow: "Ship a feature" });
+      // The security check before build sees nothing; after verify it runs after what it guards.
+      for (const to of ["afterSpec", "afterVerify"]) {
+        const impact = policyImpact(p(base), p(moveTo("beforeVerify", to)), floor);
+        expect(impact.class, to).toBe("loosens");
+        expect(impact.changes.some((c) => /moves from beforeVerify/.test(c.summary))).toBe(true);
+      }
+      // The design gate moved earlier sees no build or review packet.
+      expect(policyImpact(p(base), p(moveTo("afterVerify", "afterSpec")), floor).class).toBe(
+        "loosens",
+      );
+    });
+
     it("an unchanged judge with a renamed step is neutral", () => {
       expect(
         policyImpact(p(doc()), p(withStep({ ...security, name: "Security pass" })), floor).class,
