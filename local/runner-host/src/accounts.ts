@@ -27,7 +27,10 @@ import {
 import { z } from "zod";
 import type { Paths } from "./config.ts";
 
-export type AccountPaths = Pick<Paths, "accountsFile" | "accountTokensDir" | "accountConfigsDir"> & {
+export type AccountPaths = Pick<
+  Paths,
+  "accountsFile" | "accountTokensDir" | "accountConfigsDir"
+> & {
   /** Where the host records each account's last usage limit (its own state, not the registry). */
   limitsFile: string;
 };
@@ -261,7 +264,11 @@ export async function addTokenAccount(
       : {}),
   };
   await writePrivate(join(dir, ".claude.json"), `${JSON.stringify(seeded, null, 2)}\n`);
-  const entry = { kind: "token" as const, tokenEnv: env, addedAt: (options.now ?? new Date()).toISOString() };
+  const entry = {
+    kind: "token" as const,
+    tokenEnv: env,
+    addedAt: (options.now ?? new Date()).toISOString(),
+  };
   await addEntry(p, name, entry);
   return harnessAccount(p, name, entry);
 }
@@ -304,7 +311,8 @@ export async function removeAccount(
   if (registry.active === name) {
     throw new AccountError(`"${name}" is the active account: sf-runner account use another first`);
   }
-  if (inUse.has(name)) throw new AccountError(`a running job uses "${name}": wait for it to finish`);
+  if (inUse.has(name))
+    throw new AccountError(`a running job uses "${name}": wait for it to finish`);
   delete registry.accounts[name];
   await saveRegistry(p, registry);
   await rm(tokenFile(p, name), { force: true });
@@ -356,4 +364,3 @@ export async function loggedInAs(configDir: string): Promise<string | null> {
   };
   return config.oauthAccount?.emailAddress ?? null;
 }
-

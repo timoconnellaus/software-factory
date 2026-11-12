@@ -69,6 +69,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   `brew install tmux` if missing, `git pull`, `sf-runner doctor --fix` (sets `checkouts` once from
   Orca's repos), then `sf-runner install` with no jobs running. Job worktrees the old runner left in
   Orca (`sf-job:` comments) are removed in Orca by hand. Pieces 2–8 get their own specs.
+  Piece 3, [spec 32](specs/32-claude-accounts-on-a-host.md) / [ADR 0410](adr/0410-claude-accounts-live-on-the-host.md)
+  (block Y, migration 0180), is built on branch `timoconnellaus/hosts-accounts`: Claude accounts on
+  a host (`sf-runner account add|use|list|remove`), the active one in each job's launch, the
+  dashboard's picker on Setup (`runner.account.use`, delivered as `account.use` on the heartbeat),
+  usage limits surfaced per account. Its live checks (a real second login, a switch from Setup) are
+  in the PR.
 - **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
   versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals

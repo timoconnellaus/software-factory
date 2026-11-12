@@ -56,7 +56,12 @@ describe("accounts on a host", () => {
     expect(await activeAccount(p)).toEqual({ name: "default" });
     expect(await accountsReport(p)).toEqual({ names: ["default"], active: "default", limits: [] });
     const [only] = await listAccounts(p, { HOME: "/h" });
-    expect(only).toEqual({ name: "default", kind: "default", active: true, configDir: "/h/.claude" });
+    expect(only).toEqual({
+      name: "default",
+      kind: "default",
+      active: true,
+      configDir: "/h/.claude",
+    });
   });
 
   it("adds a login account in its own 0700 config dir and makes it active on `use`", async () => {
@@ -96,16 +101,20 @@ describe("accounts on a host", () => {
     expect(await mode(p.accountTokensDir)).toBe(0o700);
     // The token file sits under the runner's config dir (denied to every run), not in the
     // account's Claude config dir.
-    expect(join(p.accountTokensDir, "ci.token").startsWith(join(root, ".config/software-factory"))).toBe(
-      true,
+    expect(
+      join(p.accountTokensDir, "ci.token").startsWith(join(root, ".config/software-factory")),
+    ).toBe(true);
+    const seeded = JSON.parse(
+      await readFile(join(p.accountConfigsDir, "ci", ".claude.json"), "utf8"),
     );
-    const seeded = JSON.parse(await readFile(join(p.accountConfigsDir, "ci", ".claude.json"), "utf8"));
     expect(seeded).toEqual({ hasCompletedOnboarding: true });
     expect(await readFile(p.accountsFile, "utf8")).not.toContain(OAUTH);
     expect(JSON.stringify(await accountsReport(p))).not.toContain(OAUTH);
 
     await addTokenAccount(p, "api", API_KEY);
-    const api = JSON.parse(await readFile(join(p.accountConfigsDir, "api", ".claude.json"), "utf8"));
+    const api = JSON.parse(
+      await readFile(join(p.accountConfigsDir, "api", ".claude.json"), "utf8"),
+    );
     // Claude's own approval record for a custom key: its last 20 characters.
     expect(api.customApiKeyResponses.approved).toEqual([API_KEY.slice(-20)]);
     await expect(addTokenAccount(p, "x", "opaque")).rejects.toThrow(/--oauth/);
@@ -219,7 +228,10 @@ describe("the heartbeat carries account names; the dashboard's pick switches the
     const cloud = fakeCloud();
     const cp = await controlPlane(cloud);
     const host = new RunnerHost({
-      adapter: fakeAdapter((j) => repo.host.clonePath(j), async () => []),
+      adapter: fakeAdapter(
+        (j) => repo.host.clonePath(j),
+        async () => [],
+      ),
       cp,
       git: repo.host,
       maxConcurrent: 1,
@@ -251,7 +263,10 @@ describe("the heartbeat carries account names; the dashboard's pick switches the
     const cloud = fakeCloud();
     const lines: string[] = [];
     const host = new RunnerHost({
-      adapter: fakeAdapter((j) => repo.host.clonePath(j), async () => []),
+      adapter: fakeAdapter(
+        (j) => repo.host.clonePath(j),
+        async () => [],
+      ),
       cp: await controlPlane(cloud),
       git: repo.host,
       maxConcurrent: 1,

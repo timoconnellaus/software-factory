@@ -140,9 +140,7 @@ describe("a run's Claude account (ADR 0410)", () => {
       for (const name of MODEL_CREDENTIAL_ENV.filter((n) => n !== "CLAUDE_CONFIG_DIR")) {
         expect(run.env?.[name]).toBeUndefined();
       }
-      expect(run.projected.launch).toEqual(
-        expect.objectContaining({ account: "work", configDir }),
-      );
+      expect(run.projected.launch).toEqual(expect.objectContaining({ account: "work", configDir }));
       // The config dir stays readable (Claude's shell snapshots); its credentials file doesn't.
       const settings = run.projected.settings;
       expect(settings.permissions.deny).toContain(`Read(/${join(configDir, ".credentials.json")})`);
@@ -197,26 +195,23 @@ describe("a run's Claude account (ADR 0410)", () => {
     expect(run.env).toBeNull();
   });
 
-  it.skipIf(inHarnessSandbox)(
-    "still passes the ADR 0270 check on a named account",
-    async () => {
-      const configDir = join(await temp("sf-acc-cfg-"), "work");
-      const run = await launchWith({ name: "work", configDir });
-      try {
-        let problems: string[] = ["not started"];
-        for (let i = 0; i < 30 && problems.length; i++) {
-          await new Promise((r) => setTimeout(r, 100));
-          problems = await verifyLaunch(run.projected.launch, async (pid) => {
-            const real = await psCommand(pid);
-            return real?.replace(/^\/bin\/sh /, "") ?? null;
-          });
-        }
-        expect(problems).toEqual([]);
-      } finally {
-        run.child.kill();
+  it.skipIf(inHarnessSandbox)("still passes the ADR 0270 check on a named account", async () => {
+    const configDir = join(await temp("sf-acc-cfg-"), "work");
+    const run = await launchWith({ name: "work", configDir });
+    try {
+      let problems: string[] = ["not started"];
+      for (let i = 0; i < 30 && problems.length; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        problems = await verifyLaunch(run.projected.launch, async (pid) => {
+          const real = await psCommand(pid);
+          return real?.replace(/^\/bin\/sh /, "") ?? null;
+        });
       }
-    },
-  );
+      expect(problems).toEqual([]);
+    } finally {
+      run.child.kill();
+    }
+  });
 
   it("knows where a run's transcripts go", () => {
     expect(accountConfigDir({ name: "work", configDir: "/a/work" })).toBe("/a/work");

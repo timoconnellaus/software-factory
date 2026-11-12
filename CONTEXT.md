@@ -304,6 +304,15 @@ It keeps its own code on the commit the engine was deployed from, updating itsel
 (ADR 0360).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
+**Claude account** (on a host)
+A Claude subscription or key a runner host runs Claude Code with (ADR 0410): a **login** (its own
+Claude config dir, used as `CLAUDE_CONFIG_DIR`) or a **token** (a `claude setup-token` OAuth token or
+an API key in a 0600 file), plus `default`, whatever `claude` uses with no account set. Added and
+removed only on the host (`sf-runner account`). One is **active**: a job takes it when its workspace
+is prepared and keeps it. The owner switches it by hand, on the host or from Setup
+(`runner.account.use`, which sends only the name). The factory sees names, never credentials.
+_Avoid_: profile (Orca's word), login (only one kind), key (only one kind)
+
 **Capability**
 Something a runner or harness declares it can do. Jobs ask for capabilities; `.factory/` can
 restrict them. The known ones:

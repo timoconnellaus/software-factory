@@ -23,7 +23,8 @@ export async function findTranscript(
 ): Promise<string | null> {
   const name = projectDirName(cwd);
   let best: { path: string; mtime: number } | null = null;
-  const defaultDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || homedir(), ".claude");
+  const defaultDir =
+    process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || homedir(), ".claude");
   for (const root of options.configDirs ?? [defaultDir]) {
     const dir = join(root, "projects", name);
     for (const file of await readdir(dir).catch(() => [] as string[])) {

@@ -84,7 +84,9 @@ describe("Claude accounts on a runner (ADR 0410)", () => {
     expect(picked).toEqual({ runnerId, requested: "work", active: "default" });
     expect((await listed(w.human, runnerId))?.requested).toBe("work");
     // Not switched yet (a lost answer, a host between turns): asked again.
-    expect((await beat(actor, accounts())).commands).toEqual([{ kind: "account.use", name: "work" }]);
+    expect((await beat(actor, accounts())).commands).toEqual([
+      { kind: "account.use", name: "work" },
+    ]);
     expect((await beat(actor)).commands).toEqual([{ kind: "account.use", name: "work" }]);
     // Switched: the pick is done.
     expect((await beat(actor, accounts("work"))).commands).toEqual([]);

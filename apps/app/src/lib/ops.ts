@@ -55,6 +55,7 @@ export interface OpMap {
   "runner.register": Def<typeof operations.runnerRegister>;
   "runner.rotateKey": Def<typeof operations.runnerRotateKey>;
   "runner.list": Def<typeof operations.runnerList>;
+  "runner.account.use": Def<typeof operations.runnerAccountUse>;
   "cli.deviceLookup": Def<typeof operations.cliDeviceLookup>;
   "cli.approveDevice": Def<typeof operations.cliApproveDevice>;
   "cli.denyDevice": Def<typeof operations.cliDenyDevice>;
@@ -118,6 +119,7 @@ export const APP_OPERATIONS = [
   "runner.register",
   "runner.rotateKey",
   "runner.list",
+  "runner.account.use",
   "cli.deviceLookup",
   "cli.approveDevice",
   "cli.denyDevice",

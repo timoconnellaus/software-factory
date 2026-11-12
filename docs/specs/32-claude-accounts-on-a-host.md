@@ -24,7 +24,8 @@ from the dashboard. Credentials never leave the host: the factory sees account n
     `~/.config/software-factory/accounts/<name>.token` (0600). The kind is detected from the prefix
     (`sk-ant-oat…` → `CLAUDE_CODE_OAUTH_TOKEN`, `sk-ant-api…` → `ANTHROPIC_API_KEY`), or set with
     `--oauth` / `--api-key`. It also gets its own config dir, seeded so Claude skips first-run
-    onboarding (and, for an API key, its "use this key?" prompt).
+    onboarding (and, for an API key, its "use this key?" prompt, which Claude records by the key's
+    last 20 characters).
   - **default** always exists and can't be removed: whatever `claude` uses with no account set.
     The launch is exactly as before, so a host with no accounts works with zero setup.
   - The registry is `~/.config/software-factory/accounts.json` (0600): the active account's name
@@ -87,7 +88,8 @@ from the dashboard. Credentials never leave the host: the factory sees account n
    and `sf-runner account list` shows `default` active.
 2. `sf-runner account add work` makes `~/.local/share/software-factory/accounts/work/` (0700) and runs
    `claude` with `CLAUDE_CONFIG_DIR` set to it. `sf-runner account add ci --token-stdin` stores the
-   token 0600, outside any config dir, and nothing else on disk or on the wire carries it.
+   token 0600, outside any config dir, and nothing else on disk or on the wire carries it (bar
+   Claude's own approval record of an API key's last 20 characters).
 3. After `sf-runner account use work`, the next job's launch script exports
    `CLAUDE_CONFIG_DIR=<accounts>/work` and unsets the other model credentials. A job already running
    keeps its account. A token account's launch reads the token from its file into the one variable,
