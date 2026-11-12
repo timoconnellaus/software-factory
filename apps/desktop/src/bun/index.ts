@@ -15,9 +15,9 @@ import { operationHandlers } from "./operations.ts";
 import { Runner } from "./runner.ts";
 import { liveJobs } from "./runner-jobs.ts";
 import { saveTo } from "./save.ts";
+import { titleBarDoubleClick } from "./title-bar.ts";
 import { bunExec, runningAppPath } from "./update-verify.ts";
 import { type UpdaterLike, Updates } from "./updates.ts";
-import { titleBarDoubleClick } from "./title-bar.ts";
 import { viewUrl } from "./view-url.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
