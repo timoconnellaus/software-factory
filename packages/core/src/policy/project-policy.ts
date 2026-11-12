@@ -132,6 +132,15 @@ export const projectPolicySchema = z
           .positive()
           .max(24 * 60)
           .default(48),
+        /**
+         * Minutes the spec gate waits for the spec critic (spec 23): after that it opens without
+         * its notes. Absent: 20.
+         */
+        criticMinutes: z
+          .number()
+          .positive()
+          .max(24 * 60)
+          .optional(),
       })
       .default({ gateHours: 72, questionHours: 48 }),
     /** How many items may wait at human gates before new builds stop (ADR 0040). */

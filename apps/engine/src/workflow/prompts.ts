@@ -209,3 +209,29 @@ export function stepPrompt(
     ),
   ].join("\n");
 }
+
+/**
+ * The spec critic (spec 23 part C): a second agent reads the plan going to the gate and the
+ * repository, and writes notes for the person and the planner. It decides nothing.
+ */
+export function criticPrompt(
+  item: ItemBrief,
+  spec: { bodyMd: string; acceptanceCriteria: string[] },
+): string {
+  return [
+    `You are the spec critic for work item #${item.number}. Read the plan below and the repository (AGENTS.md, CONTEXT.md, docs/, the code it touches) but change nothing.`,
+    "",
+    `Title: ${item.title}`,
+    "",
+    item.body,
+    "",
+    "The plan:",
+    spec.bodyMd,
+    "",
+    "Its acceptance criteria:",
+    ...spec.acceptanceCriteria.map((c) => `- ${c}`),
+    "",
+    "Write notes a person deciding the spec gate should read: what's missing or unclear, criteria that can't be checked, contradictions with the code or the docs, risks, and questions nobody asked. Be specific (name the file or the line of the plan), and keep each note to a sentence or two. You can't approve or reject the spec, and nothing you write opens the gate: a person decides.",
+    footer('{ "notes": ["..."], "summary": "..." }'),
+  ].join("\n");
+}

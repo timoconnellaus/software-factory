@@ -26,6 +26,12 @@ export const WORKFLOW_FEATURES = [
    * (a small item without a spec, re-triaged on the answers) or opens planning with them.
    */
   "triage-readiness",
+  /**
+   * v9 (provisional: the next number above main's at merge): the spec critic (spec 23 part C). A
+   * review-role run reads the plan going to the gate and the repository; its notes are shown at
+   * the gate and given to the planner. The gate opens when it's done or after its timeout.
+   */
+  "spec-critic",
 ] as const;
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 
@@ -37,6 +43,7 @@ const v5 = [...v4, "planning-spec"] as const;
 const v6 = [...v5, "workflow-plan"] as const;
 const v7 = [...v6, "release-wait"] as const;
 const v8 = [...v7, "triage-readiness"] as const;
+const v9 = [...v8, "spec-critic"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -48,6 +55,7 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   6: new Set(v6),
   7: new Set(v7),
   8: new Set(v8),
+  9: new Set(v9),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */

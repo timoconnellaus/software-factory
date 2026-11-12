@@ -7,10 +7,14 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 /** The migrations this branch adds, by file name. Keep in step when one is added. */
-const OWN = ["0370_needs_info.sql", "0371_work_item_title_index.sql"];
+const OWN = [
+  "0370_needs_info.sql",
+  "0371_work_item_title_index.sql",
+  "0372_spec_critique.sql",
+];
 
 /** The columns they add, as `table.column`, which must exist both ways. */
-const COLUMNS = ["core_work_items.needs_info"];
+const COLUMNS = ["core_work_items.needs_info", "core_specs.critique"];
 
 async function columns(db: D1Database): Promise<Set<string>> {
   const tables = [...new Set(COLUMNS.map((c) => c.split(".")[0] as string))];

@@ -63,6 +63,14 @@ export const SCREENS = [
     keys: ["f"],
     scrollTo: "your-edits",
   },
+  // Spec 23 part C: the critic's notes at the spec gate.
+  {
+    name: "plan-critic",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="critic-notes"]'],
+  },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },

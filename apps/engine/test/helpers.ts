@@ -49,6 +49,9 @@ export const BALANCED = {
   autonomyPolicy: "balanced",
   overrides: { agent: { outbound: "allow" } },
   retryLimit: 1,
+  // Spec 23 (v9): the spec critic times out at once in tests that don't run it, so the gate opens
+  // as before; test/spec-critic.test.ts runs it with a real timeout.
+  timeouts: { criticMinutes: 0.001 },
 };
 
 export async function world(policy: unknown = BALANCED) {

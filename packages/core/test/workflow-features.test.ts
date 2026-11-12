@@ -5,9 +5,9 @@ import { has, WORKFLOW_FEATURES, WORKFLOW_VERSION_FEATURES } from "../src/index.
 describe("Workflow features per version", () => {
   it("has a row for every version, each adding to the one before, and nothing for an unknown one", () => {
     const versions = Object.keys(WORKFLOW_VERSION_FEATURES).map(Number);
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect([...(WORKFLOW_VERSION_FEATURES[1] ?? [])]).toEqual([]);
-    expect([...(WORKFLOW_VERSION_FEATURES[8] ?? [])]).toEqual([...WORKFLOW_FEATURES]);
+    expect([...(WORKFLOW_VERSION_FEATURES[9] ?? [])]).toEqual([...WORKFLOW_FEATURES]);
     expect(has(null, "verify-packet")).toBe(false);
     expect(has(undefined, "verify-packet")).toBe(false);
     expect(has(99, "verify-packet")).toBe(false);
@@ -23,6 +23,7 @@ describe("Workflow features per version", () => {
       "workflow-plan": 6,
       "release-wait": 7,
       "triage-readiness": 8,
+      "spec-critic": 9,
     } as const;
     expect(Object.keys(since).sort()).toEqual([...WORKFLOW_FEATURES].sort());
     for (let v = 1; v <= 7; v++) {

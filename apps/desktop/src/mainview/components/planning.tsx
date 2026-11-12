@@ -1394,6 +1394,7 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         {gateSummary(view)}
       </span>
       <EditsNotKept view={view} workItemId={item.id} />
+      <CriticNotes view={view} />
       {specGate && partial && partial.length > 0 && (
         <span className="text-status-waiting text-xs">
           {partial.length} coverage categor{partial.length === 1 ? "y" : "ies"} still partial
@@ -1575,5 +1576,48 @@ function EditConfirm({
         )}
       </span>
     </div>
+  );
+}
+
+/**
+ * The spec critic's notes on the plan at the gate (spec 23 part C): a second agent's reading, shown
+ * to the person deciding. Notes only: they open and close nothing.
+ */
+function CriticNotes({ view }: { view: PlanningView }) {
+  const critique = view.spec?.critique;
+  if (!critique) return null;
+  const label =
+    critique.status === "timed_out"
+      ? "Critic: didn't finish in time"
+      : critique.status === "failed"
+        ? "Critic: no notes (its run failed)"
+        : `Critic: ${critique.notes.length} note${critique.notes.length === 1 ? "" : "s"}`;
+  if (critique.status !== "done" || critique.notes.length === 0) {
+    return (
+      <span className="text-muted-foreground text-xs" data-testid="critic-notes">
+        {label}
+      </span>
+    );
+  }
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="link" size="xs" className="h-auto p-0" data-testid="critic-notes">
+          {label}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="grid w-[26rem] gap-2 text-sm" data-testid="critic-notes-list">
+        <div className="text-muted-foreground text-xs">
+          A second agent read the plan and the repository. Its notes are for you and the planner;
+          they decide nothing.
+        </div>
+        {critique.summary && <div className="font-medium">{critique.summary}</div>}
+        <ul className="grid list-disc gap-1 pl-4">
+          {critique.notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
   );
 }

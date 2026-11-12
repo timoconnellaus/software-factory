@@ -12,6 +12,15 @@ export const RESULT_FILE = ".factory-result.json";
 const criterion = z.string().min(1).max(1_000);
 
 /** `triage`: the foreman's sizing (ADR 0005, 0013). */
+/**
+ * The spec critic's result (spec 23 part C): notes on the plan, nothing else. It can't approve,
+ * reject or open the gate; whatever it writes is shown to the person and the planner as notes.
+ */
+export const critiqueResultSchema = z.object({
+  notes: z.array(z.string().min(1).max(1_000)).max(20).default([]),
+  summary: z.string().max(2_000).optional(),
+});
+
 export const triageResultSchema = z.object({
   size: z.enum(["small", "medium", "large"]),
   /** Why this size; logged with the spec decision. */
@@ -37,7 +46,10 @@ export const triageResultSchema = z.object({
   readiness: z.enum(["ready", "needs_answers", "not_actionable"]).default("ready"),
   readinessReason: z.string().max(2_000).optional(),
   /** The questions for needs_answers or not_actionable: to the requester, at most five. */
-  questions: z.array(z.lazy(() => questionDraftSchema)).max(5).default([]),
+  questions: z
+    .array(z.lazy(() => questionDraftSchema))
+    .max(5)
+    .default([]),
 });
 
 /**

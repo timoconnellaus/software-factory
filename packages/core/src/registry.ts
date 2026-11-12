@@ -128,6 +128,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
   planning.planningPause,
   planning.planningResume,
   planning.planningGet,
+  planning.specCritique,
+  planning.planningRequestYield,
   specs.specPropose,
   specs.specAccept,
   specs.specCommit,
