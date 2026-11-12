@@ -12,8 +12,19 @@
 // - **QR or typed code**: a person signed in on the website, or on the desktop with Touch ID, makes
 //   a pair offer (mobile.pairOffer). The offer *is* the approval: one use, 5 minutes, stored only as
 //   hashes. The phone sends its secret (from the QR) or the typed code with authStart, gets the
-//   one-time code back directly, and exchanges it as above. Five wrong typed codes close an offer,
-//   and the engine takes at most 30 typed codes an hour from anyone.
+//   one-time code back directly, and exchanges it as above.
+//
+// The typed code's limits (ADR 0541 amendment, 2026-11-12). A guess costs a real phone running the
+// real app: the attestation is checked before the code is even looked at, and every refusal after
+// the nonce is found (a bad chain, a wrong code, a limit) spends the nonce, so each try needs a new
+// nonce and a new Keystore key. Then, counted in SQL in the call's own batch, so parallel tries
+// can't race past them:
+// - five wrong codes close the offer they name (its `attempts`, incremented in place);
+// - one caller (the network address the door saw) gets ten typed codes an hour;
+// - once thirty wrong codes have come in an hour, a caller who has already sent a wrong one this
+//   hour is held. A caller's first code isn't, so other people's guessing never stops the owner's
+//   right code: only their offer's own five can, and then the owner is told to make a new code.
+// - a caller holds at most ten unspent nonces, and the engine two hundred.
 //
 // The phone isn't anyone before it signs in, so the client door calls mobile.nonce,
 // mobile.authStart and mobile.authExchange unsigned, as MOBILE_DEVICE_ACTOR.
@@ -55,11 +66,15 @@ export const MOBILE_TOKEN_TTL_MS = 30 * 24 * 3_600_000;
 export const MOBILE_NONCE_TTL_MS = 5 * 60_000;
 export const PAIR_OFFER_TTL_MS = 5 * 60_000;
 export const MOBILE_AUTH_TTL_MS = 10 * 60_000;
-/** Wrong typed codes that close an offer, and typed codes the engine takes an hour from anyone. */
+/** Wrong typed codes that close an offer. */
 export const PAIR_CODE_ATTEMPTS = 5;
-export const PAIR_CODE_TRIES_PER_HOUR = 30;
-/** At most this many unspent nonces at once (mobile/nonce is unauthenticated). */
+/** Typed codes one caller may send an hour. */
+export const PAIR_CODE_TRIES_PER_CALLER = 10;
+/** Wrong typed codes an hour, across the factory, after which a caller with a wrong one is held. */
+export const PAIR_CODE_WRONG_PER_HOUR = 30;
+/** At most this many unspent nonces at once (mobile/nonce is unauthenticated), and per caller. */
 export const MOBILE_NONCE_LIMIT = 200;
+export const MOBILE_NONCE_LIMIT_PER_CALLER = 10;
 /** At most this many live offers per person. */
 export const PAIR_OFFER_LIMIT = 5;
 
@@ -115,11 +130,15 @@ function requireMobileActor(ctx: HandlerContext) {
 
 const baseUrl = (ctx: HandlerContext) => (ctx.services.publicBaseUrl ?? "").replace(/\/+$/, "");
 
+/**
+ * Checks the phone's attestation. A chain that fails comes back as `refused` (the caller spends
+ * the nonce); an engine that can't check at all throws `unavailable`.
+ */
 async function verifyAttestation(
   ctx: HandlerContext,
   nonce: string,
   chain: readonly string[],
-): Promise<VerifiedAttestation> {
+): Promise<{ ok: VerifiedAttestation } | { refused: { message: string; reason: string } }> {
   const service = ctx.services.mobileAttestation;
   if (!service) {
     throw new OperationError("unavailable", "phone sign-in isn't set up on this engine");
@@ -134,20 +153,21 @@ async function verifyAttestation(
     );
   }
   try {
-    return await service.verify(chain, {
-      challenge: await attestationChallenge(nonce),
-      revoked,
-      now: Date.parse(ctx.now),
-    });
+    return {
+      ok: await service.verify(chain, {
+        challenge: await attestationChallenge(nonce),
+        revoked,
+        now: Date.parse(ctx.now),
+      }),
+    };
   } catch (error) {
     if (error instanceof AttestationError) {
-      throw new OperationError(
-        "forbidden",
-        `this phone's key attestation was refused: ${error.message}`,
-        {
-          attestation: error.reason,
+      return {
+        refused: {
+          message: `this phone's key attestation was refused: ${error.message}`,
+          reason: error.reason,
         },
-      );
+      };
     }
     throw error;
   }
@@ -165,13 +185,18 @@ export const mobileNonce = defineOperation({
   redact: { output: (o) => ({ ...o, nonce: "[redacted]" }) },
   async handler(_input, ctx) {
     requireMobileActor(ctx);
-    const live = await ctx.db
-      .selectFrom("core_mobile_nonces")
-      .select((eb) => eb.fn.countAll<number>().as("n"))
-      .where("consumed_at", "is", null)
-      .where("expires_at", ">", ctx.now)
-      .executeTakeFirst();
-    if (Number(live?.n ?? 0) >= MOBILE_NONCE_LIMIT) {
+    const caller = ctx.origin.caller ?? "";
+    const live = await ctx.d1
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM core_mobile_nonces WHERE consumed_at IS NULL AND expires_at > ?1) AS total,
+                (SELECT COUNT(*) FROM core_mobile_nonces WHERE caller = ?2 AND consumed_at IS NULL AND expires_at > ?1) AS mine`,
+      )
+      .bind(ctx.now, caller)
+      .first<{ total: number; mine: number }>();
+    if (
+      Number(live?.total ?? 0) >= MOBILE_NONCE_LIMIT ||
+      Number(live?.mine ?? 0) >= MOBILE_NONCE_LIMIT_PER_CALLER
+    ) {
       throw new OperationError(
         "unavailable",
         "too many sign-ins at once: try again in a few minutes",
@@ -179,14 +204,25 @@ export const mobileNonce = defineOperation({
     }
     const nonce = randomToken();
     const expiresAt = new Date(Date.parse(ctx.now) + MOBILE_NONCE_TTL_MS).toISOString();
+    // The limits again, in the insert itself, so parallel calls can't all pass the read above.
     ctx.write(
-      ctx.db.insertInto("core_mobile_nonces").values({
-        nonce_hash: await sha256Hex(nonce),
-        created_at: ctx.now,
-        expires_at: expiresAt,
-        consumed_at: null,
-      }),
+      ctx.d1
+        .prepare(
+          `INSERT INTO core_mobile_nonces (nonce_hash, caller, created_at, expires_at, consumed_at)
+           SELECT ?1, ?2, ?3, ?4, NULL
+           WHERE (SELECT COUNT(*) FROM core_mobile_nonces WHERE consumed_at IS NULL AND expires_at > ?3) < ?5
+             AND (SELECT COUNT(*) FROM core_mobile_nonces WHERE caller = ?2 AND consumed_at IS NULL AND expires_at > ?3) < ?6`,
+        )
+        .bind(
+          await sha256Hex(nonce),
+          caller,
+          ctx.now,
+          expiresAt,
+          MOBILE_NONCE_LIMIT,
+          MOBILE_NONCE_LIMIT_PER_CALLER,
+        ),
     );
+    ctx.guardChanged("under the nonce limits");
     return { nonce, expiresAt };
   },
 });
@@ -207,8 +243,20 @@ const startOutput = z.discriminatedUnion("status", [
     expiresAt: z.string(),
     keyStorage: z.string(),
   }),
-  /** A wrong typed code: counted against the offer it names (the door answers 403). */
-  z.object({ status: z.literal("refused"), error: z.string(), attemptsLeft: z.number() }),
+  /**
+   * Refused after the nonce was found: a bad chain, a wrong or dead typed code, a wrong QR secret,
+   * or a limit. The call commits (the nonce is spent, a typed code is counted) and the door answers
+   * with `code`'s status.
+   */
+  z.object({
+    status: z.literal("refused"),
+    code: z.enum(["forbidden", "denied", "unavailable"]),
+    error: z.string(),
+    /** The attestation check that failed. */
+    attestation: z.string().optional(),
+    /** Wrong codes the named offer still takes (an estimate under parallel tries). */
+    attemptsLeft: z.number().optional(),
+  }),
 ]);
 
 export const mobileAuthStart = defineOperation({
@@ -243,7 +291,7 @@ export const mobileAuthStart = defineOperation({
         : null,
       nonce: "[redacted]",
     }),
-    output: (o) => ("code" in o ? { ...o, code: "[redacted]" } : o),
+    output: (o) => (o.status === "approved" ? { ...o, code: "[redacted]" } : o),
   },
   async handler(input, ctx) {
     requireMobileActor(ctx);
@@ -256,6 +304,34 @@ export const mobileAuthStart = defineOperation({
     if (!nonce || nonce.consumed_at || expired(ctx, nonce)) {
       throw new OperationError("forbidden", "this sign-in's nonce is used or expired: start again");
     }
+    // From here every answer spends the nonce, refusals included: another try needs a new nonce,
+    // and so a new Keystore key attested with its challenge.
+    const spendNonce = () => {
+      ctx.write(
+        ctx.db
+          .updateTable("core_mobile_nonces")
+          .set({ consumed_at: ctx.now })
+          .where("nonce_hash", "=", nonceHash)
+          .where("consumed_at", "is", null),
+      );
+      ctx.guardChanged("use the nonce once");
+    };
+    const refuse = (refusal: Omit<Refusal, "status">): Refusal => {
+      spendNonce();
+      return { status: "refused", ...refusal };
+    };
+
+    // The attestation first: a typed code is only looked at for a real phone running our app.
+    const checked = await verifyAttestation(ctx, input.nonce, input.attestationChain);
+    if ("refused" in checked) {
+      return refuse({
+        code: "forbidden",
+        error: checked.refused.message,
+        attestation: checked.refused.reason,
+      });
+    }
+    const attested = checked.ok;
+
     const pending = await ctx.db
       .selectFrom("core_desktop_auth_requests")
       .select((eb) => eb.fn.countAll<number>().as("n"))
@@ -263,23 +339,18 @@ export const mobileAuthStart = defineOperation({
       .where("expires_at", ">", ctx.now)
       .executeTakeFirst();
     if (Number(pending?.n ?? 0) >= DESKTOP_PENDING_LIMIT) {
-      throw new OperationError(
-        "unavailable",
-        "too many sign-ins are waiting: try again in a few minutes",
-      );
+      return refuse({
+        code: "unavailable",
+        error: "too many sign-ins are waiting: try again in a few minutes",
+      });
     }
-    // A typed code is counted before the attestation is even looked at: the cap holds whatever
-    // the phone sends.
+
     let offer: { id: string; user_id: string } | null = null;
     if (input.offer && "code" in input.offer) {
       const found = await redeemTypedCode(ctx, normalizePairCode(input.offer.code));
-      if ("refused" in found) return found.refused;
+      if ("refused" in found) return refuse(found.refused);
       offer = found.offer;
-    }
-
-    const attested = await verifyAttestation(ctx, input.nonce, input.attestationChain);
-
-    if (input.offer && "offerId" in input.offer) {
+    } else if (input.offer) {
       const row = await ctx.db
         .selectFrom("core_pair_offers")
         .selectAll()
@@ -292,33 +363,25 @@ export const mobileAuthStart = defineOperation({
         row.closed_at ||
         expired(ctx, row)
       ) {
-        throw new OperationError(
-          "denied",
-          "this pairing code is used, expired or wrong: make a new one on the desktop or the website",
-        );
+        return refuse({
+          code: "denied",
+          error:
+            "this pairing code is used, expired or wrong: make a new one on the desktop or the website",
+        });
       }
-      offer = row;
-    }
-
-    ctx.write(
-      ctx.db
-        .updateTable("core_mobile_nonces")
-        .set({ consumed_at: ctx.now })
-        .where("nonce_hash", "=", nonceHash)
-        .where("consumed_at", "is", null),
-    );
-    ctx.guardChanged("use the nonce once");
-    if (offer) {
       ctx.write(
         ctx.db
           .updateTable("core_pair_offers")
           .set({ consumed_at: ctx.now })
-          .where("id", "=", offer.id)
+          .where("id", "=", row.id)
           .where("consumed_at", "is", null)
-          .where("closed_at", "is", null),
+          .where("closed_at", "is", null)
+          .where("expires_at", ">", ctx.now),
       );
       ctx.guardChanged("use the offer once");
+      offer = row;
     }
+    spendNonce();
 
     const id = newId("desktopAuthRequest");
     const expiresAt = new Date(Date.parse(ctx.now) + MOBILE_AUTH_TTL_MS).toISOString();
@@ -368,59 +431,128 @@ export const mobileAuthStart = defineOperation({
   },
 });
 
-/** Finds the live offer a typed code names, counting the try (and a wrong one against it). */
+type Refusal = Extract<z.output<typeof startOutput>, { status: "refused" }>;
+
+/** The try counts toward the caps only if they hold when the batch runs (one statement). */
+const UNDER_CAPS = `(SELECT COUNT(*) FROM core_pair_code_tries WHERE caller = ?4 AND at > ?5) < ?6
+  AND NOT (EXISTS (SELECT 1 FROM core_pair_code_tries WHERE caller = ?4 AND at > ?5 AND ok = 0)
+           AND (SELECT COUNT(*) FROM core_pair_code_tries WHERE at > ?5 AND ok = 0) >= ?7)`;
+
+/**
+ * Finds the live offer a typed code names. Counts the try, and a wrong one against the offer its
+ * first two characters name, in SQL in the call's batch. A right code consumes its offer there too,
+ * guarded, so a code can't pair twice or after its offer closed.
+ */
 async function redeemTypedCode(
   ctx: HandlerContext,
   code: string,
-): Promise<
-  | { offer: { id: string; user_id: string } }
-  | { refused: { status: "refused"; error: string; attemptsLeft: number } }
-> {
+): Promise<{ offer: { id: string; user_id: string } } | { refused: Omit<Refusal, "status"> }> {
+  const caller = ctx.origin.caller ?? "";
   const hourAgo = new Date(Date.parse(ctx.now) - 3_600_000).toISOString();
-  const tries = await ctx.db
-    .selectFrom("core_pair_code_tries")
-    .select((eb) => eb.fn.countAll<number>().as("n"))
-    .where("at", ">", hourAgo)
-    .executeTakeFirst();
-  if (Number(tries?.n ?? 0) >= PAIR_CODE_TRIES_PER_HOUR) {
-    throw new OperationError(
-      "unavailable",
-      "too many typed codes this hour: scan the QR code instead, or try again later",
-    );
+  const counts = await ctx.d1
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM core_pair_code_tries WHERE caller = ?1 AND at > ?2) AS mine,
+              (SELECT COUNT(*) FROM core_pair_code_tries WHERE caller = ?1 AND at > ?2 AND ok = 0) AS mineWrong,
+              (SELECT COUNT(*) FROM core_pair_code_tries WHERE at > ?2 AND ok = 0) AS wrong`,
+    )
+    .bind(caller, hourAgo)
+    .first<{ mine: number; mineWrong: number; wrong: number }>();
+  const held =
+    Number(counts?.mine ?? 0) >= PAIR_CODE_TRIES_PER_CALLER ||
+    (Number(counts?.mineWrong ?? 0) > 0 && Number(counts?.wrong ?? 0) >= PAIR_CODE_WRONG_PER_HOUR);
+  if (held) {
+    return {
+      refused: {
+        code: "unavailable",
+        error: "too many typed codes this hour: scan the QR code instead, or try again later",
+      },
+    };
   }
-  const live = await ctx.db
+  const hash = await sha256Hex(code);
+  const named =
+    code.length === CODE_LENGTH
+      ? await ctx.db
+          .selectFrom("core_pair_offers")
+          .selectAll()
+          .where("code_hash", "=", hash)
+          .executeTakeFirst()
+      : undefined;
+  const live = (o: { consumed_at: string | null; closed_at: string | null; expires_at: string }) =>
+    !o.consumed_at && !o.closed_at && o.expires_at > ctx.now;
+  const match = named && live(named) && named.attempts < PAIR_CODE_ATTEMPTS ? named : undefined;
+  const tryId = crypto.randomUUID();
+  const recordTry = (ok: boolean) =>
+    ctx.write(
+      ctx.d1
+        .prepare(
+          `INSERT INTO core_pair_code_tries (id, at, ok, caller) SELECT ?1, ?2, ?3, ?4 WHERE ${UNDER_CAPS}`,
+        )
+        .bind(
+          tryId,
+          ctx.now,
+          ok ? 1 : 0,
+          caller,
+          hourAgo,
+          PAIR_CODE_TRIES_PER_CALLER,
+          PAIR_CODE_WRONG_PER_HOUR,
+        ),
+    );
+
+  if (match) {
+    recordTry(true);
+    ctx.guardChanged("under the typed-code limits");
+    ctx.write(
+      ctx.d1
+        .prepare(
+          `UPDATE core_pair_offers SET consumed_at = ?1
+           WHERE id = ?2 AND consumed_at IS NULL AND closed_at IS NULL AND expires_at > ?1 AND attempts < ?3`,
+        )
+        .bind(ctx.now, match.id, PAIR_CODE_ATTEMPTS),
+    );
+    ctx.guardChanged("use the offer once");
+    return { offer: match };
+  }
+
+  recordTry(false);
+  if (named) {
+    // The right code for an offer that is closed, used or expired. Only a real phone with our app
+    // gets this far, and a dead offer can't be used, so saying so gives nothing away.
+    return {
+      refused: {
+        code: "denied",
+        error: named.closed_at
+          ? "this code's offer was closed after too many wrong tries: make a new code on the desktop or the website"
+          : "this code is used or expired: make a new code on the desktop or the website",
+      },
+    };
+  }
+  // A wrong code counts against the live offer its first two characters name, in place: parallel
+  // tries each add one, and the fifth closes the offer. Only a try that counted (under the caps)
+  // counts against the offer.
+  const tag = code.slice(0, TAG_LENGTH);
+  const offers = await ctx.db
     .selectFrom("core_pair_offers")
-    .selectAll()
-    .where("code_tag", "=", code.slice(0, TAG_LENGTH))
+    .select(["attempts"])
+    .where("code_tag", "=", tag)
     .where("consumed_at", "is", null)
     .where("closed_at", "is", null)
     .where("expires_at", ">", ctx.now)
     .execute();
-  const hash = await sha256Hex(code);
-  const match = code.length === CODE_LENGTH ? live.find((o) => o.code_hash === hash) : undefined;
   ctx.write(
-    ctx.db
-      .insertInto("core_pair_code_tries")
-      .values({ id: crypto.randomUUID(), at: ctx.now, ok: match ? 1 : 0 }),
+    ctx.d1
+      .prepare(
+        `UPDATE core_pair_offers
+         SET attempts = attempts + 1,
+             closed_at = CASE WHEN attempts + 1 >= ?1 THEN ?2 ELSE closed_at END
+         WHERE code_tag = ?3 AND consumed_at IS NULL AND closed_at IS NULL AND expires_at > ?2
+           AND EXISTS (SELECT 1 FROM core_pair_code_tries WHERE id = ?4)`,
+      )
+      .bind(PAIR_CODE_ATTEMPTS, ctx.now, tag, tryId),
   );
-  if (match) return { offer: match };
-  let attemptsLeft = 0;
-  for (const o of live) {
-    const attempts = o.attempts + 1;
-    attemptsLeft = Math.max(attemptsLeft, PAIR_CODE_ATTEMPTS - attempts);
-    ctx.write(
-      ctx.db
-        .updateTable("core_pair_offers")
-        .set({
-          attempts,
-          ...(attempts >= PAIR_CODE_ATTEMPTS ? { closed_at: ctx.now } : {}),
-        })
-        .where("id", "=", o.id),
-    );
-  }
+  const attemptsLeft = Math.max(0, ...offers.map((o) => PAIR_CODE_ATTEMPTS - o.attempts - 1));
   return {
     refused: {
-      status: "refused",
+      code: "forbidden",
       error:
         attemptsLeft > 0
           ? "that code isn't right: check it against the screen"
@@ -820,7 +952,7 @@ export const mobilePairOfferStatus = defineOperation({
 export const mobileRenew = defineOperation({
   name: "mobile.renew",
   description:
-    "Renew this phone's sign-in for another 30 days (ADR 0541 decision 7): a new token for the same device, and its other tokens revoked. Only the phone itself, with a fingerprint for this exact call.",
+    "Renew this phone's sign-in for another 30 days (ADR 0541 decision 7): a new token for the same device, and its other tokens revoked. Only the phone itself, with a fingerprint for this exact call. The proof shows the phone holds its key, not a decision, so a phone with approvals off, or one registered as software (its boot isn't verified), renews too.",
   risk: "write",
   actors: ["human"],
   permission: "signed-in",

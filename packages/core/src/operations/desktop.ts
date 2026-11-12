@@ -236,8 +236,16 @@ export interface DesktopTokenRow {
 }
 
 /** Refuses a challenge on a device whose approvals are off, except to turn them back on. */
+/**
+ * Operations whose proof shows the person holds the device, not a decision (ADR 0541 amendment,
+ * 2026-11-12): a phone with approvals off, or one registered as `software` (its boot isn't
+ * verified), still renews its own token, or it would lapse after 30 days.
+ */
+export const POSSESSION_PROOFS = ["mobile.renew"] as const;
+const possessionOnly = (op: string) => (POSSESSION_PROOFS as readonly string[]).includes(op);
+
 async function requireDecides(ctx: HandlerContext, deviceId: string, op: string) {
-  if (op === "device.update") return;
+  if (op === "device.update" || possessionOnly(op)) return;
   const d = await ctx.db
     .selectFrom("core_desktop_devices")
     .select(["decides"])
@@ -647,18 +655,23 @@ export const presenceRedeem = defineOperation({
     }
     // A software key can be read by any process of the user: it proves nothing (ADR 0391). A phone
     // whose boot isn't verified or whose bootloader is unlocked is stored as `software` too (0541).
+    // DESKTOP_ALLOW_SOFTWARE_KEYS is for a Mac's unsigned dev build only: a phone never decides
+    // with a software key, whatever the engine's settings. Renewing a phone's own token isn't a
+    // decision: its Keystore key (attested at sign-in) signs it, whatever the boot state.
     const hardware =
       device.platform === "android"
         ? device.key_storage === "strongbox" || device.key_storage === "tee"
         : device.key_storage === "secure-enclave";
-    if (!hardware && !ctx.services.allowSoftwareDeviceKeys) {
+    const renewal = device.platform === "android" && possessionOnly(input.op);
+    const devSoftwareMac = device.platform === "macos" && ctx.services.allowSoftwareDeviceKeys;
+    if (!hardware && !renewal && !devSoftwareMac) {
       throw refused(
         device.platform === "android"
           ? "this phone can't approve: its key isn't attested in secure hardware on a verified, locked phone"
           : "this device's key isn't in the Secure Enclave (an unsigned build): decide on the website",
       );
     }
-    if (!device.decides && input.op !== "device.update") {
+    if (!device.decides && input.op !== "device.update" && !possessionOnly(input.op)) {
       throw refused("approvals are off on this device");
     }
     let valid = false;

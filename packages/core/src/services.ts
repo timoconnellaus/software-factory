@@ -258,6 +258,7 @@ export interface FactoryServices {
   /**
    * Accept presence proofs from desktop devices with a software key (ADR 0391). Off unless the
    * engine runs with `DESKTOP_ALLOW_SOFTWARE_KEYS=1`, which no deployed config sets: fails closed.
+   * Macs only: a phone with a software key never decides, whatever this says (ADR 0541).
    */
   allowSoftwareDeviceKeys?: boolean;
   /**

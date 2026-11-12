@@ -111,13 +111,17 @@ CREATE INDEX core_cli_tokens_user_idx ON core_cli_tokens (user_id, created_at);
 CREATE INDEX core_cli_tokens_device_idx ON core_cli_tokens (device_id);
 
 -- The challenge a phone's Keystore key is generated with (ADR 0541 decision 2): one use, 5
--- minutes, stored only as the SHA-256 of the nonce.
+-- minutes, stored only as the SHA-256 of the nonce. `caller` is a hash of the network address the
+-- door saw (an IPv4 address or an IPv6 /64), for the per-caller limit on unspent nonces.
 CREATE TABLE core_mobile_nonces (
   nonce_hash TEXT PRIMARY KEY NOT NULL,
+  caller TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   consumed_at TEXT
 );
+CREATE INDEX core_mobile_nonces_live_idx ON core_mobile_nonces (consumed_at, expires_at);
+CREATE INDEX core_mobile_nonces_caller_idx ON core_mobile_nonces (caller, expires_at);
 
 -- Add a phone (ADR 0541 decision 6): the offer is the approval, made by a signed-in person on the
 -- website or on the desktop with Touch ID. One use, 5 minutes. The QR's secret and the typed code
@@ -141,12 +145,15 @@ CREATE TABLE core_pair_offers (
 );
 CREATE INDEX core_pair_offers_tag_idx ON core_pair_offers (code_tag, expires_at);
 
--- Every typed-code try, right or wrong, for the cap of 30 an hour across the factory.
+-- Every typed-code try that got past the attestation, right or wrong, with its caller (as on
+-- core_mobile_nonces), for the hourly caps per caller and across the factory.
 CREATE TABLE core_pair_code_tries (
   id TEXT PRIMARY KEY NOT NULL,
   at TEXT NOT NULL,
-  ok INTEGER NOT NULL
+  ok INTEGER NOT NULL,
+  caller TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX core_pair_code_tries_at_idx ON core_pair_code_tries (at);
+CREATE INDEX core_pair_code_tries_caller_idx ON core_pair_code_tries (caller, at);
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 310) WHERE key = 'schema_version';

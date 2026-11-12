@@ -970,6 +970,8 @@ export interface CoreDesktopDevicesTable {
 
 export interface CoreMobileNoncesTable {
   nonce_hash: string;
+  /** A hash of the caller's network address, as the door saw it (per-caller limits). */
+  caller: Generated<string>;
   created_at: Iso;
   expires_at: Iso;
   consumed_at: Iso | null;
@@ -994,6 +996,8 @@ export interface CorePairCodeTriesTable {
   id: string;
   at: Iso;
   ok: number;
+  /** A hash of the caller's network address, as the door saw it (per-caller limits). */
+  caller: Generated<string>;
 }
 
 export interface CorePresenceChallengesTable {

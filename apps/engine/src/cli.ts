@@ -40,10 +40,12 @@ import {
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
 import { STATUS } from "./channel.ts";
-import { clientHub } from "./client-hub.ts";
+import { clientHub, DEVICE_HEADER } from "./client-hub.ts";
 import { invokeDeps } from "./deps.ts";
 import {
   MOBILE_DEVICE_ACTOR,
+  mobileCaller,
+  mobileSignInConflict,
   mobileSignInRoute,
   mobileTooOld,
   mobileUpdateRequired,
@@ -153,7 +155,11 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
     }
-    return clientHub(env, who.userId).fetch(request);
+    // The hub tags a device's socket with its id, so revoking the device closes it (ADR 0541).
+    const headers = new Headers(request.headers);
+    headers.delete(DEVICE_HEADER);
+    if (who.kind !== "cli") headers.set(DEVICE_HEADER, who.deviceId);
+    return clientHub(env, who.userId).fetch(new Request(request, { headers }));
   }
   const terminal = TERMINAL_ROUTE.exec(path);
   if (terminal?.[1] && terminal[2] && request.method === "GET") {
@@ -183,12 +189,22 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   }
   const phoneSignIn = mobileSignInRoute(path);
   if (phoneSignIn) {
+    const caller = await mobileCaller(request);
     return respond(async () => {
-      const r = await run(env, phoneSignIn, body, MOBILE_DEVICE_ACTOR, { surface: "mobile" });
-      // A wrong typed pairing code is counted (the call commits) and then refused.
-      const out = r.pending ? null : (r.output as { status?: string; error?: string });
+      let r: Awaited<ReturnType<typeof run>>;
+      try {
+        r = await run(env, phoneSignIn, body, MOBILE_DEVICE_ACTOR, { surface: "mobile", caller });
+      } catch (error) {
+        throw mobileSignInConflict(phoneSignIn, error);
+      }
+      // A refusal after the nonce was found commits (the nonce spent, a typed code counted), then
+      // is answered as an error.
+      const out = r.pending
+        ? null
+        : (r.output as { status?: string; code?: string; error?: string });
       if (out?.status === "refused") {
-        throw new OperationError("forbidden", out.error ?? "refused", out);
+        const code = out.code === "denied" || out.code === "unavailable" ? out.code : "forbidden";
+        throw new OperationError(code, out.error ?? "refused", out);
       }
       return r;
     }, true);

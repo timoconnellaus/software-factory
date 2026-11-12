@@ -3,21 +3,29 @@
 // The phone generates its signing key in Android Keystore with an attestation challenge, and sends
 // the key's certificate chain (leaf first) with mobile.authStart. This module decides whether that
 // key may register, and with what `key_storage`:
-// - the chain: every certificate signed by the next, names chained, intermediates in date, and the
-//   last key one of Google's pinned roots (roots.ts); no certificate on the revocation list;
+// - the chain: every certificate signed by the next, names chained, every issuer a CA
+//   (basicConstraints cA, keyUsage keyCertSign), intermediates in date, and the last key one of
+//   Google's pinned roots (roots.ts); no certificate on the revocation list;
 // - the key description (OID 1.3.6.1.4.1.11129.2.1.17) only in the leaf, as Google says: a later
 //   one would be an attacker extending the chain;
 // - the challenge equals the one this sign-in derives;
 // - the security level (attestation and KeyMint) is TrustedEnvironment or StrongBox: a software
 //   level is refused;
-// - the key: EC P-256, SIGN, generated in the hardware, user authentication by fingerprint only
-//   (no PIN), per use (no timeout), and not `noAuthRequired`;
+// - the key: EC P-256, SIGN, `origin` GENERATED (present, not imported), user authentication by
+//   fingerprint only (no PIN), per use (no timeout), and not `noAuthRequired`;
 // - the app: exactly our package, signed only by certificates in `MOBILE_SIGNING_CERTS`;
+// - the phone is recent enough: KeyMint (attestation version 100 or above, Android 12 and later),
+//   and an OS patch level no older than `maxPatchAgeMonths` (18 unless set);
 // - the boot state: `Verified` and the bootloader locked. Otherwise the phone still registers,
 //   with key_storage `software`, so it can't decide (the owner's choice, spec 60 open question 4).
 //
 // Any other failure throws an AttestationError, and the sign-in is refused before anything is
 // stored.
+//
+// What this can't see (ADR 0541): a phone whose factory attestation key ("keybox") has leaked and
+// isn't on Google's revocation list yet, rooted so that its Keystore is emulated, passes every check
+// here. Requiring remotely provisioned (RKP) chains, whose keys Google issues per device and can
+// rotate quickly, is the later answer.
 import {
   bool,
   bytesEqual,
@@ -33,7 +41,7 @@ import {
   T,
 } from "./der.ts";
 import { GOOGLE_ATTESTATION_ROOTS, type PinnedRoot } from "./roots.ts";
-import { type Certificate, OID, parseCertificate, sha256, signedBy } from "./x509.ts";
+import { type Certificate, canIssue, OID, parseCertificate, sha256, signedBy } from "./x509.ts";
 
 export const KEY_DESCRIPTION_OID = "1.3.6.1.4.1.11129.2.1.17";
 /** The phone app's package (spec 60 open question 1, accepted by the owner). Permanent. */
@@ -50,7 +58,9 @@ export type AttestationFailure =
   | "security-level"
   | "key"
   | "auth"
-  | "app";
+  | "app"
+  | "version"
+  | "patch";
 
 export class AttestationError extends Error {
   readonly reason: AttestationFailure;
@@ -127,6 +137,24 @@ export interface AttestationExpectations {
   now: number;
   /** Google's roots unless a test passes its own. */
   roots?: readonly PinnedRoot[];
+  /** The oldest OS patch level accepted, in months before `now` (MOBILE_MAX_PATCH_AGE_MONTHS). */
+  maxPatchAgeMonths?: number;
+}
+
+/** KeyMint's first attestation version (Android 12); Keymaster's were 1 to 4. */
+export const MIN_ATTESTATION_VERSION = 100;
+/** The default oldest OS patch level, in months. */
+export const MAX_PATCH_AGE_MONTHS = 18;
+
+/** How many months a `YYYYMM` (or `YYYYMMDD`) patch level is before `now`; null if it isn't one. */
+export function patchAgeMonths(level: number, now: number): number | null {
+  const text = String(level);
+  const m = /^(\d{4})(\d{2})(\d{2})?$/.exec(text);
+  if (!m) return null;
+  const month = Number(m[2]);
+  if (month < 1 || month > 12) return null;
+  const d = new Date(now);
+  return d.getUTCFullYear() * 12 + d.getUTCMonth() - (Number(m[1]) * 12 + month - 1);
 }
 
 /** The attestation challenge for a nonce from mobile/nonce: SHA-256 of its UTF-8 bytes. */
@@ -183,6 +211,14 @@ export async function verifyAndroidAttestation(
     if (!bytesEqual(cert.issuer, issuer.subject) || !(await signedBy(cert, issuer))) {
       throw new AttestationError("chain", `certificate ${i} isn't signed by the next one`);
     }
+    // An issuer must be a CA allowed to sign certificates: a leaf (or any end-entity key) can't
+    // be made to vouch for another key.
+    if (!canIssue(issuer)) {
+      throw new AttestationError(
+        "chain",
+        `certificate ${i + 1} isn't a CA that may sign certificates`,
+      );
+    }
   }
   // Intermediates must be in date. The leaf's dates are the key's (Android often writes 1970 to
   // 2106), and the root is a pinned key, not a certificate, so neither is judged by its dates.
@@ -227,7 +263,7 @@ export async function verifyAndroidAttestation(
     (hw.ecCurve !== null && hw.ecCurve !== CURVE_P256) ||
     (hw.keySize !== null && hw.keySize !== 256) ||
     !hw.purpose.includes(PURPOSE_SIGN) ||
-    (hw.origin !== null && hw.origin !== ORIGIN_GENERATED)
+    hw.origin !== ORIGIN_GENERATED
   ) {
     throw new AttestationError("key", "not a P-256 signing key generated in the hardware");
   }
@@ -256,6 +292,25 @@ export async function verifyAndroidAttestation(
     !app.signatureDigests.every((d) => allowed.has(d))
   ) {
     throw new AttestationError("app", "the key isn't our app's, signed with our release key");
+  }
+
+  // The phone: KeyMint, and patched within the window.
+  if (kd.attestationVersion < MIN_ATTESTATION_VERSION) {
+    throw new AttestationError(
+      "version",
+      "this phone's Keystore is too old (Android 12 or later, with KeyMint, is needed)",
+    );
+  }
+  const patchLevel = hw.osPatchLevel ?? sw.osPatchLevel;
+  const maxAge = expected.maxPatchAgeMonths ?? MAX_PATCH_AGE_MONTHS;
+  const age = patchLevel === null ? null : patchAgeMonths(patchLevel, expected.now);
+  if (age === null || age > maxAge) {
+    throw new AttestationError(
+      "patch",
+      age === null
+        ? "the attestation has no OS patch level"
+        : `this phone's security patch is ${age} months old (at most ${maxAge}): update the phone`,
+    );
   }
 
   // The boot state decides whether this phone may decide.

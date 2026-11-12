@@ -10,9 +10,11 @@
 //   and no copy younger than a day is held, phone sign-in is refused (fails closed).
 import {
   GOOGLE_ATTESTATION_ROOTS,
+  MAX_PATCH_AGE_MONTHS,
   MOBILE_DEVICE_ACTOR,
   MOBILE_PACKAGE,
   type MobileAttestationService,
+  OperationError,
   type PinnedRoot,
   verifyAndroidAttestation,
 } from "@software-factory/core";
@@ -47,6 +49,58 @@ export function mobileSignInRoute(
 }
 
 export { MOBILE_DEVICE_ACTOR };
+
+/**
+ * Who is calling the unsigned sign-in, for its per-caller limits: a hash of the address Cloudflare
+ * gives in `cf-connecting-ip` (which a client can't set through the edge), an IPv6 address by its
+ * /64, since one connection usually holds a whole /64. Without the header (a local engine) every
+ * call is the same caller.
+ */
+export async function mobileCaller(request: Request): Promise<string> {
+  const ip = (request.headers.get("cf-connecting-ip") ?? "").trim().toLowerCase();
+  const key = ip.includes(":") ? `v6:${ipv6Prefix64(ip)}` : `v4:${ip}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  return [...new Uint8Array(digest).slice(0, 16)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** The first four groups of an IPv6 address, `::` expanded. */
+export function ipv6Prefix64(ip: string): string {
+  const [head = "", tail] = ip.split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups =
+    tail === undefined
+      ? left
+      : [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
+  return groups
+    .slice(0, 4)
+    .map((g) => g.replace(/^0+(?=.)/, ""))
+    .join(":");
+}
+
+/**
+ * A guarded write in a phone sign-in found the state changed: the nonce was spent by a parallel
+ * call, a limit filled up between the read and the batch, or the offer closed or was used while the
+ * code was on its way. Said plainly instead of "the state changed".
+ */
+export function mobileSignInConflict(route: string, error: unknown): unknown {
+  if (!(error instanceof OperationError) || error.code !== "conflict") return error;
+  if (route === "mobile.nonce") {
+    return new OperationError(
+      "unavailable",
+      "too many sign-ins at once: try again in a few minutes",
+    );
+  }
+  if (route === "mobile.authStart") {
+    return new OperationError(
+      "conflict",
+      "this sign-in changed while it was sent (its nonce was used, or the code's offer was used or closed): start again, and if the code is refused, make a new code on the desktop or the website",
+    );
+  }
+  return error;
+}
 
 /** The protocol a request says it speaks; no header (or garbage) is 0. */
 export function sentProtocol(request: Request): number {
@@ -95,12 +149,14 @@ export function clearRevocationCache() {
 
 /** The attestation service for invoke(), from the Worker's env. */
 export function mobileAttestation(
-  env: Pick<Env, "MOBILE_SIGNING_CERTS">,
+  env: Pick<Env, "MOBILE_SIGNING_CERTS" | "MOBILE_MAX_PATCH_AGE_MONTHS">,
 ): MobileAttestationService {
   const signingCerts = (env.MOBILE_SIGNING_CERTS ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const months = Number.parseInt(env.MOBILE_MAX_PATCH_AGE_MONTHS ?? "", 10);
+  const maxPatchAgeMonths = Number.isFinite(months) && months > 0 ? months : MAX_PATCH_AGE_MONTHS;
   return {
     signingCerts,
     revoked: () => revokedSerials(),
@@ -109,6 +165,7 @@ export function mobileAttestation(
         ...expected,
         packageName: MOBILE_PACKAGE,
         signingCerts,
+        maxPatchAgeMonths,
         roots: mobileTestSeams.roots ?? GOOGLE_ATTESTATION_ROOTS,
       }),
   };

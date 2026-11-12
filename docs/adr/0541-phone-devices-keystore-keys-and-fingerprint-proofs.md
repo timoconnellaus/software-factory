@@ -176,6 +176,7 @@ and stable; one tap for answers on the phone only). Building PR 1a settled these
 - **The typed code** is ten Crockford base32 characters: the first two name the offer (unique among
   live offers) so a wrong code counts against that offer only, and the other eight are the secret
   (40 bits against five tries). Every try, right or wrong, counts toward the cap of 30 an hour.
+  *(Changed by the review below: the caps are per caller and atomic.)*
 - **The QR code** holds the App Link `https://<site>/mobile/pair?offer=<id>#secret=<secret>`: the
   secret stays in the fragment, which no server sees. The website's `/mobile/pair` and
   `/mobile/callback` only bounce to the app (an `intent://` link) when the App Link didn't catch
@@ -202,3 +203,54 @@ and stable; one tap for answers on the phone only). Building PR 1a settled these
 - **Not in PR 1a:** the desktop app's Add a phone dialog. The engine side is built and tested
   (`mobile.pairOffer` with a Touch ID proof); the dialog is a new component and a route hook in
   `apps/desktop`, which the desktop sessions own.
+
+## Amendment, 2026-11-12: after the review of PR 1a
+An independent review of PR 1a ran 200 parallel wrong typed codes against one offer: all were
+recorded past the cap, and the offer ended with one attempt and never closed, because the counts
+were read and then written back. The typed code was also read before the attestation, and a wrong
+code didn't spend the nonce, so codes could be guessed with no phone at all. Fixed on the same PR:
+- **The attestation comes first.** A typed code is looked at only for a key that passed every check
+  above, so only a real phone running our app can guess. A bad chain is refused the same way
+  whether the code was right or wrong.
+- **A refusal spends the nonce.** Once the nonce is found, every answer spends it: a bad chain, a
+  wrong code, a wrong QR secret, a limit. Another try needs a new nonce and so a new attested key.
+  (If Google's revocation list can't be had, the engine can't judge anything and the nonce stays.)
+- **Counted in SQL, in the call's batch.** A wrong code adds one to the offer its tag names in place
+  (`attempts = attempts + 1`), and the fifth closes it in the same statement. A try is inserted only
+  if the caps hold when the batch runs, and a wrong code counts against an offer only if its try
+  was inserted. A right code consumes its offer guarded by `attempts < 5` and the offer being live.
+- **Per caller and across the factory.** The caller is the network address the door sees
+  (`cf-connecting-ip`, an IPv6 address by its /64), stored only as a hash. One caller gets ten typed
+  codes an hour and holds at most ten unspent nonces (the engine two hundred). After thirty wrong
+  codes in an hour, a caller who has already sent a wrong one this hour is held, but a caller's first
+  code never is: other people's guessing can't stop the owner's right code, except by spending its
+  offer's own five. Then the owner's right code answers "this code's offer was closed after too many
+  wrong tries: make a new code on the desktop or the website".
+- **The phone doesn't decide config changes or self-modify.** `approval.decide` from the `mobile`
+  surface is refused, approving or rejecting, with or without a proof, for a pending `config.save`
+  or `config.rollback` or any `self-modify` action: "approve this on the desktop app or the
+  website". The fingerprint prompt reads only "Approve config.save on #n" until spec 60 PR 8 binds
+  it to the version's digest. `invoke()` checks it (`phoneMayDecidePending`), and the decidability
+  test pins the list.
+- **Attestation, tightened.** `origin` must be present and GENERATED. Every issuer in the chain must
+  carry basicConstraints `cA` and keyUsage `keyCertSign`. The attestation version must be KeyMint's
+  (100 or above: Android 12 and later), and the OS patch level no older than 18 months
+  (`MOBILE_MAX_PATCH_AGE_MONTHS`); a phone that fails these is refused, not downgraded.
+- **What attestation can't catch.** A phone whose factory attestation key (its "keybox") has leaked
+  and isn't on Google's revocation list yet, rooted so that a module answers for the Keystore,
+  passes every check here, boot state included, because the leaked key signs whatever it is told.
+  Requiring remotely provisioned (RKP) chains, whose keys Google issues per device and rotates
+  within weeks, is the later answer; it would refuse phones from before Android 12's RKP.
+- **The ECDSA root has a real chain behind it.** `testdata/tegu/sdk36/TEE_EC_2026_ROOT.pem` from
+  Google's `android/keyattestation` (a preproduction Pixel 9a, RKP) ends at the pinned "Key
+  Attestation CA1" key; it is a test fixture, and passes every check up to its key's authentication.
+- **`DESKTOP_ALLOW_SOFTWARE_KEYS` is for Macs.** It lets a Mac's unsigned dev build decide on a local
+  engine. A phone with a software key never decides, whatever it says.
+- **Renewing isn't deciding.** `mobile.renew` takes a proof that the phone holds its key, so a phone
+  with approvals off, or registered as `software`, renews too instead of lapsing after 30 days. The
+  proof is for the renewal only.
+- **Revoking a device closes its live socket at once** (the outbox's `device.revoked`, after commit),
+  with close code 4401, instead of at its next call.
+- **The emulator** signs in with a `dev` build flavour of its own package id that only a
+  non-production engine accepts, as `software` (spec 60, "The dev build flavour"). The production
+  engine knows one package, and no flag on it accepts a software attestation.

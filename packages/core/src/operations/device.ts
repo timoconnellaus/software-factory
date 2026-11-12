@@ -2,7 +2,8 @@
 // turn its approvals on or off. `desktopDevice.list` and `desktopDevice.revoke` are these under
 // their first names (desktop.ts).
 //
-// Revoking a device revokes its tokens at once: the next call with one is `unauthenticated`.
+// Revoking a device revokes its tokens at once: the next call with one is `unauthenticated`, and
+// its live socket is closed after commit (the outbox's `device.revoked`).
 // Turning approvals *on* is itself a decision: only that device, with a presence proof for this
 // exact call, can do it (a lost, unlocked phone can't turn its own approvals back on).
 import { z } from "zod";
@@ -147,6 +148,7 @@ export const deviceRevoke = defineOperation({
         .where("device_id", "=", row.id)
         .where("revoked_at", "is", null),
     );
+    ctx.emit({ kind: "device.revoked", payload: { userId: row.user_id, deviceId: row.id } });
     ctx.change({ entity: "desktop_device", id: row.id, after: { revoked: true } });
     return { revoked: true };
   },

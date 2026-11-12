@@ -51,6 +51,8 @@ export type OutboxMessage =
    * host's held steer call answers at once.
    */
   | { kind: "run.steered"; payload: { workItemId: string } }
+  /** A device was revoked (ADR 0541): sf-engine closes its live socket in the person's ClientHub. */
+  | { kind: "device.revoked"; payload: { userId: string; deviceId: string } }
   /** A notification for a person (web push in spec 15). `url` is the deep link. */
   | {
       kind: "notify";

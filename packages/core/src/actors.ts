@@ -52,6 +52,12 @@ export interface Origin {
    */
   deviceId?: string;
   /**
+   * Who is calling, by network: a hash of the address the door saw (an IPv4 address, or an IPv6
+   * /64), for the per-caller limits on the phone's unsigned sign-in (ADR 0541). Set by the door,
+   * never the caller.
+   */
+  caller?: string;
+  /**
    * A verified presence proof (ADR 0391, 0541): the client door redeemed a Touch ID or fingerprint
    * signature for exactly this operation and the digest of this input. Set by the door, never the
    * caller.

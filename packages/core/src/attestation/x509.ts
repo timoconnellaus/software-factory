@@ -4,6 +4,7 @@
 import {
   bigInt,
   bits,
+  bool,
   CONTEXT,
   children,
   content,
@@ -53,6 +54,30 @@ export const OID = {
 } as const;
 
 const copy = (b: Uint8Array) => new Uint8Array(b);
+
+const BASIC_CONSTRAINTS = "2.5.29.19";
+const KEY_USAGE = "2.5.29.15";
+
+/**
+ * Whether a certificate may issue others: basicConstraints with cA TRUE, and keyUsage with
+ * keyCertSign. Both extensions are required; a malformed one counts as no.
+ */
+export function canIssue(cert: Certificate): boolean {
+  const bc = cert.extensions.get(BASIC_CONSTRAINTS);
+  const ku = cert.extensions.get(KEY_USAGE);
+  if (!bc || !ku) return false;
+  try {
+    // BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLenConstraint INTEGER OPTIONAL }
+    const first = children(expect(parseOne(bc), T.SEQUENCE))[0];
+    const ca = first?.tag === T.BOOLEAN && first.cls === 0 ? bool(first) : false;
+    // KeyUsage ::= BIT STRING; keyCertSign is bit 5, 0x04 in the first byte.
+    const usage = content(expect(parseOne(ku), T.BIT_STRING));
+    const keyCertSign = usage.length >= 2 && ((usage[1] as number) & 0x04) !== 0;
+    return ca && keyCertSign;
+  } catch {
+    return false;
+  }
+}
 
 export function parseCertificate(der: Uint8Array): Certificate {
   const cert = expect(parseOne(der), T.SEQUENCE);

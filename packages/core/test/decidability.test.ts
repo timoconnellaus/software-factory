@@ -12,6 +12,8 @@ import {
   type DeviceSurface,
   deviceDecidable,
   OPERATIONS,
+  PHONE_REFUSES_PENDING,
+  phoneMayDecidePending,
   presenceSurfaceAllowed,
 } from "../src/index.ts";
 
@@ -163,5 +165,40 @@ describe("device decidability (ADR 0541 decision 5)", () => {
         },
       }
     `);
+  });
+
+  it("the phone refuses approval.decide for config changes and self-modify (until spec 60 PR 8)", () => {
+    // The pending actions approval.decide can be about, and whether the phone may decide each. The
+    // fingerprint prompt reads only "Approve config.save on #n" until it binds the version digest.
+    const rows = [
+      { operation: "config.save", risk: "self-modify" },
+      { operation: "config.save", risk: "write" },
+      { operation: "config.rollback", risk: "write" },
+      { operation: "pr.merge", risk: "self-modify" },
+      { operation: "pr.open", risk: "self-modify" },
+      { operation: "pr.open", risk: "write" },
+      { operation: "spec.accept", risk: "write" },
+      { operation: "deploy.run", risk: "deploy" },
+    ];
+    expect(
+      Object.fromEntries(
+        rows.map((r) => [
+          `${r.operation} (${r.risk})`,
+          phoneMayDecidePending(r) ? "phone" : "refused",
+        ]),
+      ),
+    ).toMatchInlineSnapshot(`
+      {
+        "config.rollback (write)": "refused",
+        "config.save (self-modify)": "refused",
+        "config.save (write)": "refused",
+        "deploy.run (deploy)": "phone",
+        "pr.merge (self-modify)": "refused",
+        "pr.open (self-modify)": "refused",
+        "pr.open (write)": "phone",
+        "spec.accept (write)": "phone",
+      }
+    `);
+    expect(PHONE_REFUSES_PENDING).toMatch(/approve this on the desktop app or the website/);
   });
 });

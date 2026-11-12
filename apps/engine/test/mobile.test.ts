@@ -20,7 +20,13 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { pruneChannelStore } from "../src/channel.ts";
 import worker from "../src/index.ts";
-import { clearRevocationCache, mobileTestSeams, revokedSerials } from "../src/mobile.ts";
+import {
+  clearRevocationCache,
+  ipv6Prefix64,
+  mobileCaller,
+  mobileTestSeams,
+  revokedSerials,
+} from "../src/mobile.ts";
 import {
   attestedKey,
   challengeFor,
@@ -28,6 +34,7 @@ import {
   pemToBase64,
   TEST_SIGNING_CERT,
   testRoot,
+  thisMonth,
 } from "./attestation.ts";
 import sbCert0 from "./fixtures/android-attestation/ec-strongbox/cert0.pem?raw";
 import sbCert1 from "./fixtures/android-attestation/ec-strongbox/cert1.pem?raw";
@@ -37,15 +44,27 @@ import teeCert0 from "./fixtures/android-attestation/ec-tee/cert0.pem?raw";
 import teeCert1 from "./fixtures/android-attestation/ec-tee/cert1.pem?raw";
 import teeCert2 from "./fixtures/android-attestation/ec-tee/cert2.pem?raw";
 import teeCert3 from "./fixtures/android-attestation/ec-tee/cert3.pem?raw";
-import { all, first, ok, uid, type World, world } from "./helpers.ts";
+import rkpCert0 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert0.pem?raw";
+import rkpCert1 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert1.pem?raw";
+import rkpCert2 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert2.pem?raw";
+import rkpCert3 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert3.pem?raw";
+import rkpCert4 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert4.pem?raw";
+import { all, call, first, ok, uid, type World, world } from "./helpers.ts";
 
 const PROTOCOL = { "x-sf-client": "mobile", "x-sf-client-protocol": "1" };
+
+/** The address the door sees (`cf-connecting-ip`): a fresh one per test, so limits don't leak. */
+let ip = "";
+const randomIp = () => `10.${Array.from(crypto.getRandomValues(new Uint8Array(3))).join(".")}`;
+/** The engine's env; a test may swap in other vars. */
+let engineEnv: Env = env;
 
 const post = (
   path: string,
   body: unknown,
   token?: string,
   headers: Record<string, string> = PROTOCOL,
+  from = ip,
 ) =>
   worker.fetch(
     new Request(`https://sf-engine.example/client/v1/${path}`, {
@@ -53,11 +72,12 @@ const post = (
       body: JSON.stringify(body),
       headers: {
         "content-type": "application/json",
+        "cf-connecting-ip": from,
         ...headers,
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
     }),
-    env,
+    engineEnv,
   );
 const json = async <T = Record<string, unknown>>(res: Response) => (await res.json()) as T;
 const b64url = (bytes: Uint8Array) =>
@@ -76,6 +96,8 @@ async function pkce() {
 
 let root: Awaited<ReturnType<typeof testRoot>>;
 beforeEach(async () => {
+  ip = randomIp();
+  engineEnv = env;
   root = await testRoot();
   mobileTestSeams.roots = [root.pinned];
   mobileTestSeams.revoked = new Set();
@@ -87,31 +109,37 @@ afterEach(() => {
   clearRevocationCache();
 });
 
-async function nonce() {
-  const res = await post("mobile/nonce", {});
+async function nonce(from = ip) {
+  const res = await post("mobile/nonce", {}, undefined, PROTOCOL, from);
   expect(res.status).toBe(200);
   return (await json<{ nonce: string }>(res)).nonce;
 }
 
 /** A phone: a nonce, a key attested with its challenge (options override the good defaults). */
-async function phone(options: Partial<KeyOptions> = {}, under = root) {
-  const n = await nonce();
+async function phone(options: Partial<KeyOptions> = {}, under = root, from = ip) {
+  const n = await nonce(from);
   const key = await attestedKey(under, { challenge: await challengeFor(n), ...options });
   return { nonce: n, ...key };
 }
 type Phone = Awaited<ReturnType<typeof phone>>;
 
-async function start(p: Phone, extra: Record<string, unknown> = {}) {
+async function start(p: Phone, extra: Record<string, unknown> = {}, from = ip) {
   const { verifier, challenge } = await pkce();
   const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
-  const res = await post("mobile/start", {
-    nonce: p.nonce,
-    attestationChain: p.chain,
-    deviceName: "Tim's Pixel 9",
-    codeChallenge: challenge,
-    state,
-    ...extra,
-  });
+  const res = await post(
+    "mobile/start",
+    {
+      nonce: p.nonce,
+      attestationChain: p.chain,
+      deviceName: "Tim's Pixel 9",
+      codeChallenge: challenge,
+      state,
+      ...extra,
+    },
+    undefined,
+    PROTOCOL,
+    from,
+  );
   return { res, verifier, state };
 }
 
@@ -199,11 +227,12 @@ async function gate(
   workItemId: string,
   kind: "spec" | "merge" | "approval",
   input: Record<string, unknown> = {},
+  pending: { operation?: string; risk?: string } = {},
 ) {
   const id = `pa_${crypto.randomUUID().replaceAll("-", "")}`;
   await env.DB.prepare(
     `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, assignee_user_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'merge', 'agent', 'foreman', ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'agent', 'foreman', ?, ?, ?)`,
   )
     .bind(
       id,
@@ -211,7 +240,9 @@ async function gate(
       w.projectId,
       workItemId,
       kind,
-      kind === "merge" ? "pr.merge" : kind === "spec" ? "spec.accept" : "pr.open",
+      pending.operation ??
+        (kind === "merge" ? "pr.merge" : kind === "spec" ? "spec.accept" : "pr.open"),
+      pending.risk ?? "merge",
       JSON.stringify(input),
       w.userId,
       new Date().toISOString(),
@@ -285,6 +316,37 @@ describe("Android key attestation (criterion 1)", () => {
     expect((revoked as AttestationError).reason).toBe("revoked");
   });
 
+  it("a captured real RKP chain reaches Google's pinned ECDSA root (Key Attestation CA1)", async () => {
+    // Google's own test data from a Pixel 9a (fixtures/android-attestation/README.md): the real
+    // chain behind the 2026 root we pin. Judged inside its RKP certificates' two weeks.
+    const rkp = [rkpCert0, rkpCert1, rkpCert2, rkpCert3, rkpCert4].map(pemToBase64);
+    const der = Uint8Array.from(atob(rkp[0] as string), (c) => c.charCodeAt(0));
+    const kd = parseKeyDescription(
+      parseCertificate(der).extensions.get(KEY_DESCRIPTION_OID) as Uint8Array,
+    );
+    expect(kd.attestationVersion).toBe(400);
+    expect(kd.hardwareEnforced.osPatchLevel).toBe(202602);
+    const app = kd.softwareEnforced.application;
+    const expected = {
+      challenge: kd.challenge,
+      packageName: app?.packages[0]?.name ?? "",
+      signingCerts: app?.signatureDigests ?? [],
+      revoked: new Set<string>(),
+      now: Date.UTC(2026, 1, 25),
+      roots: GOOGLE_ATTESTATION_ROOTS,
+    };
+    const refused = await verifyAndroidAttestation(rkp, expected).catch((e: AttestationError) => e);
+    // The chain, the pinned P-384 root, the CA checks, the dates, the challenge and the security
+    // level all pass; the key itself has no user authentication.
+    expect((refused as AttestationError).reason).toBe("auth");
+    // Under a root list without CA1 it's untrusted.
+    const unpinned = await verifyAndroidAttestation(rkp, {
+      ...expected,
+      roots: GOOGLE_ATTESTATION_ROOTS.filter((r) => !r.name.includes("CA1")),
+    }).catch((e: AttestationError) => e);
+    expect((unpinned as AttestationError).reason).toBe("untrusted-root");
+  });
+
   it("a captured real chain whose root isn't Google's is refused", async () => {
     const refused = await verifyAndroidAttestation(strongbox, {
       challenge: new Uint8Array(),
@@ -332,6 +394,18 @@ describe("Android key attestation (criterion 1)", () => {
       ],
       ["a software KeyMint level", () => phone({ keyMintSecurityLevel: 0 }), "security-level"],
       ["an imported key", () => phone({ origin: 2 }), "key"],
+      ["a key with no origin", () => phone({ origin: null }), "key"],
+      ["an intermediate that isn't a CA", () => phone({ intermediateNotCa: true }), "chain"],
+      [
+        "a Keymaster attestation (before KeyMint)",
+        () => phone({ attestationVersion: 4 }),
+        "version",
+      ],
+      [
+        "a security patch older than 18 months",
+        () => phone({ osPatchLevel: thisMonth(Date.now() - 19 * 31 * 86_400_000) }),
+        "patch",
+      ],
       ["a key that can't sign", () => phone({ purpose: [0] }), "key"],
       [
         "a key description beyond the leaf",
@@ -527,26 +601,11 @@ describe("pairing: the browser and the pair offer (criteria 2 and 3)", () => {
     );
     expect(closed?.attempts).toBe(5);
     expect(closed?.closed_at).not.toBeNull();
-    // Even the right code is refused now.
+    // Even the right code is refused now, and the owner is told to make a new one.
     const right = await start(await phone(), { offer: { code: next.code } });
     expect(right.res.status).toBe(403);
+    expect((await json<{ error: string }>(right.res)).error).toMatch(/closed.*make a new code/);
     expect(await tokens(w.userId)).toBe(1);
-  });
-
-  it("takes at most 30 typed codes an hour from anyone", async () => {
-    await env.DB.prepare("DELETE FROM core_pair_code_tries").run();
-    const now = new Date().toISOString();
-    await env.DB.batch(
-      Array.from({ length: 30 }, (_, i) =>
-        env.DB.prepare("INSERT INTO core_pair_code_tries (id, at, ok) VALUES (?, ?, 0)").bind(
-          `t${i}`,
-          now,
-        ),
-      ),
-    );
-    const { res } = await start(await phone(), { offer: { code: "ABCDEFGHJK" } });
-    expect(res.status).toBe(503);
-    await env.DB.prepare("DELETE FROM core_pair_code_tries").run();
   });
 
   it("Add a phone from the desktop takes Touch ID; device approvals stay refused (criterion 3)", async () => {
@@ -596,6 +655,180 @@ describe("pairing: the browser and the pair offer (criteria 2 and 3)", () => {
 });
 
 /** The desktop's sign-in (spec 40), for the Mac side of these tests. */
+/** The hash the door keys a caller's limits by, for an address. */
+const callerOf = (address: string) =>
+  mobileCaller(new Request("https://x", { headers: { "cf-connecting-ip": address } }));
+
+/** Typed-code tries already made in the last hour, from a caller. */
+async function pastTries(address: string, n: number, ok = 0) {
+  const caller = await callerOf(address);
+  const at = new Date(Date.now() - 60_000).toISOString();
+  await env.DB.batch(
+    Array.from({ length: n }, () =>
+      env.DB.prepare(
+        "INSERT INTO core_pair_code_tries (id, at, ok, caller) VALUES (?, ?, ?, ?)",
+      ).bind(crypto.randomUUID(), at, ok, caller),
+    ),
+  );
+}
+
+/** A wrong code that names an offer by its first two characters. */
+const wrongFor = (code: string, i: number) => {
+  const plain = code.replace("-", "");
+  const guess = `${plain.slice(0, 2)}${String(i).padStart(8, "Z")}`.slice(0, 10);
+  return guess === plain ? `${plain.slice(0, 2)}ZZZZZZZZ` : guess;
+};
+
+describe("the typed code's limits hold under parallel guessing (review of PR 1a)", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM core_pair_code_tries").run();
+  });
+
+  it("parallel wrong guesses from many phones close the offer at exactly five", async () => {
+    const w = await world();
+    const offer = await ok<{ offerId: string; code: string }>("mobile.pairOffer", {}, w.human);
+    const attackers = await Promise.all(
+      Array.from({ length: 40 }, async (_, i) => {
+        const from = `203.0.113.${i + 1}`;
+        return { from, p: await phone({}, root, from) };
+      }),
+    );
+    const results = await Promise.all(
+      attackers.map(({ from, p }, i) =>
+        start(p, { offer: { code: wrongFor(offer.code, i) } }, from),
+      ),
+    );
+    expect(results.map((r) => r.res.status)).toEqual(results.map(() => 403));
+    const row = await first<{ attempts: number; closed_at: string | null }>(
+      "SELECT attempts, closed_at FROM core_pair_offers WHERE id = ?",
+      offer.offerId,
+    );
+    expect(row?.attempts).toBe(5);
+    expect(row?.closed_at).not.toBeNull();
+    // The owner's right code now says the offer is closed: make a new code.
+    const owner = await start(await phone(), { offer: { code: offer.code } });
+    expect(owner.res.status).toBe(403);
+    expect((await json<{ error: string }>(owner.res)).error).toMatch(/closed.*make a new code/);
+    expect(await tokens(w.userId)).toBe(0);
+  });
+
+  it("one nonce carries one guess: parallel codes on it count once", async () => {
+    const w = await world();
+    const offer = await ok<{ offerId: string; code: string }>("mobile.pairOffer", {}, w.human);
+    const p = await phone();
+    const results = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => start(p, { offer: { code: wrongFor(offer.code, i) } })),
+    );
+    expect(results.filter((r) => r.res.status === 403).length).toBeGreaterThanOrEqual(1);
+    const tries = await first<{ n: number }>("SELECT COUNT(*) AS n FROM core_pair_code_tries");
+    expect(tries?.n).toBe(1);
+    const row = await first<{ attempts: number }>(
+      "SELECT attempts FROM core_pair_offers WHERE id = ?",
+      offer.offerId,
+    );
+    expect(row?.attempts).toBe(1);
+  });
+
+  it("a bad chain is refused before the code is read, the same for a right and a wrong code, and spends the nonce", async () => {
+    const w = await world();
+    const offer = await ok<{ offerId: string; code: string }>("mobile.pairOffer", {}, w.human);
+    const other = await testRoot();
+    const right = await start(await phone({}, other), { offer: { code: offer.code } });
+    const wrong = await start(await phone({}, other), { offer: { code: wrongFor(offer.code, 1) } });
+    const a = await json(right.res);
+    const b = await json(wrong.res);
+    expect([right.res.status, wrong.res.status]).toEqual([403, 403]);
+    expect(a).toEqual(b);
+    expect(a).toMatchObject({ details: { attestation: "untrusted-root" } });
+    // Nothing was counted, and the offer is untouched.
+    expect((await first<{ n: number }>("SELECT COUNT(*) AS n FROM core_pair_code_tries"))?.n).toBe(
+      0,
+    );
+    expect(
+      (
+        await first<{ attempts: number }>(
+          "SELECT attempts FROM core_pair_offers WHERE id = ?",
+          offer.offerId,
+        )
+      )?.attempts,
+    ).toBe(0);
+    // The refusal spent the nonce: a good key for it is refused as used.
+    const junk = await phone({}, other);
+    expect((await start(junk, { offer: { code: wrongFor(offer.code, 2) } })).res.status).toBe(403);
+    const good = await attestedKey(root, { challenge: await challengeFor(junk.nonce) });
+    const again = await start({ ...junk, ...good }, { offer: { code: offer.code } });
+    expect(again.res.status).toBe(403);
+    expect((await json<{ error: string }>(again.res)).error).toMatch(/nonce is used/);
+    // The owner still pairs.
+    expect((await start(await phone(), { offer: { code: offer.code } })).res.status).toBe(200);
+  });
+
+  it("one caller gets ten codes an hour, counted in SQL; the owner elsewhere still pairs", async () => {
+    const w = await world();
+    const offer = await ok<{ offerId: string; code: string }>("mobile.pairOffer", {}, w.human);
+    const attacker = "198.51.100.66";
+    await pastTries(attacker, 6);
+    // Ten at once from the caller: only four fit under its ten.
+    const phones = await Promise.all(Array.from({ length: 10 }, () => phone({}, root, attacker)));
+    const results = await Promise.all(
+      phones.map((p, i) => start(p, { offer: { code: `00ZZZZZZZ${i}` } }, attacker)),
+    );
+    expect(results.every((r) => r.res.status === 403 || r.res.status === 503)).toBe(true);
+    const mine = await first<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM core_pair_code_tries WHERE caller = ?",
+      await callerOf(attacker),
+    );
+    expect(mine?.n).toBe(10);
+    // The next one is refused before it's counted.
+    const held = await start(
+      await phone({}, root, attacker),
+      { offer: { code: "00ZZZZZZZZ" } },
+      attacker,
+    );
+    expect(held.res.status).toBe(503);
+    // None of it touched the owner's offer, and the owner pairs from their own address.
+    const owner = await start(await phone(), { offer: { code: offer.code } });
+    expect(owner.res.status).toBe(200);
+  });
+
+  it("thirty wrong codes an hour hold repeat guessers, never a caller's first code", async () => {
+    const w = await world();
+    const offer = await ok<{ offerId: string; code: string }>("mobile.pairOffer", {}, w.human);
+    await pastTries("192.0.2.1", 30);
+    // A caller who already sent a wrong code this hour is held.
+    const repeat = "192.0.2.2";
+    await pastTries(repeat, 1);
+    const held = await start(
+      await phone({}, root, repeat),
+      { offer: { code: "00ZZZZZZZZ" } },
+      repeat,
+    );
+    expect(held.res.status).toBe(503);
+    // The owner's first code goes through.
+    const owner = await start(await phone(), { offer: { code: offer.code } });
+    expect(owner.res.status).toBe(200);
+  });
+
+  it("a caller holds at most ten unspent nonces, counted in SQL; another caller still gets one", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        post("mobile/nonce", {}, undefined, PROTOCOL, "198.51.100.9"),
+      ),
+    );
+    const statuses = results.map((r) => r.status);
+    expect(statuses.filter((s) => s === 200).length).toBe(10);
+    expect(statuses.filter((s) => s !== 200)).toEqual(Array(10).fill(503));
+    expect((await post("mobile/nonce", {}, undefined, PROTOCOL, "198.51.100.10")).status).toBe(200);
+  });
+
+  it("an IPv6 caller is keyed by its /64", async () => {
+    expect(ipv6Prefix64("2001:db8:1:2:aaaa::1")).toBe("2001:db8:1:2");
+    expect(ipv6Prefix64("2001:db8::1")).toBe("2001:db8:0:0");
+    expect(await callerOf("2001:db8:1:2::5")).toBe(await callerOf("2001:db8:1:2:ffff::9"));
+    expect(await callerOf("2001:db8:1:3::5")).not.toBe(await callerOf("2001:db8:1:2::5"));
+  });
+});
+
 async function desktopSignIn(w: World) {
   const keys = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
     "sign",
@@ -797,6 +1030,54 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
     );
   });
 
+  it("DESKTOP_ALLOW_SOFTWARE_KEYS lets a dev Mac decide, never a software-level phone", async () => {
+    const w = await world();
+    const soft = await browserSignIn(w, await phone({ deviceLocked: false }));
+    expect(soft.keyStorage).toBe("software");
+    engineEnv = { ...env, DESKTOP_ALLOW_SOFTWARE_KEYS: "1" };
+    const workItemId = await newItem(w, soft.token);
+    await gate(w, workItemId, "spec");
+    const input = { workItemId };
+    const proof = await prove(soft.token, soft.phone, "spec.approve", input);
+    const res = await callOp(soft.token, "spec.approve", input, proof);
+    expect(res.status).toBe(403);
+    expect((await json<{ error: string }>(res)).error).toMatch(/can't approve/);
+  });
+
+  it("config changes and self-modify aren't decided on the phone, with or without a proof", async () => {
+    const w = await world();
+    const { token, phone: p } = await browserSignIn(w);
+    const workItemId = await newItem(w, token);
+    const pending: { operation: string; risk: string }[] = [
+      { operation: "config.save", risk: "self-modify" },
+      { operation: "config.save", risk: "write" },
+      { operation: "config.rollback", risk: "write" },
+      { operation: "pr.open", risk: "self-modify" },
+    ];
+    for (const pa of pending) {
+      const id = await gate(w, workItemId, "approval", {}, pa);
+      for (const decision of ["approved", "rejected"]) {
+        const input = { pendingActionId: id, decision };
+        const proof = await prove(token, p, "approval.decide", input);
+        const res = await callOp(token, "approval.decide", input, proof);
+        expect([pa, decision, res.status]).toEqual([pa, decision, 403]);
+        expect((await json<{ error: string }>(res)).error).toMatch(
+          /approve this on the desktop app or the website/,
+        );
+      }
+      const row = await first<{ status: string }>(
+        "SELECT status FROM core_pending_actions WHERE id = ?",
+        id,
+      );
+      expect(row?.status).toBe("pending");
+      // The website still decides it.
+      expect(
+        (await call("approval.decide", { pendingActionId: id, decision: "rejected" }, w.human))
+          .status,
+      ).toBe("ok");
+    }
+  });
+
   it("a phone registered with approvals off can't ask for a challenge", async () => {
     const w = await world();
     const off = await browserSignIn(w, undefined, false);
@@ -893,6 +1174,53 @@ describe("tokens, revocation and the door (criterion 6)", () => {
     expect(result.token).toMatch(/^sfm_/);
     expect((await callOp(token, "inbox.list", {})).status).toBe(401);
     expect((await callOp(result.token, "inbox.list", {})).status).toBe(200);
+  });
+
+  it("a phone that can't decide still renews with a fingerprint (approvals off, or software)", async () => {
+    const w = await world();
+    const off = await browserSignIn(w, undefined, false);
+    const soft = await browserSignIn(w, await phone({ verifiedBootState: 2 }));
+    expect(soft.keyStorage).toBe("software");
+    for (const got of [off, soft]) {
+      // It can't decide...
+      const workItemId = await newItem(w, got.token);
+      await gate(w, workItemId, "spec");
+      expect((await callOp(got.token, "spec.approve", { workItemId })).status).toBe(403);
+      // ...but its own key renews its token.
+      const proof = await prove(got.token, got.phone, "mobile.renew", {});
+      const res = await callOp(got.token, "mobile.renew", {}, proof);
+      expect(res.status).toBe(200);
+      const { result } = await json<{ result: { token: string } }>(res);
+      expect((await callOp(result.token, "inbox.list", {})).status).toBe(200);
+      expect((await callOp(got.token, "inbox.list", {})).status).toBe(401);
+      // A renewal proof is for the renewal only.
+      const reused = await callOp(result.token, "spec.approve", { workItemId }, proof);
+      expect(reused.status).toBe(403);
+    }
+  });
+
+  it("revoking a phone closes its live socket at once", async () => {
+    const w = await world();
+    const { token, deviceId } = await browserSignIn(w);
+    const live = await worker.fetch(
+      new Request("https://sf-engine.example/client/v1/live", {
+        headers: { upgrade: "websocket", authorization: `Bearer ${token}`, ...PROTOCOL },
+      }),
+      env,
+    );
+    expect(live.status).toBe(101);
+    const ws = live.webSocket as WebSocket;
+    const closed = new Promise<number>((resolve) =>
+      ws.addEventListener("close", (e) => resolve(e.code)),
+    );
+    ws.accept();
+    // Revoked from the website, not by the phone.
+    await ok("device.revoke", { deviceId }, w.human);
+    const code = await Promise.race([
+      closed,
+      new Promise<string>((resolve) => setTimeout(() => resolve("still open"), 2_000)),
+    ]);
+    expect(code).toBe(4401);
   });
 
   it("a phone below the minimum protocol gets 426; a CLI or desktop token isn't affected", async () => {

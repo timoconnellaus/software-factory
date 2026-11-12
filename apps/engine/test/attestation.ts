@@ -136,8 +136,15 @@ export interface KeyOptions {
   /** 2 fingerprint, 1 password, 3 either; null leaves it out. */
   userAuthType?: number | null;
   authTimeout?: number | null;
-  origin?: number;
+  /** null leaves it out. */
+  origin?: number | null;
   verifiedBootState?: number;
+  /** 300 (KeyMint 3) unless set; Keymaster's were 1 to 4. */
+  attestationVersion?: number;
+  /** `YYYYMM`; this month unless set. */
+  osPatchLevel?: number;
+  /** Leave the CA extensions off the intermediate (an end-entity key vouching for another). */
+  intermediateNotCa?: boolean;
   deviceLocked?: boolean;
   packageName?: string;
   signatureDigest?: string;
@@ -169,7 +176,7 @@ function keyDescription(o: KeyOptions): Uint8Array {
     ...(o.authTimeout === null || o.authTimeout === undefined
       ? []
       : [explicit(505, int(o.authTimeout))]),
-    explicit(702, int(o.origin ?? 0)),
+    ...(o.origin === null ? [] : [explicit(702, int(o.origin ?? 0))]),
     explicit(
       704,
       seq(
@@ -180,12 +187,12 @@ function keyDescription(o: KeyOptions): Uint8Array {
       ),
     ),
     explicit(705, int(140000)),
-    explicit(706, int(202610)),
+    explicit(706, int(o.osPatchLevel ?? thisMonth())),
     explicit(718, int(20261005)),
     explicit(719, int(20261005)),
   );
   return seq(
-    int(300),
+    int(o.attestationVersion ?? 300),
     enumerated(o.attestationSecurityLevel ?? 1),
     int(300),
     enumerated(o.keyMintSecurityLevel ?? 1),
@@ -197,6 +204,18 @@ function keyDescription(o: KeyOptions): Uint8Array {
 }
 
 const extension = (id: string, value: Uint8Array) => seq(oid(id), octets(value));
+
+/** `YYYYMM` for the current month, as a phone patched this month reports it. */
+export function thisMonth(at = Date.now()): number {
+  const d = new Date(at);
+  return d.getUTCFullYear() * 100 + d.getUTCMonth() + 1;
+}
+
+/** basicConstraints cA TRUE and keyUsage keyCertSign + cRLSign, as Google's issuers carry. */
+const caExtensions = () => [
+  extension("2.5.29.19", seq(bool(true))),
+  extension("2.5.29.15", tlv(0x03, new Uint8Array([0x01, 0x06]))),
+];
 
 /** A test root that only the tests trust. */
 export async function testRoot(): Promise<{ keys: Keys; pinned: PinnedRoot; cn: string }> {
@@ -220,6 +239,7 @@ export async function attestedKey(root: Awaited<ReturnType<typeof testRoot>>, o:
     issuer: root.cn,
     subjectKeys: root.keys,
     issuerKeys: root.keys,
+    extensions: caExtensions(),
   });
   const mid = await certificate({
     subject: "Test StrongBox intermediate",
@@ -227,7 +247,10 @@ export async function attestedKey(root: Awaited<ReturnType<typeof testRoot>>, o:
     subjectKeys: midKeys,
     issuerKeys: root.keys,
     ...(o.intermediateNotAfter !== undefined ? { notAfter: o.intermediateNotAfter } : {}),
-    extensions: o.extensionInIntermediate ? [extension("1.3.6.1.4.1.11129.2.1.17", kd)] : [],
+    extensions: [
+      ...(o.intermediateNotCa ? [] : caExtensions()),
+      ...(o.extensionInIntermediate ? [extension("1.3.6.1.4.1.11129.2.1.17", kd)] : []),
+    ],
   });
   const leaf = await certificate({
     subject: "Android Keystore Key",
