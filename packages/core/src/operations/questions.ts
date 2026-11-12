@@ -18,10 +18,10 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
-import { logPlanning, wakeSession } from "../planning.ts";
+import { logPlanning, takeBackFromGate, wakeSession } from "../planning.ts";
 import { approverIds, backupOwnerId } from "../scope.ts";
 import { questionsEvent } from "../workflow-events.ts";
-import { byJob, planningJob, planningJobFields } from "./planning.ts";
+import { byJob, notifyAway, planningJob, planningJobFields } from "./planning.ts";
 import { fencingToken, jobId, questionId, requireWorkItem, workItemId } from "./shared.ts";
 
 /** Questions bulk accept never covers (ADR 0042). */
@@ -93,17 +93,19 @@ export const questionAsk = defineOperation({
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     let sessionId: string | null = null;
+    let session: Awaited<ReturnType<typeof planningJob>>["session"] | null = null;
     if (ctx.actor.type === "runner") {
       if (!input.jobId || input.fencingToken === undefined) {
         throw new OperationError("invalid_input", "a planning job names its job and fencing token");
       }
-      sessionId = (
+      session = (
         await planningJob(ctx, {
           jobId: input.jobId,
           fencingToken: input.fencingToken,
           workItemId: input.workItemId,
         })
-      ).session.id;
+      ).session;
+      sessionId = session.id;
     } else if (!input.workItemId) {
       throw new OperationError("invalid_input", "workItemId is required");
     }
@@ -194,6 +196,14 @@ export const questionAsk = defineOperation({
       // The planning agent's questions show up live; the owner hears once, when planning is ready.
       logPlanning(ctx, w.id, "question.asked", { questionIds: ids });
       ctx.change({ entity: "work_item", id: w.id, after: { questionsAsked: ids.length } });
+      if (session) {
+        await notifyAway(
+          ctx,
+          session,
+          "planning.question",
+          `${ids.length} new question${ids.length === 1 ? "" : "s"} on #${w.number}: ${w.title}`,
+        );
+      }
       return { questionIds: ids, numbers, round: w.planning_round };
     }
     if (assignee) {
@@ -430,9 +440,10 @@ function answer(
     answer_revision: number;
     planning_session_id: string | null;
   },
-  value: string,
+  value: string | null,
   acceptedDefault: boolean,
   note: string | null = null,
+  skipped = false,
 ) {
   const revising = q.status === "answered";
   const revision = q.answer_revision + 1;
@@ -443,6 +454,8 @@ function answer(
         status: "answered",
         answer: value,
         note,
+        skipped: skipped ? 1 : 0,
+        answer_delivered_at: null,
         accepted_default: acceptedDefault ? 1 : 0,
         answered_by: ctx.actor.id,
         answered_at: ctx.now,
@@ -463,7 +476,13 @@ function answer(
     entity: "question",
     id: q.id,
     before: { status: q.status },
-    after: { answer: value, acceptedDefault, ...(note ? { note } : {}), revision },
+    after: {
+      answer: value,
+      acceptedDefault,
+      ...(note ? { note } : {}),
+      ...(skipped ? { skipped } : {}),
+      revision,
+    },
   });
 }
 
@@ -498,17 +517,24 @@ async function closeRoundIfDone(ctx: HandlerContext, answeredIds: string[]) {
 export const questionAnswer = defineOperation({
   name: "question.answer",
   description:
-    "Answer one question on a work item, optionally with a note. A planning session's question can be answered again (a revised answer reaches the planning agent); any other question answered twice is refused as already answered. In V1's spec rounds the Workflow continues when the last blocking question is answered.",
+    "Answer one question on a work item, optionally with a note, or skip a planning session's question (the planning agent decides it). A planning session's question can be answered again (a revised answer reaches the planning agent, and takes the spec back if it waits at the gate); any other question answered twice is refused as already answered. In V1's spec rounds the Workflow continues when the last blocking question is answered.",
   risk: "write",
   actors: ["human"],
   permission: "member",
   browserOnly: true,
   presenceDecidable: true,
-  input: z.object({
-    questionId,
-    answer: z.string().min(1).max(8_000),
-    note: z.string().trim().max(4_000).optional(),
-  }),
+  input: z
+    .object({
+      questionId,
+      answer: z.string().min(1).max(100_000).optional(),
+      note: z.string().trim().max(4_000).optional(),
+      /** Skip it: the planning agent decides (spec 26). Planning questions only. */
+      skipped: z.boolean().optional(),
+    })
+    .refine((v) => v.skipped || v.answer !== undefined, {
+      message: "an answer is required unless the question is skipped",
+      path: ["answer"],
+    }),
   output: z.object({ answered: z.boolean(), revised: z.boolean(), roundComplete: z.boolean() }),
   async handler(input, ctx) {
     const q = await ctx.db
@@ -521,9 +547,20 @@ export const questionAnswer = defineOperation({
     if (q.status !== "open" && !revisable) {
       throw new OperationError("conflict", `question already ${q.status}`);
     }
+    if (input.skipped && !q.planning_session_id) {
+      throw new OperationError(
+        "invalid_input",
+        "only a planning session's questions can be skipped",
+      );
+    }
     await assertCanAnswer(ctx, q.assignee_user_id);
-    answer(ctx, q, input.answer, input.answer === q.default_answer, input.note || null);
+    if (input.skipped) answer(ctx, q, null, false, input.note || null, true);
+    else {
+      const value = input.answer ?? "";
+      answer(ctx, q, value, value === q.default_answer, input.note || null);
+    }
     if (q.planning_session_id) {
+      await takeBackFromGate(ctx, requireWorkItem(ctx), "a person changed an answer");
       await wakeSession(ctx, requireWorkItem(ctx));
       return { answered: true, revised: revisable, roundComplete: false };
     }
@@ -571,7 +608,10 @@ export const questionAcceptDefaults = defineOperation({
       }
     }
     const planning = open.some((q) => q.planning_session_id !== null && accepted.includes(q.id));
-    if (planning) await wakeSession(ctx, w);
+    if (planning) {
+      await takeBackFromGate(ctx, w, "a person accepted defaults");
+      await wakeSession(ctx, w);
+    }
     const roundComplete =
       accepted.length > 0 && !planning ? await closeRoundIfDone(ctx, accepted) : false;
     return { accepted, skipped, roundComplete };

@@ -330,6 +330,10 @@ export interface CoreQuestionsTable {
   revision: Generated<number>;
   answer_revision: Generated<number>;
   note: string | null;
+  /** Spec 26: the person skipped it; the planning agent decides. */
+  skipped: Generated<Bool>;
+  /** Spec 26: when this answer revision reached the planning agent. */
+  answer_delivered_at: Iso | null;
   planning_session_id: string | null;
   updated_at: Iso | null;
 }

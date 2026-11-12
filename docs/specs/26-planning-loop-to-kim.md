@@ -79,4 +79,24 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
     desktop's view updates within 2 s of a change without polling.
 
 ## As built
-(Filled in by each PR.)
+**PR A, the loop.** Migration 0240 (`core_questions.skipped`, `answer_delivered_at`).
+- `PLANNING_NEWS_THROTTLE_MS` is 2 s. `planning.news` writes the session row only when its status
+  or activity changes, or every 30 s for `agent_seen_at`.
+- `planning.ready` reads the news since the session's cursor and refuses (`conflict`) when a
+  person's answer or message is in it. It also withdraws a spec gate the Workflow opened after a
+  take-back (a stale gate).
+- `takeBackFromGate` (in `packages/core/src/planning.ts`) runs on `chat.send`, `question.answer`
+  and `question.acceptDefaults` while the session is at the gate. It moves the round on, withdraws
+  the pending `spec.accept` (`decision: "withdrawn"`, the approval event to the Workflow) and logs
+  `gate.withdrawn`. `spec.approve`, and `approval.decide` approving a spec gate, refuse a stale gate
+  (`assertSpecGateCurrent`). The Workflow's planning stage `continue`s on `withdrawn`.
+- `fitNews` in `harness-claude` drops presence first, then shortens long texts, then reports a
+  count. Its pointer is the cursor just before the first event.
+- News: `about` on chat messages; `skipped` and a nullable `answer` on answers. `question.answer`
+  takes `skipped: true` for planning questions only.
+- Read receipts: `deliver()` marks exactly the answers and messages it delivered. `planning.get`
+  returns `skipped` and `answerDeliveredAt`.
+- `notifyAway` sends `planning.question` and `planning.reply` notices after the announcement, when
+  nobody is present.
+- `run.steer` on a planning run writes a delivered chat message and logs `chat.steered` (not news).
+- Not in A: the interrupt, Stop, Pause and finish alone (PR B), and the UI (PR C).

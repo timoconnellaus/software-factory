@@ -15,6 +15,7 @@ import type { Selectable } from "kysely";
 import { OperationError } from "./errors.ts";
 import { newId } from "./ids.ts";
 import type { HandlerContext, WorkItemRow } from "./operation.ts";
+import { approvalEvent } from "./workflow-events.ts";
 
 export type PlanningSessionRow = Selectable<CorePlanningSessionsTable>;
 
@@ -260,7 +261,13 @@ export async function readNews(
   ctx: Pick<HandlerContext, "db" | "now">,
   workItemId: string,
   cursor: number,
-): Promise<{ cursor: number; events: PlanningNewsEvent[]; userEvents: LogRow[] }> {
+): Promise<{
+  cursor: number;
+  events: PlanningNewsEvent[];
+  userEvents: LogRow[];
+  /** The answered questions and people's messages this news carries (their read receipts). */
+  delivered: { questionIds: string[]; messageIds: string[] };
+}> {
   const rows = (await ctx.db
     .selectFrom("core_planning_events")
     .select(["id", "type", "actor_id", "payload", "at"])
@@ -288,6 +295,7 @@ export async function readNews(
           "prompt",
           "answer",
           "note",
+          "skipped",
           "accepted_default",
           "answered_by",
           "status",
@@ -307,6 +315,18 @@ export async function readNews(
         .execute()
     : [];
   const byMessage = new Map(messages.map((m) => [m.id, m]));
+  // What each message is about (kim's `about`), so the agent needn't look the question up.
+  const aboutIds = [
+    ...new Set(messages.map((m) => m.question_id).filter((id): id is string => !!id)),
+  ];
+  const aboutRows = aboutIds.length
+    ? await ctx.db
+        .selectFrom("core_questions")
+        .select(["id", "number", "prompt"])
+        .where("id", "in", aboutIds)
+        .execute()
+    : [];
+  const aboutById = new Map(aboutRows.map((q) => [q.id, q]));
   const people = await names(ctx, [
     ...questions.map((q) => q.answered_by ?? ""),
     ...messages.map((m) => m.author_id),
@@ -326,7 +346,7 @@ export async function readNews(
       const qid = String(p.questionId);
       if (lastAnswerRow.get(qid) !== r) continue;
       const q = byQuestion.get(qid);
-      if (q?.status !== "answered" || q.answer === null) continue;
+      if (q?.status !== "answered" || (q.answer === null && q.skipped !== 1)) continue;
       events.push({
         type: revised.has(qid) ? "answer.revised" : "answer.submitted",
         cursor: r.id,
@@ -334,7 +354,8 @@ export async function readNews(
         questionId: qid,
         number: q.number,
         prompt: q.prompt,
-        answer: q.answer,
+        answer: q.skipped === 1 ? null : q.answer,
+        skipped: q.skipped === 1,
         note: q.note,
         acceptedDefault: q.accepted_default === 1,
         by: people.get(q.answered_by ?? "") ?? q.answered_by ?? "",
@@ -350,6 +371,13 @@ export async function readNews(
         text: m.text,
         from: people.get(m.author_id) ?? m.author_id,
         questionId: m.question_id,
+        about: m.question_id
+          ? {
+              questionId: m.question_id,
+              number: aboutById.get(m.question_id)?.number ?? null,
+              prompt: aboutById.get(m.question_id)?.prompt ?? "",
+            }
+          : null,
         kind: m.kind,
       });
     } else if (r.type === "presence.changed") {
@@ -361,7 +389,17 @@ export async function readNews(
       });
     }
   }
-  return { cursor: last, events, userEvents };
+  return {
+    cursor: last,
+    events,
+    userEvents,
+    delivered: {
+      questionIds: events.flatMap((e) =>
+        e.type === "answer.submitted" || e.type === "answer.revised" ? [e.questionId] : [],
+      ),
+      messageIds: events.flatMap((e) => (e.type === "chat.message" ? [e.messageId] : [])),
+    },
+  };
 }
 
 /**
@@ -556,4 +594,103 @@ export function endPlanningSessions(ctx: HandlerContext, workItemId: string, rea
       .where("status", "in", ["queued", "claimed"]),
   );
   emitChanged(ctx, workItemId);
+}
+
+// ---- a person's word takes the spec back from the gate (spec 26, ADR 0470) ----
+
+/**
+ * Withdraws the work item's open spec gate, if any (`decision: "withdrawn"`, as verify withdraws a
+ * merge gate): the Workflow's planning stage moves to the next round. Write-only.
+ */
+export async function withdrawSpecGate(ctx: HandlerContext, workItemId: string, note: string) {
+  const pending = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select(["id", "workflow_id"])
+    .where("work_item_id", "=", workItemId)
+    .where("kind", "=", "spec")
+    .where("status", "=", "pending")
+    .execute();
+  if (!pending.length) return;
+  ctx.write(
+    ctx.db
+      .updateTable("core_pending_actions")
+      .set({
+        status: "rejected",
+        decision: "withdrawn",
+        decided_at: ctx.now,
+        decided_by: ctx.actor.id,
+        note,
+      })
+      .where(
+        "id",
+        "in",
+        pending.map((p) => p.id),
+      )
+      .where("status", "=", "pending"),
+  );
+  for (const p of pending) {
+    if (!p.workflow_id) continue;
+    ctx.emit({
+      kind: "workflow.event",
+      payload: {
+        instanceId: p.workflow_id,
+        type: approvalEvent(p.id),
+        payload: { decision: "withdrawn", note, by: ctx.actor.id },
+      },
+    });
+  }
+}
+
+/**
+ * A person answered or wrote while the spec waits at the gate: the planner must see it, so the spec
+ * leaves the gate and the next round starts (ADR 0470). A gate the Workflow opens after this (the
+ * planner asked a moment before) is stale: approving it is refused, and the planner's next
+ * `planning.ready` withdraws it. Returns whether the spec was taken back.
+ */
+export async function takeBackFromGate(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  why: string,
+): Promise<boolean> {
+  const session = await openSession(ctx, w.id);
+  if (!session?.at_gate) return false;
+  const note = `withdrawn: ${why}, so the planner revises before the gate`;
+  ctx.write(
+    ctx.db
+      .updateTable("core_planning_sessions")
+      .set({
+        round: session.round + 1,
+        ready_spec_id: null,
+        ready_at: null,
+        at_gate: 0,
+        updated_at: ctx.now,
+      })
+      .where("id", "=", session.id)
+      .where("at_gate", "=", 1),
+  );
+  await withdrawSpecGate(ctx, w.id, note);
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({ status: "running", updated_at: ctx.now })
+      .where("id", "=", w.id)
+      .where("status", "=", "waiting"),
+  );
+  logPlanning(ctx, w.id, "gate.withdrawn", { round: session.round + 1, why });
+  return true;
+}
+
+/**
+ * Refuses a decision on a spec gate the planner no longer stands behind: its session is open but
+ * not at the gate (a person wrote after it asked, ADR 0470).
+ */
+export async function assertSpecGateCurrent(ctx: HandlerContext, workItemId: string | null) {
+  if (!workItemId) return;
+  const session = await openSession(ctx, workItemId);
+  if (session && !session.at_gate) {
+    throw new OperationError(
+      "conflict",
+      "a person wrote after the planner asked for the gate: it is revising, and asks again when it's done",
+    );
+  }
 }

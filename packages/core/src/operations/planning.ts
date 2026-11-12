@@ -26,7 +26,9 @@ import {
   planningReadyEvent,
   presentPeople,
   readNews,
+  takeBackFromGate,
   wakeSession,
+  withdrawSpecGate,
 } from "../planning.ts";
 import { approverIds } from "../scope.ts";
 import { ACTIVE_RUN } from "./runners.ts";
@@ -96,13 +98,24 @@ export async function planningJob(
   return { session, runId: run.id };
 }
 
-/** The session is alive and doing something: the pill shows it. */
+/** How stale `agent_seen_at` may get before a look with nothing new writes it again. */
+const SEEN_REFRESH_MS = 30_000;
+
+/** The session is alive and doing something: the pill shows it. Writes only what changed. */
 function markWorking(ctx: HandlerContext, session: PlanningSessionRow, activity?: string) {
+  const status = session.status === "yielding" ? "yielding" : "working";
+  const unchanged =
+    session.status === status &&
+    session.idle_since === null &&
+    (activity === undefined || activity === session.activity) &&
+    session.agent_seen_at !== null &&
+    Date.parse(ctx.now) - Date.parse(session.agent_seen_at) < SEEN_REFRESH_MS;
+  if (unchanged) return;
   ctx.write(
     ctx.db
       .updateTable("core_planning_sessions")
       .set({
-        status: session.status === "yielding" ? "yielding" : "working",
+        status,
         idle_since: null,
         agent_seen_at: ctx.now,
         updated_at: ctx.now,
@@ -125,6 +138,27 @@ async function agentDrafted(ctx: HandlerContext): Promise<boolean> {
     .where("id", "=", w.current_spec_id)
     .executeTakeFirst();
   return spec?.created_by === ctx.actor.id;
+}
+
+/**
+ * After planning was announced, a question the agent asks or a reply it sends tells the owner, once
+ * per call, when nobody has the Planning view open (spec 26; kim notifies per burst).
+ */
+export async function notifyAway(
+  ctx: HandlerContext,
+  session: PlanningSessionRow,
+  event: "planning.question" | "planning.reply",
+  title: string,
+) {
+  if (!session.announced_at) return;
+  const w = requireWorkItem(ctx);
+  if ((await presentPeople(ctx, w.id)).length) return;
+  const approvers = await approverIds(ctx.db, w.org_id, ctx.scope.policy);
+  const to = approvers.includes(w.requester_user_id) ? w.requester_user_id : (approvers[0] ?? null);
+  ctx.emit({
+    kind: "notify",
+    payload: { event, userId: to, workItemId: w.id, title, url: `/work/${w.id}?tab=planning` },
+  });
 }
 
 /** First draft + questions are in and the agent is waiting: tell the owner once (criterion 1). */
@@ -457,6 +491,12 @@ export const chatReply = defineOperation({
     );
     markWorking(ctx, session);
     logPlanning(ctx, w.id, "chat.reply", { messageId });
+    await notifyAway(
+      ctx,
+      session,
+      "planning.reply",
+      `The planner replied on #${w.number}: ${w.title}`,
+    );
     return { messageId };
   },
 });
@@ -509,14 +549,22 @@ export const planningNews = defineOperation({
     const { session } = await planningJob(ctx, input);
     const from = input.cursor ?? session.delivered_cursor;
     const news = await readNews(ctx, session.work_item_id, from);
-    deliver(ctx, session, news.cursor);
+    deliver(ctx, session, news.cursor, news.delivered);
     markWorking(ctx, session, input.activity);
     return { ...(await newsEnvelope(ctx, session)), cursor: news.cursor, events: news.events };
   },
 });
 
-/** Moves the session's cursor and marks the chat messages it carried as read. */
-function deliver(ctx: HandlerContext, session: PlanningSessionRow, cursor: number) {
+/**
+ * Moves the session's cursor and marks exactly the answers and people's messages it carried as read
+ * (spec 26: read receipts; anything past the page stays unread).
+ */
+function deliver(
+  ctx: HandlerContext,
+  session: PlanningSessionRow,
+  cursor: number,
+  delivered: { questionIds: string[]; messageIds: string[] },
+) {
   if (cursor <= session.delivered_cursor) return;
   ctx.write(
     ctx.db
@@ -525,14 +573,24 @@ function deliver(ctx: HandlerContext, session: PlanningSessionRow, cursor: numbe
       .where("id", "=", session.id)
       .where("delivered_cursor", "<", cursor),
   );
-  ctx.write(
-    ctx.db
-      .updateTable("core_planning_messages")
-      .set({ delivered_at: ctx.now })
-      .where("work_item_id", "=", session.work_item_id)
-      .where("author_kind", "=", "person")
-      .where("delivered_at", "is", null),
-  );
+  if (delivered.messageIds.length) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_messages")
+        .set({ delivered_at: ctx.now })
+        .where("id", "in", delivered.messageIds)
+        .where("delivered_at", "is", null),
+    );
+  }
+  if (delivered.questionIds.length) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_questions")
+        .set({ answer_delivered_at: ctx.now })
+        .where("id", "in", delivered.questionIds)
+        .where("answer_delivered_at", "is", null),
+    );
+  }
 }
 
 export const planningWait = defineOperation({
@@ -553,7 +611,7 @@ export const planningWait = defineOperation({
     const dueAt = batchDue(news.userEvents, envelope.openQuestions, input.idleMs);
     const due = dueAt !== null && dueAt <= Date.parse(ctx.now);
     if (due) {
-      deliver(ctx, session, news.cursor);
+      deliver(ctx, session, news.cursor, news.delivered);
       markWorking(ctx, session);
       return { ...envelope, cursor: news.cursor, events: news.events, due, recheckAt: null };
     }
@@ -631,6 +689,14 @@ export const planningReady = defineOperation({
       return { specId: session.ready_spec_id, round: session.round };
     }
     if (!w.current_spec_id) throw new OperationError("conflict", "revise the spec first");
+    // No gate on stale news (ADR 0470): a person's answer or message the agent hasn't read yet.
+    const unread = await readNews(ctx, w.id, session.delivered_cursor);
+    if (unread.userEvents.length) {
+      throw new OperationError(
+        "conflict",
+        `a person answered or wrote since you last looked (${unread.userEvents.length} event${unread.userEvents.length === 1 ? "" : "s"}): call planning_news, act on it, then ask for the gate again`,
+      );
+    }
     const open = await ctx.db
       .selectFrom("core_questions")
       .select("number")
@@ -644,6 +710,9 @@ export const planningReady = defineOperation({
         `blocking questions are still open: ${open.map((q) => `Q${q.number ?? "?"}`).join(", ")}`,
       );
     }
+    // A gate the Workflow opened after a person took the spec back is stale: withdraw it, and the
+    // Workflow's next round opens the gate on this request (ADR 0470).
+    await withdrawSpecGate(ctx, w.id, "withdrawn: the planner asked for the gate again");
     ctx.write(
       ctx.db
         .updateTable("core_planning_sessions")
@@ -702,6 +771,7 @@ export const chatSend = defineOperation({
       }),
     );
     logPlanning(ctx, w.id, "chat.message", { messageId });
+    await takeBackFromGate(ctx, w, "a person wrote in the chat");
     await wakeSession(ctx, w);
     return { messageId };
   },
@@ -830,6 +900,9 @@ const questionView = z.object({
   answer: z.string().nullable(),
   note: z.string().nullable(),
   acceptedDefault: z.boolean(),
+  skipped: z.boolean(),
+  /** When this answer reached the planning agent (a read receipt); null until then. */
+  answerDeliveredAt: z.string().nullable(),
   answeredBy: z.string().nullable(),
   answeredAt: z.string().nullable(),
   answerRevision: z.number(),
@@ -1021,6 +1094,8 @@ export const planningGet = defineOperation({
         answer: q.answer,
         note: q.note,
         acceptedDefault: q.accepted_default === 1,
+        skipped: q.skipped === 1,
+        answerDeliveredAt: q.answer_delivered_at,
         answeredBy: q.answered_by,
         answeredAt: q.answered_at,
         answerRevision: q.answer_revision,

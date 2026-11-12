@@ -49,15 +49,18 @@ export const COVERAGE_CATEGORIES = [
 export const PLANNING_IDLE_MS = 15_000;
 /** A chat message, or every open question answered, settles this fast (kim's 750 ms). */
 export const PLANNING_SETTLE_MS = 750;
-/** PostToolUse takes news at most this often (kim's TAKE_THROTTLE_MS). */
-export const PLANNING_NEWS_THROTTLE_MS = 15_000;
+/**
+ * PostToolUse takes news at most this often (ADR 0470). Kim takes its own interview at every step;
+ * 2 s keeps a person's message from waiting behind a busy agent while bounding the reads.
+ */
+export const PLANNING_NEWS_THROTTLE_MS = 2_000;
 /** The longest one `planning.wait` call is held on the channel; the Stop hook calls it again. */
 export const PLANNING_WAIT_MAX_MS = 50_000;
 /** An idle session may yield only after this long idle with nobody present (ADR 0300, 0301). */
 export const PLANNING_YIELD_AFTER_MS = 5 * 60_000;
 
 const defaultValue = z.union([
-  z.string().trim().min(1).max(2_000),
+  z.string().trim().min(1).max(10_000),
   z.number().finite().transform(String),
   z.boolean().transform((v) => (v ? "Yes" : "No")),
 ]);
@@ -65,21 +68,21 @@ const defaultValue = z.union([
 /** One question, as the planning agent writes it (kim's fields, in the factory's names). */
 export const planningQuestionSchema = z.object({
   kind: z.enum(QUESTION_KINDS).default("text"),
-  prompt: z.string().trim().min(1).max(2_000),
+  prompt: z.string().trim().min(1).max(10_000),
   /** Background a person needs, in Markdown. */
-  context: z.string().max(8_000).optional(),
+  context: z.string().max(20_000).optional(),
   /** The choices, for single- and multiple-choice. Yes-no questions have Yes and No. */
-  options: z.array(z.string().trim().min(1).max(500)).max(12).default([]),
+  options: z.array(z.string().trim().min(1).max(1_000)).max(100).default([]),
   /**
    * The recommended answer: one option (several for multiple-choice), a number, Yes/No, or
    * suggested text. People accept it with one click or in bulk.
    */
   default: z
-    .union([defaultValue, z.array(defaultValue).min(1).max(12)])
+    .union([defaultValue, z.array(defaultValue).min(1).max(100)])
     .transform((v) => (Array.isArray(v) ? v : [v]))
     .optional(),
   /** Why the default, in Markdown. */
-  recommendation: z.string().max(4_000).optional(),
+  recommendation: z.string().max(20_000).optional(),
   /** Decision domain (ADR 0029): product, architecture, security, privacy, operations, … */
   domain: z.string().trim().min(1).max(40).default("product"),
   /** Whether the spec can't go to the gate without it. */
@@ -219,7 +222,9 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     questionId: z.string(),
     number: z.number().nullable(),
     prompt: z.string(),
-    answer: z.string(),
+    /** Null when the person skipped it: decide it yourself. */
+    answer: z.string().nullable(),
+    skipped: z.boolean(),
     note: z.string().nullable(),
     acceptedDefault: z.boolean(),
     by: z.string(),
@@ -232,6 +237,10 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     text: z.string(),
     from: z.string(),
     questionId: z.string().nullable(),
+    /** The question the message is about (kim's `about`), so the agent needn't look it up. */
+    about: z
+      .object({ questionId: z.string(), number: z.number().nullable(), prompt: z.string() })
+      .nullable(),
     /** `gate`: the approver asked for changes at the spec gate. */
     kind: z.enum(["chat", "gate"]),
   }),

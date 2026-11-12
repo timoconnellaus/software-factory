@@ -44,6 +44,7 @@ const answer: PlanningNewsEvent = {
   number: 1,
   prompt: "Which time zone?",
   answer: "UTC",
+  skipped: false,
   note: null,
   acceptedDefault: false,
   by: "Tim",
