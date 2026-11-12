@@ -935,11 +935,33 @@ export const questionAnswerFromEdit = defineOperation({
     }
     const edit = await ctx.db
       .selectFrom("core_spec_edits")
-      .select(["id", "work_item_id", "author_id"])
+      .selectAll()
       .where("id", "=", input.editId)
       .executeTakeFirst();
     if (!edit || edit.work_item_id !== q.work_item_id) {
       throw new OperationError("forbidden", "that edit isn't this work item's");
+    }
+    // The edit settles this question only if it still stands, came after the answer it replaces,
+    // was made by someone who may answer it, and is about it: the block carries the question's tag
+    // before and after (review of #85). Otherwise ask the person.
+    const ask = (why: string) =>
+      new OperationError("conflict", `${why}: ask the person in the chat instead`);
+    if (edit.replaced_by || edit.released_at) throw ask("that edit no longer stands");
+    if (q.answered_at && q.answered_at > edit.created_at && q.answered_via_edit !== edit.id) {
+      throw ask("the question was answered after that edit");
+    }
+    const tag = `[Q${q.number}]`;
+    if (!edit.before.includes(tag) || !edit.after.includes(tag)) {
+      throw ask(
+        `that edit isn't about Q${q.number} (the line doesn't carry ${tag} before and after)`,
+      );
+    }
+    const approvers = await approverIds(ctx.db, requireWorkItem(ctx).org_id, ctx.scope.policy);
+    if (q.assignee_user_id !== edit.author_id && !approvers.includes(edit.author_id)) {
+      throw new OperationError(
+        "forbidden",
+        "the person who edited the plan can't answer this question",
+      );
     }
     answer(
       ctx,

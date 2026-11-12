@@ -704,6 +704,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             authorId: ME,
             authorName: "You",
             createdAt: ago(4),
+            kept: true,
           },
         ]
       : [],

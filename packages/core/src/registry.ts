@@ -110,6 +110,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   planning.planningNews,
   planning.planningPeek,
   planning.specEdit,
+  planning.specReleaseEdit,
   planning.planningWait,
   planning.planningYield,
   planning.planningReady,

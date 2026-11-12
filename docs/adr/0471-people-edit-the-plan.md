@@ -38,3 +38,13 @@ plan and people steer it through chat.
   chat when it disagrees.
 - An answer the planner records from an edit is still the person's own decision. That is why it is
   refused for the questions bulk accept never covers.
+
+## Amendment, 2026-11-12 (review of #85)
+"Word for word" is whole blocks, not a substring: each block an edit wrote must still be a block of
+the plan exactly, so the planner can't append to a person's line or match a short edit inside its
+own text. Edits have a lifecycle: a later edit covering an earlier one retires it, and a person can
+release an edit (`spec.releaseEdit`). An edit is refused once the spec gate is decided. The planner's
+revision is guarded on the plan version it replaces, `planning.ready` re-checks the edits, and an
+answer recorded from an edit must be about that question, newer than its last answer, and by someone
+who may answer it.
+
