@@ -39,6 +39,7 @@ const cases = (): Record<string, string> => ({
     try { new EventSource("${TRAP}/sse") } catch {}
   </script>`,
   "css url, @import and font": `<style>@import url("${TRAP}/import.css"); @font-face { font-family: t; src: url("${TRAP}/font.woff2") } body { background: url("${TRAP}/css.png"); font-family: t }</style><link rel="stylesheet" href="${TRAP}/style.css">`,
+  "DNS prefetch": `<link rel="dns-prefetch" href="${TRAP.replace("127.0.0.1", "trap-dns.invalid")}"><link rel="dns-prefetch" href="${TRAP}">`,
   "prefetch and preload": `<link rel="prefetch" href="${TRAP}/prefetch"><link rel="preload" as="image" href="${TRAP}/preload"><link rel="preconnect" href="${TRAP}"><link rel="icon" href="${TRAP}/icon.png">`,
   "WebRTC to a STUN server": `<script>try { const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:127.0.0.1:${UDP}" }] }); pc.createDataChannel("x"); pc.createOffer().then((o) => pc.setLocalDescription(o)) } catch {}</script>`,
   "WebRTC from a fresh iframe": `<script>try { const f = document.createElement("iframe"); document.body.appendChild(f); const P = f.contentWindow.RTCPeerConnection; const pc = new P({ iceServers: [{ urls: "stun:127.0.0.1:${UDP}" }] }); pc.createDataChannel("x"); pc.createOffer().then((o) => pc.setLocalDescription(o)) } catch {}</script>`,
@@ -104,7 +105,11 @@ for (const [engine, launcher] of [
       await browser.close();
     });
 
-    for (const name of Object.keys(cases())) {
+    // MOCKUP_REPEAT=20 runs each case 20 times (the flake check for review of #90).
+    const repeat = Number(process.env.MOCKUP_REPEAT ?? 1);
+    for (const name of Object.keys(cases()).flatMap((n) =>
+      Array.from({ length: repeat }, () => n),
+    )) {
       it(`can't get out by ${name}`, async () => {
         // A UDP port of its own per case: a previous case's late STUN retries can't count here.
         udp.close();

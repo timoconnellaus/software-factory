@@ -65,7 +65,39 @@ function useArtifact(workItemId: string, artifact: Pick<Artifact, "id" | "revisi
  * One mockup in a sandboxed frame, at its own frame width, scaled to fit `fit` pixels wide.
  * `values` are applied; `preview` is shown over them while set; in comment mode a click pins.
  */
-export function MockupFrame({
+/**
+ * Whether mockups are framed in this app (review of #90). Off by default until the Electrobun bridge
+ * probe (docs/reviews/2026-11-12-mockup-bridge-probe.md) has run in the real app and found nothing
+ * reachable; a developer turns it on with `localStorage["sf-mockups"] = "on"`.
+ */
+export function mockupsEnabled(): boolean {
+  try {
+    return globalThis.localStorage?.getItem("sf-mockups") === "on";
+  } catch {
+    return false;
+  }
+}
+
+/** A mockup frame, or, while mockups aren't enabled in this app, a note in its place. */
+export function MockupFrame(props: Parameters<typeof LiveMockupFrame>[0]) {
+  if (!mockupsEnabled()) {
+    return (
+      <div
+        className={cn(
+          "flex items-center justify-center rounded-md bg-selected p-4 text-center text-ink-muted text-xs",
+          props.className,
+        )}
+        style={{ width: props.fit, minHeight: 80 }}
+        data-testid="mockup-disabled"
+      >
+        {props.artifact.title}: mockups are not enabled in this app yet
+      </div>
+    );
+  }
+  return <LiveMockupFrame {...props} />;
+}
+
+function LiveMockupFrame({
   workItemId,
   artifact,
   fit,
@@ -99,6 +131,8 @@ export function MockupFrame({
   const scale = fit / docWidth;
   const [height, setHeight] = useState(size.height);
   const [loaded, setLoaded] = useState(0);
+  const [stopped, setStopped] = useState(false);
+  const [generation, setGeneration] = useState(0);
   const srcDoc = useMemo(
     () => (content.data ? outerDocument(content.data.content) : undefined),
     [content.data],
@@ -113,8 +147,9 @@ export function MockupFrame({
     const onMessage = (e: MessageEvent) => {
       if (!e.data || typeof e.data !== "object") return;
       const m = e.data as Record<string, unknown>;
-      if (e.source === frame.current?.contentWindow && m.type === "reset") {
-        setLoaded((n) => n + 1);
+      // The outer frame says the mockup tried to leave and was stopped: offer Reload.
+      if (e.source === frame.current?.contentWindow && m.type === "stopped") {
+        setStopped(true);
         return;
       }
       if (!e.source || e.source !== innerWindow(frame.current)) return;
@@ -171,6 +206,7 @@ export function MockupFrame({
         <div className="p-3 text-destructive text-xs">{errorMessage(content.error)}</div>
       ) : (
         <iframe
+          key={generation}
           ref={frame}
           title={artifact.title}
           sandbox="allow-scripts"
@@ -182,6 +218,20 @@ export function MockupFrame({
           )}
           style={{ width: docWidth, height: shown, transform: `scale(${scale})` }}
         />
+      )}
+      {stopped && (
+        <Button
+          size="xs"
+          variant="outline"
+          className="absolute top-2 right-2 bg-panel"
+          onClick={() => {
+            setStopped(false);
+            setGeneration((g) => g + 1);
+          }}
+          data-testid="mockup-reload"
+        >
+          Reload
+        </Button>
       )}
     </div>
   );
@@ -287,9 +337,19 @@ export function MockupsPane({
     );
   }
   const cards = q?.optionArtifacts ? Object.entries(q.optionArtifacts) : [];
+  const off = !mockupsEnabled() && (
+    <div
+      className="rounded-md bg-selected px-3 py-2 text-ink-muted text-xs"
+      data-testid="mockups-off"
+    >
+      Mockups are not enabled in this app yet: the planner's drawings are listed by title but not
+      drawn.
+    </div>
+  );
   if (q && cards.length) {
     return (
       <div className="grid gap-3 px-6 py-5" data-testid="option-cards">
+        {off}
         <div className="flex items-baseline gap-2 font-semibold text-[15px]">
           <span className="font-mono text-status-running text-xs">Q{q.number}</span>
           {q.prompt}
@@ -394,6 +454,7 @@ export function MockupsPane({
   if (!one) return null;
   return (
     <div className="grid gap-3 px-6 py-5" data-testid="mockup-single">
+      {off}
       <div className="flex items-center gap-2">
         <span className="font-semibold">{one.title}</span>
         <span className="font-mono text-[11px] text-ink-muted">rev {one.revision}</span>

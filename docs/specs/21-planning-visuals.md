@@ -101,6 +101,13 @@ System designs and `.kim/` write-back (spec 22). Phone notifications (spec 15).
   `artifact.read`.
 - Screenshots: `docs/screenshots/planning/visuals-*.png` (before: `visuals-before.png`).
 
+- **After the second review of #90**: mockups are off in the desktop app until the bridge probe runs
+  (a flag, default off, that the frame checks); a refused navigation stops the mockup at once with a
+  static notice and Reload (deterministic: the navigation cases run 20 times in both engines without
+  a flake); the budget is guarded in the batch, counts live artifacts only, and deleting frees bytes;
+  a DNS-prefetch case joins the hostile set; the bridge probe now posts real preload-shaped messages
+  and names the observable effect (a forged `dom-ready` closes the app's terminals).
+
 ## Follow-ups
 - **WebRTC off in the desktop WebView** (ADR 0472, review of #90). The frame script removes the
   WebRTC constructors, which the real-engine tests prove for the direct case, a fresh iframe and

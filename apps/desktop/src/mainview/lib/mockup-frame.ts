@@ -143,7 +143,7 @@ export function frameDocument(content: string, nonce = ""): string {
 
 /** What a mockup that keeps trying to leave its frame is replaced with. */
 const STOPPED =
-  '<!doctype html><body data-mockup-stopped="1" style="font:13px system-ui;color:#555;padding:16px">This mockup tried to leave its frame and was stopped.</body>';
+  '<!doctype html><body data-mockup-stopped="1" style="font:13px system-ui;color:#555;padding:16px">This mockup tried to leave its frame and was stopped. Reload it from the app to try again.</body>';
 
 /** Escapes text for an HTML attribute value in double quotes. */
 const attr = (text: string) =>
@@ -151,38 +151,36 @@ const attr = (text: string) =>
 
 /**
  * The outer document: the app's own, holding the mockup in a nested sandboxed frame. Its CSP
- * forbids frame navigation, so the mockup can't leave; the watcher puts the mockup back when its frame
- * holds anything else (a refused navigation's error page), and tells the app (`reset`).
+ * forbids frame navigation, so the mockup can't leave; the first refused navigation replaces it with
+ * a static notice, and the app is told (`stopped`) so it can offer Reload.
  */
 export function outerDocument(content: string): string {
   const nonce = crypto.randomUUID();
   const inner = attr(frameDocument(content, nonce));
   return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CSP}"><style>html,body{margin:0;height:100%;overflow:hidden;background:#fff}iframe{border:0;display:block;width:100%;height:100%}</style></head><body><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${inner}"></iframe><script>(() => {
   const frame = document.querySelector("iframe");
-  const doc = frame.getAttribute("srcdoc");
-  // Every document the frame loads must be the mockup, which says so with the nonce once it has
-  // loaded. A navigation the CSP refused leaves an error page that never does: put the mockup back,
-  // and after two tries stop it with a notice (no scripts) instead of letting it loop.
-  let loads = 0, heres = 0, resets = 0, stopped = false;
+  // The outer CSP's frame-src 'none' is what refuses a navigation of the mockup's frame; the
+  // browser reports it here. The mockup is replaced at once with a static notice (no scripts, no
+  // retry), and the app is told so it can offer Reload. As a fallback, a document that loads in the
+  // frame without checking in with the nonce (an error page) stops it the same way.
+  let loads = 0, heres = 0, stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    frame.setAttribute("sandbox", "");
+    frame.setAttribute("srcdoc", ${JSON.stringify(STOPPED)});
+    parent.postMessage({ type: "stopped" }, "*");
+  };
+  document.addEventListener("securitypolicyviolation", (e) => {
+    if (/^(frame|child)-src/.test(e.effectiveDirective || e.violatedDirective || "")) stop();
+  });
   addEventListener("message", (e) => {
     if (e.source === frame.contentWindow && e.data && e.data.type === "here" && e.data.nonce === ${JSON.stringify(nonce)}) heres++;
   });
   frame.addEventListener("load", () => {
+    if (stopped) return;
     loads++;
-    setTimeout(() => {
-    if (stopped || loads <= heres) return;
-    loads = 0;
-    heres = 0;
-    if (++resets > 2) {
-      stopped = true;
-      frame.setAttribute("sandbox", "");
-      frame.setAttribute("srcdoc", ${JSON.stringify(STOPPED)});
-      parent.postMessage({ type: "stopped" }, "*");
-      return;
-    }
-    frame.setAttribute("srcdoc", doc);
-    parent.postMessage({ type: "reset" }, "*");
-    }, 700);
+    setTimeout(() => { if (!stopped && loads > heres) stop(); }, 700);
   });
 })();</script></body></html>`;
 }

@@ -12,6 +12,7 @@ import {
   artifactUpdateInputSchema,
   declaredControls,
 } from "@software-factory/runner-contract";
+import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
@@ -116,6 +117,7 @@ export const artifactAdd = defineOperation({
         created_at: ctx.now,
       }),
     );
+    guardBudget(ctx, w.id);
     if (input.show) showArtifact(ctx, session.id, id);
     logPlanning(ctx, w.id, "artifact.added", { artifactId: id, revision: 1 });
     return { artifactId: id, revision: 1, controls };
@@ -189,6 +191,7 @@ export const artifactUpdate = defineOperation({
         }),
       );
       pruneRevisions(ctx, current.id, revision);
+      guardBudget(ctx, w.id);
     }
     if (input.show) showArtifact(ctx, session.id, current.id);
     logPlanning(ctx, w.id, "artifact.updated", { artifactId: current.id, revision });
@@ -215,6 +218,13 @@ export const artifactDelete = defineOperation({
         .updateTable("core_planning_artifacts")
         .set({ deleted_at: ctx.now, updated_at: ctx.now })
         .where("id", "=", current.id),
+    );
+    // Its bytes are freed (review of #90): the latest revision stays for the record, the rest go.
+    ctx.write(
+      ctx.db
+        .deleteFrom("core_planning_artifact_revisions")
+        .where("artifact_id", "=", current.id)
+        .where("revision", "<", current.revision),
     );
     logPlanning(ctx, w.id, "artifact.deleted", { artifactId: current.id });
     return { artifactId: current.id, deleted: true };
@@ -362,6 +372,8 @@ async function checkBudget(
       eb.fn.count<number>("a.id").distinct().as("artifacts"),
     ])
     .where("a.work_item_id", "=", workItemId)
+    // Only live artifacts count (review of #90): a deleted one frees its slot and its bytes.
+    .where("a.deleted_at", "is", null)
     .executeTakeFirst();
   const used = Number(row?.bytes ?? 0);
   if (newArtifact && Number(row?.artifacts ?? 0) >= ARTIFACTS_PER_ITEM) {
@@ -399,4 +411,26 @@ async function prunedBytes(ctx: HandlerContext, artifactId: string, latest: numb
     .where("revision", "<=", latest - ARTIFACT_REVISIONS_KEPT)
     .executeTakeFirst();
   return Number(row?.bytes ?? 0);
+}
+
+/**
+ * Guards the budget in the batch (review of #90): placed after the writes, it fails the whole batch
+ * if, with them, the item's live artifacts exceed the cap or their bytes the budget, so two adds
+ * racing can't both pass the check above. Point lookups by core_planning_artifacts_item_idx and the
+ * revisions' primary key, bounded by the caps.
+ */
+function guardBudget(ctx: HandlerContext, workItemId: string) {
+  ctx.guardExists(
+    "the item's artifacts still fit",
+    ctx.db
+      .selectFrom("core_work_items")
+      .select("id")
+      .where("id", "=", workItemId)
+      .where(
+        sql<boolean>`(SELECT COUNT(*) FROM core_planning_artifacts WHERE work_item_id = ${workItemId} AND deleted_at IS NULL) <= ${ARTIFACTS_PER_ITEM}`,
+      )
+      .where(
+        sql<boolean>`(SELECT COALESCE(SUM(r.size), 0) FROM core_planning_artifacts a JOIN core_planning_artifact_revisions r ON r.artifact_id = a.id WHERE a.work_item_id = ${workItemId} AND a.deleted_at IS NULL) <= ${ARTIFACT_ITEM_BYTES}`,
+      ),
+  );
 }

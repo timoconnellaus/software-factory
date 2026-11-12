@@ -11,8 +11,8 @@ import {
   type PlanningNews,
 } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
-import { FOREMAN } from "../src/index.ts";
-import { newItem, ok, RUNNER_ACTOR, refusal, uid, world } from "./helpers.ts";
+import { FOREMAN, invoke } from "../src/index.ts";
+import { deps, newItem, ok, RUNNER_ACTOR, refusal, uid, world } from "./helpers.ts";
 
 const manifest: CapabilityManifest = {
   contractVersion: CONTRACT_VERSION,
@@ -44,7 +44,35 @@ async function planning(w: W) {
   if (!job || job.jobId !== started.jobId) throw new Error("expected the planning job");
   const agent = <O = Record<string, unknown>>(op: string, input: Record<string, unknown> = {}) =>
     ok<O>(op, { ...input, jobId: job.jobId, fencingToken: job.lease.fencingToken }, m5);
-  return { item, agent };
+  return { item, agent, job, m5 };
+}
+const planningWithJob = planning;
+
+/** Runs an operation held after its reads, before its commit, until released (deterministic races). */
+function held(op: string, input: unknown, actor: { type: string; id: string }) {
+  let release!: () => void;
+  let reached!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const reachedP = new Promise<void>((r) => {
+    reached = r;
+  });
+  const result = invoke(
+    {
+      ...deps,
+      beforeCommit: async (name) => {
+        if (name !== op) return;
+        reached();
+        await gate;
+      },
+    },
+    op,
+    input,
+    { actor: actor as never, origin: { surface: "test" } },
+  );
+  result.catch(() => reached());
+  return { result, reached: reachedP, release };
 }
 
 const SETTINGS = `<!doctype html><html><head><style>
@@ -318,5 +346,32 @@ describe("planning visuals (spec 21)", () => {
     const full = await refusal(agent("artifact.add", { title: "One more", content: big }));
     expect(full.code).toBe("conflict");
     expect(full.message).toContain("MB");
+  });
+
+  it("guards the budget in the batch, counts only live artifacts, and frees a deleted one's slot (review of #90, 5)", async () => {
+    const w = await world();
+    const { agent, job, m5 } = await planningWithJob(w);
+    const ids: string[] = [];
+    for (let i = 0; i < 49; i++) {
+      ids.push(
+        (await agent<{ artifactId: string }>("artifact.add", { title: `M${i}`, content: SETTINGS }))
+          .artifactId,
+      );
+    }
+    // Two adds race for the 50th slot: both read 49, the guard lets only one commit.
+    const fields = { jobId: job.jobId, fencingToken: job.lease.fencingToken };
+    const a = held("artifact.add", { title: "A", content: SETTINGS, ...fields }, m5);
+    await a.reached;
+    await agent("artifact.add", { title: "B", content: SETTINGS });
+    a.release();
+    expect((await refusal(a.result)).code).toBe("conflict");
+    expect((await refusal(agent("artifact.add", { title: "C", content: SETTINGS }))).code).toBe(
+      "conflict",
+    );
+    // Deleting frees the slot.
+    await agent("artifact.delete", { artifactId: ids[0] });
+    expect(await agent("artifact.add", { title: "D", content: SETTINGS })).toMatchObject({
+      revision: 1,
+    });
   });
 });

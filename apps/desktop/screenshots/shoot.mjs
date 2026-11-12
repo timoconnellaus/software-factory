@@ -47,12 +47,14 @@ export const SCREENS = [
     path: "/work/wi_12?tab=plan&pane=mockups",
     design: "PlanFocusMockup.html",
     keys: ["f"],
+    storage: { "sf-mockups": "on" },
   },
   {
     name: "plan-canvas",
     path: "/work/wi_12?tab=plan&pane=canvas",
     design: "PlanFocus.html",
     keys: ["f"],
+    storage: { "sf-mockups": "on" },
   },
   {
     name: "plan-focus-alone",
@@ -257,7 +259,12 @@ try {
       // A fresh view state per shot: one tab, the Personal org.
       await cdp.send("Page.navigate", { url: base });
       await sleep(300);
-      await cdp.send("Runtime.evaluate", { expression: "localStorage.clear()" });
+      await cdp.send("Runtime.evaluate", {
+        // A screen may set per-device settings first (e.g. mockups on, spec 21).
+        expression: `localStorage.clear(); ${Object.entries(s.storage ?? {})
+          .map(([k, v]) => `localStorage.setItem(${JSON.stringify(k)}, ${JSON.stringify(v)});`)
+          .join(" ")}`,
+      });
       const file = resolve(out, `${s.name}-${theme}${tag ? `-${tag}` : ""}.png`);
       await shoot(
         cdp,

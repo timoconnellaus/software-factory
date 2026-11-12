@@ -80,3 +80,23 @@ to a page with no CSP, and `img-src https:` let it send anything out as an image
   nested frames, workers and media. Each test asserts a trap server (HTTP and UDP) saw nothing, the
   app page didn't move, and the frame holds the mockup (or the stopped notice).
 
+## Amendment, 2026-11-12 (second review of #90)
+- **What blocks a navigation is the outer CSP's `frame-src 'none'`**, not the nonce. The browser refuses
+  the navigation and reports it to the outer document (`securitypolicyviolation`, `frame-src`). The outer
+  then replaces the mockup **at once** with a static notice (a frame with an empty sandbox, so no
+  scripts), with no retry loop, and tells the app, which offers Reload. The nonce check-in only
+  detects the rare case where an error page loads without a violation event. It is a fallback, and it
+  stops the mockup the same way.
+- **The allowed CDNs are a narrow, low-bandwidth exfiltration channel.** A mockup may load
+  `https://cdn.jsdelivr.net/gh/<attacker>/<repo>/<file>?<data>` and similar, and jsdelivr publishes
+  per-file hit statistics. That would carry only what the mockup itself holds (its own content and
+  what the person types into it, never the app's data or credentials), slowly and visibly in public
+  stats. It is accepted because mockups need the libraries and fonts. Removing it would mean
+  vendoring every library the planner may use.
+- **Mockups are off in the desktop app** (`mockupsEnabled()`, default off; a developer turns them on
+  with `localStorage["sf-mockups"] = "on"`) until the Electrobun bridge probe
+  (`docs/reviews/2026-11-12-mockup-bridge-probe.md`) has run in the real app and found nothing
+  reachable. While off, nothing is framed: each mockup is a titled note.
+- The budget is guarded in the batch (a check after the writes, so racing adds can't both pass).
+  Only live artifacts count, and deleting one frees its older revisions.
+
