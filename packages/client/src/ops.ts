@@ -43,6 +43,7 @@ export interface OpMap {
   "planning.finishAlone": Def<typeof operations.planningFinishAlone>;
   "spec.edit": Def<typeof operations.specEdit>;
   "artifact.get": Def<typeof operations.artifactGet>;
+  "spec.writeBack": Def<typeof operations.specWriteBack>;
   "spec.releaseEdit": Def<typeof operations.specReleaseEdit>;
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
