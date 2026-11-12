@@ -303,6 +303,21 @@ on their machine with their model credential); others watch read-only. Every ste
 the runner host takes it over a held `steer` call on the signed channel, at most once.
 _Avoid_: chat (planning has its own chat), prompt (the job's prompt is set at launch), command
 
+**Web terminal**
+A running job's real terminal in the browser: the **Web terminal** view on the Live tab (spec 35,
+ADR 0440), xterm.js over a WebSocket to the job's **terminal relay**. Opening it is an operation,
+`run.terminal.attach`, which records who attached, when, and the mode: `type` for the owner of the
+run's runner, `watch` (read-only) for everyone else in the org. The relay enforces the mode. It
+shows the visible screen, not scrollback.
+_Avoid_: console, shell, remote desktop
+
+**Terminal relay**
+The `TerminalRelay` Durable Object in sf-engine, one per job (ADR 0440). The runner host connects to
+it outbound with a one-use ticket it got from the signed channel's held `terminal` call, and viewers
+connect through sf-app. It forwards the host's output to every viewer and only the runner owner's
+keys and size to the host, and tells the host to stop when the last viewer leaves.
+_Avoid_: proxy, tunnel (nothing listens on the host)
+
 **Runner host**
 The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
 outbound over the signed channel, loads runner adapters, fetches into the checkout the machine
@@ -349,7 +364,9 @@ restrict them. The known ones:
   outside the git tree (ADR 0310);
 - `container-isolation`: each job's harness runs in its own container (ADR 0430); planning sessions
   still run on the host;
-- `steer`: a person can message the live session from the dashboard (a **steer**, ADR 0400).
+- `steer`: a person can message the live session from the dashboard (a **steer**, ADR 0400);
+- `terminal`: the live session's terminal can be bridged to the dashboard's **web terminal**
+  (runner-local: a tmux control-mode client, ADR 0440).
 _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**
