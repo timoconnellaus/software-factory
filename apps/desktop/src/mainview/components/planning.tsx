@@ -65,6 +65,7 @@ import { toast } from "sonner";
 import { onPlanningChanged } from "../bridge.ts";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { op, submitKey } from "../lib/op.ts";
+import { commentsOn, matchesEdit, ownBlock } from "../lib/plan-blocks.ts";
 import { planningQuery } from "../lib/queries.ts";
 import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
@@ -835,37 +836,6 @@ type Draft = { text: string; questionId?: string; anchor?: Anchor };
 type Anchor = { specId: string; lineStart: number; lineEnd: number; quote: string };
 
 /**
- * Whether a block is a person's edit: one of the blocks the edit wrote, exactly, as the server
- * compares them (ADR 0471, review of #85). Text the planner adds to it makes it the planner's.
- */
-const matchesEdit = (raw: string, after: string) =>
-  planBlocks(after).some((b) => b.text === foldSpace(raw));
-
-/**
- * The comments anchored to a block: the same text, and when several blocks read the same, the one
- * nearest the lines the comment was made on (review of #85).
- */
-function commentsOn(
-  view: PlanningView,
-  raw: string,
-  lineStart: number,
-  blocks: { text: string; lineStart: number }[],
-) {
-  const text = foldSpace(raw);
-  const same = blocks.filter((b) => b.text === text);
-  return view.messages.filter((m) => {
-    if (!m.anchor || foldSpace(m.anchor.quote) !== text) return false;
-    const nearest = same.reduce((best, b) =>
-      Math.abs(b.lineStart - (m.anchor?.lineStart ?? 0)) <
-      Math.abs(best.lineStart - (m.anchor?.lineStart ?? 0))
-        ? b
-        : best,
-    );
-    return nearest.lineStart === lineStart;
-  });
-}
-
-/**
  * One block of the plan, with Edit and Comment (spec 27, design PlanFocus): Edit opens its source
  * lines in place and saves them as the person's edit; Comment starts a chat message anchored to
  * them. An edited block says who edited it and that the planner keeps their wording.
@@ -1091,6 +1061,9 @@ function Spec({
   );
   const me = useMe();
   const sourceLines = spec ? spec.bodyMd.split("\n") : [];
+  // The plan's blocks as the server splits them: a block's lines are always these, never
+  // react-markdown's span (a list item's span takes in its nested list; review of #85, round 2).
+  const planParts = useMemo(() => (spec ? planBlocks(spec.bodyMd) : []), [spec]);
   const block =
     (Tag: "p" | "li") =>
     ({ node, children }: { node?: unknown; children?: ReactNode }) => {
@@ -1106,13 +1079,11 @@ function Spec({
       };
       // Spec 27: a block's own source lines, for editing and commenting. A paragraph inside a
       // list item is the item's: only the item gets the controls.
-      const pos = (node as { position?: { start: { line: number }; end: { line: number } } })
-        ?.position;
-      const lineStart = pos ? pos.start.line - 1 : -1;
-      const lineEnd = pos ? pos.end.line - 1 : -1;
-      const raw = lineStart >= 0 ? sourceLines.slice(lineStart, lineEnd + 1).join("\n") : "";
-      const inItem = Tag === "p" && /^\s*([-*+]|\d+[.)])\s/.test(raw);
-      if (!spec || lineStart < 0 || inItem) {
+      const own = ownBlock(Tag, node, planParts, sourceLines);
+      const lineStart = own?.lineStart ?? -1;
+      const lineEnd = own?.lineEnd ?? -1;
+      const raw = own?.raw ?? "";
+      if (!spec || !own) {
         return Tag === "li" ? (
           <li className={className} {...data}>
             {children}
@@ -1133,7 +1104,7 @@ function Spec({
           workItemId={workItemId}
           edit={view.edits.find((e) => matchesEdit(raw, e.after))}
           settled={view.questions.filter((q) => q.answeredViaEdit !== null)}
-          comments={commentsOn(view, raw, lineStart, planBlocks(spec.bodyMd)).length}
+          comments={commentsOn(view, raw, lineStart, planParts).length}
           me={me}
           onComment={onComment}
         >
