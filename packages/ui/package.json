@@ -6,6 +6,7 @@
   "description": "shadcn/ui components and the factory theme (zinc, Geist, status dots) from .kim/design-system.",
   "exports": {
     "./globals.css": "./src/styles/globals.css",
+    "./desktop.css": "./src/styles/desktop.css",
     "./lib/*": "./src/lib/*.ts",
     "./components/*": "./src/components/*.tsx",
     "./hooks/*": "./src/hooks/*.ts"

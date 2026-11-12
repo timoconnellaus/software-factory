@@ -32,7 +32,10 @@ itself to `~/.hutch` and adds a PATH line to your shell profile the first time.
 | `src/shared/decisions.ts` | The gate decisions, which go only through `decide` (Touch ID). |
 | `src/mainview/` | The SPA (TanStack Router, hash history) on `packages/ui`. It holds no token. |
 | `src/mainview/lib/` | `op` / `read` (one `batch` per tick) / `decide`, the queries, the session from `org.list`, decisions, attachments over the door. |
-| `src/mainview/routes/`, `components/` | The screens, ported from sf-app (spec 40 M3): Inbox, Work, New work, attach, the work item with Planning and its timeline, the review packet, Setup, This Mac. Pure logic is in `packages/client`. |
+| `src/mainview/routes/`, `components/` | The screens (spec 40 M3, restyled for spec 41): Inbox, Work, New work, attach, the work item (Overview, Plan, Runs, Review, Activity), Setup, This Mac. Pure logic is in `packages/client`. |
+| `src/mainview/routes/_app.tsx`, `components/shell-*.tsx` | The window shell (spec 41, ADR 0460): toolbar with tabs and ⌘K, org rail, sidebar, the content panel, status bar, keyboard shortcuts, focus mode. Sections (`_work.tsx`, `_settings.tsx`) are layout routes with their nested list. |
+| `src/mainview/lib/view-state.ts` | This Mac's view state: tabs, pins, the chosen org, the sidebar, focus. Never sent to the factory. |
+| `screenshots/` | The screenshot harness: the view over a fixture door, shot by Chrome over CDP. `node apps/desktop/screenshots/shoot.mjs --design` writes `docs/screenshots/desktop-shell/`. |
 
 ## Signing the key helper (M4)
 Only `sf-keys` gets the `keychain-access-groups` entitlement (the Developer ID team's group), so only
