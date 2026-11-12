@@ -114,14 +114,55 @@ narrower or rougher), **missing**, **wrong** (a bug, or a behaviour that defeats
 | 5. Take over in a terminal | the agent always runs in the user's own terminal | runner-local: `tmux attach` on the runner's Mac; the Live tab's terminal (hosts work in flight). Typing works (verified) | Nothing new for planning beyond case 1's "steer into the record" |
 | 6. Hands-off: accept every default, only the final approval needs a person | "Accept all", and the agent stops itself | "Accept remaining defaults", the agent revises and calls `planning_ready`, then Approve. Two decisions in sf-app; on desktop two Touch IDs (plus one per question that can't be bulk-accepted: security, privacy, irreversible, no default, by policy) | Works today. The Touch ID per answer on desktop is the friction (owner decision below). Defaults are never accepted without a person (ADR 0042): no change proposed |
 
+## The planning screens (PR #61) against the backend
+The approved design (`docs/design/factory-ui/ItemPlan.html`, `PlanFocus.html`,
+`PlanFocusMockup.html`, on PR #61) is the target for the planning UI. Each behaviour it shows:
+
+| Shown | Backend today | Where it comes |
+| --- | --- | --- |
+| Questions with progress, Recommended pre-selected, "changed by you", Accept recommended, bulk "Accept 3 recommended" | yes (`question.answer`, `acceptDefaults`, `acceptedDefault`) | — |
+| Skip | no | slice 1 |
+| Per-question thread ("2 messages") | yes (`questionId` on chat) | slice 1 adds `about` to news |
+| Plan with provenance chips, rev N, changed line highlighted, assumptions with Overturn, coverage | yes | — |
+| **Edit a plan line** ("the agent keeps your wording and updated Q3 to match") | no | slice 2 (`spec.edit`) |
+| **Comment (C)** on the plan | no | slice 2 (comments on spec blocks) |
+| **Pinned comment on a mockup** with Resolved / Reopen | no (kim's pins have no resolved state either: new) | spec 21 |
+| Mockups tab, option cards (Choose A / B), Open full size, "Try with" states, Ask for a third option, Canvas, System | no | spec 21 (System: spec 22) |
+| **Chat: Enter = after the planner's current step; ⌘-Enter = interrupt now** | Enter: yes but up to 15 s late (the throttle). Interrupt: no | slice 1 (below) |
+| Activity line ("Revising the acceptance criteria") with **Stop** | the activity: yes; Stop: no | slice 1 (interrupt without a message) |
+| **Pause** (session bar) | no; the session yields only when the scheduler asks | slice 1 (`planning.pause` / `resume`: interrupt, then yield the slot; news doesn't wake it until resumed) |
+| Open terminal | runner-local `tmux attach` on the runner's Mac; the Live tab's terminal comes with the hosts work | hosts session |
+| Planner is here / working on M5 / runner and light slots in the status bar | yes (presence, the pill, pools in the heartbeat) | — |
+| **Let the planner finish alone** | no. "Accept remaining defaults" is the nearest | slice 1: `planning.finishAlone` accepts the bulk-acceptable defaults now and **the ones the planner asks later**, and the planner calls `planning_ready` itself. Security, privacy, irreversible and no-default questions still wait for a person (ADR 0042), and approval stays a person's. A person turning it on is not an auto-accept on timeout, but the owner should confirm it reads ADR 0042 the same way |
+| Approve plan and 2 work items | no | spec 24 (splits) |
+
+**How Enter and ⌘-Enter map onto the hooks and steer.**
+- **Enter (after its current step)** is `chat.send`. The message goes into the planning log, and the
+  PostToolUse hook brings it after the tool call the planner is in. With slice 1's news at every
+  tool call, that is the next step, not up to 15 s later. An idle planner is woken by its Stop hook
+  (0.8 s, measured).
+- **⌘-Enter (interrupt now)** is `chat.send` with `interrupt: true`. The message is stored like any
+  other, then the factory steers the run: the runner adapter presses Escape in the session (Claude
+  Code stops the current step) and submits a fixed line: "A person interrupted you: read the
+  planning news". No person's text is typed into the terminal. The UserPromptSubmit hook then
+  delivers the news, the message included, as untrusted data, as for any chat. So any member who may
+  chat may interrupt, not only the runner's owner (`run.steer` stays owner-only, because there the
+  text is typed as-is). It needs one optional runner capability, `interrupt` (Escape, then a line),
+  declared by `runner-local`: a new adapter method and the smallest possible hook in the host's
+  steer loop.
+- **Stop** on the activity line is the same interrupt with no message and the line "A person
+  stopped your current step; end your turn". The Stop hook then waits as usual.
+
 ## Owner decisions needed
 1. **Answering a planning question on desktop.** Today each answer is a Touch ID prompt because
    `question.answer` is a presence-decided gate operation (ADR 0042, 0391). Proposal: answers to a
    *planning session's* questions are ordinary member writes (no presence proof), except security,
    privacy and irreversible ones, which keep it. The spec gate keeps Touch ID. This narrows a
    `browserOnly` rule, so it is a policy change for the owner, not something to do quietly.
-2. **Collaboration slice before or after spec 21.** Spec edits by people and comments on spec
-   blocks (cases 2 and 3) aren't in any spec. The proposal puts them straight after the fixes.
+2. ~~Collaboration slice before or after spec 21.~~ Decided 2026-11-12: slice 2 (spec edits by
+   people, comments on spec blocks) goes before spec 21.
+3. **"Let the planner finish alone"** accepts defaults the planner asks after the person turned it
+   on. Only bulk-acceptable ones, never on a timeout. Confirm this reads ADR 0042 as intended.
 
 ## Proposed build order
 1. **Slice 1, M1 fixes (kim parity in the loop).** No new tables beyond a small migration.
@@ -134,9 +175,11 @@ narrower or rougher), **missing**, **wrong** (a bug, or a behaviour that defeats
    - Read receipts on answers and messages; notifications for questions asked after the first
      announcement and for agent replies, once per burst.
    - A steer on a planning run also goes into the chat.
+   - Steering from the design: chat after the current step (Enter) or as an interrupt (⌘-Enter),
+     Stop on the activity line, Pause and Resume, and "Let the planner finish alone".
    - Desktop: push-driven updates instead of the 3 s poll, inside the planning component; decision 1
      if the owner agrees.
-2. **Slice 2, collaboration** (if the owner agrees): `spec.edit` by people, comments on spec
+2. **Slice 2, collaboration** (agreed): `spec.edit` by people, comments on spec
    blocks, optional question dependencies.
 3. **Spec 21**: mockups, option cards, live controls, the canvas, pinned comments.
 4. **Spec 23**: triage questions, the readiness check, the spec critic.
