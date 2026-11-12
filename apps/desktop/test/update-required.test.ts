@@ -11,6 +11,7 @@ const base: UpdateStatus = {
   error: null,
   needsMove: false,
   jobs: 0,
+  waitingForRunner: null,
   downloadUrl: "https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip",
 };
 const actions = (u: Partial<UpdateStatus>) =>
@@ -26,6 +27,17 @@ describe("the Update required screen", () => {
     expect(v.actions.map((a) => a.action)).toEqual(["restart-when-idle", "restart-anyway"]);
     expect(v.actions[1]?.label).toMatch(/cancels 2 jobs/);
     expect(v.body).toMatch(/unpushed work is lost/);
+  });
+
+  it("offers nothing while it waits for the runner to stop claiming, and says how long", () => {
+    const v = updateRequiredView({
+      ...base,
+      ready: true,
+      version: "0.1.9",
+      waitingForRunner: Date.now() + 20_000,
+    });
+    expect(v.actions).toEqual([]);
+    expect(v.body).toMatch(/Waiting for this Mac's runner.*up to 20 s/);
   });
 
   it("offers the download (and a retry) when nothing is staged", () => {

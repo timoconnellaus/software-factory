@@ -242,6 +242,7 @@ describe("the inbox", () => {
       light: null,
       rateLimitedUntil: null,
       lastSeenAt: null,
+      paused: null,
       update: null,
     };
     const soon = new Date(pinned.getTime() + 60_000).toISOString();
@@ -265,6 +266,7 @@ describe("the inbox", () => {
       light: null,
       rateLimitedUntil: null,
       lastSeenAt: null,
+      paused: null,
     };
     expect(updateLabel({ ...base, update: null })).toBe("");
     expect(updateLabel({ ...base, update: { state: "behind", reason: null } })).toBe(

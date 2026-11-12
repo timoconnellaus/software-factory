@@ -248,6 +248,14 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
     without ever opening asks the same URL over plain HTTPS once; a 426 `update_required` there
     shows the screen and stops reconnecting (*Try again* starts it again). Any other failure
     reconnects with backoff as before.
+  - The terminal socket (spec 42) does the same: it sends the protocol headers on its upgrade, and
+    one that never opened asks the door why; `update_required` closes it with *Update required*
+    and shows the screen (`terminal.test.ts`).
+  - *Restart to update* first asks the runner to stop claiming and shows **Waiting for the
+    runner** (the menu, and the screen with a countdown) until it answers, for at most 30 s
+    (`DRAIN_TIMEOUT_MS`, `restart-update.ts`). A runner that doesn't answer in time isn't stopped:
+    the app says so and updates once it is idle (or *Restart anyway*). Terminals close with the
+    live socket before the restart, and on quit.
   - A floor can't outrun the builds: each release writes `<channel>-macos-arm64-protocol.json`
     (the live build's version and `DOOR_PROTOCOL`) after its manifests, and
     `scripts/deploy/desktop-floor.ts`, in CI and before the deploy, refuses a

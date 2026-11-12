@@ -61,4 +61,5 @@ that has published one, and fails closed when it can't tell. (2) The live socket
 backoff on a 426 and never showed the screen. A WebSocket can't read a refused upgrade's status,
 so a socket that never opened asks the same URL over HTTPS once; a 426 `update_required` calls the
 same handler as the door client and stops reconnecting. Spec 42's terminal socket does the same
-when it lands.
+(2026-11-12, after #77): it sends the protocol headers on its upgrade, and one that never opened asks
+the door why; `update_required` closes it with "Update required" and shows the app's screen.

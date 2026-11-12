@@ -4,11 +4,14 @@
 // runner's jobs without saying so); otherwise the download.
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { UpdateStatus } from "../../shared/rpc.ts";
 import { DRAG, NO_DRAG } from "../lib/title-bar.ts";
 
 type Action = "restart" | "restart-when-idle" | "restart-anyway" | "download" | "retry";
+
+const secondsLeft = (until: number, now = Date.now()) =>
+  Math.max(0, Math.ceil((until - now) / 1000));
 
 /** What the screen says and offers for this status; pure, for the tests. */
 export function updateRequiredView(u: UpdateStatus): {
@@ -16,6 +19,12 @@ export function updateRequiredView(u: UpdateStatus): {
   actions: { action: Action; label: string; variant: "default" | "outline" | "destructive" }[];
 } {
   const jobs = `${u.jobs} job${u.jobs === 1 ? "" : "s"}`;
+  // "Restart to update" asked the runner to stop claiming and is waiting for its answer (bounded).
+  if (u.waitingForRunner !== null)
+    return {
+      body: `Version ${u.version ?? "new"} is ready. Waiting for this Mac's runner to stop taking jobs before restarting (up to ${secondsLeft(u.waitingForRunner)} s)…`,
+      actions: [],
+    };
   if (u.needsMove)
     return {
       body: "Move Software Factory to your Applications folder and open it from there, so it can update itself. Or download the new version.",
@@ -76,6 +85,7 @@ export function UpdateRequired({
       <p className="text-muted-foreground text-sm">
         This version of Software Factory is too old for the factory. {view.body}
       </p>
+      {status.waitingForRunner !== null && <WaitingForRunner until={status.waitingForRunner} />}
       {status.error && !status.needsMove && (
         <Card className="px-4 py-3 text-muted-foreground text-xs">{status.error}</Card>
       )}
@@ -99,5 +109,20 @@ export function UpdateRequired({
         ))}
       </div>
     </main>
+  );
+}
+
+/** The drain's countdown: "Waiting for the runner", ticking until the app gives up on it. */
+function WaitingForRunner({ until }: { until: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <Card className="px-4 py-3 text-muted-foreground text-xs" data-testid="waiting-for-runner">
+      Waiting for the runner… gives up in {secondsLeft(until, now)} s, then the app updates once the
+      runner is idle.
+    </Card>
   );
 }

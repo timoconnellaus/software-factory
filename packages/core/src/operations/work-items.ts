@@ -2,7 +2,7 @@
 // finishing and cancelling.
 
 import { parseJson, readBatch } from "@software-factory/db";
-import { triageResultSchema } from "@software-factory/runner-contract";
+import { capacityPausedSchema, triageResultSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -348,6 +348,15 @@ export const workItemGet = defineOperation({
     workflows: z.array(z.object({ name: z.string(), description: z.string() })),
     /** ADR 0491: who released it, and its "waits for" links both ways. */
     releasedBy: z.string().nullable().optional(),
+    /** ADR 0493: shaping before release: when it started and finished, and the base it planned on. */
+    shaping: z
+      .object({
+        startedAt: z.string(),
+        shapedAt: z.string().nullable(),
+        baseSha: z.string().nullable(),
+      })
+      .nullable()
+      .optional(),
     waitsFor: z.array(linkView).optional(),
     waitedOnBy: z.array(linkView).optional(),
     stages: z.array(stageView),
@@ -538,6 +547,9 @@ export const workItemGet = defineOperation({
           description: x.description,
         })) ?? [],
       releasedBy: w.released_by,
+      shaping: w.shaping_started_at
+        ? { startedAt: w.shaping_started_at, shapedAt: w.shaped_at, baseSha: w.shaped_base_sha }
+        : null,
       waitsFor: waitsForRows.map(toLink),
       waitedOnBy: waitedOnRows.map(toLink),
       stages: stages.map((s) => ({
@@ -718,7 +730,9 @@ export const workItemCancel = defineOperation({
         throw new OperationError("forbidden", "only the requester or an approver can cancel");
       }
     }
-    if ((PRE_PIPELINE as readonly string[]).includes(w.status)) {
+    // Nothing runs before the pull, unless the item is being (or was) shaped: then its Workflow,
+    // runs and gates are cancelled like any running item's (ADR 0493).
+    if ((PRE_PIPELINE as readonly string[]).includes(w.status) && !w.shaping_started_at) {
       // Nothing runs before the pull (ADR 0491): no Workflow, runs or gates to stop.
       ctx.write(
         ctx.db
@@ -741,7 +755,12 @@ export const workItemCancel = defineOperation({
       });
       return { cancelled: true };
     }
-    if (!(ACTIVE_STATUSES as readonly string[]).includes(w.status)) return { cancelled: false };
+    if (
+      !(ACTIVE_STATUSES as readonly string[]).includes(w.status) &&
+      !(w.shaping_started_at && (PRE_PIPELINE as readonly string[]).includes(w.status))
+    ) {
+      return { cancelled: false };
+    }
     await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     cancelWorkItem(ctx, w, input.reason);
     // Its slot is free: the next queued item may start, after this commits (ADR 0491).
@@ -776,7 +795,9 @@ export const workItemTriage = defineOperation({
     // takes a workflow's gate steps away from work already under way.
     let workflow = w.kind === "attached" ? null : w.workflow;
     let workflowReason = w.kind === "attached" ? null : w.workflow_reason;
-    if (w.kind !== "attached" && !w.pulled_at) {
+    // Legacy: never pulled and never shaped (a shaping item's workflow is pinned by
+    // workItem.shape, and triage doesn't change it, ADR 0492/0493).
+    if (w.kind !== "attached" && !w.pulled_at && !w.shaping_started_at) {
       const shape = ctx.scope.pinnedPolicy ?? policy;
       const picked = input.result.workflow
         ? (shape.workflows.find(
@@ -958,8 +979,16 @@ export const workItemFinish = defineOperation({
   output: z.object({ status: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    if (!["running", "waiting", "paused"].includes(w.status)) return { status: w.status };
-    setItemStatus(ctx, w.id, ["running", "waiting", "paused"], input.status, input.reason);
+    // `shaping`: a spec rejected while shaping before release ends the item too (ADR 0493).
+    if (!["running", "waiting", "paused", "shaping"].includes(w.status))
+      return { status: w.status };
+    setItemStatus(
+      ctx,
+      w.id,
+      ["running", "waiting", "paused", "shaping"],
+      input.status,
+      input.reason,
+    );
     // Its planning session, if it ended mid-planning, gives its slot back (spec 20).
     endPlanningSessions(ctx, w.id, `${input.status}: ${input.reason}`);
     // An item that ends in the queue (a Workflow giving up, or done without the queue's merge)
@@ -1070,6 +1099,11 @@ export const inboxList = defineOperation({
         light: z.object({ inUse: z.number(), max: z.number() }).nullable(),
         rateLimitedUntil: z.string().nullable(),
         lastSeenAt: z.string().nullable(),
+        /**
+         * Why it takes nothing new in some pools for now (ADR 0552): its load (with the numbers)
+         * or its tmux. Null when it takes work everywhere, or is offline.
+         */
+        paused: capacityPausedSchema.nullable(),
         /**
          * Its code against the deployed commit (ADR 0360): null when it's current or doesn't
          * report a version. `behind`: updating on its own (`waiting`/`updating`); `blocked` and
@@ -1263,6 +1297,9 @@ export const inboxList = defineOperation({
         light: r.light_max === null ? null : { inUse: lightActive, max: r.light_max },
         rateLimitedUntil: limited ? r.rate_limited_until : null,
         lastSeenAt: r.last_seen_at,
+        paused: offline
+          ? null
+          : (capacityPausedSchema.safeParse(parseJson<unknown>(r.paused, null)).data ?? null),
         update: runnerUpdate(r, desiredRunnerVersion(ctx.services)),
       };
     });

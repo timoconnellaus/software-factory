@@ -30,6 +30,12 @@ export const SCREENS = [
   { name: "item-header", path: "/work/wi_9", design: "ItemOverview.html" },
   { name: "item-plan", path: "/work/wi_12?tab=plan", design: "ItemPlan.html" },
   { name: "plan-focus", path: "/work/wi_12?tab=plan", design: "PlanFocus.html", keys: ["f"] },
+  {
+    name: "plan-focus-alone",
+    path: "/work/wi_12?tab=plan&fixture=alone",
+    design: "PlanFocus.html",
+    keys: ["f"],
+  },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
@@ -41,6 +47,7 @@ export const SCREENS = [
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
   { name: "update-required-ready", path: "/", query: "?update=ready", design: "Main.html" },
   { name: "update-required-jobs", path: "/", query: "?update=jobs", design: "Main.html" },
+  { name: "update-required-waiting", path: "/", query: "?update=waiting", design: "Main.html" },
   { name: "update-required-download", path: "/", query: "?update=download", design: "Main.html" },
 ];
 

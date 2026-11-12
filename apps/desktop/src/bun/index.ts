@@ -12,10 +12,11 @@ import { acquireInstanceLock, watchParent } from "./instance.ts";
 import { Live, liveUrl } from "./live.ts";
 import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { operationHandlers } from "./operations.ts";
-import { restartToUpdate as restartUpdate } from "./restart-update.ts";
+import { DRAIN_TIMEOUT_MS, restartToUpdate as restartUpdate } from "./restart-update.ts";
 import { Runner } from "./runner.ts";
 import { liveJobs } from "./runner-jobs.ts";
 import { saveTo } from "./save.ts";
+import { Terminals } from "./terminal.ts";
 import { titleBarDoubleClick } from "./title-bar.ts";
 import { bunExec, runningAppPath } from "./update-verify.ts";
 import { type UpdaterLike, Updates } from "./updates.ts";
@@ -78,11 +79,22 @@ const ops = operationHandlers({
   },
   signedOut: () => {
     auth.forget();
+    terminals.closeAll();
     toView("sessionChanged", auth.session());
     refreshTray();
   },
 });
 const guarded = ops.guarded;
+// Runs' web terminals (spec 42): the door's socket here, its frames to the view over the RPC.
+const terminals = new Terminals(
+  ENGINE_URL,
+  () => auth.currentToken(),
+  (e) => toView("terminalEvent", e),
+  undefined,
+  undefined,
+  // A terminal's upgrade refused as too old shows "Update required", as the live socket does.
+  { updateRequired: () => doorSaysUpdate() },
+);
 
 const rpc = BrowserView.defineRPC<AppRPC>({
   maxRequestTime: 120_000,
@@ -99,6 +111,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       },
       signOut: async () => {
         live.stop();
+        terminals.closeAll();
         await auth.signOut();
         setBadge(0);
         return auth.session();
@@ -107,6 +120,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       call: ops.call,
       batch: ops.batch,
       decide: ops.decide,
+      terminalOpen: (p) => terminals.open(p),
+      terminalSend: (p) => terminals.send(p),
+      terminalClose: (p) => terminals.close(p),
       runnerState: () => runner.state,
       runnerAction: async ({ action }) => {
         if (action === "takeover") await runner.takeOverFromLaunchd();
@@ -164,12 +180,16 @@ function openWindow(path?: string) {
     trafficLightOffset: { x: 5, y: 6 },
   });
   // A link that launched the app arrives before the view listens: send it once the page is up.
+  // A (re)load also means no view holds the open terminals' handles any more (a reload, or WebKit
+  // restarting its content process): close them, or each keeps an attach and a relay viewer slot.
   win.webview.on("dom-ready", () => {
+    terminals.closeAll();
     if (pendingPath) toView("navigate", { path: pendingPath });
     pendingPath = null;
   });
   win.on("close", () => {
     win = null;
+    terminals.closeAll();
   });
 }
 
@@ -235,6 +255,7 @@ function updateStatus(): UpdateStatus {
     error: u.error,
     needsMove: u.needsMove,
     jobs: liveJobs().length,
+    waitingForRunner,
     downloadUrl,
   };
 }
@@ -242,6 +263,8 @@ function pushUpdate() {
   toView("updateChanged", updateStatus());
   refreshTray();
 }
+/** "Restart to update" is waiting for the runner to stop claiming, until this time (epoch ms). */
+let waitingForRunner: number | null = null;
 /** The person chose "Restart to update when the runner is idle". */
 let restartWhenIdle = false;
 
@@ -258,6 +281,17 @@ function updateItems() {
       },
     ];
   if (!u.ready) return [];
+  if (waitingForRunner !== null) {
+    const s = Math.max(0, Math.ceil((waitingForRunner - Date.now()) / 1000));
+    return [
+      {
+        type: "normal" as const,
+        label: `Update to ${u.version}: waiting for the runner (up to ${s} s)…`,
+        action: "noop",
+        enabled: false,
+      },
+    ];
+  }
   const jobs = liveJobs().length;
   if (jobs === 0)
     return [
@@ -305,9 +339,18 @@ async function restartToUpdate(anyway = false) {
   try {
     const outcome = await restartUpdate(
       {
-        drain: () => runner.drain(),
+        drain: (ms) => runner.drain(ms),
+        // "Waiting for the runner" in the menu and the view, with when it gives up.
+        waiting: (until) => {
+          waitingForRunner = until;
+          pushUpdate();
+        },
         liveJobs: () => liveJobs(),
-        stopLive: () => live.stop(),
+        // The live socket and every open terminal: an update restarts the app under them.
+        stopLive: () => {
+          live.stop();
+          terminals.closeAll();
+        },
         startLive: () => live.start(),
         stopRunner: () => runner.stop(),
         startRunner: () => void runner.start(),
@@ -315,7 +358,14 @@ async function restartToUpdate(anyway = false) {
       },
       { anyway },
     );
-    if (outcome === "deferred") {
+    if (outcome === "timeout") {
+      restartWhenIdle = true;
+      if (!wasWaiting)
+        Utils.showNotification({
+          title: "Software Factory",
+          body: `The runner didn't answer within ${DRAIN_TIMEOUT_MS / 1000} s. The app updates once it is idle; or choose Restart anyway.`,
+        });
+    } else if (outcome === "deferred") {
       restartWhenIdle = true;
       if (!wasWaiting)
         Utils.showNotification({
@@ -435,9 +485,18 @@ const gateLabel = (kind: string) =>
 
 // The live socket (spec 40 M2b): a gate opening reaches the badge and a notification at once.
 const live = new Live(liveUrl(ENGINE_URL), () => auth.currentToken(), {
-  connected: () => void pollInbox(),
+  connected: () => {
+    void pollInbox();
+    // Pushes may have been missed while the socket was down: open Planning views re-read (spec 26).
+    toView("planningChanged", { workItemId: "*" });
+  },
   updateRequired: () => doorSaysUpdate(),
   event: (e) => {
+    // A Planning view this person has open changed (spec 26): the view re-reads it.
+    if (e.type === "planning.changed" && e.workItemId) {
+      toView("planningChanged", { workItemId: e.workItemId });
+      return;
+    }
     if (e.type !== "notify") return;
     void pollInbox({ notify: false }).then(() => {
       if (e.title) Utils.showNotification({ title: "Software Factory", body: e.title });
@@ -462,6 +521,7 @@ Electrobun.events.on("open-url", async (e: { data: { url: string } }) => {
 
 async function quit() {
   live.stop();
+  terminals.closeAll();
   await runner.stop();
   Utils.quit();
 }

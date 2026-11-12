@@ -296,6 +296,11 @@ export interface CoreWorkItemsTable {
   released_by: string | null;
   /** 0261: when the pipeline started (the pull). */
   pulled_at: Iso | null;
+  /** 0262 (ADR 0493): when its Workflow started to run the shaping stages, before release. */
+  shaping_started_at: Iso | null;
+  /** 0262: when the shaping stages finished, and the default branch's head then. */
+  shaped_at: Iso | null;
+  shaped_base_sha: string | null;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
@@ -546,6 +551,8 @@ export interface CoreRunnersTable {
   /** The account the owner asked for, until the runner reports it active. */
   account_requested: string | null;
   account_requested_at: Iso | null;
+  /** 0320 (ADR 0552): why it takes nothing new in some pools (capacity.paused), or null. */
+  paused: JsonText | null;
   /** 0290 (ADR 0520): the runner's RUNNER_COMPAT as it last reported; null (never) counts as 1. */
   compat: number | null;
 }

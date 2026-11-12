@@ -11,6 +11,7 @@ import {
   type CapabilityManifest,
   canRun,
   capabilityManifestSchema,
+  capacityPausedSchema,
   capacitySchema,
   JOB_STAGES,
   type Job,
@@ -27,6 +28,7 @@ import {
   stagePool,
   storedArtifactSchema,
 } from "@software-factory/runner-contract";
+import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId, newRunnerId } from "../ids.ts";
@@ -263,6 +265,7 @@ function reportRunnerState(
         light_max: report.capacity.light?.max ?? null,
         light_in_use: report.capacity.light?.inUse ?? 0,
         accepting: report.capacity.accepting ? 1 : 0,
+        paused: report.capacity.paused ? json(report.capacity.paused) : null,
         ...(report.rateLimitedUntil !== undefined
           ? { rate_limited_until: report.rateLimitedUntil }
           : {}),
@@ -630,15 +633,31 @@ async function freePools(
   if (!runner.accepting) return null;
   if (runner.rate_limited_until && Date.parse(runner.rate_limited_until) > nowMs) return null;
   const active = await activeRunsByPool(ctx, runner.id);
+  // A pool the runner paused (ADR 0552: its load, or its tmux) gets nothing new.
+  const paused = (reported ? reported.paused : runnerPaused(runner))?.pools ?? [];
   if (runner.light_max === null) {
-    const any = Math.max(active.heavy + active.light, reported?.inUse ?? 0) < runner.capacity_max;
+    const any =
+      paused.length === 0 &&
+      Math.max(active.heavy + active.light, reported?.inUse ?? 0) < runner.capacity_max;
     return { heavy: any, light: any, split: false };
   }
   return {
-    heavy: Math.max(active.heavy, reported?.inUse ?? 0) < runner.capacity_max,
-    light: Math.max(active.light, reported?.light?.inUse ?? 0) < runner.light_max,
+    heavy:
+      !paused.includes("heavy") &&
+      Math.max(active.heavy, reported?.inUse ?? 0) < runner.capacity_max,
+    light:
+      !paused.includes("light") &&
+      Math.max(active.light, reported?.light?.inUse ?? 0) < runner.light_max,
     split: true,
   };
+}
+
+/** The pause a runner last reported (ADR 0552), or null. */
+function runnerPaused(
+  runner: Pick<RunnerRow, "paused">,
+): z.infer<typeof capacityPausedSchema> | null {
+  const parsed = capacityPausedSchema.safeParse(parseJson<unknown>(runner.paused, null));
+  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -845,10 +864,15 @@ export const jobClaim = defineOperation({
     // A light job this runner could take but for a full light pool: ask an idle session to yield.
     let lightBlocked = false;
 
+    // Released work first: a shaping item's triage and planning jobs (ADR 0493) wait behind the
+    // jobs of work people already committed to, then oldest first.
     const queued = await ctx.db
       .selectFrom("core_jobs")
       .selectAll()
       .where("status", "=", "queued")
+      .orderBy(
+        sql`(SELECT w.status = 'shaping' FROM core_work_items w WHERE w.id = core_jobs.work_item_id)`,
+      )
       .orderBy("created_at")
       .limit(50)
       .execute();
@@ -864,7 +888,8 @@ export const jobClaim = defineOperation({
         .where("id", "=", job.project_id)
         .executeTakeFirst();
       if (!item || !project) continue;
-      if (!["running", "waiting"].includes(item.status)) continue;
+      // `shaping`: shaping stages before release runs its triage and planning jobs too (ADR 0493).
+      if (!["running", "waiting", "shaping"].includes(item.status)) continue;
       if (!room[job.pool] && (job.pool !== "light" || !room.split || lightBlocked)) continue;
       const refusal = await placementRefusal(
         ctx,

@@ -11,6 +11,8 @@
 // - Bytes travel as `{ "$bytes": "<base64>" }` in `call` and `batch` (wire-bytes.ts): an attachment
 //   upload's input, an attachment's output.
 // - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
+// - `terminal/<workItemId>/<runId>` (GET, WebSocket) is a run's web terminal for the desktop app
+//   (spec 42, ADR 0530): the same attach as sf-app's socket route, then the relay's viewer socket.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
 // - The version handshake (spec 40 M4, ADR 0393): the desktop app sends `x-sf-client-protocol`. A
 //   desktop sign-in or a desktop token's request below DESKTOP_MIN_PROTOCOL gets 426
@@ -36,9 +38,12 @@ import { createDb } from "@software-factory/db";
 import { STATUS } from "./channel.ts";
 import { clientHub } from "./client-hub.ts";
 import { invokeDeps } from "./deps.ts";
+import { attachTerminal, openViewerSocket } from "./terminal-attach.ts";
 import { decodeBytes, encodeBytes } from "./wire-bytes.ts";
 
 export const CLI_PREFIX = "/cli/v1/";
+/** The desktop app's terminal socket: `terminal/<workItemId>/<runId>` under the door. */
+const TERMINAL_ROUTE = /^terminal\/(wi_[0-9a-f]{32})\/(run_[0-9a-f]{32})$/;
 export const CLIENT_PREFIX = "/client/v1/";
 /** The most calls one `batch` may carry. */
 export const BATCH_LIMIT = 20;
@@ -115,7 +120,7 @@ async function versionGate(request: Request, env: Env, path: string): Promise<Re
 /** Who a bearer token is: a CLI token (with its scope) or a desktop device's token. */
 type Caller =
   | { kind: "cli"; userId: string; scope: "read" | "write" }
-  | { kind: "desktop"; userId: string; deviceId: string };
+  | { kind: "desktop"; userId: string; deviceId: string; tokenId: string };
 
 export async function handleCli(request: Request, env: Env): Promise<Response> {
   const pathname = new URL(request.url).pathname;
@@ -138,6 +143,12 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
       return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
     }
     return clientHub(env, who.userId).fetch(request);
+  }
+  const terminal = TERMINAL_ROUTE.exec(path);
+  if (terminal?.[1] && terminal[2] && request.method === "GET") {
+    const who = await authenticate(request, env);
+    if (!who) return unauthenticated();
+    return openTerminal(env, who, terminal[1], terminal[2], request);
   }
   if (request.method !== "POST") return reply({ error: "not found", code: "not_found" }, 404);
   let body: Record<string, unknown>;
@@ -211,6 +222,42 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   return reply({ error: "not found", code: "not_found" }, 404);
 }
 
+/**
+ * A run's web terminal through the door (spec 42, ADR 0530): desktop tokens only. Refusals are plain
+ * door replies before any upgrade; the attach decides `type` or `watch` and is recorded with the
+ * device, exactly as sf-app's route records the browser's.
+ */
+async function openTerminal(
+  env: Env,
+  who: Caller,
+  workItemId: string,
+  runId: string,
+  request: Request,
+): Promise<Response> {
+  if (who.kind !== "desktop") {
+    return reply(
+      { error: "the web terminal opens in the desktop app or the website", code: "forbidden" },
+      STATUS.forbidden,
+    );
+  }
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
+  }
+  const attached = await attachTerminal(env, workItemId, runId, {
+    actor: { type: "human", id: who.userId },
+    origin: { surface: "desktop", deviceId: who.deviceId, requestId: crypto.randomUUID() },
+    // The relay re-checks the token (and the device) while the socket is open (ADR 0530).
+    tokenId: who.tokenId,
+  });
+  if (!attached.ok) {
+    return reply(
+      { error: attached.error.message, code: attached.error.code },
+      STATUS[attached.error.code],
+    );
+  }
+  return openViewerSocket(env, attached.jobId, attached.path);
+}
+
 /** One token lookup per request: the version gate and the route share it. */
 const callers = new WeakMap<Request, Promise<Caller | null>>();
 
@@ -231,7 +278,14 @@ async function lookUpCaller(request: Request, env: Env): Promise<Caller | null> 
   const db = createDb(env.DB);
   const now = new Date().toISOString();
   const desktop = await resolveDesktopToken(db, token, now);
-  if (desktop) return { kind: "desktop", userId: desktop.user_id, deviceId: desktop.device_id };
+  if (desktop) {
+    return {
+      kind: "desktop",
+      userId: desktop.user_id,
+      deviceId: desktop.device_id,
+      tokenId: desktop.id,
+    };
+  }
   const cli = await resolveCliToken(db, token, now);
   if (cli) return { kind: "cli", userId: cli.user_id, scope: cli.scope };
   return null;

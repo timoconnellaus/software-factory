@@ -2,7 +2,14 @@
 // operations are answered from fixtures.ts instead of the main process. vite.config.ts swaps it in.
 // It also draws the traffic lights macOS would draw over the toolbar, so shots match the window.
 import type { OpName } from "@software-factory/client/ops";
-import type { AppRPC, CallResult, RunnerState, Session, UpdateStatus } from "../src/shared/rpc.ts";
+import type {
+  AppRPC,
+  CallResult,
+  RunnerState,
+  Session,
+  TerminalEvent,
+  UpdateStatus,
+} from "../src/shared/rpc.ts";
 import { ANSWERS } from "./fixtures.ts";
 
 /**
@@ -50,11 +57,12 @@ function updateStatus(): UpdateStatus {
   const which = new URLSearchParams(location.search).get("update");
   return {
     required: !!which,
-    ready: which === "ready" || which === "jobs",
-    version: which === "ready" || which === "jobs" ? "0.1.42" : null,
+    ready: which === "ready" || which === "jobs" || which === "waiting",
+    version: which === "ready" || which === "jobs" || which === "waiting" ? "0.1.42" : null,
     error: which === "download" ? "Failed to download update: HTTP 404" : null,
     needsMove: false,
     jobs: which === "jobs" ? 2 : 0,
+    waitingForRunner: which === "waiting" ? Date.now() + 25_000 : null,
     downloadUrl: "https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip",
   };
 }
@@ -80,6 +88,14 @@ export const bun = {
   saveDownload: async () => ({ ok: true, path: null }),
   updateStatus: async () => updateStatus(),
   updateAction: async () => updateStatus(),
+  // A run's terminal (spec 42): the harness's server bridges a real tmux pane it was given
+  // (terminal.mjs); without one, opening it fails as an unreachable terminal does.
+  terminalOpen: async (p: { id: string; workItemId: string; runId: string }) => {
+    await subscribed();
+    return post<{ ok: boolean; error: string | null }>("open", { ...p, mode: TERMINAL_MODE });
+  },
+  terminalSend: (p: { id: string; data: string }) => post<{ ok: boolean }>("send", p),
+  terminalClose: (p: { id: string }) => post<{ ok: boolean }>("close", p),
   titleBarDoubleClick: async () => {
     const call = await mainProcess();
     return call
@@ -89,9 +105,37 @@ export const bun = {
 };
 
 const none = () => () => undefined;
+
+const TERMINAL_MODE = new URLSearchParams(location.search).get("terminal") ?? "type";
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`/__terminal/${path}`, { method: "POST", body: JSON.stringify(body) });
+  return (await res.json()) as T;
+}
+const terminalListeners = new Set<(e: TerminalEvent) => void>();
+let events: Promise<void> | null = null;
+/** The harness's event stream, open before a terminal is (so its first frames aren't missed). */
+function subscribed(): Promise<void> {
+  events ??= new Promise((ready) => {
+    const source = new EventSource("/__terminal/events");
+    source.onopen = () => ready();
+    source.onmessage = (m) => {
+      const e = JSON.parse(String(m.data)) as TerminalEvent;
+      for (const f of terminalListeners) f(e);
+    };
+  });
+  return events;
+}
+export const onTerminal = (l: (e: TerminalEvent) => void) => {
+  void subscribed();
+  terminalListeners.add(l);
+  return () => {
+    terminalListeners.delete(l);
+  };
+};
 export const onSession = none;
 export const onRunner = none;
 export const onInbox = none;
+export const onPlanningChanged = none;
 export const onNavigate = none;
 export const onUpdate = none;
 
