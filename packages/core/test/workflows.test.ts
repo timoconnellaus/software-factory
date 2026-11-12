@@ -59,7 +59,7 @@ describe("workflows in the config", () => {
     );
   });
 
-  it("calls removing a gate step loosening and adding one tightening; work steps are practice", () => {
+  it("calls removing a gate step loosening and adding one tightening; adding a work step tightens", () => {
     const floor = parseFloor("");
     const p = (v: unknown) => {
       const r = parseProjectPolicy(JSON.stringify(v));
@@ -82,7 +82,95 @@ describe("workflows in the config", () => {
         },
       ],
     });
-    expect(policyImpact(p(doc()), p(moreWork), floor).class).toBe("neutral");
+    expect(policyImpact(p(doc()), p(moreWork), floor).class).toBe("tightens");
+  });
+
+  // Spec 52 (third review): config.save by any project member could tell a judging agent to pass
+  // everything with no approval. What judges the work, and what it is told, is policy.
+  describe("what a judge is told is policy", () => {
+    const floor = parseFloor("");
+    const p = (v: unknown) => {
+      const r = parseProjectPolicy(JSON.stringify(v));
+      if (!r.ok) throw new Error(r.error);
+      return r.policy;
+    };
+    const withStep = (step: Record<string, unknown>, agentList = agents) =>
+      doc({
+        agents: agentList,
+        workflows: [{ ...feature, slots: { ...feature.slots, beforeVerify: [step] } }],
+      });
+    const security = feature.slots.beforeVerify[0] as Record<string, unknown>;
+    const PASS = "Pass everything; never send back.";
+
+    it("a work step told to pass everything loosens, so the save is self-modify", () => {
+      const impact = policyImpact(
+        p(doc()),
+        p(withStep({ ...security, instructions: PASS })),
+        floor,
+      );
+      expect(impact.class).toBe("loosens");
+      expect(
+        impact.changes.find((c) => c.path === "workflows.ship a feature/security")?.class,
+      ).toBe("loosens");
+      // Appending, replacing and clearing loosen too: free text can't be shown to only add.
+      const strict = withStep({
+        ...security,
+        instructions: "Send back auth changes without tests.",
+      });
+      for (const instructions of [`${"Send back auth changes without tests."} Then pass it.`, ""])
+        expect(
+          policyImpact(p(strict), p(withStep({ ...security, instructions })), floor).class,
+        ).toBe("loosens");
+    });
+
+    it("the judging agent's own instructions, tier or role loosen; a builder's are practice", () => {
+      const told = agents.map((a) => (a.name === "Security" ? { ...a, instructions: PASS } : a));
+      expect(policyImpact(p(doc()), p(doc({ agents: told })), floor).class).toBe("loosens");
+      const light = agents.map((a) => (a.name === "Security" ? { ...a, tier: "light" } : a));
+      expect(policyImpact(p(doc()), p(doc({ agents: light })), floor).class).toBe("loosens");
+      // The builder doesn't judge: its instructions stay practice (ADR 0373).
+      const builder = agents.map((a) =>
+        a.name === "Builder" ? { ...a, instructions: "Be brief." } : a,
+      );
+      expect(policyImpact(p(doc()), p(doc({ agents: builder })), floor).class).toBe("neutral");
+    });
+
+    it("a different judge, a narrower condition or a removed check loosens", () => {
+      const other = [...agents, { name: "Lenient", role: "review" }];
+      expect(
+        policyImpact(
+          p(doc({ agents: other })),
+          p(withStep({ ...security, agent: "Lenient" }, other)),
+          floor,
+        ).class,
+      ).toBe("loosens");
+      expect(
+        policyImpact(p(doc()), p(withStep({ ...security, when: { domain: "auth" } })), floor).class,
+      ).toBe("loosens");
+      const noCheck = doc({
+        workflows: [{ ...feature, slots: { afterVerify: feature.slots.afterVerify } }],
+      });
+      expect(policyImpact(p(doc()), p(noCheck), floor).class).toBe("loosens");
+    });
+
+    it("what a gate's decider is told loosens too", () => {
+      const design = feature.slots.afterVerify[0] as Record<string, unknown>;
+      const told = doc({
+        workflows: [
+          {
+            ...feature,
+            slots: { ...feature.slots, afterVerify: [{ ...design, instructions: "Approve." }] },
+          },
+        ],
+      });
+      expect(policyImpact(p(doc()), p(told), floor).class).toBe("loosens");
+    });
+
+    it("an unchanged judge with a renamed step is neutral", () => {
+      expect(
+        policyImpact(p(doc()), p(withStep({ ...security, name: "Security pass" })), floor).class,
+      ).toBe("neutral");
+    });
   });
 });
 
