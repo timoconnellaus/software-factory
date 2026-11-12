@@ -235,22 +235,6 @@ export const projectPolicySchema = z
       .default({})
       .refine((o) => Object.keys(o).length <= 20, "at most 20 stages can be overridden"),
     /**
-     * Written by the factory, never by the person saving (`config.save` replaces what a draft
-     * carries): for each override that is looser than the org workflow's value, the org config
-     * version and the org's value it was approved against as a loosening. At resolve time the
-     * stricter of the org's value and the override applies, unless the override was approved
-     * against the org's current value; once the org moves that value on, the approval lapses.
-     */
-    workflowOverrideApprovals: z
-      .record(
-        z.string().min(1).max(40),
-        z.record(
-          z.string().min(1).max(40),
-          z.object({ orgVersion: z.number().int().nonnegative(), orgValue: z.unknown() }).strict(),
-        ),
-      )
-      .default({}),
-    /**
      * Self-improvement (ADR 0373): the factory trials practice changes on the next `trialSize`
      * items, at most `weeklyCap` a week. Turning it on is a policy change for a person.
      */
@@ -351,6 +335,10 @@ export function parseProjectPolicy(raw: string): PolicyParse {
   } catch {
     return { ok: false, error: "policy is not JSON" };
   }
+  // Approvals of looser overrides are the factory's own record (core_override_approvals), never
+  // a document's: a field of that name in a saved or imported config is dropped, not honoured.
+  if (value && typeof value === "object" && !Array.isArray(value))
+    delete (value as Record<string, unknown>).workflowOverrideApprovals;
   const parsed = projectPolicySchema.safeParse(value);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];

@@ -1216,12 +1216,12 @@ screen needs).
    pins `org_config_version` (migration 0282) when shaping starts and again at the pull, beside
    `policy_sha`. After review: a save stores only the overrides that differ from the org's value,
    and at resolve time the stricter of the org's value and the override applies (`requiredFrom`: the
-   smaller; `requiredChecks` and `sections`: both), unless the looser override was approved as a
-   loosening against the org's value (`workflowOverrideApprovals`, written by the factory, never by
-   the draft: the org version and value it was approved against). When the org moves that value,
-   the approval lapses, the stricter applies, and the org's admins are notified
-   (`workflow.overrideLapsed`); an approval re-applies only if the org returns to exactly the value
-   approved. A loosening of the org workflow (an override, or a switch that drops a check) is
+   smaller; `requiredChecks` and `sections`: both), unless an org admin approved that exact looser
+   value for the org version being resolved (`core_override_approvals`, migration 0282, written only
+   by the approve path; never read from a config document or an imported file, whose
+   `workflowOverrideApprovals` field is dropped). A new org version carries an approval only where
+   it leaves that setting's value unchanged; where the org moved it, the approval lapses, the
+   stricter applies, and the org's admins are notified (`workflow.overrideLapsed`). A loosening of the org workflow (an override, or a switch that drops a check) is
    decided by an org admin: the pending action carries `decider = 'org-admin'` (migration 0282) and
    `approval.decide` asks for one. A judging stage is compared by what its agent is (role, tier,
    instructions, requirements), not its name. An org change that would leave a project unable to

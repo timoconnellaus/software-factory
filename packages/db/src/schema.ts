@@ -495,6 +495,18 @@ export interface CorePendingActionsTable {
   decider: "org-admin" | null;
 }
 
+/** An org admin's approval of a looser project override, for one org version (migration 0282). */
+export interface CoreOverrideApprovalsTable {
+  project_id: string;
+  org_id: string;
+  org_version: number;
+  stage_id: string;
+  setting: string;
+  value: JsonText;
+  approved_by: string;
+  approved_at: Iso;
+}
+
 export interface CoreReviewPacketsTable {
   id: string;
   work_item_id: string;
@@ -1175,6 +1187,7 @@ export interface CoreDatabase {
   core_questions: CoreQuestionsTable;
   core_specs: CoreSpecsTable;
   core_pending_actions: CorePendingActionsTable;
+  core_override_approvals: CoreOverrideApprovalsTable;
   core_review_packets: CoreReviewPacketsTable;
   core_incidents: CoreIncidentsTable;
   core_audit: CoreAuditTable;

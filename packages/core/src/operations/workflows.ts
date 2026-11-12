@@ -8,7 +8,7 @@ import type { Db } from "@software-factory/db";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
-import type { ImpactChange, PolicyImpact } from "../policy/impact.ts";
+import { type ImpactChange, type PolicyImpact, same } from "../policy/impact.ts";
 import {
   agentSchema,
   onOrgWorkflow,
@@ -30,7 +30,11 @@ import {
   orgConfigRaw,
   parseOrgConfig,
 } from "../stages/org-config.ts";
-import { lapsedOverrides, resolveProjectWorkflow } from "../stages/project-workflow.ts";
+import {
+  normaliseOverrides,
+  orgValueOf,
+  resolveProjectWorkflow,
+} from "../stages/project-workflow.ts";
 import { STAGE_TYPES, stageType } from "../stages/registry.ts";
 import { validateWorkflow } from "../stages/validate.ts";
 import { type WorkflowDefinition, workflowDefinitionSchema } from "../stages/workflow.ts";
@@ -278,20 +282,45 @@ export async function writeOrgVersion(
   const projects = await orgProjects(ctx.db, org);
   const stranded = strandedBy(projects, config, input.before);
   if (stranded) throw new OperationError("invalid_input", stranded);
-  // An override approved as a loosening against the org's old value lapses when the org moves that
-  // value on: the stricter applies from now, and the org's admins are told (spec 52, fourth review).
-  const lapsed = projects.flatMap((p) =>
-    p.policy
-      ? lapsedOverrides(p.policy, config)
-          .filter(
-            (l) =>
-              !lapsedOverrides(p.policy as ProjectPolicy, input.before).some(
-                (b) => b.stageId === l.stageId && b.key === l.key,
-              ),
-          )
-          .map((l) => `${p.name}: ${l.stageId} ${l.key}`)
-      : [],
-  );
+  // An org admin's approval of a project's looser override counts for one org version
+  // (core_override_approvals). The factory carries it to this version where the org leaves that
+  // setting's value as it was; where the org moved it and the override is still looser, it lapses:
+  // the stricter applies, and the org's admins are told (spec 52, fourth review).
+  const approvals =
+    expect === 0
+      ? []
+      : await ctx.db
+          .selectFrom("core_override_approvals")
+          .selectAll()
+          .where("org_id", "=", org)
+          .where("org_version", "=", expect)
+          .limit(500)
+          .execute();
+  const lapsed: string[] = [];
+  for (const a of approvals) {
+    const p = projects.find((x) => x.id === a.project_id);
+    if (!p?.policy) continue;
+    let approved: unknown;
+    try {
+      approved = JSON.parse(a.value);
+    } catch {
+      continue;
+    }
+    // Only for the override the project still has.
+    if (!same(p.policy.workflowOverrides[a.stage_id]?.[a.setting], approved)) continue;
+    const was = orgValueOf(p.policy, input.before, a.stage_id, a.setting);
+    const now = orgValueOf(p.policy, config, a.stage_id, a.setting);
+    if (!now.found) continue;
+    if (was.found && same(was.value, now.value)) {
+      ctx.write(
+        ctx.db.insertInto("core_override_approvals").values({ ...a, org_version: version }),
+      );
+      continue;
+    }
+    const n = normaliseOverrides(p.policy, config);
+    if (n.looser.some((l) => l.stageId === a.stage_id && l.key === a.setting))
+      lapsed.push(`${p.name}: ${a.stage_id} ${a.setting}`);
+  }
   if (lapsed.length) {
     const admins = await ctx.db
       .selectFrom("core_member")
@@ -299,12 +328,12 @@ export async function writeOrgVersion(
       .where("organization_id", "=", org)
       .where("role", "in", ["owner", "admin"])
       .execute();
-    for (const a of admins)
+    for (const admin of admins)
       ctx.emit({
         kind: "notify",
         payload: {
           event: "workflow.overrideLapsed",
-          userId: a.user_id,
+          userId: admin.user_id,
           title: `The org's workflow change ends approved project overrides (the stricter value applies): ${lapsed.join("; ")}`,
           url: "/settings",
         },

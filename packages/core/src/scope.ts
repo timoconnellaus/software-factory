@@ -6,7 +6,7 @@ import { OperationError } from "./errors.ts";
 import type { ProjectRow, RepositoryRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
 import { onOrgWorkflow, type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
 import { EMPTY_ORG_CONFIG, parseOrgConfig } from "./stages/org-config.ts";
-import { effectivePolicy } from "./stages/project-workflow.ts";
+import { effectivePolicy, type OverrideApprovals } from "./stages/project-workflow.ts";
 
 const EMPTY: Scope = {
   orgId: null,
@@ -155,7 +155,7 @@ export async function resolveScope(
     workItem?.policy_sha && workItem.policy_sha !== project.policy_sha
       ? (await loadPolicy(db, { id: project.id, policy_sha: workItem.policy_sha })).policy
       : null;
-  const resolved = await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem);
+  const resolved = await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem, project.id);
   return {
     orgId,
     projectId,
@@ -313,7 +313,7 @@ async function resolveBatched(
         policyError: raw.policyError,
         pinnedPolicy: pinnedRaw,
       }
-    : await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem);
+    : await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem, project.id);
   return {
     orgId,
     projectId,
@@ -343,18 +343,19 @@ export async function withOrgWorkflow(
   raw: { policy: ProjectPolicy | null; policyError: string | null },
   pinnedRaw: ProjectPolicy | null,
   workItem: Pick<WorkItemRow, "org_config_version"> | null,
+  projectId: string | null = null,
 ): Promise<{
   policy: ProjectPolicy | null;
   rawPolicy: ProjectPolicy | null;
   policyError: string | null;
   pinnedPolicy: ProjectPolicy | null;
 }> {
-  const current = await resolveOrgWorkflow(db, orgId, raw.policy, null);
+  const current = await resolveOrgWorkflow(db, orgId, raw.policy, null, projectId);
   const pinnedVersion = workItem?.org_config_version ?? null;
   const pinnedBase = pinnedRaw ?? (pinnedVersion !== null ? raw.policy : null);
   const pinned =
     pinnedBase && (pinnedRaw || onOrgWorkflow(pinnedBase))
-      ? await resolveOrgWorkflow(db, orgId, pinnedBase, pinnedVersion)
+      ? await resolveOrgWorkflow(db, orgId, pinnedBase, pinnedVersion, projectId)
       : null;
   return {
     policy: current.policy,
@@ -407,12 +408,41 @@ async function orgConfigAt(db: Db, orgId: string, version: number): Promise<OrgC
   return parsed;
 }
 
+/**
+ * The org admins' approvals of a project's looser overrides for one org version
+ * (`core_override_approvals`, by its primary key's prefix): stage → setting → the value approved.
+ */
+export async function overrideApprovals(
+  db: Db,
+  projectId: string,
+  orgVersion: number,
+): Promise<OverrideApprovals> {
+  const rows = await db
+    .selectFrom("core_override_approvals")
+    .select(["stage_id", "setting", "value"])
+    .where("project_id", "=", projectId)
+    .where("org_version", "=", orgVersion)
+    .limit(50)
+    .execute();
+  const out: OverrideApprovals = {};
+  for (const r of rows) {
+    try {
+      out[r.stage_id] = { ...out[r.stage_id], [r.setting]: JSON.parse(r.value) as unknown };
+    } catch {
+      // A row that isn't JSON approves nothing.
+    }
+  }
+  return out;
+}
+
 /** `policy` with its org workflow resolved under `version` (null: the org's current one). */
 export async function resolveOrgWorkflow(
   db: Db,
   orgId: string,
   policy: ProjectPolicy | null,
   version: number | null,
+  /** Whose override approvals apply; null: none (every looser override takes the stricter value). */
+  projectId: string | null = null,
 ): Promise<{ policy: ProjectPolicy | null; error: string | null }> {
   if (!policy || !onOrgWorkflow(policy)) return { policy, error: null };
   // The org's current version is one point read of its row; the document is read and parsed only
@@ -432,7 +462,11 @@ export async function resolveOrgWorkflow(
       ? { ok: true as const, config: EMPTY_ORG_CONFIG }
       : await orgConfigAt(db, orgId, at);
   if (!org.ok) return { policy: null, error: `the org config v${at} doesn't validate` };
-  const effective = effectivePolicy(policy, org.config);
+  const approvals =
+    projectId && at !== null && Object.keys(policy.workflowOverrides).length
+      ? await overrideApprovals(db, projectId, at)
+      : {};
+  const effective = effectivePolicy(policy, org.config, approvals);
   return effective.ok
     ? { policy: effective.value, error: null }
     : { policy: null, error: `the project's workflow: ${effective.error}` };

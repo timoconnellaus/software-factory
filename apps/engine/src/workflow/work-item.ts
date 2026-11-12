@@ -1649,13 +1649,18 @@ class ItemFlow {
    */
   private async pinnedPolicy() {
     const row = await this.env.DB.prepare(
-      `SELECT p.raw, w.org_id, w.org_config_version FROM core_work_items w
+      `SELECT p.raw, w.org_id, w.project_id, w.org_config_version FROM core_work_items w
        JOIN core_project_policies p ON p.project_id = w.project_id
          AND p.sha = COALESCE(w.policy_sha, (SELECT policy_sha FROM core_projects WHERE id = w.project_id))
        WHERE w.id = ?`,
     )
       .bind(this.workItemId)
-      .first<{ raw: string; org_id: string; org_config_version: number | null }>();
+      .first<{
+        raw: string;
+        org_id: string;
+        project_id: string;
+        org_config_version: number | null;
+      }>();
     if (!row) return null;
     const parsed = parseProjectPolicy(row.raw);
     if (!parsed.ok) return null;
@@ -1665,6 +1670,7 @@ class ItemFlow {
         row.org_id,
         parsed.policy,
         row.org_config_version,
+        row.project_id,
       )
     ).policy;
   }
