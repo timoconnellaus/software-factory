@@ -13,6 +13,7 @@ import {
   build,
   call,
   first,
+  gateHead,
   gateOpen,
   github,
   itemStatus,
@@ -49,8 +50,12 @@ async function toMergeGate(w: World, title: string, file: string) {
   return item.workItemId;
 }
 
-const approve = (w: World, workItemId: string) =>
-  ok("review.merge", { workItemId, openedFullDiff: true }, w.human);
+const approve = async (w: World, workItemId: string) =>
+  ok(
+    "review.merge",
+    { workItemId, openedFullDiff: true, headSha: await gateHead(workItemId) },
+    w.human,
+  );
 
 const merges = (workItemId: string) =>
   all<{ actor_type: string; actor_id: string; outcome: string }>(
@@ -369,6 +374,44 @@ describe("the babysitter's deliverer (v11)", () => {
     await deliverRepository(env, u.project_id, u.repositoryId);
     await itemStatus(u.a, "done");
     expect(await merges(u.a)).toHaveLength(1);
+  });
+
+  // Main's pr.merge closes an approval when GitHub says the head moved; on a v11 item the
+  // babysitter owns that: pr.merge leaves the approval and says why in details, not only in text.
+  it("a head that moves under the babysitter's merge: pr.merge leaves the approval to it, and it re-snapshots", async () => {
+    const w = await world();
+    const u = await updatedAndWaiting(w, "Head moved under the merge");
+    await github.setChecks(w.repo, u.head_sha, CI("success"));
+    const branch = String(
+      (await first<{ branch: string }>("SELECT branch FROM core_work_items WHERE id = ?", u.a))
+        ?.branch,
+    );
+    deliverTestSeams.beforeLand = async () => {
+      deliverTestSeams.beforeLand = null;
+      await github.push(w.repo, branch, undefined, ["src/late.ts"]);
+    };
+    await deliverRepository(env, u.project_id, u.repositoryId);
+    const refused = await first<{ reason: string }>(
+      "SELECT reason FROM core_audit WHERE operation = 'pr.merge' AND work_item_id = ? AND actor_id = 'babysitter' AND outcome = 'failed'",
+      u.a,
+    );
+    expect(refused?.reason).toMatch(/merge refused: head moved/);
+    expect(refused?.reason).not.toMatch(/review the new commit/);
+    // Not closed behind the babysitter's back: pr.merge didn't withdraw it for the new commit.
+    const approval = await first<{ status: string; note: string | null }>(
+      "SELECT status, note FROM core_pending_actions WHERE id = ?",
+      u.pending_action_id,
+    );
+    expect(approval?.note ?? "").not.toMatch(/review the new commit/);
+    // The deliverer matched the refusal by its details and re-snapshotted: the snapshot, not
+    // pr.merge's text, decided what happens to the moved head.
+    const ended = await first<{ end_reason: string | null }>(
+      "SELECT end_reason FROM core_merge_queue WHERE work_item_id = ? ORDER BY enqueued_at DESC LIMIT 1",
+      u.a,
+    );
+    expect(ended?.end_reason ?? "").not.toMatch(/pr\.merge failed after approval/);
+    expect(ended?.end_reason ?? "").toMatch(/moved/);
+    expect(await merges(u.a)).toEqual([]);
   });
 
   it("asks GitHub to update a head at most MAX_UPDATES times, then holds it", async () => {
