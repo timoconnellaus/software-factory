@@ -569,6 +569,27 @@ export const jobEnqueue = defineOperation({
   },
 });
 
+/** The wait reason of a build that carries checks when no online runner declares `checks`. */
+export const NO_CHECKS_RUNNER = "no runner that can run this project's checks is online";
+
+/**
+ * Whether any online runner declares `checks` (fifth review). Reads core_runners, which is sized by
+ * configuration (a handful of rows), only when a claim is refused for missing `checks`.
+ */
+async function checksRunnerOnline(ctx: Pick<HandlerContext, "db" | "now">): Promise<boolean> {
+  const since = new Date(Date.parse(ctx.now) - RUNNER_OFFLINE_MS).toISOString();
+  const rows = await ctx.db
+    .selectFrom("core_runners")
+    .select("manifest")
+    .where("revoked_at", "is", null)
+    .where("last_seen_at", ">=", since)
+    .limit(100)
+    .execute();
+  return rows.some((r) =>
+    (parseJson<CapabilityManifest | null>(r.manifest, null)?.capabilities ?? []).includes("checks"),
+  );
+}
+
 /**
  * What job.claim's candidate query already read for a job (AGENTS.md "Cloudflare cost", rule 8):
  * placementRefusal uses these instead of a query each, and memoises the per-project reads (policy,
@@ -645,7 +666,26 @@ export async function placementRefusal(
     harness: { id: job.harness } as Job["harness"],
     requires: job.requires,
   });
-  if (!fit.ok) return { reason: fit.reason };
+  if (!fit.ok) {
+    // Fifth review (ADR 0501): a build that carries checks waits on a runner that declares
+    // `checks`. When none online does, the job says why rather than nothing.
+    if (
+      job.requires.includes("checks") &&
+      !manifest.capabilities.includes("checks") &&
+      canRun(
+        { ...manifest, capabilities: [...manifest.capabilities, "checks"] },
+        {
+          harness: { id: job.harness } as Job["harness"],
+          requires: job.requires,
+        },
+      ).ok &&
+      // Once per claim, not per candidate (rule 8).
+      !(await memoised(facts, "checksRunnerOnline", () => checksRunnerOnline(ctx)))
+    ) {
+      return { reason: fit.reason, waitReason: NO_CHECKS_RUNNER };
+    }
+    return { reason: fit.reason };
+  }
   if (facts && !facts.shared) {
     return { reason: "runner is not the requester's and is not shared into this project" };
   }
