@@ -116,8 +116,10 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       ]),
     );
     expect(s.filesystem.allowRead).toEqual(["/t/sf-checks/job_1-x"]);
-    expect(s.filesystem.allowWrite).toEqual(["/t/sf-checks/job_1-x", "/tmp", "/private/tmp"]);
-    expect(s.filesystem.denyWrite).toContain("/Users/o/.ssh");
+    expect(s.filesystem.allowWrite).toEqual(["/t/sf-checks/job_1-x"]);
+    expect(s.filesystem.denyWrite).toEqual(
+      expect.arrayContaining(["/Users/o/.ssh", "/runner/config", "/runner/runs"]),
+    );
     expect(s.network.allowedDomains).toEqual(
       expect.arrayContaining(["registry.npmjs.org", "example.org"]),
     );
@@ -168,6 +170,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
           run: [
             `cat ${outside}/key && echo READ-PROTECTED`,
             `echo x > ${outside}/w && echo WROTE-OUTSIDE`,
+            "echo x > /tmp/sf-check-probe-$$ && echo WROTE-TMP",
             `echo x > ${homedir()}/.sf-check-probe && echo WROTE-HOME`,
             "curl -sS -m 5 https://example.com >/dev/null && echo REACHED-NETWORK",
             "echo ok > here && cat here",
@@ -176,7 +179,9 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
         },
         never,
       );
-      expect(r.output).not.toMatch(/READ-PROTECTED|WROTE-OUTSIDE|WROTE-HOME|REACHED-NETWORK/);
+      expect(r.output).not.toMatch(
+        /READ-PROTECTED|WROTE-OUTSIDE|WROTE-TMP|WROTE-HOME|REACHED-NETWORK/,
+      );
       expect(r.output).toContain("ok");
       expect(await readFile(join(dir, "here"), "utf8")).toBe("ok\n");
     },

@@ -4,7 +4,8 @@
 // shell: Anthropic's sandbox runtime (`srt`, the engine under Claude Code's sandbox), with
 //   - the harness's deny lists for the home dir's credential stores (`denyHome`) and the runner's
 //     own dirs (its key, other runs, the clones), read and write;
-//   - writes only to the check's clean tree, its own temporary HOME and temp dirs;
+//   - writes only to the check's clean tree, its own temporary HOME and temp (not /tmp: other jobs'
+//     check trees live there);
 //   - the network limited to the job's allowlist (`allowedDomains(profile)`), local ports allowed;
 //   - the harness's credential-free environment (`harnessEnv`), with HOME and TMPDIR the check's own.
 // The lists come from `@software-factory/harness-claude`; nothing here restates them.
@@ -19,7 +20,6 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import {
   allowedDomains,
-  defaultTempDirs,
   denyHome,
   EMPTY_DIRS,
   EMPTY_FILES,
@@ -107,9 +107,10 @@ export function checkSandboxSettings(
       // own checks root is re-allowed (allowRead wins over denyRead).
       denyRead: [...homeDeny, ...options.protectPaths, join(dirs.root, "..")],
       allowRead: [dirs.root],
-      // Write: only the check's own tree, home and temp, and the system temp dirs.
-      allowWrite: [dirs.root, ...defaultTempDirs(options.platform)],
-      denyWrite: homeDeny,
+      // Write: only the check's own tree, home and temp (TMPDIR points there). Not the system temp
+      // dirs the harness allows: other jobs' check trees, and anything else in /tmp, stay out.
+      allowWrite: [dirs.root],
+      denyWrite: [...homeDeny, ...options.protectPaths],
     },
   };
 }
