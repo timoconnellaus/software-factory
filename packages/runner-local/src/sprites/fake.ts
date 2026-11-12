@@ -5,10 +5,12 @@
 //
 // Each sprite is a directory: a sprite path `/a/b` is `<root>/<sprite>/a/b`. The runner's fixed
 // scripts (`scripts.ts`) run for real with every absolute path argument mapped there, so the
-// upload, the pull, the sha check and the result bundle are the real thing over real git. Only the
-// toolchain install is recorded instead of run, `ps` answers from the sprite's process table, and
-// the TTY command is the test's (`fakeClaude` stands in for Claude in the sprite). Not used at runtime.
-import { execFileSync, spawn } from "node:child_process";
+// upload, the pull, the sha check and the result bundle are the real thing over real git. The TTY's
+// entry script runs for real too (it loads the credential file, deletes it, sets the environment),
+// up to the harness's launch script, which a stub replaces: it records the environment, and the
+// test's `fakeClaude` stands in for Claude from there. Only the toolchain install is recorded
+// instead of run, and `ps` answers from the sprite's process table. Not used at runtime.
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -48,6 +50,8 @@ export interface FakeTty {
   socket: ServerSocket | null;
   /** What reads the terminal's input. */
   inputs: Array<(data: Buffer) => void>;
+  /** The environment the real entry script handed the launch script (null: no entry script). */
+  env: Record<string, string> | null;
 }
 
 export interface FakeSprite {
@@ -61,6 +65,9 @@ export interface FakeSprite {
   ttys: FakeTty[];
   /** Every exec's argv, in order. */
   execs: string[][];
+  /** The `config` it was created with (its size). */
+  config: Record<string, unknown> | null;
+  createdAt: string;
 }
 
 export interface FakeSpritesOptions {
@@ -69,8 +76,8 @@ export interface FakeSpritesOptions {
   onTty?: (tty: FakeTty, map: (path: string) => string) => void;
   /** What `ps -p <pid>` prints (default: the sprite's process table). */
   ps?: (sprite: FakeSprite, pid: number) => string | null;
-  /** Changes what the policy GET returns. */
-  egressView?: (sprite: FakeSprite) => EgressRule[];
+  /** Changes what the policy GET returns (any shape: the client must refuse what it can't read). */
+  egressView?: (sprite: FakeSprite) => unknown[];
   /** Changes what the sprite GET returns. */
   infoView?: (sprite: FakeSprite) => Record<string, unknown>;
 }
@@ -80,6 +87,17 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
   const sprites = new Map<string, FakeSprite>();
   const calls: string[] = [];
   const ttys = new Map<string, FakeTty>();
+  /** The entry scripts' process groups, killed when their terminal ends. */
+  const children = new Map<FakeTty, ChildProcess>();
+  const killTty = (tty: FakeTty) => {
+    const child = children.get(tty);
+    children.delete(tty);
+    if (child?.pid) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {}
+    }
+  };
 
   const mapFor = (sprite: FakeSprite) => (path: string) => {
     if (!path.startsWith("/")) return path;
@@ -96,6 +114,7 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
       organization: "personal",
       status: "running",
       url: `https://${s.name}-0001.sprites.app`,
+      created_at: s.createdAt,
     };
   const authed = (req: IncomingMessage) => req.headers.authorization === `Bearer ${token}`;
   const body = (req: IncomingMessage) =>
@@ -121,7 +140,10 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
         return json(res, 200, { sprites: list, has_more: false });
       }
       if (req.method === "POST") {
-        const input = JSON.parse((await body(req)) || "{}") as { name?: string };
+        const input = JSON.parse((await body(req)) || "{}") as {
+          name?: string;
+          config?: Record<string, unknown>;
+        };
         if (!input.name || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(input.name)) {
           return json(res, 400, { error: "invalid name" });
         }
@@ -135,6 +157,8 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
           provisioned: [],
           ttys: [],
           execs: [],
+          config: input.config ?? null,
+          createdAt: new Date().toISOString(),
         };
         mkdirSync(sprite.root, { recursive: true });
         sprites.set(sprite.name, sprite);
@@ -150,6 +174,7 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
         sprites.delete(name);
         for (const t of sprite.ttys) {
           t.exited = true;
+          killTty(t);
           t.socket?.close(1011, "sprite destroyed");
         }
         rmSync(sprite.root, { recursive: true, force: true });
@@ -221,7 +246,11 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
     });
   }
 
+  /** Upgraded sockets: `closeAllConnections` doesn't know them. */
+  const upgraded = new Set<import("node:stream").Duplex>();
   server.on("upgrade", (req, socket) => {
+    upgraded.add(socket);
+    socket.on("close", () => upgraded.delete(socket));
     const url = new URL(req.url ?? "/", "http://x");
     calls.push(`WS ${url.pathname}`);
     if (!authed(req)) {
@@ -262,6 +291,7 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
         exited: false,
         socket: null,
         inputs: [],
+        env: null,
         write(data) {
           this.socket?.send(Buffer.from(data));
         },
@@ -271,6 +301,7 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
         exit(code) {
           if (this.exited) return;
           this.exited = true;
+          killTty(this);
           this.socket?.send(JSON.stringify({ type: "exit", exit_code: code }));
           this.socket?.close(1000);
         },
@@ -278,7 +309,13 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
       ttys.set(tty.id, tty);
       sprite.ttys.push(tty);
       bindTty(tty, ws);
-      options.onTty?.(tty, mapFor(sprite));
+      void runEntry(sprite, tty).then(
+        () => options.onTty?.(tty, mapFor(sprite)),
+        (err) => {
+          tty.write(`fake sprite: ${err instanceof Error ? err.message : err}\r\n`);
+          tty.exit(1);
+        },
+      );
       return;
     }
     const stdin: Buffer[] = [];
@@ -303,6 +340,50 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
       }
     });
   });
+
+  /**
+   * Runs the TTY's entry script for real (its path arguments mapped), with a stub in place of the
+   * harness's launch script that records the environment it was handed and then waits.
+   */
+  async function runEntry(sprite: FakeSprite, tty: FakeTty): Promise<void> {
+    const map = mapFor(sprite);
+    const entry = tty.argv[1] ? map(tty.argv[1]) : "";
+    if (!entry || !existsSync(entry) || scriptName(readFileSync(entry, "utf8")) !== "entry") return;
+    const fake = join(sprite.root, ".fake");
+    mkdirSync(fake, { recursive: true });
+    const dump = join(fake, `env-${tty.id}`);
+    const stub = join(fake, "launch-stub.sh");
+    writeFileSync(
+      stub,
+      `#!/bin/sh
+env > "$SF_FAKE_ENV_DUMP.tmp" && mv "$SF_FAKE_ENV_DUMP.tmp" "$SF_FAKE_ENV_DUMP"
+exec sleep 600
+`,
+    );
+    const args = tty.argv.slice(2).map((a, i) => (i === 1 ? stub : a.startsWith("/") ? map(a) : a));
+    const child = spawn("sh", [entry, ...args], {
+      cwd: sprite.root,
+      env: { ...process.env, SF_FAKE_ENV_DUMP: dump },
+      stdio: "ignore",
+      detached: true,
+    });
+    children.set(tty, child);
+    let exited: number | null = null;
+    child.on("exit", (code) => {
+      exited = code ?? 1;
+    });
+    for (let i = 0; i < 250 && !existsSync(dump); i++) {
+      if (exited !== null) throw new Error(`the entry script exited ${exited}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    if (!existsSync(dump)) throw new Error("the entry script never reached the launch script");
+    tty.env = Object.fromEntries(
+      readFileSync(dump, "utf8")
+        .split("\n")
+        .filter((l) => l.includes("="))
+        .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+    );
+  }
 
   function bindTty(tty: FakeTty, ws: ServerSocket) {
     tty.socket?.close(1000);
@@ -340,6 +421,8 @@ export async function fakeSpritesApi(root: string, options: FakeSpritesOptions =
     },
     close: () =>
       new Promise<void>((resolve) => {
+        for (const tty of [...children.keys()]) killTty(tty);
+        for (const socket of upgraded) socket.destroy();
         server.closeAllConnections();
         server.close(() => resolve());
       }),
@@ -357,7 +440,7 @@ export interface FakeClaudeOptions {
    * path into this machine's, `append` writes a status line, `git` runs git in the sprite's repo.
    */
   onPrompt?: (agent: FakeAgent) => unknown;
-  /** Every credential the entry script would have loaded (the file it read and deleted). */
+  /** Every credential the real entry script loaded into Claude's environment. */
   credentials?: string[];
 }
 
@@ -381,13 +464,10 @@ export interface FakeAgent {
  */
 export function fakeClaude(options: FakeClaudeOptions = {}) {
   return (tty: FakeTty, map: (path: string) => string) => {
-    const entry = readFileSync(map(tty.argv[1] ?? ""), "utf8");
-    const launchScript = /^exec \/bin\/sh '?([^'\n]+)'?$/m.exec(entry)?.[1] ?? "";
-    const credential = /^set -a; \. '?([^'\n;]+)'?; set \+a$/m.exec(entry)?.[1] ?? "";
-    if (credential && existsSync(map(credential))) {
-      options.credentials?.push(readFileSync(map(credential), "utf8"));
-      rmSync(map(credential));
-    }
+    // The entry script's arguments: the credential file, then the launch script.
+    const launchScript = tty.argv[3] ?? "";
+    const credential = tty.env?.CLAUDE_CODE_OAUTH_TOKEN ?? tty.env?.ANTHROPIC_API_KEY;
+    if (credential) options.credentials?.push(credential);
     const runDir = dirname(launchScript);
     const record = JSON.parse(
       readFileSync(map(join(runDir, LAUNCH_RECORD)), "utf8"),

@@ -20,9 +20,18 @@ export interface TtyBridgeConfig {
   attachBase: string;
   /** The provider token's file (0600). */
   tokenFile: string;
-  /** How many times to reattach after a drop before giving up. */
+  /** How many reattaches in the whole session before giving up (default 60). */
   reattach?: number;
+  /**
+   * How long one outage may last before giving up (default 9 min): under the sprite's
+   * `max_run_after_disconnect` (10 min), so the bridge never waits on an agent already stopped.
+   */
+  giveUpMs?: number;
 }
+
+/** Defaults: the whole session's reattach budget, and the longest outage. */
+export const REATTACH_LIMIT = 60;
+export const GIVE_UP_MS = 9 * 60_000;
 
 type WebSocketCtor = new (url: string, init?: { headers?: Record<string, string> }) => WebSocket;
 
@@ -43,10 +52,14 @@ export function runTtyBridge(config: TtyBridgeConfig, io: TtyBridgeIo): Promise<
   const WS = io.WebSocket ?? (globalThis.WebSocket as unknown as WebSocketCtor);
   const token = readFileSync(config.tokenFile, "utf8").trim();
   const headers = { authorization: `Bearer ${token}` };
-  const maxReattach = config.reattach ?? 30;
+  const maxReattach = config.reattach ?? REATTACH_LIMIT;
+  const giveUpMs = config.giveUpMs ?? GIVE_UP_MS;
   let sessionId: string | null = null;
   let ws: WebSocket | null = null;
+  /** Reattaches in the whole session: never reset, so a server that accepts and drops can't loop. */
   let attempts = 0;
+  /** When the current outage began (the last drop with no output since). */
+  let downSince: number | null = null;
 
   if (io.stdin.isTTY && io.stdin.setRawMode) io.stdin.setRawMode(true);
   const size = () => ({
@@ -82,7 +95,6 @@ export function runTtyBridge(config: TtyBridgeConfig, io: TtyBridgeIo): Promise<
       socket.binaryType = "arraybuffer";
       let exited = false;
       socket.addEventListener("open", () => {
-        attempts = 0;
         socket.send(JSON.stringify(size()));
       });
       socket.addEventListener("message", (event) => {
@@ -95,25 +107,42 @@ export function runTtyBridge(config: TtyBridgeConfig, io: TtyBridgeIo): Promise<
             };
             if (msg.type === "session_info" && msg.session_id !== undefined) {
               sessionId = String(msg.session_id);
-            } else if (msg.type === "exit") {
+              downSince = null;
+              return;
+            }
+            if (msg.type === "exit") {
               exited = true;
-              finish(typeof msg.exit_code === "number" ? msg.exit_code : 0);
+              finish(typeof msg.exit_code === "number" ? msg.exit_code : 1);
+              return;
+            }
+            if (msg.type === "resize" || msg.type === "port_opened" || msg.type === "port_closed") {
+              return;
             }
           } catch {}
+          // Not a control message: terminal output sent as text. Shown, never dropped.
+          io.stdout.write(event.data);
           return;
         }
+        downSince = null;
         io.stdout.write(Buffer.from(event.data as ArrayBuffer));
       });
       socket.addEventListener("close", (event) => {
         if (done || exited) return;
-        // A clean close with no session to come back to is the end of the command.
-        if (event.code === 1000 && !sessionId) return finish(0);
-        if (!sessionId || attempts >= maxReattach) {
+        downSince ??= Date.now();
+        const outage = Date.now() - downSince;
+        // No exit message is never a clean end. Without a session there is nothing to reattach to.
+        if (!sessionId || attempts >= maxReattach || outage >= giveUpMs) {
           // Said in the pane: the runner shows the screen when Claude never came up.
           io.stdout.write(
-            `\r\nsprite bridge: the sprite's terminal closed (${event.code}${event.reason ? ` ${event.reason}` : ""})\r\n`,
+            `\r\nsprite bridge: the sprite's terminal closed (${event.code}${event.reason ? ` ${event.reason}` : ""}); ${
+              !sessionId
+                ? "no session to reattach to"
+                : attempts >= maxReattach
+                  ? `gave up after ${attempts} reattaches`
+                  : `gave up after ${Math.round(outage / 1000)} s without it`
+            }\r\n`,
           );
-          return finish(event.code === 1000 ? 0 : 1);
+          return finish(1);
         }
         attempts++;
         const wait = Math.min(10_000, (io.backoffMs ?? 500) * attempts);

@@ -5,3 +5,4 @@ export * from "./mirror.ts";
 export * from "./reap.ts";
 export * from "./result.ts";
 export * from "./scripts.ts";
+export * from "./tty-bridge.ts";

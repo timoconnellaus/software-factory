@@ -117,10 +117,14 @@ and docs on 2026-11-12. The [Sources](#sources) list has the links.
    allowlist.
 4. **Egress is Sprites' network policy, set to the container allowlist.** The rules are the job's
    `egressAllowlist` (ADR 0430 §5: the stage's hosts, `api.anthropic.com`, the runner's
-   `sprites.allowedHosts`) as `allow` domain rules. There is no `*` and no
+   `sprites.allowedHosts`) as `allow` domain rules, **then an explicit `{"domain":"*","action":"deny"}`**:
+   the runner never relies on the policy denying by default. There is no `allow *` and no
    `{"include":"defaults"}`.
    - The policy is put on after provisioning and read back before the job's files go in. The launch
      check reads it again (§7).
+   - **The read-back fails closed.** A rule of any shape the runner doesn't recognise (an
+     `include`, a CIDR, an unknown action or key) fails the check, and so do a missing deny-all, an
+     `allow *`, or any rule that isn't the job's.
    - **Not the in-sprite proxy.** The agent has `sudo` in its own VM and could bypass anything that
      runs inside it. The policy is enforced outside.
    - **Two things are lost against the container.** A port in an allowlist entry can't be kept,
@@ -135,22 +139,31 @@ and docs on 2026-11-12. The [Sources](#sources) list has the links.
      **the same absolute paths** as on the host (`sudo mkdir`, then owned by `sprite`), so the
      projected paths hold on both sides. That covers the settings, the launch script, the status
      file and the transcript.
-   - **The credential** is written to a 0600 file in the sprite over exec stdin. The sprite's entry
-     script reads it, deletes it and hands over to the harness's unchanged launch script. It is
-     never in a URL, an argv or the host's disk.
-   - **Keeping awake.** The entry script holds a Tasks API task, so a sprite doesn't pause while
-     Claude waits on the model.
+   - **The upload is checked.** The tar is streamed from a file on the host (never held in memory,
+     capped at 2 GiB), kept whole in the sprite and unpacked only when its sha256 matches.
+   - **The credential** is written last, just before the session, over exec stdin into a 0600 file
+     in **`/dev/shm`**: memory, never the sprite's disk or a checkpoint. The sprite's entry script
+     (`ENTRY`, a fixed script; its paths are arguments) reads it, deletes it and hands over to the
+     harness's unchanged launch script. It is never in a URL, an argv or the host's disk. If the host
+     dies between the write and the session, it is lost when the sprite is destroyed or goes cold.
+   - **Keeping awake, tied to Claude.** The entry script's watchdog holds a Tasks API task only while
+     Claude's process lives, then releases it, so the sprite pauses and stops costing compute. It
+     also enforces a lifetime (§12).
 6. **The session stays a tmux session on the host; its pane is bridged to the sprite.** The pane
    runs `sprite.sh`, which runs `tty-bridge.ts` on the host's Node.
    - **The bridge** opens the sprite's TTY exec with the token from its file and pipes the pane
-     through it raw. When the socket drops without an exit it reattaches to the same exec session.
+     through it raw. When the socket drops without an exit it reattaches to the same exec session,
+     within a budget for the whole session (60 reattaches) and for one outage (9 min, under the
+     sprite's 10-minute `max_run_after_disconnect`), then gives up. Text frames that aren't control
+     messages are shown as output, and no exit message is never a clean end.
    - **What carries over unchanged:** the start check and the trust dialog, the prompt pointer, a
      steer typed with `send-keys` (ADR 0400), the screen log, takeover by `tmux attach`, and the web
      terminal's tmux control-mode bridge (ADR 0440).
    - **The capabilities** are runner-local's, with `terminal`, minus `own-hardware` (a sprite is not
-     the owner's machine, so a project that requires it doesn't route here). Added are
-     `container-isolation`, because the VM meets everything that capability means, and the new
-     `cloud-sandbox`.
+     the owner's machine, so a project that requires it doesn't route here), plus the new
+     `cloud-sandbox`. **Not `container-isolation`:** the egress is weaker than a container's (every
+     port of an allowed host, no request log), so a policy that requires container isolation doesn't
+     route here.
    - **What doesn't move:** stream-json sessions (ADR 0450) aren't available on sprites, as on
      containers, and planning sessions stay on the host (ADR 0350).
 7. **The launch check runs in the sprite.** It compares:
@@ -184,13 +197,29 @@ and docs on 2026-11-12. The [Sources](#sources) list has the links.
    The host's unchanged steps follow: the merge check (unmerged entries in the sprite fail the job),
    the leftovers commit, the credential scan (ADR 0430 §8), the push with a fresh job token, and the
    diff. The host never unpacks files the sprite sent with anything but git's own checkout.
-10. **Reaping by name.** A sprite is named `sf-<runner id>-<job slug>-<hash>`. Reaping and `doctor`
-    list sprites with this runner's prefix and destroy those no live job names. The owner's other
-    sprites and other hosts' sprites are never touched.
+10. **Reaping by name, at start and while running, never quietly.** A sprite is named
+    `sf-<runner id>-<job slug>-<hash>`. Reaping at start, a sweep every 10 minutes while the host
+    runs, and `doctor` list sprites with this runner's prefix and destroy those no live job names
+    or that are past their lifetime. The owner's other sprites and other hosts' sprites are never
+    touched. A sprite that can't be destroyed (the token unreadable, the API down) is an error that
+    is logged loudly, and a job whose release couldn't destroy its sprite doesn't report `released`.
 11. **A small provider interface.** `SandboxApi` (create, get, list, destroy, set and get egress,
     exec, a TTY URL) is everything the adapter uses. Sprites is its one implementation
     (`spritesApi`). Another provider would be a second implementation. No wider abstraction is
     built.
+12. **Size and lifetime are explicit.** The create call sends the size (default 4 CPUs, 8192 MB,
+    50 GB; `runner.json` `sprites.cpus`, `memoryMb`, `storageGb`). Sprites documents no server-side
+    maximum lifetime, so the runner enforces one (default 4 h, `sprites.maxLifetimeMinutes`, capped
+    by the job's session timeout plus 30 min): the entry script stops Claude then and releases the
+    keep-awake hold, and the sweep destroys any of the runner's sprites older than that.
+13. **Bounded on the host.** Exec output is capped (16 MiB unless a call says otherwise), and the
+    result bundle streams to a file (capped at 2 GiB). The mirror takes at most 8 files, 64 MiB per
+    file and 256 MiB in all per job. The stage result is pulled to a file outside the worktree and
+    put in place only after the import (which could leave a symlink there), and the host reads
+    `.factory-result.json` only as a regular file directly in the worktree, never through a symlink,
+    in every isolation mode.
+14. **A gate before the mode is used.** Spec 36 lists the live checks against Sprites itself that
+    must pass before any runner is set to `"isolation": "sprites"`.
 
 ## Consequences
 - Jobs no longer use the host's CPU. The host only bridges and pulls, so a Mac can run more jobs
@@ -198,8 +227,9 @@ and docs on 2026-11-12. The [Sources](#sources) list has the links.
 - Every job starts slower: a sprite create, the Claude Code install, the upload. That is tens of
   seconds against a container's few. A warm per-project pool would cut it, at the cost in §2.
 - The owner's host must stay up and online while its sprites run. If it dies, the sprite's Claude
-  stops `max_run_after_disconnect` (10 min) after the bridge goes. The next start's reaping, or
-  `sf-runner doctor --fix`, destroys the sprite.
+  stops `max_run_after_disconnect` (10 min) after the bridge goes, its keep-awake hold ends with it,
+  and the sprite pauses (storage is still billed). The next start's reaping, or
+  `sf-runner doctor --fix`, destroys it.
 - Egress is per host, not per host and port, and has no request log.
 - The model credential is in a cloud VM's environment, on Fly's infrastructure. It is the same
   token the container gets, revocable with `claude setup-token`. Egress and the credential scan
@@ -207,12 +237,8 @@ and docs on 2026-11-12. The [Sources](#sources) list has the links.
 - Billing is the owner's Sprites account. The factory shows none of it.
 - The fake Sprites API (`runner-local/src/sprites/fake.ts`) reproduces the endpoints and framing
   above and runs the runner's fixed scripts for real, so the upload, the pull, the checks and the
-  result bundle are tested over real git. These still need a live run, against a real sprite:
-  - `sudo` and the absolute paths;
-  - the real image's tools;
-  - the policy endpoint's exact shape;
-  - the Tasks API;
-  - the reattach.
+  result bundle are tested over real git, and runs the real entry script. What only Sprites itself
+  can answer is spec 36's live-check gate.
 
 ## Sources
 Checked 2026-11-12.

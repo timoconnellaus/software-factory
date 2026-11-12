@@ -7,8 +7,10 @@
 // and the working tree on the snapshot, and then runs its unchanged steps: the merge check, the
 // leftovers commit, the credential scan, the push with the job token, the diff. Nothing the sprite
 // sends is ever unpacked as files by anything but git's own checkout.
-import { rm, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { open, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { hostGitEnv, SAFE_GIT } from "../container/job-repo.ts";
 import { type Exec, run } from "../exec.ts";
 import type { SandboxApi } from "./api.ts";
@@ -29,11 +31,9 @@ const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 /** Where the snapshot is fetched to in the host's job repo, for the length of the import. */
 export const SNAPSHOT_REF = "refs/software-factory/sprite-snapshot";
 
-/** Splits the script's output: the JSON line, then the bundle. */
-export function parseResult(out: Buffer): { header: ResultHeader; bundle: Buffer } {
-  const nl = out.indexOf(0x0a);
-  if (nl < 0) throw new Error("the sprite's result has no header");
-  const raw = JSON.parse(out.subarray(0, nl).toString("utf8")) as Partial<ResultHeader>;
+/** The script's first line: the header, checked. */
+export function parseResultHeader(line: string): ResultHeader {
+  const raw = JSON.parse(line) as Partial<ResultHeader>;
   const header: ResultHeader = {
     head: String(raw.head ?? ""),
     snapshot: String(raw.snapshot ?? ""),
@@ -45,26 +45,57 @@ export function parseResult(out: Buffer): { header: ResultHeader; bundle: Buffer
   }
   if (header.mergeHead && !SHA.test(header.mergeHead)) header.mergeHead = "";
   if (!Number.isInteger(header.unmerged) || header.unmerged < 0) header.unmerged = 0;
-  return { header, bundle: out.subarray(nl + 1) };
+  return header;
 }
 
-/** Runs the result script in the sandbox. */
+/** The most a result (the header and the bundle) may be. */
+export const MAX_RESULT_BYTES = 2 * 1024 ** 3;
+
+/**
+ * Runs the result script in the sandbox, its output streamed to `outFile` (never held in memory,
+ * capped at `MAX_RESULT_BYTES`), then splits it: the header, and the bundle into `bundleFile`.
+ */
 export async function fetchResult(
   api: SandboxApi,
   sandbox: string,
   paths: { work: string; gitDir: string; tmp: string; base: string },
-): Promise<{ header: ResultHeader; bundle: Buffer }> {
-  const r = await api.exec(
-    sandbox,
-    scriptArgv(RESULT, [paths.work, paths.gitDir, paths.tmp, paths.base]),
-    { timeoutMs: 10 * 60_000 },
-  );
-  if (r.code !== 0) {
-    throw new Error(
-      `the result script exited ${r.code}: ${r.stderr.toString().trim().slice(-500)}`,
+  files: { outFile: string; bundleFile: string; maxBytes?: number },
+): Promise<ResultHeader> {
+  try {
+    const r = await api.exec(
+      sandbox,
+      scriptArgv(RESULT, [paths.work, paths.gitDir, paths.tmp, paths.base]),
+      {
+        timeoutMs: 10 * 60_000,
+        stdoutFile: files.outFile,
+        maxStdout: files.maxBytes ?? MAX_RESULT_BYTES,
+      },
     );
+    if (r.code !== 0) {
+      throw new Error(
+        `the result script exited ${r.code}: ${r.stderr.toString().trim().slice(-500)}`,
+      );
+    }
+    const fd = await open(files.outFile, "r");
+    let head: Buffer;
+    try {
+      head = Buffer.alloc(4096);
+      const { bytesRead } = await fd.read(head, 0, head.length, 0);
+      head = head.subarray(0, bytesRead);
+    } finally {
+      await fd.close();
+    }
+    const nl = head.indexOf(0x0a);
+    if (nl < 0) throw new Error("the sprite's result has no header");
+    const header = parseResultHeader(head.subarray(0, nl).toString("utf8"));
+    await pipeline(
+      createReadStream(files.outFile, { start: nl + 1 }),
+      createWriteStream(files.bundleFile, { mode: 0o600 }),
+    );
+    return header;
+  } finally {
+    await rm(files.outFile, { force: true });
   }
-  return parseResult(r.stdout);
 }
 
 /**
@@ -78,15 +109,13 @@ export async function importResult(input: {
   gitDir: string;
   branch: string;
   header: ResultHeader;
-  bundle: Buffer;
-  /** Where the bundle is written for the fetch (outside the working tree). */
+  /** The bundle (`fetchResult`'s), outside the working tree; removed afterwards. */
   bundleFile: string;
 }): Promise<string[]> {
   const { exec, work, header } = input;
   const env = hostGitEnv();
   const git = (args: string[]) =>
     run(exec, "git", [...SAFE_GIT, ...args], { cwd: work, env, timeoutMs: 10 * 60_000 });
-  await writeFile(input.bundleFile, input.bundle, { mode: 0o600 });
   try {
     await git([
       "fetch",

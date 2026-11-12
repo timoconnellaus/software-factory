@@ -13,8 +13,11 @@
 // Planning sessions still run on the host (their relay is on the host's loopback, ADR 0350).
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import {
   DEFAULT_HARNESS_ACCOUNT,
@@ -63,10 +66,11 @@ import {
 import { jobDirs } from "../container/spec.ts";
 import { nodeExec } from "../exec.ts";
 import { sessionName } from "../tmux.ts";
-import { type EgressRule, type SandboxApi, spritesApi } from "./api.ts";
+import { type EgressRule, type SandboxApi, type SandboxSize, spritesApi } from "./api.ts";
 import { createMirror, type Mirror } from "./mirror.ts";
 import { fetchResult, importResult } from "./result.ts";
 import {
+  ENTRY,
   pinnedClaudeVersion,
   provisionScript,
   SHA256,
@@ -100,8 +104,16 @@ export interface SpriteRecord {
   uploadHead?: string;
   /** The job repo, for the checks after the session. */
   repo: { work: string; gitDir: string; dotGit: string; configHash: string };
-  /** The model credential's file in the sprite, gone once Claude is up. */
+  /**
+   * The model credential's file in the sprite: in `/dev/shm` (memory: never on the sprite's disk or
+   * in a checkpoint), deleted by the entry script once read.
+   */
   credentialFile: string;
+  /** Set (and written) before the create call: from then on the sprite may exist and must go. */
+  createRequested?: boolean;
+  size: SandboxSize;
+  /** The most the session may run, in seconds; the entry script stops Claude then. */
+  maxLifetimeS: number;
 }
 
 export interface SpritesOptions {
@@ -132,6 +144,15 @@ export interface SpritesOptions {
   mirrorMs?: number;
   /** Tests: environment for the sprite's scripts (the fake runs them without sudo). */
   scriptEnv?: Record<string, string>;
+  /** The sprite's size, sent explicitly at creation (default `DEFAULT_SPRITE_SIZE`). */
+  size?: Partial<SandboxSize>;
+  /**
+   * The most a sprite may live (default 4 h): the entry script stops Claude then, so the sprite
+   * pauses and stops costing compute, and the host's sweep destroys any sprite older than this.
+   */
+  maxLifetimeMs?: number;
+  /** The most bytes copied in per job (default 2 GiB). */
+  maxUploadBytes?: number;
   log?: (message: string) => void;
 }
 
@@ -144,6 +165,10 @@ export interface SpriteWorkspace extends LocalWorkspace {
   hostAccount: HarnessAccount;
   jobRoot: string;
 }
+
+export const DEFAULT_SPRITE_SIZE: SandboxSize = { cpus: 4, memoryMb: 8192, storageGb: 50 };
+export const DEFAULT_MAX_LIFETIME_MS = 4 * 60 * 60_000;
+export const DEFAULT_MAX_UPLOAD_BYTES = 2 * 1024 ** 3;
 
 const isSprite = (ws: LocalWorkspace | undefined): ws is SpriteWorkspace => !!ws && "sprite" in ws;
 
@@ -167,9 +192,13 @@ export function spritePrefix(runnerId: string): string {
     .slice(0, 16)}-`;
 }
 
+/** The rule that ends every job's policy: anything not allowed above is refused. */
+export const DENY_ALL: EgressRule = { domain: "*", action: "deny" };
+
 /**
  * The egress rules for a job: the allowlist a container job's proxy gets (ADR 0430 §5), as domain
- * rules. Sprites' policy is DNS-based, so a port in an entry can't be kept: the host is allowed.
+ * rules, then an explicit deny of everything else (never relying on a default). Sprites' policy is
+ * DNS-based, so a port in an entry can't be kept: the host is allowed.
  */
 export function egressRules(allow: readonly string[]): EgressRule[] {
   const domains = new Set<string>();
@@ -177,24 +206,45 @@ export function egressRules(allow: readonly string[]): EgressRule[] {
     const host = entry.trim().toLowerCase().replace(/:\d+$/, "");
     if (host && host !== "*") domains.add(host);
   }
-  return [...domains].sort().map((domain) => ({ domain, action: "allow" as const }));
+  return [...[...domains].sort().map((domain) => ({ domain, action: "allow" as const })), DENY_ALL];
 }
 
 const ruleKey = (r: EgressRule) => `${r.action} ${r.domain.toLowerCase()}`;
 
-/** What differs between the rules in force and the record's. Empty when they are the same. */
-export function egressProblems(want: EgressRule[], have: EgressRule[] | null): string[] {
-  if (!have) return ["the sprite's egress policy can't be read"];
+/**
+ * What differs between the rules in force and the job's. Empty only when they are exactly the
+ * job's rules: its allows and the deny-all, nothing else (no `allow *`, nothing it doesn't know).
+ */
+export function egressProblems(want: EgressRule[], have: EgressRule[]): string[] {
+  if (have.length === 0) return ["the sprite has no egress policy (it can reach anything)"];
+  const problems: string[] = [];
+  if (!have.some((r) => r.domain === "*" && r.action === "deny")) {
+    problems.push("the sprite's egress policy doesn't deny everything else");
+  }
+  if (have.some((r) => r.domain === "*" && r.action === "allow")) {
+    problems.push("the sprite's egress policy allows everything");
+  }
   const a = new Set(want.map(ruleKey));
   const b = new Set(have.map(ruleKey));
   const extra = [...b].filter((k) => !a.has(k));
   const missing = [...a].filter((k) => !b.has(k));
-  if (have.length === 0) return ["the sprite has no egress policy (it can reach anything)"];
-  return extra.length || missing.length
-    ? [
-        `the sprite's egress policy differs${extra.length ? `; unexpected: ${extra.join(", ")}` : ""}${missing.length ? `; missing: ${missing.join(", ")}` : ""}`,
-      ]
-    : [];
+  if (extra.length || missing.length) {
+    problems.push(
+      `the sprite's egress policy differs${extra.length ? `; unexpected: ${extra.join(", ")}` : ""}${missing.length ? `; missing: ${missing.join(", ")}` : ""}`,
+    );
+  }
+  return problems;
+}
+
+/** The rules in force, checked: a policy it can't read or understand is a problem (fail closed). */
+export async function checkEgress(api: SandboxApi, name: string, want: EgressRule[]) {
+  try {
+    return egressProblems(want, await api.getEgress(name));
+  } catch (err) {
+    return [
+      `the sprite's egress policy can't be checked: ${err instanceof Error ? err.message : err}`,
+    ];
+  }
 }
 
 /** The script the job's tmux pane runs: the bridge to Claude in the sprite. */
@@ -209,32 +259,23 @@ export function spriteScript(jobId: string, node: string, config: string): strin
 }
 
 /**
- * The command the sprite's TTY runs: it takes the model credential from its file (and deletes it),
- * sets the job's environment, keeps the sprite awake while the session runs (Sprites pauses an idle
- * sprite, which would drop Claude's connection), then hands over to the harness's launch script.
+ * The arguments of the sprite's entry script (`ENTRY`): the credential file, the launch script, the
+ * keep-awake task's name, the lifetime in seconds, then the job's environment.
  */
-export function spriteEntry(input: {
+export function entryArgs(input: {
   jobId: string;
   credentialFile: string;
-  env: Record<string, string>;
   launchScript: string;
-}): string {
-  const task = `sf-${input.jobId.replace(/[^A-Za-z0-9-]/g, "-")}`;
+  maxLifetimeS: number;
+  env: Record<string, string>;
+}): string[] {
   return [
-    "#!/bin/sh",
-    `# Written by the software factory runner for job ${input.jobId}: the sprite's side (ADR 0480).`,
-    `set -a; . ${shellQuote(input.credentialFile)}; set +a`,
-    `rm -f ${shellQuote(input.credentialFile)}`,
-    ...Object.entries(input.env).map(([k, v]) => `export ${k}=${shellQuote(v)}`),
-    "if [ -S /.sprite/api.sock ]; then",
-    "  ( while :; do",
-    `      curl -s --unix-socket /.sprite/api.sock -H 'content-type: application/json' -X PUT http://sprite/v1/tasks/${task} -d '{"expire":"5m"}' >/dev/null 2>&1`,
-    "      sleep 60",
-    "    done ) &",
-    "fi",
-    `exec /bin/sh ${shellQuote(input.launchScript)}`,
-    "",
-  ].join("\n");
+    input.credentialFile,
+    input.launchScript,
+    `sf-${input.jobId.replace(/[^A-Za-z0-9-]/g, "-")}`,
+    String(Math.max(60, Math.round(input.maxLifetimeS))),
+    ...Object.entries(input.env).map(([k, v]) => `${k}=${v}`),
+  ];
 }
 
 /** The environment Claude gets in a sprite (a container's, without the proxy: egress is the policy). */
@@ -252,30 +293,46 @@ export function spriteEnv(home: string): Record<string, string> {
   };
 }
 
-/** A tar of the given absolute paths, relative to `/`, without extended attributes. */
-function tarOf(paths: string[]): Promise<Buffer> {
+/**
+ * A tar of the given absolute paths, relative to `/`, without extended attributes, streamed into
+ * `out` (never held in memory). Fails past `maxBytes`. Returns its sha256 and size.
+ */
+async function tarTo(
+  paths: string[],
+  out: string,
+  maxBytes: number,
+): Promise<{ sha256: string; bytes: number }> {
   const flags =
     process.platform === "darwin" ? ["--no-xattrs", "--no-mac-metadata"] : ["--no-xattrs"];
-  return new Promise((done, fail) => {
-    const child = spawn(
-      "tar",
-      ["-c", "-f", "-", ...flags, "-C", "/", ...paths.map((p) => relative("/", p))],
-      {
-        env: { ...process.env, COPYFILE_DISABLE: "1" },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    const out: Buffer[] = [];
-    let err = "";
-    child.stdout.on("data", (c: Buffer) => out.push(c));
-    child.stderr.on("data", (c: Buffer) => {
-      err += c.toString();
-    });
-    child.on("error", fail);
-    child.on("close", (code) =>
-      code === 0 ? done(Buffer.concat(out)) : fail(new Error(`tar exited ${code}: ${err.trim()}`)),
-    );
+  const child = spawn(
+    "tar",
+    ["-c", "-f", "-", ...flags, "-C", "/", ...paths.map((p) => relative("/", p))],
+    { env: { ...process.env, COPYFILE_DISABLE: "1" }, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let err = "";
+  child.stderr.on("data", (c: Buffer) => {
+    err += c.toString();
   });
+  const exited = new Promise<number | null>((done, fail) => {
+    child.on("error", fail);
+    child.on("close", done);
+  });
+  let bytes = 0;
+  const capped = new Transform({
+    transform(chunk: Buffer, _enc, next) {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        child.kill();
+        next(new Error(`the job's files are over ${maxBytes} bytes; not copying them in`));
+      } else next(null, chunk);
+    },
+  });
+  await pipeline(child.stdout, capped, createWriteStream(out, { mode: 0o600 }));
+  const code = await exited;
+  if (code !== 0) throw new Error(`tar exited ${code}: ${err.trim()}`);
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(out)) hash.update(chunk as Buffer);
+  return { sha256: hash.digest("hex"), bytes: (await stat(out)).size };
 }
 
 /** `ps` in the sprite: the process's argv, or null when it is gone. */
@@ -310,9 +367,7 @@ export async function spriteChecks(
   if (record.id && info.id !== record.id) {
     problems.push(`sprite ${record.name} is ${info.id}, not the ${record.id} the runner made`);
   }
-  problems.push(
-    ...egressProblems(record.egress, await api.getEgress(record.name).catch(() => null)),
-  );
+  problems.push(...(await checkEgress(api, record.name, record.egress)));
   const r = await api.exec(record.name, scriptArgv(SHA256, launch.settingsPaths), {
     ...(env ? { env } : {}),
     timeoutMs: 20_000,
@@ -376,17 +431,21 @@ export function createSpritesRunner(
     ...(scriptEnv ? { env: scriptEnv } : {}),
     ...extra,
   });
-  let apiPromise: Promise<SandboxApi> | null = options.api ? Promise.resolve(options.api) : null;
-  const api = (): Promise<SandboxApi> => {
-    apiPromise ??= readSpritesToken(options.tokenFile).then((token) =>
-      spritesApi({ token, ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}) }),
-    );
-    // A missing token is retried on the next job (the owner may log in meanwhile).
-    apiPromise.catch(() => {
-      if (!options.api) apiPromise = null;
-    });
-    return apiPromise;
+  /** The client for the token in the file now: a re-login takes effect on the next call. */
+  let cached: { token: string; api: SandboxApi } | null = null;
+  const api = async (): Promise<SandboxApi> => {
+    if (options.api) return options.api;
+    const token = await readSpritesToken(options.tokenFile);
+    if (cached?.token !== token) {
+      cached = {
+        token,
+        api: spritesApi({ token, ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}) }),
+      };
+    }
+    return cached.api;
   };
+  const size: SandboxSize = { ...DEFAULT_SPRITE_SIZE, ...options.size };
+  const maxLifetimeMs = options.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS;
   const search = {
     dirs: config.checkouts ?? [],
     exclude: [
@@ -418,9 +477,9 @@ export function createSpritesRunner(
     await mirror?.stop().catch(() => {});
   }
 
+  /** Destroys a sprite. Any failure (no token, the API) throws: it may still be running. */
   async function destroy(name: string): Promise<void> {
-    const provider = await api().catch(() => null);
-    if (provider) await provider.destroy(name);
+    await (await api()).destroy(name);
   }
 
   async function cleanUp(job: Job, ws: SpriteWorkspace | undefined): Promise<string[]> {
@@ -433,18 +492,23 @@ export function createSpritesRunner(
       }
     };
     await stopMirror(job.jobId);
-    await attempt("destroy sprite", () =>
-      destroy(ws?.sprite.name ?? spriteName(prefix, job.jobId)),
-    );
+    const runDir = ws?.runDir ?? join(config.runsDir, job.jobId);
+    const record = ws?.sprite ?? (await readSpriteRecord(runDir));
+    const name = record?.name ?? spriteName(prefix, job.jobId);
+    if (record?.createRequested) {
+      // It may exist: it must be destroyed, or this release fails (and says so).
+      await attempt(`destroy sprite ${name} (it may still be running)`, () => destroy(name));
+    } else {
+      // Never created by this run; a crashed earlier run's, if any, goes too when it can.
+      await destroy(name).catch(() => {});
+    }
     const root = await spritesRoot().catch(() => options.spritesDir);
     await attempt("remove job dir", async () => {
       const dir = ws?.jobRoot ?? jobDirs(root, sessionName(job.jobId)).root;
       if (!isUnder(dir, root)) throw new Error(`refusing to remove ${dir}: not under ${root}`);
       await rm(dir, { recursive: true, force: true });
     });
-    await attempt("remove run dir", () =>
-      removeRunDir(ws?.runDir ?? join(config.runsDir, job.jobId)),
-    );
+    await attempt("remove run dir", () => removeRunDir(runDir));
     if (ws) await attempt("remove attachments", () => removeRunDir(ws.attachmentsDir));
     secrets.delete(job.jobId);
     return errors;
@@ -463,55 +527,95 @@ export function createSpritesRunner(
     return files;
   }
 
+  /** Where a job's transfer files go on the host: outside every dir copied in or checked out. */
+  async function transferDir(): Promise<string> {
+    const dir = join(await spritesRoot(), ".transfer");
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    return dir;
+  }
+
   /** After the session: the result into the host's job repo, then the checks (ADR 0480). */
   async function afterSession(job: Job, ws: SpriteWorkspace): Promise<string[]> {
     const provider = await api();
     const record = ws.sprite;
     await stopMirror(job.jobId);
-    // The stage result is a private file (never in git): pulled like the run's files.
+    const transfer = await transferDir();
+    const name = sessionName(job.jobId);
+    // The stage result is a private file (never in git): pulled to a host file of its own, and put
+    // in the worktree only after the import (which could otherwise replace it with a symlink).
     const resultPath = join(ws.path, RESULT_FILE);
-    await rm(resultPath, { force: true });
-    await createMirror({ api: provider, sandbox: record.name, files: () => [resultPath] })
-      .pull()
-      .catch((err) =>
-        log(`${job.jobId}: pulling the result: ${err instanceof Error ? err.message : err}`),
+    const pulled = join(transfer, `${name}.result.json`);
+    await rm(pulled, { force: true });
+    try {
+      await createMirror({
+        api: provider,
+        sandbox: record.name,
+        files: () => [{ remote: resultPath, local: pulled }],
+        maxSize: 8 << 20,
+      })
+        .pull()
+        .catch((err) =>
+          log(`${job.jobId}: pulling the result: ${err instanceof Error ? err.message : err}`),
+        );
+      const bundleFile = join(transfer, `${name}.bundle`);
+      const header = await fetchResult(
+        provider,
+        record.name,
+        {
+          work: ws.path,
+          gitDir: record.repo.gitDir,
+          tmp: ws.runTmp,
+          base: record.uploadHead ?? ws.baseSha,
+        },
+        { outFile: join(transfer, `${name}.result`), bundleFile },
       );
-    const { header, bundle } = await fetchResult(provider, record.name, {
-      work: ws.path,
-      gitDir: record.repo.gitDir,
-      tmp: ws.runTmp,
-      base: record.uploadHead ?? ws.baseSha,
-    });
-    await provider.destroy(record.name);
-    const problems = await importResult({
-      exec,
-      work: ws.path,
-      gitDir: record.repo.gitDir,
-      branch: ws.branch,
-      header,
-      bundle,
-      bundleFile: join(ws.jobRoot, "result.bundle"),
-    });
-    problems.push(...(await checkJobGitDir(record.repo)));
-    if (problems.length === 0) {
-      const leaked = await scanForSecrets(exec, ws.path, ws.baseSha, secrets.get(job.jobId) ?? []);
-      if (leaked.length)
-        problems.push(`the model credential is in ${leaked.slice(0, 10).join(", ")}`);
+      const problems = await importResult({
+        exec,
+        work: ws.path,
+        gitDir: record.repo.gitDir,
+        branch: ws.branch,
+        header,
+        bundleFile,
+      });
+      problems.push(...(await checkJobGitDir(record.repo)));
+      // Whatever the import left at the result's path goes (never followed), then the pulled one.
+      const there = await lstat(resultPath).catch(() => null);
+      if (there) await rm(resultPath, { recursive: true, force: true });
+      if (await lstat(pulled).catch(() => null)) await rename(pulled, resultPath);
+      if (problems.length === 0) {
+        const leaked = await scanForSecrets(
+          exec,
+          ws.path,
+          ws.baseSha,
+          secrets.get(job.jobId) ?? [],
+        );
+        if (leaked.length)
+          problems.push(`the model credential is in ${leaked.slice(0, 10).join(", ")}`);
+      }
+      return problems;
+    } finally {
+      await rm(pulled, { force: true });
+      // The result is in (or failed): the sprite goes now. If it can't, release tries again and
+      // fails loudly.
+      await provider.destroy(record.name).catch((err) => {
+        log(
+          `${job.jobId}: DESTROYING SPRITE ${record.name} FAILED, it may still be running: ${err instanceof Error ? err.message : err}`,
+        );
+      });
     }
-    return problems;
   }
 
   return {
     async manifest(): Promise<CapabilityManifest> {
       const base = await local.manifest();
       // Not the owner's hardware: a project that requires `own-hardware` (client repos) won't
-      // route here. The sandbox is at least a container's boundary (ADR 0480).
+      // route here. Not `container-isolation` either: the egress is weaker than a container's
+      // (every port of an allowed host, no request log), so it declares only what is true.
       return {
         ...base,
         capabilities: [
           ...new Set([
             ...base.capabilities.filter((c) => c !== "own-hardware"),
-            "container-isolation" as const,
             "cloud-sandbox" as const,
           ]),
         ],
@@ -580,7 +684,10 @@ export function createSpritesRunner(
         });
         await writeFile(join(runDir, STATUS_FILE), "", { mode: 0o600 });
         await writeFile(join(runDir, PID_FILE), "", { mode: 0o600 });
-        const credentialFile = join(dirs.root, ".credential.env");
+        const credentialFile = `/dev/shm/${session}.env`;
+        const maxLifetimeS =
+          Math.min(maxLifetimeMs, (job.limits.sessionTimeoutMs ?? maxLifetimeMs) + 30 * 60_000) /
+          1000;
         const record: SpriteRecord = {
           jobId: job.jobId,
           provider: options.api?.kind ?? "sprites",
@@ -595,6 +702,8 @@ export function createSpritesRunner(
             configHash: repo.configHash,
           },
           credentialFile,
+          size,
+          maxLifetimeS,
         };
         await writeFile(join(runDir, SPRITE_RECORD), `${JSON.stringify(record, null, 2)}\n`, {
           mode: 0o600,
@@ -602,17 +711,23 @@ export function createSpritesRunner(
         const entry = join(runDir, SPRITE_ENTRY);
         await writeFile(
           entry,
-          spriteEntry({
-            jobId: job.jobId,
-            credentialFile,
-            env: spriteEnv(dirs.home),
-            launchScript: projected.scriptPath,
-          }),
+          `#!/bin/sh\n# Written by the software factory runner for job ${job.jobId}: the sprite's side (ADR 0480).\n${ENTRY}`,
           { mode: 0o700 },
         );
+        const argv = [
+          "/bin/sh",
+          entry,
+          ...entryArgs({
+            jobId: job.jobId,
+            credentialFile,
+            launchScript: projected.scriptPath,
+            maxLifetimeS,
+            env: spriteEnv(dirs.home),
+          }),
+        ];
         const provider = await api();
         const ttyConfig: TtyBridgeConfig = {
-          url: provider.ttyUrl(name, ["/bin/sh", entry], { cols: 200, rows: 50, dir: dirs.work }),
+          url: provider.ttyUrl(name, argv, { cols: 200, rows: 50, dir: dirs.work }),
           attachBase: provider.ttyUrl(name, [], { cols: 200, rows: 50 }).split("?")[0] ?? "",
           tokenFile: options.tokenFile,
         };
@@ -645,7 +760,9 @@ export function createSpritesRunner(
               scriptArgv(WRITE, [path]),
               execOpts(60_000, { stdin: content }),
             );
-            if (r.code !== 0) throw new Error(`exited ${r.code}: ${r.stderr.toString().trim()}`);
+            if (r.code !== 0 || !r.stdout.toString().includes("written")) {
+              throw new Error(`exited ${r.code}: ${r.stderr.toString().trim()}`);
+            }
           },
           sprite: record,
           hostAccount,
@@ -701,8 +818,17 @@ export function createSpritesRunner(
         return r;
       };
       try {
-        // A fresh sprite per job (Sprites can't create one from another's checkpoint).
-        const created = await provider.create(record.name);
+        // A fresh sprite per job (Sprites can't create one from another's checkpoint). Recorded
+        // first: from here on, release must destroy it or fail.
+        record.createRequested = true;
+        await writeFile(
+          join(workspace.runDir, SPRITE_RECORD),
+          `${JSON.stringify(record, null, 2)}\n`,
+          {
+            mode: 0o600,
+          },
+        );
+        const created = await provider.create(record.name, record.size);
         record.id = created.id;
         if (signal.aborted) throw signal.reason;
         // The toolchain first, while nothing of the job is inside: no code, no credential.
@@ -716,7 +842,7 @@ export function createSpritesRunner(
         );
         // Then the allowlist, outside the sprite's reach, and checked before anything goes in.
         await provider.setEgress(record.name, record.egress);
-        const egress = egressProblems(record.egress, await provider.getEgress(record.name));
+        const egress = await checkEgress(provider, record.name, record.egress);
         if (egress.length) throw new Error(egress.join("; "));
         // The job's files, at the paths the harness projected (after the host's merge).
         record.uploadHead = (
@@ -739,8 +865,27 @@ export function createSpritesRunner(
         );
         const roots = [workspace.jobRoot, workspace.runDir];
         if (capabilities.includes("work-item-attachments")) roots.push(workspace.attachmentsDir);
-        const tar = await tarOf(roots);
-        await run("copying the job in", scriptArgv(UPLOAD, ["/", ...roots]), 10 * 60_000, tar);
+        const tarFile = join(await transferDir(), `${workspace.name}.tar`);
+        try {
+          const tar = await tarTo(
+            roots,
+            tarFile,
+            options.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES,
+          );
+          const r = await provider.exec(
+            record.name,
+            scriptArgv(UPLOAD, ["/", tar.sha256, ...roots]),
+            { ...execOpts(15 * 60_000), stdinFile: tarFile },
+          );
+          if (r.code !== 0 || !r.stdout.toString().includes(`uploaded ${tar.sha256}`)) {
+            throw new Error(
+              `copying the job in exited ${r.code}: ${r.stderr.toString().trim().slice(-1_000)}`,
+            );
+          }
+        } finally {
+          await rm(tarFile, { force: true });
+        }
+        // The credential last, into memory in the sprite, just before the session that reads it.
         await run(
           "writing the credential",
           scriptArgv(WRITE, [record.credentialFile]),
@@ -753,6 +898,8 @@ export function createSpritesRunner(
           api: provider,
           sandbox: record.name,
           files: () => mirrored(workspace),
+          maxFiles: 8,
+          maxTotal: 256 << 20,
           log: (m) => log(`${job.jobId}: ${m}`),
         });
         mirrors.set(job.jobId, mirror);
@@ -762,7 +909,12 @@ export function createSpritesRunner(
       } catch (err) {
         active.delete(job.jobId);
         await stopMirror(job.jobId);
-        await provider.destroy(record.name).catch(() => {});
+        // The sprite (and the credential file in it) goes now; release tries again if this fails.
+        await provider.destroy(record.name).catch((destroyErr) => {
+          log(
+            `${job.jobId}: DESTROYING SPRITE ${record.name} FAILED, it may still be running: ${destroyErr instanceof Error ? destroyErr.message : destroyErr}`,
+          );
+        });
         throw err;
       }
     },

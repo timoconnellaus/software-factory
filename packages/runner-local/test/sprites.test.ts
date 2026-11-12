@@ -17,6 +17,7 @@ import {
   egressRules,
   execUrl,
   HarnessConfigMismatch,
+  parseEgressRules,
   parsePull,
   pinnedClaudeVersion,
   reapSprites,
@@ -197,9 +198,9 @@ describe("the Sprites API client (ADR 0480)", () => {
     const fake = await fakeSpritesApi(root);
     cleanups.push(fake.close);
     const api = spritesApi({ apiUrl: fake.url, token: fake.token });
-    const made = await api.create("sf-test-a");
+    const made = await api.create("sf-test-a", { cpus: 2, memoryMb: 2048, storageGb: 10 });
     expect(made.id).toMatch(/^sprite-/);
-    await api.create("other-b");
+    await api.create("other-b", { cpus: 2, memoryMb: 2048, storageGb: 10 });
     expect((await api.list("sf-test-")).map((s) => s.name)).toEqual(["sf-test-a"]);
     await api.setEgress("sf-test-a", [{ domain: "github.com", action: "allow" }]);
     expect(await api.getEgress("sf-test-a")).toEqual([{ domain: "github.com", action: "allow" }]);
@@ -215,7 +216,9 @@ describe("the Sprites API client (ADR 0480)", () => {
     await api.destroy("sf-test-a");
     expect(await api.get("sf-test-a")).toBeNull();
     const wrong = spritesApi({ apiUrl: fake.url, token: "not-it" });
-    await expect(wrong.create("sf-test-c")).rejects.toThrow(/401/);
+    await expect(
+      wrong.create("sf-test-c", { cpus: 2, memoryMb: 2048, storageGb: 10 }),
+    ).rejects.toThrow(/401/);
     expect(execUrl("https://api.sprites.dev", "s", ["/bin/sh", "x y"], { tty: "true" })).toBe(
       "wss://api.sprites.dev/v1/sprites/s/exec?cmd=%2Fbin%2Fsh&cmd=x+y&path=%2Fbin%2Fsh&tty=true",
     );
@@ -230,13 +233,29 @@ describe("the Sprites API client (ADR 0480)", () => {
       { domain: "*.npmjs.org", action: "allow" },
       { domain: "github.com", action: "allow" },
       { domain: "localhost", action: "allow" },
+      { domain: "*", action: "deny" },
     ]);
     const want = egressRules(["github.com"]);
     expect(egressProblems(want, want)).toEqual([]);
     expect(egressProblems(want, [])[0]).toMatch(/no egress policy/);
-    expect(egressProblems(want, [...want, { domain: "*", action: "allow" }])[0]).toMatch(
-      /unexpected: allow \*/,
+    expect(egressProblems(want, [...want, { domain: "*", action: "allow" }])).toEqual(
+      expect.arrayContaining([expect.stringMatching(/allows everything/)]),
     );
+    // Without the trailing deny-all it fails, even with the same allows.
+    expect(egressProblems(want, want.slice(0, -1))).toEqual(
+      expect.arrayContaining([expect.stringMatching(/doesn't deny everything else/)]),
+    );
+    // A rule it doesn't understand fails closed when read.
+    for (const odd of [
+      { include: "defaults" },
+      { cidr: "10.0.0.0/8", action: "allow" },
+      { domain: "github.com", action: "log" },
+      { domain: "github.com", action: "allow", ports: [22] },
+    ]) {
+      expect(() => parseEgressRules({ rules: [...want, odd] })).toThrow(/doesn't understand/);
+    }
+    expect(parseEgressRules({ rules: want })).toEqual(want);
+    expect(() => parseEgressRules({})).toThrow(/no rules/);
     expect(pinnedClaudeVersion()).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
@@ -257,15 +276,11 @@ describe("a sprite job's session", { timeout: 30_000 }, () => {
     const j = job();
     const manifest = await w.runner.manifest();
     expect(manifest.capabilities).toEqual(
-      expect.arrayContaining([
-        "cloud-sandbox",
-        "container-isolation",
-        "steer",
-        "terminal",
-        "ui-takeover",
-      ]),
+      expect.arrayContaining(["cloud-sandbox", "steer", "terminal", "ui-takeover"]),
     );
     expect(manifest.capabilities).not.toContain("own-hardware");
+    // Its egress is weaker than a container's: it doesn't claim container isolation.
+    expect(manifest.capabilities).not.toContain("container-isolation");
     const ws = await w.runner.prepareWorkspace(j, signal());
     const session = await w.runner.startSession(j, ws, signal());
     expect(session.takeover?.hint).toBe("tmux -L software-factory attach -t sf-job_1");
@@ -280,10 +295,18 @@ describe("a sprite job's session", { timeout: 30_000 }, () => {
     expect(sprite.egress.map((r) => r.domain)).toEqual(
       expect.arrayContaining(["api.anthropic.com", "github.com"]),
     );
-    expect(sprite.egress.some((r) => r.domain === "*")).toBe(false);
-    // The credential reached the sprite only as a file the entry script read and deleted.
-    expect(w.credentials).toEqual([`CLAUDE_CODE_OAUTH_TOKEN='${TOKEN}'\n`]);
-    expect(existsSync(join(sprite.root, ws.path, "..", ".credential.env"))).toBe(false);
+    expect(sprite.egress.some((r) => r.domain === "*" && r.action === "allow")).toBe(false);
+    expect(sprite.egress.at(-1)).toEqual({ domain: "*", action: "deny" });
+    // Its size was sent explicitly.
+    expect(sprite.config).toEqual({ cpus: 4, ram_mb: 8192, storage_gb: 50 });
+    // The credential went in as a file in memory (/dev/shm); the real entry script loaded it into
+    // Claude's environment and deleted it.
+    expect(w.credentials).toEqual([TOKEN]);
+    const tty = sprite.ttys[0];
+    expect(tty?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe(TOKEN);
+    expect(tty?.env?.SOFTWARE_FACTORY_ISOLATION).toBe("sprites");
+    expect(tty?.argv[2]).toBe("/dev/shm/sf-job_1.env");
+    expect(existsSync(join(sprite.root, "dev", "shm", "sf-job_1.env"))).toBe(false);
     // The prompt went into the sprite, and the pointer over the TTY.
     expect(await readFile(join(sprite.root, ws.path, PROMPT_FILE), "utf8")).toBe("add a line");
     // The launch was checked in the sprite (ps, the settings' hashes) before the prompt.
@@ -367,14 +390,41 @@ describe("a sprite job's session", { timeout: 30_000 }, () => {
 
   it("kills a sprite whose egress policy isn't the job's, before the prompt", async () => {
     const w = await world({
-      api: { egressView: (s) => [...s.egress, { domain: "*", action: "allow" }] },
+      api: { egressView: (s) => [{ domain: "*", action: "allow" }, ...s.egress] },
     });
     const j = job();
     const ws = await w.runner.prepareWorkspace(j, signal());
     const err = await w.runner.startSession(j, ws, signal()).catch((e) => e);
-    expect(String(err.message)).toMatch(/egress policy differs; unexpected: allow \*/);
+    expect(String(err.message)).toMatch(/allows everything/);
     expect(w.api.sprites.size).toBe(0);
     await w.runner.release(j, ws, undefined);
+  });
+
+  it("fails closed on a policy rule it doesn't understand", async () => {
+    const w = await world({
+      api: { egressView: (s) => [{ include: "defaults" }, ...s.egress] },
+    });
+    const j = job();
+    const ws = await w.runner.prepareWorkspace(j, signal());
+    const err = await w.runner.startSession(j, ws, signal()).catch((e) => e);
+    expect(String(err.message)).toMatch(/can't be checked: .*doesn't understand/);
+    expect(w.api.sprites.size).toBe(0);
+    await w.runner.release(j, ws, undefined);
+  });
+
+  it("fails release loudly when the sprite it made can't be destroyed", async () => {
+    const w = await world({ claude: {} });
+    const j = job();
+    const ws = await w.runner.prepareWorkspace(j, signal());
+    const session = await w.runner.startSession(j, ws, signal());
+    const token = await readFile(w.tokenFile, "utf8");
+    await rm(w.tokenFile);
+    await expect(w.runner.release(j, ws, session)).rejects.toThrow(/may still be running/);
+    expect(w.api.sprites.size).toBe(1);
+    // With the token back, a second release destroys it.
+    await writeFile(w.tokenFile, token, { mode: 0o600 });
+    await w.runner.release(j, ws, session);
+    expect(w.api.sprites.size).toBe(0);
   });
 
   it("kills a process in the sprite that doesn't match its launch record", async () => {
@@ -458,10 +508,18 @@ describe("reaping sprite jobs", () => {
   it("destroys this runner's sprites without a live job, and nobody else's", async () => {
     const w = await world();
     const api = spritesApi({ apiUrl: w.api.url, token: w.api.token });
-    await api.create(spriteName("sf-test-", "job_live"));
-    await api.create(spriteName("sf-test-", "job_dead"));
-    await api.create("sf-other-runner-job-x");
-    await api.create("owners-own-sprite");
+    await api.create(spriteName("sf-test-", "job_live"), {
+      cpus: 2,
+      memoryMb: 2048,
+      storageGb: 10,
+    });
+    await api.create(spriteName("sf-test-", "job_dead"), {
+      cpus: 2,
+      memoryMb: 2048,
+      storageGb: 10,
+    });
+    await api.create("sf-other-runner-job-x", { cpus: 2, memoryMb: 2048, storageGb: 10 });
+    await api.create("owners-own-sprite", { cpus: 2, memoryMb: 2048, storageGb: 10 });
     await mkdir(join(w.spritesDir, "sf-job_dead"), { recursive: true });
     const reaped = await reapSprites(
       { spritesDir: w.spritesDir, runsDir: w.runsDir, namePrefix: "sf-test-", api },

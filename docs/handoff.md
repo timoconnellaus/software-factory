@@ -103,8 +103,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   sprite made by the owner's host with its own Sprites token (`sf-runner sprites login`, 0600 on the
   host). `packages/runner-local/src/sprites/` holds the API client, the pane-to-sprite TTY bridge,
   the run-file mirror and the result bundle. Egress is Sprites' network policy. The host still pushes.
-  Tested against a fake Sprites API. Criteria 1, 3 (live part), 8 (`tmux attach`) and 11 (`doctor`)
-  need a live run with the owner's token (runner-host README, "A sprite per job").
+  Tested against a fake Sprites API. **The mode must not be turned on until spec 36's live-check
+  gate has passed** (policy shapes and default deny, bypasses with `sudo`, Fly's internal network,
+  `/.sprite/api.sock`, checkpoints, exec framing, create's size, the image); criteria 1, 8
+  (`tmux attach`) and 11 (`doctor`) are part of it (runner-host README, "A sprite per job").
   Piece 6, **the web terminal** (block AB, [spec 35](specs/35-web-terminal.md) /
   [ADR 0440](adr/0440-a-web-terminal-relayed-through-a-durable-object-per-job.md), migration 0210,
   branch `timoconnellaus/hosts-web-terminal`): the Live tab's Web terminal view (xterm.js), the

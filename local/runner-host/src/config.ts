@@ -87,6 +87,20 @@ export const configSchema = z.object({
       apiUrl: z.string().url().optional(),
       /** More egress hosts for every job on this runner, on top of the stage's. */
       allowedHosts: z.array(z.string().min(1).max(260)).max(100).optional(),
+      /** Each sprite's size, sent at creation (defaults: 4 CPUs, 8192 MB, 50 GB). */
+      cpus: z.number().int().min(1).max(16).optional(),
+      memoryMb: z.number().int().min(1024).max(65_536).optional(),
+      storageGb: z.number().int().min(10).max(500).optional(),
+      /**
+       * The most a sprite may live, in minutes (default 240): Claude is stopped then, and the
+       * host's sweep destroys any of its sprites older than this.
+       */
+      maxLifetimeMinutes: z
+        .number()
+        .int()
+        .min(10)
+        .max(24 * 60)
+        .optional(),
     })
     .strict()
     .optional(),

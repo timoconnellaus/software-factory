@@ -198,13 +198,19 @@ the host only bridges the terminal and pulls the run's files, so `maxConcurrent`
   `packages/runner-local/container/Dockerfile`), in `/opt/software-factory/claude-code-<version>`,
   before anything of the job is inside. That takes tens of seconds per job.
 - **Egress** is Sprites' network policy, set to the container allowlist (the stage's hosts,
-  `api.anthropic.com`, `sprites.allowedHosts`) and read back before the job's files go in. It is
-  DNS-based: a port in an entry is dropped, and there is no request log (the run gets an
-  `egress-policy` artifact instead).
+  `api.anthropic.com`, `sprites.allowedHosts`) followed by an explicit deny-all, and read back
+  (failing closed on anything unexpected) before the job's files go in. It is DNS-based: a port in
+  an entry is dropped, and there is no request log (the run gets an `egress-policy` artifact
+  instead). That is why a sprites runner doesn't declare `container-isolation`.
 - **What goes in**: the job repo (only the job's history, as for a container), the run dir and the
   attachments, at the same paths as here. The credential is the active **token account**'s token
-  (a login account is refused), written to a 0600 file that the sprite's entry script reads and
-  deletes. The job's GitHub token never goes in: this host pushes.
+  (a login account is refused), written last to a 0600 file in the sprite's `/dev/shm` (memory) that
+  its entry script reads and deletes. The job's GitHub token never goes in: this host pushes.
+- **Size and lifetime** are explicit: `sprites.cpus`, `memoryMb`, `storageGb` (default 4, 8192, 50)
+  and `sprites.maxLifetimeMinutes` (default 240). The sprite is kept awake only while Claude runs,
+  Claude is stopped at the lifetime, and the host sweeps every 10 minutes for this runner's sprites
+  that no job holds or that are past their lifetime. A sprite that can't be destroyed is logged
+  loudly (`DESTROYING SPRITE … FAILED`, `REAPING SPRITES FAILED`), and that job's release fails.
 - **The session** is still `tmux -L software-factory attach -t sf-<jobId>` here: the pane is bridged
   to the sprite's terminal (and reattaches after a network drop). Steering and the web terminal work
   as usual.
@@ -215,7 +221,11 @@ the host only bridges the terminal and pulls the run's files, so `maxConcurrent`
   with the job token, as for a container.
 - **Planning sessions** still run on this host.
 
-Switching a runner, with no jobs running:
+**Don't switch a runner yet:** spec 36's live-check gate must pass first (policy shapes and default
+deny, matching, bypasses with `sudo`, Fly's internal network, `/.sprite/api.sock`, checkpoints,
+`max_run_after_disconnect`, exec framing, create's size, the image). Run it on a scratch runner.
+
+Switching a runner, once the gate has passed, with no jobs running:
 1. Get a token at [sprites.dev/account](https://sprites.dev/account) (or `sprite login`, then the
    org token) and run `pbpaste | local/runner-host/bin/sf-runner sprites login`. It checks the token
    against the API before saving it.
@@ -226,7 +236,7 @@ Switching a runner, with no jobs running:
 4. Run `sf-runner doctor` (token, API, credential, no leftover sprites), then `sf-runner install` to
    restart the service.
 
-`sf-runner sprites status` shows the token's prefix, the API and this runner's sprites;
+`sf-runner sprites status` shows the token's length (never any of it), the API and this runner's sprites;
 `sf-runner sprites logout` removes the token (revoke it at sprites.dev too).
 
 ## Connecting: `sf-runner login` (ADR 0056)
@@ -451,6 +461,8 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 | `container.cpus`, `container.memory`, `container.pids` | —, —, 4096 | Limits per job container (`memory` in Docker's syntax, `8g`) |
 | `sprites.apiUrl` | `https://api.sprites.dev` | The Sprites API, with `"isolation": "sprites"` (ADR 0480). The token is not here: `sf-runner sprites login` |
 | `sprites.allowedHosts` | — | More egress hosts for every job's sprite (`host`, `*.host`; a port is dropped) |
+| `sprites.cpus`, `sprites.memoryMb`, `sprites.storageGb` | 4, 8192, 50 | Each sprite's size, sent at creation |
+| `sprites.maxLifetimeMinutes` | 240 | The most a sprite lives: Claude is stopped then, and the sweep destroys older sprites |
 | `repoUrlMap` | — | Test only: clone and push a local bare repo in place of GitHub |
 
 ## End-to-end test (local engine)

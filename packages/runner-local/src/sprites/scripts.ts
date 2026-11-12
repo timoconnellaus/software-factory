@@ -15,24 +15,70 @@ const script = (name: string, body: string[]) =>
 // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template.
 const SUDO = ['SUDO="${SF_SUDO-sudo -n}"', 'if [ "$(id -u)" = 0 ]; then SUDO=""; fi'];
 
+const SHA_OF = '(sha256sum "$1" 2>/dev/null || shasum -a 256 "$1") | cut -d" " -f1';
+
 /**
- * The job's files in: `$1` is the root the tar is relative to (`/`), the rest are the directories
- * to make and own first (the job dir, the run dir, the attachments). The tar comes on stdin. The
- * files land at the same absolute paths they have on the host, so the harness's projected paths
- * (settings, launch script, status file, transcript) hold in the sprite and on the host.
+ * The job's files in: `$1` is the root the tar is relative to (`/`), `$2` the tar's sha256, the
+ * rest the directories to make and own first (the job dir, the run dir, the attachments). The tar
+ * comes on stdin, is kept whole, and is unpacked only if its hash matches (a truncated upload
+ * fails). The files land at the same absolute paths they have on the host, so the harness's
+ * projected paths (settings, launch script, status file, transcript) hold in the sprite and on
+ * the host.
  */
 export const UPLOAD = script("upload", [
   ...SUDO,
-  'root="$1"; shift',
+  'root="$1"; sha="$2"; shift 2',
+  `sha_of() { ${SHA_OF}; }`,
   'for d in "$@"; do $SUDO mkdir -p "$d"; $SUDO chown "$(id -u):$(id -g)" "$d"; done',
-  'tar -x -f - -C "$root" --no-same-owner',
+  "t=$(mktemp); trap 'rm -f \"$t\"' EXIT",
+  'cat > "$t"',
+  'got=$(sha_of "$t")',
+  'if [ "$got" != "$sha" ]; then echo "the upload arrived as $got, not $sha" >&2; exit 65; fi',
+  'tar -x -f "$t" -C "$root" --no-same-owner',
+  'echo "uploaded $sha"',
 ]);
 
 /**
- * A file from stdin into `$1` (0600): the model credential (the entry script reads and deletes it)
- * and the prompt.
+ * A file from stdin into `$1` (0600): the model credential (into memory, `/dev/shm`; the entry
+ * script reads and deletes it) and the prompt.
  */
-export const WRITE = script("write", ["umask 077", 'cat > "$1"']);
+export const WRITE = script("write", [
+  "umask 077",
+  'd=$(dirname "$1"); if [ ! -d "$d" ]; then mkdir -p "$d"; fi',
+  'cat > "$1"',
+  'echo "written"',
+]);
+
+/**
+ * What the sprite's TTY runs (`sprite-entry.sh`): `$1` the credential file, `$2` the harness's
+ * launch script, `$3` a name for the keep-awake task, `$4` the most seconds the session may run,
+ * then `KEY=value` environment. It loads the credential and deletes it, sets the environment, and
+ * starts a watchdog tied to this process (which becomes Claude): while Claude lives it holds a
+ * Tasks API hold so the sprite doesn't pause mid-turn; once Claude is gone, or the lifetime is up
+ * (it then stops Claude), it releases the hold, so the sprite pauses and stops costing compute.
+ */
+export const ENTRY = script("entry", [
+  'cred="$1"; launch="$2"; task="$3"; life="$4"; shift 4',
+  'set -a; . "$cred"; set +a',
+  'rm -f "$cred"',
+  'for kv in "$@"; do export "$kv"; done',
+  "me=$$",
+  "start=$(date +%s)",
+  "(",
+  "  hold() {",
+  "    if [ -S /.sprite/api.sock ]; then",
+  `      curl -s --max-time 10 --unix-socket /.sprite/api.sock -H 'content-type: application/json' "$@" >/dev/null 2>&1 || true`,
+  "    fi",
+  "  }",
+  '  while kill -0 "$me" 2>/dev/null; do',
+  '    if [ $(( $(date +%s) - start )) -ge "$life" ]; then kill -TERM "$me" 2>/dev/null; break; fi',
+  `    hold -X PUT "http://sprite/v1/tasks/$task" -d '{"expire":"5m"}'`,
+  "    sleep 30",
+  "  done",
+  '  hold -X DELETE "http://sprite/v1/tasks/$task"',
+  ") </dev/null >/dev/null 2>&1 &",
+  'exec /bin/sh "$launch"',
+]);
 
 /** sha256 of each file argument, one per line (`missing` when it isn't a file). */
 export const SHA256 = script("sha256", [

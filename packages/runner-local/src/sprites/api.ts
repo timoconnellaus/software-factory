@@ -6,7 +6,7 @@
 // What this relies on (docs: https://docs.fly.io/sprites/, OpenAPI: https://api.sprites.dev/openapi.json,
 // WebSocket spec: https://docs.fly.io/sprites/api/asyncapi.json, SDK: github.com/superfly/sprites-js):
 // - `Authorization: Bearer <token>` on every call, the WebSocket upgrade included;
-// - `POST /v1/sprites {name}`, `GET /v1/sprites/{name}`, `GET /v1/sprites?prefix=`,
+// - `POST /v1/sprites {name, config}`, `GET /v1/sprites/{name}`, `GET /v1/sprites?prefix=`,
 //   `DELETE /v1/sprites/{name}`;
 // - `POST|GET /v1/sprites/{name}/policy/network` with `{rules: [{domain, action}]}`: a DNS-based
 //   egress allowlist enforced outside the sprite, which the sprite can't change;
@@ -14,6 +14,9 @@
 //   whose first byte is the stream (0 stdin, 1 stdout, 2 stderr, 3 exit with the code, 4 stdin
 //   EOF); with `tty=true&rows=&cols=`, raw terminal bytes both ways, `{"type":"resize"}` from the
 //   client, `{"type":"session_info"}` and `{"type":"exit","exit_code"}` from the server.
+// Spec 36's live-check gate lists what of this must be confirmed against Sprites itself.
+import { createReadStream, createWriteStream, type WriteStream } from "node:fs";
+import { stat } from "node:fs/promises";
 
 /** A sandbox as the provider reports it. */
 export interface SandboxInfo {
@@ -21,17 +24,32 @@ export interface SandboxInfo {
   name: string;
   /** `running`, `warm` or `cold` on Sprites. */
   status: string;
+  /** When it was created (ms since the epoch), when the provider says. */
+  createdAt: number | null;
 }
 
-/** One egress rule: a host (`example.com`, `*.example.com`) allowed or denied. */
+/** One egress rule: a host (`example.com`, `*.example.com`, `*`) allowed or denied. */
 export interface EgressRule {
   domain: string;
   action: "allow" | "deny";
 }
 
+/** The size a sandbox is created with (sent explicitly, never the provider's default). */
+export interface SandboxSize {
+  cpus: number;
+  memoryMb: number;
+  storageGb: number;
+}
+
 export interface SandboxExecOptions {
   /** Bytes for the command's stdin, then EOF. */
   stdin?: Buffer | string;
+  /** A file streamed as stdin, then EOF (an upload: never held in memory). */
+  stdinFile?: string;
+  /** Stdout streamed into this file instead of memory (a result bundle). */
+  stdoutFile?: string;
+  /** The most stdout bytes taken (in memory or the file); more fails the exec. Default 16 MiB. */
+  maxStdout?: number;
   env?: Record<string, string>;
   dir?: string;
   timeoutMs?: number;
@@ -39,30 +57,27 @@ export interface SandboxExecOptions {
 
 export interface SandboxExecResult {
   code: number;
+  /** Empty when `stdoutFile` was given. */
   stdout: Buffer;
   stderr: Buffer;
-}
-
-/** How a terminal (the job's tmux pane) connects to a command in the sandbox with a TTY. */
-export interface SandboxTty {
-  url: string;
-  /** Sent on the upgrade; holds the provider token, so it is never written to disk or argv. */
-  headers?: Record<string, string>;
 }
 
 export interface SandboxApi {
   readonly kind: string;
   /** Who the token belongs to, or a provider error (for `doctor`): lists at most one sandbox. */
   check(): Promise<void>;
-  create(name: string): Promise<SandboxInfo>;
+  create(name: string, size: SandboxSize): Promise<SandboxInfo>;
   /** Null when there is none. */
   get(name: string): Promise<SandboxInfo | null>;
   list(prefix: string): Promise<SandboxInfo[]>;
-  /** Gone is fine. */
+  /** Gone is fine; anything else throws. */
   destroy(name: string): Promise<void>;
   setEgress(name: string, rules: EgressRule[]): Promise<void>;
-  /** The rules in force, or null when the provider doesn't say. */
-  getEgress(name: string): Promise<EgressRule[] | null>;
+  /**
+   * The rules in force. Throws on any rule it doesn't recognise (an `include`, a CIDR, an unknown
+   * action), so a check against it fails closed.
+   */
+  getEgress(name: string): Promise<EgressRule[]>;
   /** Runs a command without a TTY and collects its output. */
   exec(name: string, argv: string[], options?: SandboxExecOptions): Promise<SandboxExecResult>;
   /** The URL a terminal bridge opens to run `argv` with a TTY (the token is added from a file). */
@@ -87,6 +102,9 @@ export class SandboxApiError extends Error {
 export const STREAM = { stdin: 0, stdout: 1, stderr: 2, exit: 3, stdinEof: 4 } as const;
 
 export const SPRITES_API_URL = "https://api.sprites.dev";
+
+/** How long the agent may run with no terminal attached (the bridge reattaches well before). */
+export const MAX_RUN_AFTER_DISCONNECT = "10m";
 
 /** The bits of Node 24's WebSocket the client uses (a fake in tests is the real one on localhost). */
 type WebSocketCtor = new (url: string, init?: { headers?: Record<string, string> }) => WebSocket;
@@ -118,6 +136,32 @@ export function execUrl(
   return url.toString();
 }
 
+const DOMAIN = /^(\*|(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)$/;
+
+/**
+ * Reads a policy's rules strictly: only `{domain, action}` with a host name (or `*`) and `allow` or
+ * `deny`, and no other keys. Anything else throws (fail closed).
+ */
+export function parseEgressRules(raw: unknown): EgressRule[] {
+  const rules = (raw as { rules?: unknown } | null)?.rules;
+  if (!Array.isArray(rules)) throw new SandboxApiError("the network policy has no rules list");
+  return rules.map((r, i) => {
+    const rule = r as Record<string, unknown>;
+    const keys = rule && typeof rule === "object" ? Object.keys(rule).sort().join(",") : "";
+    if (
+      keys !== "action,domain" ||
+      typeof rule.domain !== "string" ||
+      !DOMAIN.test(rule.domain.toLowerCase()) ||
+      (rule.action !== "allow" && rule.action !== "deny")
+    ) {
+      throw new SandboxApiError(
+        `the network policy has a rule the runner doesn't understand (#${i}): ${JSON.stringify(r).slice(0, 200)}`,
+      );
+    }
+    return { domain: rule.domain.toLowerCase(), action: rule.action };
+  });
+}
+
 /** Sprites over its API. */
 export function spritesApi(options: SpritesApiOptions): SandboxApi {
   const apiUrl = (options.apiUrl ?? SPRITES_API_URL).replace(/\/+$/, "");
@@ -126,12 +170,11 @@ export function spritesApi(options: SpritesApiOptions): SandboxApi {
   const auth = { authorization: `Bearer ${options.token}` };
 
   async function call(method: string, path: string, body?: unknown): Promise<Response> {
-    const res = await doFetch(`${apiUrl}${path}`, {
+    return doFetch(`${apiUrl}${path}`, {
       method,
       headers: { ...auth, ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    return res;
   }
   async function must(method: string, path: string, body?: unknown): Promise<unknown> {
     const res = await call(method, path, body);
@@ -151,7 +194,13 @@ export function spritesApi(options: SpritesApiOptions): SandboxApi {
   }
   const info = (raw: unknown): SandboxInfo => {
     const r = (raw ?? {}) as Record<string, unknown>;
-    return { id: String(r.id ?? ""), name: String(r.name ?? ""), status: String(r.status ?? "") };
+    const created = typeof r.created_at === "string" ? Date.parse(r.created_at) : Number.NaN;
+    return {
+      id: String(r.id ?? ""),
+      name: String(r.name ?? ""),
+      status: String(r.status ?? ""),
+      createdAt: Number.isFinite(created) ? created : null,
+    };
   };
   const sprite = (name: string) => `/v1/sprites/${encodeURIComponent(name)}`;
 
@@ -160,8 +209,18 @@ export function spritesApi(options: SpritesApiOptions): SandboxApi {
     async check() {
       await must("GET", "/v1/sprites?max_results=1");
     },
-    async create(name) {
-      return info(await must("POST", "/v1/sprites", { name }));
+    async create(name, size) {
+      const made = info(
+        await must("POST", "/v1/sprites", {
+          name,
+          // Sent explicitly (spec 36's gate checks the server honours it).
+          config: { cpus: size.cpus, ram_mb: size.memoryMb, storage_gb: size.storageGb },
+        }),
+      );
+      if (made.name && made.name !== name) {
+        throw new SandboxApiError(`Sprites made ${made.name}, not ${name}`);
+      }
+      return made;
     },
     async get(name) {
       const res = await call("GET", sprite(name));
@@ -206,16 +265,7 @@ export function spritesApi(options: SpritesApiOptions): SandboxApi {
       await must("POST", `${sprite(name)}/policy/network`, { rules });
     },
     async getEgress(name) {
-      const r = (await must("GET", `${sprite(name)}/policy/network`)) as {
-        rules?: Array<Record<string, unknown>>;
-      } | null;
-      if (!r?.rules) return null;
-      return r.rules
-        .filter((x) => typeof x.domain === "string")
-        .map((x) => ({
-          domain: String(x.domain),
-          action: x.action === "deny" ? "deny" : "allow",
-        }));
+      return parseEgressRules(await must("GET", `${sprite(name)}/policy/network`));
     },
     exec(name, argv, execOptions = {}) {
       const env = Object.entries(execOptions.env ?? {}).map(([k, v]) => `${k}=${v}`);
@@ -224,11 +274,17 @@ export function spritesApi(options: SpritesApiOptions): SandboxApi {
         ...(env.length ? { env } : {}),
         ...(execOptions.dir ? { dir: execOptions.dir } : {}),
       });
+      const maxStdout = execOptions.maxStdout ?? 16 << 20;
       return new Promise<SandboxExecResult>((resolve, reject) => {
         const ws = new WS(url, { headers: auth });
         ws.binaryType = "arraybuffer";
         const stdout: Buffer[] = [];
         const stderr: Buffer[] = [];
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        let file: WriteStream | null = execOptions.stdoutFile
+          ? createWriteStream(execOptions.stdoutFile, { mode: 0o600 })
+          : null;
         let code: number | null = null;
         let settled = false;
         const finish = (err?: Error) => {
@@ -238,30 +294,53 @@ export function spritesApi(options: SpritesApiOptions): SandboxApi {
           try {
             ws.close();
           } catch {}
-          if (err) reject(err);
-          else
-            resolve({
-              code: code ?? 1,
-              stdout: Buffer.concat(stdout),
-              stderr: Buffer.concat(stderr),
-            });
+          const done = () => {
+            if (err) reject(err);
+            else if (code === null) {
+              reject(new SandboxApiError(`exec ${argv[0]} in ${name} ended with no exit code`));
+            } else {
+              resolve({ code, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) });
+            }
+          };
+          if (file) {
+            const f = file;
+            file = null;
+            f.end(done);
+          } else done();
         };
         const timer = setTimeout(
           () => finish(new SandboxApiError(`exec ${argv[0]} timed out`)),
           execOptions.timeoutMs ?? 120_000,
         );
-        ws.addEventListener("open", () => {
-          const input =
-            execOptions.stdin === undefined
-              ? Buffer.alloc(0)
-              : Buffer.isBuffer(execOptions.stdin)
-                ? execOptions.stdin
-                : Buffer.from(execOptions.stdin);
-          // Frames of at most 1 MiB, then EOF.
-          for (let i = 0; i < input.length; i += 1 << 20) {
-            ws.send(Buffer.concat([Buffer.from([STREAM.stdin]), input.subarray(i, i + (1 << 20))]));
+        const sendStdin = async () => {
+          const frame = (chunk: Buffer) => Buffer.concat([Buffer.from([STREAM.stdin]), chunk]);
+          // Backpressure: wait while the socket holds more than 8 MiB unsent.
+          const drain = async () => {
+            while (ws.bufferedAmount > 8 << 20 && !settled) {
+              await new Promise((r) => setTimeout(r, 20));
+            }
+          };
+          if (execOptions.stdinFile) {
+            for await (const chunk of createReadStream(execOptions.stdinFile, {
+              highWaterMark: 1 << 20,
+            })) {
+              if (settled) return;
+              ws.send(frame(chunk as Buffer));
+              await drain();
+            }
+          } else if (execOptions.stdin !== undefined) {
+            const input = Buffer.isBuffer(execOptions.stdin)
+              ? execOptions.stdin
+              : Buffer.from(execOptions.stdin);
+            for (let i = 0; i < input.length; i += 1 << 20) {
+              ws.send(frame(input.subarray(i, i + (1 << 20))));
+              await drain();
+            }
           }
-          ws.send(Buffer.from([STREAM.stdinEof]));
+          if (!settled) ws.send(Buffer.from([STREAM.stdinEof]));
+        };
+        ws.addEventListener("open", () => {
+          sendStdin().catch((err) => finish(err instanceof Error ? err : new Error(String(err))));
         });
         ws.addEventListener("message", (event) => {
           if (typeof event.data === "string") {
@@ -277,9 +356,18 @@ export function spritesApi(options: SpritesApiOptions): SandboxApi {
           const data = Buffer.from(event.data as ArrayBuffer);
           if (data.length === 0) return;
           const payload = data.subarray(1);
-          if (data[0] === STREAM.stdout) stdout.push(payload);
-          else if (data[0] === STREAM.stderr) stderr.push(payload);
-          else if (data[0] === STREAM.exit) {
+          if (data[0] === STREAM.stdout) {
+            stdoutBytes += payload.length;
+            if (stdoutBytes > maxStdout) {
+              finish(new SandboxApiError(`exec ${argv[0]} wrote over ${maxStdout} bytes`));
+              return;
+            }
+            if (file) file.write(payload);
+            else stdout.push(payload);
+          } else if (data[0] === STREAM.stderr) {
+            stderrBytes += payload.length;
+            if (stderrBytes <= 1 << 20) stderr.push(payload);
+          } else if (data[0] === STREAM.exit) {
             code = payload.length > 0 ? (payload[0] ?? 0) : 0;
             finish();
           }
@@ -289,19 +377,15 @@ export function spritesApi(options: SpritesApiOptions): SandboxApi {
           finish(new SandboxApiError(`exec ${argv[0]} in ${name}: ${message}`));
         });
         ws.addEventListener("close", (event) => {
-          if (code === null && !settled) {
-            // No exit frame: 1000 is a clean exit (the SDK reads it as 0), anything else failed.
-            if (event.code === 1000) code = 0;
-            else {
-              finish(
-                new SandboxApiError(
-                  `exec ${argv[0]} in ${name} closed ${event.code}${event.reason ? `: ${event.reason}` : ""}`,
-                ),
-              );
-              return;
-            }
+          // No exit frame is never a success, whatever the close code: a truncated upload or
+          // result must not look fine.
+          if (code === null) {
+            finish(
+              new SandboxApiError(
+                `exec ${argv[0]} in ${name} closed ${event.code} with no exit code${event.reason ? `: ${event.reason}` : ""}`,
+              ),
+            );
           }
-          finish();
         });
       });
     },
@@ -312,9 +396,14 @@ export function spritesApi(options: SpritesApiOptions): SandboxApi {
         cols: String(ttyOptions.cols),
         rows: String(ttyOptions.rows),
         ...(ttyOptions.dir ? { dir: ttyOptions.dir } : {}),
-        // The agent stops if the host's bridge is gone this long (it reattaches before then).
-        max_run_after_disconnect: "10m",
+        // The agent stops if the host's bridge is gone this long (it gives up reattaching before).
+        max_run_after_disconnect: MAX_RUN_AFTER_DISCONNECT,
       });
     },
   };
+}
+
+/** A file's size, for the upload cap. */
+export async function fileSize(path: string): Promise<number> {
+  return (await stat(path)).size;
 }

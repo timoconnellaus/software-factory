@@ -39,6 +39,8 @@ afterEach(async () => {
 function allText(dir: string): string {
   let out = "";
   for (const name of readdirSync(dir, { recursive: true }) as string[]) {
+    // The fake's own record of Claude's environment, not a file in the sprite.
+    if (name === ".fake" || name.startsWith(".fake/")) continue;
     const path = join(dir, name);
     if (statSync(path, { throwIfNoEntry: false })?.isFile()) out += readFileSync(path, "latin1");
   }
@@ -188,10 +190,9 @@ describe("runner.json sprites isolation", () => {
     const dirs = paths({ HOME: "/nonexistent-home" });
     const runner = buildRunner(configSchema.parse(BASE), dirs);
     const caps = (await runner.adapter.manifest()).capabilities;
-    expect(caps).toEqual(
-      expect.arrayContaining(["cloud-sandbox", "container-isolation", "terminal"]),
-    );
+    expect(caps).toEqual(expect.arrayContaining(["cloud-sandbox", "terminal"]));
     expect(caps).not.toContain("own-hardware");
+    expect(caps).not.toContain("container-isolation");
     expect(dirs.spritesTokenFile).toBe("/nonexistent-home/.config/software-factory/sprites.token");
     expect(() => configSchema.parse({ ...BASE, sprites: { token: "x" } })).toThrow();
     expect(
@@ -225,7 +226,11 @@ describe("sf-runner sprites", () => {
     expect((await readFile(tokenFile, "utf8")).trim()).toBe(fake.token);
     expect((await stat(tokenFile)).mode & 0o777).toBe(0o600);
     expect(lines.at(-1)).toMatch(/"isolation": "sprites"/);
-    await spritesApi({ apiUrl: fake.url, token: fake.token }).create("sf-abc123-job-1-aaaaaa");
+    await spritesApi({ apiUrl: fake.url, token: fake.token }).create("sf-abc123-job-1-aaaaaa", {
+      cpus: 1,
+      memoryMb: 1024,
+      storageGb: 10,
+    });
     expect(await spritesCommand(["status"], deps(""))).toBe(0);
     expect(lines).toContain("  sf-abc123-job-1-aaaaaa  running");
     expect(lines.join("\n")).not.toContain(fake.token);

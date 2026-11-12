@@ -66,7 +66,7 @@ export async function spritesCommand(args: string[], deps: SpritesCliDeps): Prom
         log(err instanceof Error ? err.message : String(err));
         return 1;
       }
-      log(`token: ${deps.tokenFile} (${token.slice(0, 6)}…)`);
+      log(`token: ${deps.tokenFile} (${token.length} characters; never printed)`);
       const api = deps.api(token);
       try {
         await api.check();

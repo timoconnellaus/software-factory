@@ -93,6 +93,10 @@ export const containerDirs = (
   runtime: dockerRuntime({ exec, bin: dockerBin(config) }),
 });
 
+/** The most a sprite may live (ADR 0480), from runner.json. */
+export const spriteLifetimeMs = (config: Pick<RunnerConfig, "sprites">) =>
+  (config.sprites?.maxLifetimeMinutes ?? 240) * 60_000;
+
 /** A sprites runner's dirs and API, for reaping and `doctor` (ADR 0480). */
 export async function spriteDirs(
   config: Pick<RunnerConfig, "sprites" | "runnerId">,
@@ -103,6 +107,7 @@ export async function spriteDirs(
     spritesDir: dirs.spritesDir,
     runsDir: dirs.runsDir,
     namePrefix: spritePrefix(config.runnerId),
+    maxAgeMs: spriteLifetimeMs(config),
     api:
       api ??
       spritesApi({
@@ -194,6 +199,12 @@ export function buildRunner(
           fetchNamespace: FETCH_NAMESPACE,
           ...(config.sprites?.apiUrl ? { apiUrl: config.sprites.apiUrl } : {}),
           ...(config.sprites?.allowedHosts ? { allowedHosts: config.sprites.allowedHosts } : {}),
+          size: {
+            ...(config.sprites?.cpus ? { cpus: config.sprites.cpus } : {}),
+            ...(config.sprites?.memoryMb ? { memoryMb: config.sprites.memoryMb } : {}),
+            ...(config.sprites?.storageGb ? { storageGb: config.sprites.storageGb } : {}),
+          },
+          maxLifetimeMs: spriteLifetimeMs(config),
           log,
           ...options.sprites,
         },
@@ -241,7 +252,13 @@ export function buildRunner(
         : sprites
           ? await spriteDirs(config, dirs, options.sprites?.api)
               .then((d) => reapSprites(d, running))
-              .catch(() => [] as string[])
+              .catch((err) => {
+                // Never quiet: a sprite that wasn't destroyed may still be running and billed.
+                log(
+                  `REAPING SPRITES FAILED, some may still be running: ${err instanceof Error ? err.message : err}`,
+                );
+                return [] as string[];
+              })
           : [];
       const local = await reapOrphans(
         {
@@ -253,6 +270,14 @@ export function buildRunner(
       return [...new Set([...reaped, ...local])];
     },
     liveJobsFile: liveJobsFile(dirs),
+    // A sprites runner sweeps while it runs (ADR 0480): sprites no live job holds, or past their
+    // lifetime, so none is left billing between restarts.
+    ...(sprites
+      ? {
+          sweep: async (running: Set<string>) =>
+            reapSprites(await spriteDirs(config, dirs, options.sprites?.api), running),
+        }
+      : {}),
     log,
     ...(options.selfUpdate ? { selfUpdate: options.selfUpdate } : {}),
     ...(options.onUpdated ? { onUpdated: options.onUpdated } : {}),

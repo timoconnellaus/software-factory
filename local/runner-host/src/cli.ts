@@ -547,7 +547,7 @@ async function doctor(args: string[]) {
         ...(configured.sprites?.apiUrl ? { apiUrl: configured.sprites.apiUrl } : {}),
       }).check();
       apiUp = true;
-      return `${dirs.spritesTokenFile} (${token.slice(0, 6)}…), API ok`;
+      return `${dirs.spritesTokenFile} (${token.length} characters), API ok`;
     });
     if (apiUp) {
       await check("sprite jobs (no sprite or job dir without a job)", async () => {
