@@ -83,7 +83,11 @@ export async function currentOrgConfig(
   return { version: row.config_version, config: parsed.config };
 }
 
-async function storedOrgConfig(db: Db, org: string, version: number): Promise<OrgConfig | null> {
+export async function storedOrgConfig(
+  db: Db,
+  org: string,
+  version: number,
+): Promise<OrgConfig | null> {
   const row = await db
     .selectFrom("core_org_configs")
     .select("raw")

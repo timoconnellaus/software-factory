@@ -19,7 +19,7 @@ import {
   type StageInstance,
   type WorkflowDefinition,
 } from "../src/stages/index.ts";
-import { call, first, newItem, ok, POLICY, world } from "./helpers.ts";
+import { call, FOREMAN, first, newItem, ok, POLICY, refusal, world } from "./helpers.ts";
 
 type W = Awaited<ReturnType<typeof world>>;
 
@@ -271,5 +271,63 @@ describe("a project on an org workflow", () => {
     expect(now.pinnedPolicy?.workflows[0]?.slots.beforeVerify.map((s) => s.id)).toEqual([
       "security",
     ]);
+  });
+});
+
+describe("release takes the current version unless the shaping stages changed (Q4)", () => {
+  async function shapedItem(w: W) {
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "backlog", projectId: w.projectId, title: "Shaped" },
+      w.human,
+    );
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    await ok("workItem.shaped", { workItemId: item.workItemId }, FOREMAN);
+    return item.workItemId;
+  }
+  async function orgSave(w: W, base: number, workflow: WorkflowDefinition) {
+    const r = await call("workflow.save", { orgId: w.orgId, baseVersion: base, workflow }, w.human);
+    if (r.status === "pending")
+      await ok(
+        "approval.decide",
+        { pendingActionId: r.pendingActionId, decision: "approved" },
+        w.human,
+      );
+  }
+  const pinOf = async (id: string) =>
+    (
+      await first<{ org_config_version: number | null }>(
+        "SELECT org_config_version FROM core_work_items WHERE id = ?",
+        id,
+      )
+    ).org_config_version;
+  const withSetting = (id: string, settings: Record<string, unknown>): WorkflowDefinition => ({
+    ...SHIP,
+    stages: SHIP.stages.map((s) => (s.id === id ? { ...s, settings } : s)),
+  });
+
+  it("delivery-only changes: released under the current version", async () => {
+    const w = await world();
+    await orgWorkflow(w);
+    expect((await saveConfig(w, { ...POLICY, workflow: SHIP.id })).status).toBe("ok");
+    const id = await shapedItem(w);
+    expect(await pinOf(id)).toBe(2);
+    await orgSave(w, 2, withSetting("build", { retryLimit: 3 }));
+    await ok("workItem.release", { workItemId: id }, w.human);
+    expect(await pinOf(id)).toBe(3);
+  });
+
+  it("changed shaping stages: refused until the person chooses the shaped version", async () => {
+    const w = await world();
+    await orgWorkflow(w);
+    expect((await saveConfig(w, { ...POLICY, workflow: SHIP.id })).status).toBe("ok");
+    const id = await shapedItem(w);
+    await orgSave(w, 2, withSetting("spec", { requiredFrom: "small" }));
+    const e = await refusal(call("workItem.release", { workItemId: id }, w.human));
+    expect(e.message).toMatch(
+      /shaped under org config v2; its workflow's shaping stages changed in v3/,
+    );
+    await ok("workItem.release", { workItemId: id, underShapedVersion: true }, w.human);
+    expect(await pinOf(id)).toBe(2);
   });
 });

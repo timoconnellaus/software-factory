@@ -1197,8 +1197,13 @@ screen needs).
    (`runsOnToday`: anything but Software's stages in order with checks and decisions in its slots,
    or a setting the engine would ignore) is refused at save and fails closed at run time. An item
    pins `org_config_version` (migration 0282) when shaping starts and again at the pull, beside
-   `policy_sha`. Still to come in (d): the release flag when shaping stages changed (Q4), the
-   tightening re-pin at the next boundary (Q3), and moving each project's slot workflow to the org.
+   `policy_sha`. (d3) builds Q4: `workItem.release` of a shaped item takes the org's current version
+   when the workflow's shaping stages are the same in it (ids, types, settings with defaults,
+   conditions, agents, in order), and otherwise is refused, naming both versions, until the person
+   passes `underShapedVersion: true` or shapes it again (`workItem.shape`, which pins the current
+   version); the pull keeps a shaped item's release-time pin. Still to come in (d): the card and
+   inbox flag for such an item (the refusal carries it for now), the tightening re-pin at the next
+   boundary (Q3), and moving each project's slot workflow to the org.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the

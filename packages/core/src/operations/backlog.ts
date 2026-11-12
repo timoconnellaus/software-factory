@@ -12,8 +12,10 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import { type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
+import { same } from "../policy/impact.ts";
+import { isOrgWorkflowId, type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
+import { resolveProjectWorkflow, shapingStagesOf } from "../stages/project-workflow.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
 import {
@@ -27,6 +29,7 @@ import {
   STAGES,
   workItemId,
 } from "./shared.ts";
+import { currentOrgConfig, storedOrgConfig } from "./workflows.ts";
 
 /** States before release: no Workflow instance exists in them, except `shaping` (part C). */
 export const PRE_PIPELINE = ["backlog", "shaping", "ready", "queued"] as const;
@@ -143,12 +146,20 @@ export function startPipeline(
         status_reason: null,
         pulled_at: ctx.now,
         policy_sha: pin.trial?.candidateSha ?? project.policy_sha,
-        // Release takes the org's current config version too (spec 52, Q4).
+        // An item released straight from the backlog takes the org's current config version here;
+        // a shaped one keeps the version its release chose (spec 52, Q4: `releaseOrgVersion`).
         org_config_version: (eb) =>
           eb
-            .selectFrom("core_organization")
-            .select("config_version")
-            .where("id", "=", project.org_id),
+            .case()
+            .when("shaping_started_at", "is", null)
+            .then(
+              eb
+                .selectFrom("core_organization")
+                .select("config_version")
+                .where("id", "=", project.org_id),
+            )
+            .else(eb.ref("org_config_version"))
+            .end(),
         trial_id: pin.trial?.id ?? null,
         workflow,
         workflow_reason: workflow ? "the project's workflow" : null,
@@ -503,6 +514,39 @@ const startedOutput = z.object({
   ),
 });
 
+/**
+ * The org config version a shaped item is released under (spec 52, Q4), or undefined when there is
+ * nothing to decide (not shaped, or not on an org workflow; the pull pins those). The current
+ * version when the workflow's shaping stages are the same in it as in the version the item was
+ * shaped under (same ids, types and settings, in order); otherwise release doesn't guess: it is
+ * refused until the person chooses to release under the shaped version, or shapes it again.
+ */
+async function releaseOrgVersion(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  orgId: string,
+  underShapedVersion: boolean | undefined,
+): Promise<number | null | undefined> {
+  const raw = ctx.scope.rawPolicy;
+  if (!w.shaping_started_at || !raw || !isOrgWorkflowId(raw.workflow)) return undefined;
+  const current = await currentOrgConfig(ctx.db, orgId);
+  const shapedUnder = w.org_config_version;
+  if (shapedUnder === null || shapedUnder === current.version) return current.version || null;
+  const then = await storedOrgConfig(ctx.db, orgId, shapedUnder);
+  const shaping = (config: typeof current.config | null) => {
+    const r = config ? resolveProjectWorkflow(raw, config) : null;
+    return r?.ok ? shapingStagesOf(r.value) : null;
+  };
+  const was = shaping(then);
+  if (was !== null && same(was, shaping(current.config))) return current.version;
+  if (underShapedVersion) return shapedUnder;
+  throw new OperationError(
+    "conflict",
+    `work item #${w.number} was shaped under org config v${shapedUnder}; its workflow's shaping stages changed in v${current.version}. Release it under v${shapedUnder} (underShapedVersion: true), or shape it again under v${current.version} (workItem.shape).`,
+    { shapedUnder, current: current.version },
+  );
+}
+
 export const workItemRelease = defineOperation({
   name: "workItem.release",
   description:
@@ -510,13 +554,22 @@ export const workItemRelease = defineOperation({
   risk: "write",
   actors: ["human", "agent", "intake"],
   permission: "member",
-  input: z.object({ workItemId }),
+  input: z.object({
+    workItemId,
+    /**
+     * Spec 52, Q4: when the org workflow's shaping stages changed since the item was shaped,
+     * release it anyway under the version it was shaped under. (To shape it again under the
+     * current version instead, call workItem.shape.)
+     */
+    underShapedVersion: z.boolean().optional(),
+  }),
   output: startedOutput,
-  async handler(_input, ctx) {
+  async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const project = requireProject(ctx);
     const refused = releaseRefusal(ctx, w);
     if (refused) throw refused;
+    const orgVersion = await releaseOrgVersion(ctx, w, project.org_id, input.underShapedVersion);
     const plan = w.shaping_started_at ? await shapedPlan(ctx, w) : null;
     ctx.write(
       ctx.db
@@ -526,6 +579,7 @@ export const workItemRelease = defineOperation({
           status_reason: null,
           released_at: ctx.now,
           released_by: ctx.actor.id,
+          ...(orgVersion !== undefined ? { org_config_version: orgVersion } : {}),
           updated_at: ctx.now,
         })
         .where("id", "=", w.id)
