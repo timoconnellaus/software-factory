@@ -270,6 +270,35 @@ describe("verify in the v2 Workflow", () => {
       touchesPolicy.workItemId,
     );
     expect(gate).toMatchObject({ operation: "pr.merge", risk: "self-modify" });
+
+    // A check-only fix that adds a skipped regression test: the tests-intact guard finds it, so
+    // the auto-merge is refused and the item waits at the human merge gate (ADR 0500).
+    const skipped = await make("Factory incident: a regression case that skips");
+    await runStage(w, skipped.workItemId, "triage", () => triage("small"));
+    await runStage(w, skipped.workItemId, "build", () =>
+      build([
+        { path: ".factory/checks/no-skip.json", status: "added" },
+        {
+          path: "evals/regressions/inc_3.test.ts",
+          status: "added",
+          patch: '@@ -0,0 +1,1 @@\n+it.skip("catches the slip", () => {});',
+        },
+      ]),
+    );
+    await runStage(w, skipped.workItemId, "verify", () => verifyPass);
+    await gateOpen(skipped.workItemId, "merge");
+    expect(
+      await first<{ operation: string }>(
+        "SELECT operation FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND status = 'pending'",
+        skipped.workItemId,
+      ),
+    ).toMatchObject({ operation: "pr.merge" });
+    const refused = await first<{ outcome: string; reason: string | null }>(
+      "SELECT outcome, reason FROM core_audit WHERE work_item_id = ? AND operation = 'pr.autoMerge'",
+      skipped.workItemId,
+    );
+    expect(refused?.outcome).not.toBe("ok");
+    expect(JSON.stringify(refused)).toMatch(/tests aren't intact/);
   });
 });
 

@@ -301,6 +301,12 @@ async function startSelfUpdate(
       exec: nodeExec,
       installDeps: pnpmInstall(nodeExec),
       log,
+      ...(config.updateCaps?.heavyAfterMinutes !== undefined
+        ? { heavyAfterMs: config.updateCaps.heavyAfterMinutes * 60_000 }
+        : {}),
+      ...(config.updateCaps?.allAfterMinutes !== undefined
+        ? { allAfterMs: config.updateCaps.allAfterMinutes * 60_000 }
+        : {}),
     });
     const { sha, update } = updater.report();
     log(

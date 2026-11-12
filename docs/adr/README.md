@@ -84,7 +84,8 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0372](0372-agents-are-harness-neutral.md) | Agents are harness-neutral (role + tier, instructions, abstract permissions); the runner resolves the model |
 | [0373](0373-the-factory-improves-its-own-practice.md) | The factory improves its own practice as trials with auto-rollback; policy stays with people |
 | [0374](0374-the-adjudicator-earns-approval-in-shadow-mode.md) | The adjudicator earns gate approvals in shadow mode (≥95% precision), never rejects, never merge/deploy/self-modify |
-| [0360](0360-runners-update-themselves-to-the-deployed-commit.md) | Runners update themselves to the deployed commit: when idle, fast-forward only, rolled back by a wrapper if the new code doesn't start |
+| [0360](0360-runners-update-themselves-to-the-deployed-commit.md) | Runners update themselves to the deployed commit: when idle, fast-forward only, rolled back by a wrapper if the new code doesn't start (amended by 0520) |
+| [0520](0520-runners-keep-claiming-while-an-update-waits.md) | Runners keep claiming while an update waits: the desired version is the last runner-code commit (`RUNNER_SHA`), caps at 30 and 60 minutes, and only a `RUNNER_COMPAT` bump drains at once; the compatibility rule |
 | [0380](0380-runner-local-tmux-and-hook-status.md) | Runners run agents in tmux without Orca (`runner-local`, runner-orca deleted); status from Claude Code hooks; checkouts from configured dirs |
 | [0420](0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md) | Linux hosts run the same runner as a systemd user service (linger, `KillMode=process`, the shared self-update wrapper); per-platform deny lists; doctor checks bubblewrap and socat |
 | [0450](0450-a-stream-json-session-mode-with-a-chat-view.md) | A stream-json session mode beside tmux (per runner, the `chat` capability), events from the structured output, a chat view, takeover by `claude --resume` (`run.takeover`) |
@@ -96,6 +97,7 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0390](0390-the-desktop-app-is-the-daily-ui.md) | The desktop app is the daily UI and the runner's supervisor |
 | [0391](0391-the-client-door-desktop-devices-and-presence.md) | One client door; desktop devices decide gates with a presence proof |
 | [0392](0392-the-website-shrinks-to-auth.md) | The website shrinks to auth, links go through a trampoline |
+| [0460](0460-the-desktop-shell-and-look.md) | The desktop shell and look: a `hiddenInset` window, sections as route layouts with a nested list, tabs/pins/org as this Mac's view state, the look as `packages/ui` tokens with a desktop-only mapping, real data only |
 | [0400](0400-watch-and-steer-runs-from-the-dashboard.md) | Watch and steer runs from the dashboard: `run.steer` (runner owner only, journalled), a held `steer` call on the channel, `message` events from the transcript, `run.live` polled |
 | [0440](0440-a-web-terminal-relayed-through-a-durable-object-per-job.md) | A web terminal relayed through a Durable Object per job: the host connects outbound with a one-use ticket from a held `terminal` call, browsers attach through `run.terminal.attach` (owner types, others watch, enforced in the relay), tmux control mode on the host |
 | [0410](0410-claude-accounts-live-on-the-host.md) | Claude accounts live on the host (a config dir or a token each); the owner switches the active one by name, on the host or from the dashboard; usage limits are surfaced, never rotated |
@@ -103,3 +105,10 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0350](0350-how-the-planning-loop-is-wired.md) | How the planning loop is wired: one planning call on the channel scoped by the job, a host relay for the harness, the log's id as the cursor, held waits, yields and pinned resumes, pools, the PlanningHub, Workflow v5 |
 | [0330](0330-the-factory-runs-its-own-merge-queue.md) | The factory runs its own merge queue per project: approved merges land one at a time, the head is updated by GitHub's update-branch and the approval carries over a clean update (Workflow v4) |
 | [0320](0320-factory-branches-stay-mergeable.md) | Factory branches merge the default branch before a build; a PR that can't merge goes back to build, and CI that never reports asks a person (Workflow v3) |
+| [0510](0510-workflows-are-ordered-stages-of-stage-types.md) | Workflows are ordered stages of built-in stage types, defined once per org; floors in code (spec 52, not built) |
+| [0511](0511-a-reconciler-runs-the-stage-list.md) | Proposed: a reconciler (a pure function from a D1 snapshot to the next action, on events and a tick) runs the stage list |
+| [0512](0512-the-review-packet-is-artifact-evidence-and-decision.md) | Proposed: the review packet is an artifact, its evidence and a decision, all bound to one digest |
+| [0513](0513-skills-are-shared-by-the-org-and-attached-where-used.md) | Skills are shared by the org and attached to agents, stages and stage types; the factory proposes edits, a person accepts |
+| [0514](0514-autopilots-file-work-they-never-ship-it.md) | Autopilots file work on a trigger; they never merge, deploy or change config, and release only where policy allows |
+| [0500](0500-the-factory-guards-the-tests.md) | The factory guards the tests: deleted, skipped or weakened tests, new suppressions and gate-file edits are found in code from the diff, go to a person, and block the check-only auto-merge |
+| [0501](0501-the-factory-runs-the-checks-and-only-executed-evidence-proves-a-criterion.md) | The runner host runs the project's checks on the head SHA (through the adapter's `exec`), a failure goes back to the same session, and only executed evidence proves a criterion |

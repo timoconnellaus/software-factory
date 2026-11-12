@@ -75,7 +75,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   notifies the org's admins and shows in the inbox. A policy may hold builds while it's red.
 - **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
-  0231). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
+  0231). The packet's **tests-intact** guard reads GitHub's diff for weakened tests, suppressions
+  and gate-file edits; its findings go to a person and block the check-only auto-merge, never the
+  verdict (ADR 0500). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
@@ -118,9 +120,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   instead (ADR 0430): a self-contained job repo with only the job's history, no home or host
   credentials, egress only through the job's allowlist proxy, every stage `bypassPermissions`, and
   the launch check inside the container. The host still pushes, from the job repo.
-  A runner host keeps its own code on the commit `sf-engine` was deployed from (`DEPLOYED_SHA`,
-  sent in each heartbeat): it updates itself when idle and rolls back an update that doesn't start
-  (ADR 0360).
+  A runner host keeps its own code on the last commit that changed runner code (`RUNNER_SHA`, which
+  the deploy computes next to `DEPLOYED_SHA`, sent in each heartbeat): it keeps claiming while an
+  update waits, updates at its first idle heartbeat (light jobs only after 30 minutes, nothing after
+  60), and rolls back an update that doesn't start (ADR 0360, 0520). Only a heartbeat whose
+  `minRunnerCompat` is above the runner's `RUNNER_COMPAT` stops its claims at once.
   A host holds one or more **Claude accounts** (ADR 0410): a login in its own config dir or a token
   in a 0600 file, never sent to the factory. The heartbeat reports their names and the active one;
   the owner picks the active one with `sf-runner account use` or on Setup (`runner.account.use`,
@@ -131,7 +135,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
   `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses
   off the app, so no token (the CLI's, MCP's) can approve anything.
-- **The desktop app** (`apps/desktop`, ADRs 0390–0392, spec 40) is the daily UI on macOS (Electrobun): it
+- **The desktop app** (`apps/desktop`, ADRs 0390–0392 and 0460, specs 40 and 41) is the daily UI on macOS (Electrobun), a window shell of sections with nested lists drawn from `packages/ui`'s desktop tokens: it
   supervises this Mac's `sf-runner` and calls operations through the same door (`/client/v1`) with a
   desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates
   only with a per-call presence proof (Touch ID) the door verifies; nothing else on the Mac can make

@@ -13,5 +13,12 @@
       "#/*": ["./src/*"]
     }
   },
-  "include": ["src", "test", "vite.config.ts", "vitest.config.ts", "electrobun.config.ts"]
+  "include": [
+    "src",
+    "test",
+    "screenshots",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "electrobun.config.ts"
+  ]
 }

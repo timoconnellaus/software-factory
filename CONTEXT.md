@@ -224,8 +224,17 @@ _Avoid_: hidden test, eval
 What a person reviews at a gate: a verdict row, what changed, criteria with evidence, reviewer
 notes, screenshots, risk flags, the diff and a preview link. Sections are set per project in
 `.factory/` (`reviewPacket.sections`). It also backs the `factory/verify` check. The packet in the
-app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
+app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments. Its **Tests
+intact** section is always shown (ADR 0500).
 _Avoid_: PR summary, report
+
+**Tests intact**
+The factory's own check, in code, that a diff doesn't weaken the tests the build is judged by:
+deleted, removed, skipped or commented-out tests, new lint or type suppressions, lowered thresholds
+and edits to gate files (`.factory/`, CI workflows, test and lint config), read from GitHub's diff at
+the head SHA (ADR 0500). A **finding** is for a person: it never fails the verdict, no agent judges
+it, and it blocks the check-only auto-merge. Findings belong to one SHA's review packet.
+_Avoid_: test tampering check, reviewer finding
 
 **CLI token**
 What `sf login` gets once a person approves its code in the app: acts as that person on the `cli`
@@ -325,6 +334,22 @@ The code that implements the runner contract for one kind of runner: `runner-loc
 tmux on the runner's machine, ADR 0380; it replaced the first adapter, `runner-orca`), later dev
 boxes, sandboxes and `runner-codex-cloud`. The core only knows the contract.
 _Avoid_: driver, plugin, integration
+
+**Runner code**
+What a runner host runs from its own checkout: `local/runner-host`, `packages/runner-*`,
+`packages/harness-*` and their workspace dependencies. The **desired version** a heartbeat hands out
+is the last commit on `main` that changed it (`RUNNER_SHA`, computed by the deploy), not every
+deployed commit; a runner at or ahead of it is current (ADR 0520). A runner behind it keeps claiming
+and updates at its first idle heartbeat (light jobs only after 30 minutes pending, nothing after 60).
+_Avoid_: runner version (ambiguous with the compat level)
+
+**Runner compat level**
+`RUNNER_COMPAT` in `packages/runner-contract`: a number bumped by hand in the PR that makes a change
+an older runner can't follow. The engine sends its own as `minRunnerCompat`; a runner below it claims
+nothing until it has updated, and the engine sends no job to a runner that reported a lower one
+(ADR 0520). Everything short of that follows the compatibility rule:
+optional new fields, growing enums, new kinds of job behind a capability.
+_Avoid_: contract version (`CONTRACT_VERSION`, which stays fixed)
 
 **Job session**
 The live harness for one job: under runner-local, Claude Code in the tmux session `sf-<jobId>` on
@@ -472,6 +497,24 @@ _Avoid_: pipeline (the skeleton), stage list
 **Step**
 One entry in a workflow slot: a **work** step hands to an agent and is advisory; a **gate** step
 hands to a person and is enforced.
+
+**Stage type**, **workflow template**, **stage template** (designed, spec 52, not built)
+A stage type is built-in code with a fixed contract (what it runs, produces and needs, its evidence,
+screen, gate and reversibility); a workflow will be an org-level ordered list of stages, each an
+instance of a stage type, split into **shaping** stages (before release) and **delivery** stages.
+Templates are ready-made workflows (Software, Marketing) or stage types with default settings
+(ADR 0510).
+
+**Skill** (designed, spec 52, not built)
+How the team does one thing, written once (instructions plus files), versioned and owned by the
+org, attached to an agent, a stage, or built into a stage type. The factory may propose an edit;
+only a person accepts one (ADR 0513).
+_Avoid_: playbook, recipe
+
+**Autopilot** (designed, spec 52, not built)
+A trigger (schedule or event), an agent, its skills, an instruction and an output target: work the
+factory starts on its own. It files through the backlog, never merges or deploys (ADR 0514).
+_Avoid_: cron job, bot
 
 **Agent** (config)
 A harness-neutral profile: model role and tier, instructions, abstract permissions, capabilities.

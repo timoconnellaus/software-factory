@@ -29,6 +29,7 @@ export function services(env: Env): FactoryServices {
     publicBaseUrl: env.PUBLIC_BASE_URL,
     allowSoftwareDeviceKeys: env.DESKTOP_ALLOW_SOFTWARE_KEYS === "1",
     ...(env.DEPLOYED_SHA ? { deployedSha: env.DEPLOYED_SHA } : {}),
+    ...(env.RUNNER_SHA ? { runnerSha: env.RUNNER_SHA } : {}),
     attachments: r2AttachmentBlobs(env.ATTACHMENTS),
     runnerKey: async (runnerId, version) => {
       if (!RUNNER_CHANNEL_SECRET) {
