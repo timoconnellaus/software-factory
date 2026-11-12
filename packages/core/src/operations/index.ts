@@ -20,6 +20,7 @@ export * from "./planning.ts";
 export * from "./projects.ts";
 export * from "./protection.ts";
 export * from "./questions.ts";
+export * from "./reconcile.ts";
 export * from "./runners.ts";
 export * from "./specs.ts";
 export * from "./terminal.ts";

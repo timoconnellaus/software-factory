@@ -560,6 +560,17 @@ today's Workflow, recording what it would do, and takes no item until it **agree
 row**: 20 consecutive finished items whose every transition it predicted, with any divergence
 resetting the count (build plan PR (c)). The switch-over is its own PR, approved by a person.
 
+**Known differences in shadow, to settle before the streak can count.** Each is reported under its
+own name in the item's report (`known`), not as a generic divergence, and counts as a divergence
+until it is settled:
+- `queue-head-moved`: when the head moves in the merge queue, today's Workflow merges the default
+  branch into the branch, waits for CI on the new head and lands with the same approval (ADR 0330),
+  while the reconciler's `publish` stage sends the item back to Checks and reopens the merge gate.
+  The babysitter (spec 53, PRs #103 to #105) changes exactly this: its deliverer lands approved
+  merges, and an approval survives a clean merge of main only while the change is the same. Settle
+  the reconciler's rule with spec 53 as built, then drop the name. The shadow pass sees it as a
+  review packet the queue carried to a new head (`carriedFrom`).
+
 ## The review packet: artifact, evidence, decision
 Today's packet (ADR 0020, 0037, 0041) is a verdict, what changed, criteria with evidence, the
 reviewer, checks, risk flags and drift, for one head SHA, and it backs `factory/verify`. The same
@@ -1166,8 +1177,14 @@ screen needs).
    `workflowTemplate.list`. **Built-in workflows** Attached PR and Incident are listed read-only and
    accept only tightening saves (a loosening one is refused). Projects still run their own config
    and the engine is unchanged: org workflows are visible and editable but not yet used.
-4. **(c) The reconciler in shadow** (migration **0281**: `core_item_stages`, `core_item_steps`,
-   `core_reconcile_shadow`, `core_work_items.reconcile_rev`, `next_check_at`). `reconcile()`, the
+4. **(c) The reconciler in shadow** (migration **0281**: `core_reconcile_items`; as built, `core_item_stages`, `core_item_steps`, `reconcile_rev` and
+   `next_check_at` move to the switch-over, since nothing writes them while the Workflow drives).
+   As built in two PRs: (c1) `reconcile()` and `next()`, pure; (c2) the shadow pass, off the
+   Workflow's path (a cron pass over the items that ended, one verdict row per item), which compares
+   stage order and skips. Jobs and attempts, gates and who decided them, send-back targets and
+   rounds, retry counts, slot steps and ends other than Done are not compared yet: each counts as a
+   divergence on every item, and `reconcile.streak` reports "comparison incomplete: <what is
+   missing>", never a number, until they are. `reconcile()`, the
    snapshot loader and `next()` for Software's types. It runs on the outbox and the cron beside the
    Workflow, drives nothing, and records what it would do next to what the Workflow did; a report
    per item and the **agreement streak** (consecutive finished items with no divergence). The
