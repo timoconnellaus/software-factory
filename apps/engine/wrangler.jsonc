@@ -57,13 +57,7 @@
   ],
   // One instance per work item; the instance id is the work item id (ADR 0006, 0053).
   // Work item attachments (ADR 0310): private, reached only through the attachment operations.
-  // The archive (AGENTS.md "Cloudflare cost", rule 4): a run's events and steers, moved out of D1 30
-  // days after the run ended (src/retention.ts). Its own bucket, so the attachments' stray-blob
-  // sweep never sees it. Provisioned by scripts/deploy/provision.ts like any bound bucket.
-  "r2_buckets": [
-    { "binding": "ATTACHMENTS", "bucket_name": "sf-attachments" },
-    { "binding": "ARCHIVE", "bucket_name": "sf-archive" }
-  ],
+  "r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "sf-attachments" }],
   // One PlanningHub per work item (spec 20, ADR 0350): live Planning tabs and the planning
   // agent's held waits hear about changes here.
   "durable_objects": {

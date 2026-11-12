@@ -9,12 +9,19 @@ import {
   STEER_MAX,
   steerText,
 } from "@software-factory/runner-contract";
+import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { logPlanning, takeBackFromGate } from "../planning.ts";
-import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
+import {
+  fencingToken,
+  jobId,
+  RUN_EVENTS_BATCH_MAX,
+  requireWorkItem,
+  workItemId,
+} from "./shared.ts";
 
 /** Runs whose session may still be steered (core_runs.status). */
 export const ACTIVE = ["claimed", "preparing", "running", "collecting"];
@@ -24,6 +31,29 @@ export const LIVE_EVENTS_MAX = 300;
 export const LIVE_BYTES_MAX = 300_000;
 
 /** The run of events that fits the budget, keeping the newest or the oldest end (at least one). */
+/** Stored rows as events: a batch row of log lines becomes one `log` event per line. */
+function expandRows(
+  rows: { seq: number; last_seq: number | null; at: string; type: string; payload: string }[],
+): { seq: number; at: string; type: string; payload: string }[] {
+  const out: { seq: number; at: string; type: string; payload: string }[] = [];
+  for (const row of rows) {
+    if (row.last_seq === null) {
+      out.push(row);
+      continue;
+    }
+    const { lines } = JSON.parse(row.payload) as { lines: Record<string, unknown>[] };
+    for (const { seq, at, ...line } of lines) {
+      out.push({
+        seq: seq as number,
+        at: at as string,
+        type: "log",
+        payload: JSON.stringify(line),
+      });
+    }
+  }
+  return out;
+}
+
 function withinBudget<T extends { payload: string }>(rows: T[], keep: "newest" | "oldest"): T[] {
   let total = 0;
   const ordered = keep === "newest" ? [...rows].reverse() : rows;
@@ -285,24 +315,33 @@ export const runLive = defineOperation({
         terminal: { allowed: false, mode: null, reason: "No run yet." },
       };
     }
+    const afterSeq = input.afterSeq;
     const [rows, steers, mode] = await Promise.all([
-      input.afterSeq === undefined
+      afterSeq === undefined
         ? ctx.db
             .selectFrom("core_run_events")
-            .select(["seq", "at", "type", "payload"])
+            .select(["seq", "last_seq", "at", "type", "payload"])
             .where("run_id", "=", run.id)
             .orderBy("seq", "desc")
             .limit(LIVE_EVENTS_MAX)
             .execute()
-            .then((rows) => rows.reverse())
+            .then((rows) => expandRows(rows.reverse()).slice(-LIVE_EVENTS_MAX))
         : ctx.db
             .selectFrom("core_run_events")
-            .select(["seq", "at", "type", "payload"])
+            .select(["seq", "last_seq", "at", "type", "payload"])
             .where("run_id", "=", run.id)
-            .where("seq", ">", input.afterSeq)
+            // A batch row starts at most a batch before the lines it holds: the seq bound keeps
+            // the read on the primary key, the coalesce catches a batch straddling the cursor.
+            .where("seq", ">", afterSeq - RUN_EVENTS_BATCH_MAX)
+            .where(sql<boolean>`coalesce(last_seq, seq) > ${afterSeq}`)
             .orderBy("seq", "asc")
             .limit(LIVE_EVENTS_MAX)
-            .execute(),
+            .execute()
+            .then((rows) =>
+              expandRows(rows)
+                .filter((e) => e.seq > afterSeq)
+                .slice(0, LIVE_EVENTS_MAX),
+            ),
       ctx.db
         .selectFrom("core_run_steers")
         .leftJoin("core_user", "core_user.id", "core_run_steers.author_user_id")

@@ -66,6 +66,71 @@ async function member(orgId: string) {
 const at = () => new Date().toISOString();
 
 describe("watching and steering a run", () => {
+  it("stores a run of log lines as one row and shows every line, from any cursor", async () => {
+    const { w, actor, item, job } = await running();
+    const log = (seq: number, text = `line ${seq}`) => ({
+      jobId: job.jobId,
+      seq,
+      at: at(),
+      type: "log" as const,
+      stream: "terminal" as const,
+      text,
+    });
+    await ok(
+      "run.reportEvents",
+      {
+        jobId: job.jobId,
+        fencingToken: job.lease.fencingToken,
+        events: [
+          { jobId: job.jobId, seq: 1, at: at(), type: "job.state", state: "running" },
+          log(2),
+          log(3),
+          log(4),
+          { jobId: job.jobId, seq: 5, at: at(), type: "agent.status", status: "working" },
+          log(6),
+          // Over a megabyte of lines: split into rows under D1's row limit.
+          ...Array.from({ length: 20 }, (_, i) => log(7 + i, "y".repeat(60_000))),
+        ],
+      },
+      actor,
+    );
+    const stored = await rows<{ seq: number; last_seq: number | null }>(
+      "SELECT e.seq, e.last_seq FROM core_run_events e JOIN core_runs r ON r.id = e.run_id WHERE r.job_id = ? ORDER BY e.seq",
+      job.jobId,
+    );
+    expect(stored.slice(0, 4)).toEqual([
+      { seq: 1, last_seq: null },
+      { seq: 2, last_seq: 4 },
+      { seq: 5, last_seq: null },
+      { seq: 6, last_seq: expect.any(Number) },
+    ]);
+    expect(stored.length).toBeLessThan(8);
+    type Live = { events: { seq: number; type: string; data: { text?: string } }[] };
+    const all = await ok<Live>("run.live", { workItemId: item.workItemId, afterSeq: 0 }, w.human);
+    expect(all.events.slice(0, 6).map((e) => [e.seq, e.type, e.data.text ?? null])).toEqual([
+      [1, "job.state", null],
+      [2, "log", "line 2"],
+      [3, "log", "line 3"],
+      [4, "log", "line 4"],
+      [5, "agent.status", null],
+      [6, "log", "line 6"],
+    ]);
+    // A cursor in the middle of a batch: only the lines after it.
+    const after = await ok<Live>("run.live", { workItemId: item.workItemId, afterSeq: 3 }, w.human);
+    expect(after.events.slice(0, 3).map((e) => e.seq)).toEqual([4, 5, 6]);
+    // A retried batch is a no-op.
+    await ok(
+      "run.reportEvents",
+      { jobId: job.jobId, fencingToken: job.lease.fencingToken, events: [log(2), log(3), log(4)] },
+      actor,
+    );
+    const again = await rows(
+      "SELECT 1 FROM core_run_events e JOIN core_runs r ON r.id = e.run_id WHERE r.job_id = ?",
+      job.jobId,
+    );
+    expect(again.length).toBe(stored.length);
+  });
+
   it("shows a run's events to any member, after a cursor, with transcript messages", async () => {
     const { w, actor, item, job } = await running();
     await ok(

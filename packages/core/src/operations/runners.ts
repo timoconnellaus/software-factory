@@ -50,6 +50,7 @@ import {
   fencingToken,
   itemRepository,
   jobId,
+  RUN_EVENTS_BATCH_MAX,
   repoRef,
   requireRepository,
   requireWorkItem,
@@ -1158,16 +1159,64 @@ export const runReportEvents = defineOperation({
   // Every 3 s while a run logs: the events are kept in core_run_events, so the audit records only
   // a batch that moves the run (a state, a session start, a takeover), ADR 0590.
   audit: { changesOnly: true },
-  input: z.object({ jobId, fencingToken, events: z.array(runnerEventSchema).max(500) }),
+  input: z.object({
+    jobId,
+    fencingToken,
+    events: z.array(runnerEventSchema).max(RUN_EVENTS_BATCH_MAX),
+  }),
   output: z.object({ accepted: z.number() }),
   async handler(input, ctx) {
     const run = await loadRun(ctx, input.jobId);
+    // A run of consecutive log lines is one row (AGENTS.md "Cloudflare cost": rows written are the
+    // cost), keyed by its first line's seq, so a retried batch is still a no-op; every other event
+    // is a row of its own, as the reads by type need.
+    const rows: {
+      seq: number;
+      last_seq: number | null;
+      at: string;
+      type: string;
+      payload: string;
+    }[] = [];
+    let lines: Record<string, unknown>[] = [];
+    const flushLines = () => {
+      const first = lines[0];
+      const last = lines.at(-1);
+      if (first && last) {
+        rows.push({
+          seq: first.seq as number,
+          last_seq: last.seq as number,
+          at: first.at as string,
+          type: "log",
+          payload: JSON.stringify({ lines }),
+        });
+      }
+      lines = [];
+    };
+    let bytes = 0;
     for (const e of input.events) {
       const { jobId: _job, seq, at, type, ...payload } = e;
+      if (type === "log") {
+        const line = { seq, at, ...payload };
+        const size = JSON.stringify(line).length;
+        // D1 refuses a row over 2 MB: a batch row stops at about 1 MB (a line is at most 64 KB).
+        if (bytes + size > LOG_ROW_BYTES_MAX) {
+          flushLines();
+          bytes = 0;
+        }
+        lines.push(line);
+        bytes += size;
+        continue;
+      }
+      bytes = 0;
+      flushLines();
+      rows.push({ seq, last_seq: null, at, type, payload: JSON.stringify(payload) });
+    }
+    flushLines();
+    for (const row of rows) {
       ctx.write(
         ctx.db
           .insertInto("core_run_events")
-          .values({ run_id: run.id, seq, at, type, payload: JSON.stringify(payload) })
+          .values({ run_id: run.id, ...row })
           .onConflict((oc) => oc.columns(["run_id", "seq"]).doNothing()),
       );
     }
@@ -1202,6 +1251,9 @@ export const runReportEvents = defineOperation({
     return { accepted: input.events.length };
   },
 });
+
+/** A stored batch of log lines stays under this many bytes of JSON (D1's row limit is 2 MB). */
+export const LOG_ROW_BYTES_MAX = 1_000_000;
 
 export const runAddArtifact = defineOperation({
   name: "run.addArtifact",

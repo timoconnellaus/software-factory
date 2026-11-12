@@ -13,7 +13,7 @@ import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-con
 import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
 import worker from "../src/index.ts";
-import { archiveRunEvents, pruneExpired } from "../src/retention.ts";
+import { pruneExpired } from "../src/retention.ts";
 import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
 import { growingScans, type Recorded, recordingEnv } from "./query-plans.ts";
 
@@ -147,19 +147,6 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
   {
     name: "the hourly prunes (retention)",
     run: (e) => pruneExpired(e.DB, new Date()),
-  },
-  {
-    // Last: it ends the test's run 31 days ago and archives its events and steers.
-    name: "archiving an ended run's events (retention)",
-    run: async (e) => {
-      if (!job) return null;
-      await env.DB.prepare(
-        "UPDATE core_runs SET status = 'handed_back', ended_at = ? WHERE job_id = ?",
-      )
-        .bind(new Date(Date.now() - 31 * 86_400_000).toISOString(), job.jobId)
-        .run();
-      return archiveRunEvents(e, new Date(), { chunk: 10, chunks: 3 });
-    },
   },
 ];
 
