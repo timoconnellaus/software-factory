@@ -14,6 +14,7 @@ import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { operationHandlers } from "./operations.ts";
 import { Runner } from "./runner.ts";
 import { saveTo } from "./save.ts";
+import { Updates } from "./updates.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
 /** The inbox count's fallback refresh; the live socket brings changes the moment they happen. */
@@ -163,6 +164,16 @@ const RUNNER_LABEL: Record<RunnerState["status"], string> = {
   locked: "another host is running",
   failed: "failed",
 };
+const updates = new Updates((u) => {
+  if (u.ready && u.version) {
+    Utils.showNotification({
+      title: "Software Factory",
+      body: `Version ${u.version} is ready: restart to update`,
+    });
+  }
+  refreshTray();
+});
+
 function refreshTray() {
   const s = runner.state;
   tray.setTitle(`SF${inboxCount ? ` ${inboxCount}` : ""}${s.status === "running" ? " ●" : ""}`);
@@ -186,6 +197,15 @@ function refreshTray() {
         ]
       : []),
     { type: "divider" },
+    ...(updates.state.ready
+      ? [
+          {
+            type: "normal" as const,
+            label: `Restart to update to ${updates.state.version}`,
+            action: "update",
+          },
+        ]
+      : []),
     { type: "normal", label: "Open Software Factory", action: "open" },
     { type: "normal", label: "Launch at login", action: "login-item", checked: loginItemEnabled() },
     { type: "normal", label: "Quit", action: "quit" },
@@ -201,6 +221,12 @@ tray.on("tray-clicked", async (e: unknown) => {
     refreshTray();
   }
   if (action === "quit") await quit();
+  if (action === "update") {
+    // The runner cancels and releases its jobs first; the update then restarts the app.
+    live.stop();
+    await runner.stop();
+    await updates.apply();
+  }
 });
 
 function setBadge(count: number) {
@@ -278,6 +304,7 @@ watchParent(() => void quit());
 
 refreshTray();
 void runner.start();
+void updates.start();
 live.start();
 void pollInbox();
 setInterval(() => void pollInbox(), INBOX_POLL_MS);
