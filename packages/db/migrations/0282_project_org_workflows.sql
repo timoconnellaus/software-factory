@@ -6,4 +6,10 @@
 -- Read with the item's row by primary key; no index.
 ALTER TABLE core_work_items ADD COLUMN org_config_version INTEGER;
 
+-- Who may decide a pending action, when not the project's approvers: `org-admin` for a project
+-- config save that loosens its org workflow (an override looser than the org's value, or a switch
+-- that drops a check): an org admin approves it (spec 52, Q6). Read with the pending action's row by
+-- primary key (approval.decide); no index.
+ALTER TABLE core_pending_actions ADD COLUMN decider TEXT;
+
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 282) WHERE key = 'schema_version';

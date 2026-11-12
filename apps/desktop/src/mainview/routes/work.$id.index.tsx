@@ -62,6 +62,7 @@ import {
   runnersQuery,
   timelineQuery,
   useRefreshAfterDecision,
+  workflowQuery,
   workItemQuery,
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
@@ -875,9 +876,14 @@ function Taken({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) => v
  */
 function WorkflowLine({ detail }: { detail: WorkItemDetail }) {
   const { item } = detail;
+  // The item pins the workflow by what the config names (an org workflow's id, `wf_…`); people
+  // read its name, which `project.workflow` gives as its label.
+  const project = useQuery(workflowQuery(item.projectId));
+  const named = project.data?.workflow;
+  const label = named && item.workflow === named.name ? named.label : item.workflow;
   return (
     <span data-testid="work-item-workflow">
-      {item.workflow ?? "The skeleton alone"}
+      {label ?? "The skeleton alone"}
       {item.workflowReason && (
         <span className="mt-0.5 block text-ink-3 text-xs">{item.workflowReason}</span>
       )}

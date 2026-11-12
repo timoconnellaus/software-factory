@@ -445,7 +445,7 @@ const STAGES_IN_ORDER = [
 ] as const;
 
 /**
- * `project.workflow`: Factory names its workflow, Website runs the built-in one, CRM defines
+ * `project.workflow`: Factory runs an org workflow, Website runs the built-in one, CRM defines
  * workflows and names none (it fails closed: work is captured, never released).
  */
 function workflowOf(projectId: string): OpOutput<"project.workflow"> {
@@ -460,12 +460,8 @@ function workflowOf(projectId: string): OpOutput<"project.workflow"> {
   }
   const workflow =
     projectId === FACTORY
-      ? {
-          name: "software",
-          label: "Software",
-          description: "Plan, build, verify, review",
-          builtIn: false,
-        }
+      ? // On an org workflow (spec 52 PR (d)): named by its id, read by its name.
+        { name: "wf_ship_it", label: "Ship it", description: "", builtIn: false }
       : {
           name: "software",
           label: "Software (built in)",
@@ -541,10 +537,10 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       headSha: atMerge ? "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f" : null,
       prNumber: atMerge ? 51 : null,
       policySha: "5da8988",
-      workflow: "software",
+      workflow: "wf_ship_it",
       workflowReason: "the project's default",
     },
-    workflows: [{ name: "software", description: "Plan, build, verify, review" }],
+    workflows: [{ name: "wf_ship_it", description: "Ship it" }],
     stages,
     spec: {
       id: `spec_${n}`,

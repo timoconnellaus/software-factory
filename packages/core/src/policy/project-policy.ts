@@ -24,6 +24,20 @@ export const ORG_WORKFLOW_ID = /^wf_[a-z0-9_]{1,60}$/;
 export const isOrgWorkflowId = (name: string | null | undefined): name is string =>
   !!name && ORG_WORKFLOW_ID.test(name);
 
+/**
+ * Whether the project runs an org workflow: `workflow` is shaped like an org workflow id and no slot
+ * workflow in the config has that name. A slot workflow named like one before spec 52 PR (d) stays a
+ * slot workflow, so an existing config runs exactly as before; only new slot workflows may not take
+ * such a name (`config.save` refuses one).
+ */
+export function onOrgWorkflow(
+  policy: { workflow: string | null; workflows: readonly { name: string }[] } | null,
+): policy is { workflow: string; workflows: readonly { name: string }[] } {
+  if (!policy || !isOrgWorkflowId(policy.workflow)) return false;
+  const named = policy.workflow.toLowerCase();
+  return !policy.workflows.some((w) => w.name.toLowerCase() === named);
+}
+
 /** Names people read and steps refer to. */
 const label = z.string().trim().min(1).max(60);
 const instructions = z.string().max(4_000).default("");
@@ -221,6 +235,22 @@ export const projectPolicySchema = z
       .default({})
       .refine((o) => Object.keys(o).length <= 20, "at most 20 stages can be overridden"),
     /**
+     * Written by the factory, never by the person saving (`config.save` replaces what a draft
+     * carries): for each override that is looser than the org workflow's value, the org config
+     * version and the org's value it was approved against as a loosening. At resolve time the
+     * stricter of the org's value and the override applies, unless the override was approved
+     * against the org's current value; once the org moves that value on, the approval lapses.
+     */
+    workflowOverrideApprovals: z
+      .record(
+        z.string().min(1).max(40),
+        z.record(
+          z.string().min(1).max(40),
+          z.object({ orgVersion: z.number().int().nonnegative(), orgValue: z.unknown() }).strict(),
+        ),
+      )
+      .default({}),
+    /**
      * Self-improvement (ADR 0373): the factory trials practice changes on the next `trialSize`
      * items, at most `weeklyCap` a week. Turning it on is a policy change for a person.
      */
@@ -248,14 +278,7 @@ export const projectPolicySchema = z
   .superRefine((policy, ctx) => {
     const error = workflowsError(policy.agents, policy.workflows);
     if (error) ctx.addIssue({ code: "custom", path: ["workflows"], message: error });
-    for (const w of policy.workflows)
-      if (isOrgWorkflowId(w.name))
-        ctx.addIssue({
-          code: "custom",
-          path: ["workflows"],
-          message: `a workflow can't be called "${w.name}": names like that are org workflow ids`,
-        });
-    const org = isOrgWorkflowId(policy.workflow);
+    const org = onOrgWorkflow(policy);
     if (!org && Object.keys(policy.workflowOverrides).length > 0)
       ctx.addIssue({
         code: "custom",

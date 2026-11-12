@@ -191,6 +191,23 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
     input: z.output<I>,
     at: { scope: Scope; floor: FloorParse; db: Db },
   ) => RiskClass | Promise<RiskClass>;
+  /**
+   * A `review` answer that only an org owner or admin may decide, not the project's approvers (a
+   * project config save that loosens its org workflow, spec 52 Q6). The pending action is assigned
+   * to the org's admins and marked so `approval.decide` asks for one.
+   */
+  decidedByOrgAdmin?: (
+    input: z.output<I>,
+    at: { scope: Scope; floor: FloorParse; db: Db },
+  ) => Promise<boolean>;
+  /**
+   * The handler reads nothing an org workflow decides (stages, agents, spec size, retries, checks,
+   * review sections), and nor does the gate for it: a polled read. The scope then doesn't resolve
+   * the project's org workflow: `policy` is the project's config as saved (spec 52 PR (d), cost).
+   */
+  skipsOrgWorkflow?: true;
+  /** A permission that depends on the resolved scope (who may decide a pending action). */
+  permissionOf?: (input: z.output<I>, at: { scope: Scope; db: Db }) => Promise<Permission>;
   input: I;
   output: O;
   /** Actor types that may call it at all (checked before the gate). */

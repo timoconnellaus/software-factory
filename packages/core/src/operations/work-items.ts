@@ -661,6 +661,8 @@ export const workItemTimeline = defineOperation({
   name: "workItem.timeline",
   description:
     "A work item's timeline, straight from the audit journal (spec 13): every operation on it with actor, gate decision, outcome and reason, oldest first.",
+  // Polled: reads nothing an org workflow decides (spec 52 PR (d), cost).
+  skipsOrgWorkflow: true,
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",

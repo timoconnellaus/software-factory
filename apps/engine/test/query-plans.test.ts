@@ -3,11 +3,14 @@
 // SCAN of a growing table. To guard another path, add a scenario to HOT_PATHS.
 import { env } from "cloudflare:workers";
 import {
+  clearOrgConfigCache,
   invoke,
   r2AttachmentBlobs,
   recentOutcomes,
+  resolveScope,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
+import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -180,6 +183,44 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
   {
     name: "the hourly prunes (retention)",
     run: (e) => pruneExpired(e.DB, new Date()),
+  },
+  {
+    // Spec 52 PR (d): a polled read on a project that runs an org workflow, with nothing cached, so
+    // the org config's version and document are read: point reads by primary key. The timeline
+    // (skipsOrgWorkflow) reads neither. (workItem.get's own reads aren't registered here yet.)
+    name: "polled reads of an item on an org workflow",
+    run: async (e) => {
+      const o = await world();
+      await ok(
+        "workflow.save",
+        { orgId: o.orgId, baseVersion: 0, workflow: { ...SOFTWARE, id: "wf_ship", name: "Ship" } },
+        o.human,
+      );
+      const cfg = await ok<{ current: { version: number } | null }>(
+        "config.get",
+        { projectId: o.projectId },
+        o.human,
+      );
+      const policy = cfg.current?.policy as Record<string, unknown>;
+      await ok(
+        "config.save",
+        {
+          projectId: o.projectId,
+          baseVersion: cfg.current?.version ?? 0,
+          policy: { ...policy, workflow: "wf_ship", workflows: [], agents: [] },
+        },
+        o.human,
+      );
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "backlog", projectId: o.projectId, title: "Polled" },
+        o.human,
+      );
+      clearOrgConfigCache();
+      const scope = await resolveScope(createDb(e.DB), { workItemId: item.workItemId });
+      if (scope.policy?.workflow !== "wf_ship") throw new Error("the org workflow didn't resolve");
+      return as(e, "workItem.timeline", { workItemId: item.workItemId }, o.human);
+    },
   },
 ];
 

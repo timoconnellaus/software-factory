@@ -477,6 +477,8 @@ export interface CorePendingActionsTable {
   note: string | null;
   opened_full_diff: Bool | null;
   gate_open_ms: number | null;
+  /** `org-admin`: only an org owner or admin decides it (a project's org workflow loosened, migration 0282). */
+  decider: "org-admin" | null;
 }
 
 export interface CoreReviewPacketsTable {

@@ -4,11 +4,7 @@ import type { Db, KillScope } from "@software-factory/db";
 import type { Actor } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import type { ProjectRow, RepositoryRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
-import {
-  isOrgWorkflowId,
-  type ProjectPolicy,
-  parseProjectPolicy,
-} from "./policy/project-policy.ts";
+import { onOrgWorkflow, type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
 import { EMPTY_ORG_CONFIG, parseOrgConfig } from "./stages/org-config.ts";
 import { effectivePolicy } from "./stages/project-workflow.ts";
 
@@ -53,12 +49,12 @@ export async function resolveScope(db: Db, ref: ScopeRef): Promise<Scope>;
 export async function resolveScope(
   db: Db,
   ref: ScopeRef,
-  batch: { d1: D1Database; userId: string | null },
+  batch: { d1: D1Database; userId: string | null; skipOrgWorkflow?: boolean },
 ): Promise<Scope & { role: string | null | undefined }>;
 export async function resolveScope(
   db: Db,
   ref: ScopeRef,
-  batch?: { d1: D1Database; userId: string | null },
+  batch?: { d1: D1Database; userId: string | null; skipOrgWorkflow?: boolean },
 ): Promise<Scope & { role?: string | null | undefined }> {
   let workItemId = ref.workItemId ?? null;
   if (!workItemId && ref.jobId) {
@@ -116,6 +112,7 @@ export async function resolveScope(
       batch.d1,
       { workItemId, projectId, orgId, repositoryId },
       batch.userId,
+      batch.skipOrgWorkflow ?? false,
     );
   }
 
@@ -203,6 +200,7 @@ async function resolveBatched(
     repositoryId: string | null;
   },
   userId: string | null,
+  skipOrgWorkflow: boolean,
 ): Promise<Scope & { role: string | null | undefined }> {
   // The project is the work item's when there is one (as in the unbatched path).
   const projectExpr = ids.workItemId
@@ -306,13 +304,16 @@ async function resolveBatched(
   const pinnedRaw = pinnedRow
     ? interpretPolicy({ policy_sha: workItem?.policy_sha ?? null }, pinnedRow).policy
     : null;
-  const { policy, rawPolicy, policyError, pinnedPolicy } = await withOrgWorkflow(
-    db,
-    project.org_id,
-    raw,
-    pinnedRaw,
-    workItem,
-  );
+  // A read that uses none of what an org workflow decides (polled timelines, planning, the queue)
+  // doesn't resolve it: the project's config as saved, and no org config read or parsed.
+  const { policy, rawPolicy, policyError, pinnedPolicy } = skipOrgWorkflow
+    ? {
+        policy: raw.policy,
+        rawPolicy: raw.policy,
+        policyError: raw.policyError,
+        pinnedPolicy: pinnedRaw,
+      }
+    : await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem);
   return {
     orgId,
     projectId,
@@ -352,7 +353,7 @@ export async function withOrgWorkflow(
   const pinnedVersion = workItem?.org_config_version ?? null;
   const pinnedBase = pinnedRaw ?? (pinnedVersion !== null ? raw.policy : null);
   const pinned =
-    pinnedBase && (pinnedRaw || isOrgWorkflowId(pinnedBase.workflow))
+    pinnedBase && (pinnedRaw || onOrgWorkflow(pinnedBase))
       ? await resolveOrgWorkflow(db, orgId, pinnedBase, pinnedVersion)
       : null;
   return {
@@ -363,6 +364,49 @@ export async function withOrgWorkflow(
   };
 }
 
+/**
+ * Parsed and validated org config documents by `org:version`, per isolate. A version is immutable
+ * once written, so an entry never goes stale; the map is bounded so an isolate serving many orgs
+ * keeps only the most recent.
+ */
+const ORG_CONFIGS = new Map<string, OrgConfigParse>();
+const ORG_CONFIG_CACHE_SIZE = 64;
+type OrgConfigParse = ReturnType<typeof parseOrgConfig>;
+
+/** For tests: forget every cached org config. */
+export function clearOrgConfigCache() {
+  ORG_CONFIGS.clear();
+}
+
+/** The org's config at `version`, parsed once per isolate (the document is up to 256 KiB). */
+async function orgConfigAt(db: Db, orgId: string, version: number): Promise<OrgConfigParse> {
+  const key = `${orgId}:${version}`;
+  const hit = ORG_CONFIGS.get(key);
+  if (hit) {
+    // Most recently used last.
+    ORG_CONFIGS.delete(key);
+    ORG_CONFIGS.set(key, hit);
+    return hit;
+  }
+  // A point read by primary key (org_id, version).
+  const row = await db
+    .selectFrom("core_org_configs")
+    .select("raw")
+    .where("org_id", "=", orgId)
+    .where("version", "=", version)
+    .executeTakeFirst();
+  const parsed: OrgConfigParse = row
+    ? parseOrgConfig(JSON.parse(row.raw))
+    : { ok: true, config: EMPTY_ORG_CONFIG };
+  if (!row) return parsed;
+  ORG_CONFIGS.set(key, parsed);
+  if (ORG_CONFIGS.size > ORG_CONFIG_CACHE_SIZE) {
+    const oldest = ORG_CONFIGS.keys().next().value;
+    if (oldest !== undefined) ORG_CONFIGS.delete(oldest);
+  }
+  return parsed;
+}
+
 /** `policy` with its org workflow resolved under `version` (null: the org's current one). */
 export async function resolveOrgWorkflow(
   db: Db,
@@ -370,25 +414,24 @@ export async function resolveOrgWorkflow(
   policy: ProjectPolicy | null,
   version: number | null,
 ): Promise<{ policy: ProjectPolicy | null; error: string | null }> {
-  if (!policy || !isOrgWorkflowId(policy.workflow)) return { policy, error: null };
-  // One point read: the org config by primary key (org_id, version), the current version by the
-  // org's primary key. Only for a project on an org workflow.
-  const row = await db
-    .selectFrom("core_org_configs")
-    .select(["raw", "version"])
-    .where("org_id", "=", orgId)
-    .where(
-      "version",
-      "=",
-      version ??
-        ((eb) =>
-          eb.selectFrom("core_organization").select("config_version").where("id", "=", orgId)),
-    )
-    .executeTakeFirst();
-  const org = row
-    ? parseOrgConfig(JSON.parse(row.raw))
-    : { ok: true as const, config: EMPTY_ORG_CONFIG };
-  if (!org.ok) return { policy: null, error: `the org config v${row?.version} doesn't validate` };
+  if (!policy || !onOrgWorkflow(policy)) return { policy, error: null };
+  // The org's current version is one point read of its row; the document is read and parsed only
+  // the first time this isolate sees that version. Only for a project on an org workflow.
+  const at =
+    version ??
+    (
+      await db
+        .selectFrom("core_organization")
+        .select("config_version")
+        .where("id", "=", orgId)
+        .executeTakeFirst()
+    )?.config_version ??
+    null;
+  const org =
+    at === null
+      ? { ok: true as const, config: EMPTY_ORG_CONFIG }
+      : await orgConfigAt(db, orgId, at);
+  if (!org.ok) return { policy: null, error: `the org config v${at} doesn't validate` };
   const effective = effectivePolicy(policy, org.config);
   return effective.ok
     ? { policy: effective.value, error: null }

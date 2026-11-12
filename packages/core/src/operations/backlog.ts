@@ -12,7 +12,7 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import { type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
+import { onOrgWorkflow, type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
@@ -1201,11 +1201,16 @@ export const projectWorkflow = defineOperation({
     const named = policy.workflow
       ? policy.workflows.find((w) => w.name.toLowerCase() === policy.workflow?.toLowerCase())
       : undefined;
+    // On an org workflow the resolved config names it by id (`wf_…`) and carries its name as the
+    // description (spec 52 PR (d)): people read the name.
+    const org = onOrgWorkflow(ctx.scope.rawPolicy);
     const workflow = named
       ? {
           name: named.name,
-          label: named.name[0]?.toUpperCase() + named.name.slice(1),
-          description: named.description,
+          label: org
+            ? named.description || named.name
+            : named.name[0]?.toUpperCase() + named.name.slice(1),
+          description: org ? "" : named.description,
           builtIn: false,
         }
       : {

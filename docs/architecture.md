@@ -80,7 +80,10 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   `workflowOverrides` of the few settings each type lists as `overridable` (spec 52 PR (d)); until
   the switch-over, today's Workflow runs it through `effectivePolicy` (the scope's `policy`; config
   operations read `rawPolicy`), under the org config version the item pinned
-  (`core_work_items.org_config_version`, migration 0282). The **reconciler** (ADR 0511) is
+  (`core_work_items.org_config_version`, migration 0282). Overrides apply as the stricter of the
+  org's value and the project's, unless an org admin approved the looser one against the org's
+  value (`workflowOverrideApprovals`; it lapses when the org moves that value). The parsed org
+  config is cached per isolate by (org, version). The **reconciler** (ADR 0511) is
   `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**, off the Workflow's
   path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
   its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each
