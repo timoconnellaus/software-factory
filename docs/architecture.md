@@ -13,11 +13,13 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   (`sf-engine.zerobsai.com/runner/v1/*`). Both bind one D1 database, `software-factory`: work items,
   questions, gates, runs, leases, audit journal, outbox and Better Auth, all `core_*` tables
   (`packages/db/migrations`, ADR 0050). `sf-engine` also binds one private R2 bucket,
-  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes.
+  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes. Tables that only grow are
+  pruned by the minute cron in bounded batches (`apps/engine/src/retention.ts`, AGENTS.md "Cloudflare cost").
 - **Operations** (ADR 0003, 0004) are the only way to change state. Every call goes through
   `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, from
   its current config version, and no looser than the version a work item started under), fencing
   token, permission, handler, then one D1 batch with the audit row and outbox rows (ADR 0035, 0370).
+  A changes-only operation that changed nothing commits no batch and writes no audit row (ADR 0590).
 - **Workflows** own the gates, one per work item; the **foreman** picks a route within them, and
   its decisions are listed as binding or advisory (ADR 0005, 0006). Gates block in v1 and a waiting
   item holds no runner slot.
