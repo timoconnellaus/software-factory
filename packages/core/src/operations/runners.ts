@@ -673,7 +673,7 @@ interface ClaimCandidate {
 }
 
 /**
- * job.claim's candidates (AGENTS.md "Cloudflare cost", rule 9): the first 50 queued jobs in claim
+ * job.claim's candidates (AGENTS.md "Cloudflare cost", rule 8): the first 50 queued jobs in claim
  * order, joined to their item, project and lease, with itemRepository's answer, the runner's
  * owner-or-share and the kill switch worked out in SQL. Jobs in a pool with no room, on an item
  * not running, waiting or shaping, or (with the item's repository found) that the runner may not
@@ -1073,7 +1073,7 @@ export const jobClaim = defineOperation({
 
     // The first 50 queued jobs, released work first: a shaping item's triage and planning jobs
     // (ADR 0493) wait behind the jobs of work people already committed to, then oldest first. One
-    // query (AGENTS.md "Cloudflare cost", rule 9) reads each job with its item, project and lease,
+    // query (AGENTS.md "Cloudflare cost", rule 8) reads each job with its item, project and lease,
     // and whether the item has its repository, and drops in SQL the jobs this runner could never
     // take now: a pool with no room, an item not running, waiting or shaping, and (unless the item
     // lacks its repository, whose wait reason is still recorded) a runner neither the requester's
