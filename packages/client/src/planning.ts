@@ -167,9 +167,8 @@ export function answerText(kind: string, values: string[]): string {
 }
 
 /** Spec 21: what an answer sets in its mockup, and a mockup's frame size, shared with the server. */
-export { appliedValues, frameSize } from "@software-factory/runner-contract";
 /** The plan's blocks, as the server compares them (spec 27). */
-export { foldSpace, planBlocks } from "@software-factory/runner-contract";
+export { appliedValues, foldSpace, frameSize, planBlocks } from "@software-factory/runner-contract";
 /** The one sensitive-question check, shared with the server (ADR 0042, review of #71). */
 export { isSensitiveQuestion };
 

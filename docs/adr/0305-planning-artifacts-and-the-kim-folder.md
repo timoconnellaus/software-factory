@@ -2,6 +2,10 @@
 
 Status: accepted, 2026-11-11 (planning interview).
 
+> Amended 2026-11-12 by [ADR 0472](0472-planning-mockups-in-sandboxed-frames.md): artifact content
+> is kept in D1 by revision, not R2, and mockups render in sandboxed frames with an opaque origin
+> (`srcdoc`, `allow-scripts` only, a CSP first) rather than on a separate served origin.
+
 ## Context
 Planning now makes mockups and system designs ([ADR 0300](0300-planning-is-a-live-session-on-a-runner.md)).
 They need a home while planning runs, a place in the repo once approved, and a safe way to show

@@ -31,6 +31,18 @@ export const SCREENS = [
   { name: "item-plan", path: "/work/wi_12?tab=plan", design: "ItemPlan.html" },
   { name: "plan-focus", path: "/work/wi_12?tab=plan", design: "PlanFocus.html", keys: ["f"] },
   {
+    name: "plan-mockups",
+    path: "/work/wi_12?tab=plan&pane=mockups",
+    design: "PlanFocusMockup.html",
+    keys: ["f"],
+  },
+  {
+    name: "plan-canvas",
+    path: "/work/wi_12?tab=plan&pane=canvas",
+    design: "PlanFocus.html",
+    keys: ["f"],
+  },
+  {
     name: "plan-focus-alone",
     path: "/work/wi_12?tab=plan&fixture=alone",
     design: "PlanFocus.html",

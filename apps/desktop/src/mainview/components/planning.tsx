@@ -94,7 +94,11 @@ export function Planning({
   // Docked, chat folds to a strip on the right; in focus it stays open.
   const [chatOpen, setChatOpen] = useState(false);
   // Spec 21: the workspace's tab, comment mode, a hovered option's preview, a mockup opened full size.
-  const [tab, setTab] = useState<"plan" | "mockups" | "canvas">("plan");
+  const [tab, setTab] = useState<"plan" | "mockups" | "canvas">(() => {
+    // A link can open the workspace on a tab: `pane=mockups` or `pane=canvas` (spec 21).
+    const pane = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("pane");
+    return pane === "mockups" || pane === "canvas" ? pane : "plan";
+  });
   const [pinMode, setPinMode] = useState(false);
   const [preview, setPreview] = useState<{
     artifactId: string;
@@ -986,9 +990,9 @@ function WorkspaceTabs({
         variant="outline"
       >
         <ToggleGroupItem value="plan">Plan</ToggleGroupItem>
-        <ToggleGroupItem value="mockups" data-testid="tab-mockups">
+        <ToggleGroupItem value="mockups" className="gap-1 px-3" data-testid="tab-mockups">
           Mockups{" "}
-          {mockups > 0 && <span className="font-mono text-ink-muted text-xs">{mockups}</span>}
+          {mockups > 0 && <span className="ml-1 font-mono text-ink-muted text-xs">{mockups}</span>}
         </ToggleGroupItem>
         <ToggleGroupItem value="canvas" data-testid="tab-canvas">
           Canvas
@@ -1496,6 +1500,7 @@ function Chat({
           text,
           ...(draft.questionId ? { questionId: draft.questionId } : {}),
           ...(draft.anchor ? { anchor: draft.anchor } : {}),
+          ...(draft.pin ? { pin: draft.pin } : {}),
           ...(interrupt ? { interrupt: true } : {}),
         },
         { idempotencyKey: submitKey() },
@@ -1551,6 +1556,15 @@ function Chat({
               <span className="font-medium text-foreground">{m.authorName}</span>
               {m.kind === "gate" && <Badge variant="outline">spec gate: changes</Badge>}
               {m.questionId && <Chip tag={`Q${numbers.get(m.questionId) ?? "?"}`} />}
+              {m.pin && <PinLabel view={view} pin={m.pin} testId="message-pin" />}
+              {!m.pin && m.replyTo && pinOf(view, m.replyTo) && (
+                <PinLabel
+                  view={view}
+                  pin={pinOf(view, m.replyTo)}
+                  prefix="re "
+                  testId="message-reply-pin"
+                />
+              )}
               {m.anchor && (
                 <span className="flex items-center gap-0.5" title={m.anchor.quote}>
                   <MessageSquarePlusIcon className="size-3" /> on the plan
@@ -1583,6 +1597,26 @@ function Chat({
         <div ref={end} />
       </div>
       <div className="grid flex-none gap-1.5 border-line-soft border-t px-4 py-3">
+        {draft.pin && (
+          <div
+            className="flex items-center gap-2 text-muted-foreground text-xs"
+            data-testid="comment-pin"
+          >
+            <MapPinIcon className="size-3" />
+            <span className="truncate">
+              On {draft.pin.element} in{" "}
+              {view.artifacts.find((a) => a.id === draft.pin?.artifactId)?.title ?? "a mockup"}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 px-1 text-xs"
+              onClick={() => onDraft({ text: draft.text })}
+            >
+              ✕
+            </Button>
+          </div>
+        )}
         {draft.anchor && (
           <div
             className="flex items-center gap-2 text-muted-foreground text-xs"
@@ -1865,5 +1899,35 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         onConfirm={(note) => decide({ kind: "spec.requestChanges", workItemId: item.id, note })}
       />
     </div>
+  );
+}
+
+/** The pin of the message `id` replies to, if that message is a pinned comment (spec 21, AC4). */
+function pinOf(view: PlanningView, id: string): Pin | null {
+  return view.messages.find((x) => x.id === id)?.pin ?? null;
+}
+
+/** A pinned comment's element, titled with its mockup; a reply to one says "re" it. */
+function PinLabel({
+  view,
+  pin,
+  prefix = "",
+  testId,
+}: {
+  view: PlanningView;
+  pin: Pin | null;
+  prefix?: string;
+  testId: string;
+}) {
+  if (!pin) return null;
+  return (
+    <span
+      className="flex min-w-0 items-center gap-0.5 truncate"
+      title={view.artifacts.find((a) => a.id === pin.artifactId)?.title ?? "a mockup"}
+      data-testid={testId}
+    >
+      <MapPinIcon className="size-3 flex-none" /> {prefix}
+      {pin.element}
+    </span>
   );
 }
