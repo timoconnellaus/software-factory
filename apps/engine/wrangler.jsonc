@@ -72,8 +72,12 @@
     // tighten; anything malformed denies every call. Empty = no floor.
     "FACTORY_FLOOR": "",
     // The default-branch commit this engine was deployed from (ADR 0360): the deploy sets it with
-    // `--var DEPLOYED_SHA:<sha>`, and runners update themselves to it. Empty: a dev engine (no updates).
+    // `--var DEPLOYED_SHA:<sha>`. Empty: a dev engine (no updates).
     "DEPLOYED_SHA": "",
+    // The last commit at or before DEPLOYED_SHA that changed runner code (ADR 0520): the deploy
+    // computes it with git and sets `--var RUNNER_SHA:<sha>`, and runners are asked to run it, so a
+    // deploy that changed no runner code moves no runner. Empty: runners get DEPLOYED_SHA.
+    "RUNNER_SHA": "",
     // Accept presence proofs from desktop devices with a software key (ADR 0391): "1" only on a local
     // dev engine. Anything else refuses them, so a gate decision needs a Secure Enclave key.
     "DESKTOP_ALLOW_SOFTWARE_KEYS": "",

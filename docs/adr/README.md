@@ -84,7 +84,8 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0372](0372-agents-are-harness-neutral.md) | Agents are harness-neutral (role + tier, instructions, abstract permissions); the runner resolves the model |
 | [0373](0373-the-factory-improves-its-own-practice.md) | The factory improves its own practice as trials with auto-rollback; policy stays with people |
 | [0374](0374-the-adjudicator-earns-approval-in-shadow-mode.md) | The adjudicator earns gate approvals in shadow mode (≥95% precision), never rejects, never merge/deploy/self-modify |
-| [0360](0360-runners-update-themselves-to-the-deployed-commit.md) | Runners update themselves to the deployed commit: when idle, fast-forward only, rolled back by a wrapper if the new code doesn't start |
+| [0360](0360-runners-update-themselves-to-the-deployed-commit.md) | Runners update themselves to the deployed commit: when idle, fast-forward only, rolled back by a wrapper if the new code doesn't start (amended by 0520) |
+| [0520](0520-runners-keep-claiming-while-an-update-waits.md) | Runners keep claiming while an update waits: the desired version is the last runner-code commit (`RUNNER_SHA`), caps at 30 and 60 minutes, and only a `RUNNER_COMPAT` bump drains at once; the compatibility rule |
 | [0380](0380-runner-local-tmux-and-hook-status.md) | Runners run agents in tmux without Orca (`runner-local`, runner-orca deleted); status from Claude Code hooks; checkouts from configured dirs |
 | [0420](0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md) | Linux hosts run the same runner as a systemd user service (linger, `KillMode=process`, the shared self-update wrapper); per-platform deny lists; doctor checks bubblewrap and socat |
 | [0450](0450-a-stream-json-session-mode-with-a-chat-view.md) | A stream-json session mode beside tmux (per runner, the `chat` capability), events from the structured output, a chat view, takeover by `claude --resume` (`run.takeover`) |

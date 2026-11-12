@@ -47,3 +47,13 @@ code.
   happen on their own.
 - **Not handled:** an update that starts but misbehaves later (heartbeats fine, jobs fail). That is
   caught by incidents, not by the updater.
+
+> Amended 2026-11-12 ([ADR 0520](0520-runners-keep-claiming-while-an-update-waits.md), spec
+> [38](../specs/38-runner-updates-without-draining.md)): draining on every deploy kept the M5 from
+> claiming most of the time, verifies included. Decision 1: the desired version is now the last
+> commit on `main` (first parent, at or before `DEPLOYED_SHA`) that changed runner code, which the
+> deploy computes with git and sets as `RUNNER_SHA`; `DEPLOYED_SHA` is the fallback. A runner at or
+> ahead of it is current, so "would go backwards" is no longer a reason to block. Decision 2: a runner
+> behind it keeps claiming and updates at its first idle heartbeat; after 30 minutes pending it
+> claims light jobs only, after 60 nothing. It stops claiming at once only when the heartbeat's
+> `minRunnerCompat` is above its code's `RUNNER_COMPAT`, which a breaking change bumps by hand.
