@@ -646,6 +646,8 @@ export interface CoreRunEventsTable {
   at: Iso;
   type: string;
   payload: JsonText;
+  /** Set on a row that holds a batch of log lines, `seq` to `last_seq` (migration 0361). */
+  last_seq: number | null;
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */

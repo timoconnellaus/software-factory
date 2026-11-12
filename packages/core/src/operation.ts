@@ -160,6 +160,11 @@ export interface HandlerContext {
   emit(message: OutboxMessage): void;
   /** Record a change for the audit row's diff. */
   change(change: Change): void;
+  /**
+   * Mark this call as one that changed something a person may want to read later, without a diff:
+   * a changes-only operation (`audit.changesOnly`) then writes its audit row (ADR 0590).
+   */
+  changed(): void;
   /** Point the audit row at a work item / project the input didn't name (e.g. a created one). */
   subject(ref: { workItemId?: string; projectId?: string; orgId?: string }): void;
 }
@@ -264,6 +269,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
   concealAs?: (input: z.output<I>) => string;
   /** How to find the scope when the default (input field names) isn't enough. */
   scope?: (input: z.output<I>, db: Db) => Promise<ScopeRef>;
+  /**
+   * Machine-frequency operations (a heartbeat, an empty claim, a held wait, presence; ADR 0590,
+   * AGENTS.md "Cloudflare cost" rule 12) write no audit row unless the call changed state: the handler
+   * called `ctx.change` or `ctx.changed`, queued an outbox message, or `changed(output)` is true.
+   * Refusals and failures are always audited, and so is a call with an idempotency key.
+   */
+  audit?: { changesOnly: true; changed?: (output: z.output<O>) => boolean };
   /** Strip secrets before the input/output is written to the audit journal. */
   redact?: { input?: (input: z.output<I>) => unknown; output?: (output: z.output<O>) => unknown };
   handler(input: z.output<I>, ctx: HandlerContext): Promise<z.input<O>>;

@@ -73,6 +73,8 @@ export function logPlanning(
   type: string,
   payload: Record<string, unknown> = {},
 ) {
+  // A planning event is a change a person may read later: a changes-only call is audited.
+  ctx.changed();
   ctx.write(
     ctx.db.insertInto("core_planning_events").values({
       work_item_id: workItemId,
