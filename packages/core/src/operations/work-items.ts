@@ -11,8 +11,20 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import { endPlanningSessions } from "../planning.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
+import { desiredRunnerVersion } from "../services.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
-import { trialForNewItem } from "./improve.ts";
+import {
+  ACTIVE_STATUSES,
+  INTAKE_STATES,
+  linkNewItem,
+  PRE_PIPELINE,
+  priority,
+  priorityIndex,
+  priorityOf,
+  releaseRefusal,
+  requestPull,
+  requestPullsAfterEnd,
+} from "./backlog.ts";
 import { queuedEntriesQuery, releaseMergeQueue } from "./merge-queue.ts";
 import { protectionDriftQuery } from "./protection.ts";
 import {
@@ -20,6 +32,7 @@ import {
   cancelWorkItem,
   createWorkItem,
   projectId,
+  repositoryId,
   requireProject,
   requireWorkItem,
   STAGES,
@@ -29,6 +42,11 @@ import {
 
 export const SIZES = ["small", "medium", "large"] as const;
 export const ITEM_STATUSES = [
+  // Before release (ADR 0491); `shaping` is spec 50 part C's.
+  "backlog",
+  "shaping",
+  "ready",
+  "queued",
   "running",
   "waiting",
   "paused",
@@ -37,6 +55,27 @@ export const ITEM_STATUSES = [
   "rejected",
   "cancelled",
 ] as const;
+
+const linkView = z.object({
+  id: z.string(),
+  number: z.number(),
+  title: z.string(),
+  status: z.string(),
+  projectId: z.string(),
+});
+const toLink = (r: {
+  id: string;
+  number: number;
+  title: string;
+  status: string;
+  project_id: string;
+}) => ({
+  id: r.id,
+  number: r.number,
+  title: r.title,
+  status: r.status,
+  projectId: r.project_id,
+});
 
 const itemSummary = z.object({
   id: z.string(),
@@ -55,6 +94,10 @@ const itemSummary = z.object({
   prUrl: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** ADR 0491: pull priority, the repository it uses (ADR 0490), and when it was released. */
+  priority: priority.optional(),
+  repositoryId: z.string().nullable().optional(),
+  releasedAt: z.string().nullable().optional(),
 });
 
 type ItemRow = NonNullable<HandlerContext["scope"]["workItem"]>;
@@ -75,18 +118,23 @@ const summarise = (w: ItemRow): z.input<typeof itemSummary> => ({
   prUrl: w.pr_url,
   createdAt: w.created_at,
   updatedAt: w.updated_at,
+  priority: priorityOf(w.priority),
+  repositoryId: w.repository_id,
+  releasedAt: w.released_at,
 });
 
 export const workItemCreate = defineOperation({
   name: "workItem.create",
   description:
-    "Send work to the factory: creates a work item on a project and starts its Workflow (triage → spec gate when needed → build → verify → merge gate). Idempotent per intake event: a redelivered `eventId` is a no-op; a new event whose `dedupeKey` maps to an existing item attaches to it instead of creating a second. Refused when the project has no valid `.factory/policy.json` on its default branch.",
+    'Capture work on a project (ADR 0491). By default it lands in the backlog and nothing runs; `state: "ready"` marks it shaped; `state: "queued"` creates and releases it in one step (as New work and `sf new` do), and the factory starts its Workflow (triage → spec gate when needed → build → verify → merge gate) as soon as the project is under its active limit and what it waits for is done. Releasing follows workItem.release\'s rules: a person may; an agent or intake only where the config allows; refused when its workflow needs a repository and it has none. Idempotent per intake event: a redelivered `eventId` is a no-op; a new event whose `dedupeKey` maps to an existing item attaches to it instead of creating a second. Refused when the project has no valid `.factory/policy.json` on its default branch.',
   risk: "write",
   actors: ["human", "intake"],
   permission: "member",
   input: z
     .object({
       projectId,
+      /** The repository it uses (ADR 0490): needed only when the project has several. */
+      repositoryId: repositoryId.optional(),
       /** Defaults to the first line of the body. */
       title: z.string().trim().min(1).max(200).optional(),
       body: z.string().max(50_000).default(""),
@@ -98,6 +146,12 @@ export const workItemCreate = defineOperation({
       dedupeKey: z.string().min(1).max(300).optional(),
       /** Who the work is for. Intake must name them; for a person it is themselves. */
       requesterUserId: z.string().min(1).optional(),
+      /** Where it starts (ADR 0491): `queued` is create-and-release. */
+      state: z.enum(INTAKE_STATES).default("backlog"),
+      priority: priority.default("normal"),
+      /** Items it waits for (same org, any project): it isn't pulled until they are done. */
+      waitsFor: z.array(workItemId).max(20).default([]),
+      acceptanceCriteria: z.array(z.string().min(1).max(2_000)).max(50).optional(),
     })
     .refine((v) => v.title || v.body.trim(), { message: "a title or a body is needed" }),
   output: z.object({
@@ -105,14 +159,26 @@ export const workItemCreate = defineOperation({
     number: z.number(),
     branch: z.string(),
     outcome: z.enum(["created", "attached", "duplicate"]),
+    /** Where a created item is now: `running` when the pull started it at once. */
+    status: z.string().optional(),
   }),
   async handler(input, ctx) {
     const project = requireProject(ctx);
     if (!ctx.scope.policy) {
       throw new OperationError(
         "unavailable",
-        `project ${project.name} has no valid .factory/policy.json on ${project.default_branch} (${ctx.scope.policyError}); agents can't work on it`,
+        `project ${project.name} has no valid config (${ctx.scope.policyError}); agents can't work on it`,
       );
+    }
+    // The repository it uses: named, or the project's only one; none yet is fine before release.
+    const repository = ctx.scope.repository;
+    if (input.state === "queued") {
+      const refused = releaseRefusal(ctx, {
+        status: "ready",
+        repository_id: repository?.id ?? null,
+        number: project.next_number,
+      });
+      if (refused) throw refused;
     }
     const requester = ctx.actor.type === "human" ? ctx.actor.id : input.requesterUserId;
     if (!requester) throw new OperationError("invalid_input", "intake must name the requester");
@@ -184,13 +250,19 @@ export const workItemCreate = defineOperation({
 
     const created = createWorkItem(ctx, {
       project,
+      repositoryId: repository?.id ?? null,
       title,
       body: input.body,
       source: input.source,
       requesterUserId: requester,
       number: project.next_number,
-      trial: await trialForNewItem(ctx, project.id),
+      state: input.state,
+      priority: priorityIndex(input.priority),
+      acceptanceCriteria: input.acceptanceCriteria ?? null,
     });
+    await linkNewItem(ctx, { id: created.id, org_id: project.org_id }, input.waitsFor);
+    // Create and release: the pull runs right after this commits, in its own batch.
+    if (input.state === "queued") requestPull(ctx, project.id);
     ctx.write(
       ctx.db
         .insertInto("core_intake_keys")
@@ -206,6 +278,7 @@ export const workItemCreate = defineOperation({
       number: project.next_number,
       branch: created.branch,
       outcome: "created" as const,
+      status: input.state,
     };
   },
 });
@@ -273,6 +346,19 @@ export const workItemGet = defineOperation({
     }),
     /** The workflows it could follow (of the version it started under), for "change workflow". */
     workflows: z.array(z.object({ name: z.string(), description: z.string() })),
+    /** ADR 0491: who released it, and its "waits for" links both ways. */
+    releasedBy: z.string().nullable().optional(),
+    /** ADR 0493: shaping before release: when it started and finished, and the base it planned on. */
+    shaping: z
+      .object({
+        startedAt: z.string(),
+        shapedAt: z.string().nullable(),
+        baseSha: z.string().nullable(),
+      })
+      .nullable()
+      .optional(),
+    waitsFor: z.array(linkView).optional(),
+    waitedOnBy: z.array(linkView).optional(),
     stages: z.array(stageView),
     spec: z
       .object({
@@ -391,7 +477,7 @@ export const workItemGet = defineOperation({
     // The item's own rows go to D1 as one batch (ADR 0241), alongside the approver lookup.
     const [
       { ids: approverUserIds, users: approverUsers },
-      [stages, specRows, questions, gates, runs, packetRows, queue],
+      [stages, specRows, questions, gates, runs, packetRows, queue, waitsForRows, waitedOnRows],
     ] = await Promise.all([
       approversLookup,
       readBatch(ctx.d1, [
@@ -427,7 +513,17 @@ export const workItemGet = defineOperation({
           .orderBy("created_at", "desc")
           .limit(1),
         // Where the item stands in the merge queue (ADR 0330); empty outside the merge stage.
-        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : ""),
+        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : "", w.repository_id),
+        ctx.db
+          .selectFrom("core_work_item_links as l")
+          .innerJoin("core_work_items as t", "t.id", "l.waits_for_id")
+          .select(["t.id", "t.number", "t.title", "t.status", "t.project_id"])
+          .where("l.work_item_id", "=", w.id),
+        ctx.db
+          .selectFrom("core_work_item_links as l")
+          .innerJoin("core_work_items as t", "t.id", "l.work_item_id")
+          .select(["t.id", "t.number", "t.title", "t.status", "t.project_id"])
+          .where("l.waits_for_id", "=", w.id),
       ]),
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
@@ -450,6 +546,12 @@ export const workItemGet = defineOperation({
           name: x.name,
           description: x.description,
         })) ?? [],
+      releasedBy: w.released_by,
+      shaping: w.shaping_started_at
+        ? { startedAt: w.shaping_started_at, shapedAt: w.shaped_at, baseSha: w.shaped_base_sha }
+        : null,
+      waitsFor: waitsForRows.map(toLink),
+      waitedOnBy: waitedOnRows.map(toLink),
       stages: stages.map((s) => ({
         stage: s.stage,
         attempt: s.attempt,
@@ -628,9 +730,41 @@ export const workItemCancel = defineOperation({
         throw new OperationError("forbidden", "only the requester or an approver can cancel");
       }
     }
-    if (!["running", "waiting", "paused"].includes(w.status)) return { cancelled: false };
+    // Nothing runs before the pull, unless the item is being (or was) shaped: then its Workflow,
+    // runs and gates are cancelled like any running item's (ADR 0493).
+    if ((PRE_PIPELINE as readonly string[]).includes(w.status) && !w.shaping_started_at) {
+      // Nothing runs before the pull (ADR 0491): no Workflow, runs or gates to stop.
+      ctx.write(
+        ctx.db
+          .updateTable("core_work_items")
+          .set({
+            status: "cancelled",
+            status_reason: input.reason,
+            closed_at: ctx.now,
+            updated_at: ctx.now,
+          })
+          .where("id", "=", w.id)
+          .where("status", "=", w.status),
+      );
+      ctx.guardChanged("cancel");
+      ctx.change({
+        entity: "work_item",
+        id: w.id,
+        before: { status: w.status },
+        after: { status: "cancelled", reason: input.reason },
+      });
+      return { cancelled: true };
+    }
+    if (
+      !(ACTIVE_STATUSES as readonly string[]).includes(w.status) &&
+      !(w.shaping_started_at && (PRE_PIPELINE as readonly string[]).includes(w.status))
+    ) {
+      return { cancelled: false };
+    }
     await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     cancelWorkItem(ctx, w, input.reason);
+    // Its slot is free: the next queued item may start, after this commits (ADR 0491).
+    requestPull(ctx, w.project_id);
     return { cancelled: true };
   },
 });
@@ -655,20 +789,28 @@ export const workItemTriage = defineOperation({
     const w = requireWorkItem(ctx);
     const policy = ctx.scope.policy;
     if (!policy) throw new OperationError("denied", "no valid policy");
-    // The foreman's workflow pick is binding but bounded (ADR 0005, 0371): only a workflow of the
-    // version the item started under, and a workflow can only add steps to the skeleton.
-    const shape = ctx.scope.pinnedPolicy ?? policy;
-    const picked = input.result.workflow
-      ? (shape.workflows.find(
-          (x) => x.name.toLowerCase() === input.result.workflow?.toLowerCase(),
-        ) ?? null)
-      : null;
-    const workflow = w.kind === "attached" ? null : (picked?.name ?? null);
-    const workflowReason = workflow
-      ? (input.result.workflowReason ?? "picked by triage")
-      : input.result.workflow
-        ? `triage asked for "${input.result.workflow}", which this project doesn't have: the skeleton alone`
+    // An item follows its project's workflow, pinned when it was pulled (ADR 0492): triage no
+    // longer picks, and a pick it still sends is ignored. An item started before 0261 (no
+    // `pulled_at`) was promised triage's pick (ADR 0371): it keeps that rule, so the deploy never
+    // takes a workflow's gate steps away from work already under way.
+    let workflow = w.kind === "attached" ? null : w.workflow;
+    let workflowReason = w.kind === "attached" ? null : w.workflow_reason;
+    // Legacy: never pulled and never shaped (a shaping item's workflow is pinned by
+    // workItem.shape, and triage doesn't change it, ADR 0492/0493).
+    if (w.kind !== "attached" && !w.pulled_at && !w.shaping_started_at) {
+      const shape = ctx.scope.pinnedPolicy ?? policy;
+      const picked = input.result.workflow
+        ? (shape.workflows.find(
+            (x) => x.name.toLowerCase() === input.result.workflow?.toLowerCase(),
+          ) ?? null)
         : null;
+      workflow = picked?.name ?? null;
+      workflowReason = workflow
+        ? (input.result.workflowReason ?? "picked by triage")
+        : input.result.workflow
+          ? `triage asked for "${input.result.workflow}", which this project doesn't have: the skeleton alone`
+          : null;
+    }
     // An attached PR is already built: spec and build are skipped whatever its size (spec 05).
     const decision =
       w.kind === "attached"
@@ -837,8 +979,16 @@ export const workItemFinish = defineOperation({
   output: z.object({ status: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    if (!["running", "waiting", "paused"].includes(w.status)) return { status: w.status };
-    setItemStatus(ctx, w.id, ["running", "waiting", "paused"], input.status, input.reason);
+    // `shaping`: a spec rejected while shaping before release ends the item too (ADR 0493).
+    if (!["running", "waiting", "paused", "shaping"].includes(w.status))
+      return { status: w.status };
+    setItemStatus(
+      ctx,
+      w.id,
+      ["running", "waiting", "paused", "shaping"],
+      input.status,
+      input.reason,
+    );
     // Its planning session, if it ended mid-planning, gives its slot back (spec 20).
     endPlanningSessions(ctx, w.id, `${input.status}: ${input.reason}`);
     // An item that ends in the queue (a Workflow giving up, or done without the queue's merge)
@@ -895,6 +1045,8 @@ export const workItemFinish = defineOperation({
       before: { status: w.status },
       after: { status: input.status },
     });
+    // Its slot is free, and what waited on it may start (ADR 0491).
+    await requestPullsAfterEnd(ctx, w, input.status);
     return { status: input.status };
   },
 });
@@ -1140,7 +1292,7 @@ export const inboxList = defineOperation({
         light: r.light_max === null ? null : { inUse: lightActive, max: r.light_max },
         rateLimitedUntil: limited ? r.rate_limited_until : null,
         lastSeenAt: r.last_seen_at,
-        update: runnerUpdate(r, ctx.services.deployedSha),
+        update: runnerUpdate(r, desiredRunnerVersion(ctx.services)),
       };
     });
 
@@ -1221,15 +1373,19 @@ function queuePosition(
   return i < 0 ? null : { position: i + 1, ahead: queue.slice(0, i).map((e) => e.number) };
 }
 
-/** How a runner's code stands against the deployed commit, for the inbox's health line (ADR 0360). */
+/**
+ * How a runner's code stands against the commit runners should run, for the inbox's health line
+ * (ADR 0360, 0520). A runner that says it is `current` checked that itself: it may be ahead of the
+ * desired commit (on the deployed one, say), which only git on the runner can tell.
+ */
 function runnerUpdate(
   r: { version: string | null; update_state: string | null; update_reason: string | null },
-  deployedSha: string | undefined,
+  desired: string | null,
 ): { state: "behind" | "blocked" | "rolled_back"; reason: string | null } | null {
   if (r.update_state === "blocked" || r.update_state === "rolled_back") {
     return { state: r.update_state, reason: r.update_reason };
   }
-  const desired = /^[0-9a-f]{40}$/.test(deployedSha ?? "") ? deployedSha : null;
+  if (r.update_state === "current") return null;
   if (!r.version || !desired || r.version === desired) return null;
   return { state: "behind", reason: null };
 }
@@ -1237,42 +1393,18 @@ function runnerUpdate(
 export const workItemSetWorkflow = defineOperation({
   name: "workItem.setWorkflow",
   description:
-    "Change which of the project's workflows a work item follows (ADR 0371), or `null` for the skeleton alone. Only until its build starts: after that its steps are already running. A person's call; triage makes the first pick.",
+    "Refused since ADR 0492: a work item follows its project's workflow (the config's `workflow`), pinned when its pipeline starts, and there is no per-item override. Change the project's workflow in its config instead (config.save).",
   risk: "write",
   actors: ["human"],
   permission: "member",
   input: z.object({ workItemId, workflow: z.string().max(60).nullable() }),
   output: z.object({ workflow: z.string().nullable() }),
-  async handler(input, ctx) {
-    const w = requireWorkItem(ctx);
-    if (!["intake", "triage", "spec"].includes(w.stage)) {
-      throw new OperationError(
-        "conflict",
-        `the build has started (stage ${w.stage}): the workflow can no longer change`,
-      );
-    }
-    const shape = ctx.scope.pinnedPolicy ?? ctx.scope.policy;
-    let workflow: string | null = null;
-    if (input.workflow !== null) {
-      const found = shape?.workflows.find(
-        (x) => x.name.toLowerCase() === input.workflow?.toLowerCase(),
-      );
-      if (!found) throw new OperationError("not_found", `no workflow called "${input.workflow}"`);
-      workflow = found.name;
-    }
-    ctx.write(
-      ctx.db
-        .updateTable("core_work_items")
-        .set({ workflow, workflow_reason: "changed by a person", updated_at: ctx.now })
-        .where("id", "=", w.id),
+  async handler(_input, ctx) {
+    requireWorkItem(ctx);
+    throw new OperationError(
+      "conflict",
+      "an item follows its project's workflow (ADR 0492): change the project's workflow in its config",
     );
-    ctx.change({
-      entity: "work_item",
-      id: w.id,
-      before: { workflow: w.workflow },
-      after: { workflow },
-    });
-    return { workflow };
   },
 });
 

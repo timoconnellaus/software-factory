@@ -1,6 +1,6 @@
-// Work item detail (spec 13, mockups work-item and planning): stage steps, then Timeline, Planning,
-// Runs and Review packet tabs, with acceptance criteria and details beside them. Ported from sf-app
-// for spec 40 M3.
+// A work item (spec 13; restyled for spec 41, design ItemOverview/ItemPlan/ItemRuns/ItemReview/
+// ItemActivity): the crumbs and title, the stage strip, then Overview, Plan, Runs, Review and
+// Activity. Plan is docked in the page; F gives it the whole window (focus mode, Esc to leave).
 
 import {
   ago,
@@ -11,9 +11,8 @@ import {
 } from "@software-factory/client/format";
 import type { WorkItemDetail } from "@software-factory/client/ops";
 import { parsePacket } from "@software-factory/client/packet";
-import { agentTime, stageSteps, statusOf, yourTime } from "@software-factory/client/work-item";
+import { agentTime, stageSteps, yourTime } from "@software-factory/client/work-item";
 import { Button } from "@software-factory/ui/components/button";
-import { Card } from "@software-factory/ui/components/card";
 import {
   Dialog,
   DialogContent,
@@ -23,16 +22,20 @@ import {
   DialogTitle,
 } from "@software-factory/ui/components/dialog";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
-import { StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@software-factory/ui/components/tabs";
+import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
+import { PinIcon, PinOffIcon } from "lucide-react";
 import { useState } from "react";
+import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { Attachments } from "../components/attachments.tsx";
+import { OpenTerminal } from "../components/open-terminal.tsx";
 import { Planning } from "../components/planning.tsx";
 import { ReviewPacket } from "../components/review-packet.tsx";
+import { CriteriaList } from "../components/review-parts.tsx";
+import { Chip, PageArea, Panel, SectionTitle } from "../components/shell-list.tsx";
 import { Timeline } from "../components/timeline.tsx";
 import { ExternalLink } from "../lib/external.tsx";
 import { OpError, op } from "../lib/op.ts";
@@ -45,16 +48,27 @@ import {
   workItemQuery,
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
-import { appRoute } from "./_app.tsx";
+import { togglePin, updateViewState, useViewState } from "../lib/view-state.ts";
+import { workLayout } from "./_work.tsx";
 
-const TABS = ["timeline", "planning", "runs", "review"] as const;
-type Tab = (typeof TABS)[number];
+export const TABS = ["overview", "plan", "runs", "review", "activity"] as const;
+export type Tab = (typeof TABS)[number];
+/** The tab names before spec 41, which links and bookmarks may still carry. */
+const OLD: Record<string, Tab> = { timeline: "activity", planning: "plan" };
+
+export function parseTab(v: unknown): Tab | undefined {
+  if (typeof v !== "string") return undefined;
+  if ((TABS as readonly string[]).includes(v)) return v as Tab;
+  return OLD[v];
+}
 
 export const Route = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => workLayout,
   path: "/work/$id",
-  validateSearch: (s: Record<string, unknown>): { tab?: Tab } =>
-    TABS.includes(s.tab as Tab) ? { tab: s.tab as Tab } : {},
+  validateSearch: (s: Record<string, unknown>): { tab?: Tab } => {
+    const tab = parseTab(s.tab);
+    return tab ? { tab } : {};
+  },
   // Everything the page renders, in one request: the item (with its spec, questions, gates, runs
   // and packet), its timeline, the runners (for runner names), and the planning view (spec 20).
   loader: ({ context: { queryClient }, params }) =>
@@ -66,11 +80,11 @@ export const Route = createRoute({
       queryClient.ensureQueryData(planningQuery(params.id)).catch(() => null),
     ]),
   pendingComponent: () => (
-    <Page>
+    <PageArea>
       <Skeleton className="h-6 w-60" />
       <Skeleton className="h-10 w-full" />
       <Skeleton className="h-64 w-full" />
-    </Page>
+    </PageArea>
   ),
   errorComponent: WorkItemError,
   component: WorkItemPage,
@@ -81,165 +95,124 @@ function WorkItemError({ error }: { error: unknown }) {
   const code = (error as { code?: unknown } | null)?.code;
   const notFound = code === "not_found" || code === "forbidden";
   return (
-    <Page>
-      <h1 className="font-semibold text-2xl tracking-tight">
+    <PageArea>
+      <h1 className="m-0 font-semibold text-[18px]">
         {notFound ? "Work item not found" : "Couldn't load this work item"}
       </h1>
-      <p className="text-muted-foreground text-sm">
+      <p className="text-ink-muted">
         {notFound ? "It doesn't exist, or it isn't in one of your orgs." : errorMessage(error)}{" "}
-        <Link to="/" className="underline">
+        <Link to="/" className="text-ink underline">
           Back to the inbox
         </Link>
       </p>
-    </Page>
+    </PageArea>
   );
 }
 
 function WorkItemPage() {
   const { id } = Route.useParams();
-  const { tab } = Route.useSearch();
+  const { tab = "overview" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const { data: d } = useSuspenseQuery(workItemQuery(id));
-  const timeline = useQuery(timelineQuery(id));
-  const me = useSessionId();
+  const focus = useViewState((s) => s.focus);
 
-  const hasQuestions =
-    d.questions.some((q) => q.status === "open") ||
-    d.gates.some((g) => g.kind === "spec" && g.status === "pending");
-  const current: Tab =
-    tab ??
-    (d.reviewPacket && d.item.stage === "merge"
-      ? "review"
-      : hasQuestions
-        ? "planning"
-        : "timeline");
+  // Focus mode: the planning has the whole window (the shell hides its chrome).
+  if (focus === id) return <Planning detail={d} mode="focus" />;
 
-  return (
-    <Page>
+  const go = (t: Tab) => navigate({ search: { tab: t }, replace: true });
+  const head = (
+    <div className="flex flex-col gap-3 px-[22px] pt-[18px]">
       <Header detail={d} />
-      <StageSteps detail={d} />
-      <WorkflowLine detail={d} />
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
-        <Tabs
-          value={current}
-          onValueChange={(t) => navigate({ search: { tab: t as Tab }, replace: true })}
-          className="min-w-0"
-        >
-          <TabsList>
-            <TabsTrigger value="timeline">Timeline</TabsTrigger>
-            <TabsTrigger value="planning">
-              Planning
-              {hasQuestions && <StatusDot status="waiting" className="ml-1" />}
-            </TabsTrigger>
-            <TabsTrigger value="runs">Runs</TabsTrigger>
-            <TabsTrigger value="review">Review packet</TabsTrigger>
-          </TabsList>
-          <TabsContent value="timeline">
-            <Card className="px-5 py-4">
-              {timeline.data ? (
-                <Timeline entries={timeline.data.entries} gates={d.gates} me={me} />
-              ) : (
-                <Skeleton className="h-24 w-full" />
-              )}
-            </Card>
-          </TabsContent>
-          <TabsContent value="planning">
-            <Planning detail={d} />
-          </TabsContent>
-          <TabsContent value="runs">
-            <Runs detail={d} />
-          </TabsContent>
-          <TabsContent value="review">
-            <ReviewPacket detail={d} />
-          </TabsContent>
-        </Tabs>
-        <Aside detail={d} />
-      </div>
-    </Page>
+      <StageStrip detail={d} />
+      <TabBar detail={d} tab={tab} onTab={go} />
+    </div>
   );
-}
 
-function useSessionId() {
-  return useSession().user.id;
+  if (tab === "plan") {
+    return (
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-page" data-testid="page">
+        {head}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <Planning detail={d} mode="docked" />
+        </div>
+      </main>
+    );
+  }
+  return (
+    <main className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-page" data-testid="page">
+      {head}
+      <div className="flex flex-col gap-4 px-[22px] pt-4 pb-7">
+        {tab === "overview" && <Overview detail={d} onTab={go} />}
+        {tab === "runs" && <Runs detail={d} />}
+        {tab === "review" && <ReviewPacket detail={d} />}
+        {tab === "activity" && <Activity detail={d} />}
+      </div>
+    </main>
+  );
 }
 
 function Header({ detail }: { detail: WorkItemDetail }) {
   const { item } = detail;
-  const session = useSession();
   const projects = useProjects();
-  const runners = useQuery(runnersQuery());
   const project = projects.data?.find((p) => p.id === item.projectId);
-  const lastRun = detail.runs.at(-1);
-  const runnerName = lastRun
-    ? (runners.data?.runners.find((r) => r.id === lastRun.runnerId)?.name ?? lastRun.runnerId)
-    : null;
-  const takeover = [...detail.runs].reverse().find((r) => r.takeover)?.takeover ?? null;
-  const [showTakeover, setShowTakeover] = useState(false);
+  const pinned = useViewState((s) => s.pins.includes(item.id));
   const [cancel, setCancel] = useState(false);
   const active = ["running", "waiting", "paused"].includes(item.status);
   return (
-    <div className="grid gap-2">
-      <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-        <StatusBadge status={statusOf(detail)} className="text-foreground">
-          {STAGE_LABEL[item.stage] ?? item.stage}
-          {item.status !== "running" && ` · ${item.status}`}
-        </StatusBadge>
-        <span>
-          {session.orgs.find((o) => o.id === item.orgId)?.name ?? "Personal"} ·{" "}
-          {project?.name ?? "project"} · <span className="font-mono">#{item.number}</span>
-        </span>
-        {item.kind === "incident" && (
-          <span className="rounded-md border px-1.5">factory incident</span>
-        )}
-        {item.kind === "attached" && <span className="rounded-md border px-1.5">attached PR</span>}
-        {detail.mergeQueue && (
-          <span className="rounded-md border px-1.5" data-testid="merge-queue">
-            {detail.mergeQueue.position === 1
-              ? "Landing: next in the merge queue"
-              : `Queued to merge: behind ${detail.mergeQueue.ahead.map((n) => `#${n}`).join(", ")}`}
-          </span>
-        )}
-      </div>
-      <div className="flex flex-wrap items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="font-semibold text-2xl tracking-tight" data-testid="work-item-title">
-            {item.title}
-          </h1>
-          <div className="text-muted-foreground text-sm">
-            Requested by {item.requesterUserId === session.user.id ? "you" : "someone else"} · from{" "}
-            {item.source} · {ago(item.createdAt)}
-            {runnerName && (
-              <>
-                {" "}
-                · runs on <span className="font-mono">{runnerName}</span>
-              </>
-            )}
-            {item.statusReason && ` · ${item.statusReason}`}
-          </div>
-        </div>
-        <div className="flex gap-2">
-          {takeover && (
-            <Button variant="outline" onClick={() => setShowTakeover((v) => !v)}>
-              Take over locally
-            </Button>
-          )}
-          {active && (detail.viewer.isRequester || detail.viewer.isApprover) && (
-            <Button variant="outline" onClick={() => setCancel(true)} data-testid="cancel">
-              Cancel
-            </Button>
+    <header className="flex flex-wrap items-end gap-2.5">
+      <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-1">
+        <div className="text-ink-3 text-xs" data-testid="crumbs">
+          <Link to="/work" className="underline">
+            Work
+          </Link>{" "}
+          /{" "}
+          <Link to="/work" search={{ project: item.projectId }} className="underline">
+            {project?.name ?? "project"}
+          </Link>{" "}
+          / <span className="font-mono">#{item.number}</span>
+          {item.kind === "incident" && <Chip className="ml-2">factory incident</Chip>}
+          {item.kind === "attached" && <Chip className="ml-2">attached PR</Chip>}
+          {detail.mergeQueue && (
+            <Chip className="ml-2" data-testid="merge-queue">
+              {detail.mergeQueue.position === 1
+                ? "Landing: next in the merge queue"
+                : `Queued to merge behind ${detail.mergeQueue.ahead.map((n) => `#${n}`).join(", ")}`}
+            </Chip>
           )}
         </div>
+        <h1
+          className="m-0 font-semibold text-[18px] tracking-[-0.015em]"
+          data-testid="work-item-title"
+        >
+          #{item.number} {item.title}
+        </h1>
       </div>
-      {takeover && showTakeover && (
-        <Card className="gap-1 px-4 py-3 text-sm">
-          <div className="font-medium">{takeover.label}</div>
-          <div className="whitespace-pre-wrap font-mono text-muted-foreground text-xs">
-            {takeover.hint}
-          </div>
-        </Card>
-      )}
+      <div className="flex flex-wrap items-center gap-2" data-testid="item-actions">
+        <Button
+          variant="outline"
+          size="icon-md"
+          aria-label={pinned ? "Unpin" : "Pin to the sidebar"}
+          title={pinned ? "Unpin" : "Pin to the sidebar"}
+          onClick={() => updateViewState((s) => togglePin(s, item.id))}
+          data-testid="pin"
+        >
+          {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
+        </Button>
+        <OpenTerminal detail={detail} />
+        {active && (detail.viewer.isRequester || detail.viewer.isApprover) && (
+          <Button
+            variant="outline"
+            size="md"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setCancel(true)}
+            data-testid="cancel"
+          >
+            Cancel item
+          </Button>
+        )}
+      </div>
       <CancelDialog open={cancel} onOpenChange={setCancel} workItemId={item.id} />
-    </div>
+    </header>
   );
 }
 
@@ -295,34 +268,47 @@ function CancelDialog({
   );
 }
 
-function StageSteps({ detail }: { detail: WorkItemDetail }) {
+/** The stages as a strip of dots: done, now, to come, skipped (with triage's reason). */
+export function StageStrip({ detail }: { detail: WorkItemDetail }) {
   const steps = stageSteps(detail);
+  const waiting = detail.item.status === "waiting";
   return (
-    <div className="flex flex-wrap items-center gap-1 text-xs" data-testid="stage-steps">
-      {steps.map((s, i) => (
-        <span key={s.stage} className="inline-flex items-center gap-1">
-          {i > 0 && <span className="text-muted-foreground">›</span>}
-          <span
-            data-state={s.state}
-            title={s.reason ?? undefined}
-            className={cn(
-              "rounded-full border px-2 py-0.5 text-muted-foreground",
-              s.gate && "border-dashed",
-              s.state === "done" && "border-solid bg-secondary text-foreground",
-              s.state === "now" && "border-solid border-status-running font-medium text-foreground",
-              s.state === "failed" && "border-solid border-status-failed text-foreground",
-              s.state === "skipped" && "line-through",
-            )}
-          >
-            {STAGE_LABEL[s.stage]}
-            {s.state === "done" && " ✓"}
-          </span>
+    <div
+      className="flex flex-wrap items-center gap-x-[18px] gap-y-1 rounded-[10px] bg-panel px-3.5 py-2.5 shadow-panel"
+      data-testid="stage-steps"
+    >
+      {steps.map((s) => (
+        <span
+          key={s.stage}
+          data-state={s.state}
+          title={s.reason ?? undefined}
+          className={cn(
+            "inline-flex items-center gap-1.5",
+            s.state === "todo" && "text-ink-3",
+            s.state === "now" && "font-semibold",
+            s.state === "skipped" && "text-ink-muted line-through",
+          )}
+        >
+          <StatusDot
+            status={
+              s.state === "done"
+                ? "done"
+                : s.state === "now"
+                  ? waiting
+                    ? "waiting"
+                    : "running"
+                  : s.state === "failed"
+                    ? "failed"
+                    : "idle"
+            }
+          />
+          {STAGE_LABEL[s.stage]}
         </span>
       ))}
       {steps
         .filter((s) => s.state === "skipped")
         .map((s) => (
-          <span key={s.stage} className="ml-2 text-muted-foreground" data-testid="skip-reason">
+          <span key={s.stage} className="text-ink-muted text-xs" data-testid="skip-reason">
             {STAGE_LABEL[s.stage]} skipped: {s.reason}
           </span>
         ))}
@@ -330,42 +316,253 @@ function StageSteps({ detail }: { detail: WorkItemDetail }) {
   );
 }
 
+function TabBar({
+  detail,
+  tab,
+  onTab,
+}: {
+  detail: WorkItemDetail;
+  tab: Tab;
+  onTab: (t: Tab) => void;
+}) {
+  const planWaits =
+    detail.questions.some((q) => q.status === "open") ||
+    detail.gates.some((g) => g.kind === "spec" && g.status === "pending");
+  const reviewWaits = detail.gates.some((g) => g.kind === "merge" && g.status === "pending");
+  return (
+    <div className="flex gap-1 border-line border-b" role="tablist" data-testid="item-tabs">
+      {TABS.map((t) => (
+        <button
+          key={t}
+          type="button"
+          role="tab"
+          aria-selected={tab === t}
+          onClick={() => onTab(t)}
+          className={cn(
+            "-mb-px inline-flex items-center gap-1.5 border-b-2 border-transparent px-2.5 pt-1 pb-2 text-ink-3 hover:text-ink",
+            tab === t && "border-ink font-medium text-ink",
+          )}
+          data-testid={`tab-${t}`}
+        >
+          {capitalise(t)}
+          {((t === "plan" && planWaits) || (t === "review" && reviewWaits)) && (
+            <StatusDot status="waiting" />
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) => void }) {
+  const me = useSession().user.id;
+  const session = useSession();
+  const role = session.orgs.find((o) => o.id === detail.item.orgId)?.role;
+  const packet = detail.reviewPacket ? parsePacket(detail.reviewPacket) : null;
+  const criteria = detail.spec?.acceptanceCriteria ?? [];
+  const mergeGate = detail.gates.find((g) => g.kind === "merge" && g.status === "pending");
+  const specGate = detail.gates.find((g) => g.kind === "spec" && g.status === "pending");
+  const openQuestions = detail.questions.filter((q) => q.status === "open").length;
+  return (
+    <div className="flex flex-wrap items-start gap-[18px]">
+      <div className="flex min-w-0 flex-[999_1_400px] flex-col gap-[18px]">
+        {mergeGate && packet && (
+          <Panel needsYou className="gap-2.5 px-3.5 py-3.5" data-testid="waiting-on-you">
+            <div className="flex items-center gap-2 font-semibold text-[17px]">
+              <StatusDot status="waiting" className="!size-2" />
+              Waiting on you to merge or send back
+            </div>
+            <div className="text-ink-2">
+              Verify {packet.verdict === "pass" ? "passed" : "failed"}. The packet was built at
+              commit {packet.headSha.slice(0, 7)}.
+            </div>
+            <Button className="w-fit" onClick={() => onTab("review")}>
+              Open the review
+            </Button>
+          </Panel>
+        )}
+        {!mergeGate && (specGate || openQuestions > 0) && (
+          <Panel needsYou className="gap-2.5 px-3.5 py-3.5" data-testid="waiting-on-you">
+            <div className="flex items-center gap-2 font-semibold text-[17px]">
+              <StatusDot status="waiting" className="!size-2" />
+              {specGate ? "Waiting on you to approve the spec" : "Waiting on your answers"}
+            </div>
+            {openQuestions > 0 && (
+              <div className="text-ink-2">
+                {openQuestions} open question{openQuestions === 1 ? "" : "s"}.
+              </div>
+            )}
+            <Button className="w-fit" onClick={() => onTab("plan")}>
+              Open the plan
+            </Button>
+          </Panel>
+        )}
+        <section className="flex flex-col gap-2">
+          <SectionTitle>Description</SectionTitle>
+          <Panel className="leading-normal [&_code]:font-mono [&_code]:text-xs [&_p]:my-0.5">
+            {detail.item.body ? <Markdown>{detail.item.body}</Markdown> : "No description."}
+          </Panel>
+        </section>
+        <section className="flex flex-col gap-2" data-testid="criteria-section">
+          <SectionTitle note="Set in the spec, proven in verify">Acceptance criteria</SectionTitle>
+          {packet ? (
+            <CriteriaList packet={packet} />
+          ) : criteria.length ? (
+            <div className="overflow-hidden rounded-[10px] bg-panel shadow-panel">
+              {criteria.map((c) => (
+                <div
+                  key={c}
+                  className="flex gap-3 border-line-soft border-t px-3.5 py-3 first:border-t-0"
+                >
+                  <span className="min-w-0 flex-1 font-medium">{c}</span>
+                  <span className="flex items-center gap-1.5 text-ink-muted">
+                    <StatusDot status="idle" />
+                    Not checked yet
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Panel className="text-ink-muted">None yet: they come with the spec.</Panel>
+          )}
+        </section>
+        <Attachments
+          workItemId={detail.item.id}
+          meId={me}
+          isAdmin={role === "owner" || role === "admin"}
+        />
+      </div>
+      <aside className="flex min-w-[260px] flex-[1_1_272px] flex-col gap-3">
+        <Details detail={detail} />
+        <Taken detail={detail} onTab={onTab} />
+      </aside>
+    </div>
+  );
+}
+
+function Rows({ children }: { children: React.ReactNode }) {
+  return <dl className="m-0 grid grid-cols-[116px_minmax(0,1fr)] gap-x-3 gap-y-2">{children}</dl>;
+}
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <dt className="text-ink-3">{label}</dt>
+      <dd className="m-0 min-w-0">{children}</dd>
+    </>
+  );
+}
+
+function Details({ detail }: { detail: WorkItemDetail }) {
+  const me = useSession().user.id;
+  const projects = useProjects();
+  const { item } = detail;
+  return (
+    <Panel className="gap-2.5" data-testid="details">
+      <h2 className="m-0 font-semibold text-[13px]">Details</h2>
+      <Rows>
+        <Row label="Project">
+          {projects.data?.find((p) => p.id === item.projectId)?.name ?? "project"}
+        </Row>
+        {item.size && <Row label="Size">{capitalise(item.size)}</Row>}
+        <Row label="From">
+          {item.requesterUserId === me ? "You" : "Someone else"}, in {item.source}
+        </Row>
+        {(detail.workflows.length > 0 || item.workflow) && (
+          <Row label="Workflow">
+            <WorkflowLine detail={detail} />
+          </Row>
+        )}
+        <Row label="Approvers">
+          {detail.approvers.users
+            .map((u) => (u.id === me ? "you" : (u.githubLogin ?? u.name)))
+            .join(", ") || "nobody"}
+        </Row>
+        <Row label="Branch">
+          <span className="break-all font-mono text-[12px]">{item.branch}</span>
+        </Row>
+        {item.prUrl && (
+          <Row label="Pull request">
+            <ExternalLink href={item.prUrl} className="font-mono text-[12px] underline">
+              #{item.prNumber}
+            </ExternalLink>
+          </Row>
+        )}
+        <Row label="Started">{ago(item.createdAt)}</Row>
+        {item.statusReason && <Row label="Now">{item.statusReason}</Row>}
+      </Rows>
+    </Panel>
+  );
+}
+
+function Taken({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) => void }) {
+  const me = useSession().user.id;
+  const byStage = new Map<string, number>();
+  for (const r of detail.runs) byStage.set(r.stage, (byStage.get(r.stage) ?? 0) + 1);
+  return (
+    <Panel className="gap-2.5">
+      <h2 className="m-0 font-semibold text-[13px]">What it has taken</h2>
+      <Rows>
+        <Row label="Runs">{[...byStage].map(([s, n]) => `${n} ${s}`).join(", ") || "none yet"}</Row>
+        <Row label="Agent time">{duration(agentTime(detail)) || "0s"}</Row>
+        <Row label="Your time">
+          <span data-testid="your-time">{duration(yourTime(detail, me)) || "0s"}</span>
+        </Row>
+      </Rows>
+      <button type="button" className="w-fit underline" onClick={() => onTab("runs")}>
+        See every run
+      </button>
+    </Panel>
+  );
+}
+
+/**
+ * The workflow the item follows: its project's, pinned when its pipeline started (ADR 0492). There
+ * is no per-item override, so it is shown, not chosen; the project's workflow is set in Settings.
+ */
+function WorkflowLine({ detail }: { detail: WorkItemDetail }) {
+  const { item } = detail;
+  return (
+    <span data-testid="work-item-workflow">
+      {item.workflow ?? "The skeleton alone"}
+      {item.workflowReason && (
+        <span className="mt-0.5 block text-ink-3 text-xs">{item.workflowReason}</span>
+      )}
+    </span>
+  );
+}
+
 function Runs({ detail }: { detail: WorkItemDetail }) {
   const runners = useQuery(runnersQuery());
   if (detail.runs.length === 0) {
-    return <Card className="px-5 py-6 text-muted-foreground text-sm">No runs yet.</Card>;
+    return <Panel className="text-ink-muted">No runs yet.</Panel>;
   }
   return (
-    <Card className="gap-0 overflow-x-auto py-0">
-      <table className="w-full text-sm" data-testid="runs">
+    <div className="overflow-hidden rounded-[10px] bg-panel shadow-panel">
+      <table className="w-full" data-testid="runs">
         <thead>
-          <tr className="text-left text-muted-foreground text-xs">
-            <th className="px-4 py-2.5 font-medium">Run</th>
+          <tr className="text-left text-ink-muted text-xs">
+            <th className="px-3.5 py-2.5 font-medium">Run</th>
             <th className="px-2 py-2.5 font-medium">Stage</th>
             <th className="px-2 py-2.5 font-medium">Runner</th>
-            <th className="px-2 py-2.5 font-medium">Branch</th>
             <th className="px-2 py-2.5 font-medium">Time</th>
-            <th className="px-4 py-2.5 font-medium">Status</th>
+            <th className="px-3.5 py-2.5 font-medium">Result</th>
           </tr>
         </thead>
         <tbody>
-          {detail.runs.map((r) => (
-            <tr key={r.id} className="border-t align-top">
-              <td className="px-4 py-2.5 font-mono text-xs">#{r.runNo}</td>
+          {[...detail.runs].reverse().map((r) => (
+            <tr key={r.id} className="border-line-soft border-t align-top">
+              <td className="px-3.5 py-2.5 font-mono text-[12px]">#{r.runNo}</td>
               <td className="px-2 py-2.5">{capitalise(r.stage)}</td>
-              <td className="px-2 py-2.5 font-mono text-xs">
+              <td className="px-2 py-2.5">
                 {runners.data?.runners.find((x) => x.id === r.runnerId)?.name ?? r.runnerId}
-                <div className="font-sans text-muted-foreground">Claude Code</div>
+                <div className="text-ink-muted text-xs">Claude Code</div>
               </td>
-              <td className="max-w-56 truncate px-2 py-2.5 font-mono text-xs" title={r.branch}>
-                {r.branch}
-              </td>
-              <td className="whitespace-nowrap px-2 py-2.5 text-xs">
+              <td className="whitespace-nowrap px-2 py-2.5 font-mono text-[12px]">
                 {duration(
                   (r.endedAt ? Date.parse(r.endedAt) : Date.now()) - Date.parse(r.startedAt),
                 )}
               </td>
-              <td className="px-4 py-2.5 text-xs">
+              <td className="px-3.5 py-2.5">
                 <span className="inline-flex items-center gap-1.5">
                   <StatusDot
                     status={
@@ -376,161 +573,28 @@ function Runs({ detail }: { detail: WorkItemDetail }) {
                         : "running"
                     }
                   />
-                  {r.outcome ?? r.status}
+                  {r.endedAt ? capitalise(r.outcome ?? r.status) : "Running"}
                 </span>
-                {r.summary && <div className="mt-1 text-muted-foreground">{r.summary}</div>}
+                {r.summary && <div className="mt-0.5 text-ink-3 text-xs">{r.summary}</div>}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-    </Card>
-  );
-}
-
-function Aside({ detail }: { detail: WorkItemDetail }) {
-  const me = useSessionId();
-  const session = useSession();
-  const role = session.orgs.find((o) => o.id === detail.item.orgId)?.role;
-  const runners = useQuery(runnersQuery());
-  const packet = detail.reviewPacket ? parsePacket(detail.reviewPacket) : null;
-  const criteria = detail.spec?.acceptanceCriteria ?? [];
-  const lastRun = detail.runs.at(-1);
-  return (
-    <div className="grid content-start gap-4">
-      <Card className="gap-2 px-5 py-4" data-testid="criteria">
-        <div className="font-semibold">Acceptance criteria</div>
-        {criteria.length === 0 && (
-          <div className="text-muted-foreground text-sm">None yet: they come with the spec.</div>
-        )}
-        {criteria.map((c) => {
-          const checked = packet?.criteria.find((p) => p.criterion === c);
-          return (
-            <div key={c} className="flex items-start gap-2 text-sm">
-              <StatusDot
-                status={checked ? (checked.met ? "done" : "failed") : "idle"}
-                className="mt-1.5"
-              />
-              <span>{c}</span>
-            </div>
-          );
-        })}
-      </Card>
-      <Card className="gap-0 px-5 py-4">
-        <div className="mb-2 font-semibold">Details</div>
-        <table className="text-sm">
-          <tbody className="[&_td]:py-1 [&_td:first-child]:pr-4 [&_td:first-child]:text-muted-foreground">
-            <tr>
-              <td>Policy</td>
-              <td>
-                {detail.policy ? (
-                  <span className="font-mono text-xs">{detail.policy.autonomyPolicy}</span>
-                ) : (
-                  "none synced"
-                )}
-              </td>
-            </tr>
-            <tr>
-              <td>Approvers</td>
-              <td>
-                {detail.approvers.users
-                  .map((u) => (u.id === me ? "you" : (u.githubLogin ?? u.name)))
-                  .join(", ") || "nobody"}
-              </td>
-            </tr>
-            <tr>
-              <td>Runner</td>
-              <td className="font-mono text-xs">
-                {lastRun
-                  ? (runners.data?.runners.find((r) => r.id === lastRun.runnerId)?.name ??
-                    lastRun.runnerId)
-                  : "—"}
-              </td>
-            </tr>
-            <tr>
-              <td>Branch</td>
-              <td className="max-w-40 truncate font-mono text-xs" title={detail.item.branch}>
-                {detail.item.branch}
-              </td>
-            </tr>
-            <tr>
-              <td>Agent time</td>
-              <td>{duration(agentTime(detail)) || "0s"}</td>
-            </tr>
-            <tr>
-              <td>Your time</td>
-              <td data-testid="your-time">{duration(yourTime(detail, me)) || "0s"}</td>
-            </tr>
-            {detail.item.prUrl && (
-              <tr>
-                <td>PR</td>
-                <td>
-                  <ExternalLink href={detail.item.prUrl} className="underline">
-                    #{detail.item.prNumber}
-                  </ExternalLink>
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </Card>
-      <Attachments
-        workItemId={detail.item.id}
-        meId={me}
-        isAdmin={role === "owner" || role === "admin"}
-      />
     </div>
   );
 }
 
-function Page({ children }: { children: React.ReactNode }) {
+function Activity({ detail }: { detail: WorkItemDetail }) {
+  const timeline = useQuery(timelineQuery(detail.item.id));
+  const me = useSession().user.id;
   return (
-    <main className="mx-auto grid w-full grid-cols-[minmax(0,1fr)] max-w-[1200px] gap-4 p-4 md:p-6">
-      {children}
-    </main>
-  );
-}
-
-/** The workflow the item follows (ADR 0371), changeable until its build starts. */
-function WorkflowLine({ detail }: { detail: WorkItemDetail }) {
-  const queryClient = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const { item, workflows } = detail;
-  if (workflows.length === 0 && !item.workflow) return null;
-  const changeable = ["intake", "triage", "spec"].includes(item.stage);
-  async function change(name: string) {
-    setBusy(true);
-    try {
-      await op("workItem.setWorkflow", { workItemId: item.id, workflow: name || null });
-      toast.success(name ? `Follows ${name} now.` : "Follows the skeleton alone now.");
-      await queryClient.invalidateQueries({ queryKey: ["workItem", item.id] });
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="work-item-workflow">
-      <span className="text-muted-foreground">Workflow</span>
-      {changeable ? (
-        <select
-          className="h-8 rounded-md border bg-background px-2"
-          value={item.workflow ?? ""}
-          disabled={busy}
-          onChange={(e) => void change(e.target.value)}
-        >
-          <option value="">The skeleton alone</option>
-          {workflows.map((w) => (
-            <option key={w.name}>{w.name}</option>
-          ))}
-        </select>
+    <Panel className="px-4 py-3.5">
+      {timeline.data ? (
+        <Timeline entries={timeline.data.entries} gates={detail.gates} me={me} />
       ) : (
-        <span className="font-medium">{item.workflow ?? "The skeleton alone"}</span>
+        <Skeleton className="h-24 w-full" />
       )}
-      {item.workflowReason && (
-        <span className="text-muted-foreground text-xs">{item.workflowReason}</span>
-      )}
-    </div>
+    </Panel>
   );
 }

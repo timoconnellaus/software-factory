@@ -22,8 +22,15 @@ control plane, a Workflow or a gate.
 _Avoid_: pipeline (for the whole thing), instance, control plane (that is the Cloudflare side)
 
 **Project**
-One repo inside a factory, configured by its committed `.factory/` directory.
-_Avoid_: repo (when you mean the configured unit), app
+A body of work inside a factory (a product, a launch, Marketing): org → project → work item → run.
+It has one config (versions in the app, ADR 0370) and zero or more repositories (ADR 0490).
+_Avoid_: repo (a project is not a repository), app
+
+**Repository**
+A GitHub repository of a project, reached through the org's GitHub App installation: owner, name,
+default branch. A GitHub repository is in at most one project. A work item uses one repository,
+chosen when it is created (the project's only one by default) and fixed once its pipeline starts.
+_Avoid_: project (when you mean the repo), repo record
 
 **Requester**
 The user a work item is for. Placement rules such as `route: requester-first` prefer the
@@ -54,6 +61,38 @@ spec and acceptance criteria, runs and a review packet. Each one is driven by on
 **kind** is `change` (work for the factory to build), `incident` (a factory incident) or `attached`
 (an attached PR).
 _Avoid_: task, ticket, job (a job is one stage's assignment to a runner), issue (the GitHub thing)
+
+**Backlog, ready, queued**
+The states a work item has before its pipeline starts (ADR 0491). **Backlog**: captured (title,
+notes, project, priority); nothing runs. **Ready**: shaped (size, acceptance criteria). **Queued**:
+released to the factory, waiting for a slot. No Workflow exists in them; creating an item leaves it
+in the backlog unless the caller releases it in the same step (New work, `sf new`).
+_Avoid_: draft, todo, inbox (the inbox is what waits on a person)
+
+**Shaping, delivery**
+The two phases of a workflow's stages, with release between them (ADR 0493). **Shaping** stages
+need a person, hold no build slot and don't count as active; with today's engine they are triage and
+interview planning (the spec stage and its gate). **Delivery** is everything from build on. A person
+can shape an item before releasing it (`workItem.shape`; its status is `shaping`, then `ready`);
+small items are released from the backlog and shape inside delivery.
+_Avoid_: planning state (planning is one stage type), pre-work
+
+**Release**
+Handing a backlog or ready item to the factory (`workItem.release`): it becomes queued. A person may
+always release; an agent, intake or chat only where the project's config sets `release.agents`.
+_Avoid_: submit, start, approve
+
+**Pull**
+The factory starting the next queued item of a project while its active items (running, waiting,
+paused) are under the config's `activeLimit`: by priority, then rank, then release time, skipping
+items whose **waits for** items aren't done. The pull pins the config version and the project's
+workflow (ADR 0491, 0492).
+_Avoid_: dispatch, schedule (the scheduler places jobs on runners)
+
+**Waits for**
+A link from one work item to another in the same org, any project: the first isn't pulled until the
+second is done (a launch post waits for its feature). No cycles.
+_Avoid_: depends on, blocked by (that is the read: what still holds it)
 
 **Attached PR**
 A pull request opened outside the factory (by a local session or a person) and attached to a work
@@ -185,8 +224,17 @@ _Avoid_: hidden test, eval
 What a person reviews at a gate: a verdict row, what changed, criteria with evidence, reviewer
 notes, screenshots, risk flags, the diff and a preview link. Sections are set per project in
 `.factory/` (`reviewPacket.sections`). It also backs the `factory/verify` check. The packet in the
-app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
+app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments. Its **Tests
+intact** section is always shown (ADR 0500).
 _Avoid_: PR summary, report
+
+**Tests intact**
+The factory's own check, in code, that a diff doesn't weaken the tests the build is judged by:
+deleted, removed, skipped or commented-out tests, new lint or type suppressions, lowered thresholds
+and edits to gate files (`.factory/`, CI workflows, test and lint config), read from GitHub's diff at
+the head SHA (ADR 0500). A **finding** is for a person: it never fails the verdict, no agent judges
+it, and it blocks the check-only auto-merge. Findings belong to one SHA's review packet.
+_Avoid_: test tampering check, reviewer finding
 
 **CLI token**
 What `sf login` gets once a person approves its code in the app: acts as that person on the `cli`
@@ -304,6 +352,22 @@ tmux on the runner's machine, ADR 0380; it replaced the first adapter, `runner-o
 boxes, sandboxes and `runner-codex-cloud`. The core only knows the contract.
 _Avoid_: driver, plugin, integration
 
+**Runner code**
+What a runner host runs from its own checkout: `local/runner-host`, `packages/runner-*`,
+`packages/harness-*` and their workspace dependencies. The **desired version** a heartbeat hands out
+is the last commit on `main` that changed it (`RUNNER_SHA`, computed by the deploy), not every
+deployed commit; a runner at or ahead of it is current (ADR 0520). A runner behind it keeps claiming
+and updates at its first idle heartbeat (light jobs only after 30 minutes pending, nothing after 60).
+_Avoid_: runner version (ambiguous with the compat level)
+
+**Runner compat level**
+`RUNNER_COMPAT` in `packages/runner-contract`: a number bumped by hand in the PR that makes a change
+an older runner can't follow. The engine sends its own as `minRunnerCompat`; a runner below it claims
+nothing until it has updated, and the engine sends no job to a runner that reported a lower one
+(ADR 0520). Everything short of that follows the compatibility rule:
+optional new fields, growing enums, new kinds of job behind a capability.
+_Avoid_: contract version (`CONTRACT_VERSION`, which stays fixed)
+
 **Job session**
 The live harness for one job: under runner-local, Claude Code in the tmux session `sf-<jobId>` on
 the factory's own tmux socket (`tmux -L software-factory`), in the job's worktree. Its status comes
@@ -390,7 +454,13 @@ How a runner confines a job's harness, set per runner in `runner.json` (ADR 0430
   only through the job's **egress proxy** (the stage's allowed hosts and the model API). Every stage
   runs `bypassPermissions`. The container gets the job's Claude account as its token, so it needs a
   token account (or `default` with a token in `runner.json`). A login account can't be used.
-_Avoid_: sandbox (for the container: the sandbox is Claude's own)
+- `sprites`: a fresh **sprite** (a Sprites cloud sandbox, Fly.io) per job, made by the runner host
+  with the owner's Sprites token (ADR 0480). The job repo and the run's files are copied in; egress
+  is Sprites' network policy set to the same allowlist, ending in a deny-all; the job's tmux pane on the host is bridged
+  to the sprite's terminal; the result comes back as a git bundle and the host pushes. The factory
+  never sees the Sprites token or the Claude token; the sprite never sees the job token.
+_Avoid_: sandbox (for the container or the sprite: the sandbox is Claude's own; say "cloud
+sandbox" or "sprite")
 
 **Capability**
 Something a runner or harness declares it can do. Jobs ask for capabilities; `.factory/` can
@@ -406,6 +476,9 @@ restrict them. The known ones:
   outside the git tree (ADR 0310);
 - `container-isolation`: each job's harness runs in its own container (ADR 0430); planning sessions
   still run on the host;
+- `cloud-sandbox`: each job runs in a cloud sandbox the runner host makes for it (a sprite, ADR
+  0480), not on the host's own hardware. Such a runner declares neither `own-hardware` nor
+  `container-isolation` (its egress is per host, not per port, and has no request log);
 - `steer`: a person can message the live session from the dashboard (a **steer**, ADR 0400);
 - `chat`: sessions run as a structured stream (the stream-json **session mode**): the dashboard
   shows them in the **Chat view** and the owner can take one over by resume (ADR 0450);
@@ -450,6 +523,24 @@ _Avoid_: pipeline (the skeleton), stage list
 **Step**
 One entry in a workflow slot: a **work** step hands to an agent and is advisory; a **gate** step
 hands to a person and is enforced.
+
+**Stage type**, **workflow template**, **stage template** (designed, spec 52, not built)
+A stage type is built-in code with a fixed contract (what it runs, produces and needs, its evidence,
+screen, gate and reversibility); a workflow will be an org-level ordered list of stages, each an
+instance of a stage type, split into **shaping** stages (before release) and **delivery** stages.
+Templates are ready-made workflows (Software, Marketing) or stage types with default settings
+(ADR 0510).
+
+**Skill** (designed, spec 52, not built)
+How the team does one thing, written once (instructions plus files), versioned and owned by the
+org, attached to an agent, a stage, or built into a stage type. The factory may propose an edit;
+only a person accepts one (ADR 0513).
+_Avoid_: playbook, recipe
+
+**Autopilot** (designed, spec 52, not built)
+A trigger (schedule or event), an agent, its skills, an instruction and an output target: work the
+factory starts on its own. It files through the backlog, never merges or deploys (ADR 0514).
+_Avoid_: cron job, bot
 
 **Agent** (config)
 A harness-neutral profile: model role and tier, instructions, abstract permissions, capabilities.

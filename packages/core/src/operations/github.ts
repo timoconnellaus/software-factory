@@ -6,7 +6,7 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation } from "../operation.ts";
 import { requireQueueHead } from "./merge-queue.ts";
-import { repoRef, requireProject, requireWorkItem, sha, workItemId } from "./shared.ts";
+import { repoRef, requireRepository, requireWorkItem, sha, workItemId } from "./shared.ts";
 
 export const branchEnsure = defineOperation({
   name: "branch.ensure",
@@ -19,15 +19,15 @@ export const branchEnsure = defineOperation({
   output: z.object({ branch: z.string(), sha: z.string() }),
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
-    const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     let head = await ctx.services.github.getBranchSha(repo, w.branch);
     if (!head) {
-      const base = await ctx.services.github.getBranchSha(repo, project.default_branch);
+      const base = await ctx.services.github.getBranchSha(repo, repository.default_branch);
       if (!base)
         throw new OperationError(
           "unavailable",
-          `no ${project.default_branch} branch on ${repo.owner}/${repo.repo}`,
+          `no ${repository.default_branch} branch on ${repo.owner}/${repo.repo}`,
         );
       await ctx.services.github.createBranch(repo, w.branch, base);
       head = base;
@@ -71,7 +71,7 @@ export const branchAdvance = defineOperation({
     if (lease?.fencing_token !== run.fencing_token) {
       return { ok: false, sha: null, reason: "the run's fencing token is stale (taken over)" };
     }
-    const repo = await repoRef(ctx, requireProject(ctx));
+    const repo = await repoRef(ctx, requireRepository(ctx));
     const moved = await ctx.services.github.fastForward(repo, w.branch, run.head_sha);
     if (!moved.ok) return { ok: false, sha: null, reason: moved.reason };
     ctx.write(
@@ -107,9 +107,9 @@ export const prOpen = defineOperation({
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
-    const files = await ctx.services.github.changedFiles(repo, project.default_branch, w.branch);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
+    const files = await ctx.services.github.changedFiles(repo, repository.default_branch, w.branch);
     const touchesFactoryConfig = files.some((f) => f === ".factory" || f.startsWith(".factory/"));
     if (w.pr_number && w.pr_url) {
       return {
@@ -121,7 +121,7 @@ export const prOpen = defineOperation({
     }
     const pr = await ctx.services.github.openPullRequest(repo, {
       head: w.branch,
-      base: project.default_branch,
+      base: repository.default_branch,
       title: w.title,
       body: input.body || `Work item #${w.number}, built by the software factory.`,
     });
@@ -154,7 +154,7 @@ export const prMerge = defineOperation({
       throw new OperationError("conflict", "the branch moved since the review packet was made");
     }
     await requireQueueHead(ctx, w, input.headSha);
-    const repo = await repoRef(ctx, requireProject(ctx));
+    const repo = await repoRef(ctx, requireRepository(ctx));
     const merged = await ctx.services.github.mergePullRequest(repo, {
       number: w.pr_number,
       sha: input.headSha,

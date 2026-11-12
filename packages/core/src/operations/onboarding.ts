@@ -24,7 +24,14 @@ import {
   protectionView,
   protectionViewFor,
 } from "./protection.ts";
-import { projectId, repoRef, requireProject } from "./shared.ts";
+import {
+  projectId,
+  repoRef,
+  repoSlug,
+  repositoryId,
+  requireProject,
+  requireRepository,
+} from "./shared.ts";
 import { RUNNER_OFFLINE_MS } from "./work-items.ts";
 
 /** How long a "Connect GitHub" round trip may take. */
@@ -300,15 +307,15 @@ async function linkProjects(
   record: InstallationRecord,
   account: string,
 ): Promise<string[]> {
-  const projects = await ctx.db
-    .selectFrom("core_projects")
+  const repositories = await ctx.db
+    .selectFrom("core_repositories")
     .selectAll()
     .where("org_id", "=", record.org_id)
-    .where(sql<string>`lower(repo_owner)`, "=", account.toLowerCase())
+    .where(sql<string>`lower(owner)`, "=", account.toLowerCase())
     .execute();
-  const candidates = projects.filter(
-    (p) =>
-      p.installation_record_id !== record.id || p.github_installation_id !== record.installation_id,
+  const candidates = repositories.filter(
+    (r) =>
+      r.installation_record_id !== record.id || r.github_installation_id !== record.installation_id,
   );
   if (candidates.length === 0) return [];
   let repos: InstallationRepo[];
@@ -322,19 +329,13 @@ async function linkProjects(
     const repo = repos.find(
       (r) =>
         (p.github_repo_id !== null && r.id === p.github_repo_id) ||
-        (r.owner.toLowerCase() === p.repo_owner.toLowerCase() &&
-          r.name.toLowerCase() === p.repo_name.toLowerCase()),
+        (r.owner.toLowerCase() === p.owner.toLowerCase() &&
+          r.name.toLowerCase() === p.name.toLowerCase()),
     );
     if (!repo) continue;
-    const next: ProjectRow = {
-      ...p,
-      github_installation_id: record.installation_id,
-      installation_record_id: record.id,
-      github_repo_id: repo.id,
-    };
     ctx.write(
       ctx.db
-        .updateTable("core_projects")
+        .updateTable("core_repositories")
         .set({
           github_installation_id: record.installation_id,
           installation_record_id: record.id,
@@ -343,19 +344,25 @@ async function linkProjects(
         .where("id", "=", p.id),
     );
     ctx.change({
-      entity: "project",
+      entity: "repository",
       id: p.id,
       before: { installation: p.github_installation_id, repoId: p.github_repo_id },
       after: { installation: record.installation_id, repoId: repo.id },
     });
-    if (!p.policy_sha) {
-      await syncPolicyFromGitHub(ctx, next, {
+    const project = await ctx.db
+      .selectFrom("core_projects")
+      .selectAll()
+      .where("id", "=", p.project_id)
+      .executeTakeFirst();
+    // Once per project: two of its repositories in one batch would write the same version.
+    if (project && !project.policy_sha && !linked.includes(project.id)) {
+      await syncPolicyFromGitHub(ctx, project, p, {
         installationId: record.installation_id,
-        owner: p.repo_owner,
-        repo: p.repo_name,
+        owner: p.owner,
+        repo: p.name,
       }).catch(() => null);
     }
-    linked.push(p.id);
+    if (!linked.includes(p.project_id)) linked.push(p.project_id);
   }
   return linked;
 }
@@ -395,11 +402,13 @@ export const githubRepos = defineOperation({
   }),
   async handler(input, ctx) {
     const records = (await orgRecords(ctx.db, input.orgId)).filter((r) => r.status === "active");
-    const projects = await ctx.db
-      .selectFrom("core_projects")
-      .select(["id", "repo_owner", "repo_name", "github_repo_id"])
-      .where("org_id", "=", input.orgId)
-      .execute();
+    const projects = (
+      await ctx.db
+        .selectFrom("core_repositories")
+        .select(["project_id", "owner", "name", "github_repo_id"])
+        .where("org_id", "=", input.orgId)
+        .execute()
+    ).map((r) => ({ ...r, id: r.project_id }));
     const repos = [];
     const problems = [];
     for (const record of records) {
@@ -408,8 +417,8 @@ export const githubRepos = defineOperation({
           const project = projects.find(
             (p) =>
               p.github_repo_id === r.id ||
-              (p.repo_owner.toLowerCase() === r.owner.toLowerCase() &&
-                p.repo_name.toLowerCase() === r.name.toLowerCase()),
+              (p.owner.toLowerCase() === r.owner.toLowerCase() &&
+                p.name.toLowerCase() === r.name.toLowerCase()),
           );
           repos.push({
             installationRecordId: record.id,
@@ -440,7 +449,11 @@ export const policyResync = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "admin",
-  input: z.object({ projectId }),
+  input: z.object({
+    projectId,
+    /** The repository to import from (ADR 0490); needed only when the project has several. */
+    repositoryId: repositoryId.optional(),
+  }),
   output: z.object({
     applied: z.boolean(),
     valid: z.boolean(),
@@ -449,13 +462,18 @@ export const policyResync = defineOperation({
   }),
   async handler(_input, ctx) {
     const project = requireProject(ctx);
-    const synced = await syncPolicyFromGitHub(ctx, project, await repoRef(ctx, project), {
-      importOnly: true,
-    });
+    const repository = requireRepository(ctx);
+    const synced = await syncPolicyFromGitHub(
+      ctx,
+      project,
+      repository,
+      await repoRef(ctx, repository),
+      { importOnly: true },
+    );
     if (!synced) {
       throw new OperationError(
         "unavailable",
-        `${project.repo_owner}/${project.repo_name} has no ${project.default_branch} branch yet`,
+        `${repoSlug(repository)} has no ${repository.default_branch} branch yet`,
       );
     }
     return { applied: synced.applied, valid: synced.valid, error: synced.error, sha: synced.sha };
@@ -463,6 +481,10 @@ export const policyResync = defineOperation({
 });
 
 const STEP_KEYS = ["github", "project", "policy", "runner", "protect"] as const;
+
+/** A project as Setup names it: its first repository, else its name. */
+const repoLabel = (p: Pick<ProjectView, "name" | "repo">) =>
+  p.repo ? `${p.repo.owner}/${p.repo.name}` : p.name;
 
 export const setupStatus = defineOperation({
   name: "setup.status",
@@ -495,11 +517,22 @@ export const setupStatus = defineOperation({
       .orderBy("name")
       .execute();
     const views = await projectViews(ctx.db, rows);
+    const firstRepos = await ctx.db
+      .selectFrom("core_repositories")
+      .selectAll()
+      .where("org_id", "=", input.orgId)
+      .orderBy("created_at")
+      .orderBy("id")
+      .execute();
     const projects: (ProjectView & { protection: ProtectionView | null })[] = [];
     for (const [i, view] of views.entries()) {
       const row = rows[i] as ProjectRow;
+      // Protection is still checked on the project's first repository (ADR 0490).
+      const repository = firstRepos.find((r) => r.project_id === row.id);
       const protection =
-        view.connection.status === "connected" ? await protectionViewFor(ctx, row) : null;
+        view.connection.status === "connected" && repository
+          ? await protectionViewFor(ctx, row, repository)
+          : null;
       projects.push({ ...view, protection });
     }
     const runners = await ctx.db
@@ -532,26 +565,37 @@ export const setupStatus = defineOperation({
         key: "project" as const,
         done: connected.length > 0,
         detail: connected.length
-          ? connected.map((p) => `${p.repo.owner}/${p.repo.name}`).join(", ")
+          ? connected.map(repoLabel).join(", ")
           : projects.length
-            ? `${first?.repo.owner}/${first?.repo.name} isn't reachable by a connected installation`
+            ? `${first ? repoLabel(first) : "The project"} isn't reachable by a connected installation`
             : "Add a project: pick one of your repositories",
       },
       {
         key: "policy" as const,
-        done: connected.length > 0 && withPolicy.length === connected.length,
+        done:
+          connected.length > 0 &&
+          withPolicy.length === connected.length &&
+          !withPolicy.some((p) => p.policy.workflowUnchosen),
         detail: !connected.length
           ? "Created with the project, in Settings"
-          : withPolicy.length === connected.length
-            ? connected.map((p) => `${p.name}: config v${p.configVersion ?? "?"}`).join(", ")
-            : connected
-                .filter((p) => p.policy.state !== "valid")
-                .map((p) =>
-                  p.policy.state === "missing" || p.policy.state === "none"
-                    ? `${p.name} has no factory config: open its Settings`
-                    : `${p.name}: ${p.policy.error} (fix it in Settings)`,
+          : withPolicy.some((p) => p.policy.workflowUnchosen)
+            ? withPolicy
+                .filter((p) => p.policy.workflowUnchosen)
+                .map(
+                  (p) =>
+                    `${p.name} defines workflows but runs none: choose the project's workflow in its Settings (nothing can be released until then)`,
                 )
-                .join("; "),
+                .join("; ")
+            : withPolicy.length === connected.length
+              ? connected.map((p) => `${p.name}: config v${p.configVersion ?? "?"}`).join(", ")
+              : connected
+                  .filter((p) => p.policy.state !== "valid")
+                  .map((p) =>
+                    p.policy.state === "missing" || p.policy.state === "none"
+                      ? `${p.name} has no factory config: open its Settings`
+                      : `${p.name}: ${p.policy.error} (fix it in Settings)`,
+                  )
+                  .join("; "),
       },
       {
         key: "runner" as const,
@@ -568,7 +612,7 @@ export const setupStatus = defineOperation({
         detail: !withPolicy.length
           ? "Once the project has a policy"
           : protectedOnes.length === withPolicy.length
-            ? `${withPolicy.map((p) => p.repo.defaultBranch).join(", ")} protected: a PR, ci and factory/verify required, no bypass`
+            ? `${withPolicy.map((p) => p.repo?.defaultBranch ?? p.name).join(", ")} protected: a PR, ci and factory/verify required, no bypass`
             : withPolicy
                 .filter((p) => p.protection?.state !== "ok")
                 .map((p) => `${p.name}: ${(p.protection?.problems ?? ["not checked"]).join("; ")}`)

@@ -66,3 +66,5 @@ awkward as commits.
   becomes "import from repo".
 - AGENTS.md's "Policy is read from the default branch only; a diff to `.factory/` is self-modify"
   becomes "policy is a versioned app setting; a loosening save is self-modify".
+
+> Amended 2026-11-12 ([ADR 0510](0510-workflows-are-ordered-stages-of-stage-types.md), spec 52, not built yet): workflows, agents, skills and autopilots move to an **org config version** with the same machinery (validation, impact summary, loosening as `self-modify`, rollback). Project config keeps policy and names its workflow.

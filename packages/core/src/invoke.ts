@@ -46,6 +46,11 @@ export interface InvokeDeps {
   /** Delivers outbox rows right after commit. Failures are left for the cron. */
   deliver?: (outboxIds: string[]) => Promise<void>;
   now?: () => Date;
+  /**
+   * Test seam only: called after an operation's reads and before its batch commits, so a test can
+   * hold one call there while another runs (deterministic races, spec 26).
+   */
+  beforeCommit?: (operation: string) => Promise<void>;
 }
 
 export interface InvokeOptions {
@@ -165,6 +170,8 @@ export async function runOperation<O = unknown>(
     workItemId: null,
     workItem: null,
     project: null,
+    repositories: [],
+    repository: null,
     policy: null,
     policySha: null,
     policyError: null,
@@ -242,6 +249,7 @@ export async function runOperation<O = unknown>(
     origin.surface !== "test" &&
     op.browserOnly &&
     (op.browserOnly === true || op.browserOnly(input)) &&
+    !(origin.surface === "desktop" && op.desktopDecidable) &&
     !(await presenceAllows(op, origin, rawInput))
   ) {
     return refuse(
@@ -416,11 +424,16 @@ export async function runOperation<O = unknown>(
   const messages: OutboxMessage[] = [];
   const changes: Change[] = [];
   let subject: Partial<Scope> = { ...scope };
+  const presence =
+    origin.surface === "desktop" && op.desktopDecidable
+      ? await presenceAllows(op, origin, rawInput)
+      : false;
   const ctx: HandlerContext = {
     db,
     d1,
     actor,
     origin,
+    presence,
     now,
     services: deps.services,
     scope,
@@ -505,6 +518,7 @@ export async function runOperation<O = unknown>(
     clearGuards(d1),
   ];
   try {
+    await deps.beforeCommit?.(op.name);
     await d1.batch(batch);
   } catch (error) {
     const guard = failedGuard(error);
