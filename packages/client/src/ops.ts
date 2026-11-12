@@ -42,6 +42,7 @@ export interface OpMap {
   "planning.resume": Def<typeof operations.planningResume>;
   "planning.finishAlone": Def<typeof operations.planningFinishAlone>;
   "spec.edit": Def<typeof operations.specEdit>;
+  "artifact.get": Def<typeof operations.artifactGet>;
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;
