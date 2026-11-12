@@ -108,7 +108,13 @@ export function runTtyBridge(config: TtyBridgeConfig, io: TtyBridgeIo): Promise<
         if (done || exited) return;
         // A clean close with no session to come back to is the end of the command.
         if (event.code === 1000 && !sessionId) return finish(0);
-        if (!sessionId || attempts >= maxReattach) return finish(event.code === 1000 ? 0 : 1);
+        if (!sessionId || attempts >= maxReattach) {
+          // Said in the pane: the runner shows the screen when Claude never came up.
+          io.stdout.write(
+            `\r\nsprite bridge: the sprite's terminal closed (${event.code}${event.reason ? ` ${event.reason}` : ""})\r\n`,
+          );
+          return finish(event.code === 1000 ? 0 : 1);
+        }
         attempts++;
         const wait = Math.min(10_000, (io.backoffMs ?? 500) * attempts);
         setTimeout(() => {

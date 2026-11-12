@@ -373,7 +373,13 @@ How a runner confines a job's harness, set per runner in `runner.json` (ADR 0430
   only through the job's **egress proxy** (the stage's allowed hosts and the model API). Every stage
   runs `bypassPermissions`. The container gets the job's Claude account as its token, so it needs a
   token account (or `default` with a token in `runner.json`). A login account can't be used.
-_Avoid_: sandbox (for the container: the sandbox is Claude's own)
+- `sprites`: a fresh **sprite** (a Sprites cloud sandbox, Fly.io) per job, made by the runner host
+  with the owner's Sprites token (ADR 0460). The job repo and the run's files are copied in; egress
+  is Sprites' network policy set to the same allowlist; the job's tmux pane on the host is bridged
+  to the sprite's terminal; the result comes back as a git bundle and the host pushes. The factory
+  never sees the Sprites token or the Claude token; the sprite never sees the job token.
+_Avoid_: sandbox (for the container or the sprite: the sandbox is Claude's own; say "cloud
+sandbox" or "sprite")
 
 **Capability**
 Something a runner or harness declares it can do. Jobs ask for capabilities; `.factory/` can
@@ -387,8 +393,10 @@ restrict them. The known ones:
 - `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`);
 - `work-item-attachments`: fetches the work item's attachments over the job channel into the run,
   outside the git tree (ADR 0310);
-- `container-isolation`: each job's harness runs in its own container (ADR 0430); planning sessions
-  still run on the host;
+- `container-isolation`: each job's harness runs in its own container (ADR 0430), or in a cloud
+  sandbox at least as tight (a sprite, ADR 0460); planning sessions still run on the host;
+- `cloud-sandbox`: each job runs in a cloud sandbox the runner host makes for it (a sprite, ADR
+  0460), not on the host's own hardware (such a runner doesn't declare `own-hardware`);
 - `steer`: a person can message the live session from the dashboard (a **steer**, ADR 0400);
 - `chat`: sessions run as a structured stream (the stream-json **session mode**): the dashboard
   shows them in the **Chat view** and the owner can take one over by resume (ADR 0450);

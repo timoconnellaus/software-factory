@@ -140,7 +140,9 @@ describe("a sprite job and the host's push (ADR 0460)", { timeout: 30_000 }, () 
     expect(git(w.bare, "log", "-1", "--format=%s", j.branch)).toMatch(/uncommitted changes/);
     expect(git(w.bare, "show", `${j.branch}:LEFTOVER.md`)).toBe("left over");
     expect(git(w.bare, "log", "-1", "--format=%s", `${j.branch}^`)).toBe("add a line");
-    expect(git(w.bare, "log", "-1", "--format=%s", `${j.branch}^^`)).toBe(`Merge main into ${j.branch}`);
+    expect(git(w.bare, "log", "-1", "--format=%s", `${j.branch}^^`)).toBe(
+      `Merge main into ${j.branch}`,
+    );
     expect(git(w.bare, "show", `${j.branch}:MAIN.md`)).toBe("landed on main");
     expect(
       git(w.bare, "branch", "--list")
@@ -186,11 +188,15 @@ describe("runner.json sprites isolation", () => {
     const dirs = paths({ HOME: "/nonexistent-home" });
     const runner = buildRunner(configSchema.parse(BASE), dirs);
     const caps = (await runner.adapter.manifest()).capabilities;
-    expect(caps).toEqual(expect.arrayContaining(["cloud-sandbox", "container-isolation", "terminal"]));
+    expect(caps).toEqual(
+      expect.arrayContaining(["cloud-sandbox", "container-isolation", "terminal"]),
+    );
     expect(caps).not.toContain("own-hardware");
     expect(dirs.spritesTokenFile).toBe("/nonexistent-home/.config/software-factory/sprites.token");
     expect(() => configSchema.parse({ ...BASE, sprites: { token: "x" } })).toThrow();
-    expect(configSchema.parse({ ...BASE, sprites: { allowedHosts: ["pypi.org"] } }).sprites).toEqual({
+    expect(
+      configSchema.parse({ ...BASE, sprites: { allowedHosts: ["pypi.org"] } }).sprites,
+    ).toEqual({
       allowedHosts: ["pypi.org"],
     });
   });

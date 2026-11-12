@@ -56,6 +56,8 @@ import {
   checkJobGitDir,
   createJobRepo,
   HOST_FETCH_NAMESPACE,
+  hostGitEnv,
+  SAFE_GIT,
   scanForSecrets,
 } from "../container/job-repo.ts";
 import { jobDirs } from "../container/spec.ts";
@@ -718,7 +720,10 @@ export function createSpritesRunner(
         if (egress.length) throw new Error(egress.join("; "));
         // The job's files, at the paths the harness projected (after the host's merge).
         record.uploadHead = (
-          await exec("git", ["rev-parse", "HEAD"], { cwd: workspace.path })
+          await exec("git", [...SAFE_GIT, "rev-parse", "HEAD"], {
+            cwd: workspace.path,
+            env: hostGitEnv(),
+          })
         ).stdout.trim();
         await writeFile(
           join(workspace.runDir, SPRITE_RECORD),

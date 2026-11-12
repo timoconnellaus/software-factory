@@ -130,6 +130,38 @@ For tests, `@software-factory/runner-local/testing` also has a scripted `docker`
 `claude` in a real container under tmux. It probes the home, the egress, the writes and a commit
 that the host then pushes. It is skipped without Docker or tmux.
 
+## A sprite per job (`src/sprites/`, ADR 0460, spec 36)
+`createSpritesRunner(config)` runs each job (but planning) in a fresh sprite on Sprites, made with the
+owner's token (`sprites.tokenFile`), and keeps runner-local's tmux session on the host. Its pane
+runs `sprite.sh`, the bridge (`tty-bridge.ts`) to the sprite's TTY exec, so the start check, the
+prompt pointer, steering, `tmux attach` and the web terminal bridge work unchanged.
+- **prepareWorkspace**: the job repo (as a container's, `container/job-repo.ts`) under
+  `<spritesDir>/sf-<jobId>/`, the harness projected with `isolation: "container"`, the sprite's
+  pinned Claude (`/opt/software-factory/claude-code-<v>/bin/claude`) and `platform: "linux"`;
+  `sprite.json`, `sprite-entry.sh` (the sprite's side: the credential file, keep-awake, then the
+  launch script) and `sprite-tty.json`. Refuses a login account and a missing token up front.
+- **startSession**: creates the sprite, runs `sprite/provision.sh` (the Dockerfile's toolchain, Claude
+  Code at its pin), sets and reads back the network policy (`egressRules`), uploads the job dir, run
+  dir and attachments at the same paths (`UPLOAD`), writes the credential file (`WRITE`), starts the
+  mirror (`mirror.ts`: pid, status, transcripts) and runs runner-local's start, whose launch check
+  adds `spriteChecks` (id, policy, settings hashes in the sprite) and whose `ps` runs in the sprite.
+- **events**: on `session.ended`, pulls the stage result, runs `RESULT` (a snapshot commit of the
+  working tree on the agent's HEAD, as a bundle), imports it with the host's safe git
+  (`result.ts`), destroys the sprite, checks the git dir and scans for the credential.
+- **collectArtifacts** adds `egress-policy`. **release** destroys the sprite and removes the dirs.
+  **manifest**: runner-local's capabilities without `own-hardware`, plus `container-isolation` and
+  `cloud-sandbox`.
+- `api.ts` is the `SandboxApi` interface and `spritesApi` (HTTP + the exec WebSocket).
+  `reapSprites` / `diagnoseSprites` (`reap.ts`) act on this runner's name prefix only.
+  `checkRunningSprite(runDir, api)` is the check for `sf-runner doctor`.
+
+For tests, `testing` has `fakeSpritesApi` (`src/sprites/fake.ts`): the endpoints and framing on
+localhost, the fixed scripts run for real in a directory per sprite, `fakeClaude` for the sprite's
+side and `bridgeSpawn` for `scriptedTmux`'s `spawn`, which runs the real bridge in the pane.
+`test/sprites.test.ts` runs the adapter end to end on it; `test/sprites.integration.test.ts` does it
+on the real tmux with the bridge as its own process and the web terminal on the pane (skipped
+without tmux). Nothing in the tests talks to Sprites.
+
 `src/testing.ts` (`@software-factory/runner-local/testing`) is a scripted tmux for tests. Git stays
 real. `test/tmux.integration.test.ts` runs the adapter on the real tmux, on its own socket, with a
 stand-in `claude`. It is skipped when tmux isn't installed.
