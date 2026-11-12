@@ -106,6 +106,10 @@ export interface FakeGitHub extends GitHubService {
   setMergeable(repo: RepoRef, number: number, mergeable: boolean | null): Promise<void>;
   /** GitHub refuses the PR's next merge with this reason (once). */
   refuseNextMerge(repo: RepoRef, number: number, reason: string): Promise<void>;
+  /** Points a branch at an existing commit, as a force-push does. */
+  forcePush(repo: RepoRef, branch: string, sha: string): Promise<void>;
+  /** Sets a commit's committer date, as whoever pushed it chose (past or future). */
+  setCommitTime(repo: RepoRef, sha: string, at: string): Promise<void>;
   /** Sets a person's role on the repo (null: not a collaborator). */
   setPermission(repo: RepoRef, login: string, permission: string | null): Promise<void>;
   /** What `GET /app` reports (default: every event the factory needs). */
@@ -406,6 +410,16 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         mergeableState: mergeable === null ? "unknown" : mergeable ? "clean" : "dirty",
         headSha: state.refs[pull.head] ?? null,
       };
+    },
+    async forcePush(r, branch, at) {
+      const state = await load(r);
+      state.refs[branch] = at;
+      await save(r, state);
+    },
+    async setCommitTime(r, at, when) {
+      const state = await load(r);
+      state.times = { ...(state.times ?? {}), [at]: when };
+      await save(r, state);
     },
     async refuseNextMerge(r, number, reason) {
       const state = await load(r);

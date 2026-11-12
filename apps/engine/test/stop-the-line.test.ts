@@ -287,6 +287,64 @@ describe("stop the line (spec 53)", () => {
     expect(await health(w)).toMatchObject({ state: "green", head_sha: h2 });
   });
 
+  // Second review of #104, the probe run: observations were ordered by the head commit's committer
+  // date, which whoever pushes controls.
+  it("a force-push back to an older green commit turns main green", async () => {
+    const w = await world();
+    const h1 = String(await github.getBranchSha(w.repo, "main"));
+    await github.setChecks(w.repo, h1, CI("success"));
+    expect((await observe(w)).state).toBe("green");
+    const h2 = await github.push(w.repo, "main", undefined, ["src/bad.ts"]);
+    await github.setChecks(w.repo, h2, CI("failure"));
+    expect((await observe(w)).state).toBe("red");
+    await github.forcePush(w.repo, "main", h1); // h1's commit date is older than h2's
+    expect((await observe(w)).state).toBe("green");
+    expect(await health(w)).toMatchObject({ state: "green", head_sha: h1, red_since: null });
+  });
+
+  it("a future-dated commit doesn't freeze main's state", async () => {
+    const w = await world();
+    const h1 = String(await github.getBranchSha(w.repo, "main"));
+    await github.setCommitTime(w.repo, h1, "2099-01-01T00:00:00.000Z");
+    await github.setChecks(w.repo, h1, CI("success"));
+    expect((await observe(w)).state).toBe("green");
+    const h2 = await github.push(w.repo, "main", undefined, ["src/bad.ts"]);
+    await github.setCommitTime(w.repo, h2, new Date().toISOString()); // an honest date
+    await github.setChecks(w.repo, h2, CI("failure"));
+    expect((await observe(w)).state).toBe("red"); // not green "until 2099"
+    expect(await health(w)).toMatchObject({ head_sha: h2 });
+  });
+
+  it("a past-dated commit on main is still read as main's head", async () => {
+    const w = await world();
+    const h1 = String(await github.getBranchSha(w.repo, "main"));
+    await github.setCommitTime(w.repo, h1, new Date().toISOString());
+    await github.setChecks(w.repo, h1, CI("failure"));
+    expect((await observe(w)).state).toBe("red");
+    const h2 = await github.push(w.repo, "main", undefined, ["src/fix.ts"]);
+    await github.setCommitTime(w.repo, h2, "2001-01-01T00:00:00.000Z");
+    await github.setChecks(w.repo, h2, CI("success"));
+    expect((await observe(w)).state).toBe("green");
+    expect(await health(w)).toMatchObject({ head_sha: h2, red_since: null });
+  });
+
+  // Second review of #104: a repair mark outlived its episode and skipped the hold in the next.
+  it("an episode's repairs end with it: green clears the mark", async () => {
+    const w = await world();
+    const b = await toMergeGate(w, "The fix", "src/b.ts");
+    const head = String(await github.getBranchSha(w.repo, "main"));
+    await github.setChecks(w.repo, head, CI("failure"));
+    await observe(w);
+    await ok("workItem.markRepair", { workItemId: b, repair: true }, w.human);
+    await github.setChecks(w.repo, head, CI("success"));
+    expect((await observe(w)).state).toBe("green");
+    const row = await first<{ repairs_main: number }>(
+      "SELECT repairs_main FROM core_work_items WHERE id = ?",
+      b,
+    );
+    expect(row?.repairs_main).toBe(0);
+  });
+
   it("counts a cancelled or timed-out run as red, ignores one cancelled before it started", async () => {
     const w = await world();
     const head = String(await github.getBranchSha(w.repo, "main"));

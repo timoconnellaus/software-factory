@@ -868,12 +868,12 @@ export interface CoreMainHealthTable {
   first_red_sha: string | null;
   checked_at: Iso;
   /**
-   * The observation's place in time, as GitHub gives it: the head commit's committer date, then the
-   * latest start or completion among its counted check runs. An older observation never overwrites
-   * a newer one (spec 53 review). Empty when GitHub gave none.
+   * The observation's place in time, by what the engine knows (second review of #104): when it read
+   * the branch (`observed_at`), then GitHub's newest check run id on the head as a tiebreak. Never
+   * commit dates. An older observation never overwrites a newer one.
    */
-  head_at: Generated<string>;
-  event_at: Generated<string>;
+  observed_at: Generated<string>;
+  attempt: Generated<number>;
   /**
    * Who is told about the open episode (JSON user ids, fixed when it opens): the project's
    * approvers, owner question 4's recommendation (`mainRedAudience`). The Inbox card shows to them.

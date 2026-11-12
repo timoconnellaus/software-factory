@@ -167,14 +167,17 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
 - **Review fixes (PR b):**
   - **Reconciled from GitHub.** A held queue's recheck (every 30 minutes, `HELD_RECHECK_MS`, or on
     any wake) calls `main.observe` before it holds anything, so one missed green webhook costs at
-    most one recheck. Cost: per repository with held work, one recheck per 30 minutes: three GitHub
-    reads (the branch ref, the head commit's time, its check runs), two D1 point reads, and a D1
+    most one recheck. Cost: per repository with held work, one recheck per 30 minutes: two GitHub
+    reads (the branch ref, its check runs), two D1 point reads, and a D1
     write and audit row only when the state changed.
-  - **Ordered by GitHub's own times.** An observation's place is the head commit's committer date,
-    then the latest start or completion among its counted check runs (`head_at`, `event_at`).
-    `main.observe` writes only an observation newer than the stored one, checked when it reads and
-    guarded in SQL in its batch, so a push and a check suite read together, or a run on an older
-    commit read late, never put an older state back. A rerun in flight is `pending` and keeps the
+  - **Ordered by what the engine knows** (second review of #104). Which commit is `main`'s head is
+    what GitHub reports when the engine reads the branch, never inferred from commit dates (whoever
+    pushes sets those: a force-push back to an older commit, or a future-dated one, must not freeze
+    the state). Observations are ordered by when the engine read them (`observed_at`, the call's
+    start), GitHub's newest check run id on the head breaking a tie (a rerun is a new run with a
+    higher id; the check-runs API has no run attempt). `main.observe` writes only an observation
+    newer than the stored one, checked when it reads and guarded in SQL in its batch, so a push and a
+    check suite read together, or a read that commits late, never put an older state back. A rerun in flight is `pending` and keeps the
     episode open; a run cancelled or timed out after it started is red; one cancelled before it
     started (or GitHub's `stale`) doesn't count. Flapping opens one episode per red spell.
   - **Only changes are written.** An observation that changes nothing (the same head, state,
@@ -184,7 +187,8 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     presence proof for that call (like a merge decision); never the CLI, MCP, a runner or an agent.
     Risk stays `write`: the classes above it would make a person's own mark open a gate for another
     person; the presence proof is the confirmation. A repair sorts first **only while** its
-    repository is red; after green it is an ordinary item in approval order.
+    repository is red; the green that closes the episode clears every mark in that repository, so an
+    item marked in one episode is held in the next unless someone marks it again.
   - **Items landing through their own Workflow (v4 to v7) are never held**: they started before the
     babysitter and land as they always did until they drain. Only the babysitter's deliveries hold.
   - **Who is told (owner question 4, recommended, not yet answered):** the project's approvers,
