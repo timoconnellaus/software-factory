@@ -15,9 +15,11 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { logPlanning, takeBackFromGate } from "../planning.ts";
+import { openArchiveIncident } from "./incidents.ts";
 import {
   fencingToken,
   jobId,
+  RUN_ARCHIVE_AFTER_DAYS,
   RUN_EVENTS_BATCH_MAX,
   requireWorkItem,
   workItemId,
@@ -52,6 +54,130 @@ function expandRows(
     }
   }
   return out;
+}
+
+type StoredEvent = {
+  seq: number;
+  last_seq: number | null;
+  at: string;
+  type: string;
+  payload: string;
+};
+
+/**
+ * What reading the archive came to: `read`; `failed`, R2 couldn't be read (try again); `missing`,
+ * the chunk index names an object that isn't there (the run's log is lost: reported as an
+ * incident, never shown as an empty run).
+ */
+type ArchiveRead = "read" | "failed" | "missing";
+
+/** One archived chunk's rows (NDJSON in sf-archive), and whether it could be read. */
+async function readChunk<T>(
+  ctx: HandlerContext,
+  key: string,
+): Promise<{ rows: T[]; state: ArchiveRead }> {
+  const archive = ctx.services.runArchive;
+  if (!archive) return { rows: [], state: "failed" };
+  let text: string | null;
+  try {
+    text = await archive.get(key);
+  } catch {
+    return { rows: [], state: "failed" };
+  }
+  if (text === null) return { rows: [], state: "missing" };
+  return {
+    rows: text
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as T),
+    state: "read",
+  };
+}
+
+const DAY = 86_400_000;
+
+/**
+ * A page of a run's events, from D1, the archive or both (AGENTS.md "Cloudflare cost", rule 3).
+ * A run still live, or ended under 29 days ago, is read from D1 alone. Otherwise the run may be
+ * archived, wholly (marked) or part-way (its oldest chunks moved, the rest still in D1): D1 is read
+ * first, then the chunk index, so a chunk archived between the two reads is found by the second
+ * and nothing is skipped; a chunk after the cursor is served before D1 (it holds the older seqs),
+ * one chunk a page, and the next poll carries on from its end, so nothing is read twice.
+ */
+async function pageEvents(
+  ctx: HandlerContext,
+  run: LiveRun,
+  afterSeq: number | undefined,
+): Promise<{ rows: Event[]; archive: ArchiveRead | null; missingSeq?: number }> {
+  const mayBeArchived =
+    run.events_archived_at !== null ||
+    (run.ended_at !== null &&
+      Date.parse(run.ended_at) < Date.parse(ctx.now) - (RUN_ARCHIVE_AFTER_DAYS - 1) * DAY);
+  if (!mayBeArchived) return { rows: await liveRows(ctx, run.id, afterSeq), archive: null };
+  const d1 = run.events_archived_at === null ? await liveRows(ctx, run.id, afterSeq) : [];
+  // The newest page: D1 holds the newest events while it holds any.
+  if (afterSeq === undefined && d1.length > 0) return { rows: d1, archive: null };
+  let q = ctx.db
+    .selectFrom("core_run_archive_chunks")
+    .select(["r2_key", "first_seq"])
+    .where("run_id", "=", run.id)
+    .where("first_seq", ">=", 0);
+  q =
+    afterSeq === undefined
+      ? q.orderBy("first_seq", "desc")
+      : q.where("last_seq", ">", afterSeq).orderBy("first_seq", "asc");
+  const chunk = await q.limit(1).executeTakeFirst();
+  if (!chunk) return { rows: d1, archive: null };
+  const { rows, state } = await readChunk<StoredEvent>(ctx, chunk.r2_key);
+  if (state === "missing") return { rows: [], archive: state, missingSeq: chunk.first_seq };
+  if (state !== "read") return { rows: [], archive: state };
+  const events = expandRows(rows);
+  return {
+    rows:
+      afterSeq === undefined
+        ? events.slice(-LIVE_EVENTS_MAX)
+        : events.filter((e) => e.seq > afterSeq).slice(0, LIVE_EVENTS_MAX),
+    archive: "read",
+  };
+}
+
+type Event = { seq: number; at: string; type: string; payload: string };
+
+/** An archived run's steers (its one steers object), with their authors' names. */
+async function archivedSteers(ctx: HandlerContext, runIdValue: string) {
+  const chunk = await ctx.db
+    .selectFrom("core_run_archive_chunks")
+    .select("r2_key")
+    .where("run_id", "=", runIdValue)
+    .where("first_seq", "=", -1)
+    .executeTakeFirst();
+  const { rows: steers, state } = chunk
+    ? await readChunk<{
+        id: string;
+        text: string;
+        created_at: string;
+        delivered_at: string | null;
+        author_user_id: string;
+        kind: string;
+      }>(ctx, chunk.r2_key)
+    : { rows: [], state: "read" as const };
+  const ids = [...new Set(steers.map((s) => s.author_user_id))];
+  const users = ids.length
+    ? await ctx.db
+        .selectFrom("core_user")
+        .select(["id", "name", "github_login"])
+        .where("id", "in", ids)
+        .execute()
+    : [];
+  const byId = new Map(users.map((u) => [u.id, u]));
+  return {
+    state,
+    steers: steers.slice(0, 200).map((s) => ({
+      ...s,
+      author_name: byId.get(s.author_user_id)?.name ?? null,
+      author_login: byId.get(s.author_user_id)?.github_login ?? null,
+    })),
+  };
 }
 
 /** Stored rows read per query: a row is at most ~64 KB, so a page is at most ~1.3 MB. */
@@ -157,6 +283,8 @@ export async function loadRunForItem(ctx: HandlerContext, workItem: string, id?:
       "core_runs.runner_id",
       "core_runs.started_at",
       "core_runs.ended_at",
+      "core_runs.events_archived_at",
+      "core_runs.session_mode",
       "core_runs.takeover",
       "core_runners.name as runner_name",
       "core_runners.owner_user_id as runner_owner",
@@ -228,15 +356,21 @@ function canSteer(run: LiveRun, viewer: string): { allowed: boolean; reason: str
   return { allowed: true, reason: null };
 }
 
-/** How the run's session runs (ADR 0450): its `session.started` says; null before it starts. */
+/**
+ * How the run's session runs (ADR 0450): kept on the run from its `session.started` (migration
+ * 0362), so an archived run still knows; read from the event for a run from before that column,
+ * while its events are still in D1. Null before the session starts.
+ */
 async function sessionMode(
   ctx: HandlerContext,
-  runId: string,
+  run: Pick<LiveRun, "id" | "session_mode" | "events_archived_at">,
 ): Promise<"terminal" | "stream" | null> {
+  if (run.session_mode) return run.session_mode;
+  if (run.events_archived_at !== null) return null;
   const row = await ctx.db
     .selectFrom("core_run_events")
     .select("payload")
-    .where("run_id", "=", runId)
+    .where("run_id", "=", run.id)
     .where("type", "=", "session.started")
     .orderBy("seq", "desc")
     .limit(1)
@@ -332,6 +466,28 @@ export const runLive = defineOperation({
       })
       .nullable(),
     events: z.array(eventView),
+    /**
+     * The run's events were moved to the archive (30 days after it ended): they are read from
+     * there, a page at a time, and the view says so.
+     */
+    archived: z.boolean().optional(),
+    /**
+     * Whether this answer read the archive, and how that went: `read`; `failed`, R2 couldn't be
+     * read (try again); `missing`, an object the chunk index names isn't there (the log is lost:
+     * the view says so and it is reported as an incident). Null when the answer came from D1 only.
+     */
+    archive: z.enum(["read", "failed", "missing"]).nullable().optional(),
+    /**
+     * When `missing`: which chunk (its first seq, -1 for the steers) for run.reportArchiveMissing,
+     * and the incident once one is open (one per run).
+     */
+    archiveMissing: z
+      .object({
+        firstSeq: z.number(),
+        incident: z.object({ workItemId: z.string(), number: z.number() }).nullable(),
+      })
+      .nullable()
+      .optional(),
     /** The last seq in this answer (or `afterSeq` when none is new), for the next `afterSeq`. */
     lastSeq: z.number(),
     /** Whether events before the first one returned were left out. */
@@ -360,6 +516,7 @@ export const runLive = defineOperation({
       return {
         run: null,
         events: [],
+        archived: false,
         lastSeq: 0,
         truncated: false,
         steers: [],
@@ -369,27 +526,48 @@ export const runLive = defineOperation({
       };
     }
     const afterSeq = input.afterSeq;
-    const [rows, steers, mode] = await Promise.all([
-      liveRows(ctx, run.id, afterSeq),
-      ctx.db
-        .selectFrom("core_run_steers")
-        .leftJoin("core_user", "core_user.id", "core_run_steers.author_user_id")
-        .select([
-          "core_run_steers.id",
-          "core_run_steers.text",
-          "core_run_steers.created_at",
-          "core_run_steers.delivered_at",
-          "core_run_steers.author_user_id",
-          "core_run_steers.kind",
-          "core_user.name as author_name",
-          "core_user.github_login as author_login",
-        ])
-        .where("core_run_steers.run_id", "=", run.id)
-        .orderBy("core_run_steers.created_at", "asc")
-        .limit(200)
-        .execute(),
-      sessionMode(ctx, run.id),
+    const archived = run.events_archived_at !== null;
+    const [page, steerRead, mode] = await Promise.all([
+      pageEvents(ctx, run, afterSeq),
+      archived
+        ? archivedSteers(ctx, run.id)
+        : ctx.db
+            .selectFrom("core_run_steers")
+            .leftJoin("core_user", "core_user.id", "core_run_steers.author_user_id")
+            .select([
+              "core_run_steers.id",
+              "core_run_steers.text",
+              "core_run_steers.created_at",
+              "core_run_steers.delivered_at",
+              "core_run_steers.author_user_id",
+              "core_run_steers.kind",
+              "core_user.name as author_name",
+              "core_user.github_login as author_login",
+            ])
+            .where("core_run_steers.run_id", "=", run.id)
+            .orderBy("core_run_steers.created_at", "asc")
+            .limit(200)
+            .execute()
+            .then((steers) => ({ steers, state: "read" as ArchiveRead })),
+      sessionMode(ctx, run),
     ]);
+    const rows = page.rows;
+    const steers = steerRead.steers;
+    // The worst of the two reads: a lost or unreadable object is never shown as an empty run.
+    const archive: ArchiveRead | null =
+      page.archive === "missing" || steerRead.state === "missing"
+        ? "missing"
+        : page.archive === "failed" || steerRead.state === "failed"
+          ? "failed"
+          : (page.archive ?? (archived ? "read" : null));
+    // Only when something is missing (rare): the run's incident, on core_incidents_run_idx.
+    const archiveMissing =
+      archive === "missing"
+        ? {
+            firstSeq: page.archive === "missing" ? (page.missingSeq ?? 0) : -1,
+            incident: await archiveIncident(ctx, run.id),
+          }
+        : null;
     const requested = steers.some((s) => s.kind === "takeover");
     const active = ACTIVE.includes(run.status);
     // At most LIVE_BYTES_MAX of payload: the newest events for a first read, the oldest new ones
@@ -413,6 +591,9 @@ export const runLive = defineOperation({
         takeover: parseTakeover(run.takeover),
         mode,
       },
+      archived,
+      archive,
+      archiveMissing,
       events: events.map((e) => ({
         seq: e.seq,
         at: e.at,
@@ -640,7 +821,7 @@ export const runTakeover = defineOperation({
     const run = await loadRunForItem(ctx, item.id, input.runId);
     if (!run) throw new OperationError("not_found", "no such run on this work item");
     const [mode, requested] = await Promise.all([
-      sessionMode(ctx, run.id),
+      sessionMode(ctx, run),
       takeoverRequested(ctx, run.id),
     ]);
     const verdict = canTakeOver(run, ctx.actor.id, mode, requested);
@@ -664,5 +845,60 @@ export const runTakeover = defineOperation({
     // The same wake as a steer: the host's held steer call takes it at once.
     ctx.emit({ kind: "run.steered", payload: { workItemId: item.id } });
     return { requestId: id, status: "queued" as const };
+  },
+});
+
+/** The run's archive incident (one per run), with its work item's number. */
+async function archiveIncident(
+  ctx: HandlerContext,
+  runIdValue: string,
+): Promise<{ workItemId: string; number: number } | null> {
+  const row = await ctx.db
+    .selectFrom("core_incidents")
+    .innerJoin("core_work_items", "core_work_items.id", "core_incidents.fix_work_item_id")
+    .select(["core_work_items.id", "core_work_items.number"])
+    .where("core_incidents.run_id", "=", runIdValue)
+    .where("core_incidents.kind", "=", "archive_missing")
+    .limit(1)
+    .executeTakeFirst();
+  return row ? { workItemId: row.id, number: row.number } : null;
+}
+
+export const runReportArchiveMissing = defineOperation({
+  name: "run.reportArchiveMissing",
+  description:
+    "Report that part of an archived run's log is missing from the archive (AGENTS.md \"Cloudflare cost\"): run.live answered `archive: missing` for this chunk. Trusts nothing it is told: it finds the chunk in the run's chunk index and checks with R2 (a HEAD) that the object isn't there, and does nothing otherwise. Opens one incident per run, for a person (a work item left in the backlog; no agent runs, since none could bring the object back). The website calls it when a viewer meets the gap; the archive's daily sample calls it as the scheduler.",
+  risk: "write",
+  actors: ["human", "scheduler"],
+  permission: "member",
+  input: z.object({ workItemId, runId, firstSeq: z.number().int().min(-1) }),
+  output: z.object({
+    reported: z.boolean(),
+    incident: z.object({ workItemId: z.string(), number: z.number() }).nullable(),
+  }),
+  async handler(input, ctx) {
+    const item = requireWorkItem(ctx);
+    const run = await loadRunForItem(ctx, item.id, input.runId);
+    if (!run) throw new OperationError("not_found", "no such run on this work item");
+    const [chunk, existing] = await Promise.all([
+      ctx.db
+        .selectFrom("core_run_archive_chunks")
+        .select("r2_key")
+        .where("run_id", "=", run.id)
+        .where("first_seq", "=", input.firstSeq)
+        .executeTakeFirst(),
+      archiveIncident(ctx, run.id),
+    ]);
+    if (existing) return { reported: false, incident: existing };
+    if (!chunk) return { reported: false, incident: null };
+    const archive = ctx.services.runArchive;
+    if (!archive) throw new OperationError("unavailable", "the archive isn't bound here");
+    if (await archive.exists(chunk.r2_key)) return { reported: false, incident: null };
+    const opened = openArchiveIncident(ctx, {
+      runId: run.id,
+      runNo: run.run_no,
+      key: chunk.r2_key,
+    });
+    return { reported: true, incident: { workItemId: opened.workItemId, number: opened.number } };
   },
 });
