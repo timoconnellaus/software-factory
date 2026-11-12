@@ -35,3 +35,10 @@ proves how the commit was made, not that the change the person approved is the c
 > withdrawal closes the approval and carries neither the packet nor `factory/verify` to the new
 > head; the item verifies the new head again (Workflow v12) before a person decides.
 
+> Amended 2026-11-13 (second review of PR #105, and the owner's answer to question 1: the change is
+> identical **and all checks pass again**): a surviving approval no longer carries the old head's
+> packet or posts `factory/verify` from it. The delivery ends `reverify`; the item verifies the new
+> head on its own (Workflow v12), and only if that passes re-enters with the same approval, which
+> `mergeQueue.enter` accepts only for a head whose change digest is the approved one. The change is
+> read by its changed paths (GitHub's compare, then those paths' entries), never whole trees, and
+> fails closed past 250 changed paths.
