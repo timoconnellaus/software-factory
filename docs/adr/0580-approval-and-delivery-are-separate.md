@@ -25,6 +25,9 @@ the factory.
 3. **Workflow v11.** After approval the item's Workflow enters delivery and waits for one
    `delivered-<item>` event (`merged`, `conflict`, `failed`, `withdrawn`), then ends or goes back as
    today. It never updates or merges. Old versions keep landing themselves until they drain.
+   Features are switched by a version-to-features table (`has(version, "feature")`), never by
+   `version >= N`, so nothing new switches on inside a running older instance; the number is the
+   next free one on `main` when the PR merges (spec 53, **Workflow versions**).
 4. **Merge commits, one at a time, the engine's own order.** GitHub's merge queue stays out: it is
    for organisation-owned repositories only, needs `merge_group` CI and `factory/verify` on temporary
    SHAs (ADR 0037), and rejects a conflict rather than letting the factory resolve it. With one runner

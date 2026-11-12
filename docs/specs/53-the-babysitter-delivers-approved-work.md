@@ -68,13 +68,23 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
 ## Scope
 
 ### 1. Approval is separate from delivery (ADR 0580)
-- **Workflow v11** (`#73` holds v8, planning v9, spec 52's build v10). After the merge gate is
+- **Workflow v11** (the number is provisional: see **Workflow versions** below). After the merge gate is
   approved, the item's Workflow calls `delivery.enter` (today's `mergeQueue.enter`, renamed with an
   alias kept) and waits for one event, `delivered-<item>`, whose payload is the outcome: `merged`
   (with the merge SHA), `conflict`, `failed` (with the reason) or `withdrawn` (the approval no longer
   holds, with what changed). It then finishes the item, or goes back to build or the merge gate as
   today. It never updates or merges anything itself. A hold-timeout re-reads `delivery.position`, so
   a lost event costs time, not the item.
+- **Workflow versions.** A running instance replays on the code it started with, so a feature
+  must never switch on inside an instance of an older version. No `version >= N` comparisons for
+  features: one table in the Workflow (`WORKFLOW_FEATURES`) maps each version number to the set of
+  features it has, a row per version, immutable once merged, and code asks
+  `has(version, "feature")`. v1 to v7's rows reproduce today's behaviour exactly (the existing
+  version tests prove it). A PR takes the next number above whatever is on `main` **at merge
+  time** and adds its row; rows of other open PRs do not exist until they merge. This spec's PRs
+  say v11 today (`#73`, planning and spec 52's build had claimed v8 to v10); whichever merges first
+  renumbers to the next free number then. Each of (b) and (c) that changes the Workflow's steps adds
+  its own row rather than folding into v11's after v11 has merged.
 - **The deliverer** does what `landV4` did, per repository instead of per item: pick the head, bring
   it up to date, wait for CI on the new head, merge it with `pr.merge` at the head SHA it recorded
   and the approval id, and send `delivered-<item>`.
@@ -279,8 +289,10 @@ What the screens need, and the operations that serve them:
 - Several repositories per item, and per-repository protection (spec 50's follow-up).
 
 ## Build plan
-Small PRs, deterministic part first. Block **AP**: migrations 0350–0359, ADRs 0580–0589. Workflow
-version **v11**.
+Small PRs, deterministic part first. Block **AP**: migrations 0350–0359 (0350 delivery state,
+0351 main health, 0352 the approved change, 0353 `core_flakes`), ADRs 0580–0589. Workflow version
+**v11**, provisional: the next free number on `main` at merge time, added as a row of
+`WORKFLOW_FEATURES` (see **Workflow versions**).
 1. **Docs** (this spec, ADRs 0580–0585, CONTEXT.md). No code.
 2. **(a) Approval separated from merge.** Workflow v11; `core_delivery_state` (migration 0350); the
    deliverer in `apps/engine/src/deliver/` doing exactly what `landV4` does (update, CI, merge,
@@ -292,7 +304,7 @@ version **v11**.
 4. **(c) Approval survives a clean merge of main.** The change digest, its check on update, the
    `withdrawn` outcome, the re-check under `autoApprove` (once ADR 0515 is built).
 5. **(d) The `babysit` job kind.** `JOB_STAGES`, the prompt, `babysit.next`, `ci.rerun`,
-   `flake.record` and `core_flakes` (migration 0352), conflict resolution with `branch.advance`, the
+   `flake.record` and `core_flakes` (migration 0353), conflict resolution with `branch.advance`, the
    delivery fence; the `conflict` and `check-failed` reasons.
 6. **(e) Red main.** Episodes and suspects, `mainRed.attribute`, `repair` items, `mainRed.revert`,
    `revertVerdict()`, the reland item.
