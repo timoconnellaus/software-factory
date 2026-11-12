@@ -309,6 +309,9 @@ describe("self-update: behind but busy (criterion 3, amended by ADR 0520)", () =
   });
 
   it("past the first cap it claims light jobs only, letting claimed ones (verify included) finish; past the second, nothing", async () => {
+    // Driven turn by turn (no heartbeat timer): the fake clock and the queue change only between
+    // turns, so a turn in flight never decides with one clock and claims with another (CI flake on
+    // #80: a turn already past its decision claimed the job pushed for the next step).
     const w = await world();
     const repo = await scratchRepo();
     cleanups.push(repo.cleanup);
@@ -326,7 +329,7 @@ describe("self-update: behind but busy (criterion 3, amended by ADR 0520)", () =
       git: repo.host,
       maxConcurrent: 2,
       maxLight: 3,
-      heartbeatMs: 30,
+      heartbeatMs: 3_600_000,
       log: () => {},
       selfUpdate: await w.updater({
         now: () => new Date(clock),
@@ -338,20 +341,20 @@ describe("self-update: behind but busy (criterion 3, amended by ADR 0520)", () =
     await host.start();
     expect(host.activeJobs).toEqual([verify.jobId]);
 
-    // The update has been pending for 31 minutes: a build waits, a triage job is taken.
+    // The update is pending from this turn on. A heartbeat carries the decision of the turn
+    // before it, hence the second turn.
     cloud.desiredVersion = w.c;
-    const seen = cloud.heartbeats.length;
-    await until("waiting reported", () =>
-      versions(cloud)
-        .slice(seen)
-        .some((v) => v.update.state === "waiting"),
-    );
+    await host.tick();
+    await host.tick();
+    expect(versions(cloud).at(-1)?.update.state).toBe("waiting");
+
+    // 31 minutes later: a build waits, a triage job is taken.
     clock += 31 * 60_000;
     const build = s.next();
     const triage = s.next({ stage: "triage" });
     cloud.queue.push(build, triage);
-    await until("the triage job claimed", () => host.activeJobs.includes(triage.jobId));
-    await sleep(150);
+    await host.tick();
+    await host.tick();
     expect(cloud.queue).toEqual([build]);
     expect(host.activeJobs.sort()).toEqual([verify.jobId, triage.jobId].sort());
     expect(versions(cloud).at(-1)?.update.reason).toBe(
@@ -361,20 +364,26 @@ describe("self-update: behind but busy (criterion 3, amended by ADR 0520)", () =
     expect(cloud.claimCapacities.at(-1)).toMatchObject({ max: 1, inUse: 1, light: { max: 3 } });
     expect(cloud.heartbeats.at(-1)?.capacity).toMatchObject({ max: 1, inUse: 1 });
 
-    // 61 minutes: not even light jobs.
+    // 61 minutes: not even light jobs, however many turns.
     clock += 30 * 60_000;
     const plan = s.next({ stage: "spec" });
     cloud.queue.push(plan);
-    const before = cloud.heartbeats.length;
-    await until("a few heartbeats", () => cloud.heartbeats.length >= before + 3);
+    for (let i = 0; i < 3; i++) await host.tick();
     expect(cloud.queue).toEqual([build, plan]);
     expect(versions(cloud).at(-1)?.update.reason).toBe(
       "update pending 61 min: claiming nothing, updating once its jobs end",
     );
 
-    // Everything claimed finishes, never cancelled; then it updates.
+    // Everything claimed finishes, never cancelled; then the next idle turn updates.
     s.finish(verify.jobId);
     s.finish(triage.jobId);
+    await until(
+      "both handed back",
+      () => cloud.handbacks.has(verify.jobId) && cloud.handbacks.has(triage.jobId),
+    );
+    await until("the jobs released", () => host.activeJobs.length === 0);
+    await host.tick();
+    // The restart is handed to the service on the next turn of the event loop (setImmediate).
     await until("the restart", () => updated === 1);
     expect(s.aborted).toEqual([]);
     expect(cloud.handbacks.get(verify.jobId)?.outcome).toBe("completed");
