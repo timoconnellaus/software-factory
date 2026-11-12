@@ -43,6 +43,11 @@ export interface ChangedFile {
   path: string;
   status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed" | "unchanged";
   previousPath?: string;
+  /**
+   * The file's unified diff, when GitHub returned one (ADR 0450). GitHub leaves it out for large
+   * or binary files; the tests-intact guard reports a test or gate file without one.
+   */
+  patch?: string;
 }
 
 /** One rule of a repository ruleset, as GitHub reports it. */

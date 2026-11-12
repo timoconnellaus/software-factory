@@ -23,6 +23,7 @@ import {
   packetCounts,
   packetExtras,
   packetSections,
+  packetTestsIntact,
   parsePacket,
 } from "#/lib/packet";
 import { useSession } from "#/lib/session";
@@ -144,6 +145,9 @@ export function ReviewPacket({ detail, full = false }: { detail: WorkItemDetail;
           </Button>
         </div>
       </div>
+
+      {/* Always shown, whatever sections the project picks: it's for a person (ADR 0450). */}
+      <TestsIntact packet={packet} />
 
       {packetSections(detail.policy?.reviewPacketSections).map((section) => (
         <Section
@@ -408,6 +412,53 @@ function Section({
       );
     }
   }
+}
+
+/** The tests-intact guard (ADR 0450): found in code from the diff, for a person, not the reviewer. */
+function TestsIntact({ packet }: { packet: ParsedPacket }) {
+  const t = packetTestsIntact(packet);
+  return (
+    <Panel
+      title="Tests intact"
+      subtitle="Checked by the factory from the diff on GitHub, not by an agent"
+      testId="section-testsIntact"
+    >
+      {!t ? (
+        <Empty>Not checked: this packet is from before the guard.</Empty>
+      ) : t.intact ? (
+        <div className="flex items-center gap-2 text-sm" data-testid="tests-intact">
+          <StatusDot status="done" />
+          Intact: no test was removed, skipped or weakened, and no gate file changed.
+        </div>
+      ) : (
+        <div className="grid gap-2 text-sm">
+          <div className="text-muted-foreground text-xs">
+            {t.findings.length} finding{t.findings.length === 1 ? "" : "s"} on{" "}
+            <span className="font-mono">{t.headSha.slice(0, 7)}</span>. They don't fail verify; you
+            decide whether each is right. The factory never merges this on its own.
+          </div>
+          <ul className="grid gap-1.5" data-testid="test-findings">
+            {t.findings.map((f, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: stored list, never reordered.
+              <li key={i} className="flex items-start gap-2">
+                <StatusDot status="waiting" className="mt-1.5" />
+                <div className="min-w-0">
+                  <div>{f.message}</div>
+                  {f.path && (
+                    <div className="font-mono text-muted-foreground text-xs">
+                      {f.path}
+                      {f.line ? `:${f.line}` : ""}
+                      {f.text ? ` · ${f.text}` : ""}
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Panel>
+  );
 }
 
 function VerdictRow({ packet }: { packet: ParsedPacket }) {

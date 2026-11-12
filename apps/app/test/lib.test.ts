@@ -4,7 +4,7 @@ import { runnerLabel, updateLabel } from "#/components/runner-health";
 import { duration } from "#/lib/format";
 import { groupByProject } from "#/lib/inbox";
 import type { Inbox, WorkItemDetail } from "#/lib/ops";
-import { keptOnRunner, packetSections, parsePacket } from "#/lib/packet";
+import { keptOnRunner, packetSections, packetTestsIntact, parsePacket } from "#/lib/packet";
 import { answerChoices, bulkAcceptable } from "#/lib/questions";
 import { agentTime, stageSteps, yourTime } from "#/lib/work-item";
 
@@ -97,6 +97,37 @@ describe("review packet sections (spec 14, criterion 1)", () => {
     });
     expect(p.criteria).toHaveLength(1);
     expect(p.reviewer?.sameModelAsImplementer).toBe(true);
+    // A packet from before the tests-intact guard reads as not checked, never as intact.
+    expect(packetTestsIntact(p)).toBeNull();
+  });
+  it("reads the tests-intact findings (ADR 0450)", () => {
+    const p = parsePacket({
+      id: "rp_2",
+      headSha: "a".repeat(40),
+      verdict: "pass",
+      summary: "",
+      criteria: [],
+      checks: [],
+      reviewer: null,
+      riskFlags: [],
+      sections: {
+        testsIntact: {
+          headSha: "a".repeat(40),
+          intact: false,
+          findings: [
+            {
+              kind: "test-skipped",
+              path: "src/a.test.ts",
+              line: 3,
+              text: 'it.skip("x")',
+              message: "a test is skipped",
+            },
+          ],
+        },
+      },
+      createdAt: NOW,
+    });
+    expect(packetTestsIntact(p)).toMatchObject({ intact: false, findings: [{ line: 3 }] });
   });
 });
 

@@ -1,6 +1,13 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { assemblePacket, checkOnlyDiff, FOREMAN, riskFlags, summarizeCi } from "../src/index.ts";
+import {
+  assemblePacket,
+  checkOnlyDiff,
+  FOREMAN,
+  riskFlags,
+  summarizeCi,
+  verifyCheckOutput,
+} from "../src/index.ts";
 import { FAKE_APP, protectedGuards } from "../src/testing/index.ts";
 import { first, newItem, ok, refusal, rows, services, world } from "./helpers.ts";
 
@@ -385,6 +392,31 @@ describe("the check-only auto-merge (ADR 0230)", () => {
     expect((await github.state(w.repo)).pulls[0]?.state).toBe("merged");
   });
 
+  it("refuses a check-only fix whose packet has a tests-intact finding (ADR 0450)", async () => {
+    // A check-only diff can't carry a finding today, so the packet's section is set directly: the
+    // refusal must hold whatever the patterns become, and for a packet from before the guard.
+    for (const [section, reason] of [
+      [{ intact: false, findings: [{ kind: "gate-file" }] }, /tests aren't intact/],
+      [undefined, /no tests-intact check/],
+    ] as const) {
+      const { item, head } = await incidentAtMerge(OPT_IN, CHECK_ONLY);
+      const { reviewPacketId } = await record(item.workItemId, head);
+      const row = await first<{ sections: string }>(
+        "SELECT sections FROM core_review_packets WHERE id = ?",
+        reviewPacketId,
+      );
+      const sections = { ...JSON.parse(row?.sections ?? "{}"), testsIntact: section };
+      await env.DB.prepare("UPDATE core_review_packets SET sections = ? WHERE id = ?")
+        .bind(JSON.stringify(sections), reviewPacketId)
+        .run();
+      const e = await refusal(
+        ok("pr.autoMerge", { workItemId: item.workItemId, headSha: head }, FOREMAN),
+      );
+      expect(e.code).toBe("denied");
+      expect(e.message).toMatch(reason);
+    }
+  });
+
   it("is denied without the project's opt-in (every autonomy policy denies check-merge)", async () => {
     const { item, head } = await incidentAtMerge(
       { version: 1, autonomyPolicy: "autonomous" },
@@ -451,6 +483,72 @@ describe("the check-only auto-merge (ADR 0230)", () => {
       change.item.workItemId,
     );
     expect(audit.map((r) => r.outcome)).toEqual(["failed", "failed", "failed", "failed"]);
+  });
+});
+
+describe("tests intact (ADR 0450)", () => {
+  const SKIP = {
+    path: "src/theme.test.ts",
+    status: "modified" as const,
+    patch: '@@ -1,1 +1,1 @@\n-it("toggles", () => {\n+it.skip("toggles", () => {',
+  };
+
+  it("records the findings on the packet for that SHA, passes the verdict and lists them for a person", async () => {
+    const { w, item, head } = await atVerify(["src/theme.ts", SKIP]);
+    const out = await ok<{ verdict: string; testFindings: string[]; reviewPacketId: string }>(
+      "reviewPacket.record",
+      { workItemId: item.workItemId, headSha: head, ...evidence },
+      FOREMAN,
+    );
+    expect(out.verdict).toBe("pass");
+    expect(out.testFindings).toEqual([expect.stringMatching(/skipped.*src\/theme\.test\.ts:1/)]);
+    const row = await first<{ sections: string }>(
+      "SELECT sections FROM core_review_packets WHERE id = ?",
+      out.reviewPacketId,
+    );
+    expect(JSON.parse(row?.sections ?? "{}").testsIntact).toMatchObject({
+      headSha: head,
+      intact: false,
+      findings: [{ kind: "test-skipped", path: "src/theme.test.ts", line: 1 }],
+    });
+    const [check] = await verifyCheck(w.repo, head);
+    expect(check).toMatchObject({ conclusion: "success" });
+    const stored = await first<{ title: string }>(
+      "SELECT title FROM core_verify_checks WHERE head_sha = ?",
+      head,
+    );
+    expect(stored?.title).toBe("Verified by the factory; 1 test finding for a person");
+    const text = verifyCheckOutput({
+      evidencePass: true,
+      evidenceReasons: [],
+      warnings: [],
+      riskFlags: [],
+      ci: { state: "success", failing: [], pending: [], checks: [] },
+      workItem: { number: 1, title: "x" },
+      testFindings: out.testFindings,
+    });
+    expect(text.summary).toMatch(/Tests not intact[\s\S]*theme\.test\.ts/);
+  });
+
+  it("can't be set by the caller's sections, and a new head has none until its own packet", async () => {
+    const { w, item, head } = await atVerify(["src/theme.ts", SKIP]);
+    await ok(
+      "reviewPacket.record",
+      {
+        workItemId: item.workItemId,
+        headSha: head,
+        ...evidence,
+        sections: { testsIntact: { intact: true, findings: [] } },
+      },
+      FOREMAN,
+    );
+    const stored = await first<{ sections: string }>(
+      "SELECT sections FROM core_review_packets WHERE head_sha = ?",
+      head,
+    );
+    expect(JSON.parse(stored?.sections ?? "{}").testsIntact.intact).toBe(false);
+    const next = await github.push(w.repo, item.branch, head, ["src/theme.ts"]);
+    expect(await rows("SELECT id FROM core_review_packets WHERE head_sha = ?", next)).toEqual([]);
   });
 });
 

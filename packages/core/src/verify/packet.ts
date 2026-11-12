@@ -6,6 +6,7 @@ import type { CheckResult } from "@software-factory/runner-contract";
 import type { ChangedFile } from "../services.ts";
 import type { CiSummary } from "./ci.ts";
 import { type RiskFlag, riskFlags } from "./risk.ts";
+import { type TestsIntact, testFindingLines, testsIntact } from "./tests-intact.ts";
 
 export interface PacketEvidence {
   summary: string;
@@ -48,6 +49,11 @@ export interface AssembledPacket {
   risk: RiskFlag[];
   /** Flags for the packet's `risk_flags` column: the computed ones, then the reviewer's. */
   riskFlags: string[];
+  /**
+   * Whether the diff weakens the tests (ADR 0450). Never part of the verdict and never from an
+   * agent: a person looks at the findings at the merge gate, and they block the auto-merge.
+   */
+  testsIntact: TestsIntact;
   sections: Record<string, unknown>;
 }
 
@@ -91,6 +97,21 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   }
 
   const risk = input.files ? riskFlags(input.files) : [];
+  const intact: TestsIntact = input.files
+    ? testsIntact(input.headSha, input.files)
+    : {
+        headSha: input.headSha,
+        intact: false,
+        findings: [
+          {
+            kind: "unreadable",
+            path: "",
+            line: null,
+            text: null,
+            message: "the diff couldn't be read from GitHub, so nothing says the tests are intact",
+          },
+        ],
+      };
   const verdict = evidencePass && ci.state === "success" ? "pass" : "fail";
   const evidenceReasons = [...missing.map((m) => `incomplete: ${m}`), ...reasons];
   const allReasons = [...ciReasons, ...evidenceReasons];
@@ -103,7 +124,9 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
     warnings,
     risk,
     riskFlags: [...risk.map((r) => r.message), ...evidence.riskFlags],
+    testsIntact: intact,
     sections: {
+      testsIntact: intact,
       verdict: { verdict, reasons: verdict === "pass" ? [] : allReasons, warnings },
       ci: { state: ci.state, checks: ci.checks },
       changed: input.files
@@ -125,6 +148,8 @@ export function verifyCheckOutput(args: {
   riskFlags: string[];
   ci: CiSummary;
   workItem: { number: number; title: string };
+  /** The tests-intact findings for this SHA (ADR 0450): shown first, for a person. */
+  testFindings?: string[];
 }): {
   status: "in_progress" | "completed";
   conclusion?: "success" | "failure";
@@ -139,9 +164,11 @@ export function verifyCheckOutput(args: {
       ? ` (${ci.checks.map((c) => `${c.name}: ${c.conclusion ?? c.status}`).join(", ")})`
       : ""
   }`;
+  const findings = args.testFindings ?? [];
   const summary = [
     `Work item #${args.workItem.number}: ${args.workItem.title}`,
     "",
+    ...list("Tests not intact: a person must look at these (ADR 0450)", findings),
     ...list("What fails", args.evidencePass ? [] : args.evidenceReasons),
     ...list("Warnings", args.warnings),
     ...list("Risk flags", args.riskFlags),
@@ -169,7 +196,20 @@ export function verifyCheckOutput(args: {
       summary,
     };
   }
-  return { status: "completed", conclusion: "success", title: "Verified by the factory", summary };
+  return {
+    status: "completed",
+    conclusion: "success",
+    title: findings.length
+      ? `Verified by the factory; ${findings.length} test finding${findings.length === 1 ? "" : "s"} for a person`
+      : "Verified by the factory",
+    summary,
+  };
 }
 
 const short = (sha: string) => sha.slice(0, 7);
+
+/** The tests-intact finding lines stored in a packet's sections (for `verifyCheckOutput`). */
+export function storedTestFindings(sections: Record<string, unknown>): string[] {
+  const t = sections.testsIntact as Partial<TestsIntact> | undefined;
+  return Array.isArray(t?.findings) ? testFindingLines(t.findings) : [];
+}
