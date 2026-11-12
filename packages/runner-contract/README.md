@@ -35,8 +35,14 @@ a worktree and a branch; `release` never unregisters or deletes a checkout.
    the runner's owner sends a message from the dashboard (or ~25 s), and the host types each one
    with `adapter.steer(session, steerText(text))`. Not stored by the cloud; at most once. A 404 (an
    older engine) means stop asking.
-6. Read the stage result from `RESULT_FILE` (`.factory-result.json`, never committed), push the run
-   branch, then `handback { branch, headSha, result }` and `release`.
+6. Read the stage result from `RESULT_FILE` (`.factory-result.json`, never committed). If the job
+   carries `checks` (ADR 0451), run each command in the worktree on the commit to hand back, through
+   `adapter.exec` when the adapter has it (a container runs them in the container), else a local
+   process with a scrubbed environment. A failure with `fixRounds` left goes back into the same
+   session (`adapter.steer(session, checkFailureMessage(...))`, then a second `events()` call for that
+   turn), and the fix is checked again. Push the run branch, then
+   `handback { branch, headSha, result, checks }` and `release`. The cloud stores each executed
+   check against its SHA; the verdict uses them, never the agent's own report.
 7. Any `409` with code `fenced` or `killed`: stop the session, release the workspace, drop the job.
 
 `httpControlPlane({ baseUrl: "https://sf-engine.zerobsai.com", runnerId, key })` implements all of

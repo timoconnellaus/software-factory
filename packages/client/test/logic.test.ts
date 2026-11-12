@@ -3,7 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { duration } from "../src/format.ts";
 import { groupByProject } from "../src/inbox.ts";
 import type { Inbox, WorkItemDetail } from "../src/ops.ts";
-import { keptOnRunner, packetSections, packetTestsIntact, parsePacket } from "../src/packet.ts";
+import {
+  keptOnRunner,
+  packetExecuted,
+  packetProof,
+  packetSections,
+  packetTestsIntact,
+  parsePacket,
+} from "../src/packet.ts";
 import { answerChoices, bulkAcceptable } from "../src/questions.ts";
 import { runnerLabel, updateLabel } from "../src/runners.ts";
 import { agentTime, stageSteps, yourTime } from "../src/work-item.ts";
@@ -99,6 +106,57 @@ describe("review packet sections (spec 14, criterion 1)", () => {
     expect(p.reviewer?.sameModelAsImplementer).toBe(true);
     // A packet from before the tests-intact guard reads as not checked, never as intact.
     expect(packetTestsIntact(p)).toBeNull();
+  });
+  it("reads the factory's checks and each criterion's proof (ADR 0451)", () => {
+    const p = parsePacket({
+      id: "rp_3",
+      headSha: "a".repeat(40),
+      verdict: "fail",
+      summary: "",
+      criteria: [{ criterion: "A", met: true, evidence: "unit", checks: ["tests"] }],
+      checks: [],
+      reviewer: null,
+      riskFlags: [],
+      sections: {
+        executed: {
+          declared: ["lint", "tests"],
+          results: [
+            null,
+            {
+              name: "tests",
+              command: "pnpm test",
+              exitCode: 0,
+              timedOut: false,
+              durationMs: 10,
+              logTail: "",
+              round: 0,
+              passed: true,
+            },
+          ],
+          extra: [],
+        },
+        proof: [
+          {
+            criterion: "A",
+            proven: true,
+            provenBy: ["tests"],
+            unproven: [],
+            reviewerMet: true,
+            opinion: "unit",
+          },
+        ],
+      },
+      createdAt: NOW,
+    });
+    expect(p.criteria[0]?.checks).toEqual(["tests"]);
+    expect(packetExecuted(p)?.rows.map((r) => [r.name, r.result?.passed ?? null])).toEqual([
+      ["lint", null],
+      ["tests", true],
+    ]);
+    expect(packetProof(p)?.get("A")?.proven).toBe(true);
+    // A packet from before: neither section, so the old met/unmet shows.
+    const old = parsePacket({ ...p, sections: {} });
+    expect([packetExecuted(old), packetProof(old)]).toEqual([null, null]);
   });
   it("reads the tests-intact findings (ADR 0450)", () => {
     const p = parsePacket({

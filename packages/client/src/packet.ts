@@ -3,7 +3,13 @@
 import { z } from "zod";
 import type { WorkItemDetail } from "./ops.ts";
 
-const criterion = z.object({ criterion: z.string(), met: z.boolean(), evidence: z.string() });
+const criterion = z.object({
+  criterion: z.string(),
+  met: z.boolean(),
+  evidence: z.string(),
+  /** The checks the reviewer linked it to (ADR 0451). */
+  checks: z.array(z.string()).default([]),
+});
 const check = z.object({
   name: z.string(),
   status: z.enum(["pass", "fail", "skipped"]),
@@ -207,4 +213,57 @@ export type TestsIntactSection = z.infer<typeof testsIntactSection>;
 export function packetTestsIntact(p: ParsedPacket): TestsIntactSection | null {
   const r = testsIntactSection.safeParse(p.sections.testsIntact);
   return r.success ? r.data : null;
+}
+
+const checkOutcome = z.object({
+  name: z.string(),
+  command: z.string(),
+  exitCode: z.number().nullable(),
+  timedOut: z.boolean().default(false),
+  durationMs: z.number(),
+  logTail: z.string().default(""),
+  round: z.number().default(0),
+  passed: z.boolean(),
+});
+const executedSection = z.object({
+  declared: z.array(z.string()),
+  results: z.array(checkOutcome.nullable()),
+  extra: z.array(checkOutcome).default([]),
+});
+const proofSection = z.array(
+  z.object({
+    criterion: z.string(),
+    proven: z.boolean(),
+    provenBy: z.array(z.string()).default([]),
+    unproven: z.array(z.string()).default([]),
+    reviewerMet: z.boolean(),
+    opinion: z.string().default(""),
+  }),
+);
+export type CheckOutcome = z.infer<typeof checkOutcome>;
+export type CriterionProof = z.infer<typeof proofSection>[number];
+
+/**
+ * The project's checks as the runner host ran them on the packet's SHA (ADR 0451): each declared
+ * check with its result, or null when it didn't run there. Null for a packet from before.
+ */
+export function packetExecuted(p: ParsedPacket): {
+  rows: { name: string; result: CheckOutcome | null }[];
+  extra: CheckOutcome[];
+} | null {
+  const r = executedSection.safeParse(p.sections.executed);
+  if (!r.success) return null;
+  return {
+    rows: r.data.declared.map((name, i) => ({ name, result: r.data.results[i] ?? null })),
+    extra: r.data.extra,
+  };
+}
+
+/**
+ * Each criterion's proof by criterion text (ADR 0451): Proven only by a linked check that passed.
+ * Null for a packet from before, whose criteria show the reviewer's met/unmet as before.
+ */
+export function packetProof(p: ParsedPacket): Map<string, CriterionProof> | null {
+  const r = proofSection.safeParse(p.sections.proof);
+  return r.success ? new Map(r.data.map((x) => [x.criterion, x])) : null;
 }

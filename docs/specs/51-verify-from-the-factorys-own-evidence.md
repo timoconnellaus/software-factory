@@ -109,3 +109,22 @@ step, holdout tests (ADR 0034), apps/desktop's screens until PR #56 merges.
     alone leaves it Not proven, with its evidence shown as opinion.
 12. `factory/verify` on the head SHA lists the executed results.
 13. The app shows the Checks run by the factory section and the Proven marks.
+
+## As built
+- **PR A** (#63): as specified. "Forces the item to a person" is the merge gate (always a person by
+  the floor) with the findings shown first; findings never fail the verdict, and `pr.autoMerge`
+  refuses a packet without `testsIntact.intact === true`. A new file under `.factory/checks/` is not
+  a gate-file edit (it is what ADR 0230's check-only class adds).
+- **PR B**:
+  - Checks are declared in config (`checks`, and a workflow's `checks`); the Settings screens don't
+    edit them yet (import or the config JSON does). No project declares any by default, so until one
+    does, the packet warns that only CI backs the verdict.
+  - The host sends a failure back by `steer` and a second `events()` call: runner-local needed two
+    lines (a steer starts a turn). An adapter without `steer` hands back at once and the item asks
+    a person.
+  - Without `exec` (runner-local today), checks run as a local process with a scrubbed environment
+    but **outside the harness sandbox**: the project's own test code runs as the host user. A
+    containerised runner should implement `exec`.
+  - Not proven doesn't fail the verdict; an unmet criterion still does.
+  - A factory item's verify job doesn't re-run the checks: the build's results are on the same SHA
+    (`branch.advance` only fast-forwards). An attached PR's verify job runs them once.

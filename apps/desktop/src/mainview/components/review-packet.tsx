@@ -6,12 +6,15 @@
 
 import type { WorkItemDetail } from "@software-factory/client/ops";
 import {
+  type CriterionProof,
   checkCounts,
   keptOnRunner,
   type PacketSection,
   type ParsedPacket,
   packetCounts,
+  packetExecuted,
   packetExtras,
+  packetProof,
   packetSections,
   packetTestsIntact,
   parsePacket,
@@ -143,6 +146,7 @@ export function ReviewPacket({ detail, full = false }: { detail: WorkItemDetail;
 
       {/* Always shown, whatever sections the project picks: it's for a person (ADR 0450). */}
       <TestsIntact packet={packet} />
+      <FactoryChecks packet={packet} />
 
       {packetSections(detail.policy?.reviewPacketSections).map((section) => (
         <Section
@@ -229,9 +233,19 @@ function Section({
           <ChangedFiles packet={packet} />
         </Panel>
       );
-    case "criteria":
+    case "criteria": {
+      const proof = packetProof(packet);
       return (
-        <Panel title="Acceptance criteria · evidence" testId="section-criteria" flush>
+        <Panel
+          title="Acceptance criteria · evidence"
+          subtitle={
+            proof
+              ? "Proven only by a check that passed on this commit; the reviewer's words are opinion"
+              : undefined
+          }
+          testId="section-criteria"
+          flush
+        >
           {packet.criteria.length === 0 ? (
             <div className="px-5 pb-4">
               <Empty>The packet has no criteria.</Empty>
@@ -244,15 +258,23 @@ function Section({
                   return (
                     <tr key={c.criterion} className="border-t align-top" data-met={c.met}>
                       <td className="w-10 py-2.5 pr-2 pl-5">
-                        <StatusDot status={c.met ? "done" : "failed"} className="mt-1.5" />
-                        <span className="sr-only">{c.met ? "met" : "not met"}</span>
+                        <StatusDot
+                          status={criterionStatus(c, proof?.get(c.criterion))}
+                          className="mt-1.5"
+                        />
+                        <span className="sr-only">
+                          {criterionLabel(c, proof?.get(c.criterion))}
+                        </span>
                       </td>
                       <td className="py-2.5 pr-3">{c.criterion}</td>
                       <td className="py-2.5 pr-5 text-muted-foreground text-xs">
                         {runner ? (
                           <span data-testid="kept-on-runner">kept on runner · {runner}</span>
                         ) : (
-                          c.evidence || "no evidence"
+                          <CriterionEvidence
+                            evidence={c.evidence}
+                            proof={proof?.get(c.criterion)}
+                          />
                         )}
                       </td>
                     </tr>
@@ -263,6 +285,7 @@ function Section({
           )}
         </Panel>
       );
+    }
     case "holdout": {
       const holdout = packet.sections.holdout ?? packet.sections.holdouts;
       return (
@@ -411,6 +434,88 @@ function Section({
   }
 }
 
+/** A criterion's mark (ADR 0451): proven by a check, met only in the reviewer's opinion, or unmet. */
+function criterionStatus(c: { met: boolean }, proof: CriterionProof | undefined): Status {
+  if (!c.met) return "failed";
+  if (!proof) return "done"; // a packet from before: the reviewer's word, as it was shown then
+  return proof.proven ? "done" : "waiting";
+}
+function criterionLabel(c: { met: boolean }, proof: CriterionProof | undefined): string {
+  if (!c.met) return "not met";
+  if (!proof) return "met";
+  return proof.proven ? "proven" : "not proven";
+}
+
+function CriterionEvidence({
+  evidence,
+  proof,
+}: {
+  evidence: string;
+  proof: CriterionProof | undefined;
+}) {
+  if (!proof) return <>{evidence || "no evidence"}</>;
+  return (
+    <div className="grid gap-0.5" data-testid="criterion-proof" data-proven={proof.proven}>
+      <div className="font-medium text-foreground">
+        {proof.proven ? `Proven by ${proof.provenBy.join(", ")}` : "Not proven"}
+        {!proof.proven && proof.unproven.length > 0 && (
+          <span className="font-normal text-muted-foreground">
+            {" "}
+            (linked {proof.unproven.join(", ")}: didn't pass on this commit)
+          </span>
+        )}
+      </div>
+      <div>Reviewer's opinion: {evidence || "no evidence"}</div>
+    </div>
+  );
+}
+
+/** The project's checks as the runner host ran them on this commit (ADR 0451). */
+function FactoryChecks({ packet }: { packet: ParsedPacket }) {
+  const executed = packetExecuted(packet);
+  if (!executed) return null; // a packet from before the factory ran checks itself
+  const rows = [...executed.rows, ...executed.extra.map((r) => ({ name: r.name, result: r }))];
+  return (
+    <Panel
+      title="Checks run by the factory"
+      subtitle={`Run by the runner host on ${packet.headSha.slice(0, 7)}, not reported by an agent`}
+      testId="section-factoryChecks"
+    >
+      {rows.length === 0 ? (
+        <Empty>The project declares no checks: only CI backs this verdict.</Empty>
+      ) : (
+        <ul className="grid gap-2 text-sm">
+          {rows.map(({ name, result }) => (
+            <li key={name} className="grid gap-1" data-testid="factory-check">
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusDot status={!result ? "idle" : result.passed ? "done" : "failed"} />
+                <b>{name}</b>
+                {result ? (
+                  <span className="text-muted-foreground text-xs">
+                    <code className="font-mono">{result.command}</code> ·{" "}
+                    {result.timedOut ? "timed out" : `exit ${result.exitCode ?? "signal"}`} ·{" "}
+                    {Math.max(1, Math.round(result.durationMs / 1000))} s
+                    {result.round
+                      ? ` · after ${result.round} fix round${result.round === 1 ? "" : "s"}`
+                      : ""}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground text-xs">didn't run on this commit</span>
+                )}
+              </div>
+              {result && !result.passed && result.logTail && (
+                <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap">
+                  {result.logTail}
+                </pre>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
 /** The tests-intact guard (ADR 0450): found in code from the diff, for a person, not the reviewer. */
 function TestsIntact({ packet }: { packet: ParsedPacket }) {
   const t = packetTestsIntact(packet);
@@ -463,6 +568,8 @@ function VerdictRow({ packet }: { packet: ParsedPacket }) {
   const c = packetCounts(packet);
   const checks = checkCounts(packet);
   const extras = packetExtras(packet);
+  const proof = packetProof(packet);
+  const proven = proof ? [...proof.values()].filter((x) => x.proven).length : 0;
   const cells: { label: string; value: string; status: Status; extra?: string }[] = [
     {
       label: checks.source === "ci" ? "CI on the head SHA" : "Checks (runner)",
@@ -475,11 +582,19 @@ function VerdictRow({ packet }: { packet: ParsedPacket }) {
             ? "running"
             : "idle",
     },
-    {
-      label: "Criteria",
-      value: `${c.met}/${c.total} met`,
-      status: c.total && c.met === c.total ? "done" : "failed",
-    },
+    proof
+      ? {
+          // ADR 0451: proven by an executed check, not by the reviewer's say-so.
+          label: "Criteria",
+          value: `${proven}/${c.total} proven`,
+          status: c.met < c.total ? "failed" : c.total && proven === c.total ? "done" : "waiting",
+          ...(c.total > proven && c.met === c.total ? { extra: "rest: opinion" } : {}),
+        }
+      : {
+          label: "Criteria",
+          value: `${c.met}/${c.total} met`,
+          status: c.total && c.met === c.total ? "done" : "failed",
+        },
     {
       label: "Reviewer (role review)",
       value: packet.reviewer

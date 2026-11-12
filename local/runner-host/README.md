@@ -38,10 +38,16 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    call is a `tool` event, a permission or idle notification is `waiting_input` (15 min, then the
    run fails), and `Stop` after the prompt ends the session.
 5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
-6. **Build only:** it commits any leftovers, then pushes `HEAD` to the run branch, and only there,
+6. **The project's checks** (ADR 0451, `src/checks.ts`), when the job carries them: after a build
+   session's turn, it commits the leftovers and runs each check in the worktree, on that commit,
+   through the adapter's `exec` (a local `/bin/sh -c` with only `PATH`, `HOME` and the like, never
+   the owner's tokens, for an adapter without one). A failure is typed into the same session (the
+   command, exit code and log tail, one steer) and the fix checked again, up to `fixRounds`. An
+   attached PR's verify job runs them once, with no fixes. The results go on the hand-back.
+7. **Build only:** it commits any leftovers, then pushes `HEAD` to the run branch, and only there,
    with a *fresh* job token. It never forces.
-7. It uploads artifacts: the diff, the terminal screen, check output from Claude's transcript, and a summary.
-8. It hands back `{ branch, headSha, result }`, releases the workspace, revokes the tokens and calls `release`.
+8. It uploads artifacts: the diff, the terminal screen, check output from Claude's transcript, and a summary.
+9. It hands back `{ branch, headSha, result, checks }`, releases the workspace, revokes the tokens and calls `release`.
 
 A `409 fenced|killed`, or a cancel command, stops the session at once: no push and no hand-back.
 
@@ -360,6 +366,7 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 |---|---|
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
+| `src/checks.ts` | The project's checks (ADR 0451): run through the adapter's `exec` or a scrubbed local process, failures back into the same session |
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
 | `src/runner.ts` | Wires config → channel client + git + runner-local (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
