@@ -34,6 +34,41 @@ export const configSchema = z.object({
    * `false` turns it off; the runner then reports `blocked` when it is behind.
    */
   autoUpdate: z.boolean().default(true),
+  /**
+   * Where jobs run (ADR 0430): `sandbox` (default) is a worktree with Claude Code's OS sandbox on
+   * this machine (ADR 0270); `container` is a Docker container per job, every stage with
+   * permissions off.
+   */
+  isolation: z.enum(["sandbox", "container"]).default("sandbox"),
+  /** Container isolation's settings (ADR 0430). */
+  container: z
+    .object({
+      /** The `docker` CLI (default: found on PATH, Homebrew's or ~/.local/bin). */
+      docker: z.string().optional(),
+      /**
+       * The model credential that goes into the container: `CLAUDE_CODE_OAUTH_TOKEN` (from
+       * `claude setup-token`) or `ANTHROPIC_API_KEY`. Default: the same variable in sf-runner's own
+       * environment. This file is 0600, like the runner key.
+       */
+      env: z
+        .object({
+          CLAUDE_CODE_OAUTH_TOKEN: z.string().min(1).optional(),
+          ANTHROPIC_API_KEY: z.string().min(1).optional(),
+        })
+        .strict()
+        .optional(),
+      /** More egress hosts for every job on this runner, on top of the stage's. */
+      allowedHosts: z.array(z.string().min(1).max(260)).max(100).optional(),
+      cpus: z.number().positive().max(256).optional(),
+      /** Docker's syntax: `8g`, `512m`. */
+      memory: z
+        .string()
+        .regex(/^\d+[bkmg]?$/i)
+        .optional(),
+      pids: z.number().int().min(64).max(1_000_000).optional(),
+    })
+    .strict()
+    .optional(),
   /** Test only: clone/push URL per canonical GitHub URL. */
   repoUrlMap: z.record(z.string(), z.string()).optional(),
 });
@@ -53,6 +88,11 @@ export interface Paths {
   worktreesDir: string;
   /** Each run's attachments (`<attachmentsDir>/<jobId>`), which the agent reads: also not under state. */
   attachmentsDir: string;
+  /**
+   * Container jobs' dirs (`<containersDir>/sf-<jobId>/`: the job repo, home, temp) and their
+   * credential env files (ADR 0430). Under the data dir: Docker Desktop shares the home dir.
+   */
+  containersDir: string;
   logDir: string;
 }
 
@@ -76,6 +116,7 @@ export function paths(env: NodeJS.ProcessEnv = process.env): Paths {
     runsDir: join(stateDir, "runs"),
     worktreesDir: join(dataDir, "worktrees"),
     attachmentsDir: join(dataDir, "attachments"),
+    containersDir: join(dataDir, "containers"),
     logDir: join(home, "Library", "Logs", "software-factory"),
   };
 }
@@ -99,7 +140,19 @@ export async function saveConfig(file: string, config: RunnerConfig): Promise<vo
 
 /** The config without its key, for `status`. */
 export function redacted(config: RunnerConfig): Omit<RunnerConfig, "key"> & { key: string } {
-  return { ...config, key: `${config.key.slice(0, 4)}…(redacted)` };
+  const env = config.container?.env;
+  return {
+    ...config,
+    key: `${config.key.slice(0, 4)}…(redacted)`,
+    ...(config.container && env
+      ? {
+          container: {
+            ...config.container,
+            env: Object.fromEntries(Object.keys(env).map((k) => [k, "(redacted)"])),
+          },
+        }
+      : {}),
+  };
 }
 
 export type { Capability };

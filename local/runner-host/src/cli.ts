@@ -10,7 +10,9 @@
 //   sf-runner doctor [--fix]       check node, git, tmux, claude, the channel, the checkouts (one
 //                                  per remote, no job worktree or tmux session without a job),
 //                                  and that each running job's Claude runs exactly as the
-//                                  harness launched it (ADR 0270)
+//                                  harness launched it (ADR 0270). With container isolation
+//                                  (ADR 0430): Docker, the agent image (--fix builds it), the
+//                                  model credential, and no container left without a job
 //   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
@@ -20,10 +22,16 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import {
+  checkRunningContainer,
   checkRunningHarness,
+  currentImage,
   diagnose,
+  diagnoseContainers,
+  ensureImage,
   jobIdOfSession,
   nodeExec,
+  readContainerRecord,
+  reapContainers,
   reapOrphans,
   tmuxAtLeast,
   tmuxCli,
@@ -40,24 +48,18 @@ import {
   saveConfig,
 } from "./config.ts";
 import { deviceLogin } from "./device-login.ts";
-// `sf-runner`: connect this machine to the factory, run the runner, install it as a launchd service.
-//
-//   sf-runner login [--name m5] [--url https://sf-engine.zerobsai.com] [--app https://…] [--no-install]
-//                                  print a code, wait for approval in the app, save the key, install
-//   sf-runner pair --runner-id r_… --key-stdin   (fallback: a key registered in Setup)
-//   sf-runner run                  run in the foreground (what the service runs)
-//   sf-runner status               config (key redacted), service state, the jobs it is running,
-//                                  and its version against the desired one (self-update, ADR 0360)
-//   sf-runner doctor [--fix]       check node, git, orca, claude, the channel, Orca's repos
-//                                  (duplicate source repos for one remote, job worktrees with no
-//                                  job), and that each running job's Claude runs exactly as the
-//                                  harness launched it (ADR 0270)
-//   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
 import { acquireHostLock, HostLockedError } from "./host-lock.ts";
 import * as launchd from "./launchd.ts";
 import { readLiveJobs } from "./live-jobs.ts";
 import { findOnPath, parsePairingInput, serviceNode } from "./pairing.ts";
-import { buildRunner, hostDirs, liveJobsFile } from "./runner.ts";
+import {
+  buildRunner,
+  containerDirs,
+  dockerBin,
+  hostDirs,
+  hostModelCredential,
+  liveJobsFile,
+} from "./runner.ts";
 import {
   createSelfUpdater,
   pnpmInstall,
@@ -431,6 +433,55 @@ async function doctor(args: string[]) {
     if (left.length) throw new Error(`${left.length} problem(s) left after --fix`);
     return relevant.some((f) => !f.fixable) ? "fixed what can be fixed here" : "fixed";
   });
+  const configured = await loadConfig(dirs.configFile).catch(() => null);
+  if (configured?.isolation === "container") {
+    // ADR 0430: a container per job.
+    const { runtime } = containerDirs(configured, dirs);
+    let dockerUp = false;
+    await check(`docker (${dockerBin(configured)})`, async () => {
+      const v = await runtime.version();
+      dockerUp = true;
+      return `server ${v}`;
+    });
+    if (dockerUp) {
+      await check("agent image", async () => {
+        const image = await currentImage(runtime);
+        if (image.id) return `${image.tag} (${image.id.slice(0, 19)})`;
+        if (!values.fix) {
+          throw new Error(
+            `${image.tag} isn't built; sf-runner doctor --fix builds it (a few minutes)`,
+          );
+        }
+        console.log(`  building ${image.tag}…`);
+        const built = await ensureImage(runtime);
+        return `${built.tag} built (${built.id.slice(0, 19)})`;
+      });
+      await check("container jobs (no container, network or job dir without a job)", async () => {
+        const live = await liveJobs();
+        if (!live) return "not checked: the running service doesn't report its jobs";
+        const findings = await diagnoseContainers(containerDirs(configured, dirs), live);
+        if (findings.length === 0) return "ok";
+        for (const f of findings) console.log(`  - ${f}`);
+        if (!values.fix) {
+          throw new Error(`${findings.length} left over; run sf-runner doctor --fix`);
+        }
+        const reaped = await reapContainers(containerDirs(configured, dirs), live);
+        return `fixed: removed what ${reaped.join(", ")} left`;
+      });
+    }
+    await check("model credential for containers", async () => {
+      const credential = hostModelCredential(configured)();
+      if (!credential) {
+        throw new Error(
+          "none: run `claude setup-token` and put CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY) in runner.json container.env",
+        );
+      }
+      const name = Object.keys(credential.env)[0] as keyof NonNullable<
+        NonNullable<RunnerConfig["container"]>["env"]
+      >;
+      return `${name} from ${configured.container?.env?.[name] ? "runner.json" : "sf-runner's environment"}`;
+    });
+  }
   await check("running jobs' harness (permission mode, setting sources, settings)", async () => {
     const live = await liveJobs();
     // Unknown live set (an old host): check every run dir that has a launch record.
@@ -438,7 +489,14 @@ async function doctor(args: string[]) {
     const lines: string[] = [];
     let bad = 0;
     for (const jobId of jobs) {
-      const checked = await checkRunningHarness(join(dirs.runsDir, jobId));
+      const runDir = join(dirs.runsDir, jobId);
+      // A container job's Claude is checked inside its container (ADR 0430).
+      const checked = (await readContainerRecord(runDir))
+        ? await checkRunningContainer(
+            runDir,
+            configured ? containerDirs(configured, dirs).runtime : undefined,
+          )
+        : await checkRunningHarness(runDir);
       if (!checked) {
         if (live) lines.push(`${jobId}: no launch record (started by an older runner?)`);
         continue;
@@ -447,7 +505,9 @@ async function doctor(args: string[]) {
         bad++;
         lines.push(`${jobId}: harness-config-mismatch: ${checked.problems.join("; ")}`);
       } else {
-        lines.push(`${jobId}: ${checked.record.mode}, as launched`);
+        lines.push(
+          `${jobId}: ${checked.record.mode}${checked.record.isolation === "container" ? " in its container" : ""}, as launched`,
+        );
       }
     }
     for (const line of lines) console.log(`  - ${line}`);
@@ -495,10 +555,15 @@ async function install(args: string[]) {
   // The service starts Claude in tmux: both must be on its PATH, even from a shell without them
   // (an SSH session, incident #9; `claude` is usually in ~/.local/bin).
   const localBin = join(process.env.HOME ?? "", ".local", "bin");
-  const tools = ["tmux", "claude"].map((name) => ({
-    name,
-    path: findOnPath(name, process.env.PATH, undefined, [localBin]),
-  }));
+  const config = await loadConfig(dirs.configFile).catch(() => null);
+  const tools = [
+    ...["tmux", "claude"].map((name) => ({
+      name,
+      path: findOnPath(name, process.env.PATH, undefined, [localBin]),
+    })),
+    // A container runner starts each job with `docker` (ADR 0430).
+    ...(config?.isolation === "container" ? [{ name: "docker", path: dockerBin(config) }] : []),
+  ];
   for (const t of tools) {
     if (!t.path)
       console.log(`! ${t.name} wasn't found on PATH or in the usual places: jobs won't start.`);

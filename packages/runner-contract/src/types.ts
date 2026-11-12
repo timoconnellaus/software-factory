@@ -37,6 +37,9 @@ export const CONTRACT_VERSION = "1" as const;
  * - `work-item-attachments`: fetches the work item's attachments over the channel into the run's
  *   workspace, outside the git tree, and tells the agent where they are (ADR 0310). A runner
  *   without it still runs every job; its agent just sees no attachments.
+ * - `container-isolation`: each job's harness runs in its own container: only the job's repo
+ *   mounted, no host credentials, an egress allowlist (ADR 0430). Planning sessions still run on
+ *   the host, so a policy should require it for the other stages only.
  */
 export const CAPABILITIES = [
   "browser",
@@ -46,6 +49,7 @@ export const CAPABILITIES = [
   "headless",
   "own-hardware",
   "work-item-attachments",
+  "container-isolation",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 

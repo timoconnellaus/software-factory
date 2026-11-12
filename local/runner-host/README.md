@@ -86,6 +86,52 @@ A **planning** job is a long-lived Claude session that plans one work item with 
   (ADR 0270) is what confines it. The status hook runs outside the sandbox, as every hook does: it
   only appends to the run's status file and always answers `{}`.
 
+### A container per job (`"isolation": "container"`, ADR 0430, spec 33)
+Opt in per runner. The default stays the worktree and Claude's sandbox above. With it, each job's
+Claude runs in its own Docker container (Docker Desktop or OrbStack on the Mac, Docker Engine on
+Linux), and every stage runs `bypassPermissions` unless the project's policy picks another mode.
+- **The job repo.** The job runs in a new repo, not a worktree of your checkout:
+  `<data dir>/containers/sf-<jobId>/work`, with its git dir in `…/git`. The host fetches into it only
+  the start point's history and the default branch, through a temporary
+  `refs/software-factory/jobs/<jobId>` in your checkout. Your other branches and uncommitted work are
+  never in it.
+- **What the container sees.** It mounts, at the same paths as on the host:
+  - the working tree;
+  - the git dir (its `config`, `hooks`, `info` and alternates read only);
+  - the run dir, read only (only `status.jsonl` and `claude.pid` are writable);
+  - a fresh home, its temp dir and the attachments.
+
+  No host home, no keychain, no Docker socket. The root filesystem is read-only, every capability is
+  dropped, and it runs as your uid.
+- **Egress.** The container is on an internal network with no route out. Its only way out is the
+  job's proxy container. The proxy allows the stage's hosts (npm, GitHub, Cloudflare, the project's
+  `allowedDomains`), `api.anthropic.com` and `container.allowedHosts`, and answers everything else
+  403. The run's `egress-log` artifact lists each decision.
+- **The launch check** runs inside the container: `docker exec … ps` against the launch record, the
+  settings hashes, and `docker inspect` against `container.json` (image, mounts, network,
+  privileges). `doctor` runs it on running jobs.
+- **The credential.** The one secret inside is your Claude token, which goes in as an env var. Run
+  `claude setup-token` and put the token in `runner.json` as
+  `"container": { "env": { "CLAUDE_CODE_OAUTH_TOKEN": "…" } }`. An `ANTHROPIC_API_KEY` works too, or
+  the same variable in sf-runner's environment. It reaches Docker through a 0600 env file that is
+  deleted once Claude is up.
+- **After the session.** The runner stops the containers, puts the job's git dir back (no
+  `commondir`, alternates, hooks, config changes or symlinks), and scans everything it would push
+  for the credential. Any finding fails the job without a push. Otherwise the host merges, commits
+  leftovers and pushes from the job repo exactly as before.
+- **Takeover** is unchanged: `tmux -L software-factory attach -t sf-<jobId>` attaches to Claude in
+  the container. Docker's detach keys are `ctrl-^ ctrl-_`.
+- **The image** is `packages/runner-local/container/Dockerfile` (Node 24, git, build tools,
+  corepack, Claude Code pinned), tagged `software-factory-agent:<content hash>`. The runner builds it
+  on the first job, or `sf-runner doctor --fix` does.
+- **Planning sessions** still run on the host, in a worktree with Claude's sandbox: their relay is on
+  the host's loopback (ADR 0350).
+
+Switching a runner: install Docker, then follow these steps with no jobs running.
+1. Set `"isolation": "container"` and the token in `runner.json`.
+2. Run `sf-runner doctor --fix`. It checks Docker and the credential, and builds the image.
+3. Run `sf-runner install`, which puts `docker` on the service's PATH and restarts the service.
+
 ## Connecting: `sf-runner login` (ADR 0056)
 From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
 ```sh
@@ -216,9 +262,14 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 | `maxLight` | 6 | Light jobs at once: triage, spec and planning sessions (ADR 0301). An idle planning session holds one |
 | `heartbeatMs` | 20000 | |
 | `checkouts` | set once by `login` / `doctor --fix` | Directories whose immediate git repos are your checkouts, e.g. `["~/code", "~/orca/projects"]`. A job runs as a worktree of the one whose `origin` is its repo; none → the runner's own clone |
-| `capabilities` | `hooks`, `ui-takeover`, `own-hardware`, `work-item-attachments` | No `browser`: screenshot evidence is skipped |
+| `capabilities` | `hooks`, `ui-takeover`, `own-hardware`, `work-item-attachments` (+ `container-isolation` with containers) | No `browser`: screenshot evidence is skipped |
 | `identity` | `Software Factory <software-factory@users.noreply.github.com>` | Commit author |
 | `autoUpdate` | `true` | Update the runner's checkout to the deployed commit when idle (ADR 0360); `false` reports `blocked` instead |
+| `isolation` | `sandbox` | `container`: a Docker container per job, every stage `bypassPermissions` (ADR 0430, above) |
+| `container.env` | — | The model credential for containers: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`. Else the same variable in sf-runner's environment |
+| `container.docker` | found on PATH, Homebrew, `~/.local/bin`, Docker.app | The `docker` CLI |
+| `container.allowedHosts` | — | More egress hosts for every job on this runner (`host`, `*.host`, `host:port`) |
+| `container.cpus`, `container.memory`, `container.pids` | —, —, 4096 | Limits per job container (`memory` in Docker's syntax, `8g`) |
 | `repoUrlMap` | — | Test only: clone and push a local bare repo in place of GitHub |
 
 ## End-to-end test (local engine)
@@ -245,7 +296,7 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
-| `src/runner.ts` | Wires config → channel client + git + runner-local (the only file naming an adapter) |
+| `src/runner.ts` | Wires config → channel client + git + runner-local, or its container runner with `isolation: container` (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
 | `src/config.ts`, `src/cli.ts`, `src/launchd.ts` | `sf-runner pair/run/status/doctor/install/uninstall` |
 | `test/` | The lifecycle against a fake cloud serving the real signed protocol and a local bare repo |

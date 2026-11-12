@@ -20,7 +20,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HarnessProfile, Job, JobStage } from "@software-factory/runner-contract";
 import type { PlanningLaunch } from "./planning/project.ts";
-import { type PermissionMode, RUN_SETTINGS_FILE, SETTINGS_FILE, stageMode } from "./settings.ts";
+import {
+  type Isolation,
+  type PermissionMode,
+  RUN_SETTINGS_FILE,
+  SETTINGS_FILE,
+  stageMode,
+} from "./settings.ts";
 
 /** The setting sources a run loads: the repo's and the projected local file, never the user's. */
 export const SETTING_SOURCES = "project,local";
@@ -35,6 +41,8 @@ export interface LaunchRecord {
   jobId: string;
   stage: JobStage;
   mode: PermissionMode;
+  /** Where the run is confined (ADR 0430); absent in records from before it (the sandbox). */
+  isolation?: Isolation;
   /** The exact argv, `argv[0]` included. */
   argv: string[];
   /** sha256 of the projected settings (both copies have the same bytes). */
@@ -53,13 +61,15 @@ export function claudeArgv(
     profile?: HarnessProfile;
     /** A planning session (ADR 0350): its MCP server, and the conversation to start or resume. */
     planning?: PlanningLaunch;
+    /** A container per job changes the stage's default mode (ADR 0430). */
+    isolation?: Isolation;
   },
 ): string[] {
   const planning = options.planning;
   return [
     options.claudeBin ?? "claude",
     "--permission-mode",
-    stageMode(job.stage, options.profile ?? job.harness.profile),
+    stageMode(job.stage, options.profile ?? job.harness.profile, options.isolation),
     "--setting-sources",
     SETTING_SOURCES,
     "--settings",

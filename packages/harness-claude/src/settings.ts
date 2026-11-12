@@ -71,9 +71,10 @@ export interface ClaudeSettings {
     additionalDirectories?: string[];
   };
   sandbox: {
-    enabled: true;
-    /** Refuse to start rather than run commands unsandboxed. */
-    failIfUnavailable: true;
+    /** On in every stage, except inside a container, where the container is the floor (ADR 0430). */
+    enabled: boolean;
+    /** Refuse to start rather than run commands unsandboxed (whenever the sandbox is on). */
+    failIfUnavailable: boolean;
     /** Never: `dangerouslyDisableSandbox` is ignored. The floor; no profile can change it. */
     allowUnsandboxedCommands: false;
     autoAllowBashIfSandboxed: boolean;
@@ -136,7 +137,16 @@ export interface SettingsOptions {
   attachmentsDir?: string;
   /** Files the agent's Read tool may not open (a planning session's relay file, ADR 0350). */
   denyReadFiles?: string[];
+  /**
+   * Where the run is confined (ADR 0430): `sandbox` (default) is Claude Code's OS sandbox on the
+   * host (ADR 0270); `container` is a container per job, which is the floor instead. Claude's own
+   * sandbox is off there, and every stage defaults to `bypassPermissions`.
+   */
+  isolation?: Isolation;
 }
+
+/** How a run is confined: Claude Code's OS sandbox on the host, or a container per job (ADR 0430). */
+export type Isolation = "sandbox" | "container";
 
 /** Hook events whose output can grant a permission or answer a dialog: a runner may not add them. */
 export const DECISION_HOOK_EVENTS = ["PreToolUse", "PermissionRequest", "Elicitation"] as const;
@@ -360,9 +370,28 @@ export const DEFAULT_MODES: Record<JobStage, PermissionMode> = {
   verify: "dontAsk",
 };
 
-/** The permission mode a stage runs in: the project's choice, else the default. */
-export function stageMode(stage: JobStage, profile?: HarnessProfile): PermissionMode {
-  return profile?.permissionMode?.[stage] ?? DEFAULT_MODES[stage];
+/**
+ * The default mode per stage inside a container (ADR 0430): the container confines the whole
+ * process, so every stage runs with permissions off.
+ */
+export const CONTAINER_MODES: Record<JobStage, PermissionMode> = {
+  triage: "bypassPermissions",
+  spec: "bypassPermissions",
+  planning: "bypassPermissions",
+  build: "bypassPermissions",
+  verify: "bypassPermissions",
+};
+
+/** The permission mode a stage runs in: the project's choice, else the isolation's default. */
+export function stageMode(
+  stage: JobStage,
+  profile?: HarnessProfile,
+  isolation: Isolation = "sandbox",
+): PermissionMode {
+  return (
+    profile?.permissionMode?.[stage] ??
+    (isolation === "container" ? CONTAINER_MODES : DEFAULT_MODES)[stage]
+  );
 }
 
 /** The hosts sandboxed commands may reach: the defaults plus the project's additions. */
@@ -415,7 +444,11 @@ const abs = (path: string) => `//${path.replace(/^\/+/, "")}`;
 /** The settings for one run. Pure: `projectHarness` writes it. */
 export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): ClaudeSettings {
   const profile = options.profile;
-  const mode = stageMode(job.stage, profile);
+  const isolation = options.isolation ?? "sandbox";
+  const mode = stageMode(job.stage, profile, isolation);
+  // Inside a container the container is the floor: Claude's own sandbox can't run nested there
+  // (bubblewrap needs user namespaces Docker's seccomp profile blocks), ADR 0430.
+  const osSandbox = isolation === "sandbox";
   const domains = allowedDomains(profile);
   const runTmp = options.runTmp ?? `${options.runDir}/tmp`;
   for (const event of DECISION_HOOK_EVENTS) {
@@ -476,8 +509,8 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
       ...(options.attachmentsDir ? { additionalDirectories: [options.attachmentsDir] } : {}),
     },
     sandbox: {
-      enabled: true,
-      failIfUnavailable: true,
+      enabled: osSandbox,
+      failIfUnavailable: osSandbox,
       allowUnsandboxedCommands: false,
       // Only where the mode lets everything through anyway; elsewhere the stage allowlist decides.
       autoAllowBashIfSandboxed: mode === "bypassPermissions",

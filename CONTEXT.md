@@ -290,7 +290,8 @@ _Avoid_: driver, plugin, integration
 **Job session**
 The live harness for one job: under runner-local, Claude Code in the tmux session `sf-<jobId>` on
 the factory's own tmux socket (`tmux -L software-factory`), in the job's worktree. Its status comes
-from the harness's status hook (`<runDir>/status.jsonl`), not the screen (ADR 0380).
+from the harness's status hook (`<runDir>/status.jsonl`), not the screen (ADR 0380). On a
+container runner, the tmux session runs the job's container, and Claude runs inside it (ADR 0430).
 _Avoid_: terminal (the session may have no terminal attached), pane
 
 **Runner host**
@@ -304,6 +305,15 @@ It keeps its own code on the commit the engine was deployed from, updating itsel
 (ADR 0360).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
+**Isolation**
+How a runner confines a job's harness, set per runner in `runner.json` (ADR 0430):
+- `sandbox`, the default: a git worktree with Claude Code's OS sandbox (ADR 0270);
+- `container`: a Docker container per job. It mounts only the **job repo** (a new repo per job, with
+  only the start point's history and the default branch), a fresh home and temp dirs. Egress goes
+  only through the job's **egress proxy** (the stage's allowed hosts and the model API). Every stage
+  runs `bypassPermissions`.
+_Avoid_: sandbox (for the container: the sandbox is Claude's own)
+
 **Capability**
 Something a runner or harness declares it can do. Jobs ask for capabilities; `.factory/` can
 restrict them. The known ones:
@@ -315,7 +325,9 @@ restrict them. The known ones:
   heartbeat);
 - `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`);
 - `work-item-attachments`: fetches the work item's attachments over the job channel into the run,
-  outside the git tree (ADR 0310).
+  outside the git tree (ADR 0310);
+- `container-isolation`: each job's harness runs in its own container (ADR 0430). Planning sessions
+  still run on the host.
 _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**
