@@ -3,6 +3,7 @@
 import { Card } from "@software-factory/ui/components/card";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
+import { Table, TableBody, TableCell, TableRow } from "@software-factory/ui/components/table";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect } from "react";
@@ -192,11 +193,11 @@ function InboxPage() {
           <div className="px-5 pb-4 text-muted-foreground text-sm">Nothing is running.</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <tbody>
+            <Table className="w-full text-sm">
+              <TableBody>
                 {data.running.map((item) => (
-                  <tr key={item.id} className="border-t">
-                    <td className="py-2.5 pr-3 pl-5">
+                  <TableRow key={item.id} className="border-t">
+                    <TableCell className="py-2.5 pr-3 pl-5">
                       <StatusBadge
                         status={
                           item.status === "waiting"
@@ -208,25 +209,25 @@ function InboxPage() {
                       >
                         {STAGE_LABEL[item.stage] ?? item.stage}
                       </StatusBadge>
-                    </td>
-                    <td className="w-full py-2.5 pr-3">
+                    </TableCell>
+                    <TableCell className="whitespace-normal w-full py-2.5 pr-3">
                       <Link to="/work/$id" params={{ id: item.id }} className="hover:underline">
                         {item.title}
                       </Link>
                       {item.kind === "incident" && (
                         <span className="ml-2 text-muted-foreground text-xs">factory incident</span>
                       )}
-                    </td>
-                    <td className="whitespace-nowrap py-2.5 pr-3 text-muted-foreground">
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap py-2.5 pr-3 text-muted-foreground">
                       {projectName(item.projectId)}
-                    </td>
-                    <td className="whitespace-nowrap py-2.5 pr-5 font-mono text-muted-foreground text-xs">
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap py-2.5 pr-5 font-mono text-muted-foreground text-xs">
                       {item.statusReason ?? item.status} · {ago(item.createdAt).replace(" ago", "")}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         )}
         <div className="border-t px-5 py-3">

@@ -1,5 +1,6 @@
 // Attachments on the New work form (spec wi-1): files picked, dropped or pasted before the work item
 // exists are staged here and uploaded once `workItem.create` has made it.
+import { Button } from "@software-factory/ui/components/button";
 import { Paperclip, X } from "lucide-react";
 import { useState } from "react";
 import { formatBytes, precheck, uploadAttachment } from "#/lib/attachments";
@@ -39,14 +40,15 @@ export function StagedAttachments({
           <Paperclip className="size-3.5 text-muted-foreground" />
           <span className="min-w-0 truncate">{f.name}</span>
           <span className="text-muted-foreground text-xs">{formatBytes(f.size)}</span>
-          <button
-            type="button"
-            className="ml-auto text-muted-foreground"
+          <Button
+            size="icon"
+            variant="ghost"
+            className="ml-auto size-6 text-muted-foreground"
             aria-label={`Don't attach ${f.name}`}
             onClick={() => onChange(files.filter((_, j) => j !== i))}
           >
             <X className="size-3.5" />
-          </button>
+          </Button>
         </div>
       ))}
       <AddFiles

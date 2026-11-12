@@ -12,6 +12,14 @@ import {
 } from "@software-factory/ui/components/dialog";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@software-factory/ui/components/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@software-factory/ui/components/tabs";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
@@ -19,6 +27,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Attachments } from "#/components/attachments";
+import { OptionSelect } from "#/components/option-select";
 import { Planning } from "#/components/planning";
 import { ReviewPacket } from "#/components/review-packet";
 import { Timeline } from "#/components/timeline";
@@ -325,35 +334,38 @@ function Runs({ detail }: { detail: WorkItemDetail }) {
   }
   return (
     <Card className="gap-0 overflow-x-auto py-0">
-      <table className="w-full text-sm" data-testid="runs">
-        <thead>
-          <tr className="text-left text-muted-foreground text-xs">
-            <th className="px-4 py-2.5 font-medium">Run</th>
-            <th className="px-2 py-2.5 font-medium">Stage</th>
-            <th className="px-2 py-2.5 font-medium">Runner</th>
-            <th className="px-2 py-2.5 font-medium">Branch</th>
-            <th className="px-2 py-2.5 font-medium">Time</th>
-            <th className="px-4 py-2.5 font-medium">Status</th>
-          </tr>
-        </thead>
-        <tbody>
+      <Table className="w-full text-sm" data-testid="runs">
+        <TableHeader>
+          <TableRow className="text-left text-muted-foreground text-xs">
+            <TableHead className="px-4 py-2.5 font-medium">Run</TableHead>
+            <TableHead className="px-2 py-2.5 font-medium">Stage</TableHead>
+            <TableHead className="px-2 py-2.5 font-medium">Runner</TableHead>
+            <TableHead className="px-2 py-2.5 font-medium">Branch</TableHead>
+            <TableHead className="px-2 py-2.5 font-medium">Time</TableHead>
+            <TableHead className="px-4 py-2.5 font-medium">Status</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {detail.runs.map((r) => (
-            <tr key={r.id} className="border-t align-top">
-              <td className="px-4 py-2.5 font-mono text-xs">#{r.runNo}</td>
-              <td className="px-2 py-2.5">{capitalise(r.stage)}</td>
-              <td className="px-2 py-2.5 font-mono text-xs">
+            <TableRow key={r.id} className="border-t align-top">
+              <TableCell className="px-4 py-2.5 font-mono text-xs">#{r.runNo}</TableCell>
+              <TableCell className="px-2 py-2.5">{capitalise(r.stage)}</TableCell>
+              <TableCell className="whitespace-normal px-2 py-2.5 font-mono text-xs">
                 {runners.data?.runners.find((x) => x.id === r.runnerId)?.name ?? r.runnerId}
                 <div className="font-sans text-muted-foreground">Claude Code</div>
-              </td>
-              <td className="max-w-56 truncate px-2 py-2.5 font-mono text-xs" title={r.branch}>
+              </TableCell>
+              <TableCell
+                className="max-w-56 truncate px-2 py-2.5 font-mono text-xs"
+                title={r.branch}
+              >
                 {r.branch}
-              </td>
-              <td className="whitespace-nowrap px-2 py-2.5 text-xs">
+              </TableCell>
+              <TableCell className="whitespace-nowrap px-2 py-2.5 text-xs">
                 {duration(
                   (r.endedAt ? Date.parse(r.endedAt) : Date.now()) - Date.parse(r.startedAt),
                 )}
-              </td>
-              <td className="px-4 py-2.5 text-xs">
+              </TableCell>
+              <TableCell className="whitespace-normal px-4 py-2.5 text-xs">
                 <span className="inline-flex items-center gap-1.5">
                   <StatusDot
                     status={
@@ -367,11 +379,11 @@ function Runs({ detail }: { detail: WorkItemDetail }) {
                   {r.outcome ?? r.status}
                 </span>
                 {r.summary && <div className="mt-1 text-muted-foreground">{r.summary}</div>}
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </Card>
   );
 }
@@ -507,17 +519,13 @@ function WorkflowLine({ detail }: { detail: WorkItemDetail }) {
     <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="work-item-workflow">
       <span className="text-muted-foreground">Workflow</span>
       {changeable ? (
-        <select
-          className="h-8 rounded-md border bg-background px-2"
+        <OptionSelect
+          aria-label="Workflow"
           value={item.workflow ?? ""}
           disabled={busy}
-          onChange={(e) => void change(e.target.value)}
-        >
-          <option value="">The skeleton alone</option>
-          {workflows.map((w) => (
-            <option key={w.name}>{w.name}</option>
-          ))}
-        </select>
+          options={[{ value: "", label: "The skeleton alone" }, ...workflows.map((w) => w.name)]}
+          onChange={(v) => void change(v)}
+        />
       ) : (
         <span className="font-medium">{item.workflow ?? "The skeleton alone"}</span>
       )}

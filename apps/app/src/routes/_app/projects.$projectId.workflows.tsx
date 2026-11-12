@@ -18,6 +18,7 @@ import {
   Segmented,
   useConfigDraft,
 } from "#/components/config-editor";
+import { OptionSelect } from "#/components/option-select";
 import { configQuery } from "#/lib/queries";
 import { useProjects } from "#/lib/session";
 
@@ -241,21 +242,16 @@ function WorkflowEditor({
           onChange={onChange}
         />
         <Core name="Build" detail="Role implement">
-          <select
-            className="h-8 rounded-md border bg-background px-2 text-sm"
+          <OptionSelect
             aria-label="Build agent"
             value={workflow.core?.build ?? ""}
-            onChange={(e) =>
+            options={[{ value: "", label: "Default builder" }, ...builders.map((a) => a.name)]}
+            onChange={(v) =>
               onChange((w) => {
-                w.core = e.target.value ? { build: e.target.value } : {};
+                w.core = v ? { build: v } : {};
               })
             }
-          >
-            <option value="">Default builder</option>
-            {builders.map((a) => (
-              <option key={a.name}>{a.name}</option>
-            ))}
-          </select>
+          />
         </Core>
         <SlotView
           slot="beforeVerify"
@@ -382,23 +378,17 @@ function StepEditor({
         />
         <span className="font-mono text-muted-foreground text-xs">{step.id}</span>
         {step.kind === "work" ? (
-          <select
-            className="h-8 rounded-md border bg-background px-2 text-sm"
+          <OptionSelect
             aria-label="Agent"
+            placeholder="Pick an agent"
             value={step.agent ?? ""}
-            onChange={(e) =>
+            options={agents.map((a) => a.name)}
+            onChange={(v) =>
               onChange((s) => {
-                s.agent = e.target.value;
+                s.agent = v;
               })
             }
-          >
-            <option value="" disabled>
-              Pick an agent
-            </option>
-            {agents.map((a) => (
-              <option key={a.name}>{a.name}</option>
-            ))}
-          </select>
+          />
         ) : (
           <Input
             className="h-8 w-44"
@@ -451,24 +441,25 @@ function StepEditor({
       />
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">Only when</span>
-        <select
-          className="h-7 rounded-md border bg-background px-1.5"
+        <OptionSelect
+          className="text-xs data-[size=sm]:h-7"
           aria-label="Size at least"
           value={step.when?.sizeAtLeast ?? ""}
-          onChange={(e) =>
+          options={[
+            { value: "", label: "any size" },
+            { value: "medium", label: "medium work and up" },
+            { value: "large", label: "large work" },
+          ]}
+          onChange={(v) =>
             onChange((s) => {
               const when = { ...(s.when ?? {}) };
-              if (e.target.value) when.sizeAtLeast = e.target.value;
+              if (v) when.sizeAtLeast = v;
               else delete when.sizeAtLeast;
               if (Object.keys(when).length) s.when = when;
               else delete s.when;
             })
           }
-        >
-          <option value="">any size</option>
-          <option value="medium">medium work and up</option>
-          <option value="large">large work</option>
-        </select>
+        />
         <Input
           className="h-7 w-40 text-xs"
           placeholder="touches domain (optional)"
@@ -512,21 +503,17 @@ function AgentsEditor({
                 })
               }
             />
-            <select
-              className="h-8 rounded-md border bg-background px-2 text-sm"
+            <OptionSelect
               aria-label="Role"
               value={a.role}
-              onChange={(e) =>
+              options={ROLES}
+              onChange={(v) =>
                 onChange((list) => {
                   const x = list[i];
-                  if (x) x.role = e.target.value;
+                  if (x) x.role = v;
                 })
               }
-            >
-              {ROLES.map((r) => (
-                <option key={r}>{r}</option>
-              ))}
-            </select>
+            />
             <Segmented
               options={["standard", "light"]}
               value={a.tier ?? "standard"}

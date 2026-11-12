@@ -3,6 +3,11 @@
 // pasted), and opens the work item.
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@software-factory/ui/components/collapsible";
 import { Kbd } from "@software-factory/ui/components/kbd";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
@@ -11,6 +16,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AttachButton } from "#/components/attach-button";
+import { OptionSelect } from "#/components/option-select";
 import { StagedAttachments, uploadStaged } from "#/components/staged-attachments";
 import { op } from "#/lib/op";
 import { OpError, type OpOutput } from "#/lib/ops";
@@ -121,22 +127,15 @@ function NewWorkPage() {
           data-testid="new-work-body"
         />
         <div className="flex flex-wrap items-center gap-2 border-t px-3 py-2">
-          <label className="inline-flex items-center gap-2 text-sm">
-            <span className="sr-only">Project</span>
-            <select
-              className="h-8 rounded-md border bg-background px-2 text-sm"
-              value={selected ?? ""}
-              onChange={(e) => setProjectId(e.target.value)}
-              data-testid="project-picker"
-            >
-              {(projects.data ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-              {projects.data?.length === 0 && <option value="">No projects</option>}
-            </select>
-          </label>
+          <OptionSelect
+            aria-label="Project"
+            data-testid="project-picker"
+            placeholder="No projects"
+            disabled={projects.data?.length === 0}
+            value={selected ?? ""}
+            options={(projects.data ?? []).map((p) => ({ value: p.id, label: p.name }))}
+            onChange={setProjectId}
+          />
           <span className="text-muted-foreground text-xs">
             {session.orgs.find((o) => o.id === session.personalOrgId)?.name ?? "Personal"}
           </span>
@@ -235,71 +234,73 @@ function RoutingPreview({
     )
     .join(" · ");
   return (
-    <details
-      className="group min-w-0 rounded-lg border px-4 py-3 text-sm"
+    <Collapsible
+      className="group/collapsible min-w-0 rounded-lg border px-4 py-3 text-sm"
       data-testid="routing-preview"
     >
-      <summary className="flex cursor-pointer list-none items-center gap-2 truncate">
+      <CollapsibleTrigger className="flex cursor-pointer items-center gap-2 truncate w-full text-left">
         <StatusDot status={runner && !r.waitReason ? "done" : "waiting"} />
         <span className="min-w-0 truncate">
           Runs on {runner ? <span className="font-mono">{runner.name}</span> : "no runner yet"} ·
           Claude Code · {r.waitReason ? `${r.waitReason} · ` : ""}
           {shortGates}
         </span>
-        <span className="ml-auto shrink-0 text-muted-foreground text-xs group-open:hidden">
+        <span className="ml-auto shrink-0 text-muted-foreground text-xs group-data-[state=open]/collapsible:hidden">
           Details ▾
         </span>
-        <span className="ml-auto hidden shrink-0 text-muted-foreground text-xs group-open:inline">
+        <span className="ml-auto hidden shrink-0 text-muted-foreground text-xs group-data-[state=open]/collapsible:inline">
           Details ▴
         </span>
-      </summary>
-      <table className="mt-3 w-full text-sm">
-        <tbody className="[&_td]:py-1.5 [&_td:first-child]:w-28 [&_td:first-child]:text-muted-foreground">
-          <tr>
-            <td>Requester</td>
-            <td>you ({session.user.githubLogin ?? session.user.email})</td>
-          </tr>
-          <tr>
-            <td>Runner</td>
-            <td>
-              {runner ? (
-                <>
-                  <span className="font-mono">{runner.name}</span> ·{" "}
-                  {runner.ownerUserId === session.user.id ? "yours" : "shared"} · {runner.freeSlots}{" "}
-                  of {runner.max} slots free
-                </>
-              ) : (
-                "none can take it now"
-              )}
-              <span className="text-muted-foreground"> · fallback: queue</span>
-              {r.candidates.some((c) => c.refusal) && (
-                <div className="text-muted-foreground text-xs">
-                  {r.candidates
-                    .filter((c) => c.refusal)
-                    .map((c) => `${c.name}: ${c.refusal}`)
-                    .join(" · ")}
-                </div>
-              )}
-            </td>
-          </tr>
-          <tr>
-            <td>Harness</td>
-            <td>
-              Claude Code (role implement: <span className="font-mono">{r.models.implement}</span>)
-              · reviewer: role review (<span className="font-mono">{r.models.review}</span>)
-              {r.models.sameModel ? (
-                <span className="text-status-waiting"> · same model as the implementer</span>
-              ) : (
-                " · a different model"
-              )}
-            </td>
-          </tr>
-          <tr>
-            <td>Gates</td>
-            <td>{gateSummary}</td>
-          </tr>
-        </tbody>
-      </table>
-    </details>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <table className="mt-3 w-full text-sm">
+          <tbody className="[&_td]:py-1.5 [&_td:first-child]:w-28 [&_td:first-child]:text-muted-foreground">
+            <tr>
+              <td>Requester</td>
+              <td>you ({session.user.githubLogin ?? session.user.email})</td>
+            </tr>
+            <tr>
+              <td>Runner</td>
+              <td>
+                {runner ? (
+                  <>
+                    <span className="font-mono">{runner.name}</span> ·{" "}
+                    {runner.ownerUserId === session.user.id ? "yours" : "shared"} ·{" "}
+                    {runner.freeSlots} of {runner.max} slots free
+                  </>
+                ) : (
+                  "none can take it now"
+                )}
+                <span className="text-muted-foreground"> · fallback: queue</span>
+                {r.candidates.some((c) => c.refusal) && (
+                  <div className="text-muted-foreground text-xs">
+                    {r.candidates
+                      .filter((c) => c.refusal)
+                      .map((c) => `${c.name}: ${c.refusal}`)
+                      .join(" · ")}
+                  </div>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td>Harness</td>
+              <td>
+                Claude Code (role implement: <span className="font-mono">{r.models.implement}</span>
+                ) · reviewer: role review (<span className="font-mono">{r.models.review}</span>)
+                {r.models.sameModel ? (
+                  <span className="text-status-waiting"> · same model as the implementer</span>
+                ) : (
+                  " · a different model"
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td>Gates</td>
+              <td>{gateSummary}</td>
+            </tr>
+          </tbody>
+        </table>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
