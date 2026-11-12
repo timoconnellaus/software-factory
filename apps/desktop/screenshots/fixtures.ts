@@ -357,6 +357,13 @@ function detail(id: string): OpOutput<"workItem.get"> {
               ],
             },
             risk: [],
+            // The tests-intact guard (ADR 0500): this PR only adds tests, so nothing to flag.
+            testsIntact: {
+              headSha: "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f",
+              intact: true,
+              findings: [],
+              total: 0,
+            },
             runner: { verdict: "pass", checks: PACKET_CHECKS },
             evidencePass: true,
             evidenceReasons: [],
@@ -680,8 +687,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             specId: "spec_wi_12",
             lineStart: 7,
             lineEnd: 7,
-            before:
-              "- New items land in the inbox of the project that owns the repository [Q3]",
+            before: "- New items land in the inbox of the project that owns the repository [Q3]",
             after: "- New items land in the Backlog of the project that owns the repository [Q3]",
             authorId: ME,
             authorName: "You",

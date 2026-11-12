@@ -51,8 +51,8 @@ import {
   Maximize2Icon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
-  PencilIcon,
   PauseIcon,
+  PencilIcon,
   PlayIcon,
   XIcon,
   ZapIcon,
@@ -976,8 +976,8 @@ function PlanBlock({
           data-testid="plan-block-edited"
         >
           <PencilIcon className="size-3" />
-          {edit.authorId === me ? "You" : edit.authorName} edited this line {ago(edit.createdAt)}. The
-          planner keeps the wording
+          {edit.authorId === me ? "You" : edit.authorName} edited this line {ago(edit.createdAt)}.
+          The planner keeps the wording
           {updated.length > 0
             ? ` and updated ${updated.map((q) => `Q${q.number ?? "?"}`).join(", ")} to match`
             : ""}
@@ -1243,6 +1243,7 @@ function Chat({
           workItemId,
           text,
           ...(draft.questionId ? { questionId: draft.questionId } : {}),
+          ...(draft.anchor ? { anchor: draft.anchor } : {}),
           ...(interrupt ? { interrupt: true } : {}),
         },
         { idempotencyKey: submitKey() },
@@ -1298,6 +1299,11 @@ function Chat({
               <span className="font-medium text-foreground">{m.authorName}</span>
               {m.kind === "gate" && <Badge variant="outline">spec gate: changes</Badge>}
               {m.questionId && <Chip tag={`Q${numbers.get(m.questionId) ?? "?"}`} />}
+              {m.anchor && (
+                <span className="flex items-center gap-0.5" title={m.anchor.quote}>
+                  <MessageSquarePlusIcon className="size-3" /> on the plan
+                </span>
+              )}
               <span className="grow" />
               {m.author === "person" && <ReadReceipt at={m.deliveredAt} />}
               <span>{ago(m.createdAt)}</span>
@@ -1325,6 +1331,24 @@ function Chat({
         <div ref={end} />
       </div>
       <div className="grid flex-none gap-1.5 border-line-soft border-t px-4 py-3">
+        {draft.anchor && (
+          <div
+            className="flex items-center gap-2 text-muted-foreground text-xs"
+            data-testid="comment-anchor"
+          >
+            <span className="truncate border-status-waiting border-l-2 pl-2 italic">
+              {draft.anchor.quote.replace(/^\s*[-*+]\s+/, "")}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 px-1 text-xs"
+              onClick={() => onDraft({ text: draft.text })}
+            >
+              ✕
+            </Button>
+          </div>
+        )}
         {draft.questionId && (
           <div className="flex items-center gap-2 text-muted-foreground text-xs">
             About <Chip tag={`Q${numbers.get(draft.questionId) ?? "?"}`} />
