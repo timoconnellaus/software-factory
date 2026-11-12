@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Merge gate on a phone</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1c1c1e;text-decoration:none}a:hover{color:#55555a}
+</style>
+</head><body>
+
+<div style="width: 390px; height: 844px; box-sizing: border-box; display: flex; flex-direction: column; background: #ffffff; color: #1c1c1e; font-family: 'Geist', ui-sans-serif, system-ui, sans-serif; font-size: 14px; line-height: 1.4">
+
+<div style="flex: 1; min-height: 0; overflow: hidden; padding: 12px 16px 0; display: flex; flex-direction: column; gap: 12px">
+
+<div style="display: flex; align-items: center; gap: 8px; min-height: 44px">
+<a href="InboxMerge.html" style="display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding-right: 12px; color: #3a3a3e">
+<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"></path></svg>
+Inbox</a>
+<span style="margin-left: auto; font-size: 12px; font-weight: 500; padding: 2px 8px; border: 1px solid #e3e3e0; border-radius: 999px; color: #3a3a3e">Merge</span>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h1 style="margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.25">#8 Fix the date-dependent 'rate-limited until' test</h1>
+<div style="font-family: 'Geist Mono', ui-monospace, monospace; font-size: 12px; color: #55555a">PR #43 · head 3f2a91c</div>
+</div>
+
+<div style="border: 1px solid #e3e3e0; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600"><span aria-hidden="true" style="width: 10px; height: 10px; border-radius: 999px; background: #f59e0b; display: inline-block; flex: none"></span>Passed, one criterion not proven</div>
+<div style="font-size: 13px; color: #55555a">Checked at this commit. A new push withdraws it.</div>
+</div>
+
+<a href="#" style="display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 14px; border: 1px solid #e3e3e0; border-radius: 10px">
+<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #22c55e; display: inline-block; flex: none"></span>
+<span style="flex: 1">4 of 4 checks passed</span>
+<span style="font-size: 12px; color: #55555a">lint · types · tests · ci</span>
+</a>
+
+<div style="border: 1px solid #e3e3e0; border-radius: 10px">
+<div style="display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 14px; border-bottom: 1px solid #e3e3e0">
+<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #22c55e; display: inline-block; flex: none"></span>
+<span style="flex: 1; min-width: 0">Passes whatever today's date is</span>
+<span style="font-size: 12px; color: #55555a">Proven</span>
+</div>
+<div style="display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 14px; border-bottom: 1px solid #e3e3e0">
+<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #22c55e; display: inline-block; flex: none"></span>
+<span style="flex: 1; min-width: 0">Lint, typecheck and tests pass</span>
+<span style="font-size: 12px; color: #55555a">Proven</span>
+</div>
+<div style="display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 14px; border-bottom: 1px solid #e3e3e0">
+<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #22c55e; display: inline-block; flex: none"></span>
+<span style="flex: 1; min-width: 0">No code outside the test changes</span>
+<span style="font-size: 12px; color: #55555a">Proven</span>
+</div>
+<div style="display: flex; align-items: flex-start; gap: 8px; padding: 12px 14px; background: #fafafa; border-radius: 0 0 10px 10px">
+<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #f59e0b; display: inline-block; flex: none; margin-top: 6px"></span>
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+<span>No other test depends on the date</span>
+<span style="font-size: 13px; color: #55555a">No check covers this. The reviewer searched and found none.</span>
+</span>
+<span style="font-size: 12px; font-weight: 500; color: #3a3a3e">Not proven</span>
+</div>
+</div>
+
+<div style="display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 14px; border: 1px solid #e3e3e0; border-radius: 10px">
+<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 999px; background: #22c55e; display: inline-block; flex: none"></span>
+<span style="flex: 1">Tests intact</span>
+<span style="font-size: 12px; color: #55555a">1 file, +12 −4, tests only</span>
+</div>
+
+<a href="ItemReview.html" style="display: flex; align-items: center; justify-content: center; min-height: 44px; font-size: 13px; text-decoration: underline; color: #3a3a3e">Open the full packet and diff</a>
+
+</div>
+
+<div style="border-top: 1px solid #e3e3e0; padding: 12px 16px 20px; display: flex; flex-direction: column; gap: 8px; background: #ffffff">
+<div style="display: flex; gap: 8px">
+<button type="button" style="flex: 1; min-height: 48px; border-radius: 10px; border: 1px solid #e3e3e0; background: #ffffff; color: #1c1c1e; font: inherit; font-weight: 500; cursor: pointer">Send back</button>
+<button type="button" style="flex: 1.4; min-height: 48px; border-radius: 10px; border: 0; background: #1c1c1e; color: #fafafa; font: inherit; font-weight: 500; cursor: pointer">Merge 3f2a91c</button>
+</div>
+<div style="font-size: 12px; color: #55555a; text-align: center">Confirmed with your passkey. The approval is for this commit only.</div>
+</div>
+
+</div>
+</body></html>
