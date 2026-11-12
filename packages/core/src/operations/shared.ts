@@ -308,7 +308,8 @@ export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: stri
       }))
       .where("work_item_id", "=", w.id),
   );
-  ctx.write(
+  ctx.writePendingStatus(
+    "close",
     ctx.db
       .updateTable("core_pending_actions")
       .set({

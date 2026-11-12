@@ -174,7 +174,9 @@ All of it is operations, in `packages/core`, behind the door.
 - `core_cli_tokens` is rebuilt so that `kind` allows `mobile`.
 - New tables:
   - `core_mobile_nonces` (hash, expiry: spent nonces only; a nonce is stateless until used, ADR
-    0541 second amendment) and `core_mobile_nonce_asks` (the per-caller courtesy limit);
+    0541 second amendment). The per-caller courtesy limit on asking for one was
+    `core_mobile_nonce_asks`; migration 0311 dropped it for a Workers rate limiting binding (ADR
+    0541 third amendment);
   - `core_pair_offers` (id, user, secret hash, typed-code hash, attempts, expiry, consumed);
   - `core_push_registrations` (device, encrypted token, updated);
   - `core_device_notification_settings` (device, types, summary time, time zone).

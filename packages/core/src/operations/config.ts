@@ -476,7 +476,8 @@ export async function applyApprovedConfig(
     note: input.note || (rollback ? `Rolled back to v${input.toVersion}` : null),
     createdBy: pa.actor_id,
   });
-  ctx.write(
+  ctx.writePendingStatus(
+    "apply",
     ctx.db.updateTable("core_pending_actions").set({ status: "applied" }).where("id", "=", pa.id),
   );
   return written;
