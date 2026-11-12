@@ -1,6 +1,6 @@
 // The view's end of the RPC (ADR 0390). Everything privileged is in the main process.
 import Electrobun, { Electroview } from "electrobun/view";
-import type { AppRPC, RunnerState, Session } from "../shared/rpc.ts";
+import type { AppRPC, RunnerState, Session, TerminalEvent } from "../shared/rpc.ts";
 import { bunRequests } from "./request.ts";
 
 type Listener<T> = (v: T) => void;
@@ -8,7 +8,9 @@ const listeners = {
   session: new Set<Listener<Session>>(),
   runner: new Set<Listener<RunnerState>>(),
   inbox: new Set<Listener<number>>(),
+  planning: new Set<Listener<string>>(),
   navigate: new Set<Listener<string>>(),
+  terminal: new Set<Listener<TerminalEvent>>(),
 };
 
 const rpc = Electroview.defineRPC<AppRPC>({
@@ -25,8 +27,14 @@ const rpc = Electroview.defineRPC<AppRPC>({
       inboxChanged: ({ count }) => {
         for (const l of listeners.inbox) l(count);
       },
+      planningChanged: ({ workItemId }) => {
+        for (const l of listeners.planning) l(workItemId);
+      },
       navigate: ({ path }) => {
         for (const l of listeners.navigate) l(path);
+      },
+      terminalEvent: (e) => {
+        for (const l of listeners.terminal) l(e);
       },
     },
   },
@@ -52,4 +60,7 @@ function on<K extends keyof typeof listeners>(
 export const onSession = (l: Listener<Session>) => on("session", l);
 export const onRunner = (l: Listener<RunnerState>) => on("runner", l);
 export const onInbox = (l: Listener<number>) => on("inbox", l);
+/** A Planning view this person has open changed on the engine (spec 26). */
+export const onPlanningChanged = (l: Listener<string>) => on("planning", l);
 export const onNavigate = (l: Listener<string>) => on("navigate", l);
+export const onTerminal = (l: Listener<TerminalEvent>) => on("terminal", l);

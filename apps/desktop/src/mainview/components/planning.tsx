@@ -3,9 +3,11 @@
 // to a strip; F gives planning the whole window (focus mode, the shell hides its chrome), Esc gives
 // it back. Only what the planning operations support today: new ways to steer the planner are the
 // planning build's. It reports who has it open (presence).
-// Ported from sf-app for spec 40 M3. sf-app's tab follows a Server-Sent-Events stream; the client
-// door has no planning stream, so here `planningQuery` re-reads every few seconds while the tab is
-// mounted, and the item (its gates) is re-read whenever the planning view changes.
+// Ported from sf-app for spec 40 M3. Spec 26: the engine pushes `planning.changed` to the desktop's
+// live socket for whoever has this view open (presence), and the tab re-reads then; the slow poll
+// in `planningQuery` is only a fallback. Planning answers go through `planning.answer` (no Touch ID,
+// except for security, privacy and irreversible questions); chat sends after the planner's current
+// step (Enter) or interrupts it (⌘-Enter); Stop, Pause and "Let the planner finish alone" steer it.
 
 import { ago, errorMessage } from "@software-factory/client/format";
 import type { WorkItemDetail } from "@software-factory/client/ops";
@@ -17,6 +19,7 @@ import {
   gateSummary,
   initialAnswer,
   isChanged,
+  isSensitiveQuestion,
   markTags,
   type PlanningQuestion,
   type PlanningView,
@@ -43,10 +46,19 @@ import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouteContext } from "@tanstack/react-router";
-import { CheckIcon, Maximize2Icon, MessageSquareIcon, XIcon } from "lucide-react";
+import {
+  CheckIcon,
+  Maximize2Icon,
+  MessageSquareIcon,
+  PauseIcon,
+  PlayIcon,
+  XIcon,
+  ZapIcon,
+} from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { toast } from "sonner";
+import { onPlanningChanged } from "../bridge.ts";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { op, submitKey } from "../lib/op.ts";
 import { planningQuery } from "../lib/queries.ts";
@@ -236,12 +248,35 @@ function SessionHeader({ view, detail }: { view: PlanningView; detail: WorkItemD
 }
 
 /**
- * Re-reads the item (for its gates) whenever the polled planning view changes. Stands in for sf-app's
- * Server-Sent Events, which invalidated both; the planning view itself polls (`planningQuery`).
+ * Re-reads the planning view when the engine pushes a change, and the item (for its gates) whenever
+ * the planning view changes (spec 26; the poll in `planningQuery` is only a fallback).
  */
 function useLive(workItemId: string, view: PlanningView | undefined) {
   const queryClient = useQueryClient();
   const seen = useRef<PlanningView | undefined>(undefined);
+  // The engine says this view changed (spec 26): re-read it now, not at the next poll.
+  useEffect(
+    () =>
+      onPlanningChanged((id) => {
+        // "*": the live socket (re)connected, so anything may have changed meanwhile.
+        if (id !== workItemId && id !== "*") return;
+        void queryClient.invalidateQueries({ queryKey: ["workItem", workItemId, "planning"] });
+      }),
+    [workItemId, queryClient],
+  );
+  // Back in front, re-read at once: the view may have missed pushes while hidden (review of #78).
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void queryClient.invalidateQueries({ queryKey: ["workItem", workItemId, "planning"] });
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [workItemId, queryClient]);
   useEffect(() => {
     if (!view) return;
     const first = seen.current === undefined;
@@ -258,6 +293,12 @@ function usePresence(workItemId: string) {
     const say = (open: boolean) =>
       op("planning.presence", { workItemId, open }).catch(() => undefined);
     void say(true);
+    // Back in front: say so at once, not at the next beat (review of #78).
+    const back = () => {
+      if (!stopped && document.visibilityState === "visible") void say(true);
+    };
+    window.addEventListener("focus", back);
+    document.addEventListener("visibilitychange", back);
     const timer = setInterval(() => {
       if (!stopped && document.visibilityState === "visible") void say(true);
     }, PRESENCE_MS);
@@ -267,6 +308,8 @@ function usePresence(workItemId: string) {
       stopped = true;
       clearInterval(timer);
       window.removeEventListener("pagehide", leave);
+      window.removeEventListener("focus", back);
+      document.removeEventListener("visibilitychange", back);
       void say(false);
     };
   }, [workItemId]);
@@ -326,7 +369,7 @@ function MoveDialog({
 // Design ItemPlan / PlanFocus: answered questions are compact rows on top (a tick, the answer and a
 // "default" or "changed by you" tag); each open question lists its options with the recommended one
 // already selected and badged, the reason beside it, and "Accept recommended" answers in one click.
-// The design's Skip has no operation on main, so it is left out.
+// Skip (spec 26) answers with `skipped`: the planner decides it.
 
 function Questions({
   view,
@@ -424,7 +467,11 @@ function AnsweredRow({
       />
     );
   }
-  const tag = answeredTag(q, me);
+  const tag = q.skipped
+    ? { label: "skipped · the planner decides", changed: true }
+    : q.acceptedAlone
+      ? { label: "default · finish alone", changed: false }
+      : answeredTag(q, me);
   return (
     <button
       type="button"
@@ -444,7 +491,7 @@ function AnsweredRow({
           <span className="font-medium text-[13px]">{q.prompt}</span>
         </span>
         <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12.5px] text-ink-3">
-          <span className="truncate">{q.answer ?? "—"}</span>
+          <span className="truncate">{q.skipped ? "Skipped" : (q.answer ?? "—")}</span>
           <span
             className={cn(
               "flex-none rounded-full px-1.5 py-px text-[10.5px]",
@@ -458,6 +505,7 @@ function AnsweredRow({
           {q.answerRevision > 1 && (
             <span className="flex-none text-[10.5px] text-ink-muted">revised</span>
           )}
+          <ReadReceipt at={q.answerDeliveredAt} />
         </span>
         {q.note && <span className="mt-0.5 block text-ink-muted text-xs">Note: {q.note}</span>}
       </span>
@@ -492,7 +540,48 @@ function QuestionCard({
   const [note, setNote] = useState(q.note ?? "");
   const [noting, setNoting] = useState(!!q.note);
   const { decide, pending } = useDecide();
+  const [sending, setSending] = useState(false);
   const choice = q.kind === "single-choice" || q.kind === "multiple-choice" || q.kind === "yes-no";
+  /**
+   * A planning question is answered with `planning.answer` (spec 26): no Touch ID, except for a
+   * security, privacy or irreversible one. A question outside a planning session stays a decision.
+   */
+  const submit = async (input: { answer?: string; skipped?: boolean }) => {
+    const note_ = note.trim() ? { note: note.trim() } : {};
+    if (!q.planning) {
+      return decide({
+        kind: "question.answer",
+        workItemId,
+        questionId: q.id,
+        answer: input.answer ?? "",
+        ...note_,
+      });
+    }
+    if (needsTouchId(q)) {
+      return decide({
+        kind: "planning.answer",
+        workItemId,
+        questionId: q.id,
+        questionRevision: q.revision,
+        ...input,
+        ...note_,
+      });
+    }
+    setSending(true);
+    try {
+      await op(
+        "planning.answer",
+        { questionId: q.id, questionRevision: q.revision, ...input, ...note_ },
+        { idempotencyKey: submitKey() },
+      );
+      return true;
+    } catch (error) {
+      toast.error(errorMessage(error));
+      return false;
+    } finally {
+      setSending(false);
+    }
+  };
   const multiple = q.kind === "multiple-choice";
   const chosen = other.trim() ? [...values.filter((v) => options.includes(v)), other] : values;
   const answer = answerText(q.kind, multiple ? chosen : other.trim() ? [other] : values);
@@ -640,22 +729,29 @@ function QuestionCard({
       <div className="flex flex-wrap items-center gap-1.5">
         <Button
           size="sm"
-          disabled={!answer || pending !== null}
+          disabled={!answer || pending !== null || sending}
           className="bg-status-running text-white hover:bg-status-running/90"
           onClick={async () => {
-            const done = await decide({
-              kind: "question.answer",
-              workItemId,
-              questionId: q.id,
-              answer,
-              ...(note.trim() ? { note: note.trim() } : {}),
-            });
-            if (done) onDone?.();
+            if (await submit({ answer })) onDone?.();
           }}
           data-testid={`answer-${q.id}`}
         >
           {accepting ? "Accept recommended" : q.status === "answered" ? "Change answer" : "Answer"}
         </Button>
+        {q.planning && q.status === "open" && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={pending !== null || sending}
+            title="The planner decides it, and says so in the plan"
+            onClick={async () => {
+              if (await submit({ skipped: true })) onDone?.();
+            }}
+            data-testid={`skip-${q.id}`}
+          >
+            Skip
+          </Button>
+        )}
         {!noting && (
           <Button size="sm" variant="ghost" onClick={() => setNoting(true)}>
             Add a note
@@ -673,6 +769,24 @@ function QuestionCard({
         )}
       </div>
     </Card>
+  );
+}
+
+/** Security, privacy and irreversible planning questions are still answered with Touch ID. */
+const needsTouchId = (q: Pick<PlanningQuestion, "domain" | "irreversible">) =>
+  isSensitiveQuestion(q);
+
+/** "✓ Read": when an answer or a message reached the planner (spec 26). */
+function ReadReceipt({ at }: { at: string | null | undefined }) {
+  if (!at) return null;
+  return (
+    <span
+      className="flex flex-none items-center gap-0.5 text-[10.5px] text-ink-muted"
+      title={`Read by the planner ${ago(at)}`}
+      data-testid="read-receipt"
+    >
+      <CheckIcon className="size-2.5" /> Read
+    </span>
   );
 }
 
@@ -907,17 +1021,26 @@ function Chat({
   }, [count]);
   const working =
     view.session && ["working", "yielding"].includes(view.session.status) && view.session.activity;
-  async function send() {
+  const session = view.session;
+  const canInterrupt = !!session?.canInterrupt;
+  async function send(interrupt = false) {
     const text = draft.text.trim();
     if (!text) return;
     setBusy(true);
     try {
-      await op(
+      const sent = await op(
         "chat.send",
-        { workItemId, text, ...(draft.questionId ? { questionId: draft.questionId } : {}) },
+        {
+          workItemId,
+          text,
+          ...(draft.questionId ? { questionId: draft.questionId } : {}),
+          ...(interrupt ? { interrupt: true } : {}),
+        },
         { idempotencyKey: submitKey() },
       );
       onDraft({ text: "" });
+      // An interrupt that couldn't happen still delivers: say when (spec 26).
+      if (interrupt && !sent.interrupted && sent.note) toast(capitalise(sent.note));
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
@@ -928,12 +1051,16 @@ function Chat({
     <section className={cn("flex min-h-0 flex-col bg-panel", className)} data-testid="chat-pane">
       <div className="flex h-11 flex-none items-center gap-2 px-4 font-semibold">
         Chat
+        <span className="grow" />
+        {session && !["ended", "moved"].includes(session.status) && (
+          <PauseButton workItemId={workItemId} paused={session.paused} />
+        )}
         {onClose && (
           <button
             type="button"
             aria-label="Fold the chat"
             onClick={onClose}
-            className="ml-auto flex size-6 items-center justify-center rounded-md text-ink-3 hover:bg-selected"
+            className="flex size-6 items-center justify-center rounded-md text-ink-3 hover:bg-selected"
           >
             <XIcon className="size-3.5" />
           </button>
@@ -963,6 +1090,7 @@ function Chat({
               {m.kind === "gate" && <Badge variant="outline">spec gate: changes</Badge>}
               {m.questionId && <Chip tag={`Q${numbers.get(m.questionId) ?? "?"}`} />}
               <span className="grow" />
+              {m.author === "person" && <ReadReceipt at={m.deliveredAt} />}
               <span>{ago(m.createdAt)}</span>
             </div>
             <div className="[&_code]:font-mono [&_code]:text-xs [&_p]:my-0.5">
@@ -971,8 +1099,18 @@ function Chat({
           </div>
         ))}
         {working && (
-          <div className="text-muted-foreground text-xs italic" data-testid="agent-activity">
-            Planning agent · {String(view.session?.activity)}…
+          <div
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs shadow-[0_0_0_1px_var(--line)]"
+            data-testid="agent-activity"
+          >
+            <StatusDot status="running" />
+            <span className="grow text-ink-3">{capitalise(String(view.session?.activity))}</span>
+            {canInterrupt && <StopButton workItemId={workItemId} />}
+          </div>
+        )}
+        {session?.paused && (
+          <div className="text-status-waiting text-xs" data-testid="planner-paused">
+            Paused: answers and messages wait until someone resumes it.
           </div>
         )}
         <div ref={end} />
@@ -993,24 +1131,149 @@ function Chat({
         )}
         <Textarea
           rows={2}
-          placeholder="Ask the planning agent, or tell it what to change… (Enter to send)"
+          placeholder="Ask the planner, or tell it what to change…"
           value={draft.text}
           onChange={(e) => onDraft({ ...draft, text: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void send();
+              // ⌘-Enter interrupts the planner's current step; Enter waits for it (spec 26).
+              void send(e.metaKey && canInterrupt);
             }
           }}
           data-testid="chat-input"
         />
-        <div className="flex justify-end">
-          <Button size="sm" disabled={!draft.text.trim() || busy} onClick={send}>
+        <div
+          className="flex items-center gap-1.5 whitespace-nowrap text-[11px] text-ink-muted"
+          data-testid="chat-hint"
+        >
+          <Kbd>↵</Kbd> after its step
+          <span className="grow" />
+          {canInterrupt ? (
+            <>
+              <Kbd>⌘↵</Kbd> interrupt
+            </>
+          ) : (
+            <span title="This runner can't interrupt the planner: messages arrive after its step">
+              no interrupt here
+            </span>
+          )}
+          <Button
+            size="sm"
+            className="ml-1"
+            disabled={!draft.text.trim() || busy}
+            onClick={() => send(false)}
+          >
             Send
           </Button>
         </div>
       </div>
     </section>
+  );
+}
+
+const capitalise = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** Stops the planner's current step (spec 26): the session stays, and it waits for you. */
+function StopButton({ workItemId }: { workItemId: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      className="font-medium text-destructive hover:underline disabled:opacity-50"
+      onClick={async () => {
+        setBusy(true);
+        try {
+          const r = await op("planning.stop", { workItemId }, { idempotencyKey: submitKey() });
+          if (!r.stopped && r.note) toast(capitalise(r.note));
+        } catch (error) {
+          toast.error(errorMessage(error));
+        } finally {
+          setBusy(false);
+        }
+      }}
+      data-testid="stop-planner"
+    >
+      Stop
+    </button>
+  );
+}
+
+/** Pauses the planner (news waits) or resumes it (spec 26). */
+function PauseButton({ workItemId, paused }: { workItemId: string; paused: boolean }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      disabled={busy}
+      className="h-6 px-2 font-normal text-xs"
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await op(
+            paused ? "planning.resume" : "planning.pause",
+            { workItemId },
+            {
+              idempotencyKey: submitKey(),
+            },
+          );
+        } catch (error) {
+          toast.error(errorMessage(error));
+        } finally {
+          setBusy(false);
+        }
+      }}
+      data-testid={paused ? "resume-planner" : "pause-planner"}
+    >
+      {paused ? <PlayIcon className="size-3" /> : <PauseIcon className="size-3" />}
+      {paused ? "Resume" : "Pause"}
+    </Button>
+  );
+}
+
+/**
+ * "Let the planner finish alone" (spec 26, ADR 0470): the recommended answers are accepted now and as
+ * the planner asks, except security, privacy, irreversible and no-default questions; approval stays
+ * yours. Shows who turned it on, and turns off on a click.
+ */
+function FinishAlone({ view, workItemId }: { view: PlanningView; workItemId: string }) {
+  const [busy, setBusy] = useState(false);
+  const on = view.session?.finishAlone ?? null;
+  const set = async (value: boolean) => {
+    setBusy(true);
+    try {
+      await op("planning.finishAlone", { workItemId, on: value }, { idempotencyKey: submitKey() });
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (on) {
+    return (
+      <span className="flex items-center gap-2 text-sm" data-testid="finish-alone-on">
+        <ZapIcon className="size-3.5 text-status-running" />
+        Finishing alone · set by {on.byName} {ago(on.at)}
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => set(false)}>
+          Turn off
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      disabled={busy}
+      title="Accept the recommended answers now and as the planner asks. Security, privacy and irreversible questions still wait for you, and you still approve the plan."
+      onClick={() => set(true)}
+      data-testid="finish-alone"
+    >
+      <ZapIcon className="size-3.5" />
+      Let the planner finish alone
+    </Button>
   );
 }
 
@@ -1022,6 +1285,24 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
   const [changes, setChanges] = useState(false);
   const open = view.questions.filter((q) => q.status === "open");
   const bulk = open.filter(bulkAcceptable).length;
+  // Planning questions are bulk-accepted without Touch ID (spec 26); others stay a decision.
+  const planningOnly = open.every((q) => q.planning);
+  const acceptPlanning = async () => {
+    try {
+      const r = await op(
+        "planning.acceptDefaults",
+        { workItemId: item.id },
+        { idempotencyKey: submitKey() },
+      );
+      toast.success(
+        r.skipped.length
+          ? `Accepted ${r.accepted.length}; ${r.skipped.length} must be answered one by one`
+          : `Accepted ${r.accepted.length} recommended answer${r.accepted.length === 1 ? "" : "s"}`,
+      );
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  };
   const specGate = detail.gates.find((g) => g.kind === "spec" && g.status === "pending");
   const canApprove = !!specGate && detail.viewer.isApprover;
   const partial = view.spec?.coverage.filter((c) => (c as { status: string }).status === "partial");
@@ -1039,16 +1320,23 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         </span>
       )}
       <span className="grow" />
+      {view.session && !["ended", "moved"].includes(view.session.status) && !specGate && (
+        <FinishAlone view={view} workItemId={item.id} />
+      )}
       {open.length > 0 && (
         <Button
           variant="outline"
           size="sm"
           disabled={bulk === 0 || pending !== null}
           title={bulk === 0 ? "The open questions need an answer one by one" : undefined}
-          onClick={() => decide({ kind: "question.acceptDefaults", workItemId: item.id })}
+          onClick={() =>
+            planningOnly
+              ? acceptPlanning()
+              : decide({ kind: "question.acceptDefaults", workItemId: item.id })
+          }
           data-testid="accept-defaults"
         >
-          Accept remaining defaults
+          Accept {bulk} recommended
         </Button>
       )}
       {specGate ? (

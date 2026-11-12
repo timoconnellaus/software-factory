@@ -70,6 +70,9 @@ new backend come in later slices, once that backend lands.
   has one Open terminal place. In this slice it shows what `main` has: the live run's takeover hint,
   the tmux attach command on its runner (ADR 0380), with Copy. With no live run that has a hint, the
   button isn't shown.
+  *Amended 2026-11-12 (spec 42, ADR 0530):* slice 9 is built. Open terminal shows for any live run
+  and opens the session's web terminal in place; the tmux command is behind "Attach from a terminal
+  instead".
 - **The plan is a document.** The Plan pane is a plain document in its pane, not a page on a canvas.
 - The Plan tab is restyled over what the planning operations support today: questions, the plan,
   chat, accept defaults, request changes, approve. New ways to steer the planner belong to the
@@ -134,7 +137,7 @@ rather than shown empty:
 | 6 | Settings: members, connections, devices and notifications; the All orgs page; the budget and "update ready" in the status bar; sign-in restyled | Usage capture, spec 40 M4 (updates) |
 | 7 | The item side panel (`WorkActivePanel`, the README's "The item side panel"): a running item opens in a panel over the board, expandable to full size, instead of a separate live-run page. Cards and list rows open items through one helper (`openItem` in `lib/places.ts`), so this slice changes that one place | Nothing new on the backend; the design on `factory-ui-design` (#61) |
 | 8 | A live run in the work item (`ItemRunLive`), in the side panel: the transcript and steering from spec 31 | `run.live` and `run.steer` on the client door |
-| 9 | Open terminal opens the session's web terminal in the app, not just the tmux command | The web terminal (spec 35, #66) reaching the client door: today it runs through sf-app's own server socket (`run.terminal.attach`), which the desktop can't open |
+| 9 | Open terminal opens the session's web terminal in the app, not just the tmux command (built: spec 42) | The web terminal (spec 35, #66) reaching the client door: today it runs through sf-app's own server socket (`run.terminal.attach`), which the desktop can't open |
 | 10 | Planning as designed in `ItemPlan`, `PlanFocus`, `PlanFocusMockup`: edit a plan line directly, chat after the current step or as an interrupt, let the planner finish alone, mockups with pinned comments and option cards, stop and pause, Mockups, System and Canvas tabs | The planning build |
 
 ## As built (slice 1)

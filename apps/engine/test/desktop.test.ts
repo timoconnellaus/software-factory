@@ -6,7 +6,7 @@ import { canonicalJson, inputDigest, presenceMessage, rawSignature } from "@soft
 import { describe, expect, it } from "vitest";
 import { pruneChannelStore } from "../src/channel.ts";
 import worker from "../src/index.ts";
-import { notifyClients } from "../src/outbox.ts";
+import { notifyClients, notifyPlanningViewers } from "../src/outbox.ts";
 import { first, ok, type World, world } from "./helpers.ts";
 
 const post = (path: string, body: unknown, token?: string, prefix = "/client/v1") =>
@@ -375,6 +375,17 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect(heard).toContain(w.userId);
     await until(3);
     expect(got[2]).toMatchObject({ type: "notify", workItemId });
+
+    // Spec 26: a planning change reaches only the people who have that Planning view open.
+    expect(await notifyPlanningViewers(env, workItemId)).toEqual([]);
+    await env.DB.prepare(
+      "INSERT INTO core_planning_presence (work_item_id, user_id, seen_at, left_at) VALUES (?, ?, ?, NULL)",
+    )
+      .bind(workItemId, w.userId, new Date().toISOString())
+      .run();
+    expect(await notifyPlanningViewers(env, workItemId)).toEqual([w.userId]);
+    await until(4);
+    expect(got[3]).toEqual({ type: "planning.changed", workItemId });
     ws.close();
   });
 
