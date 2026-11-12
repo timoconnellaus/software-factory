@@ -20,6 +20,7 @@ import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Cell, Empty, Row, TablePanel, WIDE } from "../components/data-table.tsx";
+import { Reads } from "../components/read-state.tsx";
 import { Chip, PageArea, PageHeader } from "../components/shell-list.tsx";
 import { useDesktopSession } from "../lib/desktop-session.ts";
 import { devicesQuery } from "../lib/factory-queries.ts";
@@ -38,69 +39,72 @@ export const Route = createRoute({
 function DevicesPage() {
   const desktop = useDesktopSession();
   const data = useQuery(devicesQuery());
-  const rows = data.data
-    ? deviceRows(data.data.devices, data.data.tokens, desktop?.deviceId ?? null)
-    : [];
+  // Which row is this Mac comes from the desktop's own session. Until it has loaded, no row offers
+  // Revoke: this Mac's would look like any other's.
+  const thisDevice = desktop?.deviceId ?? null;
+  const rows = data.data ? deviceRows(data.data.devices, data.data.tokens, thisDevice) : [];
   return (
     <PageArea>
       <PageHeader
         title="Devices"
         sub="Yours, not the org's: where you are signed in. Revoking one stops its token at once."
       />
-      {data.error ? (
-        <Empty>Couldn't read your devices: {data.error.message}</Empty>
-      ) : rows.length === 0 ? (
-        <Empty>{data.isPending ? "Loading…" : "No devices."}</Empty>
-      ) : (
-        <TablePanel
-          head={[
-            "Device",
-            { label: "Can", className: WIDE },
-            "Approves with",
-            { label: "Last used", className: WIDE },
-            "",
-          ]}
-          data-testid="devices"
-        >
-          {rows.map((r) => (
-            <Row key={r.id} data-testid={`device-${r.id}`}>
-              <Cell className="min-w-[170px] whitespace-normal">
-                <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                  <span className="font-medium">
-                    {r.kind === "cli" ? `sf CLI: ${r.name}` : `Desktop app on ${r.name}`}
-                  </span>
-                  {r.thisDevice && <Chip tone="blue">This Mac</Chip>}
-                  {r.expires && (
-                    <span className="w-full text-ink-muted text-xs">
-                      Expires in {duration(Date.parse(r.expires) - Date.now())}
+      <Reads queries={[data]} what="your devices">
+        {() =>
+          rows.length === 0 ? (
+            <Empty>No devices.</Empty>
+          ) : (
+            <TablePanel
+              head={[
+                "Device",
+                { label: "Can", className: WIDE },
+                "Proves it is you",
+                { label: "Last used", className: WIDE },
+                "",
+              ]}
+              data-testid="devices"
+            >
+              {rows.map((r) => (
+                <Row key={r.id} data-testid={`device-${r.id}`}>
+                  <Cell className="min-w-[170px] whitespace-normal">
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="font-medium">
+                        {r.kind === "cli" ? `sf CLI: ${r.name}` : `Desktop app on ${r.name}`}
+                      </span>
+                      {r.thisDevice && <Chip tone="blue">This Mac</Chip>}
+                      {r.expires && (
+                        <span className="w-full text-ink-muted text-xs">
+                          Expires in {duration(Date.parse(r.expires) - Date.now())}
+                        </span>
+                      )}
                     </span>
-                  )}
-                </span>
-              </Cell>
-              <Cell className={WIDE}>{r.can}</Cell>
-              <Cell>{r.proves}</Cell>
-              <Cell className={`text-ink-3 ${WIDE}`}>
-                {r.thisDevice
-                  ? "Now"
-                  : r.lastUsed
-                    ? ago(r.lastUsed)
-                    : r.kind === "cli"
-                      ? "Not recorded"
-                      : "Never"}
-              </Cell>
-              <Cell className="text-right">
-                {r.thisDevice ? (
-                  <Link to="/settings" className="text-ink-3 text-xs underline">
-                    Sign out…
-                  </Link>
-                ) : (
-                  <Revoke row={r} />
-                )}
-              </Cell>
-            </Row>
-          ))}
-        </TablePanel>
-      )}
+                  </Cell>
+                  <Cell className={WIDE}>{r.can}</Cell>
+                  <Cell>{r.proves}</Cell>
+                  <Cell className={`text-ink-3 ${WIDE}`}>
+                    {r.thisDevice
+                      ? "Now"
+                      : r.lastUsed
+                        ? ago(r.lastUsed)
+                        : r.kind === "cli"
+                          ? "Not recorded"
+                          : "Never"}
+                  </Cell>
+                  <Cell className="text-right">
+                    {r.thisDevice ? (
+                      <Link to="/settings" className="text-ink-3 text-xs underline">
+                        Sign out…
+                      </Link>
+                    ) : thisDevice ? (
+                      <Revoke row={r} />
+                    ) : null}
+                  </Cell>
+                </Row>
+              ))}
+            </TablePanel>
+          )
+        }
+      </Reads>
       <div className="text-ink-3 text-xs">
         Runners are under{" "}
         <Link to="/factory/runners" className="text-ink underline">

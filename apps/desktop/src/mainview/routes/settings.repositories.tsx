@@ -9,12 +9,13 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
 import { Cell, Empty, Row, TablePanel, WIDE } from "../components/data-table.tsx";
+import { Reads } from "../components/read-state.tsx";
 import { PageArea, PageHeader } from "../components/shell-list.tsx";
 import { useOrgScope } from "../components/shell-sidebar.tsx";
 import { ExternalLink } from "../lib/external.tsx";
 import { setupStatusesQuery } from "../lib/factory-queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
-import { projectsWithoutRepos, repoRows } from "../lib/settings-view.ts";
+import { projectsWithoutRepos, protectionHeader, repoRows } from "../lib/settings-view.ts";
 import { settingsLayout } from "./_settings.tsx";
 
 export const Route = createRoute({
@@ -49,65 +50,75 @@ function RepositoriesPage() {
           </Button>
         }
       />
-      {rows.length === 0 ? (
-        <Empty>No repositories yet. Connect GitHub and add a project in Setup.</Empty>
-      ) : (
-        <TablePanel
-          head={[
-            "Repository",
-            { label: "Branch", className: WIDE },
-            "Protection on main",
-            { label: "GitHub", className: WIDE },
-            "Project",
-          ]}
-          data-testid="repositories"
-        >
-          {rows.map((r) => (
-            <Row key={r.id}>
-              <Cell className="whitespace-normal break-all font-mono text-xs">{r.fullName}</Cell>
-              <Cell className={cn("font-mono text-ink-3 text-xs", WIDE)}>{r.branch}</Cell>
-              <Cell className="whitespace-normal">
-                {r.protection ? (
-                  <span
-                    className="inline-flex items-center gap-2"
-                    title={r.protection.detail ?? undefined}
-                  >
-                    <StatusDot status={r.protection.dot} />
-                    {r.protection.dot === "done" ? (
-                      r.protection.text
-                    ) : (
-                      <Link to="/setup" className="underline">
-                        {r.protection.text}
-                      </Link>
-                    )}
-                  </span>
-                ) : (
-                  <span className="text-ink-muted">Not checked yet</span>
-                )}
-              </Cell>
-              <Cell className={WIDE}>
-                <span className="inline-flex items-center gap-2">
-                  <StatusDot status={r.connection.dot} />
-                  {r.connection.manageUrl && r.connection.dot !== "done" ? (
-                    <ExternalLink href={r.connection.manageUrl} className="underline">
-                      {r.connection.text}
-                    </ExternalLink>
-                  ) : (
-                    r.connection.text
-                  )}
-                </span>
-              </Cell>
-              <Cell>{r.projectName}</Cell>
-            </Row>
-          ))}
-        </TablePanel>
-      )}
-      {bare.length > 0 && (
-        <div className="text-ink-3 text-xs" data-testid="projects-without-repos">
-          Without a repository: {bare.map((p) => p.name).join(", ")}. Their work doesn't change
-          code.
-        </div>
-      )}
+      <Reads queries={[projects, setups]} what="the repositories">
+        {() => (
+          <>
+            {rows.length === 0 ? (
+              <Empty>No repositories yet. Connect GitHub and add a project in Setup.</Empty>
+            ) : (
+              <TablePanel
+                head={[
+                  "Repository",
+                  { label: "Branch", className: WIDE },
+                  protectionHeader(rows),
+                  { label: "GitHub", className: WIDE },
+                  "Project",
+                ]}
+                data-testid="repositories"
+              >
+                {rows.map((r) => (
+                  <Row key={r.id}>
+                    <Cell className="whitespace-normal font-mono text-xs">
+                      {/* Wraps after the owner, never inside a name. */}
+                      {r.fullName.split("/")[0]}/<wbr />
+                      {r.fullName.split("/").slice(1).join("/")}
+                    </Cell>
+                    <Cell className={cn("font-mono text-ink-3 text-xs", WIDE)}>{r.branch}</Cell>
+                    <Cell className="whitespace-normal">
+                      {r.protection ? (
+                        <span
+                          className="inline-flex items-center gap-2"
+                          title={r.protection.detail ?? undefined}
+                        >
+                          <StatusDot status={r.protection.dot} />
+                          {r.protection.dot === "done" ? (
+                            r.protection.text
+                          ) : (
+                            <Link to="/setup" className="underline">
+                              {r.protection.text}
+                            </Link>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-ink-muted">Not checked yet</span>
+                      )}
+                    </Cell>
+                    <Cell className={WIDE}>
+                      <span className="inline-flex items-center gap-2">
+                        <StatusDot status={r.connection.dot} />
+                        {r.connection.manageUrl && r.connection.dot !== "done" ? (
+                          <ExternalLink href={r.connection.manageUrl} className="underline">
+                            {r.connection.text}
+                          </ExternalLink>
+                        ) : (
+                          r.connection.text
+                        )}
+                      </span>
+                    </Cell>
+                    <Cell>{r.projectName}</Cell>
+                  </Row>
+                ))}
+              </TablePanel>
+            )}
+            {bare.length > 0 && (
+              <div className="text-ink-3 text-xs" data-testid="projects-without-repos">
+                Without a repository: {bare.map((p) => p.name).join(", ")}. Their work doesn't
+                change code.
+              </div>
+            )}
+          </>
+        )}
+      </Reads>
     </PageArea>
   );
 }

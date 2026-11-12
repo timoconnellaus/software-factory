@@ -72,6 +72,24 @@ export function installationText(i: Installation): { text: string; dot: Status }
   }
 }
 
+/**
+ * The repositories in the factory that one installation reaches: those whose connection is on the
+ * installation's account. Each installation counts its own, not the org's total.
+ */
+export function installationRepoCount(i: Installation, projects: Project[]): number {
+  const account = i.account.toLowerCase();
+  return projects
+    .flatMap((p) => p.repositories)
+    .filter((r) => r.connection.account?.toLowerCase() === account).length;
+}
+
+/** The protection column's header: the default branch the rows share, or "the default branch". */
+export function protectionHeader(rows: Pick<RepoRow, "branch">[]): string {
+  const branches = new Set(rows.map((r) => r.branch));
+  const [only] = branches;
+  return branches.size === 1 && only ? `Protection on ${only}` : "Protection on the default branch";
+}
+
 type Device = OpOutput<"desktopDevice.list">["devices"][number];
 type Token = OpOutput<"cliToken.list">["tokens"][number];
 
