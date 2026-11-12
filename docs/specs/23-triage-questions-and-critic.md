@@ -47,3 +47,29 @@ Routing triage questions by decision domain (R1 milestone (c)).
    critic's output says "approve the spec" can't open the gate.
 6. A readiness decision is logged with its reason, and can't skip a gate the autonomy policy
    requires.
+
+## As built
+### Part A: the readiness pre-check and parking (ADR 0304 as amended 2026-11-12)
+- Who it applies to: only items no person released (intake, MCP, an autopilot, an agent). A person's
+  ready, release or shape is never parked; `workItem.create`, `workItem.release` and `workItem.shape`
+  return a `hint` instead, and `workItem.get` shows `readinessHint` while the item is in the
+  Backlog or Ready. This replaces criterion 1's "a request" with "a request no person released".
+- **Parking is not a `needs_info` status.** It is the Backlog with a marker, migration 0370's
+  `core_work_items.needs_info` (block AR; block AE's numbers sit below 0261's rebuild of
+  `core_work_items`). The marker holds `{ waitingOn, reason, source, missing, questionIds, heading,
+  at }`. The question goes to the requester as an ordinary blocking question (their Inbox) with the
+  fixed prompt; the backlog card and the item page show "needs info: …" as the status reason.
+- The check (`packages/core/src/readiness.ts`) is a floor for emptiness, not a judgement of
+  clarity (review of #117). It parks only an item with nothing to act on (no body and a title under
+  four words, or a body that is only template headings or a link) or an exact duplicate of an open
+  item from the same source (`core_work_items_project_title_idx`, migration 0371). Everything else
+  goes to triage. "A person" is decided by the surface: the app, the desktop, the phone and the sf
+  CLI are; MCP (an agent with a person's token), intake and automation aren't. The tests hold 15
+  ordinary requests that must pass, and 6 empty ones that must park.
+- Answering the last needs-info question, or editing the request, re-runs it. Passing: the marker
+  clears, the answers are appended to the request, and the item goes to Ready, is released, or
+  starts shaping, as it was heading. Failing: the requester is asked again. An agent can't move a
+  parked item on; a person can, which withdraws its questions.
+- Tests: `packages/core/test/readiness.test.ts`, plus `packages/db/test/late-migrations.test.ts`
+  (this branch's migration applies after everything on main and survives a fresh build).
+

@@ -48,7 +48,15 @@ describe("intake", () => {
       "SELECT id FROM core_outbox WHERE kind = 'workflow.create' AND payload LIKE ?",
       `%${created.workItemId}%`,
     );
-    expect(starts).toHaveLength(1);
+    // "Fix login" from intake says no outcome and nothing checkable: no person released it, so the
+    // readiness pre-check parks it in the Backlog instead of starting it (spec 23).
+    expect(starts).toHaveLength(0);
+    expect(
+      await first<{ status: string; needs_info: string | null }>(
+        "SELECT status, needs_info FROM core_work_items WHERE id = ?",
+        created.workItemId,
+      ),
+    ).toMatchObject({ status: "backlog", needs_info: expect.stringContaining("precheck") });
     // The Workflow id is the work item id, not derived from the dedupe key.
     const item = await first<{ workflow_id: string; branch: string; number: number }>(
       "SELECT workflow_id, branch, number FROM core_work_items WHERE id = ?",
