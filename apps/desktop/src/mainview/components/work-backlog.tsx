@@ -136,16 +136,25 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 /** Release, then say what it does: started when there's room, or waiting in Queued for #n. */
 async function releaseAll(items: BacklogItem[]) {
   const waiting: string[] = [];
+  const flagged: string[] = [];
   const ok = await eachItem(
     items,
     async (i) => {
       const r = await op("workItem.release", { workItemId: i.id });
+      if (r.releaseFlag) {
+        flagged.push(`#${i.number}`);
+        return;
+      }
       const w = waitsText(r.blockedBy);
       if (w) waiting.push(`#${i.number} waits for ${w}`);
     },
     { done: (n) => `Released ${plural(n, "item")} to the factory`, not: "Not released" },
   );
   if (waiting.length) toast(`In Queued until it lands: ${waiting.join("; ")}`);
+  if (flagged.length)
+    toast(
+      `Not released: ${flagged.join(", ")} need your choice in the Inbox (their workflow's shaping changed)`,
+    );
   return ok;
 }
 
@@ -723,7 +732,10 @@ export function ReadyPage({ projectId, onProject }: ViewProps) {
             </thead>
             <tbody>
               {items.map((i) => {
-                const blocker = releaseBlocker(i, projectOf(i.projectId));
+                // Spec 52, Q4: flagged at release, it waits on a person's choice in the Inbox.
+                const blocker = i.releaseFlag
+                  ? "Its workflow's shaping changed since it was shaped: choose in the Inbox"
+                  : releaseBlocker(i, projectOf(i.projectId));
                 const waits = waitsText(i.blockedBy);
                 return (
                   <tr

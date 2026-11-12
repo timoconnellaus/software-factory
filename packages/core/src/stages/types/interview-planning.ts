@@ -25,6 +25,7 @@ export const interviewPlanning: StageType<typeof settings> = {
     "A live planning session with questions, chat and mockups, ending in a spec a person approves.",
   phases: ["shaping", "delivery"],
   settings,
+  overridable: ["requiredFrom"],
   consumes: ["brief"],
   produces: ["plan", "spec"],
   evidence: [],

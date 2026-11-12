@@ -133,6 +133,12 @@ export interface StageType<S extends z.ZodType = z.ZodType> {
   phases: readonly Phase[];
   /** Its settings, with defaults. A stage template is a name plus a value of this. */
   settings: S;
+  /**
+   * The settings a project may override on an org workflow's stage of this type (spec 52, Q5): a
+   * short, fixed list in code. Anything else is refused. An override that loosens against the org
+   * workflow's value is `self-modify`.
+   */
+  overridable?: readonly string[];
   consumes: readonly ArtifactKind[];
   produces: readonly ArtifactKind[];
   evidence: readonly EvidenceSpec[];

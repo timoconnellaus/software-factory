@@ -105,6 +105,14 @@ function pre(
   });
 }
 
+/** #16 was shaped, and its workflow's shaping stages changed before release (spec 52, Q4). */
+const RELEASE_FLAG_16 = {
+  reason:
+    "#16 was shaped under org config v3; its workflow's shaping stages changed in v5. Shape it again under the current workflow, or accept the shaping already done and deliver it under the current workflow.",
+  shapedUnder: 3,
+  current: 5,
+};
+
 export const ITEMS: Summary[] = [
   item(13, "Guard the tests in verify", "merge", "waiting", {
     statusReason: "Packet ready",
@@ -387,6 +395,16 @@ const INBOX: OpOutput<"inbox.list"> = {
   ],
   planning: [],
   wipHolds: [],
+  releaseFlags: [
+    {
+      workItemId: "wi_16",
+      projectId: FACTORY,
+      number: 16,
+      title: "Record usage for every run",
+      ...RELEASE_FLAG_16,
+      choices: ["reshape", "accept"],
+    },
+  ],
   protection: [
     {
       projectId: FACTORY,
@@ -463,6 +481,7 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         createdAt: i.createdAt,
         updatedAt: i.updatedAt,
         waitsFor,
+        ...(i.id === "wi_16" ? { releaseFlag: RELEASE_FLAG_16 } : {}),
         blockedBy: waitsFor.filter((w) => w.status !== "done"),
       };
     });
@@ -485,7 +504,7 @@ const STAGES_IN_ORDER = [
 ] as const;
 
 /**
- * `project.workflow`: Factory names its workflow, Website runs the built-in one, CRM defines
+ * `project.workflow`: Factory runs an org workflow, Website runs the built-in one, CRM defines
  * workflows and names none (it fails closed: work is captured, never released).
  */
 function workflowOf(projectId: string): OpOutput<"project.workflow"> {
@@ -500,12 +519,8 @@ function workflowOf(projectId: string): OpOutput<"project.workflow"> {
   }
   const workflow =
     projectId === FACTORY
-      ? {
-          name: "software",
-          label: "Software",
-          description: "Plan, build, verify, review",
-          builtIn: false,
-        }
+      ? // On an org workflow (spec 52 PR (d)): named by its id, read by its name.
+        { name: "wf_ship_it", label: "Ship it", description: "", builtIn: false }
       : {
           name: "software",
           label: "Software (built in)",
@@ -585,10 +600,10 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       headSha: atMerge ? "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f" : null,
       prNumber: atMerge ? 51 : null,
       policySha: "5da8988",
-      workflow: "software",
+      workflow: "wf_ship_it",
       workflowReason: "the project's default",
     },
-    workflows: [{ name: "software", description: "Plan, build, verify, review" }],
+    workflows: [{ name: "wf_ship_it", description: "Ship it" }],
     stages,
     spec: {
       id: `spec_${n}`,

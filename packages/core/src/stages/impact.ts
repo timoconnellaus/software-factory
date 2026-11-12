@@ -6,6 +6,7 @@
 // `impact()` says nothing about, a type version it can't migrate, a reordered stage and a field
 // this code doesn't know, is a loosening, so a person decides it.
 import { type ImpactChange, type PolicyImpact, same } from "../policy/impact.ts";
+import type { AgentConfig } from "../policy/project-policy.ts";
 import type { AnyStageType } from "./contract.ts";
 import { stageType } from "./registry.ts";
 import { conditionImpact } from "./settings.ts";
@@ -110,7 +111,34 @@ function settingsImpact(
   return out;
 }
 
-function stageImpact(before: StageInstance, after: StageInstance): ImpactChange[] {
+/**
+ * The agents each side's stages hand to, when the two sides draw on different agent lists (a project
+ * moving from its own slot workflow to an org workflow). Then a judging stage is compared by what
+ * its agent is (role, tier, instructions, requirements), not by its name.
+ */
+export interface ImpactAgents {
+  before: readonly AgentConfig[];
+  after: readonly AgentConfig[];
+}
+
+/** The judging agent's definition without its name; `missing` when there's no such agent. */
+function judgeBody(agents: readonly AgentConfig[], name: string | undefined): unknown {
+  if (!name) return { builtIn: true };
+  const a = agents.find((x) => x.name.toLowerCase() === name.toLowerCase());
+  if (!a) return { missing: name.toLowerCase() };
+  return {
+    role: a.role,
+    tier: a.tier,
+    instructions: a.instructions,
+    requires: [...a.requires].sort(),
+  };
+}
+
+function stageImpact(
+  before: StageInstance,
+  after: StageInstance,
+  agents?: ImpactAgents,
+): ImpactChange[] {
   const at = `stages.${after.id}`;
   if (before.type !== after.type)
     return [loosens(at, `${after.name} changes from ${before.type} to ${after.type}.`)];
@@ -126,7 +154,18 @@ function stageImpact(before: StageInstance, after: StageInstance): ImpactChange[
   }
   if (before.phase !== after.phase)
     out.push(loosens(`${at}.phase`, `${after.name} moves from ${before.phase} to ${after.phase}.`));
-  if (before.agent !== after.agent)
+  const judgeChanged =
+    type.judges === "agent" && agents
+      ? !same(judgeBody(agents.before, before.agent), judgeBody(agents.after, after.agent))
+      : false;
+  if (judgeChanged)
+    out.push(
+      loosens(
+        `${at}.agent`,
+        `${after.name} is judged by ${after.agent ?? "its built-in agent"}, told something else than before.`,
+      ),
+    );
+  else if (before.agent !== after.agent && !(type.judges === "agent" && agents))
     out.push(
       type.judges
         ? // Who judges the work is policy (Q16): a different judge may pass what the old one sent back.
@@ -157,6 +196,7 @@ function stageImpact(before: StageInstance, after: StageInstance): ImpactChange[
 export function workflowImpact(
   before: WorkflowDefinition,
   after: WorkflowDefinition,
+  agents?: ImpactAgents,
 ): PolicyImpact {
   const changes: ImpactChange[] = [];
   const was = new Map(before.stages.map((s) => [s.id, s]));
@@ -170,7 +210,7 @@ export function workflowImpact(
   for (const s of after.stages) {
     const old = was.get(s.id);
     if (old) {
-      changes.push(...stageImpact(old, s));
+      changes.push(...stageImpact(old, s, agents));
       continue;
     }
     // An added check or gate that runs for every item only adds to what is seen. Anything else

@@ -1536,6 +1536,8 @@ export const planningGet = defineOperation({
   name: "planning.get",
   description:
     "The Planning view (spec 20): the session (state, runner, whether it waits for its runner), every question with its answer, the current spec and the one before it (to highlight what changed), the chat, who is here, and the log's cursor.",
+  // Polled: reads nothing an org workflow decides (spec 52 PR (d), cost).
+  skipsOrgWorkflow: true,
   risk: "read",
   actors: ["human"],
   permission: "member",

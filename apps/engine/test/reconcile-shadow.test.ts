@@ -2,6 +2,7 @@
 // items that ended since its cursor and writes one verdict row each; old verdicts go, a bounded batch
 // at a time.
 import { env } from "cloudflare:workers";
+import { SOFTWARE } from "@software-factory/core/stages";
 import { describe, expect, it } from "vitest";
 import {
   pruneReconcileShadow,
@@ -144,5 +145,62 @@ describe("the shadow reconciler", () => {
     expect(
       await first("SELECT work_item_id FROM core_reconcile_items WHERE work_item_id = 'wi_new'"),
     ).not.toBeNull();
+  });
+});
+
+describe("the shadow reconciler on an org workflow (spec 52 PR (d))", () => {
+  it("compares an item with the org workflow it pinned, overrides resolved", async () => {
+    const w = await world({ version: 1, autonomyPolicy: "balanced", workflow: "wf_ship" });
+    // The org's Ship wants a spec from small; the project's own default is medium.
+    const ship = {
+      ...SOFTWARE,
+      id: "wf_ship",
+      name: "Ship",
+      stages: SOFTWARE.stages.map((s) =>
+        s.id === "spec" ? { ...s, settings: { requiredFrom: "small" } } : s,
+      ),
+    };
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 0, workflow: ship }, w.human);
+    while ((await shadowPass(env, later())) > 0);
+    const id = await ended(w, "done", SMALL_DONE);
+    await env.DB.prepare(
+      "UPDATE core_work_items SET org_config_version = 1, workflow = ? WHERE id = ?",
+    )
+      .bind("wf_ship", id)
+      .run();
+    while ((await shadowPass(env, later())) > 0);
+    const row = await first<{ divergences: number; report: string }>(
+      "SELECT divergences, report FROM core_reconcile_items WHERE work_item_id = ?",
+      id,
+    );
+    // Before (d), an item on an org workflow had no verdict at all. Now it is compared with the
+    // org's definition: a small item that skipped the spec diverges from a workflow that needs one.
+    expect(row).not.toBeNull();
+    const report = JSON.parse(row?.report ?? "{}") as {
+      transitions: { observed: string; predicted: string; agrees: boolean }[];
+    };
+    expect(report.transitions).toContainEqual({
+      observed: "skip spec",
+      predicted: "enter spec",
+      agrees: false,
+    });
+  });
+
+  it("writes no verdict when the pinned org version is missing", async () => {
+    const w = await world({ version: 1, autonomyPolicy: "balanced", workflow: "wf_ship" });
+    await ok(
+      "workflow.save",
+      { orgId: w.orgId, baseVersion: 0, workflow: { ...SOFTWARE, id: "wf_ship", name: "Ship" } },
+      w.human,
+    );
+    while ((await shadowPass(env, later())) > 0);
+    const id = await ended(w, "done", SMALL_DONE);
+    await env.DB.prepare("UPDATE core_work_items SET org_config_version = 7 WHERE id = ?")
+      .bind(id)
+      .run();
+    while ((await shadowPass(env, later())) > 0);
+    expect(
+      await first("SELECT work_item_id FROM core_reconcile_items WHERE work_item_id = ?", id),
+    ).toBeNull();
   });
 });

@@ -10,7 +10,12 @@ import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
 import { FinishSetupCard } from "../components/finish-setup.tsx";
-import { GateDetail, PlanningDetail, QuestionDetail } from "../components/inbox-cards.tsx";
+import {
+  GateDetail,
+  PlanningDetail,
+  QuestionDetail,
+  ReleaseFlagDetail,
+} from "../components/inbox-cards.tsx";
 import { ProtectionChangedCard } from "../components/protection-card.tsx";
 import { ListGroup, ListItem, NestedList, PageArea } from "../components/shell-list.tsx";
 import { useScopedInbox } from "../components/shell-sidebar.tsx";
@@ -148,6 +153,12 @@ function InboxPage() {
               <PlanningDetail
                 planning={selected.planning}
                 projectName={projectName(selected.planning.projectId)}
+              />
+            )}
+            {selected.kind === "release" && (
+              <ReleaseFlagDetail
+                flag={selected.flag}
+                projectName={projectName(selected.flag.projectId)}
               />
             )}
             {selected.kind === "protection" && <ProtectionChangedCard drift={selected.drift} />}

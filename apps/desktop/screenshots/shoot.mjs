@@ -127,6 +127,9 @@ export const SCREENS = [
     design: "WorkBacklog.html",
   },
   { name: "ready", path: "/work?view=ready", design: "WorkReady.html" },
+  // Spec 52, Q4: a shaped item whose workflow's shaping changed waits on a person's choice. No
+  // design of its own: it follows the Inbox's approval page.
+  { name: "inbox-release-flag", path: "/?item=wi_16", design: "InboxQuestion.html" },
   { name: "planning-empty", path: "/work?view=planning", design: "WorkReady.html" },
   { name: "item-backlog", path: "/work/wi_21", design: "ItemBacklog.html" },
   { name: "item-ready-blocked", path: "/work/wi_site_2", design: "ItemBacklog.html" },
