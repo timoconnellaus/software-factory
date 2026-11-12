@@ -134,6 +134,10 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // change: open Planning tabs don't re-read.
       await planningHub(env, message.payload.workItemId).wake();
       return;
+    case "device.revoked":
+      // A revoked device's live socket closes now, not when it next calls (ADR 0541).
+      await clientHub(env, message.payload.userId).closeDevice(message.payload.deviceId);
+      return;
     case "notify":
       // To the person's open desktop apps (spec 40 M2b). Web push arrives with spec 15; the inbox
       // itself always reads gates and questions from D1.

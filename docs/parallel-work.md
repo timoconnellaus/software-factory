@@ -37,8 +37,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AA | 0200–0209 | 0430–0439 | Container per job (`hosts-containers`): spec 33, hosts plan piece 4. Used: ADR 0430, no migrations | in review |
 | AB | 0210–0219 | 0440–0449 | Web terminal in the dashboard (`hosts-web-terminal`): spec 35. The TerminalRelay Durable Object per job, the `terminal` held call and host socket, `run.terminal.*`, the tmux control-mode bridge, the Live tab's web terminal. Used: migration 0210; ADR 0440 | in progress |
 | AC | 0220–0229 | 0450–0459 | Chat UI on a stream-json session (`hosts-chat-ui`): spec 37. Used: migration 0220; ADR 0450 | in progress |
-| AL | 0310–0319 | 0540–0549 | The phone app (`mobile-app`): spec 60, Android first in Flutter. Design: ADRs 0540–0543 (the app, phone devices and fingerprint proofs, push through FCM, policy approval on the phone); migration 0310 reserved for its first server PR | design in review |
-| AE | 0240–0249 | 0470–0479 | Planning to kim's standard (`planning`): the [audit against kim](reviews/2026-11-12-planning-against-kim.md), spec 20's fixes, then specs 21, 23, 22, 24 | in progress |
+| AL | 0310–0319 | 0540–0549 | The phone app (`mobile-app`): spec 60, Android first in Flutter. Design: ADRs 0540–0543 (the app, phone devices and fingerprint proofs, push through FCM, policy approval on the phone). PR 1a (`mobile-server`): migration 0310 (phone devices, pair offers, `mobile` tokens); ADR 0541 amended | in review (#91) |
 | AD | 0230–0239 | 0460–0469 | The desktop shell and look (`desktop-shell`): spec 41, slice 1 of the approved UI design. The window shell, the look as `packages/ui` tokens, the existing screens restyled. Used: ADR 0460, no migrations | in progress |
 | AK | 0300–0309 | 0530–0539 | The desktop terminal (`desktop-terminal`): spec 42. Open terminal opens the session's web terminal in the desktop app through the client door. Used: ADR 0530, no migrations | in progress |
 | AE | 0240–0249 | 0470–0479 | Planning to kim's standard (`planning`): the [audit against kim](reviews/2026-11-12-planning-against-kim.md), spec 20's fixes, then specs 21, 23, 22, 24 | in progress |
@@ -49,10 +48,18 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AH | 0270–0279 | 0500–0509 | Verify from the factory's own evidence (`verify-evidence`): spec 51. PR A, the tests-intact guard (ADR 0500, no migrations); PR B, checks run by the runner host, proven criteria (ADR 0501, migration 0270). | in progress |
 | AM | 0320–0329 | 0550–0559 | Runners under load (`runner-tmux-robust`): spec 43, incident #11. No orphans, tmux errors aren't "gone", back off claiming under load, marked run branches. Used: migration 0320; ADRs 0550–0552 | in review |
 | AJ | 0290–0299 | 0520–0529 | Runner updates without draining on every deploy (`runner-update-no-drain`): spec 38 (keep claiming while an update is pending, the caps, `minRunnerCompat`, `RUNNER_SHA` from the deploy) and spec 39 (re-adopting live jobs after a restart, spec only). Used: migration 0290 (`core_runners.compat`); ADR 0520 | in review |
-| AP | 0350–0359 | 0580–0589 | The babysitter (`babysitter`): spec 53. Approval separated from delivery, stop the line on red main, approval across a clean merge of main, the `babysit` job, red-main repair. ADRs 0580–0585; Workflow v11; migrations from 0350 | in progress |
+| AP | 0350–0359 | 0580–0589 | The babysitter (`babysitter`): spec 53. Approval separated from delivery, stop the line on red main, approval across a clean merge of main, the `babysit` job, red-main repair. ADRs 0580–0585; Workflow v11 (provisional: next free at merge); migrations 0350 delivery, 0351 main health, 0352 approved change, 0353 flakes | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
+
+## Workflow versions
+Workflow versions are not claimed in blocks. The work-item Workflow keeps one table,
+`WORKFLOW_FEATURES`, mapping each version to the set of features it has; code asks
+`has(version, "feature")` and never compares `version >= N` (a later PR's check would switch on
+inside running instances of an earlier version). A PR that changes the Workflow's steps takes the
+next number above whatever is on `main` **at merge time** and adds its row; a merged row is never
+edited. Rows in other open PRs don't exist until they merge, so renumber when you merge `main`.
 
 ## Reserved areas
 Avoid these unless your build is the one named, because another build is changing them:

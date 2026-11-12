@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./attachments": "./src/attachments.ts",
     "./attachment-rules": "./src/attachment-rules.ts",
+    "./policy-gate": "./src/policy/gate.ts",
     "./testing": "./src/testing/index.ts"
   },
   "scripts": {
