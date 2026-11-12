@@ -194,9 +194,10 @@ function Header({ detail }: { detail: WorkItemDetail }) {
           #{item.number} {item.title}
         </h1>
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2" data-testid="item-actions">
         <Button
           variant="outline"
+          size="icon-md"
           aria-label={pinned ? "Unpin" : "Pin to the sidebar"}
           title={pinned ? "Unpin" : "Pin to the sidebar"}
           onClick={() => updateViewState((s) => togglePin(s, item.id))}
@@ -208,7 +209,8 @@ function Header({ detail }: { detail: WorkItemDetail }) {
         {active && (detail.viewer.isRequester || detail.viewer.isApprover) && (
           <Button
             variant="outline"
-            className="text-destructive"
+            size="md"
+            className="text-destructive hover:text-destructive"
             onClick={() => setCancel(true)}
             data-testid="cancel"
           >

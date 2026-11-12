@@ -33,7 +33,7 @@ export function OpenTerminal({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" className={className} data-testid="open-terminal">
+        <Button variant="outline" size="md" className={className} data-testid="open-terminal">
           <SquareTerminalIcon className="size-3.5" />
           Open terminal
         </Button>

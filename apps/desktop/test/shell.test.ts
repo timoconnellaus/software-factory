@@ -323,20 +323,23 @@ describe("the merge gate's words", () => {
   if (!stored) throw new Error("wi_13 carries a packet in the fixtures");
   const packet = parsePacket(stored);
 
-  it("heads the packet by what's proven", () => {
-    expect(verdictHeadline(packet)).toEqual({
-      text: "Passed, with one criterion not proven",
+  it("heads the packet by what's met", () => {
+    expect(verdictHeadline(packet)).toEqual({ text: "Passed", status: "done" });
+    const one = {
+      ...packet,
+      criteria: packet.criteria.map((c, i) => ({ ...c, met: i !== 3 })),
+    };
+    expect(verdictHeadline(one)).toEqual({
+      text: "Passed, with one criterion not met",
       status: "waiting",
     });
-    const all = { ...packet, criteria: packet.criteria.map((c) => ({ ...c, met: true })) };
-    expect(verdictHeadline(all).text).toBe("Passed");
     expect(verdictHeadline({ ...packet, verdict: "fail" }).status).toBe("failed");
   });
 
   it("chips the checks, criteria, reviewer and risk", () => {
     expect(verdictChips(packet).map((c) => c.label)).toEqual([
       "Checks 1 of 1",
-      "Criteria 3 proven, 1 not",
+      "Criteria 4 met",
       "Reviewer approves",
       "No risk flags",
     ]);

@@ -76,7 +76,7 @@ export function ReviewPacket({ detail }: { detail: WorkItemDetail }) {
         <ChecksTable packet={packet} />
         {configured.includes("criteria") && (
           <section className="flex flex-col gap-2">
-            <SectionTitle note="Proven means a check that ran covers it. Anything else is a claim.">
+            <SectionTitle note="As the verify run reported them, with its evidence.">
               Acceptance criteria
             </SectionTitle>
             <CriteriaList packet={packet} />
@@ -161,13 +161,13 @@ function VerdictNotes({ packet }: { packet: ParsedPacket }) {
   );
 }
 
-/** The checks in the packet, and CI on the head SHA. */
+/** The checks the verify run reported (its own words as the detail), and CI on the head SHA. */
 function ChecksTable({ packet }: { packet: ParsedPacket }) {
   const { ci } = packetExtras(packet);
   const rows = [
     ...packet.checks.map((c) => ({
       name: c.name,
-      where: c.detail ?? "",
+      where: c.detail ? `Verify run · ${c.detail}` : "Verify run",
       ok: c.status === "pass",
       result: c.status === "pass" ? "Passed" : c.status === "fail" ? "Failed" : "Skipped",
     })),
@@ -177,7 +177,7 @@ function ChecksTable({ packet }: { packet: ParsedPacket }) {
         name: c.name,
         where: "GitHub",
         ok: c.conclusion === "success",
-        result: c.conclusion ?? c.status,
+        result: c.conclusion === "success" ? "Passed" : (c.conclusion ?? c.status),
       })),
   ];
   if (rows.length === 0) return null;
@@ -189,7 +189,7 @@ function ChecksTable({ packet }: { packet: ParsedPacket }) {
           <thead>
             <tr className="text-left text-ink-muted text-xs">
               <th className="px-3 py-2.5 font-medium">Check</th>
-              <th className="px-3 py-2.5 font-medium">Where</th>
+              <th className="px-3 py-2.5 font-medium">Reported by</th>
               <th className="px-3 py-2.5 font-medium">Result</th>
             </tr>
           </thead>

@@ -26,6 +26,8 @@ export const SCREENS = [
   { name: "work-project", path: "/work?project=prj_factory", design: "WorkActive.html" },
   { name: "work-done", path: "/work?view=done", design: "WorkDone.html" },
   { name: "item-overview", path: "/work/wi_13", design: "ItemOverview.html" },
+  // #9 has a live run with a takeover hint, so the header shows Pin, Open terminal and Cancel.
+  { name: "item-header", path: "/work/wi_9", design: "ItemOverview.html" },
   { name: "item-plan", path: "/work/wi_12?tab=plan", design: "ItemPlan.html" },
   { name: "plan-focus", path: "/work/wi_12?tab=plan", design: "PlanFocus.html", keys: ["f"] },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
