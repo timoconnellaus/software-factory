@@ -38,7 +38,7 @@ and the factory's own planning stage writes specs in this same format.
 | [23](23-triage-questions-and-critic.md) | Planning M4: triage questions, the readiness check and the spec critic | 20 |
 | [24](24-planning-splits.md) | Planning splits a work item | 20 |
 | [25](25-verify-drift-check.md) | Verify checks drift from the spec | 04 |
-| [30](30-desktop-app.md) | The desktop app (Electrobun): the client door, desktop devices with Touch ID presence proofs, `apps/desktop`, the website shrinks to auth | 07, 08 |
+| [40](40-desktop-app.md) | The desktop app (Electrobun): the client door, desktop devices with Touch ID presence proofs, `apps/desktop`, the website shrinks to auth | 07, 08 |
 | [wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md) | Work item attachments (picker, drag-and-drop, paste; R2; runs read them) | 01, 03, 13 |
 | [wi-4](wi-4-let-s-improve-the-event-log-so-it-s-usef.md) | A readable event log: one pure module (`packages/timeline`) words each audit entry for the dashboard's timeline and `sf timeline` | 07, 13 |
 
