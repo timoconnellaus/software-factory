@@ -195,7 +195,7 @@ days, revocable. It can never decide a gate: those operations are **browser-only
 _Avoid_: API key, PAT
 
 **Desktop device**
-A Mac running the desktop app, registered by a browser sign-in (ADR 0371): a Secure Enclave key
+A Mac running the desktop app, registered by a browser sign-in (ADR 0381): a Secure Enclave key
 plus a desktop token. Its token acts as the person on the `desktop` surface, like a `write` CLI
 token; it can decide a gate only with a **presence proof** (Touch ID signing that exact call).
 Listed and revoked on the website.
@@ -204,7 +204,7 @@ _Avoid_: client, install
 **Presence proof**
 A one-time challenge, signed by a desktop device's Secure Enclave key after Touch ID, bound to one
 operation and the digest of its input. The client door checks it; `invoke()` needs it for a gate
-decision from the desktop (ADR 0371).
+decision from the desktop (ADR 0381).
 _Avoid_: 2FA, confirmation
 
 **Merge queue**

@@ -742,7 +742,7 @@ function ProjectDetails({ project }: { project: ProjectState }) {
   );
 }
 
-/** Desktop devices (ADR 0371): each Mac signed in to the desktop app, revocable here. */
+/** Desktop devices (ADR 0381): each Mac signed in to the desktop app, revocable here. */
 function DesktopDevices() {
   const devices = useQuery({
     queryKey: ["desktop-devices"],

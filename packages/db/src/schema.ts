@@ -764,7 +764,7 @@ export interface CoreCliTokensTable {
   created_at: Iso;
   expires_at: Iso;
   revoked_at: Iso | null;
-  /** `cli` (sf) or `desktop` (the desktop app, bound to `device_id`; ADR 0371). */
+  /** `cli` (sf) or `desktop` (the desktop app, bound to `device_id`; ADR 0381). */
   kind: Generated<"cli" | "desktop">;
   device_id: string | null;
 }
@@ -805,6 +805,7 @@ export interface CorePresenceChallengesTable {
   device_id: string;
   op: string;
   input_digest: string;
+  summary: string;
   nonce_hash: string;
   created_at: Iso;
   expires_at: Iso;

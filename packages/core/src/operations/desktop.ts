@@ -1,4 +1,4 @@
-// The desktop app's devices and presence proofs (ADR 0371, spec 30 M1).
+// The desktop app's devices and presence proofs (ADR 0381, spec 40 M1).
 //
 // Sign-in: the app makes a P-256 key in the Secure Enclave and calls desktop.authStart with its
 // public half, a device name and a PKCE challenge, then opens /desktop/connect?request=… in the
@@ -19,6 +19,7 @@ import { z } from "zod";
 import type { Actor } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
+import { inputDigest } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { getOperation } from "../registry.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
@@ -68,7 +69,7 @@ function requireDeviceActor(ctx: HandlerContext) {
 function requireDesktop(ctx: HandlerContext): string {
   const deviceId = ctx.origin.deviceId;
   if (ctx.origin.surface !== "desktop" || !deviceId) {
-    throw new OperationError("forbidden", "only a signed-in desktop device can do this (ADR 0371)");
+    throw new OperationError("forbidden", "only a signed-in desktop device can do this (ADR 0381)");
   }
   return deviceId;
 }
@@ -135,9 +136,75 @@ export function rawSignature(sig: Uint8Array): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-/** What a device signs for one challenge (ADR 0371). */
-export const presenceMessage = (nonce: string, op: string, digest: string) =>
-  `${nonce}\n${op}\n${digest}`;
+/**
+ * What a device signs for one challenge (ADR 0381). The last line is the summary the Touch ID
+ * prompt shows; the key helper reads it from here, never from its caller.
+ */
+export const presenceMessage = (nonce: string, op: string, digest: string, summary: string) =>
+  `${nonce}\n${op}\n${digest}\n${summary}`;
+
+const quoted = (title: string) => `"${title.replace(/\s+/g, " ").slice(0, 80)}"`;
+
+/**
+ * The words for the decision a presence proof is for (ADR 0381), from the engine's own records,
+ * never from the caller: the Touch ID prompt shows them.
+ */
+async function describeDecision(ctx: HandlerContext, op: string, input: Record<string, unknown>) {
+  const item = async (id: unknown) =>
+    typeof id === "string"
+      ? await ctx.db
+          .selectFrom("core_work_items as w")
+          .innerJoin("core_projects as p", "p.id", "w.project_id")
+          .select(["w.number", "w.title", "p.default_branch"])
+          .where("w.id", "=", id)
+          .executeTakeFirst()
+      : undefined;
+  const named = async (id: unknown) => {
+    const w = await item(id);
+    return w ? `#${w.number} ${quoted(w.title)}` : "a work item";
+  };
+  switch (op) {
+    case "spec.approve":
+      return `Approve the spec for ${await named(input.workItemId)}`;
+    case "spec.requestChanges":
+      return `Request changes to the spec for ${await named(input.workItemId)}`;
+    case "review.merge": {
+      const w = await item(input.workItemId);
+      return w
+        ? `Merge #${w.number} ${quoted(w.title)} into ${w.default_branch}`
+        : "Merge a work item";
+    }
+    case "review.sendBack":
+      return `Send ${await named(input.workItemId)} back`;
+    case "question.acceptDefaults":
+      return `Accept the recommended answers on ${await named(input.workItemId)}`;
+    case "question.answer": {
+      const q =
+        typeof input.questionId === "string"
+          ? await ctx.db
+              .selectFrom("core_questions")
+              .select(["work_item_id"])
+              .where("id", "=", input.questionId)
+              .executeTakeFirst()
+          : undefined;
+      return `Answer a question on ${await named(q?.work_item_id)}`;
+    }
+    case "approval.decide": {
+      const pa =
+        typeof input.pendingActionId === "string"
+          ? await ctx.db
+              .selectFrom("core_pending_actions")
+              .select(["operation", "work_item_id"])
+              .where("id", "=", input.pendingActionId)
+              .executeTakeFirst()
+          : undefined;
+      const verb = input.decision === "rejected" ? "Reject" : "Approve";
+      return `${verb} ${pa ? `${pa.operation} on ${await named(pa.work_item_id)}` : "a pending action"}`;
+    }
+    default:
+      return `Decide ${op}`;
+  }
+}
 
 /** The person, device and token behind a desktop bearer token, or null if unknown, revoked or expired. */
 export interface DesktopTokenRow {
@@ -184,7 +251,7 @@ async function requestById(ctx: HandlerContext, id: string) {
 export const desktopAuthStart = defineOperation({
   name: "desktop.authStart",
   description:
-    "Start a desktop app sign-in (ADR 0371): registers the device's P-256 public key (made in the Secure Enclave), its name and a PKCE S256 challenge, and returns the website page where a person approves it (10 minutes). Called unsigned by sf-engine's client door.",
+    "Start a desktop app sign-in (ADR 0381): registers the device's P-256 public key (made in the Secure Enclave), its name and a PKCE S256 challenge, and returns the website page where a person approves it (10 minutes). Called unsigned by sf-engine's client door.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -259,7 +326,7 @@ export const desktopAuthLookup = defineOperation({
 export const desktopApproveDevice = defineOperation({
   name: "desktop.approveDevice",
   description:
-    "Approve a desktop app sign-in (ADR 0371): the device gets a token that acts as you in the app, and can decide gates only with Touch ID for each decision. Returns the sf:// link that hands the one-time code back to the app. Browser-only, for a pending, unexpired request.",
+    "Approve a desktop app sign-in (ADR 0381): the device gets a token that acts as you in the app, and can decide gates only with Touch ID for each decision. Returns the sf:// link that hands the one-time code back to the app. Browser-only, for a pending, unexpired request.",
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
@@ -416,7 +483,7 @@ export const desktopAuthExchange = defineOperation({
 export const desktopDeviceList = defineOperation({
   name: "desktopDevice.list",
   description:
-    "Your desktop devices (ADR 0371): name, where the key lives, when added, last seen and revoked. Never a token or a key.",
+    "Your desktop devices (ADR 0381): name, where the key lives, when added, last seen and revoked. Never a token or a key.",
   risk: "read",
   actors: ["human"],
   permission: "signed-in",
@@ -494,22 +561,37 @@ export const desktopDeviceRevoke = defineOperation({
 export const presenceChallenge = defineOperation({
   name: "presence.challenge",
   description:
-    "A one-time challenge (60 s) for deciding one gate from the desktop app (ADR 0371): bound to the operation and the SHA-256 of its canonical input. The device signs it with its Secure Enclave key, which asks for Touch ID. Desktop devices only, for presence-decidable operations.",
+    "A one-time challenge (60 s) for deciding one gate from the desktop app (ADR 0381): bound to the operation and the SHA-256 of its canonical input, with a summary of the decision written from the factory's own records (the Touch ID prompt shows it). The device signs nonce, op, digest and summary with its Secure Enclave key. Desktop devices only, for presence-decidable operations.",
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
-  input: z.object({ op: z.string().min(1).max(80), inputDigest: digestHex }),
-  output: z.object({ challengeId: z.string(), nonce: z.string(), expiresAt: z.string() }),
-  redact: { output: (o) => ({ ...o, nonce: "[redacted]" }) },
+  input: z.object({
+    op: z.string().min(1).max(80),
+    /** The decision's own input, exactly as it will be sent. */
+    input: z.record(z.string(), z.unknown()),
+  }),
+  output: z.object({
+    challengeId: z.string(),
+    nonce: z.string(),
+    inputDigest: z.string(),
+    summary: z.string(),
+    expiresAt: z.string(),
+  }),
+  redact: {
+    input: (i) => ({ op: i.op, input: "[digested]" }),
+    output: (o) => ({ ...o, nonce: "[redacted]" }),
+  },
   async handler(input, ctx) {
     const deviceId = requireDesktop(ctx);
     const target = getOperation(input.op);
     if (!target?.presenceDecidable) {
       throw new OperationError(
         "forbidden",
-        `${input.op} can't be decided with a presence proof: it stays in the browser (ADR 0371)`,
+        `${input.op} can't be decided with a presence proof: it stays in the browser (ADR 0381)`,
       );
     }
+    const digest = await inputDigest(input.input);
+    const summary = await describeDecision(ctx, input.op, input.input);
     const nonce = randomToken();
     const challengeId = newId("presenceChallenge");
     const expiresAt = new Date(Date.parse(ctx.now) + PRESENCE_TTL_MS).toISOString();
@@ -518,21 +600,22 @@ export const presenceChallenge = defineOperation({
         id: challengeId,
         device_id: deviceId,
         op: input.op,
-        input_digest: input.inputDigest,
+        input_digest: digest,
+        summary,
         nonce_hash: await sha256Hex(nonce),
         created_at: ctx.now,
         expires_at: expiresAt,
         consumed_at: null,
       }),
     );
-    return { challengeId, nonce, expiresAt };
+    return { challengeId, nonce, inputDigest: digest, summary, expiresAt };
   },
 });
 
 export const presenceRedeem = defineOperation({
   name: "presence.redeem",
   description:
-    "The client door spends a signed presence challenge before running the decision it is for (ADR 0371). Checks the challenge belongs to this device, is unused and unexpired, names this operation and input digest, and that the signature (ECDSA P-256 over nonce, op and digest) verifies with the device key. Desktop devices only.",
+    "The client door spends a signed presence challenge before running the decision it is for (ADR 0381). Checks the challenge belongs to this device, is unused and unexpired, names this operation and input digest, that the device key is in the Secure Enclave, and that the signature (ECDSA P-256 over nonce, op, digest and summary) verifies with the device key. Desktop devices only.",
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
@@ -563,10 +646,16 @@ export const presenceRedeem = defineOperation({
     if ((await sha256Hex(input.nonce)) !== challenge.nonce_hash) throw refused("wrong nonce");
     const device = await ctx.db
       .selectFrom("core_desktop_devices")
-      .select(["public_key", "revoked_at"])
+      .select(["public_key", "revoked_at", "key_storage"])
       .where("id", "=", deviceId)
       .executeTakeFirst();
     if (!device || device.revoked_at) throw refused("device revoked");
+    // A software key can be read by any process of the user: it proves nothing (ADR 0381).
+    if (device.key_storage !== "secure-enclave" && !ctx.services.allowSoftwareDeviceKeys) {
+      throw refused(
+        "this device's key isn't in the Secure Enclave (an unsigned build): decide on the website",
+      );
+    }
     let valid = false;
     try {
       const key = await importKey(JSON.parse(device.public_key) as PublicKeyJwk);
@@ -574,7 +663,9 @@ export const presenceRedeem = defineOperation({
         { name: "ECDSA", hash: "SHA-256" },
         key,
         rawSignature(base64Decode(input.signature)),
-        new TextEncoder().encode(presenceMessage(input.nonce, input.op, input.inputDigest)),
+        new TextEncoder().encode(
+          presenceMessage(input.nonce, input.op, input.inputDigest, challenge.summary),
+        ),
       );
     } catch {
       valid = false;

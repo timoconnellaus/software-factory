@@ -1,10 +1,10 @@
-# ADR 0372: The website shrinks to auth, links go through a trampoline
+# ADR 0382: The website shrinks to auth, links go through a trampoline
 
-Status: accepted, 2026-11-12. Spec [30](../specs/30-desktop-app.md). Amends
+Status: accepted, 2026-11-12. Spec [40](../specs/40-desktop-app.md). Amends
 [ADR 0240](0240-v1-app-sign-in-and-server-functions.md) and [0241](0241-app-runs-next-to-d1-and-loads-pages-in-one-request.md).
 
 ## Context
-With the desktop app as the daily UI ([ADR 0370](0370-the-desktop-app-is-the-daily-ui.md)), sf-app
+With the desktop app as the daily UI ([ADR 0380](0380-the-desktop-app-is-the-daily-ui.md)), sf-app
 would be a second front end to keep in step. Some flows still need a browser: OAuth sign-in, the
 GitHub App install redirect, approving device logins, and links that arrive from outside the app
 (GitHub checks, PR comments, email, a phone).
@@ -20,7 +20,7 @@ GitHub App install redirect, approving device logins, and links that arrive from
    tries `sf://<path>`. If the app isn't installed, it offers "Get the app" and a sign-in. The
    `factory/verify` check, PR comments and notifications link to it.
 3. **The screens move to `apps/desktop`:** inbox, work items, planning, review packet, Setup's
-   checklist, runners. They move only once the desktop has them (spec 30 M3). The strip-down
+   checklist, runners. They move only once the desktop has them (spec 40 M3). The strip-down
    (M5) is its own PR.
 
 ## Consequences

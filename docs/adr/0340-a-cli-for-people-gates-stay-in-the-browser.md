@@ -49,4 +49,4 @@ deploy and self-modify always go to a human" (ADR 0005, AGENTS.md).
   approve.
 
 ## Amendment, 2026-11-12
-[ADR 0371](0371-the-client-door-desktop-devices-and-presence.md): the CLI door becomes the client door (`/client/v1`, `/cli/v1` kept), and a **desktop** device may decide the presence-decidable gates (spec, merge, `approval.decide`, questions) with a Secure Enclave presence proof bound to that exact call. Everything else stays browser-only, and CLI tokens are unchanged.
+[ADR 0381](0381-the-client-door-desktop-devices-and-presence.md): the CLI door becomes the client door (`/client/v1`, `/cli/v1` kept), and a **desktop** device may decide the presence-decidable gates (spec, merge, `approval.decide`, questions) with a Secure Enclave presence proof bound to that exact call. Everything else stays browser-only, and CLI tokens are unchanged.

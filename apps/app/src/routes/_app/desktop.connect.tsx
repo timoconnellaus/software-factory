@@ -1,4 +1,4 @@
-// Approve a desktop app sign-in (ADR 0371, spec 30 M1): the app opens this page as
+// Approve a desktop app sign-in (ADR 0381, spec 40 M1): the app opens this page as
 // `/desktop/connect?request=…`. The person checks the device name and key fingerprint match what
 // the app shows, and approves. The page then hands the one-time code back to the app through
 // `sf://auth/callback`. The app can decide gates only with Touch ID for each decision.

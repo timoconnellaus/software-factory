@@ -1,8 +1,8 @@
-# Spec 30: The desktop app
+# Spec 40: The desktop app
 
-**Read first**: [ADR 0370](../adr/0370-the-desktop-app-is-the-daily-ui.md),
-[0371](../adr/0371-the-client-door-desktop-devices-and-presence.md),
-[0372](../adr/0372-the-website-shrinks-to-auth.md),
+**Read first**: [ADR 0380](../adr/0380-the-desktop-app-is-the-daily-ui.md),
+[0381](../adr/0381-the-client-door-desktop-devices-and-presence.md),
+[0382](../adr/0382-the-website-shrinks-to-auth.md),
 [ADR 0340](../adr/0340-a-cli-for-people-gates-stay-in-the-browser.md) (the CLI door and the
 browser-only rule this amends), the spike [`spikes/electrobun`](../../spikes/electrobun/README.md),
 and the plan [`.kim/plans/2026-11-11-software-factory-desktop-app-electrobun.md`](../../.kim/plans/2026-11-11-software-factory-desktop-app-electrobun.md).
@@ -20,14 +20,14 @@ The build lands as five milestones, each one PR (or more), in order.
 
 ## M1: the client door, desktop devices and presence (cloud only)
 **Scope**
-- **Migration 0140:**
+- **Migration 0150:**
   - `core_desktop_auth_requests`: id, the PKCE challenge, device name, device public key (JWK),
     state, status `pending|approved|denied|consumed`, `user_id`, the hash of the one-time code,
     timestamps, expiry 10 min.
   - `core_desktop_devices`: id, `user_id`, name, public key (JWK), `created_at`, `last_seen_at`,
     `revoked_at`.
-  - `core_presence_challenges`: id, `device_id`, op, `input_digest`, the nonce's hash, `expires_at`
-    (60 s), `consumed_at`.
+  - `core_presence_challenges`: id, `device_id`, op, `input_digest`, `summary`, the nonce's hash,
+    `expires_at` (60 s), `consumed_at`.
   - `core_cli_tokens` gains `kind` (`cli|desktop`, default `cli`) and `device_id`.
 - **Operations:**
   - `desktop.authStart` and `desktop.authExchange`: unsigned, as `DESKTOP_DEVICE_ACTOR`. The
@@ -35,8 +35,9 @@ The build lands as five milestones, each one PR (or more), in order.
     mints a `write` desktop token for it.
   - `desktop.authLookup` and `desktop.approveDevice` (browser-only), `desktop.denyDevice`.
   - `desktopDevice.list` and `desktopDevice.revoke`. Revoking a device revokes its tokens.
-  - `presence.challenge { op, inputDigest }`: desktop surface only.
-  - The browser-only operations listed as presence-decidable in ADR 0371 carry
+  - `presence.challenge { op, inputDigest }`: desktop surface only. Returns the nonce and a summary
+    of the decision the engine writes from the input (the Touch ID prompt shows it).
+  - The browser-only operations listed as presence-decidable in ADR 0381 carry
     `presenceDecidable: true`.
 - **`invoke()`:**
   - `desktop` joins `SURFACES`.
@@ -49,7 +50,7 @@ The build lands as five milestones, each one PR (or more), in order.
     routes `desktop/start` and `desktop/exchange`. `/cli/v1` is an alias.
   - The token's kind sets the surface.
   - `call` accepts `presence { challengeId, signature }`. The door verifies the ECDSA P-256
-    signature over `nonce ‖ "\n" ‖ op ‖ "\n" ‖ inputDigest` with the device key, consumes the
+    signature over `nonce ‖ "\n" ‖ op ‖ "\n" ‖ inputDigest ‖ "\n" ‖ summary` with the device key, consumes the
     challenge and sets `origin.presence`.
   - `batch` runs up to 20 `read`-risk calls.
 - **The website:**
@@ -74,11 +75,13 @@ The build lands as five milestones, each one PR (or more), in order.
    - a signature from another device or a revoked device.
 5. `cli.approveDevice`, `desktop.approveDevice`, runner registration and turning a kill switch off
    stay refused on `desktop` even with a proof.
-6. A CLI token can't ask for a challenge (`presence.challenge` is desktop-only). Its gate calls are
+6. A proof from a device with a software key is refused, unless the engine runs with
+   `DESKTOP_ALLOW_SOFTWARE_KEYS=1`. The default refuses.
+7. A CLI token can't ask for a challenge (`presence.challenge` is desktop-only). Its gate calls are
    refused as before.
-7. Revoking a device makes its token fail `unauthenticated` on the next call.
-8. `/cli/v1` keeps working for `sf` unchanged. The spec 07 tests pass.
-9. `/open/work/123` renders a page that links to `sf://work/123`, plus a sign-in fallback.
+8. Revoking a device makes its token fail `unauthenticated` on the next call.
+9. `/cli/v1` keeps working for `sf` unchanged. The spec 07 tests pass.
+10. `/open/work/123` renders a page that links to `sf://work/123`, plus a sign-in fallback.
 
 ## M2: `apps/desktop`: the shell, sign-in and the runner
 Built as **M2a** (everything here except the live socket; the inbox count polls `inbox.list` every
@@ -88,7 +91,8 @@ Built as **M2a** (everything here except the live socket; the inbox count polls 
 - `apps/desktop` on Electrobun 2.x and Hutch, from the spike. Outside Biome's view of the Hutch
   devkit; its own `typecheck` and `build` turbo tasks.
 - **Sign-in:**
-  - a Secure Enclave key with `.userPresence`;
+  - a Secure Enclave key with `.userPresence`, usable only by the `sf-keys` helper (its own
+    keychain-access-group entitlement), which builds the Touch ID prompt from the signed summary;
   - the browser flow;
   - the token in the Keychain, used only by the main process;
   - **Sign out** revokes the token.
@@ -141,4 +145,4 @@ The in-app updater follows the channel. The client door's version handshake can 
 ## Out of scope
 - Windows and Linux.
 - A phone path for gate decisions (would need WebAuthn presence).
-- The presence reuse window (ADR 0371, later).
+- A presence reuse window: not adopted (ADR 0381).
