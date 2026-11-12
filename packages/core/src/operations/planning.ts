@@ -6,6 +6,7 @@ import { json, parseJson } from "@software-factory/db";
 import {
   chatReplyInputSchema,
   PLANNING_INTERRUPT_LINES,
+  pinSchema,
   planningNewsInputSchema,
   planningPeekInputSchema,
   planningReadyInputSchema,
@@ -39,6 +40,7 @@ import {
   wakeSession,
   withdrawSpecGate,
 } from "../planning.ts";
+import { liveArtifact } from "../planning-visuals.ts";
 import { approverIds } from "../scope.ts";
 import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
@@ -912,6 +914,8 @@ export const chatSend = defineOperation({
     replyTo: z.string().min(1).optional(),
     /** Stop the planner's current step so it reads this now (⌘-Enter, ADR 0470). */
     interrupt: z.boolean().optional(),
+    /** Spec 21: a comment pinned to a spot in an artifact (the element, and where it is). */
+    pin: pinSchema.optional(),
     /** A comment on plan lines (spec 27): the plan version, the lines and what they read. */
     anchor: z
       .object({
@@ -932,6 +936,7 @@ export const chatSend = defineOperation({
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     await assertAbout(ctx, w.id, input.questionId, input.replyTo);
+    if (input.pin) await liveArtifact(ctx, w.id, input.pin.artifactId);
     const messageId = newId("planningMessage");
     ctx.write(
       ctx.db.insertInto("core_planning_messages").values({
@@ -943,6 +948,7 @@ export const chatSend = defineOperation({
         question_id: input.questionId ?? null,
         reply_to: input.replyTo ?? null,
         anchor: input.anchor ? JSON.stringify(input.anchor) : null,
+        pin: input.pin ? JSON.stringify(input.pin) : null,
         created_at: ctx.now,
       }),
     );
@@ -1303,6 +1309,15 @@ const questionView = z.object({
   acceptedAlone: z.boolean(),
   /** Recorded by the planner from this person's plan edit (spec 27). */
   answeredViaEdit: z.string().nullable(),
+  /** Spec 21: links to the planner's mockups. */
+  artifactId: z.string().nullable(),
+  optionArtifacts: z.record(z.string(), z.string()).nullable(),
+  optionValues: z.record(z.string(), z.record(z.string(), z.string())).nullable(),
+  control: z.string().nullable(),
+  unit: z.string().nullable(),
+  min: z.number().nullable(),
+  max: z.number().nullable(),
+  step: z.number().nullable(),
   skipped: z.boolean(),
   /** When this answer reached the planning agent (a read receipt); null until then. */
   answerDeliveredAt: z.string().nullable(),
@@ -1354,6 +1369,8 @@ export const planningGet = defineOperation({
         pausedBy: z.string().nullable(),
         /** Its runner can interrupt the current step (⌘-Enter, Stop); else messages wait for the step. */
         canInterrupt: z.boolean(),
+        /** Spec 21: the artifact the planner put on screen last. */
+        shownArtifactId: z.string().nullable(),
         /** "Let the planner finish alone" is on: who set it and when (ADR 0470). */
         finishAlone: z.object({ by: z.string(), byName: z.string(), at: z.string() }).nullable(),
         focusedQuestionId: z.string().nullable(),
@@ -1384,6 +1401,8 @@ export const planningGet = defineOperation({
         kind: z.string(),
         deliveredAt: z.string().nullable(),
         createdAt: z.string(),
+        /** Spec 21: a comment pinned to a spot in an artifact. */
+        pin: pinSchema.nullable(),
         /** A comment on plan lines (spec 27). */
         anchor: z
           .object({
@@ -1393,6 +1412,20 @@ export const planningGet = defineOperation({
             quote: z.string(),
           })
           .nullable(),
+      }),
+    ),
+    /** Spec 21: the planner's mockups, diagrams and documents (latest revision, no content). */
+    artifacts: z.array(
+      z.object({
+        id: z.string(),
+        kind: z.string(),
+        title: z.string(),
+        description: z.string().nullable(),
+        revision: z.number(),
+        keep: z.boolean(),
+        controls: z.array(z.string()),
+        size: z.number(),
+        updatedAt: z.string(),
       }),
     ),
     /** People's standing edits to the plan (spec 27): the planner keeps them word for word. */
@@ -1413,44 +1446,65 @@ export const planningGet = defineOperation({
   }),
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
-    const [session, questions, specs, messages, last, present, edits] = await Promise.all([
-      ctx.db
-        .selectFrom("core_planning_sessions")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("created_at", "desc")
-        .limit(1)
-        .executeTakeFirst(),
-      ctx.db
-        .selectFrom("core_questions")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .where("status", "!=", "withdrawn")
-        .orderBy("position")
-        .orderBy("created_at")
-        .execute(),
-      ctx.db
-        .selectFrom("core_specs")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("version", "desc")
-        .limit(2)
-        .execute(),
-      ctx.db
-        .selectFrom("core_planning_messages")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("created_at")
-        .limit(500)
-        .execute(),
-      ctx.db
-        .selectFrom("core_planning_events")
-        .select((eb) => eb.fn.max("id").as("id"))
-        .where("work_item_id", "=", w.id)
-        .executeTakeFirst(),
-      presentPeople(ctx, w.id),
-      standingEdits(ctx, w.id),
-    ]);
+    const [session, questions, specs, messages, last, present, edits, artifacts] =
+      await Promise.all([
+        ctx.db
+          .selectFrom("core_planning_sessions")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("created_at", "desc")
+          .limit(1)
+          .executeTakeFirst(),
+        ctx.db
+          .selectFrom("core_questions")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .where("status", "!=", "withdrawn")
+          .orderBy("position")
+          .orderBy("created_at")
+          .execute(),
+        ctx.db
+          .selectFrom("core_specs")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("version", "desc")
+          .limit(2)
+          .execute(),
+        ctx.db
+          .selectFrom("core_planning_messages")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("created_at")
+          .limit(500)
+          .execute(),
+        ctx.db
+          .selectFrom("core_planning_events")
+          .select((eb) => eb.fn.max("id").as("id"))
+          .where("work_item_id", "=", w.id)
+          .executeTakeFirst(),
+        presentPeople(ctx, w.id),
+        standingEdits(ctx, w.id),
+        ctx.db
+          .selectFrom("core_planning_artifacts as a")
+          .innerJoin("core_planning_artifact_revisions as r", (j) =>
+            j.onRef("r.artifact_id", "=", "a.id").onRef("r.revision", "=", "a.revision"),
+          )
+          .select([
+            "a.id",
+            "a.kind",
+            "a.title",
+            "a.description",
+            "a.revision",
+            "a.keep",
+            "a.updated_at",
+            "r.controls",
+            "r.size",
+          ])
+          .where("a.work_item_id", "=", w.id)
+          .where("a.deleted_at", "is", null)
+          .orderBy("a.created_at")
+          .execute(),
+      ]);
     const runner = session?.runner_id
       ? await ctx.db
           .selectFrom("core_runners")
@@ -1507,6 +1561,7 @@ export const planningGet = defineOperation({
             yieldRequested: session.yield_requested_at !== null,
             paused: session.paused_at !== null,
             pausedBy: session.paused_by,
+            shownArtifactId: session.shown_artifact_id,
             canInterrupt: ["steer", "interrupt"].every((c) =>
               (
                 parseJson<{ capabilities?: string[] }>(runner?.manifest ?? "{}", {}).capabilities ??
@@ -1550,6 +1605,18 @@ export const planningGet = defineOperation({
         acceptedDefault: q.accepted_default === 1,
         acceptedAlone: q.accepted_alone === 1,
         answeredViaEdit: q.answered_via_edit,
+        artifactId: q.artifact_id,
+        optionArtifacts: q.option_artifacts
+          ? parseJson<Record<string, string>>(q.option_artifacts, {})
+          : null,
+        optionValues: q.option_values
+          ? parseJson<Record<string, Record<string, string>>>(q.option_values, {})
+          : null,
+        control: q.control,
+        unit: q.unit,
+        min: q.min,
+        max: q.max,
+        step: q.step,
         skipped: q.skipped === 1,
         answerDeliveredAt: q.answer_delivered_at,
         answeredBy: q.answered_by,
@@ -1575,12 +1642,24 @@ export const planningGet = defineOperation({
         kind: m.kind,
         deliveredAt: m.delivered_at,
         createdAt: m.created_at,
+        pin: m.pin ? parseJson<z.output<typeof pinSchema> | null>(m.pin, null) : null,
         anchor: m.anchor
           ? parseJson<{ specId: string; lineStart: number; lineEnd: number; quote: string }>(
               m.anchor,
               { specId: "", lineStart: 0, lineEnd: 0, quote: "" },
             )
           : null,
+      })),
+      artifacts: artifacts.map((a) => ({
+        id: a.id,
+        kind: a.kind,
+        title: a.title,
+        description: a.description,
+        revision: a.revision,
+        keep: a.keep === 1,
+        controls: parseJson<string[]>(a.controls, []),
+        size: a.size,
+        updatedAt: a.updated_at,
       })),
       edits: edits.map((e) => ({
         id: e.id,

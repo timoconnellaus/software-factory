@@ -13,7 +13,10 @@ export const CONTROL_PATTERN = /^(--[a-z][a-z0-9-]*|@[a-z][a-z0-9-]*|#[a-z][a-z0
 export const controlSchema = z
   .string()
   .trim()
-  .regex(CONTROL_PATTERN, "a control is --variable, @attribute or #text-slot, e.g. --accent, @nav, #headline");
+  .regex(
+    CONTROL_PATTERN,
+    "a control is --variable, @attribute or #text-slot, e.g. --accent, @nav, #headline",
+  );
 
 /** CSS units a number answer may carry. */
 export const UNIT_PATTERN = /^(px|rem|em|%|vh|vw|ch|deg|ms|s)$/;
@@ -68,7 +71,10 @@ export function appliedValues(
 }
 
 /** A frame's size: desktop unless the title or description says phone or tablet (kim's rule). */
-export function frameSize(title: string, description: string | null): {
+export function frameSize(
+  title: string,
+  description: string | null,
+): {
   width: number;
   height: number;
   device: "desktop" | "tablet" | "phone";

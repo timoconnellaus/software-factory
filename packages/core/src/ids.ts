@@ -22,6 +22,7 @@ export const ID_PREFIXES = {
   planningSession: "ps",
   planningMessage: "pm",
   specEdit: "pe",
+  planningArtifact: "art",
   cliDeviceCode: "cdc",
   cliToken: "cli",
   desktopAuthRequest: "dar",

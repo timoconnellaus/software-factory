@@ -24,6 +24,7 @@ const session = (over: Partial<NonNullable<PlanningView["session"]>> = {}) => ({
   paused: false,
   pausedBy: null,
   canInterrupt: true,
+  shownArtifactId: null,
   finishAlone: null,
   focusedQuestionId: null,
   runner: { id: "r_1", name: "mac-mini", online: true, lastSeenAt: null },

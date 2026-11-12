@@ -501,6 +501,14 @@ function question(n: number, prompt: string, extra: Partial<PlanningQ>): Plannin
     acceptedDefault: false,
     acceptedAlone: false,
     answeredViaEdit: null,
+    artifactId: null,
+    optionArtifacts: null,
+    optionValues: null,
+    control: null,
+    unit: null,
+    min: null,
+    max: null,
+    step: null,
     skipped: false,
     answerDeliveredAt: ago(29),
     answeredBy: ME,
@@ -575,6 +583,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
           paused: false,
           pausedBy: null,
           canInterrupt: true,
+          shownArtifactId: null,
           finishAlone: alone() ? { by: ME, byName: "You", at: ago(6) } : null,
           focusedQuestionId: "pq_6",
           runner: { id: RUNNER, name: "M5", online: true, lastSeenAt: ago(0) },
@@ -654,6 +663,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             kind: "chat",
             deliveredAt: ago(20),
             anchor: null,
+            pin: null,
             createdAt: ago(20),
           },
           {
@@ -667,6 +677,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             kind: "chat",
             deliveredAt: ago(12),
             anchor: null,
+            pin: null,
             createdAt: ago(12),
           },
           {
@@ -679,6 +690,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             replyTo: null,
             kind: "chat",
             deliveredAt: ago(3),
+            pin: null,
             // Spec 27: a comment on a line of the plan.
             anchor: {
               specId: "spec_wi_12",
@@ -691,6 +703,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
           },
         ]
       : [],
+    artifacts: [],
     // Spec 27: the person's edit of the Q3 line, which the planner kept.
     edits: live
       ? [

@@ -17,6 +17,7 @@ export const PLANNING_OPS = [
   "artifact.update",
   "artifact.delete",
   "artifact.show",
+  "artifact.read",
   "spec.revise",
   "chat.reply",
   "planning.news",
@@ -162,7 +163,11 @@ export const planningQuestionSchema = z.object({
   /** The one control a number (a CSS variable, with min and max) or text (a #slot) answer sets. */
   control: controlSchema.optional(),
   /** Appended to a number answer, e.g. px. */
-  unit: z.string().trim().regex(UNIT_PATTERN, "unit must be a CSS unit such as px, rem or %").optional(),
+  unit: z
+    .string()
+    .trim()
+    .regex(UNIT_PATTERN, "unit must be a CSS unit such as px, rem or %")
+    .optional(),
   min: z.number().finite().optional(),
   max: z.number().finite().optional(),
   step: z.number().finite().positive().optional(),
@@ -231,6 +236,11 @@ export const artifactUpdateInputSchema = z.object({
 });
 export const artifactDeleteInputSchema = z.object({ artifactId: z.string().min(1) });
 export const artifactShowInputSchema = z.object({ artifactId: z.string().min(1) });
+export const artifactReadInputSchema = z.object({
+  artifactId: z.string().min(1),
+  /** A past revision; omitted, the latest. */
+  revision: z.number().int().positive().optional(),
+});
 
 export const coverageItemSchema = z.object({
   category: z.string().trim().min(1).max(80),
@@ -322,6 +332,7 @@ export const PLANNING_TOOL_INPUTS = {
   "artifact.update": artifactUpdateInputSchema,
   "artifact.delete": artifactDeleteInputSchema,
   "artifact.show": artifactShowInputSchema,
+  "artifact.read": artifactReadInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema.omit({ cursor: true, ack: true, hold: true }),
@@ -343,6 +354,7 @@ export const PLANNING_INPUTS = {
   "artifact.update": artifactUpdateInputSchema,
   "artifact.delete": artifactDeleteInputSchema,
   "artifact.show": artifactShowInputSchema,
+  "artifact.read": artifactReadInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema,
@@ -364,8 +376,11 @@ export const PLANNING_TOOL_DESCRIPTIONS: Record<PlanningOp, string> = {
     "Add a mockup (self-contained HTML), a diagram (HTML or SVG) or a document (Markdown) beside the plan. People see it in the Mockups tab and on the canvas, and can pin comments to its elements. Put data-name on meaningful elements. For a choice between layouts, add one per option and name them in a question's optionArtifacts; for fonts, colours, spacing and copy, declare controls in one mockup (--var, data-plan-<attr>, data-plan-text) and bind a question to them.",
   "artifact.update":
     "Replace an artifact's content or title (a new revision; the old ones are kept). When a bound answer arrives with `applied` values, write them into the mockup's defaults here. A revision that drops a control a question binds answers with warnings.",
-  "artifact.delete": "Remove an artifact that no longer matters (its revisions stay in the record).",
+  "artifact.delete":
+    "Remove an artifact that no longer matters (its revisions stay in the record).",
   "artifact.show": "Bring an artifact on everyone's screen (not while someone is mid-question).",
+  "artifact.read":
+    "Read an artifact's content (the latest revision, or one named), e.g. after resuming on another runner.",
   "question.answerFromEdit":
     "A person's edit to the plan settled a question: record the answer it implies, as theirs (it shows as coming from their edit). Not for security, privacy or irreversible questions: ask the person instead.",
   "question.focus":
