@@ -8,8 +8,8 @@ import {
   type SlotName,
   type StepConfig,
 } from "../policy/project-policy.ts";
-import { SOFTWARE } from "./builtins.ts";
-import type { Size } from "./contract.ts";
+import { ATTACHED_PR, SOFTWARE } from "./builtins.ts";
+import { SIZE_RANK, type Size } from "./contract.ts";
 import { conditionHolds } from "./settings.ts";
 import { FIXED_STATES, type StageInstance, type WorkflowDefinition } from "./workflow.ts";
 
@@ -28,6 +28,17 @@ const RESERVED = new Set<string>([...SOFTWARE.stages.map((s) => s.id), ...FIXED_
  */
 export function slotStageId(stepId: string): string {
   return RESERVED.has(stepId) ? `step-${stepId}`.slice(0, 40) : stepId;
+}
+
+/** The slot step's own id back from its stage id (the reverse of `slotStageId`). */
+function slotStepId(stageId: string): string {
+  const bare = stageId.slice("step-".length);
+  return stageId.startsWith("step-") && RESERVED.has(bare) ? bare : stageId;
+}
+
+/** Thrown when a project's slot workflow can't be expressed as a valid stage list. */
+export class CompileError extends Error {
+  override readonly name = "CompileError";
 }
 
 function slotStage(step: StepConfig): StageInstance {
@@ -81,6 +92,19 @@ export function compileProjectWorkflow(
   const hasBuilder = policy.agents.some(
     (a) => a.name.toLowerCase() === builder.toLowerCase() && a.role === "implement",
   );
+  // Two slot steps whose ids map to the same stage id ("build" and "step-build") would compile to a
+  // definition that fails S2. Refuse here, naming both, rather than hand back an invalid one.
+  const seen = new Map<string, string>();
+  for (const slot of SLOTS)
+    for (const step of def?.slots[slot] ?? []) {
+      const id = slotStageId(step.id);
+      const other = seen.get(id);
+      if (other !== undefined)
+        throw new CompileError(
+          `workflow "${def?.name}": slot steps "${other}" and "${step.id}" both become stage "${id}"; rename one`,
+        );
+      seen.set(id, step.id);
+    }
   const stages: StageInstance[] = [];
   for (const base of SOFTWARE.stages) {
     stages.push({
@@ -192,7 +216,7 @@ export function planFromDefinition(
     const agent = s.type === "agent-check" ? agentOf(s.agent) : null;
     const decider = settings.decider;
     slots[slot].push({
-      id: s.id,
+      id: slotStepId(s.id),
       kind: s.type === "agent-check" ? "work" : "gate",
       name: s.name,
       instructions: settings.instructions ?? "",
@@ -202,4 +226,56 @@ export function planFromDefinition(
     });
   }
   return { name, slots, build };
+}
+
+/**
+ * The definition an item of this kind runs, as today's engine runs it: an attached PR the built-in
+ * Attached PR workflow (chosen by kind); an incident's fix the project's workflow with every stage in
+ * delivery (it is opened queued, never shaped); anything else the project's workflow.
+ */
+export function compileItemWorkflow(
+  policy: ProjectPolicy,
+  workflow: string | null,
+  kind: "change" | "incident" | "attached",
+): WorkflowDefinition {
+  if (kind === "attached") return ATTACHED_PR;
+  const def = compileProjectWorkflow(policy, workflow);
+  if (kind === "change") return def;
+  return { ...def, stages: def.stages.map((s) => ({ ...s, phase: "delivery" as const })) };
+}
+
+/**
+ * Whether the definition's spec gate holds for an item: its `interview-planning` stage's condition
+ * (`requiredFrom`; large always), or the foreman asked for one. No such stage: no spec. Pure.
+ */
+export function specGateHolds(
+  def: WorkflowDefinition,
+  size: Size,
+  requested?: "skip" | "require",
+): boolean {
+  const stage = def.stages.find((s) => s.type === "interview-planning");
+  if (!stage) return false;
+  const from = (stage.settings as { requiredFrom?: Size }).requiredFrom ?? "medium";
+  if (size === "large" || SIZE_RANK[size] >= SIZE_RANK[from]) return true;
+  return requested === "require";
+}
+
+/** Today's engine stages (`core_stages.stage`) a Software-shaped definition's stages stand for. */
+const ENGINE_STAGES = ["triage", "spec", "build", "verify", "merge"] as const;
+export type EngineStage = (typeof ENGINE_STAGES)[number];
+
+/**
+ * The engine stages an item passes through under a definition, in order, with whether each runs or
+ * is skipped and its phase. Slot stages show inside the stage before them, so they aren't listed.
+ */
+export function engineStages(
+  def: WorkflowDefinition,
+  size: Size,
+  requested?: "skip" | "require",
+): { stage: EngineStage; runs: boolean; phase: "shaping" | "delivery" | null }[] {
+  return ENGINE_STAGES.map((stage) => {
+    const inst = def.stages.find((s) => s.id === stage);
+    const runs = !!inst && (stage !== "spec" || specGateHolds(def, size, requested));
+    return { stage, runs, phase: inst?.phase ?? null };
+  });
 }

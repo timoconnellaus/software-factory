@@ -1,5 +1,7 @@
 import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { parseProjectPolicy } from "@software-factory/core";
+import { compileItemWorkflow, engineStages } from "@software-factory/core/stages";
 import { describe, expect, it } from "vitest";
 import {
   all,
@@ -25,6 +27,15 @@ async function create(w: Awaited<ReturnType<typeof world>>, title = "Add dark mo
     "workItem.create",
     { state: "queued", projectId: w.projectId, title },
     w.human,
+  );
+}
+
+/** `core_stages` rows as the compiled definition says (spec 52 PR (a)): each stage run or skipped. */
+function asDefinitionSays(rows: { stage: string; status: string }[]) {
+  const seen = new Map<string, boolean>();
+  for (const r of rows) if (!seen.has(r.stage)) seen.set(r.stage, r.status !== "skipped");
+  return [...seen].filter(([stage]) =>
+    ["triage", "spec", "build", "verify", "merge"].includes(stage),
   );
 }
 
@@ -67,6 +78,15 @@ describe("the work-item Workflow", () => {
       "done:done",
     ]);
     expect(stages.find((s) => s.stage === "spec")?.reason).toMatch(/below the spec threshold/);
+    // The compiled Software definition passes and skips the same stages (spec 52 PR (a)).
+    const parsed = parseProjectPolicy(JSON.stringify(BALANCED));
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(asDefinitionSays(stages)).toEqual(
+      engineStages(compileItemWorkflow(parsed.policy, null, "change"), "small").map((x) => [
+        x.stage,
+        x.runs,
+      ]),
+    );
 
     // The journal tells the whole story, including the gate decision and how long it was open.
     const trail = await all<{ operation: string; actor_type: string; outcome: string }>(

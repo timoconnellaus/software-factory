@@ -200,6 +200,14 @@ export function validateWorkflow(input: unknown, opts: ValidateOptions): Workflo
         const earlier = stages[i];
         if (!earlier) break;
         if (earlier.type.id === "checks") {
+          // F7: the Checks stage F8 relies on can't be conditional, or a workflow could skip
+          // checks for some items (small ones, say) and still pass F8.
+          if (earlier.inst.when)
+            err(
+              "F7",
+              earlier.inst.id,
+              `${earlier.inst.name} can't be skipped: ${inst.name} merges only after it`,
+            );
           ok = true;
           break;
         }

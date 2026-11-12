@@ -264,6 +264,14 @@ describe("validateWorkflow refuses each broken rule, with the stage", () => {
       "merge",
     ],
     [
+      "a merge whose only Checks stage can be skipped by `when` (F8 would otherwise be satisfied)",
+      software((s) =>
+        s.map((x) => (x.id === "verify" ? { ...x, when: { sizeAtLeast: "medium" } } : x)),
+      ),
+      "F7",
+      "verify",
+    ],
+    [
       "a stage needing a repository the project lacks",
       SOFTWARE,
       "F9",

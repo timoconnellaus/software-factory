@@ -43,8 +43,10 @@ export const interviewPlanning: StageType<typeof settings> = {
     mode: "conditional",
     on: "spec",
     outcomes: ["approve", "requestChanges", "reject"],
-    operation: "spec.approve",
-    risk: "write",
+    // The operation the Workflow opens the spec gate with, and its registry risk (`plan`, which the
+    // gate sends to review for agents under every autonomy policy).
+    operation: "spec.accept",
+    risk: "plan",
     delegable: ["adjudicator"],
   }),
   needsPerson: true,
