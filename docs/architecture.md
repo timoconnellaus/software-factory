@@ -27,8 +27,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 - **Planning** is a live agent session on a runner (ADR 0300): the planning agent works through
   operations over the runner channel (a projected planning MCP server), and kim-style hooks
   (`PostToolUse`, `UserPromptSubmit`, `Stop`) bring answers and chat back from the planning log. It
-  holds a light slot (ADR 0301). Mockups render on a sandboxed origin; kept artifacts land in `.kim/`
-  with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
+  holds a light slot (ADR 0301). Mockups are kept in D1 by revision and render in sandboxed frames
+  with an opaque origin (ADR 0472); kept artifacts land in `.kim/` with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
   channel path, `/runner/v1/jobs/:id/planning`, scoped by the job and fenced by its lease; the
   runner host relays them for the harness, so the runner key never leaves it. Every change is a row
   in the **planning log** (`core_planning_events`, its id the agent's cursor) and a

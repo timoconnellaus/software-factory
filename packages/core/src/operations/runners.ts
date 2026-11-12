@@ -1485,6 +1485,13 @@ export const runReportEvents = defineOperation({
           .set({
             last_event_at: ctx.now,
             ...(mapped ? { status: mapped } : {}),
+            // Kept on the run, so it outlives the event once archived (run.live's chat view).
+            ...(started?.type === "session.started"
+              ? {
+                  session_mode:
+                    started.mode === "stream" ? ("stream" as const) : ("terminal" as const),
+                }
+              : {}),
             ...(takeover ? { takeover: json(takeover) } : {}),
           })
           .where("id", "=", run.id),
