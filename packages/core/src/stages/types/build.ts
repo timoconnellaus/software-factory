@@ -20,6 +20,7 @@ export const build: StageType<typeof settings> = {
   description: "An agent builds the change on the item's branch, after merging the default branch.",
   phases: ["delivery"],
   settings,
+  overridable: ["retryLimit"],
   consumes: ["brief"],
   produces: ["git-head"],
   evidence: [],

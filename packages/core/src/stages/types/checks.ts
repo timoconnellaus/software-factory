@@ -46,6 +46,7 @@ export const checks: StageType<typeof settings> = {
     "Opens the pull request, checks the exact commit, reads CI and an independent reviewer, and writes the review packet.",
   phases: ["delivery"],
   settings,
+  overridable: ["sections", "requiredChecks"],
   consumes: ["git-head"],
   produces: ["pull-request"],
   evidence: [

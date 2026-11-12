@@ -109,7 +109,8 @@ export const improveScan = defineOperation({
   }),
   async handler(_input, ctx) {
     const project = requireProject(ctx);
-    const policy = ctx.scope.policy;
+    // The config as saved: a trial changes the document, not the resolved org workflow.
+    const policy = ctx.scope.rawPolicy;
     const baseVersion = versionOf(project.policy_sha) ?? 0;
     const running = await ctx.db
       .selectFrom("core_config_trials")
@@ -193,7 +194,8 @@ export const configTrialStart = defineOperation({
   output: z.object({ trialId: z.string(), candidateVersion: z.number() }),
   async handler(input, ctx) {
     const project = requireProject(ctx);
-    const policy = ctx.scope.policy;
+    // The config as saved: a trial changes the document, not the resolved org workflow.
+    const policy = ctx.scope.rawPolicy;
     if (!policy?.improve.enabled) throw new OperationError("denied", "self-improvement is off");
     if ((versionOf(project.policy_sha) ?? 0) !== input.baseVersion) {
       throw new OperationError("conflict", "the config moved on since this was drafted");

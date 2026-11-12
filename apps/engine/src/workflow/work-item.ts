@@ -29,9 +29,11 @@ import {
   parseProjectPolicy,
   type RunEventPayload,
   releaseEvent,
+  resolveOrgWorkflow,
   runEvent,
   SLOTS,
 } from "@software-factory/core";
+import { createDb } from "@software-factory/db";
 import {
   type JobStage,
   type ModelRole,
@@ -1736,19 +1738,36 @@ class ItemFlow {
     return JSON.parse(text) as WorkflowPlan;
   }
 
-  /** The config version the item was created under (ADR 0370 §5), parsed; null if there is none. */
+  /**
+   * The config version the item was created under (ADR 0370 §5), parsed; null if there is none. On
+   * an org workflow (spec 52 PR (d)), resolved under the org config version the item pinned.
+   */
   private async pinnedPolicy() {
     const row = await this.env.DB.prepare(
-      `SELECT p.raw FROM core_work_items w
+      `SELECT p.raw, w.org_id, w.project_id, w.org_config_version FROM core_work_items w
        JOIN core_project_policies p ON p.project_id = w.project_id
          AND p.sha = COALESCE(w.policy_sha, (SELECT policy_sha FROM core_projects WHERE id = w.project_id))
        WHERE w.id = ?`,
     )
       .bind(this.workItemId)
-      .first<{ raw: string }>();
+      .first<{
+        raw: string;
+        org_id: string;
+        project_id: string;
+        org_config_version: number | null;
+      }>();
     if (!row) return null;
     const parsed = parseProjectPolicy(row.raw);
-    return parsed.ok ? parsed.policy : null;
+    if (!parsed.ok) return null;
+    return (
+      await resolveOrgWorkflow(
+        createDb(this.env.DB),
+        row.org_id,
+        parsed.policy,
+        row.org_config_version,
+        row.project_id,
+      )
+    ).policy;
   }
 
   /**

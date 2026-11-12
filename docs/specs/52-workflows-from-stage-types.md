@@ -837,8 +837,11 @@ and after.
 - **Release takes the current version (Q4)** when the item's shaping stages are unchanged in it (same
   ids, types and settings, in the same order). Otherwise release doesn't guess: the item is
   **flagged** on its card and in the inbox ("planned under v3; the shaping stages changed in v5"),
-  and the person releasing it chooses to release it under its pinned version or send it back to
-  shaping under the current one. `workItem.release` refuses without that choice.
+  and the person releasing it chooses to shape it again under the current workflow, or to accept
+  the shaping already done and deliver it under the current workflow (amended 2026-11-13 from the
+  owner's answer: delivery always runs on the current version, so no one can skip a tightening by
+  releasing under an older one). `workItem.release` doesn't release it without that choice; an
+  agent's release leaves it flagged. Only a person chooses.
 - **Stage-type code**: a type's `version` changes only when its persisted step state changes
   shape. Each stage entry records the version it started on; the registry keeps old versions'
   `next()` until `core_item_stages` has none open, then deletes them. Prompt and logic changes that
@@ -1203,6 +1206,74 @@ screen needs).
    no approval. (d) moves those steps onto the org workflow, where `workflowImpact` classifies them,
    and makes the project config's remaining step and agent-instruction changes loosen the same way:
    a test saves "pass everything" into a slot step and into its agent and expects `self-modify`.
+   **As built so far:** (d1) closes that route (#120). (d2) lets a project name an org workflow by
+   id (`workflow: "wf_…"`, or `wf_software`) with `workflowOverrides` (`overridable` per type:
+   `requiredFrom`, `retryLimit`, `sections`, `requiredChecks`); `config.save` refuses an id the org
+   doesn't have or an override a type doesn't list, and classifies an override or a switch by
+   comparing the definitions (`configImpact`): one that loosens against the org's value is
+   `self-modify`. Until the switch-over, today's replayed Workflow runs it: `effectivePolicy` turns
+   the org workflow (with the overrides) back into the slot workflow, agents and settings the engine
+   already reads, so no Workflow version is needed, and a workflow it can't run as written
+   (`runsOnToday`: anything but Software's stages in order with checks and decisions in its slots,
+   or a setting the engine would ignore) is refused at save and fails closed at run time. An item
+   pins `org_config_version` (migration 0282) when shaping starts and again at the pull, beside
+   `policy_sha`. After review: a save stores only the overrides that differ from the org's value,
+   and at resolve time the stricter of the org's value and the override applies (`requiredFrom`: the
+   smaller; `requiredChecks` and `sections`: both), unless an org admin approved that exact looser
+   value for the org version being resolved (`core_override_approvals`, migration 0282, written only
+   when an org admin approves a pending action whose decider is `org-admin`, and only for the looser
+   overrides that change itself brings or changes, never one it merely keeps; never read from a config document or an imported file, whose
+   `workflowOverrideApprovals` field is dropped). A new org version carries an approval only where
+   it leaves that setting's value unchanged; where the org moved it, the approval lapses, the
+   stricter applies, and the org's admins are notified (`workflow.overrideLapsed`). An override the
+   org's new version makes looser (it was as strict or stricter) has no approval: the stricter
+   applies, and the org's admins are told it needs an org admin's approval or removal
+   (`workflow.overrideNeedsApproval`). A loosening of the org workflow (an override, or a switch that drops a check) is
+   decided by an org admin: the pending action carries `decider = 'org-admin'` (migration 0282) and
+   `approval.decide` asks for one. A judging stage is compared by what its agent is (role, tier,
+   instructions, requirements), not its name. An org change that would leave a project unable to
+   run (archiving its workflow, a save `runsOnToday` refuses, a rollback) is refused, naming the
+   projects. A slot workflow already named like an org id (`wf_x`) stays a slot workflow; only new
+   ones may not take such a name. The org config is parsed once per isolate and version, and polled
+   reads that use nothing it decides (`skipsOrgWorkflow`) don't resolve it.
+   (d3) builds Q4 as the owner answered it: delivery always runs on the org's current version (the
+   pull pins it). The version an item was shaped under decides only whether its finished shaping
+   still counts: when the current version's shaping stages are the same (ids, types, settings with
+   defaults, conditions, agents, in order), release proceeds; when they changed, release doesn't
+   guess and doesn't release. It flags the item: `core_work_items.release_flag` (migration 0285, the
+   shape of `needs_info`) with the reason and both versions, and `release_flag_user_id`, the person
+   who chooses (the one who released it; for an agent's release, the requester, else the first
+   approver), who is notified. An agent's release leaves the item flagged with the reason rather
+   than failing. The flag shows on the board's card (Ready: "choose in the Inbox") and in that
+   person's Inbox (`inbox.releaseFlags`, read by the partial index on `release_flag_user_id`) with the
+   two choices, `workItem.releaseChoice` (a person only: browser or desktop, never a CLI or MCP
+   token): `reshape` shapes it again under the current workflow (the waiting Workflow instance is
+   terminated and a new instance, `<item>_r…`, runs the current shaping stages), and `accept` records
+   that the shaping done counts under the current version and releases it. Either way it is
+   delivered under the current workflow. The check runs again at the pull, against the version
+   delivery will run on, and the start is guarded on the org still being at that version: an item
+   released under v2 whose shaping changed in v3 before it started goes back to Ready, flagged. And
+   `accept` refuses once the org has saved past the version the flag named, flagging the item again
+   against the current version so the person sees the new difference. (d4) The shadow pass compares
+   an item on an org workflow with the org workflow it pinned (`org_config_version`, resolved with
+   the project's overrides and that version's approvals by `effectivePolicy`); before, such an item
+   had no comparable definition.
+   `orgConfig.adoptProjectWorkflows` (an org admin, from the app; `dryRun` reports what it
+   would write) moves every project still on its own slot workflow, or the skeleton alone, onto an
+   org workflow: one per distinct compiled workflow (identical ones shared; a different one under a
+   taken name gets the project's slug), the agents its stages hand to added to the org's (a
+   same-named, different agent gets the project's slug), the overridable settings at Software's
+   values in the org workflow and each project's own values as its overrides, its looser ones
+   approved by the run for the version it writes. A project whose move doesn't classify neutral is
+   left as it is, with the reason, and so is one whose new org workflow would loosen against the
+   floor (a conditional check) or whose workflow declares its own checks; the others still move. The
+   run refuses any other org change that would loosen. At most 25 projects move a run (one D1 batch
+   of at most 25 × 8 statements plus the org version's), guarded on every base version it read; the
+   rest are listed and move in the next run. A project on an org workflow sees only the org agents
+   its workflow's stages name, so one project's agent never becomes another's default. A project's
+   other, unused slot workflows and its agents stay in its config (deviation from "removed": removing
+   them would itself classify as loosening). Still to come in (d): the tightening re-pin at the next
+   boundary (Q3).
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the
@@ -1262,7 +1333,7 @@ sections above were rewritten.
 | 23 | Does it switch itself off when something goes wrong? | Yes | The per-project hold; ADR 0515 |
 
 ### Known gaps
-- **A judging agent's instructions are neutral in a project's config, until (d).** On main,
+- **Closed by (d1), #120:** a judging agent's instructions were neutral in a project's config. On main,
   `config.save` by any project member classes a change to slot steps and to agent instructions as
   neutral (`policyImpact`'s `workflows` and `agents` branches). An agent judging a slot `work` step
   can be told to pass everything with no approval. Org workflows (b) don't have this gap
