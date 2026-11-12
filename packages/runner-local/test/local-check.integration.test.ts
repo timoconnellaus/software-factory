@@ -144,7 +144,7 @@ describe.skipIf(!hasDocker)(
         script,
         [
           `import { dockerRuntime, localCheckContainer } from ${JSON.stringify(src)};`,
-          `const exec = localCheckContainer({ runtime: dockerRuntime(), image: ${JSON.stringify(image)} })(`,
+          `const exec = localCheckContainer({ runtime: dockerRuntime(), runnerId: "r_lc_test", image: ${JSON.stringify(image)} })(`,
           `  { jobId: ${JSON.stringify(jobId)}, harness: { id: "claude-code", role: "implement", prompt: "" } },`,
           `  { root: ${JSON.stringify(root)}, dir: ${JSON.stringify(dir)} },`,
           ");",
@@ -162,7 +162,7 @@ describe.skipIf(!hasDocker)(
       const nets = async () => (await runtime.networks(`${JOB_LABEL}=${jobId}`)).map((n) => n.name);
       cleanups.push(async () => {
         runner.kill("SIGKILL");
-        await reapCheckContainers(runtime, new Set());
+        await reapCheckContainers(runtime, new Set(), "r_lc_test");
       });
       const until = Date.now() + 120_000;
       while (!(await ours()).includes("check")) {
@@ -178,10 +178,12 @@ describe.skipIf(!hasDocker)(
       expect(await nets()).toHaveLength(1);
       // A sweep keeps what a running job holds...
       // (Only this job's: another test's leftovers may be reaped beside it.)
-      expect(await reapCheckContainers(runtime, new Set([jobId]))).not.toContain(jobId);
+      expect(await reapCheckContainers(runtime, new Set([jobId]), "r_lc_test")).not.toContain(
+        jobId,
+      );
       expect(await ours()).toHaveLength(2);
       // ...and the next start-up (nothing running) removes all of it.
-      expect(await reapCheckContainers(runtime, new Set())).toContain(jobId);
+      expect(await reapCheckContainers(runtime, new Set(), "r_lc_test")).toContain(jobId);
       expect(await ours()).toEqual([]);
       expect(await nets()).toEqual([]);
     });

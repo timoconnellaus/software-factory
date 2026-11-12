@@ -1,6 +1,8 @@
 // After a host crash, and for `sf-runner doctor`: container jobs the host no longer runs. Their
-// containers and networks carry the label `software-factory.job=<jobId>`; their dirs are
-// `<containersDir>/sf-<jobId>`. Reaping removes them with the runtime and plain file operations,
+// containers and networks carry the label `software-factory.job=<jobId>` and the runner's own
+// `software-factory.runner=<runnerId>`; their dirs are `<containersDir>/sf-<jobId>`. Two runners can
+// share one Docker daemon (a container runner beside a sandbox runner): each reaps only what carries
+// its own runner id, never another's live containers (and nothing from before the runner label). Reaping removes them with the runtime and plain file operations,
 // never git (a job repo left by a crashed run is unchecked). Nothing without the label, or outside
 // the containers dir, is touched.
 import { readdir, realpath, rm } from "node:fs/promises";
@@ -9,12 +11,14 @@ import { removeRunDir } from "@software-factory/harness-claude";
 import { isUnder } from "../checkouts.ts";
 import { jobIdOfSession } from "../tmux.ts";
 import type { ContainerRuntime } from "./runtime.ts";
-import { JOB_LABEL, ROLE_LABEL } from "./spec.ts";
+import { JOB_LABEL, ROLE_LABEL, RUNNER_LABEL } from "./spec.ts";
 
 export interface ContainerHostDirs {
   containersDir: string;
   runsDir: string;
   runtime: ContainerRuntime;
+  /** This runner's id: only containers and networks carrying it are reaped. */
+  runnerId: string;
 }
 
 export interface ContainerLeftovers {
@@ -31,10 +35,12 @@ export async function containerLeftovers(
   const out: ContainerLeftovers = { containers: [], networks: [], dirs: [] };
   for (const c of await dirs.runtime.containers(JOB_LABEL)) {
     const jobId = c.labels[JOB_LABEL];
+    if (c.labels[RUNNER_LABEL] !== dirs.runnerId) continue;
     if (jobId && !running.has(jobId)) out.containers.push({ name: c.name, jobId });
   }
   for (const n of await dirs.runtime.networks(JOB_LABEL)) {
     const jobId = n.labels[JOB_LABEL];
+    if (n.labels[RUNNER_LABEL] !== dirs.runnerId) continue;
     if (jobId && !running.has(jobId)) out.networks.push({ name: n.name, jobId });
   }
   const root = await realpath(dirs.containersDir).catch(() => null);
@@ -86,33 +92,32 @@ export async function diagnoseContainers(
   ];
 }
 
-/** A local check's network (./local-check.ts): labelled with the role, or (older) by its name. */
-const CHECK_NETWORK = /^sf-chk-[0-9a-f]{12}-net$/;
-
 /**
  * A `sandbox` runner's check containers (ADR 0501, fifth review): each local check runs in a
  * foreground `docker run --rm` beside an egress proxy on a network of its own, removed in a
  * `finally`. A runner that dies mid-check leaves all three. This removes every container carrying
- * the job label with role `check` or `egress`, and every check network, whose job is not in
- * `running`. At start-up `running` is empty: the runner that started them is gone, so all go.
- * Returns the job ids.
+ * this runner's id and the job label with role `check` or `egress`, and every check network, whose
+ * job is not in `running`. At start-up `running` is empty: the runner that started them is gone, so
+ * all of its own go. Another runner's (on the same daemon) are never touched. Returns the job ids.
  */
 export async function reapCheckContainers(
   runtime: ContainerRuntime,
   running: Set<string>,
+  runnerId: string,
 ): Promise<string[]> {
   const reaped = new Set<string>();
   for (const c of await runtime.containers(JOB_LABEL)) {
     const jobId = c.labels[JOB_LABEL];
     const role = c.labels[ROLE_LABEL];
+    if (c.labels[RUNNER_LABEL] !== runnerId) continue;
     if (!jobId || running.has(jobId) || (role !== "check" && role !== "egress")) continue;
     await runtime.remove(c.name).catch(() => {});
     reaped.add(jobId);
   }
   for (const n of await runtime.networks(JOB_LABEL)) {
     const jobId = n.labels[JOB_LABEL];
-    if (!jobId || running.has(jobId)) continue;
-    if (n.labels[ROLE_LABEL] !== "check" && !CHECK_NETWORK.test(n.name)) continue;
+    if (!jobId || running.has(jobId) || n.labels[RUNNER_LABEL] !== runnerId) continue;
+    if (n.labels[ROLE_LABEL] !== "check") continue;
     await runtime.removeNetwork(n.name).catch(() => {});
     reaped.add(jobId);
   }

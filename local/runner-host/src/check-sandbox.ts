@@ -226,15 +226,17 @@ export function macUserDirs(env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin" }):
 }
 
 let cachedMacUserDirs: string[] | undefined;
+function userDirsOnce(): string[] {
+  if (!cachedMacUserDirs) cachedMacUserDirs = macUserDirs();
+  return cachedMacUserDirs;
+}
 
 /**
  * The shared temp dirs a check on macOS may not read (fourth review, S3): `/tmp` and `/private/tmp`,
  * and the user's own `/var/folders/<x>/<y>` (its `T`, `C` and `0`, all under it), where the owner's
  * other tools keep their temp files and caches. The check's own temp is under its own dir.
  */
-export function macTempDenies(
-  userDirs: string[] = (cachedMacUserDirs ??= macUserDirs()),
-): string[] {
+export function macTempDenies(userDirs: string[] = userDirsOnce()): string[] {
   const out = ["/tmp", "/private/tmp"];
   for (const dir of userDirs) {
     let real = dir;

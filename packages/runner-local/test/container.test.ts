@@ -38,6 +38,7 @@ import {
   hostAllowed,
   JOB_LABEL,
   ROLE_LABEL,
+  RUNNER_LABEL,
   reapCheckContainers,
   reapContainers,
   scanForSecrets,
@@ -143,6 +144,7 @@ async function world(
     screenLogMs: 0,
     container: {
       containersDir,
+      runnerId: "r_container",
       user: "501:20",
       modelCredential: () => (credential ? { env: { CLAUDE_CODE_OAUTH_TOKEN: credential } } : null),
     },
@@ -717,19 +719,21 @@ describe("reaping container jobs", () => {
     const ws = await w.runner.prepareWorkspace(job(), signal());
     await w.runner.startSession(job(), ws, signal());
     const runtime = dockerRuntime({ exec: w.docker.exec });
+    const dirs = { containersDir: w.containersDir, runsDir: w.runsDir, runtime };
+    expect(await reapContainers({ ...dirs, runnerId: "r_container" }, new Set(["job_1"]))).toEqual(
+      [],
+    );
+    expect(w.docker.containers.size).toBe(2);
+    // Another runner on the same daemon (a sandbox runner beside it) never takes this one's.
+    const other = join(w.root, "other-containers");
     expect(
-      await reapContainers(
-        { containersDir: w.containersDir, runsDir: w.runsDir, runtime },
-        new Set(["job_1"]),
-      ),
+      await reapContainers({ ...dirs, containersDir: other, runnerId: "r_sandbox" }, new Set()),
     ).toEqual([]);
     expect(w.docker.containers.size).toBe(2);
-    expect(
-      await reapContainers(
-        { containersDir: w.containersDir, runsDir: w.runsDir, runtime },
-        new Set(),
-      ),
-    ).toEqual(["job_1"]);
+    expect(w.docker.networks.size).toBe(1);
+    expect(await reapContainers({ ...dirs, runnerId: "r_container" }, new Set())).toEqual([
+      "job_1",
+    ]);
     expect(w.docker.containers.size).toBe(0);
     expect(w.docker.networks.size).toBe(0);
     expect(existsSync(join(w.containersDir, "sf-job_1"))).toBe(false);
@@ -741,7 +745,11 @@ describe("reaping a sandbox runner's check containers (fifth review)", () => {
   it("removes check and egress containers and check networks of jobs not running, and nothing else", async () => {
     const docker = scriptedDocker({ base: scriptedTmux().exec });
     const runtime = dockerRuntime({ exec: docker.exec });
-    const label = (jobId: string, role: string) => ({ [JOB_LABEL]: jobId, [ROLE_LABEL]: role });
+    const label = (jobId: string, role: string, runner = "r_sandbox") => ({
+      [JOB_LABEL]: jobId,
+      [ROLE_LABEL]: role,
+      [RUNNER_LABEL]: runner,
+    });
     const spec = (name: string, labels: Record<string, string>) => ({
       name,
       image: "img",
@@ -761,10 +769,17 @@ describe("reaping a sandbox runner's check containers (fifth review)", () => {
       internal: true,
       labels: label("job_dead", "check"),
     });
+    // A second runner on the same daemon: its live check, proxy and network are its own.
     await runtime.createNetwork("sf-chk-ba9876543210-net", {
       internal: true,
-      labels: { [JOB_LABEL]: "job_old" }, // before the role label: known by its name
+      labels: label("job_other", "check", "r_container"),
     });
+    await runtime.start(spec("sf-chk-ba9876543210", label("job_other", "check", "r_container")));
+    await runtime.start(
+      spec("sf-chk-ba9876543210-egress", label("job_other", "egress", "r_container")),
+    );
+    // Before the runner label: no runner can tell whose it is, so none takes it.
+    await runtime.start(spec("sf-chk-old", { [JOB_LABEL]: "job_old", [ROLE_LABEL]: "check" }));
     await runtime.createNetwork("sf-job_live", {
       internal: true,
       labels: label("job_live", "check"),
@@ -774,12 +789,26 @@ describe("reaping a sandbox runner's check containers (fifth review)", () => {
     await runtime.start(spec("sf-chk-live", label("job_live", "check")));
     await runtime.start(spec("sf-agent", label("job_dead", "agent")));
     await runtime.start(spec("unlabelled", {}));
-    expect((await reapCheckContainers(runtime, new Set(["job_live"]))).sort()).toEqual([
+    expect(await reapCheckContainers(runtime, new Set(["job_live"]), "r_sandbox")).toEqual([
       "job_dead",
-      "job_old",
     ]);
-    expect([...docker.containers.keys()].sort()).toEqual(["sf-agent", "sf-chk-live", "unlabelled"]);
-    expect([...docker.networks.keys()]).toEqual(["sf-job_live"]);
+    expect([...docker.containers.keys()].sort()).toEqual([
+      "sf-agent",
+      "sf-chk-ba9876543210",
+      "sf-chk-ba9876543210-egress",
+      "sf-chk-live",
+      "sf-chk-old",
+      "unlabelled",
+    ]);
+    expect([...docker.networks.keys()].sort()).toEqual(["sf-chk-ba9876543210-net", "sf-job_live"]);
+    // The other runner, at its own start-up, reaps its own and only its own.
+    expect(await reapCheckContainers(runtime, new Set(), "r_container")).toEqual(["job_other"]);
+    expect([...docker.containers.keys()].sort()).toEqual([
+      "sf-agent",
+      "sf-chk-live",
+      "sf-chk-old",
+      "unlabelled",
+    ]);
   });
 });
 
