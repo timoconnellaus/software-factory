@@ -2,8 +2,8 @@
 // consumes and produces, what proves it done, the screen it shows, what it needs, its gate and how
 // far its actions reach. A workflow only chooses types, orders them and configures them.
 //
-// This is build plan PR (a): descriptors only. `next()` and the reconciler's snapshot come with
-// PR (c); nothing at run time reads these yet.
+// Build plan PR (a) added the descriptors; PR (c) adds `next()` and `skip()`, which the reconciler
+// (reconcile.ts) calls. Nothing at run time drives an item with them yet: shadow mode comes first.
 import type { Capability, ModelRole } from "@software-factory/runner-contract";
 import type { z } from "zod";
 import type { RiskClass } from "../policy/gate.ts";
