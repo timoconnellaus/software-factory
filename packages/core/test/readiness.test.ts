@@ -141,3 +141,99 @@ describe("the readiness pre-check (spec 23)", () => {
     expect(view.item.readinessHint).toContain("too thin");
   });
 });
+
+describe("triage's parking and questions (spec 23 part B)", () => {
+  it("parks an item triage found not actionable on a new Workflow generation, and answering re-releases it there", async () => {
+    const w = await world();
+    const created = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Issues", body: CLEAR, state: "queued" },
+      w.human,
+    );
+    const parked = await ok<{ status: string; questionIds: string[] }>(
+      "workItem.parkForInfo",
+      {
+        workItemId: created.workItemId,
+        reason: "It doesn't say which issues",
+        questions: [
+          {
+            prompt: "Which label marks an issue for the factory?",
+            options: ["factory", "sf"],
+            defaultAnswer: "factory",
+          },
+        ],
+      },
+      FOREMAN,
+    );
+    expect(parked.status).toBe("backlog");
+    const row = await first<{
+      status: string;
+      workflow_id: string;
+      pulled_at: string | null;
+      needs_info: string;
+    }>(
+      "SELECT status, workflow_id, pulled_at, needs_info FROM core_work_items WHERE id = ?",
+      created.workItemId,
+    );
+    expect(row).toMatchObject({
+      status: "backlog",
+      workflow_id: `${created.workItemId}-r2`,
+      pulled_at: null,
+    });
+    expect(JSON.parse(row.needs_info)).toMatchObject({ source: "triage", heading: "queued" });
+    const [q] = parked.questionIds;
+    await ok("question.answer", { questionId: q, answer: "factory" }, w.human);
+    const after = await first<{ status: string; body: string; needs_info: string | null }>(
+      "SELECT status, body, needs_info FROM core_work_items WHERE id = ?",
+      created.workItemId,
+    );
+    expect(after.needs_info).toBeNull();
+    expect(["queued", "running"]).toContain(after.status);
+    expect(after.body).toContain("factory");
+    // The new run is the new generation.
+    const starts = await rows<{ payload: string }>(
+      "SELECT payload FROM core_outbox WHERE kind = 'workflow.create' AND payload LIKE ?",
+      `%${created.workItemId}-r2%`,
+    );
+    expect(starts).toHaveLength(1);
+  });
+
+  it("asks triage's questions into an open planning session", async () => {
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Issues", body: CLEAR, state: "queued" },
+      w.human,
+    );
+    const closed = await refusal(
+      ok(
+        "planning.seedQuestions",
+        { workItemId: item.workItemId, questions: [{ prompt: "Which label?" }] },
+        FOREMAN,
+      ),
+    );
+    expect(closed.code).toBe("conflict");
+    await ok("branch.ensure", { workItemId: item.workItemId }, FOREMAN);
+    await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+    const seeded = await ok<{ questionIds: string[] }>(
+      "planning.seedQuestions",
+      {
+        workItemId: item.workItemId,
+        questions: [{ prompt: "Which label?", options: ["factory", "sf"] }],
+      },
+      FOREMAN,
+    );
+    const view = await ok<{ questions: { id: string; prompt: string; status: string }[] }>(
+      "planning.get",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    expect(view.questions).toEqual([
+      expect.objectContaining({
+        id: seeded.questionIds[0],
+        prompt: "Which label?",
+        status: "open",
+      }),
+    ]);
+  });
+});

@@ -853,6 +853,8 @@ export const workItemTriage = defineOperation({
     specId: z.string(),
     /** The workflow picked (ADR 0371), or null for the skeleton alone. */
     workflow: z.string().nullable(),
+    /** Triage's readiness (spec 23), recorded as given. */
+    readiness: z.enum(["ready", "needs_answers", "not_actionable"]),
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
@@ -942,9 +944,19 @@ export const workItemTriage = defineOperation({
         reason,
         workflow,
         workflowReason,
+        // Spec 23 (ADR 0304): binding and logged with its reason; it never touches the gate above.
+        readiness: input.result.readiness,
+        readinessReason: input.result.readinessReason ?? null,
       },
     });
-    return { size: input.result.size, specRequired: decision.required, reason, specId, workflow };
+    return {
+      size: input.result.size,
+      specRequired: decision.required,
+      reason,
+      specId,
+      workflow,
+      readiness: input.result.readiness,
+    };
   },
 });
 

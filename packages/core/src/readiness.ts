@@ -105,7 +105,11 @@ export function park(
     source: NeedsInfo["source"];
     reason: string;
     missing: Missing[];
-    prompts: string[];
+    /** The questions: a prompt, or triage's draft (options and a default). */
+    prompts: (
+      | string
+      | { prompt: string; options?: string[]; defaultAnswer?: string; context?: string }
+    )[];
   },
 ): NeedsInfo {
   const hours = ctx.scope.policy?.timeouts.questionHours ?? 48;
@@ -132,7 +136,9 @@ export function park(
       .where("id", "=", w.id),
   );
   // Numbers continue the item's own; a parked item has no planning session.
-  args.prompts.forEach((prompt, i) => {
+  args.prompts.forEach((asked, i) => {
+    const q = typeof asked === "string" ? { prompt: asked } : asked;
+    const options = q.options ?? [];
     ctx.write(
       ctx.db.insertInto("core_questions").values({
         id: questionIds[i] as string,
@@ -145,10 +151,11 @@ export function park(
         asked_by: ctx.actor.id,
         created_at: ctx.now,
         domain: "product",
-        prompt,
-        context: `#${w.number} ${w.title} waits for this before anyone works on it.`,
-        options: "[]",
-        kind: "text",
+        prompt: q.prompt,
+        context: q.context ?? `#${w.number} ${w.title} waits for this before anyone works on it.`,
+        options: JSON.stringify(options),
+        kind: options.length ? "single-choice" : "text",
+        default_answer: q.defaultAnswer ?? null,
         blocking: 1,
         irreversible: 0,
         position: i + 1,
@@ -230,4 +237,15 @@ export function readinessHint(w: {
     .map((m) => (m === "outcome" ? "no stated outcome" : "no checkable statement"))
     .join(", ");
   return `This may be too thin to build without questions: ${what}. Triage will ask what it needs.`;
+}
+
+/**
+ * The next Workflow generation's instance id (spec 23): a Workflow instance id can't be reused, so
+ * an item triage parked starts its next run as `<id>-r2`, `<id>-r3`, …
+ */
+export function nextGeneration(workItemId: string, current: string | null): string {
+  const n = current?.startsWith(`${workItemId}-r`)
+    ? Number(current.slice(workItemId.length + 2))
+    : 1;
+  return `${workItemId}-r${(Number.isFinite(n) ? n : 1) + 1}`;
 }

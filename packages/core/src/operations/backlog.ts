@@ -2,6 +2,7 @@
 // ready, is released to the factory (queued), and the factory pulls queued items into the pipeline
 // by priority, respecting "waits for" links and the project's active limit. Creating an item no
 // longer starts its Workflow: the pull does (`startPipeline`).
+import { questionDraftSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -16,6 +17,7 @@ import { type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
 import {
   type NeedsInfo,
   needsInfoOf,
+  nextGeneration,
   park,
   parkIfNotReady,
   precheck,
@@ -134,7 +136,13 @@ export interface StartConditions {
  */
 export function startPipeline(
   ctx: HandlerContext,
-  item: { id: string; number: number; shaping_started_at?: string | null },
+  item: {
+    id: string;
+    number: number;
+    shaping_started_at?: string | null;
+    /** The Workflow generation to start or wake; the item's id when absent (spec 23). */
+    workflow_id?: string | null;
+  },
   project: Pick<ProjectRow, "id" | "org_id" | "policy_sha">,
   pin: {
     policy: Pick<ProjectPolicy, "workflow"> | null;
@@ -187,7 +195,11 @@ export function startPipeline(
     // `release: wait`. Wake it; delivery reads the version and workflow pinned just now.
     ctx.emit({
       kind: "workflow.event",
-      payload: { instanceId: item.id, type: releaseEvent(item.id), payload: {} },
+      payload: {
+        instanceId: item.workflow_id ?? item.id,
+        type: releaseEvent(item.id),
+        payload: {},
+      },
     });
     ctx.change({
       entity: "work_item",
@@ -210,7 +222,8 @@ export function startPipeline(
   );
   ctx.emit({
     kind: "workflow.create",
-    payload: { instanceId: item.id, params: { workItemId: item.id } },
+    // The item's current Workflow generation (spec 23: a triage-parked item starts a new one).
+    payload: { instanceId: item.workflow_id ?? item.id, params: { workItemId: item.id } },
   });
   ctx.change({
     entity: "work_item",
@@ -347,6 +360,7 @@ export async function pullQueued(
         "created_at",
         "repository_id",
         "shaping_started_at",
+        "workflow_id",
       ])
       .where("project_id", "=", project.id)
       .where("status", "=", "queued")
@@ -675,7 +689,7 @@ export async function shapeNow(ctx: HandlerContext, w: WorkItemRow) {
     );
     ctx.emit({
       kind: "workflow.create",
-      payload: { instanceId: w.id, params: { workItemId: w.id } },
+      payload: { instanceId: w.workflow_id, params: { workItemId: w.id } },
     });
     ctx.change({
       entity: "work_item",
@@ -1424,3 +1438,47 @@ function takeOverParked(ctx: HandlerContext, w: WorkItemRow, what: string) {
   );
   w.needs_info = null;
 }
+
+export const workItemParkForInfo = defineOperation({
+  name: "workItem.parkForInfo",
+  description:
+    "The Workflow parks a work item triage found not actionable (spec 23, ADR 0304): back in the Backlog with a needs-info marker and triage's questions to its requester. Its Workflow ends and it holds no slot. Answering them releases it again (or shapes it again, as it was heading), and triage runs again on a new Workflow with the answers in the request.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({
+    workItemId,
+    reason: z.string().min(1).max(2_000),
+    questions: z.array(questionDraftSchema).min(1).max(5),
+  }),
+  output: z.object({ status: z.string(), questionIds: z.array(z.string()) }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const heading = w.shaping_started_at && !w.pulled_at ? "shaping" : "queued";
+    const marker = park(ctx, w, {
+      heading,
+      source: "triage",
+      reason: input.reason,
+      missing: [],
+      prompts: input.questions,
+    });
+    // A fresh start: the next release or shape begins a new Workflow generation, from intake.
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          pulled_at: null,
+          shaping_started_at: null,
+          released_at: null,
+          released_by: null,
+          stage: "intake",
+          workflow_id: nextGeneration(w.id, w.workflow_id),
+          updated_at: ctx.now,
+        })
+        .where("id", "=", w.id),
+    );
+    // Its slot is free: the next queued item may start, after this commits.
+    requestPull(ctx, w.project_id);
+    return { status: "backlog", questionIds: marker.questionIds };
+  },
+});
