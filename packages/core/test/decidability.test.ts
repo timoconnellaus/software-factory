@@ -59,6 +59,10 @@ describe("device decidability (ADR 0541 decision 5)", () => {
   it("pins what needs a proof and what is one tap, on the desktop and the phone", () => {
     expect(table()).toMatchInlineSnapshot(`
       {
+        "agent.save": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
         "approval.decide {"decision":"approved"}": {
           "desktop": "proof",
           "mobile": "proof",
@@ -102,6 +106,10 @@ describe("device decidability (ADR 0541 decision 5)", () => {
         "mobile.renew": {
           "desktop": "refused",
           "mobile": "proof",
+        },
+        "orgConfig.rollback": {
+          "desktop": "refused",
+          "mobile": "refused",
         },
         "planning.acceptDefaults": {
           "desktop": "one tap",
@@ -162,6 +170,18 @@ describe("device decidability (ADR 0541 decision 5)", () => {
         "spec.requestChanges": {
           "desktop": "proof",
           "mobile": "one tap",
+        },
+        "workflow.archive": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
+        "workflow.createFromTemplate": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
+        "workflow.save": {
+          "desktop": "refused",
+          "mobile": "refused",
         },
       }
     `);
