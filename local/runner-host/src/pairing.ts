@@ -1,6 +1,7 @@
 // Small, pure pieces of `sf-runner pair` and `sf-runner install`, kept apart from the CLI so they can
 // be tested (incident 2026-11-11-bootstrap, docs/incidents/).
-import { delimiter, dirname, isAbsolute } from "node:path";
+import { accessSync, constants } from "node:fs";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 /** The Node major the runner host needs (`.nvmrc`; `--experimental-transform-types`). */
 export const MIN_NODE_MAJOR = 24;
@@ -49,11 +50,14 @@ export function parsePairingInput(
  * The Node the launchd service runs, and the PATH it gets. Refuses a Node older than
  * {@link MIN_NODE_MAJOR}: the service would otherwise pin whatever `node` the installing shell had.
  * The chosen Node's directory goes first on PATH, so tools the runner spawns use the same Node.
+ * `tools` are absolute paths of executables the service needs (tmux): their directories are added
+ * to PATH when missing.
  */
 export function serviceNode(input: {
   execPath: string;
   version: string;
   path: string | undefined;
+  tools?: string[];
 }): { node: string; path: string } {
   const major = Number(input.version.replace(/^v/, "").split(".")[0]);
   if (!Number.isFinite(major) || major < MIN_NODE_MAJOR) {
@@ -71,5 +75,33 @@ export function serviceNode(input: {
   }
   const bin = dirname(input.execPath);
   const rest = (input.path ?? "/usr/bin:/bin").split(delimiter).filter((p) => p && p !== bin);
+  for (const tool of input.tools ?? []) {
+    const dir = dirname(tool);
+    if (isAbsolute(tool) && dir !== bin && !rest.includes(dir)) rest.push(dir);
+  }
   return { node: input.execPath, path: [bin, ...rest].join(delimiter) };
+}
+
+/** Homebrew's and the usual places, searched after PATH for the service's tools. */
+export const EXTRA_TOOL_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
+
+/** The absolute path of an executable on PATH (then the usual Homebrew dirs), or null. */
+export function findOnPath(
+  name: string,
+  path: string | undefined,
+  isExecutable: (file: string) => boolean = (file) => {
+    try {
+      accessSync(file, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+): string | null {
+  for (const dir of [...(path ?? "").split(delimiter), ...EXTRA_TOOL_DIRS]) {
+    if (!dir || !isAbsolute(dir)) continue;
+    const file = join(dir, name);
+    if (isExecutable(file)) return file;
+  }
+  return null;
 }

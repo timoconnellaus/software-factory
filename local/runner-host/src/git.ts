@@ -5,15 +5,15 @@
 // hooks off, and a credential helper that answers only github.com with the job token. The token is
 // passed in the environment of that one git process, never in its arguments or on disk.
 //
-// The checkout is the one the adapter resolved (ADR 0260): usually the owner's own (their Orca
-// project), else the host's clone. In the owner's checkout the host only fetches, by explicit URL,
+// The checkout is the one the adapter resolved (ADR 0260, amended by ADR 0350): usually the owner's
+// own (found under the `checkouts` dirs), else the host's clone. In the owner's checkout the host only fetches, by explicit URL,
 // into its own ref namespace (`refs/software-factory/…`): it never changes their remotes, config,
 // FETCH_HEAD, branches or working tree, and never pushes from or checks out in it.
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { PRIVATE_WORKTREE_FILES } from "@software-factory/harness-claude";
 import type { Artifact, Job } from "@software-factory/runner-contract";
-import type { Exec } from "@software-factory/runner-orca";
+import type { Exec } from "@software-factory/runner-local";
 
 /** The push remote of a clone: a URL git can't use, so only the host's explicit push works. */
 export const DISABLED_PUSH_URL = "no-push://the-runner-host-pushes";

@@ -6,9 +6,9 @@
 //   sf-runner pair --runner-id r_… --key-stdin   (fallback: a key registered in Setup)
 //   sf-runner run                  run in the foreground (what the service runs)
 //   sf-runner status               config (key redacted), service state and the jobs it is running
-//   sf-runner doctor [--fix]       check node, git, orca, claude, the channel, Orca's repos
-//                                  (duplicate source repos for one remote, job worktrees with no
-//                                  job), and that each running job's Claude runs exactly as the
+//   sf-runner doctor [--fix]       check node, git, tmux, claude, the channel, the checkouts (one
+//                                  per remote, no job worktree or tmux session without a job),
+//                                  and that each running job's Claude runs exactly as the
 //                                  harness launched it (ADR 0270)
 //   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
 import { spawn } from "node:child_process";
@@ -21,12 +21,13 @@ import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import {
   checkRunningHarness,
   diagnose,
-  jobIdOf,
-  migrateRunnerRepos,
+  jobIdOfSession,
   nodeExec,
-  orcaCli,
-  reapOrphanWorktrees,
-} from "@software-factory/runner-orca";
+  reapOrphans,
+  tmuxAtLeast,
+  tmuxCli,
+} from "@software-factory/runner-local";
+import { checkoutDirs, migrateCheckouts } from "./checkouts.ts";
 import type { RunnerConfig } from "./config.ts";
 import {
   configSchema,
@@ -40,8 +41,8 @@ import {
 import { deviceLogin } from "./device-login.ts";
 import * as launchd from "./launchd.ts";
 import { readLiveJobs } from "./live-jobs.ts";
-import { parsePairingInput, serviceNode } from "./pairing.ts";
-import { buildRunner, liveJobsFile } from "./runner.ts";
+import { findOnPath, parsePairingInput, serviceNode } from "./pairing.ts";
+import { buildRunner, hostDirs, liveJobsFile } from "./runner.ts";
 
 const dirs = paths();
 
@@ -90,6 +91,22 @@ async function pair(args: string[]) {
     ...(values.max ? { maxConcurrent: Number(values.max) } : {}),
   });
   await adopt(config);
+}
+
+/** Fills in `checkouts` once, when it isn't set yet (ADR 0350), and says what it chose. */
+async function withCheckouts(config: RunnerConfig): Promise<RunnerConfig> {
+  const { config: next, chosen } = await migrateCheckouts(config, nodeExec, [
+    dirs.reposDir,
+    dirs.worktreesDir,
+  ]);
+  if (chosen) {
+    console.log(
+      chosen.length
+        ? `Jobs run as worktrees of your checkouts under: ${chosen.join(", ")} (runner.json "checkouts")`
+        : `No checkout dirs found: jobs use the runner's own clones. List yours in ${dirs.configFile} "checkouts".`,
+    );
+  }
+  return next;
 }
 
 /** Proves the key with one signed heartbeat, then saves the config (0600) and restarts the service. */
@@ -161,7 +178,7 @@ async function login(args: string[]) {
     ...(values.max ? { maxConcurrent: Number(values.max) } : {}),
   });
   console.log(`Approved: ${got.name ?? got.runnerId}.`);
-  await adopt(config);
+  await adopt(await withCheckouts(config));
   if (installing) await install([]);
 }
 
@@ -199,18 +216,17 @@ async function status() {
     live
       ? `jobs running: ${live.jobs.length ? live.jobs.join(", ") : "none"} (host pid ${live.pid}, ${live.updatedAt})`
       : service && /state = running/.test(service)
-        ? "jobs running: unknown (the service predates the live-jobs file; check Orca for sf-job: worktrees)"
+        ? "jobs running: unknown (the service predates the live-jobs file)"
         : "jobs running: none (no host running)",
   );
-  // What Orca holds, whichever host made it: wait for this to be empty before upgrading.
-  const rows = await orcaCli({ ...(config?.orcaBin ? { bin: config.orcaBin } : {}) })
-    .worktreePs()
-    .catch(() => null);
-  const jobRows = rows?.filter((r) => jobIdOf(r.comment)) ?? [];
+  // What the factory's tmux server holds, whichever host made it: wait for this to be empty
+  // before upgrading. Attach to one with `tmux -L software-factory attach -t sf-<jobId>`.
+  const tmux = tmuxCli();
+  const sessions = await tmux.jobSessions().catch(() => null);
   console.log(
-    rows === null
-      ? "job worktrees in Orca: unknown (orca not reachable)"
-      : `job worktrees in Orca: ${jobRows.length ? jobRows.map((r) => `${jobIdOf(r.comment)} (${r.agents.map((a) => a.state).join(",") || "no agent"})`).join(", ") : "none"}`,
+    sessions === null
+      ? "job sessions in tmux: unknown (tmux not reachable)"
+      : `job sessions in tmux (-L ${tmux.socket}): ${sessions.length ? sessions.map((s) => `${jobIdOfSession(s.name)}${s.dead ? " (exited)" : ""}`).join(", ") : "none"}`,
   );
   console.log(`state: ${dirs.stateDir}\nlog: ${join(dirs.logDir, "runner.log")}`);
 }
@@ -247,24 +263,47 @@ async function doctor(args: string[]) {
     return process.version;
   });
   await check("git", () => version("git"));
-  await check("orca", () => version("orca"));
-  await check("claude", () => version("claude"));
-  await check("orca reachable", async () => {
-    const r = await nodeExec("orca", ["repo", "list", "--json"], { timeoutMs: 20_000 });
-    if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim());
-    return "yes";
+  await check("tmux ≥ 3.2", async () => {
+    const v = await version("tmux", ["-V"]);
+    if (!tmuxAtLeast(v)) throw new Error(`${v}; install a newer one (brew install tmux)`);
+    return v;
   });
-  const orcaBin = (await loadConfig(dirs.configFile).catch(() => null))?.orcaBin;
-  const orcaOptions = { ...(orcaBin ? { bin: orcaBin } : {}), exec: nodeExec };
-  await check("orca repos (one source repo per remote, no orphaned job worktrees)", async () => {
+  await check("claude", () => version("claude"));
+  await check("checkouts (runner.json)", async () => {
+    let config = await loadConfig(dirs.configFile).catch(() => null);
+    if (config && config.checkouts === undefined) {
+      if (!values.fix) throw new Error("not set; run sf-runner doctor --fix to fill it in once");
+      config = await withCheckouts(config);
+      await saveConfig(dirs.configFile, config);
+    }
+    const list = config ? checkoutDirs(config) : [];
+    const missing: string[] = [];
+    for (const dir of list) {
+      const found = await readdir(dir).then(
+        () => true,
+        () => false,
+      );
+      if (!found) missing.push(dir);
+    }
+    if (missing.length) throw new Error(`missing: ${missing.join(", ")}`);
+    return list.length ? list.join(", ") : "none (jobs use the runner's own clones)";
+  });
+  await check("job worktrees and sessions (one checkout per remote, no orphans)", async () => {
+    const config = await loadConfig(dirs.configFile).catch(() => null);
     const live = await liveJobs();
+    const search = {
+      dirs: config ? checkoutDirs(config) : [],
+      exclude: [dirs.reposDir, dirs.worktreesDir],
+    };
     const findings = await diagnose({
-      ...orcaOptions,
-      ownReposDir: dirs.reposDir,
+      ...hostDirs(dirs),
+      checkouts: search,
       live: live ?? new Set(),
     });
-    // Without a live-jobs list every job worktree would look orphaned: don't report or fix those.
-    const relevant = live ? findings : findings.filter((f) => f.kind !== "orphan-worktree");
+    // Without a live-jobs list every job would look orphaned: don't report or fix those.
+    const orphan = (f: { kind: string }) =>
+      f.kind === "orphan-worktree" || f.kind === "orphan-session";
+    const relevant = live ? findings : findings.filter((f) => !orphan(f));
     if (relevant.length === 0) {
       return live
         ? "ok"
@@ -274,28 +313,15 @@ async function doctor(args: string[]) {
       console.log(`  - ${f.message}${f.fixable ? "" : " (not fixable here)"}`);
     if (!values.fix) throw new Error(`${relevant.length} problem(s); run sf-runner doctor --fix`);
     if (live) {
-      const reaped = await reapOrphanWorktrees(orcaOptions, live);
-      if (reaped.length) console.log(`  fixed: removed worktrees of ${reaped.join(", ")}`);
+      const reaped = await reapOrphans(hostDirs(dirs), live);
+      if (reaped.length) {
+        console.log(`  fixed: removed the sessions and worktrees of ${reaped.join(", ")}`);
+      }
     }
-    for (const m of await migrateRunnerRepos({
-      ...orcaOptions,
-      ownReposDir: dirs.reposDir,
-      live,
-    })) {
-      console.log(
-        m.skipped
-          ? `  not fixed: ${m.key}: ${m.skipped}`
-          : `  fixed: ${m.key} now uses ${m.kept.path}; unregistered and deleted ${m.retired.path}`,
-      );
-    }
-    const after = await diagnose({
-      ...orcaOptions,
-      ownReposDir: dirs.reposDir,
-      live: live ?? new Set(),
-    });
-    const left = live ? after : after.filter((f) => f.kind !== "orphan-worktree");
+    const after = await diagnose({ ...hostDirs(dirs), checkouts: search, live: live ?? new Set() });
+    const left = (live ? after : after.filter((f) => !orphan(f))).filter((f) => f.fixable);
     if (left.length) throw new Error(`${left.length} problem(s) left after --fix`);
-    return "fixed";
+    return relevant.some((f) => !f.fixable) ? "fixed what can be fixed here" : "fixed";
   });
   await check("running jobs' harness (permission mode, setting sources, settings)", async () => {
     const live = await liveJobs();
@@ -357,6 +383,8 @@ async function install(args: string[]) {
     execPath: process.execPath,
     version: process.version,
     path: process.env.PATH,
+    // The service starts Claude in tmux: tmux's directory must be on its PATH.
+    tools: [findOnPath("tmux", process.env.PATH)].filter((p): p is string => !!p),
   });
   await mkdir(dirs.logDir, { recursive: true });
   await launchd.install(

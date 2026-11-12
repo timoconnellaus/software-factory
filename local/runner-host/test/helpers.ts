@@ -27,7 +27,7 @@ import {
   type StoredArtifact,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
-import { nodeExec } from "@software-factory/runner-orca";
+import { nodeExec } from "@software-factory/runner-local";
 import { FETCH_NAMESPACE, hostGit } from "../src/git.ts";
 
 export const RUNNER = "r_hosttest01";

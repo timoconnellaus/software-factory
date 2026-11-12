@@ -21,7 +21,12 @@ export const configSchema = z.object({
   /** Capabilities to declare (default: everything the adapter supports). */
   capabilities: z.array(z.enum(CAPABILITIES)).optional(),
   identity: z.object({ name: z.string(), email: z.string() }).optional(),
-  orcaBin: z.string().optional(),
+  /**
+   * Directories whose immediate git repos are this machine's checkouts (ADR 0260, amended by ADR
+   * 0350): a job runs as a worktree of the one whose `origin` is the job's repo, else in the host's
+   * own clone. Unset until `login` or `doctor --fix` fills it in once.
+   */
+  checkouts: z.array(z.string()).optional(),
   /** Test only: clone/push URL per canonical GitHub URL. */
   repoUrlMap: z.record(z.string(), z.string()).optional(),
 });
@@ -33,6 +38,8 @@ export interface Paths {
   stateDir: string;
   reposDir: string;
   runsDir: string;
+  /** Job worktrees: `<worktreesDir>/sf-<jobId>`. */
+  worktreesDir: string;
   logDir: string;
 }
 
@@ -50,6 +57,7 @@ export function paths(env: NodeJS.ProcessEnv = process.env): Paths {
     stateDir,
     reposDir: join(stateDir, "repos"),
     runsDir: join(stateDir, "runs"),
+    worktreesDir: join(stateDir, "worktrees"),
     logDir: join(home, "Library", "Logs", "software-factory"),
   };
 }

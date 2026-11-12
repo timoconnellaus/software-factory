@@ -4,7 +4,7 @@
 // - Code asks for a model role, never a model id (ADR 0018, spec 02 criterion 7): no source file
 //   outside the model-role registry names a model.
 // - Runners are adapters (ADR 0014, spec 03 criterion 1): nothing in packages/core,
-//   packages/runner-contract or apps/* imports Orca or runner-orca.
+//   packages/runner-contract or apps/* imports Orca or a runner adapter (runner-local).
 import { strict as assert } from "node:assert";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";

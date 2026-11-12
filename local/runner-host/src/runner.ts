@@ -1,24 +1,31 @@
-// Wires a runner from its config: the signed channel client, the host's git, and the Orca adapter
-// with the Claude harness. This is the one place that names a runner adapter; the host loop and the
-// job lifecycle only see the contract.
+// Wires a runner from its config: the signed channel client, the host's git, and the local adapter
+// (git worktrees + tmux, ADR 0350) with the Claude harness. This is the one place that names a
+// runner adapter; the host loop and the job lifecycle only see the contract.
 
 import { join } from "node:path";
 import { DEFAULT_IDENTITY } from "@software-factory/harness-claude";
 import { httpControlPlane } from "@software-factory/runner-contract";
 import {
-  createOrcaRunner,
+  createLocalRunner,
   type Exec,
-  migrateRunnerRepos,
+  type LocalRunnerConfig,
   nodeExec,
-  type OrcaRunnerConfig,
-  reapOrphanWorktrees,
-} from "@software-factory/runner-orca";
+  reapOrphans,
+} from "@software-factory/runner-local";
+import { checkoutDirs } from "./checkouts.ts";
 import type { Paths, RunnerConfig } from "./config.ts";
 import { hostGit } from "./git.ts";
 import { RunnerHost } from "./host.ts";
 
 /** Where a running host records its live jobs (read by `status` and `doctor`). */
 export const liveJobsFile = (dirs: Paths) => join(dirs.stateDir, "live-jobs.json");
+
+/** The adapter's own dirs, for reaping and `doctor`. */
+export const hostDirs = (dirs: Paths, exec: Exec = nodeExec) => ({
+  worktreesDir: dirs.worktreesDir,
+  runsDir: dirs.runsDir,
+  exec,
+});
 
 export function buildRunner(
   config: RunnerConfig,
@@ -27,7 +34,7 @@ export function buildRunner(
     exec?: Exec;
     fetch?: typeof fetch;
     log?: (m: string) => void;
-    orca?: Partial<OrcaRunnerConfig>;
+    local?: Partial<LocalRunnerConfig>;
   } = {},
 ) {
   const exec = options.exec ?? nodeExec;
@@ -44,21 +51,22 @@ export function buildRunner(
     identity,
     ...(config.repoUrlMap ? { repoUrlMap: config.repoUrlMap } : {}),
   });
-  const orcaOptions = { ...(config.orcaBin ? { bin: config.orcaBin } : {}), exec };
-  const adapter = createOrcaRunner({
-    ...orcaOptions,
+  const adapter = createLocalRunner({
+    exec,
     maxConcurrent: config.maxConcurrent,
-    runsDir: dirs.runsDir,
-    // ADR 0260: jobs run in the Orca repo this machine already has for the remote; the host's
-    // clone is only the fallback when there is none, registered once and kept.
+    // ADR 0260 (amended by ADR 0350): jobs run as worktrees of the checkout this machine already
+    // has for the remote, under the configured `checkouts` dirs; the host's clone only when none.
+    checkouts: checkoutDirs(config),
     resolveRepoPath: (job) => git.clonePath(job),
     ownReposDir: dirs.reposDir,
-    startPoint: (job, repoPath) => git.startPoint(job, repoPath),
+    worktreesDir: dirs.worktreesDir,
+    runsDir: dirs.runsDir,
+    startPoint: (job, checkout) => git.startPoint(job, checkout),
     // The harness must not read the runner's key, its other runs, or the clones' git internals.
     protectPaths: [dirs.configDir, dirs.runsDir, dirs.reposDir],
     identity,
     ...(config.capabilities ? { capabilities: config.capabilities } : {}),
-    ...options.orca,
+    ...options.local,
   });
   const log = options.log ?? ((m: string) => console.log(`[runner] ${m}`));
   const host = new RunnerHost({
@@ -67,22 +75,14 @@ export function buildRunner(
     git,
     maxConcurrent: config.maxConcurrent,
     heartbeatMs: config.heartbeatMs,
-    reapOrphans: (running) => reapOrphanWorktrees(orcaOptions, running),
-    // Retire clones an earlier runner registered next to the owner's own checkout (ADR 0260). It
-    // runs after the orphans are reaped and before the first claim, so no job is using them.
-    onStart: async () => {
-      for (const m of await migrateRunnerRepos({
-        ...orcaOptions,
-        ownReposDir: dirs.reposDir,
-        live: new Set(host.activeJobs),
-      })) {
-        log(
-          m.skipped
-            ? `repo migration for ${m.key} skipped: ${m.skipped}`
-            : `${m.key}: jobs now run in ${m.kept.path}; unregistered and deleted the runner's clone ${m.retired.path}`,
-        );
-      }
-    },
+    reapOrphans: (running) =>
+      reapOrphans(
+        {
+          ...hostDirs(dirs, exec),
+          ...(options.local?.tmux ? { tmux: options.local.tmux } : {}),
+        },
+        running,
+      ),
     liveJobsFile: liveJobsFile(dirs),
     log,
     ...(options.fetch ? { fetch: options.fetch } : {}),
