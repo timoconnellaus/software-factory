@@ -3,7 +3,13 @@
 import { z } from "zod";
 import type { WorkItemDetail } from "./ops.ts";
 
-const criterion = z.object({ criterion: z.string(), met: z.boolean(), evidence: z.string() });
+const criterion = z.object({
+  criterion: z.string(),
+  met: z.boolean(),
+  evidence: z.string(),
+  /** The checks the reviewer linked it to (ADR 0501). */
+  checks: z.array(z.string()).default([]),
+});
 const check = z.object({
   name: z.string(),
   status: z.enum(["pass", "fail", "skipped"]),
@@ -209,4 +215,91 @@ export type TestsIntactSection = z.infer<typeof testsIntactSection>;
 export function packetTestsIntact(p: ParsedPacket): TestsIntactSection | null {
   const r = testsIntactSection.safeParse(p.sections.testsIntact);
   return r.success ? r.data : null;
+}
+
+const checkOutcome = z.object({
+  name: z.string(),
+  command: z.string(),
+  exitCode: z.number().nullable(),
+  timedOut: z.boolean().default(false),
+  durationMs: z.number(),
+  logTail: z.string().default(""),
+  round: z.number().default(0),
+  /** Why the runner could not run it (ADR 0501, third review): never passed, never proven. */
+  notRun: z.string().nullable().optional(),
+  /** Where it ran (fourth review): `weaker-sandbox` is named at the gate. */
+  isolation: z.string().nullable().optional(),
+  passed: z.boolean(),
+});
+const executedSection = z.object({
+  declared: z.array(z.string()),
+  results: z.array(checkOutcome.nullable()),
+  extra: z.array(checkOutcome).default([]),
+  notRun: z.array(z.object({ name: z.string(), reason: z.string() })).default([]),
+  weaker: z.array(z.string()).default([]),
+});
+const waiverSection = z.object({
+  by: z.string(),
+  at: z.string(),
+  checks: z.array(z.string()).default([]),
+});
+const proofSection = z.array(
+  z.object({
+    criterion: z.string(),
+    proven: z.boolean(),
+    provenBy: z.array(z.string()).default([]),
+    unproven: z.array(z.string()).default([]),
+    /** Linked checks that passed but can't prove it (a static check, a reviewer-picked CI job). */
+    notCounted: z.array(z.string()).default([]),
+    /** Who linked the checks: the approved spec, or the reviewer agent. */
+    linkedBy: z.enum(["spec", "reviewer"]).default("reviewer"),
+    /** The tests-intact guard found gate-file edits on this SHA. */
+    weakened: z.boolean().default(false),
+    reviewerMet: z.boolean(),
+    opinion: z.string().default(""),
+  }),
+);
+export type CheckOutcome = z.infer<typeof checkOutcome>;
+export type CriterionProof = z.infer<typeof proofSection>[number];
+
+/**
+ * The project's checks as the runner host ran them on the packet's SHA (ADR 0501): each declared
+ * check with its result, or null when it didn't run there. Null for a packet from before.
+ */
+export function packetExecuted(p: ParsedPacket): {
+  rows: { name: string; result: CheckOutcome | null }[];
+  extra: CheckOutcome[];
+  /** Set when the merge queue carried this packet to a new head: the SHA the checks ran on. */
+  ranOn: string | null;
+  /** Declared checks the runner could not run on this SHA, with why: a person decides. */
+  notRun: { name: string; reason: string }[];
+  /** Declared checks that ran in the weaker sandbox of a Mac runner whose owner opted in. */
+  weaker: string[];
+  /**
+   * A person decided to merge without the checks not run (fourth review, S2): who and when.
+   * Null while nobody has.
+   */
+  waived: { by: string; at: string; checks: string[] } | null;
+} | null {
+  const r = executedSection.safeParse(p.sections.executed);
+  if (!r.success) return null;
+  const ranOn = p.sections.checksRanOn;
+  const waived = waiverSection.safeParse(p.sections.notRunWaived);
+  return {
+    rows: r.data.declared.map((name, i) => ({ name, result: r.data.results[i] ?? null })),
+    extra: r.data.extra,
+    ranOn: typeof ranOn === "string" ? ranOn : null,
+    notRun: r.data.notRun,
+    weaker: r.data.weaker,
+    waived: waived.success ? waived.data : null,
+  };
+}
+
+/**
+ * Each criterion's proof by criterion text (ADR 0501): Proven only by a linked check that passed.
+ * Null for a packet from before, whose criteria show the reviewer's met/unmet as before.
+ */
+export function packetProof(p: ParsedPacket): Map<string, CriterionProof> | null {
+  const r = proofSection.safeParse(p.sections.proof);
+  return r.success ? new Map(r.data.map((x) => [x.criterion, x])) : null;
 }

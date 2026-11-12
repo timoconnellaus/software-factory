@@ -145,6 +145,8 @@ export function proxySpec(input: {
   jobId: string;
   allow: string[];
   addHosts?: string[];
+  /** Tests: exact `host:port` entries the proxy's private-address filter lets through. */
+  privateOk?: string[];
 }): ContainerSpec {
   return {
     name: input.name,
@@ -152,7 +154,14 @@ export function proxySpec(input: {
     user: "65534:65534",
     workdir: "/",
     entrypoint: "node",
-    command: [EGRESS_SCRIPT, "--port", String(EGRESS_PORT), "--allow", input.allow.join(",")],
+    command: [
+      EGRESS_SCRIPT,
+      "--port",
+      String(EGRESS_PORT),
+      "--allow",
+      input.allow.join(","),
+      ...(input.privateOk?.length ? ["--private-ok", input.privateOk.join(",")] : []),
+    ],
     env: {},
     mounts: [],
     tmpfs: {},

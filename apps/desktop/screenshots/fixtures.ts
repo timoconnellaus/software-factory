@@ -5,6 +5,45 @@
 import type { OpInput, OpName, OpOutput } from "@software-factory/client/ops";
 import { planBlocks } from "@software-factory/client/planning";
 
+/**
+ * `?fixture=notrun`: the runner could not run the checks (the sandbox could not start), so the item
+ * went on to the merge gate with them shown as not run (ADR 0501, third review).
+ */
+let seenNotRun = false;
+const notRunFixture = () => {
+  const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
+  seenNotRun ||= where.includes("fixture=notrun");
+  return seenNotRun;
+};
+const NOT_RUN_REASON = "this Mac runner has no container runtime";
+/** The proof when the checks weren't run: nothing proven, the spec's links left unproven. */
+const notProven = <T extends { provenBy: string[]; unproven: string[] }>(proof: T[]): T[] =>
+  proof.map((p) => ({
+    ...p,
+    proven: false,
+    provenBy: [],
+    unproven: [...p.unproven, ...p.provenBy],
+  }));
+const NOT_RUN_EXECUTED = {
+  declared: ["lint", "tests"],
+  results: ["lint", "tests"].map((name) => ({
+    name,
+    command: `pnpm ${name === "tests" ? "test" : name}`,
+    exitCode: null,
+    timedOut: false,
+    durationMs: 0,
+    logTail: `not run: ${NOT_RUN_REASON}`,
+    round: 0,
+    notRun: NOT_RUN_REASON,
+    passed: false,
+  })),
+  extra: [],
+  notRun: [
+    { name: "lint", reason: NOT_RUN_REASON },
+    { name: "tests", reason: NOT_RUN_REASON },
+  ],
+};
+
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
 
@@ -693,6 +732,82 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
               total: 0,
             },
             runner: { verdict: "pass", checks: PACKET_CHECKS },
+            // Spec 51 PR B (Workflow v8, ADR 0501): the checks the runner host ran itself on the
+            // head, and each criterion's proof. Only the approved spec's links prove a criterion.
+            executed: notRunFixture()
+              ? NOT_RUN_EXECUTED
+              : {
+                  declared: ["lint", "tests"],
+                  results: [
+                    {
+                      name: "lint",
+                      command: "pnpm lint",
+                      exitCode: 0,
+                      timedOut: false,
+                      durationMs: 14_000,
+                      logTail: "",
+                      round: 0,
+                      passed: true,
+                    },
+                    {
+                      name: "tests",
+                      command: "pnpm test",
+                      exitCode: 0,
+                      timedOut: false,
+                      durationMs: 52_000,
+                      logTail: "",
+                      round: 1,
+                      passed: true,
+                    },
+                  ],
+                  extra: [],
+                },
+            proof: (notRunFixture() ? notProven : <T>(p: T) => p)([
+              {
+                criterion: CRITERIA[0],
+                proven: true,
+                provenBy: ["tests"],
+                unproven: [],
+                notCounted: [],
+                linkedBy: "spec",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "guard.test.ts › flags removed and skipped tests",
+              },
+              {
+                criterion: CRITERIA[1],
+                proven: true,
+                provenBy: ["tests"],
+                unproven: [],
+                notCounted: [],
+                linkedBy: "spec",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "guard.test.ts › flags biome-ignore and ts-expect-error",
+              },
+              {
+                criterion: CRITERIA[2],
+                proven: false,
+                provenBy: [],
+                unproven: [],
+                notCounted: ["tests"],
+                linkedBy: "reviewer",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "packet.test.ts › includes guard findings",
+              },
+              {
+                criterion: CRITERIA[3],
+                proven: false,
+                provenBy: [],
+                unproven: [],
+                notCounted: [],
+                linkedBy: "reviewer",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "review.ts › the merge gate reads the guard's findings (read, no test)",
+              },
+            ]),
             evidencePass: true,
             evidenceReasons: [],
           },

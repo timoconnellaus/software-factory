@@ -229,6 +229,23 @@ app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comment
 intact** section is always shown (ADR 0500).
 _Avoid_: PR summary, report
 
+**Factory check**
+A command the project declares in its config (`checks`, plus any its workflow adds) that the
+**runner host** runs itself on a clean copy of the head SHA after a build (an attached PR: before its
+review), under the job's isolation: a check container, or the host's OS sandbox with the harness's
+floor. With neither it reports the check **not run**, which fails (ADR 0501). Its exit code,
+duration and redacted log tail are stored against that SHA; the verdict needs every declared check
+to pass there (from Workflow v8). A failure goes back into the same build session first, then to a
+person. Only a non-static check proves a criterion.
+_Avoid_: runner check (the agent's own report), CI
+
+**Proven**
+An acceptance criterion is **Proven** when a check the approved spec links it to (a factory check or
+a CI check run, `[checks: …]` on the criterion) passed on the head SHA; otherwise it is **Not
+proven**, and the reviewer's reasoning, and any checks the reviewer linked, are shown as opinion
+(ADR 0501).
+_Avoid_: met (the reviewer's judgement)
+
 **Tests intact**
 The factory's own check, in code, that a diff doesn't weaken the tests the build is judged by:
 deleted, removed, skipped or commented-out tests, new lint or type suppressions, lowered thresholds

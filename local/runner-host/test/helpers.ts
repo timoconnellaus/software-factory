@@ -453,6 +453,12 @@ export function fakeAdapter(
           async steer(_s: unknown, text: string) {
             steered.push(text);
           },
+          // Another turn of the same "session" (ADR 0501): the text goes in, the session runs again.
+          async *continueSession(j: Job, _s: unknown, text: string, signal: AbortSignal) {
+            steered.push(text);
+            const ws = join(clonePath(j), "..", `wt-${j.jobId}`);
+            for (const e of await session(ws, j, signal, relays.get(j.jobId))) yield e;
+          },
         }
       : {}),
     ...(options.interrupt

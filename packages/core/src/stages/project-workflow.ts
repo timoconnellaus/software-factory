@@ -276,6 +276,8 @@ function slotWorkflow(def: WorkflowDefinition): WorkflowConfig {
     description: def.name,
     slots,
     core: build ? { build } : {},
+    // An org workflow declares no checks of its own (ADR 0501): the project's own still run.
+    checks: [],
   };
 }
 
