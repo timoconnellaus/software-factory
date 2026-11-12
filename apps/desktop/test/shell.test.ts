@@ -3,12 +3,12 @@
 // the Work views and board, and how the merge gate words a packet. Fixtures come from the
 // screenshot harness's door, so the screens and the tests see the same data.
 
-import { STAGE_LABEL } from "@software-factory/client/format";
 import type { Inbox } from "@software-factory/client/ops";
 import { parsePacket } from "@software-factory/client/packet";
 import { describe, expect, it } from "vitest";
 import { ANSWERS, ITEMS } from "../screenshots/fixtures.ts";
 import { entryText, inboxEntries, selectedEntry } from "../src/mainview/lib/inbox-list.ts";
+import { panelWidth } from "../src/mainview/lib/panel.ts";
 import { matchItems, peekItem, sectionOf, tabTitle } from "../src/mainview/lib/places.ts";
 import { verdictChips, verdictHeadline } from "../src/mainview/lib/review.ts";
 import {
@@ -35,7 +35,11 @@ import {
   boardLanes,
   cardState,
   countsByView,
+  cutList,
+  laneLabel,
   outcomeOf,
+  PHASE_COLUMNS,
+  phaseColumn,
   viewOf,
   waitingOn,
   workItemsFor,
@@ -194,7 +198,7 @@ describe("status bar", () => {
   });
 
   it("counts only running items as running", () => {
-    expect(runningCount(inbox)).toBe(3);
+    expect(runningCount(inbox)).toBe(4);
   });
 
   it("says when it last heard from the factory, or that it can't", () => {
@@ -261,7 +265,18 @@ describe("places and search", () => {
     expect(tabTitle("/", find)).toBe("Inbox");
     expect(tabTitle("/work?view=done", find)).toBe("Done");
     expect(tabTitle("/work?view=backlog&project=prj_factory", find)).toBe("Backlog");
-    expect(tabTitle("/work?project=prj_factory", find)).toBe("A project");
+    expect(tabTitle("/work?project=prj_factory", find)).toBe("Project");
+    expect(
+      tabTitle("/work?project=prj_factory", find, (id) =>
+        id === "prj_factory" ? "Factory" : null,
+      ),
+    ).toBe("Factory");
+    // A project's board is the project's, as its header says.
+    expect(
+      tabTitle("/work?view=active&project=prj_factory", find, (id) =>
+        id === "prj_factory" ? "Factory" : null,
+      ),
+    ).toBe("Factory");
     expect(tabTitle("/work", find)).toBe("In the factory");
     expect(tabTitle("/work/wi_13?tab=review", find)).toBe("#13 Guard the tests in verify");
     expect(tabTitle("/work/unknown", find)).toBe("Work item");
@@ -324,26 +339,75 @@ describe("Work views and the board", () => {
     });
   });
 
-  it("puts each item in the factory in its stage's lane, Queued first, shaping before delivery", () => {
-    const items = (ANSWERS["workItem.board"]?.({ orgId: "org_personal" }).items ?? [])
+  // biome-ignore lint/style/noNonNullAssertion: the fixtures define these answers.
+  const stagesOf = (projectId: string) => ANSWERS["project.workflow"]!({ projectId }).stages;
+  const inFactory = () =>
+    (ANSWERS["workItem.board"]?.({ orgId: "org_personal" }).items ?? [])
       .filter((i) => ["queued", "running", "waiting", "paused"].includes(i.status))
       .map((i) => ({ ...i, orgId: "org_personal" }));
-    const board = boardLanes(items, STAGE_LABEL);
-    expect(
-      board.map((l) => `${l.key}/${l.phase}:${l.items.map((i) => i.number).join(",")}`),
-    ).toEqual([
-      "queued/queued:28",
-      "spec/shaping:12",
-      "build/delivery:9,11",
-      "verify/delivery:26",
-      "merge/delivery:13",
+
+  it("gives a project's board Queued then every stage of its workflow, in the read's order", () => {
+    const board = boardLanes(inFactory(), stagesOf("prj_factory"));
+    expect(board.map((l) => `${l.label}:${l.items.map((i) => i.number).join(",")}`)).toEqual([
+      "Queued:28",
+      // Empty lanes stay, so columns don't move as items do.
+      "Triage:",
+      // A released item in its spec stage is in the Spec lane; nothing calls it shaping.
+      "Spec:12",
+      "Build:9,11",
+      "Verify:26",
+      "Merge:13",
     ]);
-    // A stage the view has no label for still gets its lane, after the ones it knows.
-    const odd = boardLanes(
-      [{ ...(items[1] as (typeof items)[number]), stage: "publish", phase: "delivery" }],
-      STAGE_LABEL,
+    // Another workflow's stages come out in its own order, labelled by the read.
+    const other = boardLanes(
+      [{ ...(inFactory()[1] as ReturnType<typeof inFactory>[number]), stage: "publish" }],
+      [
+        { stage: "draft", label: "Draft" },
+        { stage: "publish", label: "Publish" },
+      ],
     );
-    expect(odd.map((l) => l.label)).toEqual(["Queued", "Publish"]);
+    expect(other.map((l) => `${l.label}:${l.items.length}`)).toEqual([
+      "Queued:0",
+      "Draft:0",
+      "Publish:1",
+    ]);
+    expect(laneLabel({ status: "running", stage: "intake" }, stagesOf("prj_factory"))).toBe(
+      "Triage",
+    );
+  });
+
+  it("puts every item in one of six phase columns, never by its stage", () => {
+    const col = (status: string, phase?: string) => phaseColumn({ status, phase });
+    expect(
+      ["backlog", "shaping", "ready", "queued", "running", "waiting", "paused"].map((s) =>
+        col(s, ["backlog", "shaping", "ready"].includes(s) ? "shaping" : "delivery"),
+      ),
+    ).toEqual(["backlog", "shaping", "ready", "queued", "delivery", "delivery", "delivery"]);
+    expect(["done", "failed", "rejected", "cancelled"].map((s) => col(s))).toEqual([
+      "done",
+      "done",
+      "done",
+      "done",
+    ]);
+    expect(PHASE_COLUMNS.map((c) => c.label)).toEqual([
+      "Backlog",
+      "Shaping",
+      "Ready",
+      "Queued",
+      "Delivery",
+      "Done",
+    ]);
+  });
+
+  it("says when the board's read was cut, by its counts", () => {
+    const counts = [
+      { orgId: "o", projectId: "p", status: "backlog", n: 450 },
+      { orgId: "o", projectId: "p", status: "running", n: 112 },
+      { orgId: "o", projectId: "p", status: "done", n: 900 },
+    ];
+    const opts = { states: ["backlog", "running"], orgId: null, projectId: "p" };
+    expect(cutList(counts, 500, opts)).toEqual({ shown: 500, of: 562 });
+    expect(cutList(counts.slice(0, 1), 450, opts)).toBeNull();
   });
 
   it("says who an item waits on, and words its outcome", () => {
@@ -406,5 +470,18 @@ describe("the merge gate's words", () => {
       "Reviewer approves",
       "No risk flags",
     ]);
+  });
+});
+
+describe("the item side panel's width", () => {
+  it("is what was asked, within 360px and half the content area, or the whole page when narrow", () => {
+    // 1200 wide: a 733px page beside the 212px list; half the content area is 472.
+    expect(panelWidth(520, 733, 212)).toBe(472);
+    expect(panelWidth(400, 733, 212)).toBe(400);
+    expect(panelWidth(200, 733, 212)).toBe(360);
+    // A wide window: the asked width.
+    expect(panelWidth(520, 1228, 212)).toBe(520);
+    // Too narrow to share: all of the page area.
+    expect(panelWidth(520, 493, 212)).toBe(493);
   });
 });

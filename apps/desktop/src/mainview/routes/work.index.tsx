@@ -7,10 +7,10 @@ import { createRoute, useNavigate } from "@tanstack/react-router";
 import { ActiveAll, DoneList, type Layout, ProjectBoard } from "../components/work-active.tsx";
 import { BacklogPage, PlanningPage, ReadyPage } from "../components/work-backlog.tsx";
 import { ProjectPage } from "../components/work-project.tsx";
-import { boardsQuery, configQuery, workListsQuery } from "../lib/queries.ts";
+import { boardsQuery, configQuery, workflowQuery, workListsQuery } from "../lib/queries.ts";
 import type { WorkView } from "../lib/work-board.ts";
 import { workLayout } from "./_work.tsx";
-import { ItemPanel, loadItem, parseTab, type Tab } from "./work.$id.index.tsx";
+import { ItemPanel, parseTab, type Tab } from "./work.$id.index.tsx";
 
 interface Search {
   view?: WorkView;
@@ -35,17 +35,38 @@ export const Route = createRoute({
     ...(typeof s.item === "string" ? { item: s.item } : {}),
     ...(parseTab(s.itemTab) ? { itemTab: parseTab(s.itemTab) } : {}),
   }),
-  loaderDeps: ({ search }) => ({ project: search.project, view: search.view, item: search.item }),
-  // The lists, a project's config (its workflow) on its page, and the item in the side panel.
+  loaderDeps: ({ search }) => ({ project: search.project, view: search.view }),
+  // The side panel's item isn't a dependency: the panel opens at once and loads inside (its
+  // skeleton), so opening an item never waits on its reads.
+  // The lists; a project's config and workflow on its page; on Planning, the workflow (its stage
+  // labels) of each project with work being shaped.
   loader: ({ context: { queryClient, session }, deps }) => {
     const orgIds = session.orgs.map((o) => o.id);
+    const board = queryClient.ensureQueryData(boardsQuery(orgIds));
     return Promise.all([
+      // The page's own board: one project's when one is chosen.
+      deps.project ? queryClient.ensureQueryData(boardsQuery(orgIds, deps.project)) : null,
+      // Its board's lanes are the project's workflow's stages.
+      deps.project && deps.view === "active"
+        ? queryClient.ensureQueryData(workflowQuery(deps.project))
+        : null,
       queryClient.ensureQueryData(workListsQuery(orgIds)),
-      queryClient.ensureQueryData(boardsQuery(orgIds)),
+      board,
       deps.project && !deps.view
-        ? queryClient.ensureQueryData(configQuery(deps.project))
+        ? Promise.all([
+            queryClient.ensureQueryData(configQuery(deps.project)),
+            queryClient.ensureQueryData(workflowQuery(deps.project)),
+          ])
         : Promise.resolve(null),
-      ...(deps.item ? loadItem(queryClient, deps.item) : []),
+      deps.view === "planning"
+        ? board.then((b) =>
+            Promise.all(
+              [
+                ...new Set(b.items.filter((i) => i.status === "shaping").map((i) => i.projectId)),
+              ].map((id) => queryClient.ensureQueryData(workflowQuery(id))),
+            ),
+          )
+        : Promise.resolve(null),
     ]).catch(() => null);
   },
   component: WorkRoute,
@@ -54,6 +75,19 @@ export const Route = createRoute({
 function WorkRoute() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
+  const close = () => {
+    const id = search.item;
+    // Replace: Back after closing goes where it went before the panel opened, not back into it.
+    void navigate({
+      search: { ...search, item: undefined, itemTab: undefined },
+      replace: true,
+    }).then(() =>
+      // Focus goes back to the card or row the item opened from.
+      requestAnimationFrame(() =>
+        document.querySelector<HTMLElement>(`[data-peek="${CSS.escape(id ?? "")}"]`)?.focus(),
+      ),
+    );
+  };
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
       <SectionPage />
@@ -63,9 +97,7 @@ function WorkRoute() {
           id={search.item}
           tab={search.itemTab ?? "overview"}
           onTab={(itemTab) => void navigate({ search: { ...search, itemTab }, replace: true })}
-          onClose={() =>
-            void navigate({ search: { ...search, item: undefined, itemTab: undefined } })
-          }
+          onClose={close}
           onExpand={() =>
             void navigate({
               to: "/work/$id",
@@ -104,7 +136,10 @@ function SectionPage() {
           onLayout={(layout) => void navigate({ search: { ...search, layout } })}
         />
       ) : (
-        <ActiveAll />
+        <ActiveAll
+          layout={search.layout ?? "board"}
+          onLayout={(layout) => void navigate({ search: { ...search, layout } })}
+        />
       );
   }
 }

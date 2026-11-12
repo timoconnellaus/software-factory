@@ -12,6 +12,7 @@ import { Kbd } from "@software-factory/ui/components/kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@software-factory/ui/components/popover";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
+import { useRouterState } from "@tanstack/react-router";
 import { Maximize2Icon, Minimize2Icon, SquareTerminalIcon, XIcon } from "lucide-react";
 import { type PointerEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -229,10 +230,15 @@ export function TerminalPanel({
 }
 
 /** Where the dock sits when not expanded: over the lower part of the page area, or the window. */
-function pageBox(): { left: number; right: number; top: number; bottom: number } {
+export function dockHost(): HTMLElement | null {
   // A view that hosts its own terminal (the Work board's item panel) first, else the page.
-  const main =
-    document.querySelector<HTMLElement>("[data-terminal-host]") ?? document.getElementById("main");
+  return (
+    document.querySelector<HTMLElement>("[data-terminal-host]") ?? document.getElementById("main")
+  );
+}
+
+function pageBox(): { left: number; right: number; top: number; bottom: number } {
+  const main = dockHost();
   if (main) {
     const r = main.getBoundingClientRect();
     return { left: r.left, right: window.innerWidth - r.right, top: r.top, bottom: r.bottom };
@@ -264,19 +270,22 @@ export function TerminalDock({
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
+  // The box it docks over is found again whenever the view moves (a tab switch renders another
+  // page element; the side panel expands to the page), so it never measures one that is gone.
+  const href = useRouterState({ select: (s) => s.location.href });
   useEffect(() => {
+    void href;
     const update = () => setBox(pageBox());
+    update();
     window.addEventListener("resize", update);
-    const main =
-      document.querySelector<HTMLElement>("[data-terminal-host]") ??
-      document.getElementById("main");
-    const observer = main ? new ResizeObserver(update) : null;
-    if (main) observer?.observe(main);
+    const host = dockHost();
+    const observer = host ? new ResizeObserver(update) : null;
+    if (host) observer?.observe(host);
     return () => {
       window.removeEventListener("resize", update);
       observer?.disconnect();
     };
-  }, []);
+  }, [href]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

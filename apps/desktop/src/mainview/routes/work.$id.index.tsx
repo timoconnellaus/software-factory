@@ -21,13 +21,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@software-factory/ui/components/dialog";
+import { Kbd } from "@software-factory/ui/components/kbd";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
-import { type QueryClient, useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Maximize2Icon, PinIcon, PinOffIcon, XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { Attachments } from "../components/attachments.tsx";
@@ -46,6 +47,14 @@ import { Chip, PageArea, Panel, SectionTitle } from "../components/shell-list.ts
 import { Timeline } from "../components/timeline.tsx";
 import { ExternalLink } from "../lib/external.tsx";
 import { OpError, op } from "../lib/op.ts";
+import { closeTerminal } from "../lib/open-terminals.ts";
+import {
+  PANEL_FULL_BELOW,
+  PANEL_MIN,
+  panelWidth,
+  rememberWidth,
+  storedWidth,
+} from "../lib/panel.ts";
 import {
   attachmentsQuery,
   boardsQuery,
@@ -76,21 +85,6 @@ export function parseTab(v: unknown): Tab | undefined {
   return OLD[v];
 }
 
-/**
- * Everything an item's view renders, for a loader: the item (with its spec, questions, gates, runs
- * and packet), its timeline, the runners (for runner names), attachments and planning (spec 20).
- * The Work board's loader uses it for the side panel; the page's own loader spells it out.
- */
-export function loadItem(queryClient: QueryClient, id: string) {
-  return [
-    queryClient.ensureQueryData(workItemQuery(id)),
-    queryClient.ensureQueryData(timelineQuery(id)).catch(() => null),
-    queryClient.ensureQueryData(runnersQuery()).catch(() => null),
-    queryClient.ensureQueryData(attachmentsQuery(id)).catch(() => null),
-    queryClient.ensureQueryData(planningQuery(id)).catch(() => null),
-  ];
-}
-
 export const Route = createRoute({
   getParentRoute: () => workLayout,
   path: "/work/$id",
@@ -104,7 +98,6 @@ export const Route = createRoute({
     Promise.all([
       // The org's board: what an item before release can wait for (its edit dialog).
       queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
-      // As `loadItem`, spelled out so the loader test sees each read.
       queryClient.ensureQueryData(workItemQuery(params.id)),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
@@ -178,35 +171,41 @@ export function ItemView({
   panel?: PanelControls;
 }) {
   const tab = tabsFor(d.item.status).includes(asked) ? asked : "overview";
+  const scroller = useRef<HTMLDivElement>(null);
+  // Expanded from the side panel: the page opens where the panel was scrolled to.
+  useLayoutEffect(() => {
+    if (panel || carried?.id !== d.item.id) return;
+    if (scroller.current) scroller.current.scrollTop = carried.top;
+    carried = null;
+  }, [panel, d.item.id]);
   const head = (
     <div className={cn("flex flex-col gap-3 pt-[18px]", panel ? "px-[18px]" : "px-[22px]")}>
-      <Header detail={d} panel={panel} />
+      <Header detail={d} inPanel={!!panel} />
       <StageStrip detail={d} />
       <TabBar detail={d} tab={tab} onTab={onTab} />
     </div>
   );
-  // In the panel, the terminal docks over the panel rather than the page (TerminalDock's host).
-  const host = panel ? { "data-terminal-host": "" } : {};
+  // In the panel the view is the panel's content, not the page: one main landmark (the list's).
+  const Body = panel ? "div" : "main";
 
   if (tab === "plan") {
     return (
-      <main
+      <Body
         className="flex min-h-0 min-w-0 flex-1 flex-col bg-page"
         data-testid={panel ? "panel-body" : "page"}
-        {...host}
       >
         {head}
         <div className="flex min-h-0 flex-1 flex-col">
           <Planning detail={d} mode="docked" />
         </div>
-      </main>
+      </Body>
     );
   }
   return (
-    <main
+    <Body
+      ref={scroller}
       className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-page"
       data-testid={panel ? "panel-body" : "page"}
-      {...host}
     >
       {head}
       <div className={cn("flex flex-col gap-4 pt-4 pb-7", panel ? "px-[18px]" : "px-[22px]")}>
@@ -215,15 +214,25 @@ export function ItemView({
         {tab === "review" && <ReviewPacket detail={d} />}
         {tab === "activity" && <Activity detail={d} />}
       </div>
-    </main>
+    </Body>
   );
 }
 
+/** Where the panel was scrolled when it expanded, for the page to open there. */
+let carried: { id: string; top: number } | null = null;
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 /**
  * The item side panel (spec 41 slice 7, design WorkActivePanel, README "The item side panel"): the
- * same view as the page, over the right of the Work list. Esc closes it and ⌘↵ expands it to the
- * page (neither while typing in a field, a dialog is open, or the terminal has the keyboard: the
- * terminal dock takes Esc first). The list keeps it in the URL (`?item=`), so back and forward work.
+ * same view as the page, beside the Work list, which stays readable. A complementary region named
+ * by the item; it opens at once with its skeleton and loads inside. Opening moves focus into it,
+ * Tab stays inside it (and its terminal) while it is open, and the list returns focus to the card
+ * when it closes. Esc closes it and ⌘↵ expands it to the page, neither while typing in a field, a
+ * dialog is open, or the terminal has the keyboard (the terminal dock takes Esc first). Its left
+ * edge drags to resize; the width is remembered. Closing it, or showing another item, closes its
+ * terminal and so releases the socket; expanding keeps the tab, the scroll and the terminal.
  */
 export function ItemPanel({
   id,
@@ -239,14 +248,33 @@ export function ItemPanel({
   onExpand: () => void;
 }) {
   const item = useQuery(workItemQuery(id));
+  const projects = useProjects();
+  const aside = useRef<HTMLElement>(null);
+  const [wanted, setWanted] = useState(storedWidth);
+  const [room, setRoom] = useState({ page: 1000, list: 0 });
+  const expanding = useRef(false);
+  const expand = () => {
+    expanding.current = true;
+    const body = aside.current?.querySelector<HTMLElement>("[data-testid=panel-body]");
+    carried = { id, top: body?.scrollTop ?? 0 };
+    onExpand();
+  };
   // Focus mode (F, or Focus on the Plan tab) gives planning the whole window: from the panel, the
   // page opens first and focus applies there.
   const focus = useViewState((s) => s.focus);
-  const keys = useRef({ onClose, onExpand });
-  keys.current = { onClose, onExpand };
+  const keys = useRef({ onClose, expand });
+  keys.current = { onClose, expand };
   useEffect(() => {
-    if (focus === id) keys.current.onExpand();
+    if (focus === id) keys.current.expand();
   }, [focus, id]);
+  // Opening moves focus into the panel. Closing it, or showing another item (the list remounts the
+  // panel per item), closes this item's terminal: its socket is released. Expanding keeps it.
+  useEffect(() => {
+    aside.current?.focus({ preventScroll: true });
+    return () => {
+      if (!expanding.current) closeTerminal(id);
+    };
+  }, [id]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
@@ -257,20 +285,140 @@ export function ItemPanel({
         keys.current.onClose();
       } else if (e.key === "Enter" && e.metaKey) {
         e.preventDefault();
-        keys.current.onExpand();
+        keys.current.expand();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  // The room it has: the page area it sits over, and the list beside it.
+  useEffect(() => {
+    const host = aside.current?.parentElement;
+    if (!host) return;
+    const measure = () =>
+      setRoom({
+        page: host.clientWidth,
+        list: document.querySelector<HTMLElement>("[data-nested-list]")?.offsetWidth ?? 0,
+      });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+  const full = room.page < PANEL_FULL_BELOW;
+  const width = panelWidth(wanted, room.page, room.list);
+
+  /** Tab and Shift-Tab cycle inside the panel and its terminal while it is open. */
+  const trapTab = (e: React.KeyboardEvent) => {
+    if (e.key !== "Tab" || !aside.current) return;
+    const dock = document.querySelector<HTMLElement>("[data-testid=terminal-dock]");
+    const all = [
+      ...aside.current.querySelectorAll<HTMLElement>(FOCUSABLE),
+      ...(dock ? dock.querySelectorAll<HTMLElement>(FOCUSABLE) : []),
+    ].filter((el) => el.offsetParent !== null);
+    const first = all[0];
+    const last = all.at(-1);
+    if (!first || !last) return;
+    const at = document.activeElement;
+    if (e.shiftKey && (at === first || at === aside.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && at === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const right = aside.current?.getBoundingClientRect().right ?? window.innerWidth;
+    let next = wanted;
+    const move = (m: PointerEvent) => {
+      next = Math.round(right - m.clientX);
+      setWanted(next);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      remember(panelWidth(next, room.page, room.list));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const remember = (w: number) => {
+    setWanted(w);
+    rememberWidth(w);
+  };
+  const title = item.data ? `#${item.data.item.number} ${item.data.item.title}` : "Work item";
+  const project = projects.data?.find((p) => p.id === item.data?.item.projectId);
+
   return (
     <aside
-      aria-label="Work item"
-      className="absolute inset-y-2 right-2 z-30 flex w-[min(640px,calc(100%-16px))] flex-col overflow-hidden rounded-xl bg-page shadow-[0_0_0_1px_var(--line),0_16px_48px_rgba(0,0,0,0.18)]"
+      ref={aside}
+      aria-label={title}
+      tabIndex={-1}
+      onKeyDown={trapTab}
+      className="absolute inset-y-2 right-2 z-30 flex flex-col overflow-hidden rounded-xl bg-page shadow-[0_0_0_1px_var(--line),0_16px_48px_rgba(0,0,0,0.18)] outline-none"
+      style={{ width: full ? "calc(100% - 16px)" : width }}
       data-testid="item-panel"
+      data-terminal-host=""
+      data-width={full ? "full" : width}
     >
+      {!full && (
+        // biome-ignore lint/a11y/useSemanticElements: a draggable splitter has no native element.
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the panel"
+          aria-valuenow={width}
+          aria-valuemin={PANEL_MIN}
+          aria-valuemax={Math.floor((room.page + room.list) / 2)}
+          tabIndex={0}
+          onPointerDown={startResize}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft") remember(panelWidth(width + 40, room.page, room.list));
+            if (e.key === "ArrowRight") remember(panelWidth(width - 40, room.page, room.list));
+          }}
+          className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-line focus-visible:bg-ring/40 focus-visible:outline-none"
+          data-testid="panel-resize"
+        />
+      )}
+      <div className="flex h-11 flex-none items-center gap-2 border-line-soft border-b px-3.5">
+        <span className="min-w-0 truncate text-ink-3 text-xs" data-testid="panel-crumbs">
+          {project?.name ?? "Project"} <span className="text-ink-muted">›</span>{" "}
+          <span className="font-mono">{item.data ? `#${item.data.item.number}` : ""}</span>
+        </span>
+        <span className="flex-1" />
+        <Button
+          variant="ghost"
+          size="md"
+          title="Open it full size (⌘↵)"
+          onClick={expand}
+          data-testid="panel-expand"
+        >
+          <Maximize2Icon />
+          Expand
+          <Kbd className="ml-0.5">⌘↵</Kbd>
+        </Button>
+        <span aria-hidden className="mx-0.5 h-4 w-px bg-line" />
+        <Button
+          variant="ghost"
+          size="icon-md"
+          aria-label="Close the panel (Esc)"
+          title="Close (Esc)"
+          onClick={onClose}
+          data-testid="panel-close"
+        >
+          <XIcon />
+        </Button>
+      </div>
       {item.data ? (
-        <ItemView detail={item.data} tab={tab} onTab={onTab} panel={{ onClose, onExpand }} />
+        <ItemView
+          detail={item.data}
+          tab={tab}
+          onTab={onTab}
+          panel={{ onClose, onExpand: expand }}
+        />
       ) : item.error ? (
         <div className="flex flex-col gap-2 p-5">
           <p className="m-0 text-ink-3">{errorMessage(item.error)}</p>
@@ -279,7 +427,7 @@ export function ItemPanel({
           </Button>
         </div>
       ) : (
-        <div className="flex flex-col gap-3 p-5">
+        <div className="flex flex-col gap-3 p-5" data-testid="panel-loading">
           <Skeleton className="h-6 w-60" />
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-48 w-full" />
@@ -289,7 +437,8 @@ export function ItemPanel({
   );
 }
 
-function Header({ detail, panel }: { detail: WorkItemDetail; panel?: PanelControls }) {
+/** The item's title and actions. In the side panel its bar has the crumbs and Close already. */
+function Header({ detail, inPanel = false }: { detail: WorkItemDetail; inPanel?: boolean }) {
   const { item } = detail;
   const projects = useProjects();
   const project = projects.data?.find((p) => p.id === item.projectId);
@@ -300,7 +449,7 @@ function Header({ detail, panel }: { detail: WorkItemDetail; panel?: PanelContro
   return (
     <header className="flex flex-wrap items-end gap-2.5">
       <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-1">
-        <div className="text-ink-3 text-xs" data-testid="crumbs">
+        <div className={cn("text-ink-3 text-xs", inPanel && "sr-only")} data-testid="crumbs">
           <Link to="/work" className="underline">
             Work
           </Link>{" "}
@@ -338,30 +487,6 @@ function Header({ detail, panel }: { detail: WorkItemDetail; panel?: PanelContro
           {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
         </Button>
         <OpenTerminal detail={detail} />
-        {panel && (
-          <>
-            <Button
-              variant="outline"
-              size="md"
-              title="Open it full size (⌘↵)"
-              onClick={panel.onExpand}
-              data-testid="panel-expand"
-            >
-              <Maximize2Icon />
-              Expand
-            </Button>
-            <Button
-              variant="outline"
-              size="icon-md"
-              aria-label="Close the panel (Esc)"
-              title="Close (Esc)"
-              onClick={panel.onClose}
-              data-testid="panel-close"
-            >
-              <XIcon />
-            </Button>
-          </>
-        )}
         {(active || pre) && (detail.viewer.isRequester || detail.viewer.isApprover) && (
           <Button
             variant="outline"

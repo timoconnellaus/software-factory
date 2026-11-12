@@ -30,27 +30,29 @@ import {
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   age,
   type BacklogItem,
+  bulkReport,
   itemsIn,
   PRIORITIES,
   PRIORITY_LABEL,
   PRIORITY_SHORT,
   type Priority,
   quickAddLines,
+  refusalText,
   releasable,
   releaseBlocker,
   waitsText,
 } from "../lib/backlog.ts";
 import { OpError, op, submitKey } from "../lib/op.ts";
 import { peekItem } from "../lib/places.ts";
-import { boardsQuery } from "../lib/queries.ts";
+import { boardsQuery, workflowQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { PageArea, PageHeader, Panel } from "./shell-list.tsx";
 import { useOrgScope, useScopedInbox } from "./shell-sidebar.tsx";
@@ -60,11 +62,16 @@ interface ViewProps {
   onProject: (id: string | null) => void;
 }
 
-/** The board's items and the projects, within the chosen org. */
-function useBoard() {
+/** The board's items (one project's, when one is chosen) and the projects, within the chosen org. */
+function useBoard(projectId: string | null) {
   const session = useSession();
   const orgId = useOrgScope();
-  const board = useQuery(boardsQuery(session.orgs.map((o) => o.id)));
+  const board = useQuery(
+    boardsQuery(
+      session.orgs.map((o) => o.id),
+      projectId,
+    ),
+  );
   const projects = useProjects();
   const scoped = (projects.data ?? []).filter((p) => orgId === null || p.orgId === orgId);
   const projectOf = (id: string) => projects.data?.find((p) => p.id === id);
@@ -81,29 +88,46 @@ function useRefresh() {
     ]);
 }
 
+/** How long the server's pull takes to have run after a release commits, give or take. */
+const PULL_SETTLED_MS = 2_500;
+
+/**
+ * After a release: refresh now, and once more when the server's pull has run (it runs right after
+ * the release commits), so a card doesn't sit in Queued until the next poll.
+ */
+function useRefreshAfterRelease() {
+  const refresh = useRefresh();
+  return async (ids: string[]) => {
+    await refresh(ids);
+    if (ids.length) setTimeout(() => void refresh(ids), PULL_SETTLED_MS);
+  };
+}
+
 const message = (e: unknown, fallback: string) => (e instanceof OpError ? e.message : fallback);
 
 /**
- * Runs one operation per item, in order, and reports once: how many went through and the first
- * refusal (each is the server's own words). Returns the ids that went through.
+ * Runs one operation per item, in order, and reports once: how many went through and every
+ * refusal, each with its item and the server's own words ("Released 3. Not released: #20 needs a
+ * repository; #22 …"). Returns the ids that went through; the refused ones stay selected.
  */
 async function eachItem(
   items: BacklogItem[],
   run: (i: BacklogItem) => Promise<unknown>,
-  done: (n: number) => string,
+  words: { done: (n: number) => string; not: string },
 ): Promise<string[]> {
   const ok: string[] = [];
-  let refusal: string | null = null;
+  const refusals: string[] = [];
   for (const i of items) {
     try {
       await run(i);
       ok.push(i.id);
     } catch (e) {
-      refusal ??= `#${i.number}: ${message(e, "couldn't do that")}`;
+      refusals.push(refusalText(i.number, message(e, "couldn't do that")));
     }
   }
-  if (ok.length) toast.success(done(ok.length));
-  if (refusal) toast.error(refusal);
+  const report = bulkReport(ok.length, refusals, words);
+  if (refusals.length) toast.error(report, { duration: 12_000 });
+  else if (ok.length) toast.success(report);
   return ok;
 }
 
@@ -119,10 +143,31 @@ async function releaseAll(items: BacklogItem[]) {
       const w = waitsText(r.blockedBy);
       if (w) waiting.push(`#${i.number} waits for ${w}`);
     },
-    (n) => `Released ${plural(n, "item")} to the factory`,
+    { done: (n) => `Released ${plural(n, "item")} to the factory`, not: "Not released" },
   );
   if (waiting.length) toast(`In Queued until it lands: ${waiting.join("; ")}`);
   return ok;
+}
+
+/**
+ * Guards a bulk action: one runs at a time, so a double click sends one set of calls. The ref
+ * catches a second click before React has re-rendered the disabled buttons.
+ */
+function useBulk() {
+  const running = useRef(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const start = async (key: string, f: () => Promise<unknown>) => {
+    if (running.current) return;
+    running.current = true;
+    setBusy(key);
+    try {
+      await f();
+    } finally {
+      running.current = false;
+      setBusy(null);
+    }
+  };
+  return { busy, start };
 }
 
 /** The project switcher: all projects in the chosen org, or one. */
@@ -224,11 +269,13 @@ function Empty({ children, testId }: { children: React.ReactNode; testId: string
 // —— Backlog ——————————————————————————————————————————————————————————————————————————————
 
 export function BacklogPage({ projectId, onProject }: ViewProps) {
-  const { orgId, board, projects, projectOf, loading } = useBoard();
+  const { orgId, board, projects, projectOf, loading } = useBoard(projectId);
   const refresh = useRefresh();
   const items = itemsIn(board.data?.items ?? [], ["backlog"], { orgId, projectId });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const bulk = useBulk();
+  const refreshAfterRelease = useRefreshAfterRelease();
   const chosen = items.filter((i) => selected.has(i.id));
   const allChosen = items.length > 0 && chosen.length === items.length;
   const toggle = (id: string, on: boolean) =>
@@ -287,7 +334,7 @@ export function BacklogPage({ projectId, onProject }: ViewProps) {
           <Table testId="backlog-list">
             <thead>
               <tr className="border-line-soft border-b">
-                <th className="w-10 py-2.5 pl-3.5 align-middle">
+                <th className="w-12 py-2.5 pr-3 pl-3.5 align-middle">
                   <Checkbox
                     className="flex"
                     aria-label="Select every item"
@@ -298,7 +345,7 @@ export function BacklogPage({ projectId, onProject }: ViewProps) {
                   />
                 </th>
                 <th className={cn(th, "w-12")}>Pri</th>
-                <th className={th}>Item</th>
+                <th className={cn(th, "w-full")}>Item</th>
                 {!projectId && <th className={cn(th, NARROW_HIDDEN)}>Project</th>}
                 <th className={cn(th, NARROW_HIDDEN)}>Size</th>
                 <th className={th}>Waits for</th>
@@ -312,7 +359,7 @@ export function BacklogPage({ projectId, onProject }: ViewProps) {
                   className="border-line-soft border-t first:border-t-0 hover:bg-page"
                   data-testid={`row-${i.id}`}
                 >
-                  <td className="py-2.5 pl-3.5 align-middle">
+                  <td className="py-2.5 pr-3 pl-3.5 align-middle">
                     <Checkbox
                       className="flex"
                       aria-label={`Select #${i.number}`}
@@ -352,21 +399,25 @@ export function BacklogPage({ projectId, onProject }: ViewProps) {
             <Button
               variant="outline"
               size="md"
-              disabled={!chosen.length}
-              onClick={async () =>
-                after(
-                  await eachItem(
-                    chosen,
-                    (i) => op("workItem.move", { workItemId: i.id, to: "ready" }),
-                    (n) => `Marked ${plural(n, "item")} ready`,
+              disabled={!chosen.length || bulk.busy !== null}
+              aria-busy={bulk.busy === "ready"}
+              onClick={() =>
+                bulk.start("ready", async () =>
+                  after(
+                    await eachItem(
+                      chosen,
+                      (i) => op("workItem.move", { workItemId: i.id, to: "ready" }),
+                      { done: (n) => `Marked ${plural(n, "item")} ready`, not: "Not moved" },
+                    ),
                   ),
                 )
               }
+              data-testid="mark-ready-selected"
             >
-              Mark ready
+              {bulk.busy === "ready" ? "Marking ready…" : "Mark ready"}
             </Button>
             <DropdownMenu>
-              <DropdownMenuTrigger asChild disabled={!chosen.length}>
+              <DropdownMenuTrigger asChild disabled={!chosen.length || bulk.busy !== null}>
                 <Button variant="outline" size="md">
                   Set priority
                   <ChevronDownIcon />
@@ -376,12 +427,17 @@ export function BacklogPage({ projectId, onProject }: ViewProps) {
                 {PRIORITIES.map((p) => (
                   <DropdownMenuItem
                     key={p}
-                    onSelect={async () =>
-                      after(
-                        await eachItem(
-                          chosen,
-                          (i) => op("workItem.update", { workItemId: i.id, priority: p }),
-                          (n) => `${PRIORITY_SHORT[p]} for ${plural(n, "item")}`,
+                    onSelect={() =>
+                      bulk.start("priority", async () =>
+                        after(
+                          await eachItem(
+                            chosen,
+                            (i) => op("workItem.update", { workItemId: i.id, priority: p }),
+                            {
+                              done: (n) => `${PRIORITY_SHORT[p]} for ${plural(n, "item")}`,
+                              not: "Not changed",
+                            },
+                          ),
                         ),
                       )
                     }
@@ -394,17 +450,24 @@ export function BacklogPage({ projectId, onProject }: ViewProps) {
             <Button
               variant="outline"
               size="md"
-              disabled={!chosen.length}
-              onClick={async () => after(await releaseAll(chosen))}
+              disabled={!chosen.length || bulk.busy !== null}
+              aria-busy={bulk.busy === "release"}
+              onClick={() =>
+                bulk.start("release", async () => {
+                  const ok = await releaseAll(chosen);
+                  await after(ok);
+                  await refreshAfterRelease(ok);
+                })
+              }
               data-testid="release-selected"
             >
-              Release
+              {bulk.busy === "release" ? "Releasing…" : "Release"}
             </Button>
             <Button
               variant="outline"
               size="md"
               className="text-destructive hover:text-destructive"
-              disabled={!chosen.length}
+              disabled={!chosen.length || bulk.busy !== null}
               onClick={() => setConfirmCancel(true)}
             >
               Cancel
@@ -434,6 +497,8 @@ function QuickAdd({ projects, projectId }: { projects: Project[]; projectId: str
   async function add() {
     if (!target || lines.length === 0 || busy) return;
     setBusy(true);
+    // The box is read-only while adding; clearing only what was sent keeps anything else safe.
+    const sent = text;
     let added = 0;
     try {
       for (const title of lines) {
@@ -444,10 +509,10 @@ function QuickAdd({ projects, projectId }: { projects: Project[]; projectId: str
         );
         added++;
       }
-      setText("");
+      setText((t) => (t === sent ? "" : t));
     } catch (e) {
       // Keep the lines not added yet, so nothing typed is lost.
-      setText(lines.slice(added).join("\n"));
+      setText((t) => (t === sent ? lines.slice(added).join("\n") : t));
       toast.error(message(e, "Couldn't add it"));
     } finally {
       if (added) toast.success(`Added ${plural(added, "item")} to the backlog`);
@@ -467,6 +532,9 @@ function QuickAdd({ projects, projectId }: { projects: Project[]; projectId: str
           id="quick-add"
           rows={1}
           value={text}
+          readOnly={busy}
+          autoComplete="off"
+          aria-busy={busy}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -499,14 +567,14 @@ function QuickAdd({ projects, projectId }: { projects: Project[]; projectId: str
           onClick={add}
           data-testid="quick-add-button"
         >
-          {lines.length > 1 ? `Add ${lines.length}` : "Add"}
+          {busy ? "Adding…" : lines.length > 1 ? `Add ${lines.length}` : "Add"}
         </Button>
       </div>
     </div>
   );
 }
 
-/** Cancelling backlog work: it stops (and shows under Stopped); nothing ran, so nothing to undo. */
+/** Cancelling backlog work: it ends (Done shows it cancelled); nothing ran, so nothing to undo. */
 function CancelItems({
   open,
   onOpenChange,
@@ -518,7 +586,7 @@ function CancelItems({
   items: BacklogItem[];
   onDone: (ids: string[]) => Promise<unknown>;
 }) {
-  const [busy, setBusy] = useState(false);
+  const bulk = useBulk();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -535,21 +603,24 @@ function CancelItems({
           </Button>
           <Button
             variant="destructive"
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              const ok = await eachItem(
-                items,
-                (i) =>
-                  op("workItem.cancel", { workItemId: i.id, reason: "cancelled from the backlog" }),
-                (n) => `Cancelled ${plural(n, "item")}`,
-              );
-              setBusy(false);
-              onOpenChange(false);
-              await onDone(ok);
-            }}
+            disabled={bulk.busy !== null}
+            onClick={() =>
+              bulk.start("cancel", async () => {
+                const ok = await eachItem(
+                  items,
+                  (i) =>
+                    op("workItem.cancel", {
+                      workItemId: i.id,
+                      reason: "cancelled from the backlog",
+                    }),
+                  { done: (n) => `Cancelled ${plural(n, "item")}`, not: "Not cancelled" },
+                );
+                onOpenChange(false);
+                await onDone(ok);
+              })
+            }
           >
-            Cancel {plural(items.length, "item")}
+            {bulk.busy ? "Cancelling…" : `Cancel ${plural(items.length, "item")}`}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -560,10 +631,9 @@ function CancelItems({
 // —— Ready ————————————————————————————————————————————————————————————————————————————————
 
 export function ReadyPage({ projectId, onProject }: ViewProps) {
-  const { orgId, board, projects, projectOf, loading } = useBoard();
+  const { orgId, board, projects, projectOf, loading } = useBoard(projectId);
   const { inbox } = useScopedInbox();
-  const refresh = useRefresh();
-  const [busy, setBusy] = useState<string | null>(null);
+  const { busy, start } = useBulk();
   const items = itemsIn(board.data?.items ?? [], ["ready"], { orgId, projectId });
   const free = releasable(items, projectOf);
   // Builds held while too many items wait at gates (ADR 0040): released work waits in Queued.
@@ -571,12 +641,9 @@ export function ReadyPage({ projectId, onProject }: ViewProps) {
     (h) => projects.some((p) => p.id === h.projectId) && (!projectId || h.projectId === projectId),
   );
 
-  async function release(list: BacklogItem[], key: string) {
-    setBusy(key);
-    const ok = await releaseAll(list);
-    setBusy(null);
-    await refresh(ok);
-  }
+  const refreshAfterRelease = useRefreshAfterRelease();
+  const release = (list: BacklogItem[], key: string) =>
+    start(key, async () => refreshAfterRelease(await releaseAll(list)));
 
   return (
     <PageArea wide>
@@ -645,7 +712,7 @@ export function ReadyPage({ projectId, onProject }: ViewProps) {
             <thead>
               <tr className="border-line-soft border-b">
                 <th className={cn(th, "w-12 pl-3.5")}>Pri</th>
-                <th className={th}>Item</th>
+                <th className={cn(th, "w-full")}>Item</th>
                 {!projectId && <th className={cn(th, NARROW_HIDDEN)}>Project</th>}
                 <th className={cn(th, NARROW_HIDDEN)}>Size</th>
                 <th className={th}>Waits for</th>
@@ -682,7 +749,7 @@ export function ReadyPage({ projectId, onProject }: ViewProps) {
                     <td className="py-2 pr-3.5 text-right">
                       {blocker ? (
                         <span
-                          className="inline-flex max-w-[220px] items-start gap-1.5 text-left text-ink-3 text-xs"
+                          className="inline-flex w-[220px] items-start gap-1.5 text-left text-ink-3 text-xs"
                           data-testid="release-blocker"
                         >
                           <StatusDot status="waiting" className="mt-1" />
@@ -720,12 +787,24 @@ export function ReadyPage({ projectId, onProject }: ViewProps) {
   );
 }
 
+/**
+ * Each stage's label as its project's workflow names it (`project.workflow`); a stage the read
+ * doesn't know yet (still loading) shows nothing rather than its raw name.
+ */
+function useStageLabels(projectIds: string[]) {
+  const reads = useQueries({ queries: projectIds.map((id) => workflowQuery(id)) });
+  return (projectId: string, stage: string) =>
+    reads.find((r) => r.data?.projectId === projectId)?.data?.stages.find((s) => s.stage === stage)
+      ?.label ?? "";
+}
+
 // —— Planning ——————————————————————————————————————————————————————————————————————————————
 
 /** Items being shaped (spec 50 part C): their workflow's shaping stages run before release. */
 export function PlanningPage({ projectId, onProject }: ViewProps) {
-  const { orgId, board, projects, projectOf, loading } = useBoard();
+  const { orgId, board, projects, projectOf, loading } = useBoard(projectId);
   const items = itemsIn(board.data?.items ?? [], ["shaping"], { orgId, projectId });
+  const stageLabel = useStageLabels([...new Set(items.map((i) => i.projectId))]);
   return (
     <PageArea wide>
       <PageHeader
@@ -752,7 +831,9 @@ export function PlanningPage({ projectId, onProject }: ViewProps) {
                     {projectOf(i.projectId)?.name ?? "project"}
                   </td>
                 )}
-                <td className="py-2.5 pr-3.5 text-ink-3">{i.statusReason ?? i.stage}</td>
+                <td className="whitespace-nowrap py-2.5 pr-3.5 text-ink-3">
+                  {i.statusReason ?? stageLabel(i.projectId, i.stage)}
+                </td>
               </tr>
             ))}
           </tbody>

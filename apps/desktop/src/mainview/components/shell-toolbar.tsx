@@ -16,7 +16,7 @@ import {
 import { useEffect } from "react";
 import { type ItemRef, tabTitle } from "../lib/places.ts";
 import { workListsQuery } from "../lib/queries.ts";
-import { useSession } from "../lib/session.ts";
+import { useProjects, useSession } from "../lib/session.ts";
 import { shortcutLabel } from "../lib/shortcuts.ts";
 import { DRAG, NO_DRAG } from "../lib/title-bar.ts";
 import {
@@ -87,6 +87,8 @@ export function Toolbar({ onSearch }: { onSearch: () => void }) {
   const activeTab = useViewState((s) => s.activeTab);
   const sidebar = useViewState((s) => s.sidebar);
   const lookup = useItemLookup();
+  const projects = useProjects();
+  const projectName = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? null;
   const { newTab, close, activate } = useTabs();
   const canBack = useRouterState({ select: (s) => (s.location.state.__TSR_index ?? 0) > 0 });
 
@@ -144,7 +146,7 @@ export function Toolbar({ onSearch }: { onSearch: () => void }) {
               data-testid="tab"
             >
               {dot && <span className={cn("size-[7px] flex-none rounded-full", dot)} />}
-              <span className="truncate">{tabTitle(t.path, lookup)}</span>
+              <span className="truncate">{tabTitle(t.path, lookup, projectName)}</span>
               {(active || tabs.length > 1) && (
                 <button
                   type="button"

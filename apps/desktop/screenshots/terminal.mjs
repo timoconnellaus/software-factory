@@ -138,14 +138,6 @@ const SHOTS_AFTER = [
   { name: "build-watcher", path: "/work/wi_9", mode: "watch" },
   { name: "build-unavailable", path: "/work/wi_9", mode: "none", attachInstead: true },
   { name: "plan-focus", path: "/work/wi_12?tab=plan", keys: ["f"], type: "pwd\r" },
-  // The item side panel on the board (spec 41 slice 7): the terminal docks inside the panel.
-  {
-    name: "board-panel",
-    // The last hash param gets the page's own `?terminal=` glued on by the hash history: `end`
-    // takes it, so `item` stays clean.
-    path: "/work?view=active&project=prj_factory&item=wi_9&end=1",
-    type: "echo typed in the side panel\r",
-  },
 ];
 const only = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const SHOTS = process.argv.includes("--before")

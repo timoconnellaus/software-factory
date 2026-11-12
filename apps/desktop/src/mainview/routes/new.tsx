@@ -37,10 +37,10 @@ import { PRIORITIES, PRIORITY_LABEL, type Priority } from "../lib/backlog.ts";
 import { OpError, op } from "../lib/op.ts";
 import {
   boardsQuery,
-  configQuery,
   openPullsQuery,
   projectsQuery,
   routingQuery,
+  workflowQuery,
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { workLayout } from "./_work.tsx";
@@ -63,7 +63,7 @@ export const Route = createRoute({
     if (project) {
       await Promise.all([
         board,
-        queryClient.ensureQueryData(configQuery(project.id)).catch(() => null),
+        queryClient.ensureQueryData(workflowQuery(project.id)).catch(() => null),
         queryClient.ensureQueryData(routingQuery(project.id)).catch(() => null),
         queryClient.ensureQueryData(openPullsQuery(project.id)).catch(() => null),
       ]);
@@ -100,10 +100,9 @@ function NewWorkPage() {
   const eventId = useRef(crypto.randomUUID());
   const selected = projectId ?? defaultProject(projects.data ?? [], search.project)?.id;
   const routing = useQuery({ ...routingQuery(selected ?? ""), enabled: !!selected });
-  const config = useQuery({ ...configQuery(selected ?? ""), enabled: !!selected });
   const board = useQuery(boardsQuery(session.orgs.map((o) => o.id)));
   const project = projects.data?.find((p) => p.id === selected);
-  const workflow = (config.data?.current?.policy as { workflow?: string | null } | null)?.workflow;
+  const workflow = useQuery({ ...workflowQuery(selected ?? ""), enabled: !!selected });
   // What it can wait for: unfinished work in the project's org (any project).
   const waitable = (board.data?.items ?? []).filter((i) => i.orgId === project?.orgId);
   const canSend = !!selected && (body.trim().length > 0 || title.trim().length > 0) && !sending;
@@ -119,7 +118,7 @@ function NewWorkPage() {
         source: "app",
         eventId: eventId.current,
         // The backlog, or create and release in one step (ADR 0491).
-        state: next,
+        state: workflow.data?.workflow === null ? "backlog" : next,
         priority,
         ...(waitsFor !== "none" ? { waitsFor: [waitsFor] } : {}),
       });
@@ -191,7 +190,7 @@ function NewWorkPage() {
           data-testid="new-work-body"
         />
       </Field>
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] items-end gap-3">
+      <div className="flex flex-wrap items-end gap-3 [&>*]:min-w-[150px] [&>*]:flex-1">
         <Field htmlFor="new-project" label="Project">
           <Select
             value={selected ?? ""}
@@ -216,13 +215,16 @@ function NewWorkPage() {
             </SelectContent>
           </Select>
         </Field>
-        <div className="flex flex-col gap-[5px]">
+        <div className="flex min-w-fit! flex-col gap-[5px]">
           <span className="font-medium text-ink-3 text-xs">Workflow</span>
-          <span className="flex h-8 items-center gap-2 text-ink-3" data-testid="new-workflow">
-            <span className="truncate rounded-full bg-panel px-[7px] py-px font-medium text-[11px] text-ink-2 shadow-ring">
-              {config.isPending ? "…" : (workflow ?? "The skeleton")}
+          <span
+            className="flex h-8 items-center gap-2 whitespace-nowrap text-ink-3"
+            data-testid="new-workflow"
+          >
+            <span className="rounded-full bg-panel px-[7px] py-px font-medium text-[11px] text-ink-2 shadow-ring">
+              {workflow.isPending ? "…" : (workflow.data?.workflow?.label ?? "None")}
             </span>
-            <span className="truncate text-xs">set by the project</span>
+            <span className="text-xs">set by the project</span>
           </span>
         </div>
         <Field htmlFor="new-priority" label="Priority">
@@ -255,6 +257,19 @@ function NewWorkPage() {
           </Select>
         </Field>
       </div>
+      {selected && workflow.data && !workflow.data.workflow && (
+        <p className="m-0 flex items-start gap-1.5 text-ink-3 text-xs" data-testid="no-workflow">
+          <StatusDot status="waiting" className="mt-1" />
+          <span>
+            This project has no workflow yet: work can be captured but not released (
+            {workflow.data.unavailable}).{" "}
+            <Link to="/work" search={{ project: selected }} className="text-ink underline">
+              See the project
+            </Link>{" "}
+            for its config, where the workflow is set.
+          </span>
+        </p>
+      )}
       <StagedAttachments files={files} onChange={setFiles} />
       {projects.data?.length === 0 && (
         <p className="text-ink-muted">
@@ -280,12 +295,15 @@ function NewWorkPage() {
               title="Keep it in the backlog"
               sub="Nothing runs. Sort it and release it later."
             />
-            <NextChoice
-              value="queued"
-              chosen={next}
-              title="Release it straight away"
-              sub="For small, clear changes. The factory starts it when the project has room."
-            />
+            {/* A project with no workflow can't release (ADR 0492): only the backlog is offered. */}
+            {workflow.data?.workflow !== null && (
+              <NextChoice
+                value="queued"
+                chosen={next}
+                title="Release it straight away"
+                sub="For small, clear changes. The factory starts it when the project has room."
+              />
+            )}
           </RadioGroup>
           {next === "queued" && <RoutingPreview state={routing} />}
         </section>

@@ -4,6 +4,16 @@
 // the priority can change (ADR 0493), and the dialog says so.
 import { ago, capitalise } from "@software-factory/client/format";
 import type { WorkItemDetail } from "@software-factory/client/ops";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@software-factory/ui/components/alert-dialog";
 import { Button } from "@software-factory/ui/components/button";
 import {
   Dialog,
@@ -29,6 +39,7 @@ import { XIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
+  fieldNames,
   PRIORITIES,
   PRIORITY_LABEL,
   type Priority,
@@ -97,6 +108,8 @@ export function NextStep({ detail }: { detail: WorkItemDetail }) {
       if (r.plan?.behindBy) {
         toast(`Its plan was written ${r.plan.behindBy} commits ago on the default branch`);
       }
+      // Once more when the server's pull has run, so the page leaves Queued without a poll.
+      setTimeout(() => void refresh(), 2_500);
     }, "Couldn't release it");
 
   return (
@@ -227,15 +240,21 @@ export function BacklogDetails({ detail }: { detail: WorkItemDetail }) {
         <dt className="text-ink-3">Size</dt>
         <dd className="m-0">{item.size ? capitalise(item.size) : "Not sized yet"}</dd>
         <dt className="text-ink-3">Repository</dt>
-        <dd
-          className="m-0 truncate font-mono text-[12px]"
-          title={repository ? `${repository.owner}/${repository.name}` : undefined}
-        >
-          {repository ? `${repository.owner}/${repository.name}` : "none"}
+        {/* Breaks only after the slash, never inside a name. */}
+        <dd className="m-0 font-mono text-[12px]">
+          {repository ? (
+            <>
+              {repository.owner}/<wbr />
+              <span className="whitespace-nowrap">{repository.name}</span>
+            </>
+          ) : (
+            "none"
+          )}
         </dd>
         <dt className="text-ink-3">From</dt>
         <dd className="m-0">
-          {item.requesterUserId === me ? "You" : "Someone else"}, in {item.source}
+          {/* Another requester can't be named yet: no read gives their name. */}
+          {item.requesterUserId === me ? `You, in ${item.source}` : capitalise(item.source)}
         </dd>
         <dt className="text-ink-3">Waits for</dt>
         <dd className="m-0" data-testid="waits-for">
@@ -289,6 +308,8 @@ function EditItem({ detail, onClose }: { detail: WorkItemDetail; onClose: () => 
   const [repositoryId, setRepositoryId] = useState<string>(item.repositoryId ?? "none");
   const [waitsFor, setWaitsFor] = useState<string[]>((detail.waitsFor ?? []).map((w) => w.id));
   const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<{ saved: string[]; refused: string[] } | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   // What it may wait for: work in the same org that isn't finished (the board's items).
   const candidates = (board.data?.items ?? []).filter(
     (i) => i.orgId === item.orgId && i.id !== item.id && !waitsFor.includes(i.id),
@@ -297,44 +318,75 @@ function EditItem({ detail, onClose }: { detail: WorkItemDetail; onClose: () => 
     [...(detail.waitsFor ?? []), ...(board.data?.items ?? [])].map((i) => [i.id, i]),
   );
 
+  const changes = shaped
+    ? { ...(priority !== item.priority ? { priority } : {}) }
+    : {
+        ...(title.trim() !== item.title ? { title: title.trim() } : {}),
+        ...(body !== item.body ? { body } : {}),
+        ...(priority !== item.priority ? { priority } : {}),
+        ...(size !== (item.size ?? "none")
+          ? { size: size === "none" ? null : (size as (typeof SIZES)[number]) }
+          : {}),
+        ...(repoChangeable && repositoryId !== (item.repositoryId ?? "none")
+          ? { repositoryId: repositoryId === "none" ? null : repositoryId }
+          : {}),
+      };
+  const before = (detail.waitsFor ?? []).map((w) => w.id);
+  const unlinks = before.filter((x) => !waitsFor.includes(x));
+  const links = waitsFor.filter((x) => !before.includes(x));
+  const dirty = Object.keys(changes).length > 0 || unlinks.length > 0 || links.length > 0;
+  const numberOf = (id: string) => `#${known.get(id)?.number ?? "?"}`;
+
+  /**
+   * Saves in three steps (the fields, then the links removed, then those added), each its own
+   * operation, so one can be refused after another went through. The dialog then says exactly
+   * what was saved and what was refused and why, and stays open on the refused part: the item
+   * re-reads, so a second Save sends only what is still different.
+   */
   async function save() {
     setBusy(true);
-    try {
-      const changes = shaped
-        ? { ...(priority !== item.priority ? { priority } : {}) }
-        : {
-            ...(title.trim() !== item.title ? { title: title.trim() } : {}),
-            ...(body !== item.body ? { body } : {}),
-            ...(priority !== item.priority ? { priority } : {}),
-            ...(size !== (item.size ?? "none")
-              ? { size: size === "none" ? null : (size as (typeof SIZES)[number]) }
-              : {}),
-            ...(repoChangeable && repositoryId !== (item.repositoryId ?? "none")
-              ? { repositoryId: repositoryId === "none" ? null : repositoryId }
-              : {}),
-          };
-      if (Object.keys(changes).length) {
+    const saved: string[] = [];
+    const refusedParts: string[] = [];
+    const reason = (e: unknown) => (e instanceof OpError ? e.message : "couldn't save it");
+    if (Object.keys(changes).length) {
+      try {
         await op("workItem.update", { workItemId: item.id, ...changes });
+        saved.push(fieldNames(Object.keys(changes)));
+      } catch (e) {
+        refusedParts.push(`${fieldNames(Object.keys(changes))}: ${reason(e)}`);
       }
-      const before = (detail.waitsFor ?? []).map((w) => w.id);
-      for (const id of before.filter((x) => !waitsFor.includes(x))) {
+    }
+    for (const id of unlinks) {
+      try {
         await op("workItem.unlink", { workItemId: item.id, waitsFor: id });
+        saved.push(`no longer waits for ${numberOf(id)}`);
+      } catch (e) {
+        refusedParts.push(`stop waiting for ${numberOf(id)}: ${reason(e)}`);
       }
-      for (const id of waitsFor.filter((x) => !before.includes(x))) {
+    }
+    for (const id of links) {
+      try {
         await op("workItem.link", { workItemId: item.id, waitsFor: id });
+        saved.push(`waits for ${numberOf(id)}`);
+      } catch (e) {
+        refusedParts.push(`wait for ${numberOf(id)}: ${reason(e)}`);
       }
+    }
+    await refresh();
+    setBusy(false);
+    if (refusedParts.length === 0) {
       toast.success("Saved");
       onClose();
-    } catch (e) {
-      refused(e, "Couldn't save it");
-    } finally {
-      setBusy(false);
-      await refresh();
+      return;
     }
+    setOutcome({ saved, refused: refusedParts });
   }
 
+  /** Esc, a click outside or Cancel: ask first when there are edits not saved. */
+  const close = () => (dirty ? setConfirmDiscard(true) : onClose());
+
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
+    <Dialog open onOpenChange={(o) => !o && close()}>
       <DialogContent className="sm:max-w-[560px]" data-testid="edit-dialog">
         <DialogHeader>
           <DialogTitle>Edit #{item.number}</DialogTitle>
@@ -454,19 +506,48 @@ function EditItem({ detail, onClose }: { detail: WorkItemDetail; onClose: () => 
             </div>
           </Field>
         </div>
+        {outcome && (
+          <div
+            role="alert"
+            className="flex flex-col gap-1 rounded-[8px] bg-page px-3 py-2.5 text-xs"
+            data-testid="save-outcome"
+          >
+            {outcome.saved.length > 0 && (
+              <span className="text-ink-2">Saved: {outcome.saved.join("; ")}.</span>
+            )}
+            <span className="text-destructive">Not saved: {outcome.refused.join("; ")}.</span>
+            <span className="text-ink-3">Change it and save again, or close to leave it.</span>
+          </div>
+        )}
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={close}>
             Cancel
           </Button>
           <Button
-            disabled={busy || (!shaped && !title.trim())}
+            disabled={busy || !dirty || (!shaped && !title.trim())}
             onClick={save}
             data-testid="save-edit"
           >
-            Save
+            {busy ? "Saving…" : "Save"}
           </Button>
         </DialogFooter>
       </DialogContent>
+      <AlertDialog open={confirmDiscard} onOpenChange={setConfirmDiscard}>
+        <AlertDialogContent data-testid="discard-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard your changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The edits to #{item.number} that aren't saved are lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={onClose} data-testid="discard">
+              Discard
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
