@@ -39,6 +39,13 @@ a worktree and a branch; `release` never unregisters or deletes a checkout.
    A runner with `chat` (a stream-json session, ADR 0450) also sends `tool` with an `id`,
    `tool.result` (output ≤ 4,000), `turn` (outcome, time, token counts) and, after a takeover,
    `takeover` (the resume command); its `session.started` says `mode: "stream"`.
+   With the `terminal` capability and `adapter.openTerminal` (ADR 0440), also keep
+   `terminal(jobId, { fencingToken, waitMs })` open: when someone opens the run's web terminal it
+   answers `{ connect: { url } }`, the job relay's socket with a one-use ticket (60 s). Connect to
+   it outbound, open the bridge when the relay sends `open`, send output as binary frames (at most
+   32 KiB; drop while the socket buffers over 1 MiB and redraw once under 256 KiB) and `size`, apply
+   `input`, `resize` and `redraw`, and stop on `close`; send `ended` when the session ends. The
+   frames and limits are in `src/terminal.ts`.
 6. Read the stage result from `RESULT_FILE` (`.factory-result.json`, never committed), push the run
    branch, then `handback { branch, headSha, result }` and `release`.
 7. Any `409` with code `fenced` or `killed`: stop the session, release the workspace, drop the job.

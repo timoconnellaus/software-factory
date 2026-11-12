@@ -68,6 +68,7 @@ import {
   streamEvents,
   takeOverStream,
 } from "./stream.ts";
+import { openTmuxTerminal } from "./terminal.ts";
 import {
   attachCommand,
   type PaneState,
@@ -204,6 +205,7 @@ export const DEFAULT_CAPABILITIES: Capability[] = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "terminal",
 ];
 
 /** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
@@ -284,7 +286,10 @@ export function createLocalRunner(
   const streamMode = config.session === "stream-json";
   // `chat` follows the session mode, whatever else is configured.
   const capabilities = [
-    ...(config.capabilities ?? DEFAULT_CAPABILITIES).filter((c) => c !== "chat"),
+    // A stream session has no terminal to share (ADR 0440): its takeover is by resume.
+    ...(config.capabilities ?? DEFAULT_CAPABILITIES).filter(
+      (c) => c !== "chat" && !(streamMode && c === "terminal"),
+    ),
     ...(streamMode ? (["chat"] as Capability[]) : []),
   ];
   /** Live stream sessions, for capacity (tmux counts its own sessions). */
@@ -976,6 +981,23 @@ export function createLocalRunner(
     async takeover(session) {
       if (!session.stream) throw new Error("attach to the tmux session to take it over");
       await takeOverStream(session);
+    },
+
+    /**
+     * The web terminal (ADR 0440): a tmux control-mode client on the job's session, started while
+     * someone watches from the dashboard and closed when they leave. A stream session (ADR 0450)
+     * has no terminal: it is taken over by resume instead.
+     */
+    openTerminal(session, options) {
+      if (session.stream) {
+        return Promise.reject(new Error("a stream-json session has no terminal: take it over"));
+      }
+      return openTmuxTerminal({
+        ...options,
+        session: session.name,
+        socket: tmux.socket,
+        ...(config.tmux?.bin ? { bin: config.tmux.bin } : {}),
+      });
     },
   };
 }

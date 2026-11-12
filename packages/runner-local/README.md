@@ -47,6 +47,13 @@ involved. The runner host (`local/runner-host`) wires it; nothing in the core im
 - **steer** (capability `steer`, ADR 0400): the message as one sanitised line (`steerText`), typed with
   `send-keys -l` in pieces of 200 characters (a long paste arrives truncated), then `Enter`. Claude
   Code queues a message typed while it works.
+- **openTerminal** (capability `terminal`, ADR 0440): the web terminal's bridge
+  (`src/terminal.ts`), a tmux control-mode client on the job's session (`tmux -L software-factory
+  -C attach -t =sf-<jobId>`, plain pipes, no PTY or native module). `%output` for the job's pane is
+  decoded to bytes; input is `send-keys -H` (hex, so nothing typed is a tmux command); the size is
+  `refresh-client -C <cols>x<rows>`, only when the runner's owner asks (a watch-only bridge leaves
+  the pane's size alone); a redraw is `capture-pane -p -e` and the cursor, read in one command so it
+  stays in order with the output. Closing it ends only the client, never the session.
 - **release** (safe to call twice): kills the session, runs `git worktree remove --force` (only ever
   under the worktrees dir), deletes the local run branch (run branches only), and removes the run and
   attachments dirs. It never touches the checkout otherwise.

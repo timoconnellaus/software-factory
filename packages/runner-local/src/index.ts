@@ -7,4 +7,5 @@ export * from "./container/index.ts";
 export * from "./exec.ts";
 export * from "./reap.ts";
 export * from "./stream.ts";
+export * from "./terminal.ts";
 export * from "./tmux.ts";

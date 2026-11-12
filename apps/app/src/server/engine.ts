@@ -18,6 +18,20 @@ export interface EngineRpc {
     workItemId: string,
     options: { actor: Actor; origin: Origin },
   ): Promise<{ ok: true; stream: ReadableStream<Uint8Array> } | { ok: false; error: Refusal }>;
+  /**
+   * Opens a run's web terminal for a person (spec 35, ADR 0440): `run.terminal.attach`, then a
+   * one-use viewer socket path on the job's relay, opened with `fetch`.
+   */
+  terminalAttach?(
+    workItemId: string,
+    runId: string,
+    options: { actor: Actor; origin: Origin },
+  ): Promise<
+    | { ok: true; jobId: string; mode: "type" | "watch"; attachId: string; path: string }
+    | { ok: false; error: Refusal }
+  >;
+  /** The binding's fetch: only the web terminal's viewer socket answers. */
+  fetch?(request: Request): Promise<Response>;
 }
 
 /** How long one operation took: the whole RPC, and the part spent inside the engine. */

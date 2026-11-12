@@ -74,6 +74,7 @@ function view(
     steers: [steer()],
     steer: { allowed: true, reason: null, max: 2000 },
     takeover: { allowed: true, reason: null, requested: false },
+    terminal: { allowed: false, mode: null, reason: "A stream session has no terminal." },
     ...over,
   };
 }

@@ -67,7 +67,8 @@ replacement: tmux stays for people who attach.
 ## Consequences
 - Two session modes behind one adapter; the dashboard shows a chat for one and the terminal for
   the other, from the same events. Moving a runner between them is a config change and a restart.
-- A stream session has no screen: the Terminal view shows only stderr and stray stdout. A person
+- A stream session has no screen: the Terminal view shows only stderr and stray stdout, and a
+  stream runner doesn't declare `terminal`, so the web terminal (ADR 0440) isn't offered. A person
   who wants a terminal takes the session over.
 - The runner host's process owns the stream session's stdio: a host that dies takes the session's
   stdin with it, and Claude exits after its turn; the job is reaped as any other.

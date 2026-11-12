@@ -127,6 +127,8 @@ describe("runner-local stream-json sessions", { timeout: 30_000 }, () => {
   it("declares chat in stream mode, and not in tmux", async () => {
     const w = await world();
     expect((await w.runner.manifest()).capabilities).toContain("chat");
+    // No tmux pane to bridge: a stream session is taken over by resume, not the web terminal.
+    expect((await w.runner.manifest()).capabilities).not.toContain("terminal");
     const tmuxRunner = createLocalRunner({ ...w.config, session: "tmux" });
     expect((await tmuxRunner.manifest()).capabilities).not.toContain("chat");
     // Even when `chat` is configured by hand, it follows the session mode.
