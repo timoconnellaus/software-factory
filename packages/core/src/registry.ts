@@ -3,6 +3,7 @@
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
 import * as adjudicator from "./operations/adjudicator.ts";
+import * as adopt from "./operations/adopt.ts";
 import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
@@ -44,6 +45,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   projects.repositoryUpdate,
   backlog.workItemRelease,
   backlog.workItemShape,
+  backlog.workItemReleaseChoice,
   backlog.workItemShaped,
   backlog.workItemMove,
   backlog.workItemUpdate,
@@ -187,6 +189,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   mergeQueue.mergeQueueHold,
   verify.reviewPacketRecord,
   verify.ciRead,
+  verify.checksForHead,
   verify.verifyRefresh,
   verify.prAutoMerge,
   verify.projectCheckGitHub,
@@ -233,6 +236,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   workflows.agentSave,
   workflows.orgConfigGet,
   workflows.orgConfigRollback,
+  adopt.orgConfigAdoptProjectWorkflows,
   workflows.stageTypeList,
   reconcile.reconcileReport,
   reconcile.reconcileStreak,

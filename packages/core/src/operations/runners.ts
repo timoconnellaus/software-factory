@@ -13,6 +13,7 @@ import {
   capabilityManifestSchema,
   capacityPausedSchema,
   capacitySchema,
+  executedCheckSchema,
   JOB_STAGES,
   type Job,
   MODEL_ROLES,
@@ -21,6 +22,7 @@ import {
   type Pool,
   RUNNER_COMPAT,
   type RunnerAccounts,
+  redactSecrets,
   runBranch,
   runnerAccountsSchema,
   runnerEventSchema,
@@ -41,9 +43,10 @@ import {
 } from "../operation.ts";
 import { planningRunEnded, USER_EVENTS } from "../planning.ts";
 import { policyImpact } from "../policy/impact.ts";
-import type { ProjectPolicy } from "../policy/project-policy.ts";
+import { declaredChecks, type ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
+import { hostChecksOn } from "../verify/proof.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
 import {
@@ -526,9 +529,17 @@ export const jobEnqueue = defineOperation({
   output: z.object({ jobId: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const requires = [
+    const requires: Capability[] = [
       ...new Set([...(ctx.scope.policy?.requires[input.stage] ?? []), ...input.agentRequires]),
     ];
+    // A job that will carry the project's checks goes only to a runner that runs them (ADR 0501,
+    // the compatibility rule of ADR 0520): an older one would hand back with none.
+    if (
+      jobChecks(ctx.scope.policy ?? null, w, input.stage, input.context).checks &&
+      !requires.includes("checks")
+    ) {
+      requires.push("checks");
+    }
     const id = newId("job");
     ctx.write(
       ctx.db.insertInto("core_jobs").values({
@@ -557,6 +568,27 @@ export const jobEnqueue = defineOperation({
     return { jobId: id };
   },
 });
+
+/** The wait reason of a build that carries checks when no online runner declares `checks`. */
+export const NO_CHECKS_RUNNER = "no runner that can run this project's checks is online";
+
+/**
+ * Whether any online runner declares `checks` (fifth review). Reads core_runners, which is sized by
+ * configuration (a handful of rows), only when a claim is refused for missing `checks`.
+ */
+async function checksRunnerOnline(ctx: Pick<HandlerContext, "db" | "now">): Promise<boolean> {
+  const since = new Date(Date.parse(ctx.now) - RUNNER_OFFLINE_MS).toISOString();
+  const rows = await ctx.db
+    .selectFrom("core_runners")
+    .select("manifest")
+    .where("revoked_at", "is", null)
+    .where("last_seen_at", ">=", since)
+    .limit(100)
+    .execute();
+  return rows.some((r) =>
+    (parseJson<CapabilityManifest | null>(r.manifest, null)?.capabilities ?? []).includes("checks"),
+  );
+}
 
 /**
  * What job.claim's candidate query already read for a job (AGENTS.md "Cloudflare cost", rule 8):
@@ -634,7 +666,26 @@ export async function placementRefusal(
     harness: { id: job.harness } as Job["harness"],
     requires: job.requires,
   });
-  if (!fit.ok) return { reason: fit.reason };
+  if (!fit.ok) {
+    // Fifth review (ADR 0501): a build that carries checks waits on a runner that declares
+    // `checks`. When none online does, the job says why rather than nothing.
+    if (
+      job.requires.includes("checks") &&
+      !manifest.capabilities.includes("checks") &&
+      canRun(
+        { ...manifest, capabilities: [...manifest.capabilities, "checks"] },
+        {
+          harness: { id: job.harness } as Job["harness"],
+          requires: job.requires,
+        },
+      ).ok &&
+      // Once per claim, not per candidate (rule 8).
+      !(await memoised(facts, "checksRunnerOnline", () => checksRunnerOnline(ctx)))
+    ) {
+      return { reason: fit.reason, waitReason: NO_CHECKS_RUNNER };
+    }
+    return { reason: fit.reason };
+  }
   if (facts && !facts.shared) {
     return { reason: "runner is not the requester's and is not shared into this project" };
   }
@@ -990,6 +1041,8 @@ async function buildJob(
   item: WorkItemRow,
   project: ProjectRow,
   leaseExpiresAt: string,
+  /** The claiming runner's capabilities: checks go only to one that declares `checks`. */
+  runnerCaps: readonly string[],
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
   // The item's repository (ADR 0490); placementRefusal already checked there is one.
@@ -1038,8 +1091,31 @@ async function buildJob(
     ...(job.stage === "planning" && planning ? { planning } : {}),
     requires: parseJson<Capability[]>(job.requires, []),
     limits: { sessionTimeoutMs: job.session_timeout_ms },
+    ...(runnerCaps.includes("checks") ? jobChecks(policy, item, job.stage, context) : {}),
     lease: { fencingToken: run.fencing_token, expiresAt: leaseExpiresAt },
   };
+}
+
+/**
+ * The checks the host runs for this job (ADR 0501), from the project's config version, never the
+ * run's branch: after every build, and before the review of a head no build ran on (an attached
+ * PR's; and, spec 53 PR c, a head a clean merge of main made, which the Workflow marks
+ * `runChecks`). A factory item's other verifies use the build's results for the same head.
+ */
+function jobChecks(
+  policy: ProjectPolicy | null,
+  item: Pick<WorkItemRow, "kind" | "workflow" | "workflow_version">,
+  stage: string,
+  context: Record<string, unknown> = {},
+): { checks?: Job["checks"] } {
+  // An item whose Workflow started before v8 has no checks step: its jobs carry none.
+  if (!policy || !hostChecksOn(item)) return {};
+  const unbuilt = item.kind === "attached" || context.runChecks === true;
+  if (stage !== "build" && !(stage === "verify" && unbuilt)) return {};
+  const commands = declaredChecks(policy, item.workflow);
+  return commands.length
+    ? { checks: { commands, fixRounds: stage === "build" ? policy.retryLimit : 0 } }
+    : {};
 }
 
 export const jobClaim = defineOperation({
@@ -1096,7 +1172,17 @@ export const jobClaim = defineOperation({
         .select("expires_at")
         .where("work_item_id", "=", item.id)
         .executeTakeFirst();
-      return { job: await buildJob(ctx, prior, run, item, project, lease?.expires_at ?? ctx.now) };
+      return {
+        job: await buildJob(
+          ctx,
+          prior,
+          run,
+          item,
+          project,
+          lease?.expires_at ?? ctx.now,
+          input.manifest.capabilities,
+        ),
+      };
     }
 
     // The claim isn't stored by the channel, so an old empty one could be replayed within the
@@ -1289,6 +1375,7 @@ export const jobClaim = defineOperation({
           itemRow,
           projectRow,
           expiresAt,
+          input.manifest.capabilities,
         ),
       };
     }
@@ -1572,10 +1659,13 @@ export function finishRun(
   });
 }
 
+/** How long a work item keeps a check result (ADR 0501): enough for its verify and merge. */
+const CHECK_RESULTS_DAYS = 30;
+
 export const runHandBack = defineOperation({
   name: "run.handBack",
   description:
-    "A run hands back: its outcome, summary, artifacts, the branch it pushed and its head, and the stage's structured result. The branch must be the run's own branch, and for a build the pushed head is checked on GitHub; otherwise the run fails. The Workflow continues with the result.",
+    "A run hands back: its outcome, summary, artifacts, the branch it pushed and its head, the stage's structured result, and the project's checks as the runner host ran them (stored against the SHA each ran on, ADR 0501). The branch must be the run's own branch, and for a build the pushed head is checked on GitHub; otherwise the run fails. The Workflow continues with the result.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -1589,6 +1679,8 @@ export const runHandBack = defineOperation({
     branch: z.string(),
     headSha: sha.optional(),
     result: z.unknown().optional(),
+    /** The job's checks as the host ran them (ADR 0501); each is stored against its own SHA. */
+    checks: z.array(executedCheckSchema).max(60).default([]),
   }),
   output: z.object({ accepted: z.boolean(), reason: z.string().nullable() }),
   async handler(input, ctx) {
@@ -1620,6 +1712,124 @@ export const runHandBack = defineOperation({
     }
     const result = input.result === undefined ? null : JSON.stringify(input.result);
     if (result && result.length > MAX_RESULT) return fail("result too large");
+    // The factory's own check results (ADR 0501). They're only evidence for the run's own head: a
+    // completed run's last round must have run on it, and a result on any other SHA is kept only when
+    // that SHA is an ancestor of the head (GitHub decides). One that isn't (a fix round amended or
+    // rebased, so the commit was never pushed) is dropped, never a reason to fail the run. A run that
+    // failed keeps its own reason: its results are stored where they can be placed, or dropped.
+    let checks = input.checks.map((c) => ({ ...c, logTail: redactSecrets(c.logTail) }));
+    const dropped: string[] = [];
+    // Only the checks this job was given (third review, 5): a result under any other name is
+    // refused, never stored where a criterion could link to it.
+    const declaredNames = new Set(
+      declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name.toLowerCase()),
+    );
+    const undeclared = checks.filter((c) => !declaredNames.has(c.name.toLowerCase()));
+    if (undeclared.length > 0) {
+      dropped.push(
+        ...undeclared.map((c) => `${c.name}@${c.headSha.slice(0, 7)} (not a declared check)`),
+      );
+      checks = checks.filter((c) => declaredNames.has(c.name.toLowerCase()));
+    }
+    if (checks.length > 0) {
+      const repo = await repoRef(ctx, requireRepository(ctx));
+      // A build's head is the one it pushed (checked on GitHub above); a verify job's is the head
+      // the Workflow asked it to verify (its context), never what the runner says.
+      const jobRow = await ctx.db
+        .selectFrom("core_jobs")
+        .select("context")
+        .where("id", "=", run.job_id)
+        .executeTakeFirst();
+      const asked = parseJson<{ headSha?: unknown }>(jobRow?.context, {}).headSha;
+      const head =
+        run.stage === "build" ? (input.headSha ?? null) : typeof asked === "string" ? asked : null;
+      const completed = input.outcome === "completed";
+      if (!head) {
+        // No head to place them on (a failed build that pushed nothing): nothing is stored.
+        dropped.push(...checks.map((c) => `${c.name}@${c.headSha.slice(0, 7)}`));
+        checks = [];
+      } else {
+        const last = Math.max(...checks.map((c) => c.round));
+        const off = checks.find((c) => c.round === last && c.headSha !== head);
+        if (off && completed) {
+          return fail(
+            `check ${off.name} ran on ${off.headSha.slice(0, 7)}, not the run's head ${head.slice(0, 7)}`,
+          );
+        }
+        const placed = new Set([head]);
+        for (const other of new Set(
+          checks.filter((c) => c.headSha !== head).map((c) => c.headSha),
+        )) {
+          const rel = await ctx.services.github.compareCommits(repo, other, head).catch(() => null);
+          if (rel?.behindBy === 0) placed.add(other);
+        }
+        dropped.push(
+          ...checks
+            .filter((c) => !placed.has(c.headSha))
+            .map((c) => `${c.name}@${c.headSha.slice(0, 7)}`),
+        );
+        checks = checks.filter((c) => placed.has(c.headSha));
+      }
+    }
+    // Whatever the outcome: a failure is evidence too. A later round on the same SHA replaces a
+    // check's row.
+    for (const c of checks) {
+      const row = {
+        run_id: run.id,
+        command: c.command,
+        exit_code: c.exitCode,
+        timed_out: c.timedOut ? 1 : 0,
+        duration_ms: c.durationMs,
+        log_tail: c.logTail,
+        round: c.round,
+        created_at: ctx.now,
+        // Not run (third review, B3): stored as such, never as a failure or a pass.
+        not_run: c.notRun ?? null,
+        // Where it ran (fourth review): the gate names the weaker sandbox.
+        isolation: c.notRun ? null : (c.isolation ?? null),
+      };
+      ctx.write(
+        ctx.db
+          .insertInto("core_check_results")
+          .values({ work_item_id: w.id, head_sha: c.headSha, name: c.name, ...row })
+          .onConflict((oc) => oc.columns(["work_item_id", "head_sha", "name"]).doUpdateSet(row)),
+      );
+    }
+    // Pruning (Cloudflare cost rule): results of heads the item replaced more than
+    // CHECK_RESULTS_DAYS ago go when it hands back again (on the primary key's prefix); never the
+    // item's current head, the merge gate's evidence. Finished items: the hourly prune
+    // (`pruneCheckResults`, apps/engine).
+    if (checks.length) {
+      const cutoff = new Date(Date.parse(ctx.now) - CHECK_RESULTS_DAYS * 86_400_000).toISOString();
+      const keep = [
+        ...new Set([...checks.map((c) => c.headSha), ...(w.head_sha ? [w.head_sha] : [])]),
+      ];
+      ctx.write(
+        ctx.db
+          .deleteFrom("core_check_results")
+          .where("work_item_id", "=", w.id)
+          .where("created_at", "<", cutoff)
+          .where("head_sha", "not in", keep),
+      );
+    }
+    if (checks.length || dropped.length) {
+      ctx.change({
+        entity: "check_results",
+        id: run.id,
+        after: {
+          // Results on a commit that isn't on the head's history: not stored (ADR 0501).
+          ...(dropped.length ? { dropped } : {}),
+          checks: checks.map((c) => ({
+            name: c.name,
+            headSha: c.headSha,
+            exitCode: c.exitCode,
+            timedOut: c.timedOut,
+            round: c.round,
+            ...(c.notRun ? { notRun: c.notRun } : {}),
+          })),
+        },
+      });
+    }
     const ok = input.outcome === "completed";
     finishRun(ctx, run, w.workflow_id, ok ? "handed_back" : "failed", input.outcome, {
       summary: input.summary ?? null,

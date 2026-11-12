@@ -464,6 +464,8 @@ export const mergeQueueList = defineOperation({
   name: "mergeQueue.list",
   description:
     "A project's merge queue (ADR 0330), head first: each approved work item waiting to land, with its number, title, the head the queue has for it and when it entered.",
+  // Polled: reads nothing an org workflow decides (spec 52 PR (d), cost).
+  skipsOrgWorkflow: true,
   risk: "read",
   actors: ["agent", "human"],
   permission: "member",

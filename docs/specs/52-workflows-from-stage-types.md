@@ -400,7 +400,7 @@ current (ADR 0370 §2). The **floors** are F-rules: no setting, template or agen
   gate's `autoApprove` is on and `autoApproveVerdict()` passed on that digest (ADR 0515), or a
   person's Preview approval on that digest when Publish follows the Preview directly (Q2), or the
   adjudicator's Preview approval under the same condition only when the Publish gate's `autoApprove`
-  is on and its conditions hold for that digest (Q2 × Q12, (working answer, owner to confirm)). No other actor's decision counts. `autoApprove` on a `publish` (social) or `self-modify` gate is refused.
+  is on and its conditions hold for that digest (Q2 × Q12, (decided by the owner, 2026-11-12)). No other actor's decision counts. `autoApprove` on a `publish` (social) or `self-modify` gate is refused.
 - **F7** No `when` on a stage whose gate is `required`, or whose type is `irreversible`. A
   conditional gate's condition lives in its typed setting, where the impact check reads it.
 - **F8** **Nothing reaches a default branch except through checks.** A `publish` stage whose
@@ -626,7 +626,7 @@ export interface EvidenceItem {
   them, no new evidence since. Publish then records the Preview's decision as its own and acts. Any
   change (a re-render, a stage between them) needs Publish's own decision. An approval by the
   adjudicator (Q12) carries over only in a workflow whose Publish gate has `autoApprove` on and whose
-  conditions hold for that digest; otherwise Publish asks a person (working answer, owner to confirm). Since `autoApprove` is
+  conditions hold for that digest; otherwise Publish asks a person (decided by the owner, 2026-11-12). Since `autoApprove` is
   refused on a `post` action (F6), an adjudicator's Preview approval never publishes a post.
 - **Dark factory mode (ADR 0515)** decides the merge gate's packet as the `auto-approve` actor when
   every condition holds for the head SHA; the decision records the facts it checked.
@@ -666,7 +666,7 @@ Every org sees them under Workflows, read-only, with **Tighten**: an org admin m
 only tightens (add a check or decision stage, narrow a decider, require more evidence). A save whose
 impact has any `loosens` change is refused outright (`invalid_input`), not sent for approval; an
 org's tightened copy keeps the built-in's id with an org version. **"Never loosen" is measured
-against the shipped built-in**, not the org's last version (working answer, owner to confirm): an org may undo its own tightening
+against the shipped built-in**, not the org's last version (decided by the owner, 2026-11-12): an org may undo its own tightening
 back to the shipped definition, and that undo is a loosening against the org's version, so it is a
 `self-modify` save an org admin approves. A save looser than the shipped built-in is refused.
 
@@ -837,8 +837,11 @@ and after.
 - **Release takes the current version (Q4)** when the item's shaping stages are unchanged in it (same
   ids, types and settings, in the same order). Otherwise release doesn't guess: the item is
   **flagged** on its card and in the inbox ("planned under v3; the shaping stages changed in v5"),
-  and the person releasing it chooses to release it under its pinned version or send it back to
-  shaping under the current one. `workItem.release` refuses without that choice.
+  and the person releasing it chooses to shape it again under the current workflow, or to accept
+  the shaping already done and deliver it under the current workflow (amended 2026-11-13 from the
+  owner's answer: delivery always runs on the current version, so no one can skip a tightening by
+  releasing under an older one). `workItem.release` doesn't release it without that choice; an
+  agent's release leaves it flagged. Only a person chooses.
 - **Stage-type code**: a type's `version` changes only when its persisted step state changes
   shape. Each stage entry records the version it started on; the registry keeps old versions'
   `next()` until `core_item_stages` has none open, then deletes them. Prompt and logic changes that
@@ -1122,7 +1125,7 @@ The owner's answers to Q11 and Q20–Q23, and their confirmation afterwards: aut
      secrets and env files, `.github/`, `.factory/`, lock files without a manifest change) or the
      workflow's `riskPaths`, and not a change to the factory itself: no path in the built-in,
      non-removable `SELF_MODIFY_PATHS` (`.factory/` and the policy, gate, registry, operation,
-     stage and workflow code, `AGENTS.md`, `docs/adr/`) (working answer, owner to confirm). It applies in every workflow on every
+     stage and workflow code, `AGENTS.md`, `docs/adr/`) (decided by the owner, 2026-11-12). It applies in every workflow on every
      repository; the workflow's `riskPaths` only adds to it.
   Anything else, or a fact that can't be read, goes to a person as today; the card says which
   condition sent it.
@@ -1140,8 +1143,8 @@ The owner's answers to Q11 and Q20–Q23, and their confirmation afterwards: aut
   (a system-written tightening) and puts a card in the inbox for the project's approvers and the org's admins, showing
   what went wrong and the merges since the last green. The shared workflow is never edited; other
   projects on it carry on. Lifting the hold is a loosening: **an org admin** lifts it and an org admin
-  approves it (Q6; working answer, owner to confirm); a project approver who isn't an org admin sees the card but can't lift it.
-- **Sampling doesn't hold merges** (working answer, owner to confirm). ADR 0374's "every fifth approval to a person" does not
+  approves it (Q6; decided by the owner, 2026-11-12); a project approver who isn't an org admin sees the card but can't lift it.
+- **Sampling doesn't hold merges** (decided by the owner, 2026-11-12). ADR 0374's "every fifth approval to a person" does not
   hold a merge when `autoApprove` is on: the sampled merge is auto-approved like the rest and also
   goes to a person as a **review-after-merge** inbox item. The verdict feeds the adjudicator's
   precision; "this should not have merged" sets the per-project hold like a revert.
@@ -1203,6 +1206,74 @@ screen needs).
    no approval. (d) moves those steps onto the org workflow, where `workflowImpact` classifies them,
    and makes the project config's remaining step and agent-instruction changes loosen the same way:
    a test saves "pass everything" into a slot step and into its agent and expects `self-modify`.
+   **As built so far:** (d1) closes that route (#120). (d2) lets a project name an org workflow by
+   id (`workflow: "wf_…"`, or `wf_software`) with `workflowOverrides` (`overridable` per type:
+   `requiredFrom`, `retryLimit`, `sections`, `requiredChecks`); `config.save` refuses an id the org
+   doesn't have or an override a type doesn't list, and classifies an override or a switch by
+   comparing the definitions (`configImpact`): one that loosens against the org's value is
+   `self-modify`. Until the switch-over, today's replayed Workflow runs it: `effectivePolicy` turns
+   the org workflow (with the overrides) back into the slot workflow, agents and settings the engine
+   already reads, so no Workflow version is needed, and a workflow it can't run as written
+   (`runsOnToday`: anything but Software's stages in order with checks and decisions in its slots,
+   or a setting the engine would ignore) is refused at save and fails closed at run time. An item
+   pins `org_config_version` (migration 0282) when shaping starts and again at the pull, beside
+   `policy_sha`. After review: a save stores only the overrides that differ from the org's value,
+   and at resolve time the stricter of the org's value and the override applies (`requiredFrom`: the
+   smaller; `requiredChecks` and `sections`: both), unless an org admin approved that exact looser
+   value for the org version being resolved (`core_override_approvals`, migration 0282, written only
+   when an org admin approves a pending action whose decider is `org-admin`, and only for the looser
+   overrides that change itself brings or changes, never one it merely keeps; never read from a config document or an imported file, whose
+   `workflowOverrideApprovals` field is dropped). A new org version carries an approval only where
+   it leaves that setting's value unchanged; where the org moved it, the approval lapses, the
+   stricter applies, and the org's admins are notified (`workflow.overrideLapsed`). An override the
+   org's new version makes looser (it was as strict or stricter) has no approval: the stricter
+   applies, and the org's admins are told it needs an org admin's approval or removal
+   (`workflow.overrideNeedsApproval`). A loosening of the org workflow (an override, or a switch that drops a check) is
+   decided by an org admin: the pending action carries `decider = 'org-admin'` (migration 0282) and
+   `approval.decide` asks for one. A judging stage is compared by what its agent is (role, tier,
+   instructions, requirements), not its name. An org change that would leave a project unable to
+   run (archiving its workflow, a save `runsOnToday` refuses, a rollback) is refused, naming the
+   projects. A slot workflow already named like an org id (`wf_x`) stays a slot workflow; only new
+   ones may not take such a name. The org config is parsed once per isolate and version, and polled
+   reads that use nothing it decides (`skipsOrgWorkflow`) don't resolve it.
+   (d3) builds Q4 as the owner answered it: delivery always runs on the org's current version (the
+   pull pins it). The version an item was shaped under decides only whether its finished shaping
+   still counts: when the current version's shaping stages are the same (ids, types, settings with
+   defaults, conditions, agents, in order), release proceeds; when they changed, release doesn't
+   guess and doesn't release. It flags the item: `core_work_items.release_flag` (migration 0285, the
+   shape of `needs_info`) with the reason and both versions, and `release_flag_user_id`, the person
+   who chooses (the one who released it; for an agent's release, the requester, else the first
+   approver), who is notified. An agent's release leaves the item flagged with the reason rather
+   than failing. The flag shows on the board's card (Ready: "choose in the Inbox") and in that
+   person's Inbox (`inbox.releaseFlags`, read by the partial index on `release_flag_user_id`) with the
+   two choices, `workItem.releaseChoice` (a person only: browser or desktop, never a CLI or MCP
+   token): `reshape` shapes it again under the current workflow (the waiting Workflow instance is
+   terminated and a new instance, `<item>_r…`, runs the current shaping stages), and `accept` records
+   that the shaping done counts under the current version and releases it. Either way it is
+   delivered under the current workflow. The check runs again at the pull, against the version
+   delivery will run on, and the start is guarded on the org still being at that version: an item
+   released under v2 whose shaping changed in v3 before it started goes back to Ready, flagged. And
+   `accept` refuses once the org has saved past the version the flag named, flagging the item again
+   against the current version so the person sees the new difference. (d4) The shadow pass compares
+   an item on an org workflow with the org workflow it pinned (`org_config_version`, resolved with
+   the project's overrides and that version's approvals by `effectivePolicy`); before, such an item
+   had no comparable definition.
+   `orgConfig.adoptProjectWorkflows` (an org admin, from the app; `dryRun` reports what it
+   would write) moves every project still on its own slot workflow, or the skeleton alone, onto an
+   org workflow: one per distinct compiled workflow (identical ones shared; a different one under a
+   taken name gets the project's slug), the agents its stages hand to added to the org's (a
+   same-named, different agent gets the project's slug), the overridable settings at Software's
+   values in the org workflow and each project's own values as its overrides, its looser ones
+   approved by the run for the version it writes. A project whose move doesn't classify neutral is
+   left as it is, with the reason, and so is one whose new org workflow would loosen against the
+   floor (a conditional check) or whose workflow declares its own checks; the others still move. The
+   run refuses any other org change that would loosen. At most 25 projects move a run (one D1 batch
+   of at most 25 × 8 statements plus the org version's), guarded on every base version it read; the
+   rest are listed and move in the next run. A project on an org workflow sees only the org agents
+   its workflow's stages name, so one project's agent never becomes another's default. A project's
+   other, unused slot workflows and its agents stay in its config (deviation from "removed": removing
+   them would itself classify as loosening). Still to come in (d): the tightening re-pin at the next
+   boundary (Q3).
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the
@@ -1262,7 +1333,7 @@ sections above were rewritten.
 | 23 | Does it switch itself off when something goes wrong? | Yes | The per-project hold; ADR 0515 |
 
 ### Known gaps
-- **A judging agent's instructions are neutral in a project's config, until (d).** On main,
+- **Closed by (d1), #120:** a judging agent's instructions were neutral in a project's config. On main,
   `config.save` by any project member classes a change to slot steps and to agent instructions as
   neutral (`policyImpact`'s `workflows` and `agents` branches). An agent judging a slot `work` step
   can be told to pass everything with no approval. Org workflows (b) don't have this gap
@@ -1270,24 +1341,25 @@ sections above were rewritten.
   closes it, as the build plan says.
 
 ### Flagged for the coordinator
-Places where the answers needed an interpretation, or where they touch each other:
-- **Q2 × Q12** (working answer, owner to confirm). An adjudicator's Preview approval plus "one approval covers Publish" would
+Places where the answers needed an interpretation, or where they touch each other. The five working
+answers below were confirmed by the owner as written on 2026-11-12, and are decided.
+- **Q2 × Q12** (decided by the owner, 2026-11-12). An adjudicator's Preview approval plus "one approval covers Publish" would
   publish with no person. It carries over only where Publish's `autoApprove` is on and its
   conditions hold; otherwise only a person's Preview approval does.
 - **Q6, self-approval.** "Org admins edit and approve" with no second person means one admin can
   turn dark factory mode on alone (today's pending actions don't forbid approving your own). Fine
   for a one-person org; an org floor could require a different admin later.
-- **Q20 and the hold** (working answer, owner to confirm). The setting is per workflow; the switch-off is a per-project hold in
+- **Q20 and the hold** (decided by the owner, 2026-11-12). The setting is per workflow; the switch-off is a per-project hold in
   the project's config (`autoApproveHold`), written by the system as a tightening. Lifting it is a
   loosening: an org admin lifts it and approves it (Q6), the same as turning the mode on.
-- **The adjudicator's "every fifth approval to a person"** (working answer, owner to confirm). Holding one eligible merge in five
+- **The adjudicator's "every fifth approval to a person"** (decided by the owner, 2026-11-12). Holding one eligible merge in five
   contradicts "just auto approving merges", so with `autoApprove` on the sampled merge is not held:
   it merges and a person reviews it afterwards (review-after-merge); a bad one trips the hold.
-- **"Changes to the factory itself"** (working answer, owner to confirm). Read as factory config (`self-modify`) and a built-in,
+- **"Changes to the factory itself"** (decided by the owner, 2026-11-12). Read as factory config (`self-modify`) and a built-in,
   non-removable `SELF_MODIFY_PATHS` list (`.factory/` and the policy, gate, registry, operation,
   stage and workflow code), excluded from auto-approval in every workflow. The workflow's
   `riskPaths` only adds to it, so nobody has to remember to protect `gate.ts`.
-- **Built-ins, "tighten, never loosen"** (working answer, owner to confirm). Measured against the shipped built-in: an org may
+- **Built-ins, "tighten, never loosen"** (decided by the owner, 2026-11-12). Measured against the shipped built-in: an org may
   undo its own tightening back to the shipped floor, and that undo is a loosening an org admin
   approves.
 - **Incident fixes.** Under ADR 0515 they also need the adjudicator's earned approval, which ADR

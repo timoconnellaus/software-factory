@@ -482,7 +482,10 @@ function seen(def: WorkflowDefinition, size: Size, domains: string[]): Seen {
     if (type.id === "agent-check") {
       guard = true;
       facts.add(`check:${s.id}`);
+      // Who judges, and what it is told, is part of the check (spec 52, Q16).
+      facts.add(`judge:${s.id}:${s.agent ?? "-"}`);
     }
+    if (typeof st.instructions === "string") facts.add(`told:${s.id}:${st.instructions}`);
     if (gate) {
       let open = true;
       if (type.id === "interview-planning")

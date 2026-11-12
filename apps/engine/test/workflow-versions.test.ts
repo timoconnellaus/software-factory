@@ -80,6 +80,14 @@ const V7_STEPS = [
 const V11_STEPS = ["{p}: enqueue", "{p}: wait #{i}", "{p}: read #{i}", "merge #{b}: deliver"].map(
   (name) => `${name.replaceAll("{", "$" + "{")}`,
 );
+// The steps v8 adds (spec 51, ADR 0501): the factory's checks on the build's head, the question when
+// they still fail, and the attached PR's check names for its reviewer.
+const V8_STEPS = [
+  "build #{b}: checks",
+  "build #{b}: checks failed",
+  "verify #{b}: check names",
+  "build #{b}: checks failing",
+].map((name) => `\`${name.replaceAll("{", "$" + "{")}\``);
 // The tags v4 builds `{p}` from: frozen like the step names.
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
@@ -120,17 +128,17 @@ describe("Workflow versions", () => {
   });
 
   // v1–v7's rows are proven equal to the old `version >= N` switches in core's
-  // workflow-features.test.ts; v11 is v7 plus the babysitter's delivery (spec 53).
-  it("v11 is v7 plus the babysitter's delivery, v12 adds re-verifying a withdrawn approval", () => {
+  // workflow-features.test.ts; v11 is v8 plus the babysitter's delivery (spec 53).
+  it("v11 is v8 plus the babysitter's delivery, v12 adds re-verifying a new head", () => {
     for (let v = 1; v <= 7; v++) expect(has(v, "babysitter-delivery"), `v${v}`).toBe(false);
     expect([...(WORKFLOW_VERSION_FEATURES[11] ?? [])].sort()).toEqual(
-      [...(WORKFLOW_VERSION_FEATURES[7] ?? []), "babysitter-delivery"].sort(),
+      [...(WORKFLOW_VERSION_FEATURES[8] ?? []), "babysitter-delivery"].sort(),
     );
-    // v12 is v11 plus re-verifying after a withdrawn approval (spec 53 PR c).
+    // v12 is v11 plus re-verifying a new head at delivery (spec 53 PR c).
     expect([...(WORKFLOW_VERSION_FEATURES[12] ?? [])].sort()).toEqual(
       [...(WORKFLOW_VERSION_FEATURES[11] ?? []), "reverify-on-withdrawal"].sort(),
     );
-    for (const v of [8, 9, 10]) expect(Object.hasOwn(WORKFLOW_VERSION_FEATURES, v)).toBe(false);
+    for (const v of [9, 10]) expect(Object.hasOwn(WORKFLOW_VERSION_FEATURES, v)).toBe(false);
     expect(Math.max(...Object.keys(WORKFLOW_VERSION_FEATURES).map(Number))).toBe(WORKFLOW_VERSION);
   });
 
@@ -159,5 +167,6 @@ describe("Workflow versions", () => {
     expect(source).toContain("return flow.runV1(version);");
     // No feature is switched by comparing version numbers (spec 53, Workflow versions).
     expect(source).not.toMatch(/version\s*(>=|<=|>|<)\s*\d/);
+    for (const name of V8_STEPS) expect(source, name).toContain(name);
   });
 });
