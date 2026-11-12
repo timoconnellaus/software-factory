@@ -189,6 +189,35 @@ describe("effectivePolicy", () => {
           ),
         ).toEqual(planFromDefinition(resolved.value, ORG.agents, size, domains, SHIP.id));
   });
+  it("hands a project only the org agents its workflow's stages name, never another project's", () => {
+    // Another project's Builder lives in the org; Ship it's build stage names no agent.
+    const builder = {
+      name: "Builder",
+      role: "implement" as const,
+      tier: "standard" as const,
+      instructions: "Project A's way of building.",
+      requires: [],
+    };
+    const org: OrgConfig = { ...ORG, agents: [...ORG.agents, builder] };
+    const eff = effectivePolicy(onShip(), org);
+    if (!eff.ok) throw new Error(eff.error);
+    expect(eff.value.agents.map((a) => a.name)).toEqual(["Security"]);
+    // So nothing builds with it: the build stage resolves no builder by name.
+    expect(eff.value.agents.some((a) => a.role === "implement")).toBe(false);
+    // A workflow whose build stage names it does hand it over.
+    const named: OrgConfig = {
+      ...org,
+      workflows: [
+        {
+          ...SHIP,
+          stages: SHIP.stages.map((s) => (s.id === "build" ? { ...s, agent: "Builder" } : s)),
+        },
+      ],
+    };
+    const own = effectivePolicy(onShip(), named);
+    if (!own.ok) throw new Error(own.error);
+    expect(own.value.agents.map((a) => a.name).sort()).toEqual(["Builder", "Security"]);
+  });
   it("fails closed on a workflow the org doesn't have, or one today's engine can't run", () => {
     expect(effectivePolicy(onShip(), EMPTY_ORG_CONFIG)).toMatchObject({ ok: false });
     const twice = { ...ORG, workflows: [{ ...SHIP, stages: [...SHIP.stages, SECURITY] }] };
