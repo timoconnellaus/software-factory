@@ -5,7 +5,17 @@ import type { CapabilityManifest, Job } from "@software-factory/runner-contract"
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { FOREMAN } from "../src/index.ts";
-import { first, numericId, ok, RUNNER_ACTOR, rows, services, uid, world } from "./helpers.ts";
+import {
+  first,
+  numericId,
+  ok,
+  RUNNER_ACTOR,
+  rows,
+  secondRepository,
+  services,
+  uid,
+  world,
+} from "./helpers.ts";
 
 const github = services.github;
 const INTAKE = { type: "intake" as const, id: "github" };
@@ -36,11 +46,7 @@ async function twoRepos() {
     ],
     members: [`gh-${w.userId}`],
   });
-  const second = await ok<{ id: string; name: string }>(
-    "repository.add",
-    { projectId: w.projectId, installationRecordId: record.id, repoId },
-    w.human,
-  );
+  const second = await secondRepository(w, { recordId: record.id, repoId, name });
   const firstRepo = await first<{ id: string }>(
     "SELECT id FROM core_repositories WHERE project_id = ? AND id != ?",
     w.projectId,

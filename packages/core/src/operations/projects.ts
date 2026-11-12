@@ -536,7 +536,7 @@ export const projectCreate = defineOperation({
 export const repositoryAdd = defineOperation({
   name: "repository.add",
   description:
-    "Add a GitHub repository to a project (ADR 0490): pick it from github.repos. The same checks as project.create (the org's installation, active, reaching the repo, not already a repository anywhere). The project's config is unchanged: it is per project. Needs an org owner or admin.",
+    "Add a GitHub repository to a project with none (ADR 0490): pick it from github.repos. The same checks as project.create (the org's installation, active, reaching the repo, not already a repository anywhere). A project has at most one repository until protection is tracked per repository: a second one would be unprotected while Setup showed green, so it is refused. The project's config is unchanged: it is per project. Needs an org owner or admin.",
   risk: "write",
   actors: ["human"],
   permission: "admin",
@@ -563,6 +563,20 @@ export const repositoryAdd = defineOperation({
       .executeTakeFirst();
     if (!project || project.org_id !== ctx.scope.orgId) {
       throw new OperationError("not_found", "no such project");
+    }
+    // One repository per project for now (ADR 0490 §8): the default-branch protection verdict, the
+    // check that holds builds on red and the daily re-check are still per project, so a second
+    // repository's main would be unguarded with Setup green.
+    const existing = await ctx.db
+      .selectFrom("core_repositories")
+      .select(["owner", "name"])
+      .where("project_id", "=", project.id)
+      .executeTakeFirst();
+    if (existing) {
+      throw new OperationError(
+        "conflict",
+        `project ${project.name} already has ${existing.owner}/${existing.name}: a second repository waits until protection is tracked per repository (spec 50 follow-up)`,
+      );
     }
     const { record, repo } = await reachableRepo(
       ctx,
