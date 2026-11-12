@@ -9,5 +9,6 @@ export * from "./project-workflow.ts";
 export * from "./reconcile.ts";
 export * from "./registry.ts";
 export * from "./settings.ts";
+export * from "./shadow.ts";
 export * from "./validate.ts";
 export * from "./workflow.ts";
