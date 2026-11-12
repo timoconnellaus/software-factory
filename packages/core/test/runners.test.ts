@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import type { CapabilityManifest, Job } from "@software-factory/runner-contract";
-import { CONTRACT_VERSION } from "@software-factory/runner-contract";
+import { CONTRACT_VERSION, RUNNER_COMPAT } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { FOREMAN, runEvent } from "../src/index.ts";
 import { protectedGuards } from "../src/testing/index.ts";
@@ -51,7 +51,7 @@ async function enqueue(workItemId: string, stage: "triage" | "build" = "build") 
 const claim = (
   actor: ReturnType<typeof RUNNER_ACTOR>,
   m = manifest(),
-  c = capacity(),
+  c: ReturnType<typeof capacity> & { light?: { max: number; inUse: number } } = capacity(),
   claimId = uid("claim-"),
 ) => ok<{ job: Job | null }>("job.claim", { claimId, manifest: m, capacity: c }, actor);
 
@@ -377,6 +377,51 @@ describe("runners and the scheduler", () => {
   });
 });
 
+describe("runner updates without draining (ADR 0520)", () => {
+  const beat = (actor: ReturnType<typeof RUNNER_ACTOR>, extra: Record<string, unknown> = {}) =>
+    ok(
+      "runner.heartbeat",
+      { manifest: manifest(), capacity: capacity(), activeJobs: [], ...extra },
+      actor,
+    );
+  const compatOf = async (runnerId: string) =>
+    (
+      await first<{ compat: number | null }>(
+        "SELECT compat FROM core_runners WHERE id = ?",
+        runnerId,
+      )
+    ).compat;
+
+  it("sends no job to a runner whose reported RUNNER_COMPAT is below the engine's; none reported counts as 1", async () => {
+    const { item, actor, runner } = await setup();
+    await enqueue(item.workItemId);
+    await beat(actor, { compat: RUNNER_COMPAT - 1 });
+    expect(await compatOf(runner.runnerId)).toBe(RUNNER_COMPAT - 1);
+    expect((await claim(actor)).job).toBeNull();
+    // An older host reports none: it counts as 1, the engine's level today.
+    await beat(actor);
+    expect(await compatOf(runner.runnerId)).toBeNull();
+    expect((await claim(actor)).job?.stage).toBe("build");
+  });
+
+  it("past the first cap the runner's capped heavy pool gets a light job, not a build", async () => {
+    const { w, item, actor } = await setup();
+    await enqueue(item.workItemId);
+    const other = await newItem(w, "Triage me");
+    await ok("branch.ensure", { workItemId: other.workItemId }, FOREMAN);
+    await enqueue(other.workItemId, "triage");
+    // What the host reports with one build running and the update past 30 minutes: max = inUse.
+    const capped = { max: 1, inUse: 1, accepting: true, light: { max: 3, inUse: 0 } };
+    expect((await claim(actor, manifest(), capped)).job?.stage).toBe("triage");
+    expect(
+      (await claim(actor, manifest(), { ...capped, light: { max: 3, inUse: 1 } })).job,
+    ).toBeNull();
+    // The cap lifted (updated): the build is placed.
+    const open = { max: 2, inUse: 0, accepting: true, light: { max: 3, inUse: 1 } };
+    expect((await claim(actor, manifest(), open)).job?.stage).toBe("build");
+  });
+});
+
 describe("runner versions (ADR 0360)", () => {
   const sha = (c: string) => c.repeat(40);
   const version = (at: string, state = "current", reason: string | null = null) => ({
@@ -438,6 +483,44 @@ describe("runner versions (ADR 0360)", () => {
       expect(listed.runners.find((r) => r.id === runner.runnerId)?.version).toBeNull();
     } finally {
       delete services.deployedSha;
+    }
+  });
+
+  it("answers the last runner-relevant commit when the deploy set one, and its RUNNER_COMPAT (ADR 0520)", async () => {
+    const { w, runner, actor } = await setup();
+    services.deployedSha = sha("c");
+    services.runnerSha = sha("b");
+    try {
+      const beat = await ok<{ desiredVersion: string | null; minRunnerCompat: number }>(
+        "runner.heartbeat",
+        {
+          manifest: manifest(),
+          capacity: capacity(),
+          activeJobs: [],
+          // A runner on the deployed commit, ahead of the runner commit, reports itself current.
+          version: { ...version(sha("c")), compat: RUNNER_COMPAT },
+        },
+        actor,
+      );
+      expect(beat).toMatchObject({ desiredVersion: sha("b"), minRunnerCompat: RUNNER_COMPAT });
+      const listed = await ok<{
+        runners: { id: string; version: string | null; desiredVersion: string | null }[];
+      }>("runner.list", {}, w.human);
+      expect(listed.runners.find((r) => r.id === runner.runnerId)).toMatchObject({
+        version: sha("c"),
+        desiredVersion: sha("b"),
+      });
+      // Malformed: falls back to the deployed commit.
+      services.runnerSha = "nope";
+      const again = await ok<{ desiredVersion: string | null }>(
+        "runner.heartbeat",
+        { manifest: manifest(), capacity: capacity(), activeJobs: [] },
+        actor,
+      );
+      expect(again.desiredVersion).toBe(sha("c"));
+    } finally {
+      delete services.deployedSha;
+      delete services.runnerSha;
     }
   });
 });
