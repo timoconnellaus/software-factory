@@ -15,6 +15,7 @@
       "!**/.wrangler",
       "!**/dist",
       "!**/*.md",
+      "!docs/design",
       "!.kim"
     ]
   },
