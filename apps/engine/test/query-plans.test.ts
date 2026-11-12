@@ -13,6 +13,7 @@ import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-con
 import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
 import worker from "../src/index.ts";
+import { pruneExpired } from "../src/retention.ts";
 import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
 import { growingScans, type Recorded, recordingEnv } from "./query-plans.ts";
 
@@ -142,6 +143,10 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         new Date(Date.now() + 2 * 3_600_000),
       );
     },
+  },
+  {
+    name: "the hourly prunes (retention)",
+    run: (e) => pruneExpired(e.DB, new Date()),
   },
 ];
 

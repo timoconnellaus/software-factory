@@ -604,6 +604,8 @@ export const planningNews = defineOperation({
   description:
     "The planning agent's news since its cursor (spec 20): answers, revised answers, people's chat messages and presence changes. A hook passes `ack` (the last cursor it showed the agent) and `hold`, so news it couldn't show comes again (spec 26); without `hold` the news is marked read at once (the agent's own planning_news call).",
   risk: "write",
+  // Called by the hooks between the agent's steps: audited when there is news (ADR 0590).
+  audit: { changesOnly: true, changed: (out) => out.events.length > 0 },
   actors: ["runner"],
   permission: "signed-in",
   input: planningNewsInputSchema.extend(planningJobFields),
@@ -755,6 +757,9 @@ export const planningWait = defineOperation({
   description:
     "The planning agent's Stop hook waits for news (spec 20, kim's batch rule): due once a person has paused 15 s after their latest answer, at once after a chat message or when no question is left open. This evaluates once and answers `due: false` with when to look again; sf-engine's channel holds the call and re-evaluates on every change. A wait that asks the session to yield answers `yield: true`.",
   risk: "write",
+  // Re-evaluated on every change and every 50 s: audited when news is handed over or the
+  // session changes (logPlanning marks it), ADR 0590.
+  audit: { changesOnly: true, changed: (out) => out.due || out.events.length > 0 },
   actors: ["runner"],
   permission: "signed-in",
   input: planningWaitInputSchema.extend(planningJobFields),
@@ -1020,6 +1025,8 @@ export const planningPresence = defineOperation({
   description:
     "The app reports that the signed-in person has the Planning view open (a heartbeat every ~20 s) or closed it. The planning agent sees who is here in its news.",
   risk: "write",
+  // Every 20 s per open Planning tab: audited when someone arrives or leaves (ADR 0590).
+  audit: { changesOnly: true },
   actors: ["human"],
   permission: "member",
   input: z.object({ workItemId, open: z.boolean() }),

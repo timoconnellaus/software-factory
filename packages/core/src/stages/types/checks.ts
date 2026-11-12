@@ -1,0 +1,137 @@
+import { z } from "zod";
+import type { ImpactChange } from "../../policy/impact.ts";
+import { same } from "../../policy/impact.ts";
+import { DEFAULT_REQUIRED_CHECKS } from "../../verify/protection.ts";
+import type { EvidenceKind, StageType } from "../contract.ts";
+
+const EVIDENCE = ["ci", "check", "criteria", "reviewer", "drift", "tests-intact"] as const;
+
+const settings = z
+  .object({
+    /** Today's CI waits (Workflow v3): minutes per wait, rounds, and rounds with no CI at all. */
+    ci: z
+      .object({
+        waitMinutes: z.number().int().min(1).max(60).default(10),
+        rounds: z.number().int().min(1).max(48).default(12),
+        missingRounds: z.number().int().min(1).max(12).default(3),
+      })
+      .strict()
+      .default({ waitMinutes: 10, rounds: 12, missingRounds: 3 }),
+    /** The independent reviewer agent. Its prompt is code's and takes no project text (F10). */
+    reviewer: z.boolean().default(true),
+    /** The build against the approved spec (ADR 0306). */
+    drift: z.boolean().default(true),
+    /** Evidence the verdict requires. */
+    requiredEvidence: z
+      .array(z.enum(EVIDENCE))
+      .max(EVIDENCE.length)
+      .default(["ci", "criteria", "reviewer"]),
+    /** CI checks that must report on the SHA besides `factory/verify` (ADR 0280). */
+    requiredChecks: z
+      .array(z.string().min(1).max(200))
+      .max(20)
+      .default([...DEFAULT_REQUIRED_CHECKS]),
+    /** The review packet's sections in order (spec 14). Absent: the default order. */
+    sections: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .strict();
+
+/** Open the PR, run the checks on the exact commit, read CI, the reviewer, and assemble the packet. */
+export const checks: StageType<typeof settings> = {
+  id: "checks",
+  version: 1,
+  name: "Checks",
+  description:
+    "Opens the pull request, checks the exact commit, reads CI and an independent reviewer, and writes the review packet.",
+  phases: ["delivery"],
+  settings,
+  consumes: ["git-head"],
+  produces: ["pull-request"],
+  evidence: [
+    { kind: "ci", required: true, about: "pull-request" },
+    { kind: "check", required: false, about: "pull-request" },
+    { kind: "criteria", required: true, about: "pull-request" },
+    { kind: "reviewer", required: true, about: "pull-request" },
+    { kind: "drift", required: false, about: "pull-request" },
+    { kind: "tests-intact", required: false, about: "pull-request" },
+  ],
+  surface: "checks",
+  requires: () => ({
+    capabilities: [],
+    connectors: ["github"],
+    repository: true,
+    pool: "heavy",
+    roles: ["review"],
+  }),
+  gate: () => null,
+  needsPerson: false,
+  reversibility: "reversible-outside",
+  steps: (s) => [
+    { id: "open-pr", kind: "check" },
+    { id: "ci", kind: "check" },
+    ...(s.reviewer ? [{ id: "reviewer", kind: "agent" as const, role: "review" as const }] : []),
+  ],
+  impact: (before, after, stageId) => {
+    const out: ImpactChange[] = [];
+    for (const key of ["reviewer", "drift"] as const) {
+      if (before[key] !== after[key])
+        out.push({
+          path: `${stageId}.${key}`,
+          class: after[key] ? "tightens" : "loosens",
+          summary: `The ${key === "reviewer" ? "reviewer" : "drift check"} ${after[key] ? "on" : "off"}.`,
+        });
+    }
+    out.push(
+      ...setImpact(
+        `${stageId}.requiredEvidence`,
+        before.requiredEvidence,
+        after.requiredEvidence,
+        "evidence",
+      ),
+      ...setImpact(
+        `${stageId}.requiredChecks`,
+        before.requiredChecks,
+        after.requiredChecks,
+        "check",
+      ),
+    );
+    if (!same(before.ci, after.ci))
+      out.push({ path: `${stageId}.ci`, class: "neutral", summary: "CI waits changed." });
+    if (!same(before.sections, after.sections)) {
+      const hidden = (before.sections ?? []).filter((x) => !(after.sections ?? []).includes(x));
+      out.push({
+        path: `${stageId}.sections`,
+        class: after.sections && hidden.length > 0 ? "loosens" : "neutral",
+        summary:
+          after.sections && hidden.length > 0
+            ? `Hides ${hidden.join(", ")} from the review packet.`
+            : "Review packet sections reordered or added.",
+      });
+    }
+    return out;
+  },
+};
+
+function setImpact(
+  path: string,
+  before: readonly (string | EvidenceKind)[],
+  after: readonly (string | EvidenceKind)[],
+  noun: string,
+): ImpactChange[] {
+  const dropped = before.filter((x) => !after.includes(x));
+  const added = after.filter((x) => !before.includes(x));
+  const out: ImpactChange[] = [];
+  if (dropped.length)
+    out.push({
+      path,
+      class: "loosens",
+      summary: `No longer requires the ${noun} ${dropped.join(", ")}.`,
+    });
+  if (added.length)
+    out.push({
+      path,
+      class: "tightens",
+      summary: `Also requires the ${noun} ${added.join(", ")}.`,
+    });
+  return out;
+}
