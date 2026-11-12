@@ -29,6 +29,25 @@ export interface Session {
 }
 
 /**
+ * Updates as the view sees them (spec 40 M4, ADR 0393). `required`: the door refused this build as
+ * too old (426 update_required), so nothing but updating works; the view shows its "Update
+ * required" screen. `ready`: a verified update is staged. `jobs`: how many jobs the runner is
+ * running (restarting cancels them, so the view asks first). `waitingForRunner`: "Restart to update"
+ * is waiting for the runner to stop claiming (it gives up at this time, epoch ms), or null.
+ * `downloadUrl`: the channel's download, for when nothing is staged.
+ */
+export interface UpdateStatus {
+  required: boolean;
+  ready: boolean;
+  version: string | null;
+  error: string | null;
+  needsMove: boolean;
+  jobs: number;
+  waitingForRunner: number | null;
+  downloadUrl: string;
+}
+
+/**
  * An operation's answer as the view sees it: the door's `{ result }` or `{ code, error }`. A call a
  * gate holds is `{ ok: false, code: "pending" }`. Bytes travel as `{ $bytes: base64 }` both ways.
  */
@@ -86,6 +105,18 @@ export type AppRPC = {
         params: { filename: string; base64: string };
         response: { ok: boolean; path: string | null };
       };
+      updateStatus: { params: Record<string, never>; response: UpdateStatus };
+      /**
+       * restart: only while the runner is idle. restart-when-idle: once its jobs end.
+       * restart-anyway: cancels its jobs (the view named them). download: opens the download.
+       * retry: forget update_required and try the door again (the floor may have been lowered).
+       */
+      updateAction: {
+        params: {
+          action: "restart" | "restart-when-idle" | "restart-anyway" | "download" | "retry";
+        };
+        response: UpdateStatus;
+      };
     };
     messages: Record<string, never>;
   };
@@ -97,6 +128,7 @@ export type AppRPC = {
       inboxChanged: { count: number };
       planningChanged: { workItemId: string };
       navigate: { path: string };
+      updateChanged: UpdateStatus;
       terminalEvent: TerminalEvent;
     };
   };

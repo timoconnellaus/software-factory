@@ -9,6 +9,10 @@
 // - `upload` gives the archive and the download versioned names, rewrites the manifests to name the
 //   versioned archive, and uploads the manifests last. A client reading a manifest always finds the
 //   archive it names, with the hash it names; a versioned name is never reused, so `immutable` holds.
+//   After the manifests, `<channel>-macos-arm64-protocol.json` names the door protocol the now-live
+//   build speaks (ADR 0393): the engine's deploy refuses a DESKTOP_MIN_PROTOCOL above it
+//   (scripts/deploy/desktop-floor.ts). Written last, it never claims a protocol before the build
+//   that speaks it is live.
 //
 // It talks to R2's S3 API with the AWS CLI and an R2 token scoped to the one bucket
 // (DESKTOP_R2_ACCESS_KEY_ID / DESKTOP_R2_SECRET_ACCESS_KEY, held only by the `release` environment).
@@ -17,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DOOR_PROTOCOL } from "../src/bun/protocol.ts";
 import { compareVersions } from "../src/shared/version.ts";
 
 const PREFIX = "desktop/";
@@ -42,6 +47,9 @@ interface Manifest {
 export const versionedArchive = (file: string, version: string) =>
   file.replace(/\.app\.tar\.zst$/, `-${version}.app.tar.zst`);
 
+/** The published build's door protocol (ADR 0393), read by the engine's deploy. */
+export const protocolFile = (channel: string) => `${channel}-${PLATFORM}-protocol.json`;
+
 /** The download's versioned name: `canary-macos-arm64-Software-Factory-0.1.42.zip`. */
 export const versionedDownload = (channel: string, version: string) =>
   `${channel}-${PLATFORM}-Software-Factory-${version}.zip`;
@@ -57,6 +65,7 @@ export function uploadPlan(
   write: (name: string, body: string) => string,
   channel: string,
   version: string,
+  protocol: number = DOOR_PROTOCOL,
 ): Upload[] {
   const head = `${channel}-${PLATFORM}-`;
   const mine = files.filter((f) => f.startsWith(head));
@@ -118,6 +127,14 @@ export function uploadPlan(
       cacheControl: "no-cache",
     });
   }
+  // The very last write: the build that speaks this protocol is live now.
+  const pf = protocolFile(channel);
+  plan.push({
+    from: write(pf, JSON.stringify({ channel, version, protocol })),
+    key: key(pf),
+    contentType: "application/json",
+    cacheControl: "no-cache",
+  });
   return plan;
 }
 
