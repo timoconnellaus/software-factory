@@ -13,7 +13,8 @@ import { backupOwnerId } from "../scope.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
 import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
 import { openIncident } from "./incidents.ts";
-import { pendingActionId, sha, workItemId } from "./shared.ts";
+import { pendingActionId, requireWorkItem, sha, workItemId } from "./shared.ts";
+import { decideNotRun } from "./verify.ts";
 import { applyApprovedOrgConfig, ORG_CONFIG_WRITES } from "./workflows.ts";
 
 /** The commit a merge gate is for: the head SHA in its `pr.merge` input (ADR 0041). */
@@ -290,18 +291,26 @@ export const reviewMerge = defineOperation({
   name: "review.merge",
   decidesPending: true,
   description:
-    "Merge a work item from its review packet (the merge gate, ADR 0041). The factory merges through the GitHub App. Records whether the full diff was opened first. With `headSha` (the phone always sends it, spec 60), the approval is for that commit only: a gate whose head has moved refuses it with `conflict`. Approvers only.",
+    "Merge a work item from its review packet (the merge gate, ADR 0041). The factory merges through the GitHub App. Records whether the full diff was opened first. With `headSha` (the phone always sends it, spec 60), the approval is for that commit only: a gate whose head has moved refuses it with `conflict`. When declared checks could not be run on the commit (ADR 0501, fourth review), it is refused with `conflict` unless `mergeWithoutChecks` is true: that decision is recorded with the packet and `factory/verify` is then posted as success, saying so. Approvers only.",
   risk: "write",
   actors: ["human"],
   permission: "approver",
   browserOnly: true,
   presenceDecidable: true,
+  // Merging without checks the runner couldn't run stays off the phone (fifth review), in the
+  // engine, not only in the client: refused with or without a fingerprint.
+  mobileRefuses: (input) => input.mergeWithoutChecks === true,
   input: z.object({
     workItemId,
     openedFullDiff: z.boolean(),
     /** The commit the person approves (spec 60): the proof binds to it through the input digest. */
     headSha: sha.optional(),
     note: z.string().max(4_000).optional(),
+    /**
+     * The person decides to merge without the declared checks the runner could not run on this
+     * commit (ADR 0501, fourth review): required when there are any, recorded, never inferred.
+     */
+    mergeWithoutChecks: z.boolean().default(false),
   }),
   output: decisionOutput,
   async handler(input, ctx) {
@@ -319,7 +328,17 @@ export const reviewMerge = defineOperation({
         { headSha: mergeGateHead(pa) },
       );
     }
-    return decidePending(ctx, pa, "approved", input.note ?? null, input.openedFullDiff);
+    let note = input.note ?? null;
+    if (pa.status === "pending") {
+      const item = requireWorkItem(ctx);
+      const head = mergeGateHead(pa) ?? item.head_sha;
+      const without = await decideNotRun(ctx, item, head ?? null, input.mergeWithoutChecks);
+      if (without.length > 0) {
+        const line = `Merged without ${without.length === 1 ? "this check" : "these checks"}, which could not be run on the runner: ${without.join(", ")}.`;
+        note = note ? `${line}\n\n${note}` : line;
+      }
+    }
+    return decidePending(ctx, pa, "approved", note, input.openedFullDiff);
   },
 });
 

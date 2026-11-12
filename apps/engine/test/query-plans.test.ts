@@ -15,7 +15,7 @@ import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
-import worker from "../src/index.ts";
+import worker, { pruneCheckResults } from "../src/index.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import { archiveRunEvents, pruneExpired } from "../src/retention.ts";
 import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
@@ -178,6 +178,23 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         r2AttachmentBlobs(env.ATTACHMENTS),
         new Date(Date.now() + 2 * 3_600_000),
       );
+    },
+  },
+  {
+    // The hourly check results prune (ADR 0501, fifth review), with a row past its cutoff to read.
+    name: "the check results prune",
+    run: async (e) => {
+      await env.DB.prepare(
+        `INSERT OR REPLACE INTO core_check_results
+           (work_item_id, head_sha, name, run_id, command, exit_code, timed_out, duration_ms,
+            log_tail, round, created_at)
+         SELECT work_item_id, ?, 'plan-guard', id, 'true', 0, 0, 1, '', 0, '2000-01-01T00:00:00.000Z'
+         FROM core_runs WHERE job_id = ?`,
+      )
+        .bind("a".repeat(40), job?.jobId ?? "")
+        .run();
+      // Its item is open, so the row is read, looked up and kept; limit 1 moves the cursor.
+      return pruneCheckResults(e.DB, new Date(), 1);
     },
   },
   {

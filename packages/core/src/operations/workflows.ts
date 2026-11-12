@@ -325,23 +325,47 @@ export async function writeOrgVersion(
     if (n.looser.some((l) => l.stageId === a.stage_id && l.key === a.setting))
       lapsed.push(`${p.name}: ${a.stage_id} ${a.setting}`);
   }
-  if (lapsed.length) {
+  // An override that was as strict as the org's value, or stricter, and that this version makes
+  // looser has no approval: the stricter value applies until an org admin approves it or the
+  // project drops it, and the org's admins are told so (spec 52, fifth review). In memory: the
+  // projects are already read.
+  const unapproved: string[] = [];
+  for (const p of projects) {
+    if (!p.policy || !onOrgWorkflow(p.policy)) continue;
+    const was = normaliseOverrides(p.policy, input.before).looser;
+    for (const l of normaliseOverrides(p.policy, config).looser)
+      if (!was.some((x) => x.stageId === l.stageId && x.key === l.key))
+        unapproved.push(`${p.name}: ${l.stageId} ${l.key}`);
+  }
+  if (lapsed.length || unapproved.length) {
     const admins = await ctx.db
       .selectFrom("core_member")
       .select("user_id")
       .where("organization_id", "=", org)
       .where("role", "in", ["owner", "admin"])
       .execute();
-    for (const admin of admins)
-      ctx.emit({
-        kind: "notify",
-        payload: {
-          event: "workflow.overrideLapsed",
-          userId: admin.user_id,
-          title: `The org's workflow change ends approved project overrides (the stricter value applies): ${lapsed.join("; ")}`,
-          url: "/settings",
-        },
-      });
+    for (const admin of admins) {
+      if (lapsed.length)
+        ctx.emit({
+          kind: "notify",
+          payload: {
+            event: "workflow.overrideLapsed",
+            userId: admin.user_id,
+            title: `The org's workflow change ends approved project overrides (the stricter value applies): ${lapsed.join("; ")}`,
+            url: "/settings",
+          },
+        });
+      if (unapproved.length)
+        ctx.emit({
+          kind: "notify",
+          payload: {
+            event: "workflow.overrideNeedsApproval",
+            userId: admin.user_id,
+            title: `The org's workflow change makes project overrides looser than the org's values; each needs an org admin's approval or removal (the stricter value applies until then): ${unapproved.join("; ")}`,
+            url: "/settings",
+          },
+        });
+    }
   }
   ctx.guardExists(
     "org config base unchanged",

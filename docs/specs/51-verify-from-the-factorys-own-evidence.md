@@ -52,27 +52,48 @@ commands it ran on the head SHA, and CI. The reviewer's opinion stays, labelled 
   config (self-modify, a person).
 - **The runner host runs them.** A build or verify job carries the item's checks (`job.checks`).
   After the build session's turn ends, the host commits what the session left, then runs each
-  check in the job's worktree **through the runner adapter's `exec`** (a container runner runs them
-  in the container), falling back to a local process only for adapters that don't declare it. Each
-  result is `{ name, command, exitCode, durationMs, logTail, headSha }` (log tail ≤ 8 KB).
+  check on a **clean copy of the commit** (no ignored files, no git dir) **through the runner
+  adapter's `exec`** (a container runner runs them in a check container), else under the host's OS
+  sandbox with the harness's floor; with neither, each check is reported not run (ADR 0501,
+  amended 2026-11-12). The project declares its install as a check (on a container runner, whose
+  check container has no network, `pnpm install --offline --frozen-lockfile` against the job's
+  store). Each result is `{ name, command, exitCode, durationMs, logTail, headSha }` (log tail
+  ≤ 8 KB), or **not run** with why (`notRun`: no isolation here, a job with no container, a sandbox
+  that couldn't start), which never passes and never goes to a fix round. Only a runner that
+  declares the `checks` capability is given a job that carries checks (ADR 0520's rule).
+  *Third review (2026-11-12):* each check runs in a dir of its own: the first on the export, each
+  later one on a copy of the tree the one before left, made after it was killed, so declare the
+  install first and let the later checks use what it installed (don't install again in them). The
+  check's pnpm store is its own. A not-run check is stored with its reason (migration 0271) and
+  the item goes on to verify and the merge gate, which say "these checks could not be run on this
+  runner: <reason>" and leave the criteria it would prove Not proven: a person decides. On macOS a
+  check can't reach loopback (so not a server it starts itself, such as a workerd test pool).
+  *Routing (deferred to the hosts session):* today the host declares `checks` for every adapter and
+  reports "not run" where it has no isolated exec. When the hosts session's follow-up makes the
+  manifest say a runner cannot run checks (the capability from `sandboxTrial()` and the adapter),
+  `job.enqueue`'s `requires: checks` keeps a v8 item that declares checks off that runner; no
+  Workflow change is needed for it.
 - **A failure goes back to the same session.** When a check fails and the adapter can steer, the
   host types the failure (command, exit code, log tail) into the same build session, waits for that
   turn to end, and runs the checks again: at most `retryLimit` rounds. Then it pushes and hands
   back with the results as they stand.
 - **Reported through the runner channel**, on the hand-back (`checks`), and stored by
-  `run.handBack` in `core_check_results` against the work item and head SHA (migration 0220).
+  `run.handBack` in `core_check_results` against the work item and head SHA (migration 0270).
   A new head has no results until checks run on it.
-- **The Workflow (v7)** reads the build's results for the pushed head: all passed → verify; any
+- **The Workflow (v8; v7 is spec 50 part C's)** reads the build's results for the pushed head: all passed → verify; any
   failed after the session's fixes → a question to a person (try another build, or stop), never a
-  cold retry. For an attached PR, the verify job runs the checks before its review session.
+  cold retry; any the runner could not run (and none failed) → on to verify, burning no build. For an attached PR, the verify job runs the checks before its review session.
 - **The verdict** (`reviewPacket.record`) uses the executed results for the head SHA, never the
   agent's report of checks: every declared check must have a passing result on the SHA, and CI must
   be green. A project with no declared checks is a warning in the packet.
-- **Proven criteria.** The reviewer maps each criterion to check names (`checks: [...]`, executed
-  check names or CI check run names). A criterion is **Proven** only when a linked executed check or
-  CI check run passed on the head SHA; otherwise **Not proven**, with the reviewer's reasoning
-  shown as opinion. The reviewer can't mark a criterion proven on its own say-so. A criterion the
-  reviewer judges unmet still fails the verdict.
+- **Proven criteria.** The approved spec links a criterion to check names (`[checks: …]` on it:
+  executed check names or CI check run names), matched to the reviewer's criteria by text, never by
+  position. A criterion is **Proven** only when a spec-linked check passed on the head SHA (not a
+  static check like lint or typecheck), marked weakened when the tests-intact guard found gate-file
+  edits; otherwise **Not proven**, with the reviewer's reasoning shown as opinion. The reviewer may
+  link checks too (`checks: [...]`), shown as "linked by the reviewer, not proven": the reviewer can't
+  mark a criterion proven on its own say-so or its own links. A criterion the reviewer judges unmet
+  still fails the verdict.
 - **`factory/verify`** reflects the executed results: its summary lists each check's result and
   the proven count, and it fails when a declared check failed or didn't run on the SHA.
 - **The app's review packet** shows a **Checks run by the factory** section (each check, exit code,
@@ -109,3 +130,22 @@ step, holdout tests (ADR 0034), apps/desktop's screens until PR #56 merges.
     alone leaves it Not proven, with its evidence shown as opinion.
 12. `factory/verify` on the head SHA lists the executed results.
 13. The app shows the Checks run by the factory section and the Proven marks.
+
+## As built
+- **PR A** (#63): as specified. "Forces the item to a person" is the merge gate (always a person by
+  the floor) with the findings shown first; findings never fail the verdict, and `pr.autoMerge`
+  refuses a packet without `testsIntact.intact === true`. A new file under `.factory/checks/` is not
+  a gate-file edit (it is what ADR 0230's check-only class adds).
+- **PR B**:
+  - Checks are declared in config (`checks`, and a workflow's `checks`); the Settings screens don't
+    edit them yet (import or the config JSON does). No project declares any by default, so until one
+    does, the packet warns that only CI backs the verdict.
+  - The host sends a failure back by `steer` and a second `events()` call: runner-local needed two
+    lines (a steer starts a turn). An adapter without `steer` hands back at once and the item asks
+    a person.
+  - Without `exec` (runner-local today), checks run as a local process with a scrubbed environment
+    but **outside the harness sandbox**: the project's own test code runs as the host user. A
+    containerised runner should implement `exec`.
+  - Not proven doesn't fail the verdict; an unmet criterion still does.
+  - A factory item's verify job doesn't re-run the checks: the build's results are on the same SHA
+    (`branch.advance` only fast-forwards). An attached PR's verify job runs them once.

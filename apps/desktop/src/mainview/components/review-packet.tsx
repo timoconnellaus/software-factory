@@ -23,6 +23,7 @@ import { ChevronRightIcon } from "lucide-react";
 import Markdown from "react-markdown";
 import { openExternal } from "../lib/external.tsx";
 import { useSession } from "../lib/session.ts";
+import { FactoryChecks } from "./factory-checks.tsx";
 import { CriteriaList, MergeDecision, useOpenedFullDiff, VerdictPanel } from "./review-parts.tsx";
 import { Panel, SectionTitle } from "./shell-list.tsx";
 
@@ -76,6 +77,8 @@ export function ReviewPacket({ detail }: { detail: WorkItemDetail }) {
             <VerdictNotes packet={packet} />
           </VerdictPanel>
         )}
+        {/* Spec 51 PR B (ADR 0501): what the runner host ran itself, beside the reported checks. */}
+        <FactoryChecks packet={packet} />
         <ChecksTable packet={packet} />
         {configured.includes("criteria") && (
           <section className="flex flex-col gap-2">
