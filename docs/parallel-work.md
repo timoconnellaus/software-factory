@@ -48,9 +48,18 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AH | 0270–0279 | 0500–0509 | Verify from the factory's own evidence (`verify-evidence`): spec 51. PR A, the tests-intact guard (ADR 0500, no migrations); PR B, checks run by the runner host, proven criteria (ADR 0501, migration 0270). | in progress |
 | AM | 0320–0329 | 0550–0559 | Runners under load (`runner-tmux-robust`): spec 43, incident #11. No orphans, tmux errors aren't "gone", back off claiming under load, marked run branches. Used: migration 0320; ADRs 0550–0552 | in review |
 | AJ | 0290–0299 | 0520–0529 | Runner updates without draining on every deploy (`runner-update-no-drain`): spec 38 (keep claiming while an update is pending, the caps, `minRunnerCompat`, `RUNNER_SHA` from the deploy) and spec 39 (re-adopting live jobs after a restart, spec only). Used: migration 0290 (`core_runners.compat`); ADR 0520 | in review |
+| AP | 0350–0359 | 0580–0589 | The babysitter (`babysitter`): spec 53. Approval separated from delivery, stop the line on red main, approval across a clean merge of main, the `babysit` job, red-main repair. ADRs 0580–0585; Workflow v11 (provisional: next free at merge); migrations 0350 delivery, 0351 main health, 0352 approved change, 0353 flakes | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
+
+## Workflow versions
+Workflow versions are not claimed in blocks. The work-item Workflow keeps one table,
+`WORKFLOW_FEATURES`, mapping each version to the set of features it has; code asks
+`has(version, "feature")` and never compares `version >= N` (a later PR's check would switch on
+inside running instances of an earlier version). A PR that changes the Workflow's steps takes the
+next number above whatever is on `main` **at merge time** and adds its row; a merged row is never
+edited. Rows in other open PRs don't exist until they merge, so renumber when you merge `main`.
 
 ## Reserved areas
 Avoid these unless your build is the one named, because another build is changing them:
