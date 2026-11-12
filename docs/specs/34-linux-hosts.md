@@ -59,6 +59,10 @@ with Claude Code in tmux, under Claude Code's Linux sandbox (bubblewrap).
     its inputs and tests pin it.
   - Reading a live process's command line (the ADR 0270 check) uses `/proc/<pid>/cmdline` on Linux,
     so it needs no procps (slim images have no `ps`). It still uses `ps -ww -o command=` elsewhere.
+- **tmux 3.3** (Debian 12's) prints control characters in `-F` output as `_`, so runner-local's
+  tab-separated `list-sessions` and `list-panes` formats broke: sessions read as
+  `job_x_0_<time>` and no pane pid. The fields are now separated by `:`, which a session name
+  can't contain. The container check found this.
 - **`doctor` on Linux** adds:
   - `bwrap` and `socat` on PATH: **✗** when missing. Claude Code's Linux sandbox needs both, and
     the factory sets `failIfUnavailable`, so a job would fail at launch.

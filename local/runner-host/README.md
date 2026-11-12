@@ -91,9 +91,10 @@ From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
 ```sh
 local/runner-host/bin/sf-runner login            # --name m5, --no-install, --no-open, --url <engine>
 ```
-It prints a code and a link (and opens it on macOS). Open the link, check the code matches, name the
+It prints a code and a link (and opens it on macOS, or with `xdg-open` on a Linux desktop). Open the link, check the code matches, name the
 runner and approve. The CLI then receives its key (once), proves it with a signed heartbeat, saves
-`~/.config/software-factory/runner.json` (0600) and installs the launchd service. Nothing is copied.
+`~/.config/software-factory/runner.json` (0600) and installs the service (launchd on macOS, systemd
+on Linux). Nothing is copied.
 If `checkouts` isn't set yet, `login` sets it once: the parent directories of the repos the Orca
 desktop app knows, when it is installed, else `[]` (edit it to list where you keep your clones).
 
@@ -111,7 +112,8 @@ desktop app knows, when it is installed, else `[]` (edit it to list where you ke
    heavy slots, build and verify, default 2; `--max-light` for light slots, triage and planning
    sessions, default 6: ADR 0301) and restarts the service if one is installed. Pass the key on stdin, not as an
    argument, so it stays out of your shell history.
-3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, tmux ≥ 3.2, claude, the channel,
+3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, tmux ≥ 3.2, claude (on Linux
+   also bubblewrap, socat, the user systemd and linger: below), the channel,
    and the checkouts: `checkouts` set and present, one checkout per remote under them, and no
    `sf-*` job worktree or tmux session without a live job. `sf-runner doctor --fix` sets `checkouts`
    once if it is unset (as `login` does) and kills and removes the orphans. It never touches your
@@ -125,7 +127,8 @@ desktop app knows, when it is installed, else `[]` (edit it to list where you ke
 The e2e driver below calls `runner.register` through `EngineApi` against a local engine.
 
 ## Running as a launchd service (macOS)
-It's a per-user LaunchAgent, because Claude Code runs as you, with your Claude login:
+It's a per-user LaunchAgent, because Claude Code runs as you, with your Claude login. On Linux it's a
+systemd user service instead: see [Running on Linux](#running-on-linux-spec-34-adr-0420).
 ```sh
 local/runner-host/bin/sf-runner install     # ~/Library/LaunchAgents/com.software-factory.runner.plist
 local/runner-host/bin/sf-runner status      # config (key redacted), service, jobs, version and update state
@@ -151,6 +154,84 @@ local/runner-host/bin/sf-runner uninstall
 - On start it reaps orphans (`sf-*` tmux sessions on its socket and `sf-*` worktrees it isn't
   running) before claiming work. It records the jobs it is running in
   `~/.local/state/software-factory/runner/live-jobs.json`.
+
+## Running on Linux (spec 34, ADR 0420)
+The same runner runs on a Linux VM or server you own (a Hetzner box, a home server). It connects
+outbound only, joins by `sf-runner login`, and runs jobs in tmux exactly as on a Mac. It runs as a
+**systemd user service** as you, with your Claude login, not as root. Debian 12+ or Ubuntu 22.04+
+with systemd; other distributions need the same packages.
+
+**1. Packages** (git, tmux ≥ 3.2, and Claude Code's sandbox: bubblewrap and socat):
+```sh
+sudo apt-get update && sudo apt-get install -y git tmux bubblewrap socat
+```
+`local/runner-host/scripts/linux-prereqs.sh` (once you have the clone, step 3) checks all of this
+and prints what is missing. `--install` runs exactly the line above with sudo, nothing else.
+
+**2. Node 24 and Claude Code**, as your user, not root:
+- Node via [nvm](https://github.com/nvm-sh/nvm). Its README's install line downloads nvm's
+  `install.sh` from GitHub and runs it. The script clones nvm into `~/.nvm` and adds three lines
+  to your shell rc. Read it first if you prefer:
+  `curl -fsSLo /tmp/nvm-install.sh https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh`,
+  then `less /tmp/nvm-install.sh` and `bash /tmp/nvm-install.sh`. Then `nvm install 24` and
+  `corepack enable` (pnpm comes from the repo's `packageManager`).
+- Claude Code: follow [its setup docs](https://code.claude.com/docs/en/setup). The native
+  installer puts `claude` in `~/.local/bin`, and `npm install -g @anthropic-ai/claude-code` also
+  works. Then run `claude` once and log in. On Linux the login is kept in
+  `~/.claude/.credentials.json`, which runs are denied.
+
+**3. The runner's checkout**, one you keep (self-update moves it):
+```sh
+git clone https://github.com/timoconnellaus/software-factory ~/software-factory-runner
+cd ~/software-factory-runner && pnpm install --frozen-lockfile
+local/runner-host/scripts/linux-prereqs.sh
+```
+
+**4. Join and install the service:**
+```sh
+local/runner-host/bin/sf-runner login --name hetzner-1
+```
+It prints a link and a code. Over SSH nothing opens: open the link in your browser where you're
+signed in to the factory, check the code matches, name the runner and approve. Only the
+runner's owner can approve. `login` then saves `~/.config/software-factory/runner.json` and runs
+`install`.
+
+**5. Linger**, once, so the service runs without you logged in and starts at boot:
+```sh
+sudo loginctl enable-linger $USER
+```
+`install` and `doctor` say when it is off.
+
+**6. Check it:**
+```sh
+local/runner-host/bin/sf-runner doctor      # adds bubblewrap, socat, a bwrap smoke run, user systemd, linger
+local/runner-host/bin/sf-runner status      # service: state = running (active), pid = …
+tail -f ~/.local/state/software-factory/logs/runner.log
+```
+Take a run over with `tmux -L software-factory attach -t sf-<jobId>` over SSH.
+
+What differs from macOS:
+- The unit is `~/.config/systemd/user/software-factory-runner.service`. It runs the same
+  `bin/sf-runner-service` wrapper, so self-update and rollback are unchanged. It restarts on a
+  non-zero exit (`Restart=on-failure`, 30 s), never after the clean exit of an unpaired runner.
+  `KillMode=process`, so a restart doesn't kill the factory's tmux server; systemd logs a warning
+  about that, and it is intended. Manage it with `systemctl --user status|restart|stop
+  software-factory-runner`.
+- The log is `$XDG_STATE_HOME/software-factory/logs/runner.log` (default `~/.local/state/…`). The
+  unit appends to it. systemd's own start and stop lines are in
+  `journalctl --user -u software-factory-runner`.
+- `doctor` fails without `bwrap` or `socat`, because the factory requires the sandbox
+  (`failIfUnavailable`). It warns if a bubblewrap smoke run fails. On Ubuntu 23.10+ that is
+  usually AppArmor's `kernel.apparmor_restrict_unprivileged_userns=1`; the fix is in Claude Code's
+  [sandboxing docs](https://code.claude.com/docs/en/sandboxing), and `doctor` says so.
+- Runs are denied the Linux credential stores (`~/.local/share/keyrings`, KWallet,
+  `~/.password-store`, `~/.config/hcloud`) and `systemctl`, `loginctl`, `journalctl`,
+  `secret-tool` and `keyctl`, as macOS runs are denied the keychain and `launchctl`.
+- `install` must run from a real login session as your user (SSH or a console). Under `su` or
+  `sudo` there's no user systemd, and `systemctl --user` fails with "Failed to connect to bus".
+
+`local/runner-host/scripts/linux-check.sh` runs runner-local's real-tmux test, the harness tests
+and these unit tests in a Debian container (Docker or OrbStack). It skips when neither is running.
 
 ## Updating itself (spec 08, ADR 0360)
 The engine answers each heartbeat with `desiredVersion`: the commit it was deployed from, which
@@ -184,7 +265,8 @@ and rolled-back commits are listed in `update-rolled-back`. The plist passes the
 `SF_RUNNER_STATE_DIR` so the wrapper and Node agree on it.
 
 **Turn it off** with `"autoUpdate": false` in `runner.json` (then restart the service:
-`launchctl kickstart -k gui/$(id -u)/com.software-factory.runner`). The runner keeps reporting its
+`launchctl kickstart -k gui/$(id -u)/com.software-factory.runner` on macOS,
+`systemctl --user restart software-factory-runner` on Linux). The runner keeps reporting its
 version, as `blocked: auto-update is off`.
 
 **Moving an existing runner onto the wrapper** (once): with no jobs running, from the runner's
@@ -247,6 +329,9 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
 | `src/runner.ts` | Wires config → channel client + git + runner-local (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
-| `src/config.ts`, `src/cli.ts`, `src/launchd.ts` | `sf-runner pair/run/status/doctor/install/uninstall` |
+| `src/config.ts`, `src/cli.ts` | `sf-runner pair/run/status/doctor/install/uninstall` |
+| `src/service.ts`, `src/launchd.ts`, `src/systemd.ts` | The service by platform: launchd on macOS, a systemd user unit on Linux (ADR 0420) |
+| `src/linux.ts` | `doctor`'s Linux checks: bubblewrap, socat, a bwrap smoke run, user systemd, linger |
+| `scripts/linux-prereqs.sh`, `scripts/linux-check.sh` | Check a Linux box's packages; run the Linux-sensitive tests in a container |
 | `test/` | The lifecycle against a fake cloud serving the real signed protocol and a local bare repo |
 | `e2e/` | The end-to-end test above |
