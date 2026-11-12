@@ -77,7 +77,28 @@ export interface OpMap {
   "desktop.denyDevice": Def<typeof operations.desktopDenyDevice>;
   "desktopDevice.list": Def<typeof operations.desktopDeviceList>;
   "desktopDevice.revoke": Def<typeof operations.desktopDeviceRevoke>;
+  "device.list": Def<typeof operations.deviceList>;
+  "device.revoke": Def<typeof operations.deviceRevoke>;
+  "device.update": Def<typeof operations.deviceUpdate>;
+  "mobile.authLookup": Def<typeof operations.mobileAuthLookup>;
+  "mobile.approveDevice": Def<typeof operations.mobileApproveDevice>;
+  "mobile.denyDevice": Def<typeof operations.mobileDenyDevice>;
+  "mobile.pairOffer": Def<typeof operations.mobilePairOffer>;
+  "mobile.pairOfferStatus": Def<typeof operations.mobilePairOfferStatus>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
+  // The work model (spec 50): the backlog, ready and release.
+  "workItem.board": Def<typeof operations.workItemBoard>;
+  "workItem.update": Def<typeof operations.workItemUpdate>;
+  "workItem.move": Def<typeof operations.workItemMove>;
+  "workItem.release": Def<typeof operations.workItemRelease>;
+  "workItem.reorder": Def<typeof operations.workItemReorder>;
+  "workItem.link": Def<typeof operations.workItemLink>;
+  "workItem.unlink": Def<typeof operations.workItemUnlink>;
+  "project.workflow": Def<typeof operations.projectWorkflow>;
+  "mergeQueue.list": Def<typeof operations.mergeQueueList>;
+  "repository.list": Def<typeof operations.repositoryList>;
+  "cliToken.list": Def<typeof operations.cliTokenList>;
+  "cliToken.revoke": Def<typeof operations.cliTokenRevoke>;
 }
 
 export type OpName = keyof OpMap;
@@ -110,3 +131,5 @@ export type ConfigView = OpOutput<"config.get">;
 export type LiveView = OpOutput<"run.live">;
 export type LiveEvent = LiveView["events"][number];
 export type LiveSteer = LiveView["steers"][number];
+export type BoardItem = OpOutput<"workItem.board">["items"][number];
+export type ProjectWorkflow = OpOutput<"project.workflow">;

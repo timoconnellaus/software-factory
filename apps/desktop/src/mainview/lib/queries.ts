@@ -123,6 +123,51 @@ export const workListsQuery = (orgIds: string[]) =>
     refetchInterval: 15_000,
   });
 
+/**
+ * Every org's board (spec 50, `workItem.board`): backlog, shaping, ready, queued and active items in
+ * pull order, each tagged with its org, and the counts per project and state (done and stopped
+ * included), which the Work list shows. The rail's org scope filters this on the client. With a
+ * project, only that project's (the server filters by its index, and its 500 cap is the project's).
+ * The live socket's events refresh it (routes/root.tsx); the slow poll covers a dropped socket.
+ */
+export const boardsQuery = (orgIds: string[], projectId: string | null = null) =>
+  queryOptions({
+    queryKey: ["work", "board", orgIds, projectId],
+    queryFn: async () => {
+      const boards = await Promise.all(
+        orgIds.map(async (orgId) => ({
+          orgId,
+          board: await read("workItem.board", projectId ? { orgId, projectId } : { orgId }),
+        })),
+      );
+      return {
+        items: boards.flatMap(({ orgId, board }) => board.items.map((i) => ({ ...i, orgId }))),
+        counts: boards.flatMap(({ orgId, board }) => board.counts.map((c) => ({ ...c, orgId }))),
+      };
+    },
+    staleTime: 10_000,
+    refetchInterval: 60_000,
+  });
+
+/**
+ * The workflow a project's items follow and its stages in order, each with its label and phase
+ * (`project.workflow`, ADR 0492/0493): what New work names and the board's lanes come from.
+ */
+export const workflowQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["workflow", projectId],
+    queryFn: () => read("project.workflow", { projectId }),
+    staleTime: 60_000,
+  });
+
+/** A project's factory config (ADR 0370): its workflow and approvers, for the project page. */
+export const configQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId],
+    queryFn: () => read("config.get", { projectId }),
+    staleTime: 60_000,
+  });
+
 export const runnersQuery = () =>
   queryOptions({
     queryKey: ["runners"],

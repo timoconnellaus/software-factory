@@ -919,12 +919,17 @@ export interface CoreCliTokensTable {
   created_at: Iso;
   expires_at: Iso;
   revoked_at: Iso | null;
-  /** `cli` (sf) or `desktop` (the desktop app, bound to `device_id`; ADR 0391). */
-  kind: Generated<"cli" | "desktop">;
+  /**
+   * `cli` (sf), `desktop` (the desktop app) or `mobile` (the phone app), the last two bound to
+   * `device_id` (ADR 0391, 0541).
+   */
+  kind: Generated<"cli" | "desktop" | "mobile">;
   device_id: string | null;
 }
 
-export type KeyStorage = "secure-enclave" | "software";
+/** Where a device's key lives (ADR 0391, 0541): only the first three may decide. */
+export type KeyStorage = "secure-enclave" | "strongbox" | "tee" | "software";
+export type DevicePlatform = "macos" | "android";
 
 export interface CoreDesktopAuthRequestsTable {
   id: string;
@@ -933,6 +938,11 @@ export interface CoreDesktopAuthRequestsTable {
   /** The device's P-256 public key, as JWK JSON. */
   public_key: string;
   key_storage: Generated<KeyStorage>;
+  platform: Generated<DevicePlatform>;
+  /** A phone's parsed key attestation (ADR 0541), JSON. */
+  attestation: string | null;
+  /** The pair offer that approved a phone's sign-in (QR or typed code). */
+  offer_id: string | null;
   state: string;
   status: Generated<"pending" | "approved" | "denied" | "consumed">;
   user_id: string | null;
@@ -950,9 +960,46 @@ export interface CoreDesktopDevicesTable {
   name: string;
   public_key: string;
   key_storage: KeyStorage;
+  platform: Generated<DevicePlatform>;
+  /** A phone's parsed key attestation (ADR 0541), JSON; null for a Mac. */
+  attestation: string | null;
+  /** 1: the device may decide with a presence proof; 0: one-tap only (ADR 0541 decision 6). */
+  decides: Generated<number>;
   created_at: Iso;
   last_seen_at: Iso | null;
   revoked_at: Iso | null;
+}
+
+export interface CoreMobileNoncesTable {
+  nonce_hash: string;
+  /** A hash of the caller's network address, as the door saw it (per-caller limits). */
+  caller: Generated<string>;
+  created_at: Iso;
+  expires_at: Iso;
+  consumed_at: Iso | null;
+}
+
+export interface CorePairOffersTable {
+  id: string;
+  user_id: string;
+  surface: "app" | "desktop";
+  secret_hash: string;
+  code_tag: string;
+  code_hash: string;
+  attempts: Generated<number>;
+  created_at: Iso;
+  expires_at: Iso;
+  consumed_at: Iso | null;
+  closed_at: Iso | null;
+  device_id: string | null;
+}
+
+export interface CorePairCodeTriesTable {
+  id: string;
+  at: Iso;
+  ok: number;
+  /** A hash of the caller's network address, as the door saw it (per-caller limits). */
+  caller: Generated<string>;
 }
 
 export interface CorePresenceChallengesTable {
@@ -1023,4 +1070,7 @@ export interface CoreDatabase {
   core_desktop_auth_requests: CoreDesktopAuthRequestsTable;
   core_desktop_devices: CoreDesktopDevicesTable;
   core_presence_challenges: CorePresenceChallengesTable;
+  core_mobile_nonces: CoreMobileNoncesTable;
+  core_pair_offers: CorePairOffersTable;
+  core_pair_code_tries: CorePairCodeTriesTable;
 }

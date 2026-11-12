@@ -12,6 +12,7 @@ const PERSONAL = "org_personal";
 const CLIENT = "org_client";
 const FACTORY = "prj_factory";
 const CRM = "prj_crm";
+const SITE = "prj_site";
 const RUNNER = "rnr_m5";
 
 type Summary = OpOutput<"workItem.list">["items"][number];
@@ -43,8 +44,25 @@ function item(
     prUrl: null,
     createdAt: ago(60 * 26),
     updatedAt: ago(n),
+    priority: "normal",
+    repositoryId: "repo_software-factory",
+    releasedAt: ago(60 * 26),
     ...extra,
   };
+}
+
+/** Work before release (spec 50): captured in the backlog, shaped to ready, or queued. */
+function pre(
+  n: number,
+  title: string,
+  status: "backlog" | "ready" | "queued" | "shaping",
+  extra: Partial<Summary> = {},
+): Summary {
+  return item(n, title, "intake", status, {
+    size: null,
+    releasedAt: status === "queued" ? ago(50) : null,
+    ...extra,
+  });
 }
 
 export const ITEMS: Summary[] = [
@@ -74,13 +92,164 @@ export const ITEMS: Summary[] = [
   }),
   item(4, "Make the event log useful", "done", "done", { updatedAt: ago(60 * 40) }),
   item(1, "Attachments on work items", "done", "done", { updatedAt: ago(60 * 60) }),
+  item(7, "Rename the runner pairing command", "build", "cancelled", {
+    statusReason: "by you, from the app",
+    updatedAt: ago(60 * 70),
+  }),
+  item(6, "Retry verify when CI is late", "verify", "failed", {
+    statusReason: "verify failed three times",
+    updatedAt: ago(60 * 90),
+  }),
   item(3, "Import contacts from a CSV", "build", "running", {
     projectId: CRM,
     orgId: CLIENT,
+    repositoryId: "repo_crm",
     statusReason: "Builder",
     updatedAt: ago(22),
   }),
+  // The backlog and ready (spec 50, design WorkBacklog/WorkReady), in pull order per state.
+  pre(22, "Test the comment parser against every comment form", "backlog", {
+    priority: "high",
+    size: "small",
+    createdAt: ago(120),
+  }),
+  pre(21, "Show cost per work item on the Done list", "backlog", {
+    priority: "high",
+    size: "medium",
+    createdAt: ago(60 * 24),
+  }),
+  // No repository chosen: releasing it is refused (the behaviour tests' refused release).
+  pre(20, "Runner offline alert has no link to the runner", "backlog", {
+    createdAt: ago(60 * 48),
+    repositoryId: null,
+  }),
+  pre(17, "Dark mode for the review packet", "backlog", {
+    priority: "low",
+    size: "small",
+    createdAt: ago(60 * 120),
+  }),
+  pre(15, "Let a question be assigned to another member", "backlog", {
+    priority: "low",
+    size: "large",
+    createdAt: ago(60 * 144),
+  }),
+  pre(16, "Record usage for every run", "ready", {
+    priority: "high",
+    size: "medium",
+    createdAt: ago(60 * 72),
+  }),
+  pre(14, "Weekly regression run", "ready", {
+    priority: "high",
+    size: "small",
+    createdAt: ago(60 * 96),
+  }),
+  pre(28, "Show the plan's age at release", "queued", { size: "small", createdAt: ago(60 * 30) }),
+  pre(2, "Rewrite the pricing page intro", "ready", {
+    id: "wi_site_2",
+    projectId: SITE,
+    repositoryId: null,
+    size: "small",
+    createdAt: ago(60 * 50),
+  }),
+  pre(5, "Import contacts from a vCard", "backlog", {
+    id: "wi_crm_5",
+    projectId: CRM,
+    orgId: CLIENT,
+    repositoryId: "repo_crm",
+    size: "large",
+    createdAt: ago(60 * 70),
+  }),
 ];
+
+/** "Waits for" links (spec 50): #21 waits for #16; #14 for #26, still in verify. */
+const LINKS: [string, string][] = [
+  ["wi_21", "wi_16"],
+  ["wi_14", "wi_26"],
+];
+
+/**
+ * The Factory section's items (spec 41, slice 5): incidents are work items of kind incident, one
+ * item is in the merge queue and a released one waits for a slot. `workItem.list` serves them with
+ * ITEMS; the shell's tests pin ITEMS alone.
+ */
+export const FACTORY_ITEMS: Summary[] = [
+  item(40, "Factory incident: #8 had a run that failed", "merge", "waiting", {
+    kind: "incident",
+    source: "incident",
+    statusReason: "Packet ready",
+    prUrl: "https://github.com/example/software-factory/pull/47",
+    createdAt: ago(60 * 22),
+    updatedAt: ago(50),
+  }),
+  item(41, "Factory incident: #4 was sent back at review", "done", "done", {
+    kind: "incident",
+    source: "incident",
+    prUrl: "https://github.com/example/software-factory/pull/44",
+    createdAt: ago(60 * 50),
+    updatedAt: ago(60 * 45),
+  }),
+  item(42, "Keep the runner count fresh", "merge", "running", {
+    statusReason: "Merge queue: CI on the merged head",
+    updatedAt: ago(12),
+  }),
+  item(43, "Show the budget in the status bar", "intake", "queued", {
+    releasedAt: ago(25),
+    updatedAt: ago(25),
+  }),
+];
+
+/** The Factory project's config (spec 41, slice 5): a version as `config.get` returns it. */
+export const POLICY_DOC = {
+  version: 1,
+  autonomyPolicy: "balanced",
+  spec: { requiredFrom: "medium" },
+  wipLimit: 3,
+  retryLimit: 2,
+  approvers: ["owner"],
+  agents: [
+    {
+      name: "Builder",
+      role: "implement",
+      tier: "standard",
+      instructions:
+        "Work one task at a time and commit when its checks pass.\nWrite the failing test before the fix.\nNever edit, skip or delete an existing test to make a check pass.\nIf a criterion cannot be proven by a check, say so in your notes.",
+      requires: [],
+    },
+    {
+      name: "Spec critic",
+      role: "review",
+      tier: "light",
+      instructions: "Challenge the spec before a person approves it.\nName what isn't testable.",
+      requires: [],
+    },
+  ],
+  workflows: [
+    {
+      name: "Software",
+      description: "Code changes: a spec, a build, verify and review.",
+      slots: {
+        afterSpec: [{ id: "critic", kind: "work", name: "Spec critic", agent: "Spec critic" }],
+        beforeVerify: [],
+        afterVerify: [
+          {
+            id: "ui-check",
+            kind: "gate",
+            name: "Browser walk-through",
+            when: { domain: "ui" },
+          },
+        ],
+      },
+      core: { build: "Builder" },
+    },
+    {
+      name: "Docs",
+      description: "Writing only: no build, a person reads it.",
+      slots: { afterSpec: [], beforeVerify: [], afterVerify: [] },
+      core: {},
+    },
+  ],
+  workflow: "Software",
+};
 
 const project = (id: string, orgId: string, name: string, slug: string) => ({
   id,
@@ -110,6 +279,13 @@ const project = (id: string, orgId: string, name: string, slug: string) => ({
 
 const PROJECTS = [
   project(FACTORY, PERSONAL, "Factory", "software-factory"),
+  // A project with no repository yet (ADR 0490): its work can be captured, not released.
+  {
+    ...project(SITE, PERSONAL, "Website", "website"),
+    repo: null,
+    repositories: [],
+    connection: { status: "missing" as const, account: null, manageUrl: null },
+  },
   project(CRM, CLIENT, "CRM", "crm"),
 ];
 
@@ -152,7 +328,9 @@ const INBOX: OpOutput<"inbox.list"> = {
       irreversible: false,
     },
   ],
-  running: ITEMS.filter((i) => ["running", "waiting", "paused"].includes(i.status)),
+  running: [...ITEMS, ...FACTORY_ITEMS].filter((i) =>
+    ["running", "waiting", "paused"].includes(i.status),
+  ),
   runners: [
     {
       id: RUNNER,
@@ -198,7 +376,140 @@ const CRITERIA = [
   "A flagged change always goes to a person",
 ];
 
+const PRE = ["backlog", "shaping", "ready", "queued"];
+const ACTIVE_STATES = ["running", "waiting", "paused"];
+const PRIORITY_ORDER = ["urgent", "high", "normal", "low"];
+
+function link(id: string) {
+  const w = ITEMS.find((i) => i.id === id) as Summary;
+  return { id: w.id, number: w.number, title: w.title, status: w.status, projectId: w.projectId };
+}
+
+/** `workItem.board` over the fixtures: the states asked for, in pull order, and counts per state. */
+function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
+  const states = input.states ?? [...PRE, ...ACTIVE_STATES];
+  const inOrg = ITEMS.filter(
+    (i) => i.orgId === input.orgId && (!input.projectId || i.projectId === input.projectId),
+  );
+  const items = inOrg
+    .filter((i) => (states as string[]).includes(i.status))
+    .sort(
+      (a, b) =>
+        PRIORITY_ORDER.indexOf(a.priority ?? "normal") -
+          PRIORITY_ORDER.indexOf(b.priority ?? "normal") ||
+        Date.parse(a.createdAt) - Date.parse(b.createdAt),
+    )
+    .map((i) => {
+      const waitsFor = LINKS.filter(([from]) => from === i.id).map(([, to]) => link(to));
+      return {
+        id: i.id,
+        projectId: i.projectId,
+        number: i.number,
+        title: i.title,
+        kind: i.kind,
+        status: i.status,
+        statusReason: i.statusReason,
+        stage: i.stage,
+        // The item's phase (core's itemPhase): shaping before release, delivery from release on.
+        phase: (["backlog", "shaping", "ready"].includes(i.status) ? "shaping" : "delivery") as
+          | "shaping"
+          | "delivery",
+        priority: i.priority ?? "normal",
+        rank: Date.parse(i.createdAt) / 1000,
+        size: i.size,
+        repositoryId: i.repositoryId ?? null,
+        requesterUserId: i.requesterUserId,
+        releasedAt: i.releasedAt ?? null,
+        createdAt: i.createdAt,
+        updatedAt: i.updatedAt,
+        waitsFor,
+        blockedBy: waitsFor.filter((w) => w.status !== "done"),
+      };
+    });
+  const counts = new Map<string, { projectId: string; status: string; n: number }>();
+  for (const i of inOrg) {
+    const key = `${i.projectId}:${i.status}`;
+    const c = counts.get(key) ?? { projectId: i.projectId, status: i.status, n: 0 };
+    c.n++;
+    counts.set(key, c);
+  }
+  return { items, counts: [...counts.values()] };
+}
+
+const STAGES_IN_ORDER = [
+  ["triage", "Triage", "shaping"],
+  ["spec", "Spec", "shaping"],
+  ["build", "Build", "delivery"],
+  ["verify", "Verify", "delivery"],
+  ["merge", "Merge", "delivery"],
+] as const;
+
+/**
+ * `project.workflow`: Factory names its workflow, Website runs the built-in one, CRM defines
+ * workflows and names none (it fails closed: work is captured, never released).
+ */
+function workflowOf(projectId: string): OpOutput<"project.workflow"> {
+  const stages = STAGES_IN_ORDER.map(([stage, label, phase]) => ({ stage, label, phase }));
+  if (projectId === CRM) {
+    return {
+      projectId,
+      workflow: null,
+      unavailable: "the project defines workflows but names none for its items",
+      stages,
+    };
+  }
+  const workflow =
+    projectId === FACTORY
+      ? {
+          name: "software",
+          label: "Software",
+          description: "Plan, build, verify, review",
+          builtIn: false,
+        }
+      : {
+          name: "software",
+          label: "Software (built in)",
+          description: "Triage, spec, build, verify and merge",
+          builtIn: true,
+        };
+  return { projectId, workflow, unavailable: null, stages };
+}
+
+/** A work item: before release it has no stages, runs, spec or gates yet (spec 50). */
 function detail(id: string): OpOutput<"workItem.get"> {
+  const d = pipelineDetail(id);
+  const links = {
+    releasedBy: d.item.releasedAt ? ME : null,
+    shaping: null,
+    waitsFor: LINKS.filter(([from]) => from === id).map(([, to]) => link(to)),
+    waitedOnBy: LINKS.filter(([, to]) => to === id).map(([from]) => link(from)),
+  };
+  if (!PRE.includes(d.item.status)) return { ...d, ...links };
+  return {
+    ...d,
+    ...links,
+    item: {
+      ...d.item,
+      body:
+        id === "wi_21"
+          ? "The Done list shows tokens. I want to see what each item cost in dollars too, so I can tell which kinds of work are expensive."
+          : d.item.body,
+      specRequired: null,
+      specDecisionReason: null,
+      domains: [],
+      workflow: null,
+      workflowReason: null,
+    },
+    stages: [],
+    spec: null,
+    questions: [],
+    gates: [],
+    runs: [],
+    reviewPacket: null,
+  };
+}
+
+function pipelineDetail(id: string): OpOutput<"workItem.get"> {
   const base = ITEMS.find((i) => i.id === id) ?? (ITEMS[0] as Summary);
   const n = base.number;
   const atMerge = base.stage === "merge";
@@ -477,10 +788,60 @@ const SETUP: OpOutput<"setup.status"> = {
       manageUrl: "https://github.com/settings/installations",
     },
   ],
-  projects: [{ ...(PROJECTS[0] as (typeof PROJECTS)[number]), protection: null }],
+  // The check's real result while the ruleset isn't imported (the protect step above).
+  projects: [
+    {
+      ...(PROJECTS[0] as (typeof PROJECTS)[number]),
+      protection: {
+        state: "red",
+        branch: "main",
+        problems: ["`factory/verify` is not a required check on main"],
+        warnings: [],
+        files: [],
+        rulesetsUrl: "https://github.com/example/software-factory/settings/rules",
+        viewerIsRepoAdmin: true,
+        adminMessage: "",
+      },
+    },
+  ],
   missingEvents: [],
   runners: { total: 1, online: 1 },
 };
+
+/**
+ * Rows of core_cli_tokens as the engine has them: each desktop app's token (kind "desktop", made by
+ * `desktop.authExchange`) beside a CLI token. `cliToken.list` answers only the CLI ones.
+ */
+export const TOKENS: (OpOutput<"cliToken.list">["tokens"][number] & { kind: "cli" | "desktop" })[] =
+  [
+    {
+      id: "clt_desktop_m5",
+      name: "M5",
+      kind: "desktop",
+      scope: "write",
+      createdAt: ago(60 * 24 * 9),
+      expiresAt: new Date(now + 21 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+    {
+      id: "clt_desktop_mini",
+      name: "Mac mini",
+      kind: "desktop",
+      scope: "write",
+      createdAt: ago(60 * 24 * 20),
+      expiresAt: new Date(now + 10 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+    {
+      id: "clt_1",
+      name: "M5 terminal",
+      kind: "cli",
+      scope: "write",
+      createdAt: ago(60 * 24 * 4),
+      expiresAt: new Date(now + 26 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+  ];
 
 type PlanningQ = OpOutput<"planning.get">["questions"][number];
 
@@ -707,6 +1068,32 @@ function liveView(): OpOutput<"run.live"> {
 
 type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
 
+/** A refusal in the server's shape: the fake door answers `{ ok: false, code, error }`. */
+export class Refusal extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Writes the behaviour tests (screenshots/behave.mjs) make. Nothing changes: each answers as the
+ * server would, and the fake door records the call. Releasing #20 is refused as core refuses an
+ * item with no repository.
+ */
+const released = (input: { workItemId: string }) => {
+  const i = ITEMS.find((x) => x.id === input.workItemId);
+  if (i && !i.repositoryId) {
+    throw new Refusal(
+      "conflict",
+      `work item #${i.number} needs a repository: choose one of the project's 1 (workItem.update)`,
+    );
+  }
+  return { status: "queued", blockedBy: [] };
+};
+
 export const ANSWERS: Answers = {
   "org.list": () => ({
     userId: ME,
@@ -718,9 +1105,11 @@ export const ANSWERS: Answers = {
   "project.list": (input) => ({ projects: PROJECTS.filter((p) => p.orgId === input.orgId) }),
   "inbox.list": () => INBOX,
   "workItem.list": (input) => ({
-    items: ITEMS.filter((i) => !input.orgId || i.orgId === input.orgId),
+    items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
   }),
   "workItem.get": (input) => detail(input.workItemId),
+  "workItem.board": (input) => board(input),
+  "project.workflow": (input) => workflowOf(input.projectId),
   "workItem.timeline": () => TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),
@@ -732,7 +1121,12 @@ export const ANSWERS: Answers = {
         name: "M5",
         ownerUserId: ME,
         keyVersion: 1,
-        manifest: null,
+        manifest: {
+          contractVersion: "1",
+          runnerKind: "local",
+          harnesses: ["claude-code"],
+          capabilities: [],
+        },
         capacityMax: 2,
         light: { max: 6, inUse: 2 },
         accepting: true,
@@ -742,9 +1136,97 @@ export const ANSWERS: Answers = {
         desiredVersion: "5da8988",
         autoUpdate: true,
         update: null,
-        accounts: null,
+        accounts: { names: ["work", "personal"], active: "work", requested: null, limits: [] },
       },
     ],
+  }),
+  "config.get": (input) => ({
+    projectId: input.projectId,
+    current: {
+      version: 12,
+      sha: "5da8988",
+      source: "app",
+      note: "Two agents and the Software workflow",
+      createdBy: "owner",
+      createdAt: ago(60 * 24 * 3),
+      valid: true,
+      impact: "neutral",
+      policy: POLICY_DOC,
+    },
+    error: null,
+    history: [],
+    pending:
+      input.projectId === FACTORY
+        ? [
+            {
+              pendingActionId: "pa_cfg_1",
+              operation: "config.save",
+              note: "Retries per item, 2 to 3",
+              by: "owner",
+              createdAt: ago(30),
+              baseVersion: 12,
+            },
+          ]
+        : [],
+  }),
+  "desktopDevice.list": () => ({
+    devices: [
+      {
+        id: "dev_m5",
+        name: "M5",
+        platform: "macos" as const,
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 9),
+        lastSeenAt: ago(0),
+        revokedAt: null,
+        decides: true,
+        attestation: null,
+        current: true,
+      },
+      {
+        id: "dsk_mini",
+        name: "Mac mini",
+        platform: "macos" as const,
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 20),
+        lastSeenAt: ago(60 * 24 * 2),
+        revokedAt: null,
+        decides: true,
+        attestation: null,
+        current: false,
+      },
+      {
+        id: "dsk_old",
+        name: "Old laptop",
+        platform: "macos" as const,
+        keyStorage: "software",
+        createdAt: ago(60 * 24 * 60),
+        lastSeenAt: ago(60 * 24 * 40),
+        revokedAt: ago(60 * 24 * 30),
+        decides: true,
+        attestation: null,
+        current: false,
+      },
+    ],
+  }),
+  // The door lists only kind "cli" (a desktop's token is its device's), as the engine does.
+  "cliToken.list": () => ({
+    tokens: TOKENS.filter((t) => t.kind === "cli").map(({ kind: _, ...t }) => t),
+  }),
+  "mergeQueue.list": (input) => ({
+    entries:
+      input.projectId === FACTORY
+        ? [
+            {
+              workItemId: "wi_42",
+              number: 42,
+              title: "Keep the runner count fresh",
+              headSha: "9c41e07d2b",
+              enqueuedAt: ago(12),
+              repositoryId: "repo_software-factory",
+            },
+          ]
+        : [],
   }),
   "setup.status": () => SETUP,
   "workItem.previewRouting": () => ({
@@ -756,4 +1238,14 @@ export const ANSWERS: Answers = {
     waitReason: null,
   }),
   "github.openPullRequests": () => ({ pulls: [] }),
+  "workItem.release": released,
+  "workItem.move": () => ({ status: "ready" }),
+  "workItem.update": (input) => ({ workItemId: input.workItemId }) as never,
+  "workItem.create": (input) =>
+    ({
+      workItemId: "wi_99",
+      number: 99,
+      status: input.state ?? "backlog",
+      outcome: "created",
+    }) as never,
 };
