@@ -153,6 +153,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
           rateLimitedUntil: null,
           ...(selfUpdate ? { version: selfUpdate.report() } : {}),
           ...(accounts ? { accounts } : {}),
+          compat: this.compat,
         },
       );
       this.failures = 0;

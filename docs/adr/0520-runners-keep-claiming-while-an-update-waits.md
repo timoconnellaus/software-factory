@@ -21,14 +21,18 @@ code at all.
    - **Runner code** is `local/runner-host`, every `packages/runner-*` and `packages/harness-*`, and
      their workspace dependency closure through `dependencies`, `optionalDependencies` and
      `peerDependencies` (from the package.json files, not a hand list), plus the root
-     `package.json`, `pnpm-workspace.yaml` and `.nvmrc`. Not `devDependencies` (tooling never runs
-     on a host) and not `pnpm-lock.yaml` (a runner installs its own commit's lockfile, which matches
-     its own package.json files).
+     `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` and `.nvmrc`. Not `devDependencies`
+     (tooling never runs on a host). The lockfile counts: a resolution change reaches a runner only
+     through an update, so a lockfile-only bump moves runners too, the safe side.
    - **First-parent** so the answer is one of `main`'s own commits, which passed CI and the merge
      gate, never a PR branch's commit.
-   - **A runner at or ahead of the desired commit is current.** A runner still on a later deployed
-     commit (from before this change, or from a deploy that has since been followed by engine-only
-     ones) already runs that code. Only a runner strictly behind it updates.
+   - **A runner at or ahead of the desired commit, on `origin/main`, is current.** A runner still on
+     a later deployed commit (from before this change, or from a deploy that has since been followed
+     by engine-only ones) already runs that code. A checkout with unpushed commits of its own isn't
+     current: it is blocked (not a fast-forward). Only a runner strictly behind it updates.
+   - A `workflow_dispatch` deploy from a branch computes `RUNNER_SHA` on that branch, so it can name
+     a commit that isn't on `main`. That fails safe: a runner refuses a desired commit that isn't on
+     `origin/main` (blocked) and keeps claiming on its current code.
 2. **A pending update doesn't stop claims.** A runner behind the desired commit keeps claiming on
    its current code and updates at the first heartbeat where no job is running.
 3. **Caps, so a busy runner still updates.** While the update has been pending:
@@ -38,9 +42,18 @@ code at all.
    - **60 minutes:** it claims nothing, so light jobs can't hold the update off forever.
 
    Both are in code (`UPDATE_HEAVY_CAP_MS`, `UPDATE_ALL_CAP_MS`) and can be set in `runner.json`
-   (`updateCaps`) for tests only. No job is ever cancelled for an update. A planning session that
-   stays open still holds the update off past 60 minutes; spec 39 (re-adopting live jobs after a
-   restart) is what removes that.
+   (`updateCaps`) for tests only. The timer is kept in `<stateDir>/update-pending-since`, so a
+   crash or a restart by hand doesn't restart it, and a transient failure (a fetch, a git error)
+   doesn't reset it; only reaching the commit, or a lasting block, does. No job is ever cancelled
+   for an update.
+   - **Planning can't hold an update off.** A planning session moves at human speed, and the engine
+     only asks one to yield from inside the claim path, which a runner claiming nothing never
+     reaches. So: (1) the engine places no planning job (a new session or a pinned resume) on a
+     runner that reports `waiting`; (2) the runner reports what it claims (`update.claims`: `all`,
+     `light`, `none`), and a heartbeat with `waiting` and `none` asks the runner's oldest idle
+     planning session (nobody present, nothing undelivered) to yield, through the existing yield.
+     Its resume is pinned to the runner and placed once it has updated. A session with a person
+     actively in it still holds the update until they leave it idle; spec 39 removes that.
 4. **A breaking change drains at once, through `RUNNER_COMPAT`.** `packages/runner-contract`
    exports `RUNNER_COMPAT`, a number. The engine sends its own as `minRunnerCompat` on every
    heartbeat; a runner whose code has a lower one claims nothing from that heartbeat on, and
@@ -51,6 +64,11 @@ code at all.
      (it would need a second commit or a deploy-time computation), and comparing one needs an
      ancestry check against a commit the runner may not have fetched. A number needs no git, and a
      host that isn't a git checkout (no self-update) can still refuse to claim.
+   - **The engine enforces it too.** The heartbeat carries the runner code's `RUNNER_COMPAT` as
+     `compat` (with or without self-update), `core_runners.compat` stores it (migration 0290;
+     missing counts as 1), and the claim handler sends no job to a runner below the engine's own. A
+     runner from before this ADR, or one that is blocked or rolled back, gets nothing after a bump
+     even though its own code doesn't know to stop.
 5. **The compatibility rule** (also in `RUNNER_COMPAT`'s comment and `wire.ts`'s header). While
    `RUNNER_COMPAT` stays the same, the engine serves a runner one or more commits behind it:
    - **Runner → engine requests** are validated by the engine with zod. A field is added only as

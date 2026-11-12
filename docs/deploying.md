@@ -63,11 +63,13 @@ that changed runner code, so an engine-only or app-only deploy moves no runner.
 - **runner code** is `local/runner-host`, `packages/runner-*`, `packages/harness-*` and their
   workspace dependency closure (`dependencies`, `optionalDependencies` and `peerDependencies` on
   `workspace:` versions, read from the package.json files), plus the root `package.json`,
-  `pnpm-workspace.yaml` and `.nvmrc`. Not `devDependencies`, and not `pnpm-lock.yaml` (a runner
-  installs its own commit's lockfile);
+  `pnpm-lock.yaml`, `pnpm-workspace.yaml` and `.nvmrc`. Not `devDependencies`;
 - `git log -1 --first-parent <deployed> -- <those paths>`. In a shallow clone it gives up and
   leaves `RUNNER_SHA` unset; the engine then answers `DEPLOYED_SHA`, which is safe (runners just
   update more often).
+
+A `workflow_dispatch` run from a branch computes it on that branch. That fails safe: runners
+refuse a desired commit that isn't on `origin/main` and keep claiming on their current code.
 
 `node -e 'import("./scripts/deploy/lib.ts").then(m => console.log(m.runnerSha("HEAD") ?? "unknown"))'`
 prints it for a local checkout.

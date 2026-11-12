@@ -218,11 +218,16 @@ export function deployArgs(
 export const RUNNER_ROOTS = ["local/runner-host", "packages/runner-*", "packages/harness-*"];
 
 /**
- * Repo files outside the packages that change what a runner installs or runs. `pnpm-lock.yaml` is
- * left out on purpose: a runner installs its own commit's lockfile, which always matches its own
- * package.json files, so a lockfile-only change elsewhere never breaks it.
+ * Repo files outside the packages that change what a runner installs or runs, `pnpm-lock.yaml`
+ * included: a runner installs its own commit's lockfile, so a resolution change only reaches it
+ * through an update (a lockfile-only bump then moves runners too, which is the safe side).
  */
-export const RUNNER_REPO_FILES = ["package.json", "pnpm-workspace.yaml", ".nvmrc"];
+export const RUNNER_REPO_FILES = [
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  ".nvmrc",
+];
 
 /** Workspace package folders (repo-relative) by package name, from pnpm-workspace.yaml. */
 export function workspacePackages(base = root): Map<string, string> {

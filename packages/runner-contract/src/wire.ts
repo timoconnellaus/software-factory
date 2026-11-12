@@ -345,9 +345,14 @@ export const runnerVersionSchema = z.object({
     state: z.enum(RUNNER_UPDATE_STATES),
     target: commitSha.nullable(),
     reason: z.string().max(500).nullable(),
+    /**
+     * What it claims while `waiting` (ADR 0520): `all` as usual, `light` jobs only (the update has
+     * waited past its first cap), or `none` (past the second cap, or the engine needs a newer
+     * runner). On `none` the engine asks its idle planning sessions to yield. Optional: older
+     * runners omit it.
+     */
+    claims: z.enum(["all", "light", "none"]).optional(),
   }),
-  /** The runner code's RUNNER_COMPAT (ADR 0520). Optional: older runners omit it. */
-  compat: z.number().int().min(0).optional(),
 });
 export type RunnerVersion = z.infer<typeof runnerVersionSchema>;
 
@@ -384,6 +389,11 @@ export const heartbeatRequestSchema = z.object({
   version: runnerVersionSchema.optional(),
   /** The host's Claude accounts, names only (ADR 0410). Optional: older hosts omit it. */
   accounts: runnerAccountsSchema.optional(),
+  /**
+   * The runner code's RUNNER_COMPAT (ADR 0520), sent with or without self-update. Optional: older
+   * hosts omit it, which counts as 1. The engine sends no job to a runner below its own.
+   */
+  compat: z.number().int().min(0).optional(),
 });
 
 export const runnerCommandSchema = z.discriminatedUnion("kind", [

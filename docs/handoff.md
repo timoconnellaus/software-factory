@@ -232,7 +232,9 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
 - Amended by ADR 0520 (spec 38): `desiredVersion` is `RUNNER_SHA`, the last commit that changed
   runner code (the deploy computes it); runners keep claiming while an update waits (light only
   after 30 min, nothing after 60) and drain at once only for a `minRunnerCompat` above their
-  `RUNNER_COMPAT`. Spec 39 (re-adopt live jobs after a restart) is written, not built.
+  `RUNNER_COMPAT`. The engine enforces it too (migration 0290, `core_runners.compat`), places no
+  planning job on a `waiting` runner, and asks its idle planning sessions to yield once it claims
+  nothing. Spec 39 (re-adopt live jobs after a restart) is written, not built.
 - The runner host updates itself: idle → fast-forward to exactly that commit → `pnpm install
   --frozen-lockfile` → exit 75. launchd runs `local/runner-host/bin/sf-runner-service`, which rolls
   back after three unconfirmed starts. It reports `blocked` (with the reason) instead of guessing.

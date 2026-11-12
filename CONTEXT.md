@@ -307,7 +307,8 @@ _Avoid_: runner version (ambiguous with the compat level)
 **Runner compat level**
 `RUNNER_COMPAT` in `packages/runner-contract`: a number bumped by hand in the PR that makes a change
 an older runner can't follow. The engine sends its own as `minRunnerCompat`; a runner below it claims
-nothing until it has updated (ADR 0520). Everything short of that follows the compatibility rule:
+nothing until it has updated, and the engine sends no job to a runner that reported a lower one
+(ADR 0520). Everything short of that follows the compatibility rule:
 optional new fields, growing enums, new kinds of job behind a capability.
 _Avoid_: contract version (`CONTRACT_VERSION`, which stays fixed)
 

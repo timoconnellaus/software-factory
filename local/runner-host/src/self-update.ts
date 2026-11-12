@@ -75,12 +75,15 @@ export interface VersionStatus {
 export type Check =
   | { kind: "current" }
   | { kind: "ready"; from: string; mode: "branch" | "detached" }
-  | { kind: "blocked"; reason: string }
+  /** `transient`: a fetch that failed, which doesn't restart a pending update's caps. */
+  | { kind: "blocked"; reason: string; transient?: true }
   | { kind: "rolled_back"; reason: string };
 
 export const recordDir = (stateDir: string) => join(stateDir, "update");
 export const rolledBackFile = (stateDir: string) => join(stateDir, "update-rolled-back");
 export const versionStatusFile = (stateDir: string) => join(stateDir, "version.json");
+/** When the update now pending was first seen (ISO), so a restart doesn't restart the caps. */
+export const pendingSinceFile = (stateDir: string) => join(stateDir, "update-pending-since");
 
 const FIELDS = ["status", "from", "to", "mode", "starts", "at", "reason"] as const;
 
@@ -236,8 +239,28 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
   let sha = await current();
   let lastFetch = 0;
   let lastLogged = "";
-  /** When the update now pending was first seen (ms); null while none is. */
-  let pendingSince: number | null = null;
+  /**
+   * When the update now pending was first seen (ms); null while none is. Kept in a file, so a crash
+   * or a restart by hand doesn't restart the caps (ADR 0520).
+   */
+  let pendingSince: number | null = await readFile(pendingSinceFile(stateDir), "utf8").then(
+    (text) => {
+      const at = Date.parse(text.trim());
+      return Number.isNaN(at) ? null : at;
+    },
+    () => null,
+  );
+  const startPending = async () => {
+    if (pendingSince !== null) return;
+    pendingSince = now().getTime();
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(pendingSinceFile(stateDir), `${new Date(pendingSince).toISOString()}\n`);
+  };
+  const clearPending = async () => {
+    if (pendingSince === null) return;
+    pendingSince = null;
+    await rm(pendingSinceFile(stateDir), { force: true });
+  };
 
   // Before the first `consider`: say what the last update did, if it was rolled back.
   const initial = await readUpdateRecord(stateDir);
@@ -254,9 +277,13 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
   const check = async (desired: string | null): Promise<Check> => {
     sha = await current();
     if (!desired || desired === sha) return { kind: "current" };
-    // At or ahead of the desired commit: current (ADR 0520). The desired commit is the last one that
-    // changed runner code, so a runner on a later commit (the deployed one, say) already runs it.
-    if ((await git("merge-base", "--is-ancestor", desired, sha)).code === 0) {
+    // At or ahead of the desired commit, on origin/main: current (ADR 0520). The desired commit is
+    // the last one that changed runner code, so a runner on a later commit of main (the deployed
+    // one, say) already runs it. A checkout with commits of its own isn't: it is blocked below.
+    if (
+      (await git("merge-base", "--is-ancestor", desired, sha)).code === 0 &&
+      (await git("merge-base", "--is-ancestor", sha, "refs/remotes/origin/main")).code === 0
+    ) {
       return { kind: "current" };
     }
     if (!options.autoUpdate) return { kind: "blocked", reason: "auto-update is off" };
@@ -304,6 +331,7 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
           return {
             kind: "blocked",
             reason: `can't fetch origin: ${fetched.stderr.trim().slice(0, 200)}`,
+            transient: true,
           };
         }
       }
@@ -400,15 +428,19 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
     current,
     check,
     apply,
-    report: () => ({ sha, autoUpdate: options.autoUpdate, update: state, compat }),
+    report: () => ({ sha, autoUpdate: options.autoUpdate, update: state }),
     async consider(desired, idle, minCompat) {
       // The engine made a change this code can't follow (ADR 0520): claim nothing, whatever else
       // holds. Jobs already running finish; the update goes ahead once they have, if it can.
       const incompatible = typeof minCompat === "number" && minCompat > compat;
       const tooOld = `the engine needs runner compat ${minCompat}, this code is ${compat}`;
-      // Not updating now: claim as usual, or nothing at all when incompatible.
-      const stay = (next: RunnerVersion["update"]): UpdateDecision => {
-        pendingSince = null;
+      // Not updating now: claim as usual, or nothing at all when incompatible. A transient failure
+      // (a fetch, a git error) keeps a pending update's timer; anything else settles it.
+      const stay = async (
+        next: RunnerVersion["update"],
+        transient = false,
+      ): Promise<UpdateDecision> => {
+        if (!transient) await clearPending();
         if (!incompatible) {
           set(next);
           return "claim";
@@ -424,24 +456,27 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
       try {
         const c = await check(desired);
         if (c.kind === "current") {
-          decision = stay({
+          decision = await stay({
             state: "current",
             target: desired,
             reason: incompatible ? "it is already at the desired commit" : null,
           });
         } else if (c.kind === "blocked") {
-          decision = stay({ state: "blocked", target: desired, reason: c.reason });
+          decision = await stay(
+            { state: "blocked", target: desired, reason: c.reason },
+            c.transient === true,
+          );
         } else if (c.kind === "rolled_back") {
-          decision = stay({ state: "rolled_back", target: desired, reason: c.reason });
+          decision = await stay({ state: "rolled_back", target: desired, reason: c.reason });
         } else if (options.canRestart === false) {
-          decision = stay({
+          decision = await stay({
             state: "blocked",
             target: desired,
             reason: "not running as the service (sf-runner install), so nothing would restart it",
           });
         } else if (!idle) {
-          pendingSince ??= now().getTime();
-          const waited = now().getTime() - pendingSince;
+          await startPending();
+          const waited = now().getTime() - (pendingSince ?? now().getTime());
           const minutes = `${Math.round(waited / 60_000)} min`;
           const waiting = (reason: string, next: UpdateDecision): UpdateDecision => {
             set({ state: "waiting", target: desired, reason });
@@ -467,16 +502,27 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
           set({ state: "updating", target: desired, reason: null });
           log(`self-update: ${short(c.from)} → ${short(desired)}`);
           const failed = await apply(desired, c.from, c.mode);
-          if (failed) decision = stay({ state: "blocked", target: desired, reason: failed });
-          else decision = "restart";
+          if (failed) decision = await stay({ state: "blocked", target: desired, reason: failed });
+          else {
+            await clearPending();
+            decision = "restart";
+          }
         }
       } catch (err) {
-        decision = stay({
-          state: "blocked",
-          target: desired,
-          reason: `self-update check failed: ${err instanceof Error ? err.message : String(err)}`,
-        });
+        decision = await stay(
+          {
+            state: "blocked",
+            target: desired,
+            reason: `self-update check failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+          true,
+        );
       }
+      // What it claims, for the engine (ADR 0520): on `none` it asks idle planning sessions to yield.
+      state = {
+        ...state,
+        claims: decision === "claim" ? "all" : decision === "light" ? "light" : "none",
+      };
       await persist(desired).catch((err) => log(`version status file: ${err}`));
       return decision;
     },

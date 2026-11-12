@@ -199,17 +199,24 @@ test("runnerSha is the last first-parent commit on main that changed runner code
   const engine = w.commit("engine");
   assert.equal(runnerSha(engine, w.dir), first);
   w.write("packages/config/tsconfig.json", "{}");
-  w.write("pnpm-lock.yaml", "lockfileVersion: 9\n# bumped\n");
-  const tooling = w.commit("tooling and lockfile");
+  const tooling = w.commit("tooling");
   assert.equal(runnerSha(tooling, w.dir), first);
+  // A lockfile change does: it can change what a runner installs.
+  w.write("pnpm-lock.yaml", "lockfileVersion: 9\n# bumped\n");
+  const lock = w.commit("lockfile");
+  assert.equal(runnerSha(lock, w.dir), lock);
 
   // A package the runner depends on, two steps away, does.
   w.write("packages/timeline/index.ts", "v2");
   const timeline = w.commit("timeline");
   assert.equal(runnerSha(timeline, w.dir), timeline);
+  // A revert of a runner change is a runner change: runners move forward onto it.
+  w.run("-c", "user.name=t", "-c", "user.email=t@example.invalid", "revert", "--no-edit", timeline);
+  const reverted = w.run("rev-parse", "HEAD");
+  assert.equal(runnerSha(reverted, w.dir), reverted);
   w.write("packages/core/index.ts", "core");
   const core = w.commit("core");
-  assert.equal(runnerSha(core, w.dir), timeline);
+  assert.equal(runnerSha(core, w.dir), reverted);
 
   // A merged PR: the merge commit on main, never the branch's own commit.
   w.run("checkout", "-q", "-b", "feature");

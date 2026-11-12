@@ -233,6 +233,8 @@ function reportRunnerState(
     rateLimitedUntil?: string | null | undefined;
     version?: z.infer<typeof runnerVersionSchema> | undefined;
     accounts?: RunnerAccounts | undefined;
+    /** Only the heartbeat carries it; a claim leaves the stored value alone. */
+    compat?: number | null;
   },
 ): { pendingAccount: string | null } {
   // The owner's pick is done once the runner reports it active, and moot once the runner reports
@@ -266,6 +268,7 @@ function reportRunnerState(
             }
           : {}),
         ...(report.accounts ? { accounts: json(report.accounts) } : {}),
+        ...(report.compat !== undefined ? { compat: report.compat } : {}),
         ...(settled ? { account_requested: null, account_requested_at: null } : {}),
       })
       .where("id", "=", runner.id),
@@ -333,6 +336,8 @@ export const runnerHeartbeat = defineOperation({
     version: runnerVersionSchema.optional(),
     /** Its Claude accounts, names only (ADR 0410); older runners omit it. */
     accounts: runnerAccountsSchema.optional(),
+    /** Its code's RUNNER_COMPAT (ADR 0520); older runners omit it, which counts as 1. */
+    compat: z.number().int().min(0).optional(),
   }),
   output: z.object({
     commands: z.array(
@@ -349,7 +354,16 @@ export const runnerHeartbeat = defineOperation({
   }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
-    const { pendingAccount } = reportRunnerState(ctx, runner, input);
+    const { pendingAccount } = reportRunnerState(ctx, runner, {
+      ...input,
+      compat: input.compat ?? null,
+    });
+    // The runner claims nothing until an update it is waiting for (ADR 0520): free its light pool
+    // by asking an idle planning session (nobody there, nothing undelivered) to yield, as a full
+    // pool would. Its resume is pinned to this runner and placed once it has updated.
+    if (input.version?.update.state === "waiting" && input.version.update.claims === "none") {
+      await requestYield(ctx, runner.id);
+    }
     const commands: (
       | { kind: "cancel"; jobId: string; reason: string }
       | { kind: "account.use"; name: string }
@@ -492,6 +506,11 @@ export async function placementRefusal(
   }
   if (job.stage === "planning" && runner.light_max === null) {
     return { reason: "runner reports no light pool" };
+  }
+  // A runner waiting to update starts no planning session (ADR 0520): one moves at human speed and
+  // would hold the update off. A pinned resume waits for it too, then goes back to it.
+  if (job.stage === "planning" && runner.update_state === "waiting") {
+    return { reason: "runner is waiting to update" };
   }
   const fit = canRun(manifest, {
     harness: { id: job.harness } as Job["harness"],
@@ -788,6 +807,10 @@ export const jobClaim = defineOperation({
         .executeTakeFirst();
       return { job: await buildJob(ctx, prior, run, item, project, lease?.expires_at ?? ctx.now) };
     }
+
+    // Code older than the engine's compatibility level gets nothing (ADR 0520), whatever the runner
+    // decides itself: one from before RUNNER_COMPAT, or one that can't update, may still claim.
+    if ((runner.compat ?? 1) < RUNNER_COMPAT) return { job: null };
 
     const room = await freePools(ctx, current, input.capacity);
     if (!room || (!room.heavy && !room.light && !room.split)) return { job: null };

@@ -1,7 +1,15 @@
 // Spec 08 (ADR 0360): the runner updates itself to the deployed commit, only when idle, refuses
 // rather than guesses, and the `sh` wrapper rolls back an update that never confirmed.
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -151,7 +159,12 @@ describe("self-update: behind and idle (criterion 2)", () => {
     expect((await readUpdateRecord(w.stateDir))?.status).toBe("confirmed");
     expect(versions(cloud2)[0]?.sha).toBe(w.b);
     expect(versions(cloud2)[0]?.update.state).toBe("current");
-    expect(versions(cloud2)[1]?.update).toEqual({ state: "current", target: w.b, reason: null });
+    expect(versions(cloud2)[1]?.update).toEqual({
+      state: "current",
+      target: w.b,
+      reason: null,
+      claims: "all",
+    });
     expect(updated).toBe(1);
     expect(await readVersionStatus(w.stateDir)).toMatchObject({
       sha: w.b,
@@ -405,12 +418,13 @@ describe("self-update: the engine needs a newer runner (ADR 0520)", () => {
     await until("a few heartbeats", () => cloud.heartbeats.length >= seen + 4);
     expect(cloud.queue).toEqual([triage]);
     expect(host.activeJobs).toEqual([first.jobId]);
+    expect(cloud.heartbeats.at(-1)?.compat).toBe(1);
     expect(versions(cloud).at(-1)).toMatchObject({
-      compat: 1,
       update: {
         state: "waiting",
         reason:
           "the engine needs runner compat 2, this code is 1: claiming nothing, updating once its jobs end",
+        claims: "none",
       },
     });
 
@@ -430,6 +444,7 @@ describe("self-update: the engine needs a newer runner (ADR 0520)", () => {
       target: w.c,
       reason:
         "the engine needs runner compat 2, this code is 1, so it claims nothing; auto-update is off",
+      claims: "none",
     });
     // A compatible engine: claims as usual on its current code.
     expect(await u.consider(w.c, true, 1)).toBe("claim");
@@ -480,6 +495,82 @@ describe("self-update: the desired commit is the last runner change (ADR 0520)",
     writeFileSync(join(w.runner, "a.txt"), "changed");
     const off = await w.updater({ autoUpdate: false });
     expect(await off.check(w.a)).toEqual({ kind: "current" });
+  });
+
+  it("a checkout with unpushed commits on top of the desired commit isn't current", async () => {
+    const w = await world();
+    git(w.runner, "pull", "-q", "--ff-only", "origin", "main");
+    git(
+      w.runner,
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.invalid",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "local",
+    );
+    const local = head(w.runner);
+    const u = await w.updater();
+    expect(await u.check(w.b)).toEqual({
+      kind: "blocked",
+      reason: `${local.slice(0, 7)} has commits that aren't in ${w.b.slice(0, 7)}: not a fast-forward`,
+    });
+  });
+});
+
+describe("self-update: the caps' timer (ADR 0520)", () => {
+  it("survives a transient failure and a restart; settles once current", async () => {
+    const w = await world();
+    let clock = Date.parse("2026-11-12T10:00:00Z");
+    const now = () => new Date(clock);
+    const caps = { now, heavyAfterMs: 30 * 60_000, allAfterMs: 60 * 60_000 };
+    const u = await w.updater(caps);
+    expect(await u.consider(w.c, false)).toBe("claim");
+    expect(u.report().update).toMatchObject({ state: "waiting", claims: "all" });
+
+    // 20 minutes on, git fails for a moment (the checkout is unreadable): blocked, timer kept.
+    clock += 20 * 60_000;
+    renameSync(join(w.runner, ".git"), join(w.runner, ".git-away"));
+    expect(await u.consider(w.c, false)).toBe("claim");
+    expect(u.report().update.state).toBe("blocked");
+    renameSync(join(w.runner, ".git-away"), join(w.runner, ".git"));
+
+    // 31 minutes since it was first pending: light jobs only.
+    clock += 11 * 60_000;
+    expect(await u.consider(w.c, false)).toBe("light");
+    expect(u.report().update).toMatchObject({ state: "waiting", claims: "light" });
+
+    // A restart (crash, kickstart) keeps the timer: 61 minutes, nothing.
+    clock += 30 * 60_000;
+    const again = await w.updater(caps);
+    expect(await again.consider(w.c, false)).toBe("drain");
+    expect(again.report().update.reason).toBe(
+      "update pending 61 min: claiming nothing, updating once its jobs end",
+    );
+
+    // Updated to it by hand: current, and the timer is gone.
+    git(w.runner, "pull", "-q", "--ff-only", "origin", "main");
+    expect(await again.consider(w.c, false)).toBe("claim");
+    expect(existsSync(join(w.stateDir, "update-pending-since"))).toBe(false);
+    clock += 120 * 60_000;
+    const later = await w.updater(caps);
+    git(
+      w.seed,
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.invalid",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "d",
+    );
+    git(w.seed, "push", "-q", "origin", "main");
+    expect(await later.consider(head(w.seed), false)).toBe("claim");
   });
 });
 
@@ -598,6 +689,7 @@ describe("self-update: blocked (criterion 4)", () => {
       state: "blocked",
       target: w.c,
       reason: "the runner's checkout has local changes",
+      claims: "all",
     });
     expect(w.logs.filter((l) => l.includes("local changes"))).toHaveLength(1);
     expect(head(w.runner)).toBe(w.a);

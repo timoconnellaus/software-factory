@@ -354,7 +354,11 @@ ahead of it (on a later deployed commit, say) is `current`. The runner reports i
    finish. None is cancelled for an update. If the update has been pending:
    - **30 minutes**, it claims light jobs only (triage, spec, planning): its heartbeat and claims
      report the heavy pool full, so no new build or verify comes; ones already claimed finish;
-   - **60 minutes**, it claims nothing, so light jobs can't hold the update off forever.
+   - **60 minutes**, it claims nothing, so light jobs can't hold the update off forever. It
+     reports `claims: none`, and the engine asks its idle planning sessions to yield (they resume
+     here once it has updated). While it is `waiting` the engine starts no planning session on it.
+
+   The timer is kept in `update-pending-since` in the state dir, so a restart doesn't restart it.
 3. **At the first heartbeat with no job running it updates** (`updating`): it writes the update record, moves the checkout to
    exactly that commit (`git merge --ff-only`, or `checkout --detach` if detached), runs
    `pnpm install --frozen-lockfile` and exits 75, and launchd starts the new code. If the move or
@@ -373,7 +377,8 @@ and rolled-back commits are listed in `update-rolled-back`. The plist passes the
 
 **A breaking engine change drains at once.** The heartbeat also carries `minRunnerCompat`, the
 engine's `RUNNER_COMPAT` (`packages/runner-contract`). When it is above this code's, the runner
-claims nothing from that heartbeat on, whatever the caps say, and updates once its jobs have ended
+claims nothing from that heartbeat on, whatever the caps say (the engine also sends no job to a
+runner whose reported `compat` is below its own), and updates once its jobs have ended
 (or reports `blocked` with both reasons if it can't update). `RUNNER_COMPAT` is bumped by hand only
 for a change an older runner can't follow; the rule is in its comment and in ADR 0520.
 
