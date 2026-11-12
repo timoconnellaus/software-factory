@@ -264,6 +264,29 @@ rather than shown empty:
   (`workItem.list`). Rounds and Usage need runs and usage on a list read; Last 30 days and Export are
   left out.
 
+## As built (slice 7: the item side panel)
+*Amended 2026-11-12.* Screenshots: `docs/screenshots/desktop-work/panel-*` and
+`docs/screenshots/desktop-terminal/board-panel-*` (the terminal docked in the panel, typed into).
+- A card on a board or a row in a Work list (Backlog, Ready, Planning, In the factory, Done, a
+  project's page) opens the item in a panel over the right of the list (`peekItem` in
+  `lib/places.ts`). Links from outside the Work lists (the inbox, details, crumbs, search) still
+  open the page (`openItem`).
+- The panel is the item page's own view (`ItemView` in `routes/work.$id.index.tsx`): the same
+  header, stage strip, tabs and tab bodies, with **Expand** and **Close** in the header. Nothing
+  is forked.
+- The URL carries it (`/work?…&item=<id>&itemTab=<tab>`): opening pushes history, so back closes
+  it and forward reopens it; Close and Esc push too. Expand (or ⌘↵) opens `/work/<id>` with the same
+  tab, and back returns to the list with the panel open. The board's loader reads the panel's item
+  with the list, in the same batch.
+- Esc closes it, except while typing in a field, while a dialog or menu is open, or while the
+  terminal has the keyboard (the dock takes Esc first, as on the page).
+- **Open terminal** in the panel docks the session's terminal (spec 42) over the panel, not the
+  page: a view can declare itself the dock's host (`data-terminal-host`).
+- Focus (F, or Focus on the Plan tab) from the panel expands to the page first, then focuses.
+- The card that is open is marked on the board (a ring) and in lists.
+- **Not in this slice**: the README's activity stream of hand-offs and agent cards and the composer
+  that messages the running agent are slice 8 (`ItemRunLive`, `run.live` and `run.steer` in the
+  panel). The panel shows the tabs the page has.
 ### Review fixes to the board, All projects and Done (2026-11-12)
 - **Phases are the item's, never a stage's.** `workItem.board`'s `phase` is now the item's: shaping
   before release (backlog, shaping, ready), delivery from release on (the owner's decision: triage
@@ -367,3 +390,22 @@ then This Mac and Devices (yours). Screenshots are with slice 5's in
   is listed once and revoking a CLI token can't sign it out. Runners are under Factory. The design's notifications have no operation yet.
 - **Members** isn't listed: no operation returns an org's members (`org.list` gives only your own
   role), so the page would show you alone.
+
+### Review fixes to the item side panel (2026-11-12)
+- **Width**: about 520px, never more than half the content area (the list and the page), so the
+  board stays readable beside it; its left edge drags (or arrow keys on it) to resize, and the
+  width is remembered in this browser. When the page area is under 720px it takes all of it.
+- **Its bar**: the crumbs, then Expand (⌘↵), then Close at the top right, apart from the item's
+  actions (Pin, Open terminal, Cancel item) under the title.
+- **Focus and landmarks**: opening moves focus into the panel; Tab and Shift-Tab stay inside it
+  (and its terminal) while it is open; closing returns focus to the card or row it came from. The
+  panel is a complementary region named by the item; the list keeps the one main landmark.
+- **It opens at once** with its skeleton and loads inside; the route no longer waits on the item's
+  reads.
+- **History**: closing replaces the entry, so Back doesn't reopen it. Expand keeps the open tab,
+  the scroll position and an open terminal (which items have a terminal open is held outside the
+  button, `lib/open-terminals.ts`). Closing the panel, or showing another item, closes its
+  terminal and releases the socket. The terminal dock finds its box again whenever the view moves,
+  so it never measures an element a tab switch replaced.
+- **Screenshots** of the terminal in the panel use the fixture door's made-up session
+  (`?terminal=fixture`), never a real shell.

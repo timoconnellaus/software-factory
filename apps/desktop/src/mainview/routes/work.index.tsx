@@ -10,11 +10,15 @@ import { ProjectPage } from "../components/work-project.tsx";
 import { boardsQuery, configQuery, workflowQuery, workListsQuery } from "../lib/queries.ts";
 import type { WorkView } from "../lib/work-board.ts";
 import { workLayout } from "./_work.tsx";
+import { ItemPanel, parseTab, type Tab } from "./work.$id.index.tsx";
 
 interface Search {
   view?: WorkView;
   project?: string;
   layout?: Layout;
+  /** The item open in the side panel, and its tab (spec 41 slice 7). */
+  item?: string;
+  itemTab?: Tab;
 }
 
 const VIEWS: WorkView[] = ["backlog", "planning", "ready", "active", "done"];
@@ -28,8 +32,12 @@ export const Route = createRoute({
     ...(s.view === "stopped" ? { view: "done" as const } : {}),
     ...(typeof s.project === "string" ? { project: s.project } : {}),
     ...(s.layout === "board" || s.layout === "list" ? { layout: s.layout } : {}),
+    ...(typeof s.item === "string" ? { item: s.item } : {}),
+    ...(parseTab(s.itemTab) ? { itemTab: parseTab(s.itemTab) } : {}),
   }),
   loaderDeps: ({ search }) => ({ project: search.project, view: search.view }),
+  // The side panel's item isn't a dependency: the panel opens at once and loads inside (its
+  // skeleton), so opening an item never waits on its reads.
   // The lists; a project's config and workflow on its page; on Planning, the workflow (its stage
   // labels) of each project with work being shaped.
   loader: ({ context: { queryClient, session }, deps }) => {
@@ -65,6 +73,46 @@ export const Route = createRoute({
 });
 
 function WorkRoute() {
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
+  const close = () => {
+    const id = search.item;
+    // Replace: Back after closing goes where it went before the panel opened, not back into it.
+    void navigate({
+      search: { ...search, item: undefined, itemTab: undefined },
+      replace: true,
+    }).then(() =>
+      // Focus goes back to the card or row the item opened from.
+      requestAnimationFrame(() =>
+        document.querySelector<HTMLElement>(`[data-peek="${CSS.escape(id ?? "")}"]`)?.focus(),
+      ),
+    );
+  };
+  return (
+    <div className="relative flex min-h-0 min-w-0 flex-1">
+      <SectionPage />
+      {search.item && (
+        <ItemPanel
+          key={search.item}
+          id={search.item}
+          tab={search.itemTab ?? "overview"}
+          onTab={(itemTab) => void navigate({ search: { ...search, itemTab }, replace: true })}
+          onClose={close}
+          onExpand={() =>
+            void navigate({
+              to: "/work/$id",
+              params: { id: search.item as string },
+              search: search.itemTab ? { tab: search.itemTab } : {},
+            })
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+/** The view the search asks for, under the panel. */
+function SectionPage() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const project = search.project ?? null;

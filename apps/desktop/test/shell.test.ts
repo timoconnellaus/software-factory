@@ -8,7 +8,8 @@ import { parsePacket } from "@software-factory/client/packet";
 import { describe, expect, it } from "vitest";
 import { ANSWERS, ITEMS } from "../screenshots/fixtures.ts";
 import { entryText, inboxEntries, selectedEntry } from "../src/mainview/lib/inbox-list.ts";
-import { matchItems, sectionOf, tabTitle } from "../src/mainview/lib/places.ts";
+import { panelWidth } from "../src/mainview/lib/panel.ts";
+import { matchItems, peekItem, sectionOf, tabTitle } from "../src/mainview/lib/places.ts";
 import { verdictChips, verdictHeadline } from "../src/mainview/lib/review.ts";
 import {
   orgInitial,
@@ -282,6 +283,17 @@ describe("places and search", () => {
     expect(tabTitle("/settings", find)).toBe("This Mac");
   });
 
+  it("opens a card in the side panel, keeping the list's search", () => {
+    const link = peekItem("wi_9");
+    expect(link.to).toBe("/work");
+    expect(link.search({ view: "active", project: "prj_factory", itemTab: "runs" })).toEqual({
+      view: "active",
+      project: "prj_factory",
+      item: "wi_9",
+      itemTab: undefined,
+    });
+  });
+
   it("puts paths in sections", () => {
     expect(sectionOf("/")).toBe("inbox");
     expect(sectionOf("/work/wi_1")).toBe("work");
@@ -458,5 +470,18 @@ describe("the merge gate's words", () => {
       "Reviewer approves",
       "No risk flags",
     ]);
+  });
+});
+
+describe("the item side panel's width", () => {
+  it("is what was asked, within 360px and half the content area, or the whole page when narrow", () => {
+    // 1200 wide: a 733px page beside the 212px list; half the content area is 472.
+    expect(panelWidth(520, 733, 212)).toBe(472);
+    expect(panelWidth(400, 733, 212)).toBe(400);
+    expect(panelWidth(200, 733, 212)).toBe(360);
+    // A wide window: the asked width.
+    expect(panelWidth(520, 1228, 212)).toBe(520);
+    // Too narrow to share: all of the page area.
+    expect(panelWidth(520, 493, 212)).toBe(493);
   });
 });
