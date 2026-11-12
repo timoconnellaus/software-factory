@@ -26,6 +26,7 @@ export const ID_PREFIXES = {
   desktopAuthRequest: "dar",
   desktopDevice: "dsk",
   presenceChallenge: "prc",
+  pairOffer: "pof",
   trial: "trl",
   adjudication: "adj",
   runSteer: "st",
