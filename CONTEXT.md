@@ -290,8 +290,17 @@ _Avoid_: driver, plugin, integration
 **Job session**
 The live harness for one job: under runner-local, Claude Code in the tmux session `sf-<jobId>` on
 the factory's own tmux socket (`tmux -L software-factory`), in the job's worktree. Its status comes
-from the harness's status hook (`<runDir>/status.jsonl`), not the screen (ADR 0380).
+from the harness's status hook (`<runDir>/status.jsonl`), not the screen (ADR 0380). What the agent
+says comes from its transcript, as `message` events. People watch it on the work item page's
+**Live** tab (spec 31).
 _Avoid_: terminal (the session may have no terminal attached), pane
+
+**Steer**
+A person's message into a live job session, sent from the Live tab with `run.steer` (ADR 0400) and
+typed into the session as if at its terminal. Only the owner of the run's runner may steer (it runs
+on their machine with their model credential); others watch read-only. Every steer is journalled;
+the runner host takes it over a held `steer` call on the signed channel, at most once.
+_Avoid_: chat (planning has its own chat), prompt (the job's prompt is set at launch), command
 
 **Runner host**
 The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
@@ -315,7 +324,8 @@ restrict them. The known ones:
   heartbeat);
 - `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`);
 - `work-item-attachments`: fetches the work item's attachments over the job channel into the run,
-  outside the git tree (ADR 0310).
+  outside the git tree (ADR 0310);
+- `steer`: a person can message the live session from the dashboard (a **steer**, ADR 0400).
 _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**

@@ -38,10 +38,15 @@ involved. The runner host (`local/runner-host`) wires it; nothing in the core im
   - `SessionEnd`, or the tmux session gone or dead, ends it: `completed` if `.factory-result.json`
     exists, else `failed`.
   - Terminal output streams as `log` events: lines that scrolled into tmux history, and the visible
-    screen at most every 10 s.
+    screen (`screen: true`) at most every 10 s.
+  - What the agent says streams as `message` events (ADR 0400): the transcript the hook reports is
+    tailed from a byte offset, and each assistant text (clipped to 8,000 characters) goes out in
+    time order with the hook's events. Earlier turns of a resumed conversation are skipped.
 - **collectArtifacts**: the final `capture-pane` screen, plus the check output and final message from
   Claude's transcript. There is no `browser` capability, so screenshot evidence is skipped.
-- **steer**: `send-keys -l <text>`, then `Enter`.
+- **steer** (capability `steer`, ADR 0400): the message as one sanitised line (`steerText`), typed with
+  `send-keys -l` in pieces of 200 characters (a long paste arrives truncated), then `Enter`. Claude
+  Code queues a message typed while it works.
 - **release** (safe to call twice): kills the session, runs `git worktree remove --force` (only ever
   under the worktrees dir), deletes the local run branch (run branches only), and removes the run and
   attachments dirs. It never touches the checkout otherwise.
