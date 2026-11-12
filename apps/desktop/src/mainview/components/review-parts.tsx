@@ -156,6 +156,7 @@ export function MergeDecision({
             kind: "review.merge",
             workItemId: item.id,
             openedFullDiff: opened,
+            headSha: packet.headSha,
             ...(without.length > 0 ? { mergeWithoutChecks: true } : {}),
           })
         }

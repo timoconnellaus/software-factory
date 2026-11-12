@@ -223,9 +223,18 @@ function MergeGateCard({
         <Button
           size="sm"
           variant="outline"
-          disabled={!canMerge || pending !== null}
+          disabled={!canMerge || !packet || pending !== null}
           title={canMerge ? undefined : "Only an approver on this project can merge"}
-          onClick={() => decide({ kind: "review.merge", workItemId: id, openedFullDiff: false })}
+          onClick={() =>
+            // For the commit the card shows (the packet's head): a push in between is refused.
+            packet &&
+            decide({
+              kind: "review.merge",
+              workItemId: id,
+              openedFullDiff: false,
+              headSha: packet.headSha,
+            })
+          }
           data-testid="merge"
         >
           Merge
