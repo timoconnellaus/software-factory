@@ -40,6 +40,20 @@ import {
   saveConfig,
 } from "./config.ts";
 import { deviceLogin } from "./device-login.ts";
+// `sf-runner`: connect this machine to the factory, run the runner, install it as a launchd service.
+//
+//   sf-runner login [--name m5] [--url https://sf-engine.zerobsai.com] [--app https://…] [--no-install]
+//                                  print a code, wait for approval in the app, save the key, install
+//   sf-runner pair --runner-id r_… --key-stdin   (fallback: a key registered in Setup)
+//   sf-runner run                  run in the foreground (what the service runs)
+//   sf-runner status               config (key redacted), service state, the jobs it is running,
+//                                  and its version against the desired one (self-update, ADR 0360)
+//   sf-runner doctor [--fix]       check node, git, orca, claude, the channel, Orca's repos
+//                                  (duplicate source repos for one remote, job worktrees with no
+//                                  job), and that each running job's Claude runs exactly as the
+//                                  harness launched it (ADR 0270)
+//   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
+import { acquireHostLock, HostLockedError } from "./host-lock.ts";
 import * as launchd from "./launchd.ts";
 import { readLiveJobs } from "./live-jobs.ts";
 import { findOnPath, parsePairingInput, serviceNode } from "./pairing.ts";
@@ -206,6 +220,19 @@ async function login(args: string[]) {
 async function run() {
   const config = await requireConfig();
   await mkdir(dirs.runsDir, { recursive: true, mode: 0o700 });
+  // One host per machine (ADR 0390): a second `run` (an orphan, launchd and the desktop app both)
+  // would fight the first over leases.
+  let releaseLock: () => void;
+  try {
+    releaseLock = acquireHostLock(dirs.stateDir);
+  } catch (error) {
+    if (error instanceof HostLockedError) {
+      console.error(error.message);
+      process.exit(3);
+    }
+    throw error;
+  }
+  process.on("exit", () => releaseLock());
   const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
   const selfUpdate = await startSelfUpdate(config, log);
   const { host } = buildRunner(config, dirs, {

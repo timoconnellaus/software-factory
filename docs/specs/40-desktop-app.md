@@ -84,6 +84,9 @@ The build lands as five milestones, each one PR (or more), in order.
 10. `/open/work/123` renders a page that links to `sf://work/123`, plus a sign-in fallback.
 
 ## M2: `apps/desktop`: the shell, sign-in and the runner
+Built as **M2a** (everything here except the live socket; the inbox count polls `inbox.list` every
+15 s) and **M2b** (the WebSocket hub, which brings notifications under 5 s, criterion 3).
+
 **Scope**
 - `apps/desktop` on Electrobun 2.x and Hutch, from the spike. Outside Biome's view of the Hutch
   devkit; its own `typecheck` and `build` turbo tasks.

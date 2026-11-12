@@ -1,0 +1,17 @@
+{
+  "extends": "@software-factory/config/tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["bun-types", "node"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "paths": {
+      "electrobun": ["./.hutch/devkit/api/sdks/main/index.ts"],
+      "electrobun/main": ["./.hutch/devkit/api/sdks/main/index.ts"],
+      "electrobun/view": ["./.hutch/devkit/api/browser/index.ts"],
+      "#/*": ["./src/*"]
+    }
+  },
+  "include": ["src", "test", "vite.config.ts", "vitest.config.ts", "electrobun.config.ts"]
+}
