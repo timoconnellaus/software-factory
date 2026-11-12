@@ -76,6 +76,22 @@ export interface CoreOrganizationTable {
   kind: Generated<OrgKind>;
   github_installation_id: string | null;
   created_at: Iso;
+  /** The org's current config version (spec 52, migration 0280); null before its first save. */
+  config_version: number | null;
+}
+
+/** An org's config versions: its workflows and agents (spec 52, migration 0280). */
+export interface CoreOrgConfigsTable {
+  org_id: string;
+  version: number;
+  raw: string;
+  source: string;
+  created_by: string | null;
+  note: string | null;
+  parent_version: number | null;
+  created_at: Iso;
+  /** How this version changed the one before it, recorded when it was written. */
+  impact: "loosens" | "tightens" | "neutral" | null;
 }
 
 export interface CoreMemberTable {
@@ -1031,6 +1047,7 @@ export interface CoreDatabase {
   core_projects: CoreProjectsTable;
   core_repositories: CoreRepositoriesTable;
   core_project_policies: CoreProjectPoliciesTable;
+  core_org_configs: CoreOrgConfigsTable;
   core_config_trials: CoreConfigTrialsTable;
   core_adjudications: CoreAdjudicationsTable;
   core_project_protection: CoreProjectProtectionTable;
