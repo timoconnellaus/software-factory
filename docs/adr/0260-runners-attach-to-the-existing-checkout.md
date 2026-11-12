@@ -75,3 +75,17 @@ adds a second one.
 Runner adapters resolve existing workspaces by canonical identity and never create a duplicate
 registration of a repo the runner's machine already has. Registration is once and permanent; per-job
 state is a worktree and a branch. This is in `.factory/checks/runner-adapters.md`.
+
+> Amended 2026-11-12 ([ADR 0350](0350-runner-local-tmux-and-hook-status.md), spec
+> [30](../specs/30-runner-local-without-orca.md)): with Orca gone (`runner-orca` deleted), the
+> checkouts no longer come from Orca's repo list. Point 2 now reads: `runner-local` scans the
+> directories listed in `runner.json` `checkouts` and takes the git repo directly under one of them
+> whose `origin` is the job's repo (`canonicalKeyFromUrl`), the first in the order listed. It makes
+> the job's worktree there with plain `git worktree add` (hooks off, no upstream written) at
+> `<state>/worktrees/sf-<jobId>`. Point 4: the fallback is still the host's clone, made once and
+> kept, but nothing is registered anywhere. Point 6, the migration, is gone; in its place
+> `sf-runner login` and `doctor --fix` fill `checkouts` once, when unset, with the parent
+> directories of Orca's repos if Orca is installed, else `[]`. Point 7: `doctor` reports two
+> checkouts of one remote under those dirs (not fixable) and `sf-*` worktrees or tmux sessions with
+> no live job (fixable). Points 1, 3 and 5 hold unchanged. Job worktrees an older runner made in
+> Orca are not reaped by the new one.

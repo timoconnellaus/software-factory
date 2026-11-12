@@ -122,3 +122,13 @@ With that, `runner-orca` can go back to `agent launch`. The post-launch check st
 > `orca terminal send --text … --enter` arrived with only its tail. The adapter writes it to
 > `.factory-prompt.md` in the worktree (excluded from git) and, after the live-process check, sends
 > harness-claude's one-line `PROMPT_POINTER` to it.
+
+> Amended 2026-11-12 ([ADR 0350](0350-runner-local-tmux-and-hook-status.md)): the terminal is now a
+> tmux session on the factory's own socket (`runner-local`), not an Orca terminal. The launch script,
+> the launch record and the post-launch check are unchanged: the session runs
+> `exec /bin/sh <runDir>/launch.sh`, the adapter waits for the pid file and the status hook's
+> `SessionStart`, runs `verifyLaunch`, and kills the session on `harness-config-mismatch` before any
+> prompt. The "Proposed Orca feature" above no longer applies. The harness now adds one hook of its own,
+> the status hook. It runs on `PreToolUse` among other events, but it only records the event and
+> always answers `{}`, so it decides nothing. Runner-supplied hooks still may not use decision events.
+> The deny list adds `tmux`.

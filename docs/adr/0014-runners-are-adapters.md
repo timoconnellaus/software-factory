@@ -25,3 +25,11 @@ and a colleague's Codex Cloud should all be able to run jobs. The core must not 
 > live work item can be injected and writes blocked until it is claimed) and **`headless`** (the
 > runner can run a session with no terminal or UI attached, like `claude -p`). Spike ADR 0100
 > (`spikes/runner-orca`) has the contract's types.
+
+> Amended 2026-11-12 ([ADR 0350](0350-runner-local-tmux-and-hook-status.md), spec
+> [30](../specs/30-runner-local-without-orca.md)): `runner-local` is now the adapter and
+> `runner-orca` is deleted. runner-local is a git worktree plus Claude Code's TUI in a tmux session
+> on the factory's own socket (`tmux -L software-factory`), not the headless `claude -p` sketched
+> above. Its manifest is `hooks`, `ui-takeover` (takeover is `tmux attach` on the host),
+> `own-hardware` and `work-item-attachments`: no `browser` and no `auto-register` until later pieces.
+> The core still knows only the contract; the wire shapes didn't change.

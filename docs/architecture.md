@@ -62,8 +62,10 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   (`verify.refresh`) records the new head, withdraws a pending merge gate and wakes the Workflow
   (`pr-head-<item>`). Closing the PR without merging cancels the item.
 - **Runners** execute jobs through the runner contract over a signed, outbound-only channel
-  (ADR 0014–0016). A **runner host** on each machine loads **runner adapters** (`runner-orca` first),
-  which drive **harnesses** (Claude Code first). Runners are owner-only unless shared through an
+  (ADR 0014–0016). A **runner host** on each machine loads **runner adapters** (`runner-local`:
+  a git worktree and a tmux session per job, ADR 0350), which drive **harnesses** (Claude Code
+  first). Agent status comes from the harness's own status hook, and a person takes a run over with
+  `tmux -L software-factory attach -t sf-<jobId>`. Runners are owner-only unless shared through an
   allowlist (ADR 0038), each run pushes its own branch under a fencing token (ADR 0035), and the
   harness runs without the owner's git or cloud credentials (ADR 0033): the runner host, not the
   harness, pushes the run branch with the job token (ADR 0250).
@@ -96,14 +98,15 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
 | `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |
 | `packages/harness-claude` | The Claude Code harness: the per-run settings (permission mode and allowlist per stage, the OS sandbox, deny rules, a credential-free environment), the exact launch command and the post-launch check (ADR 0270), the run's git config, transcript and stream-json parsing |
-| `packages/runner-orca` | The Orca runner adapter: an Orca worktree on the run branch, the harness's launch script in an Orca terminal (verified before the prompt, ADR 0270), events from `orca worktree ps`, takeover in Orca (ADR 0100) |
+| `packages/runner-local` | The local runner adapter (ADR 0350): a git worktree of the machine's checkout on the run branch, the harness's launch script in a tmux session on the factory's own socket (verified before the prompt, ADR 0270), status from the harness's hook file (`status.jsonl`), takeover by `tmux attach`, orphan reaping |
 | `packages/connector-webhook` | Inbound webhook connector, provider-neutral: signature check, delivery naming |
 | `packages/connector-github` | The GitHub App connector: App webhooks → operations |
 | `packages/config` | Shared tsconfig, Biome preset, Vitest preset |
-| `local/runner-host` | The runner host daemon `sf-runner` (Node, on a person's machine): heartbeat, claim, the job lifecycle, fetching into the machine's existing checkout (its own clone only as a fallback, ADR 0260), the run-branch push with the job token (ADR 0250), launchd service |
+| `local/runner-host` | The runner host daemon `sf-runner` (Node, on a person's machine): heartbeat, claim, the job lifecycle, fetching into the machine's existing checkout (found under `runner.json` `checkouts`; its own clone only as a fallback, ADR 0260), the run-branch push with the job token (ADR 0250), launchd service, `doctor` (tmux, git, claude, checkouts, orphans) |
 | `presets/` | The shipped autonomy policies, project templates and the floor (directory name kept) |
 | `evals/` | The `.factory/checks/` format, incident regression cases (`evals/regressions/`) and the suite CI runs over both; benchmarks later |
 | `spikes/` | Throwaway spikes. Not in the workspace or Biome |
 
-`packages/runner-local` (a headless `claude -p` runner) stays a sketch in `spikes/runner-orca`. Build
-specs are in [`specs/`](specs/).
+The first adapter, `runner-orca` (Orca's worktrees and terminals), was replaced by `runner-local`
+and deleted (ADR 0350); `spikes/runner-orca` keeps the original spike. Build specs are in
+[`specs/`](specs/).
