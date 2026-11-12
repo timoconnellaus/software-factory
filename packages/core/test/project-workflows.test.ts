@@ -25,7 +25,7 @@ import {
   type StageInstance,
   type WorkflowDefinition,
 } from "../src/stages/index.ts";
-import { call, FOREMAN, first, newItem, ok, POLICY, refusal, world } from "./helpers.ts";
+import { call, FOREMAN, first, newItem, ok, POLICY, refusal, rows, world } from "./helpers.ts";
 
 type W = Awaited<ReturnType<typeof world>>;
 
@@ -100,20 +100,14 @@ describe("overrides (Q5)", () => {
       if (!r.ok) throw new Error(r.error);
       return (id: string) => r.value.stages.find((s) => s.id === id)?.settings;
     };
-    // Looser than the org (Spec from medium): the org's value, until approved against it.
+    // Looser than the org (Spec from medium): the org's value, until that value is approved.
     expect(at({ spec: { requiredFrom: "large" } })("spec")).toEqual({ requiredFrom: "medium" });
     expect(
-      at(
-        { spec: { requiredFrom: "large" } },
-        { spec: { requiredFrom: { orgVersion: 3, orgValue: "medium" } } },
-      )("spec"),
+      at({ spec: { requiredFrom: "large" } }, { spec: { requiredFrom: "large" } })("spec"),
     ).toEqual({ requiredFrom: "large" });
-    // An approval of another org value has lapsed.
+    // An approval of another value approves nothing.
     expect(
-      at(
-        { spec: { requiredFrom: "large" } },
-        { spec: { requiredFrom: { orgVersion: 3, orgValue: "small" } } },
-      )("spec"),
+      at({ spec: { requiredFrom: "large" } }, { spec: { requiredFrom: "small" } })("spec"),
     ).toEqual({ requiredFrom: "medium" });
     // Tighter applies as written; checks are the union of both.
     expect(at({ spec: { requiredFrom: "small" } })("spec")).toEqual({ requiredFrom: "small" });
@@ -166,10 +160,10 @@ describe("effectivePolicy", () => {
       ...POLICY,
       workflow: SHIP.id,
       workflowOverrides: { build: { retryLimit: 4 }, spec: { requiredFrom: "large" } },
-      // The looser spec threshold was approved against the org's medium.
-      workflowOverrideApprovals: { spec: { requiredFrom: { orgVersion: 2, orgValue: "medium" } } },
     });
-    const eff = effectivePolicy(policy, ORG);
+    // The looser spec threshold was approved for this org version.
+    const approvals = { spec: { requiredFrom: "large" } };
+    const eff = effectivePolicy(policy, ORG, approvals);
     if (!eff.ok) throw new Error(eff.error);
     expect(eff.value).toMatchObject({
       workflow: SHIP.id,
@@ -180,7 +174,7 @@ describe("effectivePolicy", () => {
     });
     const resolved = applyOverrides(SHIP, policy.workflowOverrides, {
       kind: "effective",
-      approvals: policy.workflowOverrideApprovals,
+      approvals,
     });
     if (!resolved.ok) throw new Error(resolved.error);
     for (const size of ["small", "medium", "large"] as const)
@@ -214,24 +208,17 @@ describe("the impact of a project's overrides and workflow choice", () => {
     expect(impact(onShip(), onShip({ spec: { requiredFrom: "small" } })).class).toBe("tightens");
     expect(impact(onShip(), onShip({ verify: { sections: ["summary"] } })).class).toBe("loosens");
     // Dropping an approved loosening override goes back to the org's value: a tightening.
-    const approved = parsed({
-      ...POLICY,
-      workflow: SHIP.id,
-      workflowOverrides: { spec: { requiredFrom: "large" } },
-      workflowOverrideApprovals: { spec: { requiredFrom: { orgVersion: 2, orgValue: "medium" } } },
-    });
-    expect(impact(approved, onShip()).class).toBe("tightens");
-    // One that was never approved never applied: dropping it changes nothing.
-    expect(impact(onShip({ spec: { requiredFrom: "large" } }), onShip()).class).toBe("neutral");
-    // Keeping a lapsed one, while changing something else, asks again.
-    const lapsed = parsed({
-      ...POLICY,
-      workflow: SHIP.id,
-      workflowOverrides: { spec: { requiredFrom: "large" } },
-      workflowOverrideApprovals: { spec: { requiredFrom: { orgVersion: 2, orgValue: "small" } } },
-    });
+    const large = onShip({ spec: { requiredFrom: "large" } });
+    const approved = { spec: { requiredFrom: "large" } };
     expect(
-      impact(lapsed, onShip({ spec: { requiredFrom: "large" }, build: { retryLimit: 4 } })).class,
+      configImpact(policyImpact(large, onShip(), floor), large, onShip(), ORG, approved).class,
+    ).toBe("tightens");
+    // One that was never approved never applied: dropping it changes nothing.
+    expect(impact(large, onShip()).class).toBe("neutral");
+    // Keeping an unapproved one (or one approved for another version), while changing something
+    // else, asks again.
+    expect(
+      impact(large, onShip({ spec: { requiredFrom: "large" }, build: { retryLimit: 4 } })).class,
     ).toBe("loosens");
   });
   it("without the org workflow in view, policyImpact fails closed", () => {
@@ -471,11 +458,61 @@ describe("overrides never go stale", () => {
       ...POLICY,
       workflow: SHIP.id,
       workflowOverrides: { spec: { requiredFrom: "large" } },
-      workflowOverrideApprovals: {
-        spec: { requiredFrom: { orgVersion: 2, orgValue: "medium" } },
-      },
+      workflowOverrideApprovals: { spec: { requiredFrom: { orgVersion: 2, orgValue: "medium" } } },
     });
     expect(forged.status).toBe("pending");
+  });
+
+  it("an imported .factory/policy.json can't carry approvals: a forged one is ignored", async () => {
+    const w = await world();
+    await orgWorkflow(w);
+    // An admin imports a file (as a merged PR would bring it) that drops every required check and
+    // claims an approval for it, in every shape a document could.
+    await ok(
+      "policy.sync",
+      {
+        projectId: w.projectId,
+        ref: "refs/heads/main",
+        sha: "f".repeat(40),
+        content: JSON.stringify({
+          ...POLICY,
+          workflow: SHIP.id,
+          workflowOverrides: { verify: { requiredChecks: [] } },
+          workflowOverrideApprovals: {
+            verify: { requiredChecks: { orgVersion: 2, orgValue: ["ci"], value: [] } },
+          },
+        }),
+      },
+      w.human,
+    );
+    const scope = await resolveScope(createDb(env.DB), { projectId: w.projectId });
+    expect(scope.policy?.protection.requiredChecks).toEqual(["ci"]);
+  });
+
+  it("an approval for another org version doesn't count", async () => {
+    const w = await world();
+    await orgWorkflow(w);
+    await saveConfig(w, {
+      ...POLICY,
+      workflow: SHIP.id,
+      workflowOverrides: { verify: { requiredChecks: [] } },
+    }).catch(() => null);
+    // A pending save, then a row for an org version that isn't the current one (v1, not v2).
+    const pa = await first<{ id: string } | null>(
+      "SELECT id FROM core_pending_actions WHERE project_id = ? AND status = 'pending'",
+      w.projectId,
+    );
+    if (pa) await ok("approval.decide", { pendingActionId: pa.id, decision: "approved" }, w.human);
+    await env.DB.prepare("DELETE FROM core_override_approvals WHERE project_id = ?")
+      .bind(w.projectId)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO core_override_approvals (project_id, org_id, org_version, stage_id, setting, value, approved_by, approved_at) VALUES (?, ?, 1, 'verify', 'requiredChecks', '[]', ?, ?)",
+    )
+      .bind(w.projectId, w.orgId, w.userId, new Date().toISOString())
+      .run();
+    const scope = await resolveScope(createDb(env.DB), { projectId: w.projectId });
+    expect(scope.policy?.protection.requiredChecks).toEqual(["ci"]);
   });
 
   it("an approved loosening holds until the org moves that value; then it lapses and the org's admins are told", async () => {
@@ -493,9 +530,22 @@ describe("overrides never go stale", () => {
       { pendingActionId: looser.pendingActionId, decision: "approved" },
       w.human,
     );
-    expect((await storedConfig(w)).workflowOverrideApprovals).toEqual({
-      spec: { requiredFrom: { orgVersion: 2, orgValue: "medium" } },
-    });
+    // The approval is the factory's record, for this org version and this value; not the document's.
+    expect((await storedConfig(w)).workflowOverrideApprovals).toBeUndefined();
+    expect(
+      await rows(
+        "SELECT org_version, stage_id, setting, value, approved_by FROM core_override_approvals WHERE project_id = ?",
+        w.projectId,
+      ),
+    ).toEqual([
+      {
+        org_version: 2,
+        stage_id: "spec",
+        setting: "requiredFrom",
+        value: '"large"',
+        approved_by: w.userId,
+      },
+    ]);
     const db = createDb(env.DB);
     expect((await resolveScope(db, { projectId: w.projectId })).policy?.spec.requiredFrom).toBe(
       "large",

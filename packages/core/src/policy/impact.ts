@@ -51,7 +51,6 @@ const KNOWN = new Set([
   "release",
   "workflow",
   "workflowOverrides",
-  "workflowOverrideApprovals",
   "retryLimit",
   "approvers",
   "backupOwner",
