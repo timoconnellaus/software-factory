@@ -13,6 +13,16 @@ import {
   type WorkItemRow,
 } from "../operation.ts";
 import { type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
+import {
+  type NeedsInfo,
+  needsInfoOf,
+  park,
+  parkIfNotReady,
+  precheck,
+  precheckPrompt,
+  readinessHint,
+  refuseIfParked,
+} from "../readiness.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
@@ -491,6 +501,15 @@ const startedOutput = z.object({
       behindBy: z.number().nullable(),
     })
     .optional(),
+  /**
+   * Set when the readiness pre-check parked it in the Backlog instead (spec 23): who it waits on,
+   * why, and the questions asked of them. It goes on by itself once they're answered.
+   */
+  needsInfo: z
+    .object({ waitingOn: z.string(), reason: z.string(), questionIds: z.array(z.string()) })
+    .optional(),
+  /** The readiness pre-check's hint for the person who released it (spec 23): ignorable. */
+  hint: z.string().optional(),
   /** What it waits for that isn't done; empty when nothing holds it. */
   blockedBy: z.array(
     z.object({ id: z.string(), number: z.number(), title: z.string(), status: z.string() }),
@@ -508,9 +527,30 @@ export const workItemRelease = defineOperation({
   output: startedOutput,
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
-    const project = requireProject(ctx);
     const refused = releaseRefusal(ctx, w);
     if (refused) throw refused;
+    takeOverParked(ctx, w, "is released");
+    // The readiness pre-check (spec 23): an unclear request is parked, not released.
+    const parked = w.shaping_started_at ? null : await parkIfNotReady(ctx, w, "queued");
+    if (parked) return parkedOutput(parked);
+    const hint = w.shaping_started_at ? null : readinessHint(w);
+    return { ...(await releaseNow(ctx, w)), ...(hint ? { hint } : {}) };
+  },
+});
+
+/** What release and shape return when the pre-check parked the item. */
+function parkedOutput(m: NeedsInfo) {
+  return {
+    status: "backlog",
+    needsInfo: { waitingOn: m.waitingOn, reason: m.reason, questionIds: m.questionIds },
+    blockedBy: [],
+  };
+}
+
+/** Releases an item (ADR 0491): queued, and the pull runs after this commits. */
+export async function releaseNow(ctx: HandlerContext, w: WorkItemRow) {
+  {
+    const project = requireProject(ctx);
     const plan = w.shaping_started_at ? await shapedPlan(ctx, w) : null;
     ctx.write(
       ctx.db
@@ -540,8 +580,8 @@ export const workItemRelease = defineOperation({
       blockedBy: blocked.map(({ projectId: _p, ...b }) => b),
       ...(plan ? { plan } : {}),
     };
-  },
-});
+  }
+}
 
 export const workItemShape = defineOperation({
   name: "workItem.shape",
@@ -551,16 +591,37 @@ export const workItemShape = defineOperation({
   actors: ["human"],
   permission: "member",
   input: z.object({ workItemId }),
-  output: z.object({ status: z.string() }),
+  output: z.object({
+    status: z.string(),
+    /** The readiness pre-check's hint for the person (spec 23): ignorable. */
+    hint: z.string().optional(),
+    needsInfo: z
+      .object({ waitingOn: z.string(), reason: z.string(), questionIds: z.array(z.string()) })
+      .optional(),
+  }),
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
-    const project = requireProject(ctx);
     if (w.shaping_started_at) {
       throw new OperationError("conflict", `work item #${w.number} is already being shaped`);
     }
     // Shaping has the same preconditions as release, except who may (only a person, for now).
     const refused = releaseRefusal(ctx, w);
     if (refused) throw refused;
+    takeOverParked(ctx, w, "goes to shaping");
+    const parked = await parkIfNotReady(ctx, w, "shaping");
+    if (parked) {
+      const { blockedBy: _b, ...out } = parkedOutput(parked);
+      return out;
+    }
+    const hint = readinessHint(w);
+    return { ...(await shapeNow(ctx, w)), ...(hint ? { hint } : {}) };
+  },
+});
+
+/** Starts shaping an item (ADR 0493): its Workflow runs the shaping stages before release. */
+export async function shapeNow(ctx: HandlerContext, w: WorkItemRow) {
+  {
+    const project = requireProject(ctx);
     const policy = ctx.scope.policy;
     if (await activeKillSwitch(ctx.db, project.org_id, project.id)) {
       throw new OperationError("killed", "a kill switch is on: nothing starts shaping");
@@ -623,8 +684,8 @@ export const workItemShape = defineOperation({
       after: { status: "shaping" },
     });
     return { status: "shaping" };
-  },
-});
+  }
+}
 
 export const workItemShaped = defineOperation({
   name: "workItem.shaped",
@@ -712,6 +773,12 @@ export const workItemMove = defineOperation({
       );
     }
     if (w.status === input.to) return { status: w.status };
+    if (input.to === "ready") {
+      takeOverParked(ctx, w, "moves to Ready");
+      // Marking it ready says it's clear enough to build (spec 23): the pre-check runs.
+      if (w.status === "backlog" && (await parkIfNotReady(ctx, w, "ready")))
+        return { status: "backlog" };
+    }
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -813,6 +880,13 @@ export const workItemUpdate = defineOperation({
       ),
       after: set,
     });
+    // A parked item whose request was edited (spec 23): the pre-check runs again, and it goes on.
+    if (input.body !== undefined || input.title !== undefined) {
+      await resumeParked(ctx, { ...w, ...set } as WorkItemRow, {
+        body: input.body,
+        title: input.title,
+      });
+    }
     return { workItemId: w.id };
   },
 });
@@ -1223,4 +1297,131 @@ export async function linkNewItem(
       }),
     );
   }
+}
+
+/**
+ * A parked item's next step after a person answers one of its needs-info questions or edits its
+ * request (spec 23): once every needs-info question is answered (or the request was edited), the
+ * pre-check runs again over the request and the answers. Passing, the marker is cleared and the
+ * item goes on to where it was heading (Ready, released, or shaping). Failing, it stays parked and
+ * its requester is asked again. Triage's parking (`source: "triage"`) goes on by being released
+ * again, so triage re-runs with the answers in its record.
+ */
+export async function resumeParked(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  change: { answered?: { id: string; answer: string }; body?: string; title?: string },
+): Promise<"resumed" | "waiting" | "parked again" | null> {
+  const marker = needsInfoOf(w.needs_info);
+  if (!marker) return null;
+  const asked = marker.questionIds.length
+    ? await ctx.db
+        .selectFrom("core_questions")
+        .select(["id", "status", "answer"])
+        .where("id", "in", marker.questionIds)
+        .execute()
+    : [];
+  const answers = asked.flatMap((q) =>
+    q.id === change.answered?.id
+      ? [change.answered.answer]
+      : q.status === "answered" && q.answer
+        ? [q.answer]
+        : [],
+  );
+  const open = asked.filter((q) => q.status === "open" && q.id !== change.answered?.id);
+  // An edit to the request counts at once; answers count when all of them are in.
+  if (open.length && change.body === undefined && change.title === undefined) return "waiting";
+  const item = {
+    ...w,
+    title: change.title ?? w.title,
+    body: change.body ?? w.body,
+  };
+  if (marker.source === "precheck") {
+    const checked = precheck({
+      title: item.title,
+      body: item.body,
+      parentId: w.parent_work_item_id,
+      answers,
+    });
+    if (!checked.ok) {
+      if (open.length) return "waiting";
+      park(ctx, w, {
+        heading: marker.heading,
+        source: "precheck",
+        reason: marker.reason,
+        missing: checked.missing,
+        prompts: [precheckPrompt(checked.missing)],
+      });
+      return "parked again";
+    }
+  }
+  // The answers become part of the request, so triage and the planner read them.
+  const body = answers.length
+    ? `${item.body.trimEnd()}\n\n**From ${w.number ? `#${w.number}'s` : "the"} requester:**\n${answers.map((a) => `- ${a}`).join("\n")}`
+    : item.body;
+  for (const q of open) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_questions")
+        .set({ status: "withdrawn", note: "the request was edited" })
+        .where("id", "=", q.id)
+        .where("status", "=", "open"),
+    );
+  }
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({ needs_info: null, status_reason: null, body, updated_at: ctx.now })
+      .where("id", "=", w.id)
+      .where("needs_info", "is not", null),
+  );
+  ctx.guardChanged("the item is still parked");
+  ctx.change({
+    entity: "work_item",
+    id: w.id,
+    before: { needsInfo: marker },
+    after: { needsInfo: null },
+  });
+  const next = { ...w, body, needs_info: null };
+  if (marker.heading === "ready") {
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ status: "ready", updated_at: ctx.now })
+        .where("id", "=", w.id)
+        .where("status", "=", "backlog"),
+    );
+  } else if (marker.heading === "queued") {
+    await releaseNow(ctx, next);
+  } else {
+    await shapeNow(ctx, next);
+  }
+  return "resumed";
+}
+
+/**
+ * A parked item moved on by hand (spec 23): a person's call is their judgement, so the marker is
+ * cleared and its open questions withdrawn; an agent is refused (answer the questions or edit the
+ * request, and it goes on by itself).
+ */
+function takeOverParked(ctx: HandlerContext, w: WorkItemRow, what: string) {
+  const marker = needsInfoOf(w.needs_info);
+  if (!marker) return;
+  if (ctx.actor.type !== "human") refuseIfParked(w, what);
+  if (marker.questionIds.length) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_questions")
+        .set({ status: "withdrawn", note: "a person moved the item on" })
+        .where("id", "in", marker.questionIds)
+        .where("status", "=", "open"),
+    );
+  }
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({ needs_info: null, status_reason: null, updated_at: ctx.now })
+      .where("id", "=", w.id),
+  );
+  w.needs_info = null;
 }
