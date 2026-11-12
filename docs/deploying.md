@@ -157,8 +157,9 @@ installation repositories, repository ruleset, branch protection rule (`APP_REQU
 ## The desktop app's releases
 `.github/workflows/desktop-release.yml` (spec 40 M4) builds, signs, notarizes and uploads the macOS
 app to R2 bucket `sf-desktop-releases`, served at `https://downloads.zerobsai.com/desktop` (a custom
-domain on the bucket, set up once with `wrangler r2 bucket domain add`). It uses the `release`
-environment, which only `main` and `v*` tags may deploy to. Its secrets:
+domain on the bucket, set up once with `wrangler r2 bucket domain add`). Every push to `main` that
+touches the app or anything it bundles publishes a **canary** (`0.1.<run>`). **Stable is off**: see
+"Before stable releases" below. The workflow runs in the `release` environment. Its secrets:
 
 | Secret | What |
 | --- | --- |
@@ -166,10 +167,55 @@ environment, which only `main` and `v*` tags may deploy to. Its secrets:
 | `MACOS_SIGNING_IDENTITY` | `Developer ID Application: …` |
 | `APPLE_TEAM_ID` | The Team ID |
 | `ASC_KEY_P8`, `ASC_KEY_ID`, `ASC_ISSUER_ID` | An App Store Connect API key (Developer role) for `notarytool` |
+| `DESKTOP_R2_ACCESS_KEY_ID`, `DESKTOP_R2_SECRET_ACCESS_KEY` | An R2 API token scoped to `sf-desktop-releases` only (below) |
 
-The upload uses the repo's `CLOUDFLARE_API_TOKEN` (Workers R2 Storage: Edit). First install:
-download `https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip` (or
-`stable-…`), unzip and move it to `/Applications`. After that the app updates itself.
+It also reads the repo variable `CLOUDFLARE_ACCOUNT_ID` (for the R2 endpoint) and, for stable,
+`DESKTOP_STABLE_ENABLED`.
+
+**The upload token (owner, once).** The upload no longer uses the repo-wide `CLOUDFLARE_API_TOKEN`,
+which every workflow can read: anyone who could run a workflow could publish a build the apps
+install. Create a bucket-scoped token instead:
+1. Cloudflare dashboard → R2 → *Manage R2 API Tokens* → *Create API token*.
+2. Permission **Object Read & Write**, *Apply to specific buckets only*: `sf-desktop-releases`. No TTL
+   needed; no IP filter (GitHub's runners have no fixed IPs).
+3. Copy the *Access Key ID* and *Secret Access Key* into the `release` **environment** secrets (not
+   repo secrets) as `DESKTOP_R2_ACCESS_KEY_ID` and `DESKTOP_R2_SECRET_ACCESS_KEY`.
+4. If `CLOUDFLARE_API_TOKEN` has *Workers R2 Storage: Edit* only for the desktop upload, take that
+   permission off it (the deploy workflow's D1/Workers permissions stay).
+
+Until step 3 is done the canary upload fails (the build and signing still run).
+
+**What the upload does.** `apps/desktop/scripts/publish-release.ts` refuses, before building, a
+version that isn't higher than the channel's published one or that is already in the bucket. It
+uploads the archive and the download under versioned names (`…-0.1.42.app.tar.zst`, `…-0.1.42.zip`,
+cached immutably and never overwritten), then the unversioned download, then the manifests last,
+rewritten to name the versioned archive. A client never sees a manifest whose archive or hash isn't
+there yet. A run that fails halfway is published again as a new version.
+
+**Before stable releases (owner).** A tag-triggered workflow runs the workflow file *at the tagged
+commit*, so anyone who can push a tag could run their own copy of it with the Developer ID, the App
+Store Connect key and the upload token, and factory job tokens have `contents: write`. So stable is
+not tag-triggered: it will be a manual run of the workflow on `main` (channel `stable`, a version),
+which runs main's own file. It is refused until the variable `DESKTOP_STABLE_ENABLED` is `true`.
+**Stable releases are not safe to enable until all of these are done:**
+1. Settings → Environments → `release` → *Deployment branches and tags*: **Selected branches and
+   tags**, with `main` only. Remove the `v*` tag rule.
+2. Same page: *Required reviewers*: add yourself. Leave **Prevent self-review** unticked while you
+   are the only reviewer (you merge, so you trigger the runs you approve). Untick **Allow
+   administrators to bypass configured protection rules**.
+3. Settings → Rules → Rulesets → *New tag ruleset* "release tags": target `v*`, enforcement
+   *Active*, rules **Restrict creations**, **Restrict updates** and **Restrict deletions**, bypass
+   list **Repository admin** only. (Tags aren't used by the workflow any more; this stops a stray
+   `v*` tag from ever meaning anything.)
+4. Then set the repo variable `DESKTOP_STABLE_ENABLED` to `true`.
+
+Step 2 also guards canary: with a required reviewer, each canary run waits for an approval. If
+that's too much friction for canary, keep step 1 (main only, so only a merged commit's workflow can
+reach the secrets) and add the reviewer before turning stable on.
+
+First install: download `https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip`,
+unzip and move it to `/Applications`. After that the app updates itself; the app refuses an update
+that isn't a higher version, isn't signed with its own Team ID, or that Gatekeeper rejects.
 
 ## Deploying by hand
 

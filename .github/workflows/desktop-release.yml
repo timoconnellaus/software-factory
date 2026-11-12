@@ -1,28 +1,49 @@
 name: Desktop release
 
 # Signed, notarized builds of the desktop app (spec 40 M4, ADR 0390), uploaded to
-# downloads.zerobsai.com/desktop, where the app's updater looks:
-# - every push to main that touches the app or what it bundles → canary (version 0.1.<run>)
-# - a tag v1.2.3 → stable (version 1.2.3)
-# The signing material lives in the `release` environment, which only main and v* tags may use, so
-# no pull request can reach it.
+# downloads.zerobsai.com/desktop, where the app's updater looks.
+# - every push to main that touches the app or anything it bundles → canary (version 0.1.<run>)
+# - stable is NOT enabled. It will be a manual run of this workflow on main (never a tag), and it is
+#   refused until the owner has locked the `release` environment down and set the repo variable
+#   DESKTOP_STABLE_ENABLED=true (docs/deploying.md, "Before stable releases").
+#
+# Why no tag trigger: a workflow triggered by a tag runs the workflow file *at the tagged commit*,
+# so anyone who can push a tag (anyone with write, or a factory job token) could run their own
+# version of this file with the Developer ID. A manual run on main runs main's file.
+#
+# The signing material is in the `release` environment. Only main may deploy to it (the owner
+# removes `v*` from its allowed refs; see docs/deploying.md).
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    # The app's own code and its whole bundled workspace closure (the same closure spec 38 computes
+    # for the runner, plus the view's packages): a change to any of them changes the shipped app.
     paths:
       - apps/desktop/**
-      - packages/ui/**
-      - packages/client/**
+      - packages/**
       - local/runner-host/**
-      - packages/runner-*/**
-      - packages/harness-*/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .nvmrc
       - .github/workflows/desktop-release.yml
   workflow_dispatch:
+    inputs:
+      channel:
+        description: "canary, or stable (refused until DESKTOP_STABLE_ENABLED is true)"
+        type: choice
+        options: [canary, stable]
+        default: canary
+      version:
+        description: "stable only: the version, e.g. 1.2.3 (higher than every stable before it)"
+        type: string
+        default: ""
 
+# Canary pushes queue behind each other and the newest wins; a stable run has its own group and is
+# never cancelled.
 concurrency:
-  group: desktop-release
+  group: desktop-release-${{ github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && 'stable' || 'canary' }}
   cancel-in-progress: false
 
 permissions:
@@ -35,46 +56,103 @@ jobs:
     environment: release
     timeout-minutes: 60
     env:
+      # The runner's Node (ADR 0390). Its sha256 is pinned in apps/desktop/scripts/vendor-node.mjs.
       NODE_DIST_VERSION: "24.21.0"
+      R2_BUCKET: sf-desktop-releases
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      # Actions are pinned to commits: they run before and beside the signing material.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          node-version: ${{ env.NODE_DIST_VERSION }}
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+          fetch-depth: 0
+
+      # Only main, and only a commit that is on main. Belt and braces: the environment's allowed
+      # refs are what really stop another ref (docs/deploying.md).
+      - name: Refuse anything that isn't main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::desktop releases run only on main (got $GITHUB_REF)"; exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on origin/main"; exit 1
+          fi
 
       - name: Channel and version
         id: channel
+        env:
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_VERSION: ${{ inputs.version }}
+          STABLE_ENABLED: ${{ vars.DESKTOP_STABLE_ENABLED }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [ "${INPUT_CHANNEL:-canary}" = "stable" ]; then
+            if [ "$STABLE_ENABLED" != "true" ]; then
+              echo "::error::stable releases are not enabled: see docs/deploying.md, 'Before stable releases'"; exit 1
+            fi
+            if ! printf %s "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::stable needs a version like 1.2.3 (got '$INPUT_VERSION')"; exit 1
+            fi
             echo "channel=stable" >> "$GITHUB_OUTPUT"
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
           else
             echo "channel=canary" >> "$GITHUB_OUTPUT"
             echo "version=0.1.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
 
-      # The Developer ID goes into a throwaway keychain that is deleted at the end.
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ env.NODE_DIST_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Before building: a version that is already published is never built again, and a stable
+      # version must be higher than the one published (no downgrades, no overwrites).
+      - name: Refuse a published or lower version
+        working-directory: apps/desktop
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DESKTOP_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DESKTOP_R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ vars.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          node scripts/publish-release.ts check \
+            --channel "${{ steps.channel.outputs.channel }}" \
+            --version "${{ steps.channel.outputs.version }}"
+
+      # The Developer ID goes into a throwaway keychain that is deleted at the end, whatever happens.
+      # Passwords go to `security` on stdin or in files, never on its command line.
       - name: Signing keychain
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
+          set -euo pipefail
+          umask 077
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
-          KC_PW=$(openssl rand -hex 24)
+          echo "MACOS_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          cleanup() {
+            rm -P -f "$RUNNER_TEMP/devid.p12" "$RUNNER_TEMP/devid.pem" "$RUNNER_TEMP/devid-once.p12" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          KC_PW=$(/usr/bin/openssl rand -hex 24)
           security create-keychain -p "$KC_PW" "$KEYCHAIN"
           security set-keychain-settings -lut 3600 "$KEYCHAIN"
           security unlock-keychain -p "$KC_PW" "$KEYCHAIN"
-          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/devid.p12"
-          security import "$RUNNER_TEMP/devid.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
-          rm -P "$RUNNER_TEMP/devid.p12"
+          printf %s "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          # The .p12's real password never reaches a command line (ps): openssl (the system
+          # LibreSSL, whose PKCS#12 `security` can read) takes it from the environment and re-wraps
+          # the identity under a random one-time password, which is all `security import -P` sees.
+          # Every intermediate file is mode 600 and removed on exit, failure included.
+          export ONE_PW=$(/usr/bin/openssl rand -hex 24)
+          /usr/bin/openssl pkcs12 -in "$RUNNER_TEMP/devid.p12" -passin env:MACOS_CERT_PASSWORD -nodes \
+            -out "$RUNNER_TEMP/devid.pem" 2>/dev/null
+          /usr/bin/openssl pkcs12 -export -in "$RUNNER_TEMP/devid.pem" -passout env:ONE_PW \
+            -out "$RUNNER_TEMP/devid-once.p12"
+          security import "$RUNNER_TEMP/devid-once.p12" -k "$KEYCHAIN" -f pkcs12 -P "$ONE_PW" -T /usr/bin/codesign
+          cleanup
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PW" "$KEYCHAIN" >/dev/null
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           printf %s "$ASC_KEY_P8" > "$RUNNER_TEMP/notary.p8"
-          echo "MACOS_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
       - name: Build, sign and notarize
         working-directory: apps/desktop
@@ -92,34 +170,33 @@ jobs:
 
       - name: Check the signature
         working-directory: apps/desktop
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           app=$(ls -d build/*-macos-arm64/*.app)
-          codesign --verify --strict --deep --verbose=2 "$app"
+          # The same requirement the app checks an update against (src/bun/update-verify.ts).
+          codesign --verify --strict --deep --verbose=2 \
+            -R="anchor apple generic and identifier \"com.software-factory.desktop\" and certificate leaf[subject.OU] = \"$TEAM_ID\"" "$app"
           spctl --assess --type exec --verbose=2 "$app"
           xcrun stapler validate "$app"
 
-      # The artifacts are flat and prefixed by channel, so canary and stable share one folder.
+      # Versioned object names, uploaded before the manifests, which go last: a client never sees a
+      # manifest naming an archive that isn't there yet, nor an old archive under a new hash.
+      # The upload uses an R2 token scoped to this one bucket, held only by this environment.
       - name: Upload to downloads.zerobsai.com/desktop
         working-directory: apps/desktop
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.DESKTOP_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DESKTOP_R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ vars.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
-          for f in artifacts/*; do
-            name=$(basename "$f")
-            case "$name" in
-              *.json) type=application/json; cache="no-cache" ;;
-              *.zip) type=application/zip; cache="no-cache" ;;
-              *) type=application/octet-stream; cache="public, max-age=31536000, immutable" ;;
-            esac
-            pnpm --filter @software-factory/engine exec wrangler r2 object put \
-              "sf-desktop-releases/desktop/$name" --file "$PWD/$f" --remote \
-              --content-type "$type" --cache-control "$cache"
-          done
+          node scripts/publish-release.ts upload \
+            --channel "${{ steps.channel.outputs.channel }}" \
+            --version "${{ steps.channel.outputs.version }}"
           echo "::notice title=Desktop ${{ steps.channel.outputs.channel }} ${{ steps.channel.outputs.version }}::https://downloads.zerobsai.com/desktop/${{ steps.channel.outputs.channel }}-macos-arm64-Software-Factory.zip"
 
       - name: Clean up the keychain
         if: always()
         run: |
           [ -n "${MACOS_KEYCHAIN:-}" ] && security delete-keychain "$MACOS_KEYCHAIN" || true
-          rm -f "$RUNNER_TEMP/notary.p8"
+          rm -P -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/devid.p12" "$RUNNER_TEMP/devid.pem" "$RUNNER_TEMP/devid-once.p12" 2>/dev/null || true

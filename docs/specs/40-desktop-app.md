@@ -160,11 +160,15 @@ The in-app updater follows the channel. The client door's version handshake can 
 
 **Acceptance criteria**
 - A merge to `main` touching the app publishes a canary that an installed canary picks up.
-- A tag publishes stable.
+- ~~A tag publishes stable.~~ (2026-11-12) Stable is a manual run on `main`, refused until the
+  owner has locked the `release` environment down (`docs/deploying.md`, "Before stable releases"):
+  a tag runs the tagged commit's own workflow file with the signing material.
 - No signing material is in the repo.
+- The app applies only an update that is a higher version, signed by its own Team ID and accepted
+  by Gatekeeper, and no job is cancelled for an update unless the person says so.
 
 **As built (M4a).** `.github/workflows/desktop-release.yml` runs on a macOS runner in the `release`
-environment (only `main` and `v*` tags may use it):
+environment, on `main` only (it refuses any other ref and any commit that isn't on `origin/main`):
 - **Signing:** the Developer ID goes into a throwaway keychain, and Electrobun's own
   `mac.codesign`/`notarize` sign (hardened runtime, JIT entitlements) and notarize with the App
   Store Connect key. Signing from a build hook doesn't work: Electrobun writes the build hash into
@@ -175,12 +179,45 @@ environment (only `main` and `v*` tags may use it):
   when macOS ran it translocated from Downloads, and rewrote its own bundle on first launch. Tested
   on the M5 (2026-11-12): the plain app passes `codesign --verify --deep --strict` and `spctl` before
   launch, after the first launch and after a relaunch, and its `launcher` and `bun` run.
-- **Node:** the runner's Node is downloaded from nodejs.org at a pinned version and checked against
-  `SHASUMS256.txt`.
-- **Upload:** artifacts go to R2 bucket `sf-desktop-releases` under `desktop/`, served at
-  `https://downloads.zerobsai.com/desktop` (the build's `release.baseUrl`).
-- **The app** checks every 6 hours, downloads in the background and offers *Restart to update*,
-  stopping the runner cleanly first.
+  The certificate's password never reaches a command line, and the keychain and every key file are
+  removed on failure too. Actions are pinned to commit SHAs.
+- **Triggers:** pushes to `main` that touch `apps/desktop`, `packages/**`, `local/runner-host`, the
+  root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` or `.nvmrc`. That is a superset of the
+  app's bundled workspace closure (the closure spec 38 computes for the runner, plus the view's
+  packages): a path filter can't compute a closure, and an extra canary is harmless. Canary and
+  stable have separate concurrency groups; nothing cancels a queued run.
+- **Node:** the runner's Node is downloaded from nodejs.org at a pinned version and checked against a
+  sha256 committed in `scripts/vendor-node.mjs` (not the same server's `SHASUMS256.txt`). CI refuses
+  to build without `NODE_DIST_VERSION`.
+- **Upload:** `scripts/publish-release.ts`, with an R2 token scoped to the bucket and held only by
+  the `release` environment. Artifacts go to R2 bucket `sf-desktop-releases` under `desktop/`, served
+  at `https://downloads.zerobsai.com/desktop` (the build's `release.baseUrl`), under versioned names,
+  manifests last. It refuses a version that is already published or not higher than the live one.
+- **The app** (`src/bun/updates.ts`) checks every 6 hours and lets Electrobun download and stage in
+  the background. Electrobun trusts the bucket (it installs any manifest whose build hash differs,
+  checks only a sha256 from that same manifest, and its helper checks no signature), so the app
+  decides:
+  - it refuses a manifest whose version isn't higher than its own (no downgrades);
+  - it reads Electrobun's real state after the download (which swallows errors) and tries again in
+    30 minutes;
+  - before offering the update, and again right before applying it, it runs `codesign --verify
+    --deep --strict` on the staged bundle against `anchor apple generic and identifier
+    "com.software-factory.desktop" and certificate leaf[subject.OU] = "<Team ID>"`, with the Team ID
+    read from the running app's own signature (never the manifest), and `spctl --assess`. An
+    unsigned build takes no updates (`src/bun/update-verify.ts`);
+  - an app that can't replace itself (translocated from Downloads, or a folder this account can't
+    write) says "Move Software Factory to your Applications folder" instead of failing silently.
+- **Restart to update** waits for the runner: no job is cancelled for an update (spec 38's rule).
+  The app reads the runner host's `live-jobs.json`. While jobs run, the menu shows how many, offers
+  *Restart to update when they finish*, and *Restart anyway (cancels N jobs; their unpushed work is
+  lost)*. If the update doesn't start (nothing staged, a refused signature, a quit handler said no),
+  the runner and the live socket come back.
+- **Verified only by hand:** a canary-to-canary update on a real Mac (download, stage, the
+  signature check passing on a real staged bundle, the swap, the relaunch). The unit tests
+  (`test/updates.test.ts`, `test/release.test.ts`) cover the decisions with a fake updater and fake
+  `codesign`; `codesign`/`spctl` accepting a staged `….app.prepared-<hash>` copy of a real signed
+  build, and refusing it with a wrong Team ID or one changed file, was checked on the M5
+  (2026-11-12).
 - **Not yet:**
   - The `update_required` version handshake.
   - **M4b, the Secure Enclave key.** Tested on the M5 with the real Developer ID: a command-line
@@ -191,6 +228,13 @@ environment (only `main` and `v*` tags may use it):
     Until then signed builds sign in with a software key and decide gates on the website.
     **On hold (2026-11-12):** the owner decided Touch ID approvals are overkill; whether desktop gate
     decisions need any presence proof is being settled separately.
+  - **Why signed builds can't decide gates (2026-11-12, tested on the M5).** No keychain
+    restriction protects the desktop token or a software key from an agent running as the same
+    user: the app's `bun` runs any script under the app's signature, so a keychain ACL naming the
+    app admits the agent too. So `DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in production and gate
+    decisions are not available from a signed desktop build. The owner is deciding between
+    approving on the phone, the Touch ID helper (M4b), or container-only runners (no agent shares
+    the person's user account).
 
 ## M5: the website shrinks to auth
 `apps/app` keeps sign-in, Connect GitHub, the device approval pages, device management and
