@@ -55,6 +55,7 @@ export type ReadOpName =
   | "workItem.attachment.get"
   | "planning.get"
   | "artifact.get"
+  | "spec.writeBack"
   | "project.list"
   | "github.repos"
   | "setup.status"

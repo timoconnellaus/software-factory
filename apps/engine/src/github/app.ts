@@ -398,6 +398,38 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       if (r.status !== 200 && r.status !== 201) fail(`commit ${path}`, r);
       return { commitSha: (r.json as { commit: { sha: string } }).commit.sha };
     },
+    async commitFiles(repo, { branch, files, message }) {
+      const ref = await api(repo, "GET", `/git/ref/heads/${encodeURIComponent(branch)}`);
+      if (ref.status !== 200) fail(`read ${branch}`, ref);
+      const head = (ref.json as { object: { sha: string } }).object.sha;
+      const parent = await api(repo, "GET", `/git/commits/${head}`);
+      if (parent.status !== 200) fail(`read commit ${head}`, parent);
+      const baseTree = (parent.json as { tree: { sha: string } }).tree.sha;
+      const tree = await api(repo, "POST", "/git/trees", {
+        base_tree: baseTree,
+        tree: files.map((f) => ({
+          path: f.path,
+          mode: "100644",
+          type: "blob",
+          content: f.content,
+        })),
+      });
+      if (tree.status !== 201) fail("create tree", tree);
+      const made = await api(repo, "POST", "/git/commits", {
+        message,
+        tree: (tree.json as { sha: string }).sha,
+        parents: [head],
+      });
+      if (made.status !== 201) fail("create commit", made);
+      const commitSha = (made.json as { sha: string }).sha;
+      // A fast-forward only: a branch that moved meanwhile fails, rather than losing a commit.
+      const moved = await api(repo, "PATCH", `/git/refs/heads/${encodeURIComponent(branch)}`, {
+        sha: commitSha,
+        force: false,
+      });
+      if (moved.status !== 200) fail(`update ${branch}`, moved);
+      return { commitSha };
+    },
     async openPullRequest(repo, { head, base, title, body }) {
       const open = await api(
         repo,
