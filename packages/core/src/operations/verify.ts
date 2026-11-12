@@ -22,16 +22,18 @@ import { inspectProtection } from "./protection.ts";
 import {
   cancelWorkItem,
   projectForRepo,
+  repositoryForRepo,
   projectId,
   repoName,
   repoRef,
   requireProject,
+  requireRepository,
   requireWorkItem,
   sha,
   workItemId,
 } from "./shared.ts";
 
-export { projectForRepo, repoName };
+export { projectForRepo, repoName, repositoryForRepo };
 
 async function readCi(ctx: HandlerContext, repo: RepoRef, headSha: string): Promise<CiSummary> {
   const gh = ctx.services.github;
@@ -158,11 +160,12 @@ export const reviewPacketRecord = defineOperation({
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const ci = await readCi(ctx, repo, input.headSha);
     let files: ChangedFile[] | null = null;
     try {
-      files = await ctx.services.github.compareFiles(repo, project.default_branch, input.headSha);
+      files = await ctx.services.github.compareFiles(repo, repository.default_branch, input.headSha);
     } catch {
       files = null; // the packet is then incomplete, so it fails
     }
@@ -264,7 +267,7 @@ export const ciRead = defineOperation({
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const repo = await repoRef(ctx, requireProject(ctx));
+    const repo = await repoRef(ctx, requireRepository(ctx));
     const ci = await readCi(ctx, repo, input.headSha);
     return { ...ci, ...(await readMergeability(ctx, repo, w.pr_number, input.headSha)) };
   },
@@ -313,10 +316,11 @@ export const verifyRefresh = defineOperation({
     conclusion: z.string().nullable(),
     ciState: z.string().nullable(),
   }),
-  scope: async (input, db) => ({ projectId: await projectForRepo(db, input.repo) }),
+  scope: async (input, db) => repositoryForRepo(db, input.repo),
   async handler(input, ctx) {
     const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const none = { workItemId: null, status: null, conclusion: null, ciState: null };
     const byPr = async () =>
       input.prNumber
@@ -391,7 +395,7 @@ export const verifyRefresh = defineOperation({
         item: null,
         ...(prNumber
           ? {
-              detailsPath: `/attach?repo=${encodeURIComponent(`${project.repo_owner}/${project.repo_name}`)}&pr=${prNumber}`,
+              detailsPath: `/attach?repo=${encodeURIComponent(`${repository.owner}/${repository.name}`)}&pr=${prNumber}`,
             }
           : {}),
         prNumber,
@@ -672,11 +676,11 @@ export const prAutoMerge = defineOperation({
       throw new OperationError("conflict", "the branch moved since the review packet was made");
     }
     await requireQueueHead(ctx, w, input.headSha);
-    const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const files = await ctx.services.github.compareFiles(
       repo,
-      project.default_branch,
+      repository.default_branch,
       input.headSha,
     );
     const diff = checkOnlyDiff(files);
@@ -716,7 +720,7 @@ export const projectCheckGitHub = defineOperation({
   input: z.object({ projectId }),
   output: z.object({ ok: z.boolean(), problems: z.array(z.string()) }),
   async handler(_input, ctx) {
-    const { verdict } = await inspectProtection(ctx, requireProject(ctx));
+    const { verdict } = await inspectProtection(ctx, requireProject(ctx), requireRepository(ctx));
     return { ok: verdict.ok, problems: verdict.problems };
   },
 });

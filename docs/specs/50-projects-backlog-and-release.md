@@ -176,7 +176,7 @@ Nothing changes for a user.
     `releasedBy`.
   - The status enum in reads (`workItem.list`, `inbox.list`, …) includes the three new states.
 
-## Part C: planning before release (PR C, Workflow v7)
+## Part C: planning before release (PR C, Workflow v7) — proposed, awaiting the owner
 Raised by the owner after part B was written: planning (the live session with questions, spec 20) is
 not a pipeline stage after Queued. **Planning is how an item gets from Backlog to Ready**, and the
 spec gate is that transition. Release stays a separate, later decision.

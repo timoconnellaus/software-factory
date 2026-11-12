@@ -3,7 +3,7 @@
 import type { Db, KillScope } from "@software-factory/db";
 import type { Actor } from "./actors.ts";
 import { OperationError } from "./errors.ts";
-import type { ProjectRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
+import type { ProjectRow, RepositoryRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
 import { type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
 
 const EMPTY: Scope = {
@@ -12,6 +12,8 @@ const EMPTY: Scope = {
   workItemId: null,
   workItem: null,
   project: null,
+  repositories: [],
+  repository: null,
   policy: null,
   policySha: null,
   policyError: null,
@@ -26,6 +28,7 @@ export function defaultScopeRef(input: unknown): ScopeRef {
   return {
     workItemId: pick("workItemId"),
     projectId: pick("projectId"),
+    repositoryId: pick("repositoryId"),
     orgId: pick("orgId"),
     jobId: pick("jobId"),
     questionId: pick("questionId"),
@@ -75,6 +78,7 @@ export async function resolveScope(
   }
   let projectId = ref.projectId ?? null;
   let orgId = ref.orgId ?? null;
+  const repositoryId = ref.repositoryId ?? null;
   if (!workItemId && ref.pendingActionId) {
     const pa = await db
       .selectFrom("core_pending_actions")
@@ -87,7 +91,25 @@ export async function resolveScope(
     orgId ??= pa.org_id;
   }
 
-  if (batch) return resolveBatched(batch.d1, { workItemId, projectId, orgId }, batch.userId);
+  if (!workItemId && !projectId && repositoryId) {
+    projectId =
+      (
+        await db
+          .selectFrom("core_repositories")
+          .select("project_id")
+          .where("id", "=", repositoryId)
+          .executeTakeFirst()
+      )?.project_id ?? null;
+    if (!projectId) throw new OperationError("not_found", `no repository ${repositoryId}`);
+  }
+
+  if (batch) {
+    return resolveBatched(
+      batch.d1,
+      { workItemId, projectId, orgId, repositoryId },
+      batch.userId,
+    );
+  }
 
   let workItem: WorkItemRow | null = null;
   if (workItemId) {
@@ -115,6 +137,14 @@ export async function resolveScope(
   }
 
   if (!project) return { ...EMPTY, orgId, workItemId };
+  const repositories = await db
+    .selectFrom("core_repositories")
+    .selectAll()
+    .where("project_id", "=", project.id)
+    .orderBy("created_at")
+    .orderBy("id")
+    .execute();
+  const repository = pickRepository(repositories, workItem, repositoryId);
   const { policy, policyError } = await loadPolicy(db, project);
   const pinnedPolicy =
     workItem?.policy_sha && workItem.policy_sha !== project.policy_sha
@@ -126,6 +156,8 @@ export async function resolveScope(
     workItemId,
     workItem,
     project,
+    repositories,
+    repository,
     policy,
     policySha: project.policy_sha,
     policyError,
@@ -133,12 +165,35 @@ export async function resolveScope(
   };
 }
 
+/**
+ * The repository a call is about (ADR 0440): the work item's; else the one named; else the project's
+ * only one. Refuses a named repository that isn't the project's.
+ */
+function pickRepository(
+  repositories: RepositoryRow[],
+  workItem: Pick<WorkItemRow, "repository_id"> | null,
+  repositoryId: string | null,
+): RepositoryRow | null {
+  const id = workItem?.repository_id ?? repositoryId;
+  if (id) {
+    const found = repositories.find((r) => r.id === id);
+    if (!found) throw new OperationError("not_found", `no repository ${id} on this project`);
+    return found;
+  }
+  return repositories.length === 1 ? (repositories[0] ?? null) : null;
+}
+
 type PolicyRow = { raw: string; valid: number; error: string | null };
 
 /** `resolveScope`'s lookups as one D1 batch: the same answers and the same refusals. */
 async function resolveBatched(
   d1: D1Database,
-  ids: { workItemId: string | null; projectId: string | null; orgId: string | null },
+  ids: {
+    workItemId: string | null;
+    projectId: string | null;
+    orgId: string | null;
+    repositoryId: string | null;
+  },
   userId: string | null,
 ): Promise<Scope & { role: string | null | undefined }> {
   // The project is the work item's when there is one (as in the unbatched path).
@@ -159,6 +214,7 @@ async function resolveBatched(
   const at: {
     workItem?: number;
     project?: number;
+    repositories?: number;
     policy?: number;
     pinned?: number;
     role?: number;
@@ -183,6 +239,14 @@ async function resolveBatched(
     at.project = statements.length;
     statements.push(
       d1.prepare(`SELECT * FROM core_projects WHERE id = ${projectExpr.sql}`).bind(projectExpr.arg),
+    );
+    at.repositories = statements.length;
+    statements.push(
+      d1
+        .prepare(
+          `SELECT * FROM core_repositories WHERE project_id = ${projectExpr.sql} ORDER BY created_at, id`,
+        )
+        .bind(projectExpr.arg),
     );
     at.policy = statements.length;
     statements.push(
@@ -224,6 +288,11 @@ async function resolveBatched(
     orgId = project.org_id;
   }
   if (!project) return { ...EMPTY, orgId, workItemId: ids.workItemId, role };
+  const repositories =
+    at.repositories === undefined
+      ? []
+      : ((results[at.repositories]?.results ?? []) as unknown as RepositoryRow[]);
+  const repository = pickRepository(repositories, workItem, ids.repositoryId);
   const { policy, policyError } = interpretPolicy(project, first<PolicyRow>(at.policy));
   const pinnedRow = first<PolicyRow>(at.pinned);
   const pinnedPolicy = pinnedRow
@@ -235,6 +304,8 @@ async function resolveBatched(
     workItemId: ids.workItemId,
     workItem,
     project,
+    repositories,
+    repository,
     policy,
     policySha: project.policy_sha,
     policyError,

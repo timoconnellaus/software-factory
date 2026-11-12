@@ -938,8 +938,9 @@ class ItemFlow {
     return this.step.do("meta: item", async () => {
       const row = await this.env.DB.prepare(
         `SELECT w.number, w.title, w.body, w.branch, w.kind, w.pr_number, w.head_sha,
-                pr.default_branch, p.raw FROM core_work_items w
+                COALESCE(r.default_branch, 'main') AS default_branch, p.raw FROM core_work_items w
          JOIN core_projects pr ON pr.id = w.project_id
+         LEFT JOIN core_repositories r ON r.id = w.repository_id
          LEFT JOIN core_project_policies p ON p.project_id = pr.id AND p.sha = pr.policy_sha
          WHERE w.id = ?`,
       )

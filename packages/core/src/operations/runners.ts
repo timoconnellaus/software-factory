@@ -39,7 +39,15 @@ import type { ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
-import { fencingToken, jobId, repoRef, requireWorkItem, sha, workItemId } from "./shared.ts";
+import {
+  fencingToken,
+  jobId,
+  repoRef,
+  requireRepository,
+  requireWorkItem,
+  sha,
+  workItemId,
+} from "./shared.ts";
 import { RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./work-items.ts";
 
 /** How long a lease lasts without a heartbeat (open question in ADR 0021; ADR 0052 picks this). */
@@ -588,6 +596,17 @@ async function buildJob(
   leaseExpiresAt: string,
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
+  // The item's repository (ADR 0440): it was fixed when the item was pulled.
+  const repository = item.repository_id
+    ? await ctx.db
+        .selectFrom("core_repositories")
+        .selectAll()
+        .where("id", "=", item.repository_id)
+        .executeTakeFirst()
+    : undefined;
+  if (!repository) {
+    throw new OperationError("conflict", `work item #${item.number} has no repository`);
+  }
   // The harness stays at least as narrow as the version the item started under (ADR 0370 §5).
   const pinned =
     item.policy_sha && item.policy_sha !== project.policy_sha
@@ -610,11 +629,11 @@ async function buildJob(
     stage: job.stage as Job["stage"],
     workItem: { id: item.id, number: item.number, title: item.title },
     repo: {
-      url: `https://github.com/${project.repo_owner}/${project.repo_name}.git`,
-      owner: project.repo_owner,
-      name: project.repo_name,
+      url: `https://github.com/${repository.owner}/${repository.name}.git`,
+      owner: repository.owner,
+      name: repository.name,
       baseRef: item.branch,
-      defaultBranch: project.default_branch,
+      defaultBranch: repository.default_branch,
     },
     branch: run.branch,
     harness: {
@@ -893,9 +912,8 @@ export const runIssueToken = defineOperation({
   async handler(input, ctx) {
     const run = await loadRun(ctx, input.jobId);
     if (!isActive(run.status)) throw new OperationError("conflict", `run is ${run.status}`);
-    const project = ctx.scope.project;
-    if (!project) throw new OperationError("not_found", "no project");
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const minted = await ctx.services.github.mintRepoToken(repo);
     return {
       token: minted.token,
@@ -1097,10 +1115,8 @@ export const runHandBack = defineOperation({
     }
     if (input.outcome === "completed" && run.stage === "build") {
       if (!input.headSha) return fail("a build hand-back needs the pushed head SHA");
-      const project = ctx.scope.project;
-      if (!project) throw new OperationError("not_found", "no project");
       const pushed = await ctx.services.github.getBranchSha(
-        await repoRef(ctx, project),
+        await repoRef(ctx, requireRepository(ctx)),
         run.branch,
       );
       if (pushed !== input.headSha) {

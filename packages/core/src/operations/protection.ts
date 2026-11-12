@@ -4,7 +4,12 @@
 import type { CoreDatabase } from "@software-factory/db";
 import type { SelectQueryBuilder } from "kysely";
 import { z } from "zod";
-import { defineOperation, type HandlerContext, type ProjectRow } from "../operation.ts";
+import {
+  defineOperation,
+  type HandlerContext,
+  type ProjectRow,
+  type RepositoryRow,
+} from "../operation.ts";
 import { loadPolicy } from "../scope.ts";
 import {
   DEFAULT_REQUIRED_CHECKS,
@@ -17,7 +22,15 @@ import {
   rulesetsUrl,
   verifyProtection,
 } from "../verify/protection.ts";
-import { projectForRepo, projectId, repoName, repoRef, requireProject } from "./shared.ts";
+import {
+  projectId,
+  repoName,
+  repoRef,
+  repositoryForRepo,
+  repositoryId,
+  requireProject,
+  requireRepository,
+} from "./shared.ts";
 
 /** How often the cron re-checks a project nothing else has re-checked. */
 export const PROTECTION_RECHECK_MS = 24 * 3_600_000;
@@ -56,12 +69,13 @@ async function targetFor(
 export async function inspectProtection(
   ctx: Pick<HandlerContext, "db" | "services" | "scope">,
   project: ProjectRow,
+  repository: RepositoryRow,
 ): Promise<{ state: ProtectionState; verdict: ProtectionVerdict; target: ProtectionTarget }> {
   const target = await targetFor(ctx, project);
   try {
-    const repo = await repoRef(ctx as HandlerContext, project);
-    const guards = await ctx.services.github.repoGuards(repo, project.default_branch);
-    const verdict = verifyProtection(guards, project.default_branch, target);
+    const repo = await repoRef(ctx as HandlerContext, repository);
+    const guards = await ctx.services.github.repoGuards(repo, repository.default_branch);
+    const verdict = verifyProtection(guards, repository.default_branch, target);
     return { state: verdict.ok ? "ok" : "red", verdict, target };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -78,13 +92,17 @@ export async function inspectProtection(
   }
 }
 
-export function adminMessage(project: ProjectRow, target: ProtectionTarget, files: string[]) {
+export function adminMessage(
+  repository: RepositoryRow,
+  target: ProtectionTarget,
+  files: string[],
+) {
   const checks = [...(target.requiredChecks ?? DEFAULT_REQUIRED_CHECKS), "factory/verify"];
-  const repo = `${project.repo_owner}/${project.repo_name}`;
+  const repo = `${repository.owner}/${repository.name}`;
   return [
-    `Could you protect \`${project.default_branch}\` on ${repo}? It's for our software factory.`,
+    `Could you protect \`${repository.default_branch}\` on ${repo}? It's for our software factory.`,
     "",
-    `1. Open ${rulesetsUrl({ owner: project.repo_owner, name: project.repo_name })}`,
+    `1. Open ${rulesetsUrl({ owner: repository.owner, name: repository.name })}`,
     `2. New ruleset → Import a ruleset → choose the attached ${files.join(" (then the same for ") + (files.length > 1 ? ")" : "")} → Create`,
     "",
     `It requires a pull request and the ${checks.map((c) => `\`${c}\``).join(" and ")} checks (branch up to date), and blocks force pushes and deleting the branch, with no bypass for anyone. The factory's GitHub App can only read repository settings, so it can't apply this itself.`,
@@ -95,15 +113,17 @@ export function adminMessage(project: ProjectRow, target: ProtectionTarget, file
 export async function protectionViewFor(
   ctx: Pick<HandlerContext, "db" | "services" | "scope" | "actor">,
   project: ProjectRow,
+  repository: RepositoryRow,
   inspected?: Awaited<ReturnType<typeof inspectProtection>>,
 ): Promise<ProtectionView> {
-  const { state, verdict, target } = inspected ?? (await inspectProtection(ctx, project));
+  const { state, verdict, target } =
+    inspected ?? (await inspectProtection(ctx, project, repository));
   const kinds: RulesetKind[] = verdict.confined
     ? ["default-branch"]
     : ["default-branch", "factory-branches"];
   const files = kinds.map((kind) => ({
     kind,
-    filename: rulesetFile(kind, project.repo_name, target).filename,
+    filename: rulesetFile(kind, repository.name, target).filename,
   }));
   let viewerIsRepoAdmin: boolean | null = null;
   if (ctx.actor.type === "human") {
@@ -114,7 +134,7 @@ export async function protectionViewFor(
       .executeTakeFirst();
     if (user?.github_login) {
       try {
-        const repo = await repoRef(ctx as HandlerContext, project);
+        const repo = await repoRef(ctx as HandlerContext, repository);
         const role = await ctx.services.github.repoPermission(repo, user.github_login);
         viewerIsRepoAdmin = role === "admin";
       } catch {
@@ -127,11 +147,11 @@ export async function protectionViewFor(
     problems: verdict.problems,
     warnings: verdict.warnings,
     files,
-    rulesetsUrl: rulesetsUrl({ owner: project.repo_owner, name: project.repo_name }),
-    branch: project.default_branch,
+    rulesetsUrl: rulesetsUrl({ owner: repository.owner, name: repository.name }),
+    branch: repository.default_branch,
     viewerIsRepoAdmin,
     adminMessage: adminMessage(
-      project,
+      repository,
       target,
       files.map((f) => f.filename),
     ),
@@ -155,6 +175,7 @@ export async function missingProtectionEvents(ctx: Pick<HandlerContext, "service
 async function record(
   ctx: HandlerContext,
   project: ProjectRow,
+  repository: RepositoryRow,
   state: ProtectionState,
   verdict: ProtectionVerdict,
   trigger: string,
@@ -216,7 +237,7 @@ async function record(
         payload: {
           event: "protection.changed",
           userId: a.user_id,
-          title: `Protection on ${project.default_branch} changed: ${project.repo_owner}/${project.repo_name}`,
+          title: `Protection on ${repository.default_branch} changed: ${repository.owner}/${repository.name}`,
           url: "/setup",
         },
       });
@@ -235,8 +256,9 @@ const checkOutput = z.object({
 
 async function checkAndRecord(ctx: HandlerContext, trigger: string) {
   const project = requireProject(ctx);
-  const { state, verdict } = await inspectProtection(ctx, project);
-  const { previous, drifted } = await record(ctx, project, state, verdict, trigger);
+  const repository = requireRepository(ctx);
+  const { state, verdict } = await inspectProtection(ctx, project, repository);
+  const { previous, drifted } = await record(ctx, project, repository, state, verdict, trigger);
   return { state, previous, drifted, problems: verdict.problems, warnings: verdict.warnings };
 }
 
@@ -248,11 +270,16 @@ export const protectionRuleset = defineOperation({
   actors: ["human", "agent"],
   permission: "member",
   bootstrapsPolicy: true,
-  input: z.object({ projectId, kind: z.enum(RULESET_KINDS).default("default-branch") }),
+  input: z.object({
+    projectId,
+    repositoryId: repositoryId.optional(),
+    kind: z.enum(RULESET_KINDS).default("default-branch"),
+  }),
   output: z.object({ filename: z.string(), json: z.string() }),
   async handler(input, ctx) {
     const project = requireProject(ctx);
-    const file = rulesetFile(input.kind, project.repo_name, await targetFor(ctx, project));
+    const repository = requireRepository(ctx);
+    const file = rulesetFile(input.kind, repository.name, await targetFor(ctx, project));
     return { filename: file.filename, json: file.json };
   },
 });
@@ -269,7 +296,7 @@ export const protectionCheck = defineOperation({
   // the branch is safe again).
   bootstrapsPolicy: true,
   allowWhenKilled: true,
-  input: z.object({ projectId }),
+  input: z.object({ projectId, repositoryId: repositoryId.optional() }),
   output: checkOutput,
   async handler(_input, ctx) {
     return checkAndRecord(ctx, "setup");
@@ -287,7 +314,7 @@ export const protectionObserve = defineOperation({
   allowWhenKilled: true,
   input: z.object({ repo: repoName, event: z.string().max(100), action: z.string().max(100) }),
   output: checkOutput,
-  scope: async (input, db) => ({ projectId: await projectForRepo(db, input.repo) }),
+  scope: async (input, db) => repositoryForRepo(db, input.repo),
   async handler(input, ctx) {
     return checkAndRecord(ctx, input.event === "daily" ? "daily" : "webhook");
   },
@@ -309,12 +336,29 @@ export function protectionDriftQuery(
   return ctx.db
     .selectFrom("core_project_protection")
     .innerJoin("core_projects", "core_projects.id", "core_project_protection.project_id")
+    // The project's first repository: protection is still recorded per project (ADR 0440).
+    .innerJoin("core_repositories", (join) =>
+      join
+        .onRef("core_repositories.project_id", "=", "core_projects.id")
+        .on(({ eb, selectFrom }) =>
+          eb(
+            "core_repositories.id",
+            "=",
+            selectFrom("core_repositories as r")
+              .select("r.id")
+              .whereRef("r.project_id", "=", "core_projects.id")
+              .orderBy("r.created_at")
+              .orderBy("r.id")
+              .limit(1),
+          ),
+        ),
+    )
     .select([
       "core_projects.id as projectId",
       "core_projects.name as name",
-      "core_projects.repo_owner as owner",
-      "core_projects.repo_name as repo",
-      "core_projects.default_branch as branch",
+      "core_repositories.owner as owner",
+      "core_repositories.name as repo",
+      "core_repositories.default_branch as branch",
       "core_project_protection.problems as problems",
       "core_project_protection.changed_at as changedAt",
     ])

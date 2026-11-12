@@ -13,6 +13,7 @@ import {
   defineOperation,
   type HandlerContext,
   type ProjectRow,
+  type RepositoryRow,
   type WorkItemRow,
 } from "../operation.ts";
 import type { RepoRef } from "../services.ts";
@@ -22,6 +23,7 @@ import {
   projectId,
   repoRef,
   requireProject,
+  requireRepository,
   requireWorkItem,
   sha,
   workItemId,
@@ -301,22 +303,23 @@ export const mergeQueueUpdate = defineOperation({
       throw new OperationError("conflict", "only the head of the merge queue is updated");
     }
     if (!w.pr_number) throw new OperationError("conflict", "no pull request");
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const github = ctx.services.github;
     const at = entry.head_sha;
     const pr = await github.pullRequestMergeability(repo, w.pr_number);
     const prHead = pr.headSha ?? at;
 
     if (prHead !== at)
-      return acceptUpdate(ctx, { w, project, repo, entryId: entry.id, at, prHead });
+      return acceptUpdate(ctx, { w, project, repository, repo, entryId: entry.id, at, prHead });
 
-    const behind = (await github.compareCommits(repo, project.default_branch, at)).behindBy;
+    const behind = (await github.compareCommits(repo, repository.default_branch, at)).behindBy;
     if (behind === 0) return { state: "current" as const, headSha: at, reason: null };
     if (pr.mergeable === false) {
       return {
         state: "conflict" as const,
         headSha: at,
-        reason: `${project.default_branch} can't merge into the branch cleanly`,
+        reason: `${repository.default_branch} can't merge into the branch cleanly`,
       };
     }
     const asked = await github.updatePullRequestBranch(repo, {
@@ -327,13 +330,13 @@ export const mergeQueueUpdate = defineOperation({
       // GitHub makes the merge commit asynchronously; it is often there already.
       const after = (await github.pullRequestMergeability(repo, w.pr_number)).headSha;
       if (after && after !== at) {
-        return acceptUpdate(ctx, { w, project, repo, entryId: entry.id, at, prHead: after });
+        return acceptUpdate(ctx, { w, project, repository, repo, entryId: entry.id, at, prHead: after });
       }
       ctx.change({
         entity: "work_item",
         id: w.id,
         after: {
-          mergeQueue: `asked GitHub to merge ${project.default_branch} in (${behind} behind)`,
+          mergeQueue: `asked GitHub to merge ${repository.default_branch} in (${behind} behind)`,
         },
       });
       return { state: "updating" as const, headSha: at, reason: null };
@@ -352,13 +355,14 @@ async function acceptUpdate(
   args: {
     w: WorkItemRow;
     project: ProjectRow;
+    repository: RepositoryRow;
     repo: RepoRef;
     entryId: string;
     at: string;
     prHead: string;
   },
 ) {
-  const { w, project, repo, at, prHead } = args;
+  const { w, project, repository, repo, at, prHead } = args;
   const github = ctx.services.github;
   // The head moved. Accept it only as GitHub's update-branch merge: first parent the head the
   // queue had, second parent a commit already on the default branch. Anything else is a push
@@ -369,12 +373,12 @@ async function acceptUpdate(
     parents.length === 2 &&
     parents[0] === at &&
     merged !== undefined &&
-    (await github.compareCommits(repo, project.default_branch, merged)).aheadBy === 0;
+    (await github.compareCommits(repo, repository.default_branch, merged)).aheadBy === 0;
   if (!clean) {
     return {
       state: "moved" as const,
       headSha: prHead,
-      reason: `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${project.default_branch} into ${at.slice(0, 7)}`,
+      reason: `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${repository.default_branch} into ${at.slice(0, 7)}`,
     };
   }
   ctx.write(
@@ -394,7 +398,7 @@ async function acceptUpdate(
     entity: "work_item",
     id: w.id,
     before: { sha: at },
-    after: { sha: prHead, by: `merge queue: ${project.default_branch} merged in` },
+    after: { sha: prHead, by: `merge queue: ${repository.default_branch} merged in` },
   });
   await carryReviewPacket(ctx, { item: w, project, repo, fromSha: at, toSha: prHead });
   return { state: "updated" as const, headSha: prHead, reason: null };

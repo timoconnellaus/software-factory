@@ -3,6 +3,7 @@
 export const ID_PREFIXES = {
   workItem: "wi",
   project: "prj",
+  repository: "repo",
   factory: "fac",
   pendingAction: "pa",
   question: "q",

@@ -278,8 +278,11 @@ describe("Connect GitHub: verifying the installation", () => {
         "INSERT INTO core_factories (id, org_id, name, created_at, created_by) VALUES (?, ?, 'Default', ?, ?)",
       ).bind(factoryId, p.orgId, now, p.userId),
       env.DB.prepare(
-        "INSERT INTO core_projects (id, org_id, factory_id, name, slug, repo_owner, repo_name, created_at, created_by) VALUES (?, ?, ?, 'software-factory', 'software-factory', ?, ?, ?, ?)",
-      ).bind(projectId, p.orgId, factoryId, p.login, repoName, now, p.userId),
+        "INSERT INTO core_projects (id, org_id, factory_id, name, slug, created_at, created_by) VALUES (?, ?, ?, 'software-factory', 'software-factory', ?, ?)",
+      ).bind(projectId, p.orgId, factoryId, now, p.userId),
+      env.DB.prepare(
+        "INSERT INTO core_repositories (id, org_id, project_id, owner, name, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).bind(`repo_${projectId.slice(4)}`, p.orgId, projectId, p.login, repoName, now, p.userId),
     ]);
     const s = await start(p);
     const done = await ok<Connected>(
@@ -293,7 +296,10 @@ describe("Connect GitHub: verifying the installation", () => {
       installation_record_id: string;
       github_repo_id: number;
       policy_sha: string;
-    }>("SELECT * FROM core_projects WHERE id = ?", projectId);
+    }>(
+      "SELECT r.*, p.policy_sha FROM core_repositories r JOIN core_projects p ON p.id = r.project_id WHERE p.id = ?",
+      projectId,
+    );
     expect(row).toMatchObject({
       github_installation_id: installationId,
       installation_record_id: done.installation?.id,
@@ -352,7 +358,7 @@ describe("the installation webhooks keep the record current", () => {
       github_installation_id: string | null;
       installation_record_id: string | null;
     }>(
-      "SELECT github_installation_id, installation_record_id FROM core_projects WHERE id = ?",
+      "SELECT github_installation_id, installation_record_id FROM core_repositories WHERE project_id = ?",
       w.projectId,
     );
     expect(removed).toEqual({ github_installation_id: null, installation_record_id: null });
@@ -363,7 +369,7 @@ describe("the installation webhooks keep the record current", () => {
       INTAKE,
     );
     const back = await first<{ installation_record_id: string; github_repo_id: number }>(
-      "SELECT installation_record_id, github_repo_id FROM core_projects WHERE id = ?",
+      "SELECT installation_record_id, github_repo_id FROM core_repositories WHERE project_id = ?",
       w.projectId,
     );
     expect(back).toEqual({ installation_record_id: record.id, github_repo_id: 77 });
@@ -380,7 +386,7 @@ describe("the installation webhooks keep the record current", () => {
     expect(
       (
         await first<{ id: string | null }>(
-          "SELECT github_installation_id AS id FROM core_projects WHERE id = ?",
+          "SELECT github_installation_id AS id FROM core_repositories WHERE project_id = ?",
           w.projectId,
         )
       ).id,

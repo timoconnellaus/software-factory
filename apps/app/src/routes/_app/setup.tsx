@@ -657,14 +657,16 @@ function ProjectDetails({ project }: { project: ProjectState }) {
           }
         />
         <span className="font-semibold">{project.name}</span>
-        <a
-          href={`https://github.com/${project.repo.owner}/${project.repo.name}`}
-          target="_blank"
-          rel="noreferrer"
-          className="font-mono text-muted-foreground text-xs underline"
-        >
-          {project.repo.owner}/{project.repo.name}@{project.repo.defaultBranch}
-        </a>
+        {project.repo && (
+          <a
+            href={`https://github.com/${project.repo.owner}/${project.repo.name}`}
+            target="_blank"
+            rel="noreferrer"
+            className="font-mono text-muted-foreground text-xs underline"
+          >
+            {project.repo.owner}/{project.repo.name}@{project.repo.defaultBranch}
+          </a>
+        )}
       </div>
       <Collapsible className="group/collapsible text-sm">
         <CollapsibleTrigger className="flex items-center gap-1 text-left cursor-pointer text-muted-foreground text-xs">
@@ -727,7 +729,7 @@ function ProjectDetails({ project }: { project: ProjectState }) {
             </div>
             {project.protection && project.protection.state !== "ok" && (
               <div className="text-muted-foreground text-xs">
-                {project.repo.defaultBranch} not yet protected:{" "}
+                {project.repo?.defaultBranch ?? "The default branch"} not yet protected:{" "}
                 {project.protection.problems.join("; ")}
               </div>
             )}

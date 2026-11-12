@@ -56,9 +56,13 @@ async function world(logins: string[]) {
       "INSERT INTO core_factories (id, org_id, name, created_at, created_by) VALUES (?, ?, 'f', ?, ?)",
     ).bind(factoryId, org.id, now, user.id),
     env.DB.prepare(
-      `INSERT INTO core_projects (id, org_id, factory_id, name, slug, repo_owner, repo_name, created_at, created_by)
-       VALUES (?, ?, ?, 'p', ?, 'acme', ?, ?, ?)`,
-    ).bind(projectId, org.id, factoryId, uid("p-"), uid("repo-"), now, user.id),
+      `INSERT INTO core_projects (id, org_id, factory_id, name, slug, created_at, created_by)
+       VALUES (?, ?, ?, 'p', ?, ?, ?)`,
+    ).bind(projectId, org.id, factoryId, uid("p-"), now, user.id),
+    env.DB.prepare(
+      `INSERT INTO core_repositories (id, org_id, project_id, owner, name, created_at, created_by)
+       VALUES (?, ?, ?, 'acme', ?, ?, ?)`,
+    ).bind(`repo_${projectId.slice(4)}`, org.id, projectId, uid("repo-"), now, user.id),
     env.DB.prepare(
       `INSERT INTO core_work_items (id, org_id, project_id, workflow_id, number, slug, title, requester_user_id, source, branch, created_at, updated_at)
        VALUES (?, ?, ?, ?, 1, 'x', 'Fix the header', ?, 'app', 'factory/1-x', ?, ?)`,

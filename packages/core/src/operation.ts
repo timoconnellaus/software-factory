@@ -6,6 +6,7 @@ import type {
   CoreOrganizationTable,
   CorePendingActionsTable,
   CoreProjectsTable,
+  CoreRepositoriesTable,
   CoreWorkItemsTable,
   Db,
 } from "@software-factory/db";
@@ -64,6 +65,7 @@ export type OutboxKind = OutboxMessage["kind"];
 
 export type WorkItemRow = Selectable<CoreWorkItemsTable>;
 export type ProjectRow = Selectable<CoreProjectsTable>;
+export type RepositoryRow = Selectable<CoreRepositoriesTable>;
 export type OrgRow = Selectable<CoreOrganizationTable>;
 export type PendingActionRow = Selectable<CorePendingActionsTable>;
 
@@ -74,6 +76,13 @@ export interface Scope {
   workItemId: string | null;
   workItem: WorkItemRow | null;
   project: ProjectRow | null;
+  /** The project's repositories, oldest first (ADR 0440). Empty without a project. */
+  repositories: RepositoryRow[];
+  /**
+   * The repository the call is about: the work item's; else the input's `repositoryId`; else the
+   * project's only one. Null when none applies (no repository, or several and none named).
+   */
+  repository: RepositoryRow | null;
   /** The project's policy at `policySha`; null when missing or malformed (fails closed). */
   policy: ProjectPolicy | null;
   policySha: string | null;
@@ -89,6 +98,8 @@ export interface Scope {
 export interface ScopeRef {
   workItemId?: string | null;
   projectId?: string | null;
+  /** A repository of the project (ADR 0440); names the project too when `projectId` is absent. */
+  repositoryId?: string | null;
   orgId?: string | null;
   jobId?: string | null;
   questionId?: string | null;

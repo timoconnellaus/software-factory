@@ -111,20 +111,32 @@ export interface CoreProjectsTable {
   factory_id: string;
   name: string;
   slug: string;
-  repo_owner: string;
-  repo_name: string;
-  default_branch: Generated<string>;
-  github_installation_id: string | null;
   policy_sha: string | null;
   next_number: Generated<number>;
   created_at: Iso;
   created_by: string;
-  /** 0060: the org's installation record this project's repo is reached through. */
+}
+
+/**
+ * 0210 (ADR 0440): a GitHub repository of a project. A project has zero or more; a work item uses
+ * one. The repo columns moved here from core_projects.
+ */
+export interface CoreRepositoriesTable {
+  id: string;
+  org_id: string;
+  project_id: string;
+  owner: string;
+  name: string;
+  default_branch: Generated<string>;
+  github_installation_id: string | null;
+  /** The org's installation record this repo is reached through (ADR 0055). */
   installation_record_id: string | null;
-  /** 0060: GitHub's repo id (survives renames). */
+  /** GitHub's repo id (survives renames). */
   github_repo_id: number | null;
-  /** 0060: the open PR adding a template `.factory/policy.json`, if one was opened from Setup. */
+  /** The open PR adding a template `.factory/policy.json`, if one was opened from Setup. */
   policy_pr_url: string | null;
+  created_at: Iso;
+  created_by: string;
 }
 
 /** 0070 (ADR 0280): the last verdict on a project's default-branch protection. */
@@ -259,6 +271,8 @@ export interface CoreWorkItemsTable {
   created_at: Iso;
   updated_at: Iso;
   closed_at: Iso | null;
+  /** 0210 (ADR 0440): the repository it uses; null when none is chosen yet. */
+  repository_id: string | null;
 }
 
 export interface CoreIntakeKeysTable {
@@ -880,6 +894,7 @@ export interface CoreDatabase {
   core_invitation: CoreInvitationTable;
   core_factories: CoreFactoriesTable;
   core_projects: CoreProjectsTable;
+  core_repositories: CoreRepositoriesTable;
   core_project_policies: CoreProjectPoliciesTable;
   core_config_trials: CoreConfigTrialsTable;
   core_adjudications: CoreAdjudicationsTable;
