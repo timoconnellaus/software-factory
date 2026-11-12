@@ -59,6 +59,9 @@ jobs:
         with:
           # The commit CI passed on, not whatever main is now.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # Full history: the deploy finds the last commit that changed runner code (RUNNER_SHA,
+          # ADR 0520) with `git log`. A shallow clone falls back to the deployed commit.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
@@ -68,6 +71,10 @@ jobs:
 
       - name: Workers to deploy
         run: node scripts/deploy/deploy.ts list
+      - name: Refuse a desktop floor no published build speaks
+        # DESKTOP_MIN_PROTOCOL above the newest published desktop build's protocol would show every
+        # app "Update required" with no update to take (ADR 0393). No floor: no network, passes.
+        run: node scripts/deploy/desktop-floor.ts
       - name: Provision D1, R2 and queues
         run: node scripts/deploy/provision.ts
       - name: Apply D1 migrations

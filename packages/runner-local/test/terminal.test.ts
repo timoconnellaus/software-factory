@@ -12,6 +12,7 @@ import {
   snapshotBytes,
   tmuxCli,
 } from "../src/index.ts";
+import { skipTmuxControlTests } from "../src/testing.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -61,6 +62,24 @@ describe("tmux control mode, parsed", () => {
     expect(exits).toEqual(["detached"]);
   });
 
+  it("reads pause-after's %extended-output and %pause (spec 43: no control_discard path)", () => {
+    const outputs: [string, string][] = [];
+    const paused: string[] = [];
+    const parser = new ControlParser({
+      output: (pane, bytes) => outputs.push([pane, dec(bytes)]),
+      block: () => {},
+      exit: () => {},
+      pause: (pane) => paused.push(pane),
+    });
+    parser.push(enc("%extended-output %0 1234 : a : b\\015\\012\n%extended-output %1 5 : \n"));
+    parser.push(enc("%pause %0\n"));
+    expect(outputs).toEqual([
+      ["%0", "a : b\r\n"],
+      ["%1", ""],
+    ]);
+    expect(paused).toEqual(["%0"]);
+  });
+
   it("types as hex, so nothing typed is a tmux command, and redraws with the cursor", () => {
     expect(hexKeys("a; kill-server\r")).toEqual([
       ["61", "3b", "20", "6b", "69", "6c", "6c", "2d", "73", "65", "72", "76", "65", "72", "0d"],
@@ -90,92 +109,148 @@ async function until(what: string, test: () => boolean | Promise<boolean>, ms = 
   }
 }
 
-describe.skipIf(!hasTmux)("the bridge on the real tmux", { timeout: 30_000 }, () => {
-  it("streams output, types control characters, resizes, redraws and reports exit", async () => {
-    const name = "sf-job_term";
-    // `cat -v` shows control characters as text, so typing them is visible.
-    await tmux.newSession({ name, cwd: "/", command: "cat -v", width: 100, height: 30 });
-    let out = "";
-    const sizes: TerminalSize[] = [];
-    const exits: string[] = [];
-    const bridge: TerminalBridge = await openTmuxTerminal({
-      session: name,
-      socket: SOCKET,
-      size: null,
-      onOutput: (bytes) => {
-        out += dec(bytes);
-      },
-      onSize: (s) => sizes.push(s),
-      onExit: (r) => exits.push(r),
-    });
-    // Opened without a size: the pane keeps its own, and the first redraw came.
-    expect(sizes[0]).toEqual({ cols: 100, rows: 30 });
-    expect(out).toContain("\x1b[2J");
-
-    await bridge.write("hello\r");
-    await until("typed text echoed", () => out.includes("hello"));
-    // An arrow key (ESC [ A) and Ctrl-B, typed as raw bytes.
-    await bridge.write("\x1b[A\x02\r");
-    await until("control characters", () => out.includes("^[[A^B"));
-
-    await bridge.resize({ cols: 90, rows: 20 });
-    expect(sizes.at(-1)).toEqual({ cols: 90, rows: 20 });
-    const real = await tmux.call([
-      "display-message",
-      "-p",
-      "-t",
-      `=${name}:`,
-      "#{pane_width}x#{pane_height}",
-    ]);
-    expect(real.stdout.trim()).toBe("90x20");
-
-    out = "";
-    await bridge.redraw();
-    expect(out.startsWith("\x1b[?25l\x1b[0m\x1b[H\x1b[2J")).toBe(true);
-    expect(out).toContain("hello");
-    expect(out).toContain("^[[A^B");
-
-    await tmux.kill(name);
-    await until("exit", () => exits.length > 0);
-    await bridge.close();
-  });
-
-  it("refuses a session that isn't there, and closes cleanly twice", async () => {
-    await expect(
-      openTmuxTerminal({
-        session: "sf-job_missing",
+describe.skipIf(!hasTmux || skipTmuxControlTests())(
+  "the bridge on the real tmux",
+  { timeout: 30_000 },
+  () => {
+    it("streams output, types control characters, resizes, redraws and reports exit", async () => {
+      const name = "sf-job_term";
+      // `cat -v` shows control characters as text, so typing them is visible.
+      await tmux.newSession({ name, cwd: "/", command: "cat -v", width: 100, height: 30 });
+      let out = "";
+      const sizes: TerminalSize[] = [];
+      const exits: string[] = [];
+      const bridge: TerminalBridge = await openTmuxTerminal({
+        session: name,
         socket: SOCKET,
         size: null,
-        onOutput: () => {},
+        onOutput: (bytes) => {
+          out += dec(bytes);
+        },
+        onSize: (s) => sizes.push(s),
+        onExit: (r) => exits.push(r),
+      });
+      // Opened without a size: the pane keeps its own, and the first redraw came.
+      expect(sizes[0]).toEqual({ cols: 100, rows: 30 });
+      expect(out).toContain("\x1b[2J");
+
+      await bridge.write("hello\r");
+      await until("typed text echoed", () => out.includes("hello"));
+      // An arrow key (ESC [ A) and Ctrl-B, typed as raw bytes.
+      await bridge.write("\x1b[A\x02\r");
+      await until("control characters", () => out.includes("^[[A^B"));
+
+      await bridge.resize({ cols: 90, rows: 20 });
+      expect(sizes.at(-1)).toEqual({ cols: 90, rows: 20 });
+      const real = await tmux.call([
+        "display-message",
+        "-p",
+        "-t",
+        `=${name}:`,
+        "#{pane_width}x#{pane_height}",
+      ]);
+      expect(real.stdout.trim()).toBe("90x20");
+
+      out = "";
+      await bridge.redraw();
+      expect(out.startsWith("\x1b[?25l\x1b[0m\x1b[H\x1b[2J")).toBe(true);
+      // The cursor goes where tmux has it, not the top left (spec 42 found it at 1;1).
+      const cursor = await tmux.call([
+        "display-message",
+        "-p",
+        "-t",
+        `=${name}:`,
+        "#{cursor_x} #{cursor_y}",
+      ]);
+      const [cx, cy] = cursor.stdout.trim().split(" ").map(Number);
+      expect(out).toContain(`\x1b[${(cy ?? 0) + 1};${(cx ?? 0) + 1}H`);
+      expect(cy).toBeGreaterThan(0);
+      // The next command still gets its own answer.
+      await bridge.resize({ cols: 91, rows: 21 });
+      expect(sizes.at(-1)).toEqual({ cols: 91, rows: 21 });
+      expect(out).toContain("hello");
+      expect(out).toContain("^[[A^B");
+
+      await tmux.kill(name);
+      await until("exit", () => exits.length > 0);
+      await bridge.close();
+    });
+
+    it("keeps every command's answer its own when a command line fails (a pane that has gone)", async () => {
+      const name = "sf-job_gone";
+      await tmux.newSession({ name, cwd: "/", command: "cat", width: 80, height: 24 });
+      let out = "";
+      const bridge = await openTmuxTerminal({
+        session: name,
+        socket: SOCKET,
+        size: null,
+        onOutput: (bytes) => {
+          out += dec(bytes);
+        },
         onSize: () => {},
         onExit: () => {},
-      }),
-    ).rejects.toThrow(/can't bridge/);
+      });
+      // A second pane keeps the session (and the control client) alive; the bridged one goes.
+      const first = (
+        await tmux.call(["display-message", "-p", "-t", `=${name}:`, "#{pane_id}"])
+      ).stdout.trim();
+      await tmux.call(["split-window", "-d", "-t", `=${name}:`, "cat"]);
+      await tmux.call(["kill-pane", "-t", first]);
 
-    const name = "sf-job_closing";
-    await tmux.newSession({ name, cwd: "/", command: "cat", width: 80, height: 24 });
-    const exits: string[] = [];
-    const bridge = await openTmuxTerminal({
-      session: name,
-      socket: SOCKET,
-      size: { cols: 70, rows: 22 },
-      onOutput: () => {},
-      onSize: () => {},
-      onExit: (r) => exits.push(r),
+      // The redraw's line of two commands fails at the first: tmux sends one %error and drops the
+      // second. Nothing is drawn, and the commands after it still get their own answers (before, the
+      // redraw's second reader took the next command's answer and every reply after was off by one).
+      out = "";
+      await bridge.redraw();
+      expect(out).toBe("");
+      const done = await Promise.race([
+        bridge.resize({ cols: 75, rows: 20 }).then(() => "answered"),
+        sleep(5_000).then(() => "hung"),
+      ]);
+      expect(done).toBe("answered");
+      await bridge.redraw();
+      expect(out).toBe("");
+      await bridge.close();
+      await tmux.kill(name);
     });
-    const real = await tmux.call([
-      "display-message",
-      "-p",
-      "-t",
-      `=${name}:`,
-      "#{pane_width}x#{pane_height}",
-    ]);
-    expect(real.stdout.trim()).toBe("70x22");
-    await bridge.close();
-    await bridge.close();
-    await until("the client went", () => exits.length > 0);
-    // The session is still there: only the bridge went.
-    expect(await tmux.paneState(name)).not.toBeNull();
-    await tmux.kill(name);
-  });
-});
+
+    it("refuses a session that isn't there, and closes cleanly twice", async () => {
+      await expect(
+        openTmuxTerminal({
+          session: "sf-job_missing",
+          socket: SOCKET,
+          size: null,
+          onOutput: () => {},
+          onSize: () => {},
+          onExit: () => {},
+        }),
+      ).rejects.toThrow(/can't bridge/);
+
+      const name = "sf-job_closing";
+      await tmux.newSession({ name, cwd: "/", command: "cat", width: 80, height: 24 });
+      const exits: string[] = [];
+      const bridge = await openTmuxTerminal({
+        session: name,
+        socket: SOCKET,
+        size: { cols: 70, rows: 22 },
+        onOutput: () => {},
+        onSize: () => {},
+        onExit: (r) => exits.push(r),
+      });
+      const real = await tmux.call([
+        "display-message",
+        "-p",
+        "-t",
+        `=${name}:`,
+        "#{pane_width}x#{pane_height}",
+      ]);
+      expect(real.stdout.trim()).toBe("70x22");
+      await bridge.close();
+      await bridge.close();
+      await until("the client went", () => exits.length > 0);
+      // The session is still there: only the bridge went.
+      expect(await tmux.paneState(name)).not.toBeNull();
+      await tmux.kill(name);
+    });
+  },
+);

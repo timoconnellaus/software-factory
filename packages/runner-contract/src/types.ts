@@ -25,7 +25,34 @@ import type {
   storedArtifactSchema,
 } from "./wire.ts";
 
+/**
+ * The manifest's contract version. The engine refuses a heartbeat whose manifest names another
+ * one, so a runner on the old value could never learn it should update: don't bump it while
+ * runners update themselves. A breaking change bumps RUNNER_COMPAT instead (ADR 0520).
+ */
 export const CONTRACT_VERSION = "1" as const;
+
+/**
+ * The runner compatibility level (ADR 0520). The engine sends its own value on every heartbeat as
+ * `minRunnerCompat`; a runner whose code has a lower one stops claiming at once and updates when
+ * its running jobs end. Every other deploy leaves a runner claiming on its current code until it is
+ * idle, so the engine must keep serving a runner one or more commits behind it.
+ *
+ * The rule, while this number stays the same:
+ * - **Runner → engine requests** (heartbeat, claim, events, handback, …) are validated by the
+ *   engine with zod. A field may be added only as optional, an enum may only grow, and nothing a
+ *   runner at this level sends may be refused or change meaning.
+ * - **Engine → runner answers** are read by the runner without validation (`JSON.parse`), and it
+ *   ignores fields and command kinds it doesn't know. A new answer field or command kind is fine
+ *   when an older runner can safely ignore it.
+ * - **A job an older runner can't run correctly** (a new stage, a new way to run a stage, a field
+ *   it must act on) is gated on a capability the new runner declares (`requires`, `canRun`), so
+ *   the scheduler never hands it to an older runner.
+ * - Anything else that breaks a runner at this level (removing or renaming a field or call,
+ *   changing what one means, a stricter request schema) bumps this number in the same PR. Bump it
+ *   deliberately: every runner then drains at the next heartbeat after the deploy.
+ */
+export const RUNNER_COMPAT = 1;
 
 /**
  * Optional things a runner can do beyond the core lifecycle (names from CONTEXT.md, Capability).
@@ -40,6 +67,8 @@ export const CONTRACT_VERSION = "1" as const;
  *   without it still runs every job; its agent just sees no attachments.
  * - `steer`: a person can send a message into the live session from the dashboard (ADR 0400). The
  *   host keeps the channel's `steer` call open while the session runs and calls `adapter.steer`.
+ * - `interrupt`: with `steer`, the adapter can stop the agent's current step and submit a line
+ *   (`adapter.interrupt`: Escape, then the line), for a person's interrupt in planning (ADR 0470).
  * - `chat`: sessions run as a structured two-way stream (Claude Code's stream-json, ADR 0450): the
  *   events carry tool results and turn ends, the dashboard shows the run as a chat, and the owner
  *   can take a session over in a terminal by resuming it (`run.takeover`, `adapter.takeover`).
@@ -61,7 +90,9 @@ export const CAPABILITIES = [
   "steer",
   "chat",
   "container-isolation",
+  "interrupt",
   "terminal",
+  "cloud-sandbox",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -104,6 +135,7 @@ export type HarnessPermissionMode = (typeof HARNESS_PERMISSION_MODES)[number];
 
 export type CapabilityManifest = z.infer<typeof capabilityManifestSchema>;
 export type Capacity = z.infer<typeof capacitySchema>;
+export type CapacityPaused = NonNullable<Capacity["paused"]>;
 export type Job = z.infer<typeof jobSchema>;
 export type RunnerEvent = z.infer<typeof runnerEventSchema>;
 export type Artifact = z.infer<typeof artifactSchema>;
@@ -245,6 +277,8 @@ export interface RunnerAdapter<
   /**
    * Frees everything prepareWorkspace/startSession made for this job (its worktree and branch).
    * Never the checkout or its registration, which outlive the job. Must be safe to call twice.
+   * Throws `ReleaseIncomplete` when it can't confirm the job's processes stopped (ADR 0550): the
+   * host then doesn't report the job released.
    */
   release(job: Job, workspace: W | undefined, session: S | undefined): Promise<void>;
   /**
@@ -258,6 +292,12 @@ export interface RunnerAdapter<
    * sanitised and one line (`steerText`). Declare the `steer` capability to get steers.
    */
   steer?(session: S, text: string): Promise<void>;
+  /**
+   * Optional, with the `interrupt` capability (ADR 0470): stop the agent's current step (Claude
+   * Code's Escape), then submit `text` as `steer` does. The text is the factory's own fixed line,
+   * never a person's words.
+   */
+  interrupt?(session: S, text: string): Promise<void>;
   /**
    * Optional, with the `chat` capability (ADR 0450): stop the live stream session cleanly so a
    * person can resume it in a terminal. `events()` then yields a `takeover` event with the command
@@ -351,4 +391,22 @@ export function runBranch(itemBranch: string, runNo: number): string {
 /** Whether a branch is one the factory owns (`factory/*`). Runners push nowhere else. */
 export function isFactoryBranch(branch: string): boolean {
   return /^factory\/[0-9]+-[a-z0-9-]+$/.test(branch);
+}
+
+/**
+ * A release that couldn't confirm the job's processes stopped (ADR 0550): the agent may still be
+ * running on the host. The host doesn't report the job released (its lease lapses instead), logs
+ * it, and `sf-runner doctor` shows the process.
+ */
+export class ReleaseIncomplete extends Error {
+  override name = "ReleaseIncomplete";
+  readonly releaseIncomplete = true;
+}
+
+/** Whether an error is a `ReleaseIncomplete` (across package copies too). */
+export function isReleaseIncomplete(err: unknown): boolean {
+  return (
+    err instanceof ReleaseIncomplete ||
+    (typeof err === "object" && err !== null && "releaseIncomplete" in err)
+  );
 }

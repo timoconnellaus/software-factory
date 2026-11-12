@@ -1,7 +1,8 @@
 // Wire shapes of the runner channel, as zod schemas: the engine validates every call with them and
-// the runner host builds its requests from the inferred types. Change them only with a contract
-// version bump (CONTRACT_VERSION in ./types.ts), except for optional, additive fields an older
-// runner never receives (ADR 0350: the light pool, the planning stage and the planning call).
+// the runner host builds its requests from the inferred types. Runners keep claiming on older code
+// while an update is pending (ADR 0520), so a change here follows the compatibility rule on
+// RUNNER_COMPAT in ./types.ts: optional, additive fields and growing enums only, new kinds of job
+// gated on a capability, and anything else bumps RUNNER_COMPAT in the same PR.
 import { z } from "zod";
 import { PLANNING_OPS } from "./planning.ts";
 import {
@@ -38,6 +39,18 @@ export const capabilityManifestSchema = z.object({
   capabilities: z.array(capabilitySchema),
 });
 
+export const capacityPausedSchema = z.object({
+  reason: z.enum(["load", "tmux", "draining"]),
+  pools: z
+    .array(z.enum(["heavy", "light"]))
+    .min(1)
+    .max(2),
+  /** The 1-minute load average and the CPU count it was judged against (`load`). */
+  load1: z.number().min(0).max(100_000).optional(),
+  cores: z.number().int().min(1).max(4_096).optional(),
+  detail: z.string().max(300).optional(),
+});
+
 export const capacitySchema = z.object({
   /**
    * Concurrent jobs this runner will take. With `light` reported, this is the heavy pool (build,
@@ -55,6 +68,14 @@ export const capacitySchema = z.object({
   light: z
     .object({ max: z.number().int().min(0).max(64), inUse: z.number().int().min(0) })
     .optional(),
+  /**
+   * Why the runner takes nothing new in some pools for now (ADR 0552), when it doesn't: `load`, the
+   * host's 1-minute load average is past its threshold for those pools (heavy stops first, then
+   * light), with the numbers; `tmux`, the factory's tmux server isn't answering (ADR 0550);
+   * `draining`, the owner drained it (a drain command, or `RunnerHost.drain()`). The
+   * scheduler gives a paused pool nothing; with both pools paused `accepting` is false too.
+   */
+  paused: capacityPausedSchema.optional(),
 });
 
 /** A host name a sandboxed command may reach: `example.com` or `*.example.com`, never `*`. */
@@ -334,7 +355,9 @@ export const runnerVersionSchema = z.object({
   autoUpdate: z.boolean(),
   update: z.object({
     /**
-     * `current`: at the desired version. `waiting`: behind it, draining until its jobs finish.
+     * `current`: at the desired version or ahead of it. `waiting`: behind it, updating at the first
+     * idle heartbeat (still claiming; light jobs only once the update has waited too long, nothing
+     * once it has waited much longer or the engine needs a newer runner, ADR 0520).
      * `blocked`: behind it and can't update (local changes, auto-update off, not on main…), with
      * the reason. `updating`: applying it now. `rolled_back`: the last update didn't start
      * cleanly and was reverted, with the reason.
@@ -342,6 +365,13 @@ export const runnerVersionSchema = z.object({
     state: z.enum(RUNNER_UPDATE_STATES),
     target: commitSha.nullable(),
     reason: z.string().max(500).nullable(),
+    /**
+     * What it claims while `waiting` (ADR 0520): `all` as usual, `light` jobs only (the update has
+     * waited past its first cap), or `none` (past the second cap, or the engine needs a newer
+     * runner). On `none` the engine asks its idle planning sessions to yield. Optional: older
+     * runners omit it.
+     */
+    claims: z.enum(["all", "light", "none"]).optional(),
   }),
 });
 export type RunnerVersion = z.infer<typeof runnerVersionSchema>;
@@ -379,6 +409,11 @@ export const heartbeatRequestSchema = z.object({
   version: runnerVersionSchema.optional(),
   /** The host's Claude accounts, names only (ADR 0410). Optional: older hosts omit it. */
   accounts: runnerAccountsSchema.optional(),
+  /**
+   * The runner code's RUNNER_COMPAT (ADR 0520), sent with or without self-update. Optional: older
+   * hosts omit it, which counts as 1. The engine sends no job to a runner below its own.
+   */
+  compat: z.number().int().min(0).optional(),
 });
 
 export const runnerCommandSchema = z.discriminatedUnion("kind", [
@@ -394,11 +429,17 @@ export const heartbeatResponseSchema = z.object({
   /** New lease expiry per renewed job. */
   leases: z.array(z.object({ jobId: id, expiresAt: iso })),
   /**
-   * The runner code the factory runs (ADR 0360): the commit of the default branch the engine was
-   * deployed from. A runner behind it updates itself when idle. Null or missing: unknown (a dev
-   * engine), so no update.
+   * The runner code the factory runs (ADR 0360, amended by 0520): the last commit on the default
+   * branch, at or before the deployed one, that changed runner code. A runner behind it updates
+   * itself when idle; one at it or ahead of it is current. Null or missing: unknown (a dev engine),
+   * so no update.
    */
   desiredVersion: commitSha.nullable().optional(),
+  /**
+   * The engine's RUNNER_COMPAT (ADR 0520): a runner whose own is lower claims nothing until it has
+   * updated. Optional: an older engine omits it, and then nothing forces a drain.
+   */
+  minRunnerCompat: z.number().int().min(0).optional(),
 });
 
 export const claimRequestSchema = z.object({
@@ -468,6 +509,8 @@ export const steersResponseSchema = z.object({
       id: z.string(),
       text: z.string(),
       at: iso,
+      /** Stop the current step first (`adapter.interrupt`, ADR 0470); else type it as is. */
+      interrupt: z.boolean().optional(),
       /**
        * `takeover`: stop the stream session for a person (ADR 0450), not a message to type.
        * Optional, additive: absent is a message.

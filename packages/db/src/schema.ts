@@ -111,20 +111,40 @@ export interface CoreProjectsTable {
   factory_id: string;
   name: string;
   slug: string;
-  repo_owner: string;
-  repo_name: string;
-  default_branch: Generated<string>;
-  github_installation_id: string | null;
   policy_sha: string | null;
   next_number: Generated<number>;
   created_at: Iso;
   created_by: string;
-  /** 0060: the org's installation record this project's repo is reached through. */
+  /**
+   * @deprecated Since 0260 (ADR 0490) the repo lives in core_repositories. Only project.create
+   * writes these, as a mirror for code deployed before 0260; nothing reads them. A later migration
+   * drops them.
+   */
+  repo_owner: string;
+  /** @deprecated See `repo_owner`. Unique with it: a project with no repository writes its id. */
+  repo_name: string;
+}
+
+/**
+ * 0260 (ADR 0490): a GitHub repository of a project. A project has zero or more; a work item uses
+ * one. The repo columns moved here from core_projects.
+ */
+export interface CoreRepositoriesTable {
+  id: string;
+  org_id: string;
+  project_id: string;
+  owner: string;
+  name: string;
+  default_branch: Generated<string>;
+  github_installation_id: string | null;
+  /** The org's installation record this repo is reached through (ADR 0055). */
   installation_record_id: string | null;
-  /** 0060: GitHub's repo id (survives renames). */
+  /** GitHub's repo id (survives renames). */
   github_repo_id: number | null;
-  /** 0060: the open PR adding a template `.factory/policy.json`, if one was opened from Setup. */
+  /** The open PR adding a template `.factory/policy.json`, if one was opened from Setup. */
   policy_pr_url: string | null;
+  created_at: Iso;
+  created_by: string;
 }
 
 /** 0070 (ADR 0280): the last verdict on a project's default-branch protection. */
@@ -211,6 +231,11 @@ export interface CoreBatchGuardTable {
 
 export type Stage = "intake" | "triage" | "spec" | "build" | "verify" | "merge" | "done";
 export type WorkItemStatus =
+  // 0261 (ADR 0491): before the pipeline; `shaping` is spec 50 part C's.
+  | "backlog"
+  | "shaping"
+  | "ready"
+  | "queued"
   | "running"
   | "waiting"
   | "paused"
@@ -259,6 +284,31 @@ export interface CoreWorkItemsTable {
   created_at: Iso;
   updated_at: Iso;
   closed_at: Iso | null;
+  /** 0260 (ADR 0490): the repository it uses; null when none is chosen yet. */
+  repository_id: string | null;
+  /** 0261 (ADR 0491): 0 urgent, 1 high, 2 normal, 3 low. */
+  priority: Generated<number>;
+  /** 0261: the order within a priority, lower first. */
+  rank: Generated<number>;
+  /** 0261: JSON string[] written while shaping; null when none. */
+  acceptance_criteria: JsonText | null;
+  released_at: Iso | null;
+  released_by: string | null;
+  /** 0261: when the pipeline started (the pull). */
+  pulled_at: Iso | null;
+  /** 0262 (ADR 0493): when its Workflow started to run the shaping stages, before release. */
+  shaping_started_at: Iso | null;
+  /** 0262: when the shaping stages finished, and the default branch's head then. */
+  shaped_at: Iso | null;
+  shaped_base_sha: string | null;
+}
+
+/** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
+export interface CoreWorkItemLinksTable {
+  work_item_id: string;
+  waits_for_id: string;
+  created_at: Iso;
+  created_by: string;
 }
 
 export interface CoreIntakeKeysTable {
@@ -313,6 +363,8 @@ export interface CoreQuestionsTable {
   status: Generated<"open" | "answered" | "withdrawn">;
   answer: string | null;
   accepted_default: Generated<Bool>;
+  /** ADR 0470: accepted under a person's "finish alone" instruction (answered_by is that person). */
+  accepted_alone: Generated<Bool>;
   answered_by: string | null;
   answered_at: Iso | null;
   planning_round: number;
@@ -330,6 +382,10 @@ export interface CoreQuestionsTable {
   revision: Generated<number>;
   answer_revision: Generated<number>;
   note: string | null;
+  /** Spec 26: the person skipped it; the planning agent decides. */
+  skipped: Generated<Bool>;
+  /** Spec 26: when this answer revision reached the planning agent. */
+  answer_delivered_at: Iso | null;
   planning_session_id: string | null;
   updated_at: Iso | null;
 }
@@ -495,6 +551,10 @@ export interface CoreRunnersTable {
   /** The account the owner asked for, until the runner reports it active. */
   account_requested: string | null;
   account_requested_at: Iso | null;
+  /** 0320 (ADR 0552): why it takes nothing new in some pools (capacity.paused), or null. */
+  paused: JsonText | null;
+  /** 0290 (ADR 0520): the runner's RUNNER_COMPAT as it last reported; null (never) counts as 1. */
+  compat: number | null;
 }
 
 export interface CoreRunnerSharesTable {
@@ -583,6 +643,8 @@ export interface CoreRunSteersTable {
   text: string;
   created_at: Iso;
   delivered_at: Iso | null;
+  /** ADR 0470: stop the agent's current step before submitting the text. */
+  interrupt: Generated<Bool>;
   /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
   kind: Generated<"message" | "takeover">;
 }
@@ -659,6 +721,8 @@ export interface CoreVerifyChecksTable {
   title: string;
   review_packet_id: string | null;
   updated_at: Iso;
+  /** 0260 (ADR 0490): the repository the head SHA is in. */
+  repository_id: string | null;
 }
 
 // ---- 0060: onboarding (installations, connect state, runner device login) ----
@@ -772,6 +836,18 @@ export interface CorePlanningSessionsTable {
   activity: string | null;
   focused_question_id: string | null;
   announced_at: Iso | null;
+  /** ADR 0470: a person paused the planner; news doesn't wake it until resumed. */
+  paused_at: Iso | null;
+  paused_by: string | null;
+  /** ADR 0470: who told the planner to finish alone, and when; null while it's off. */
+  finish_alone_by: string | null;
+  finish_alone_at: Iso | null;
+  /** Spec 26: the highest cursor handed to the harness; a hook's ack is clamped to it. */
+  handed_cursor: Generated<number>;
+  /** Spec 26: JSON `{ questionId: answer revision }` handed out, for read receipts. */
+  handed_answers: string | null;
+  /** Spec 26: the last "away" notice, so questions and replies notify once per burst. */
+  notified_at: Iso | null;
   replaces_session_id: string | null;
   created_by: string;
   created_at: Iso;
@@ -801,6 +877,8 @@ export interface CorePlanningMessagesTable {
   kind: Generated<"chat" | "gate">;
   delivered_at: Iso | null;
   created_at: Iso;
+  /** Spec 26: the steer this message was typed as; delivered when the host takes it. */
+  steer_id: string | null;
 }
 
 export interface CorePlanningPresenceTable {
@@ -898,6 +976,7 @@ export interface CoreDatabase {
   core_invitation: CoreInvitationTable;
   core_factories: CoreFactoriesTable;
   core_projects: CoreProjectsTable;
+  core_repositories: CoreRepositoriesTable;
   core_project_policies: CoreProjectPoliciesTable;
   core_config_trials: CoreConfigTrialsTable;
   core_adjudications: CoreAdjudicationsTable;
@@ -905,6 +984,7 @@ export interface CoreDatabase {
   core_kill_switches: CoreKillSwitchesTable;
   core_batch_guard: CoreBatchGuardTable;
   core_work_items: CoreWorkItemsTable;
+  core_work_item_links: CoreWorkItemLinksTable;
   core_intake_keys: CoreIntakeKeysTable;
   core_intake_events: CoreIntakeEventsTable;
   core_stages: CoreStagesTable;

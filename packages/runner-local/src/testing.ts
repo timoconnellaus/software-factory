@@ -9,6 +9,18 @@ import { PID_FILE, STATUS_FILE, type StatusLine } from "@software-factory/harnes
 import { type Exec, type ExecResult, nodeExec } from "./exec.ts";
 
 export * from "./container/testing.ts";
+export * from "./sprites/fake.ts";
+export * from "./sprites/ws-server.ts";
+
+/**
+ * Whether tests that start tmux control-mode clients should skip (spec 43): inside a factory job
+ * (the harness sets `SOFTWARE_FACTORY_RUN=1` for Claude and every command it runs), so a job's
+ * build or verify doesn't start short-lived tmux servers that tmux 3.5a/3.6a crash in
+ * (control_discard, incident #11 (2026-11-12)). `SF_TMUX_CONTROL_TESTS=1` runs them anyway.
+ */
+export function skipTmuxControlTests(env: Record<string, string | undefined> = process.env) {
+  return env.SOFTWARE_FACTORY_RUN === "1" && env.SF_TMUX_CONTROL_TESTS !== "1";
+}
 
 export interface FakeSession {
   name: string;
@@ -24,6 +36,8 @@ export interface FakeSession {
   /** Text submitted with Enter, in order (the prompt pointer, then steering). */
   submitted: string[];
   trustPending: boolean;
+  /** What the pane runs, when the test spawned it (`spawn`): keys are written to it. */
+  proc?: { write(data: string): void };
 }
 
 export interface ScriptedTmuxOptions {
@@ -31,14 +45,29 @@ export interface ScriptedTmuxOptions {
   trustDialog?: boolean;
   /** Don't record SessionStart (Claude never comes up). */
   noSessionStart?: boolean;
+  /** A steer typed after the prompt doesn't record UserPromptSubmit (the test does, later). */
+  queueSteers?: boolean;
   /** What the agent does after the first prompt is submitted. */
   onPrompt?: (session: FakeSession, append: (line: Partial<StatusLine>) => void) => unknown;
   /** Runs everything that isn't tmux (default: the real thing). */
   base?: Exec;
   pid?: number;
+  /**
+   * Runs the pane's script instead of standing in for Claude (a sprite job's bridge, ADR 0480):
+   * typed text and keys go to what it returns, and the pane is dead once it sets `session.dead`.
+   */
+  spawn?: (session: FakeSession, script: string) => { write(data: string): void };
 }
 
 const ok = (stdout = ""): ExecResult => ({ stdout, stderr: "", code: 0 });
+/** What a named key sends to a spawned pane. */
+const KEYS: Record<string, string> = {
+  Enter: "\r",
+  Down: "\x1b[B",
+  Up: "\x1b[A",
+  Escape: "\x1b",
+  "C-c": "\x03",
+};
 const err = (stderr: string): ExecResult => ({ stdout: "", stderr, code: 1 });
 
 export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
@@ -82,6 +111,10 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
           trustPending: !!options.trustDialog,
         };
         sessions.set(name, s);
+        if (options.spawn) {
+          s.proc = options.spawn(s, script);
+          return ok();
+        }
         writeFileSync(join(runDir, PID_FILE), `${options.pid ?? 4242}\n`);
         if (s.trustPending) {
           s.screen = "Quick safety check\n❯ No, exit\n  Yes, I trust this folder";
@@ -108,6 +141,16 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
         const s = sessions.get(target(rest));
         if (!s) return err(`can't find pane: ${target(rest)}`);
         const li = rest.indexOf("-l");
+        if (s.proc) {
+          if (li >= 0) {
+            s.proc.write(rest[li + 1] ?? "");
+            return ok();
+          }
+          for (const key of rest.slice(rest.indexOf("-t") + 2)) {
+            s.proc.write(KEYS[key] ?? "");
+          }
+          return ok();
+        }
         if (li >= 0) {
           s.typed += rest[li + 1] ?? "";
           return ok();
@@ -126,7 +169,10 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
             const text = s.typed;
             s.typed = "";
             s.submitted.push(text);
-            append(s, { event: "UserPromptSubmit" });
+            // Claude queues a message typed mid-turn: its turn (and the hook) comes after the Stop.
+            if (s.submitted.length === 1 || !options.queueSteers) {
+              append(s, { event: "UserPromptSubmit" });
+            }
             if (s.submitted.length === 1 && options.onPrompt) {
               await options.onPrompt(s, (line) => append(s, line));
             }
@@ -225,6 +271,10 @@ const sessionId = at("--session-id") ?? at("--resume") ?? "no-session";
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 let n = 0, inited = false, busy = Promise.resolve(), interrupted = false, asked = false;
 let wake = () => {};
+// A permission request waits for its answer, as Claude Code does: the turn goes on only once the
+// runner's control_response for it arrives (else the test raced the job's end).
+let answered = () => {};
+const answer = new Promise((r) => { answered = r; });
 const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
 async function turn(text) {
   n++;
@@ -233,6 +283,7 @@ async function turn(text) {
   if (k === 1 && opts.askPermission && !asked) {
     asked = true;
     out({ type: "control_request", request_id: "perm-1", request: { subtype: "can_use_tool", tool_name: "Bash" } });
+    await answer;
   }
   out({ type: "assistant", session_id: sessionId, message: { role: "assistant", content: [{ type: "text", text: "Turn " + k + ": " + text.slice(0, 40) }] } });
   out({ type: "assistant", session_id: sessionId, message: { role: "assistant", content: [{ type: "tool_use", id: "tu_" + k, name: "Bash", input: { command: "echo " + k } }] } });
@@ -259,6 +310,7 @@ process.stdin.on("data", (chunk) => {
     appendFileSync(opts.stdinLog, line + "\\n");
     let msg;
     try { msg = JSON.parse(line); } catch { continue; }
+    if (msg.type === "control_response" && msg.response?.request_id === "perm-1") answered();
     if (msg.type === "control_request" && msg.request?.subtype === "interrupt") {
       interrupted = true;
       wake();

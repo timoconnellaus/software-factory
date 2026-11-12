@@ -4,6 +4,7 @@
 import type { OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
 import { planningHub } from "./planning-hub.ts";
+import { failDeadRelease, pullProject } from "./pull.ts";
 
 interface OutboxRow {
   id: string;
@@ -78,8 +79,15 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
     }
     case "workflow.event": {
       const found = await instanceStatus(env, message.payload.instanceId);
-      // An event for a finished or unknown instance has nobody to wake: drop it.
-      if (!found || FINISHED.has(found.status)) return;
+      // An event for a finished or unknown instance has nobody to wake: drop it. Except a shaped
+      // item's release (ADR 0493): the pull already counted it running, so with no Workflow to
+      // deliver it, it would hold a slot for ever. Fail it, visibly, instead.
+      if (!found || FINISHED.has(found.status)) {
+        if (message.payload.type.startsWith("release-")) {
+          await failDeadRelease(env, message.payload.instanceId, found?.status ?? "missing");
+        }
+        return;
+      }
       await found.instance.sendEvent({
         type: message.payload.type,
         payload: message.payload.payload,
@@ -106,9 +114,14 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       if (found && !FINISHED.has(found.status)) await found.instance.terminate();
       return;
     }
+    case "queue.pull":
+      // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
+      await pullProject(env, message.payload.projectId);
+      return;
     case "planning.changed":
       // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
       await planningHub(env, message.payload.workItemId).notify();
+      await notifyPlanningViewers(env, message.payload.workItemId);
       return;
     case "run.steered":
       // The runner host's held steer call waits on the work item's hub (ADR 0400). A wake, not a
@@ -121,6 +134,27 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       await notifyClients(env, message.payload);
       return;
   }
+}
+
+/** Who has a Planning view open: a heartbeat within this long (core's PRESENCE_TTL_MS). */
+const PLANNING_VIEWER_MS = 60_000;
+
+/**
+ * Tells the desktop apps of everyone with this work item's Planning view open that it changed (spec
+ * 26), so the desktop re-reads instead of polling; sf-app hears it from the PlanningHub's stream.
+ */
+export async function notifyPlanningViewers(env: Env, workItemId: string): Promise<string[]> {
+  const since = new Date(Date.now() - PLANNING_VIEWER_MS).toISOString();
+  const { results } = await env.DB.prepare(
+    "SELECT user_id FROM core_planning_presence WHERE work_item_id = ? AND seen_at > ? AND left_at IS NULL",
+  )
+    .bind(workItemId, since)
+    .all<{ user_id: string }>();
+  const users = results.map((r) => r.user_id);
+  await Promise.all(
+    users.map((u) => clientHub(env, u).broadcast({ type: "planning.changed", workItemId })),
+  );
+  return users;
 }
 
 type NotifyPayload = Extract<OutboxMessage, { kind: "notify" }>["payload"];

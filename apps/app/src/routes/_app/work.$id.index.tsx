@@ -33,13 +33,12 @@ import {
 } from "@software-factory/ui/components/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@software-factory/ui/components/tabs";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Attachments } from "#/components/attachments";
 import { LiveRun } from "#/components/live-run";
-import { OptionSelect } from "#/components/option-select";
 import { Planning } from "#/components/planning";
 import { ReviewPacket } from "#/components/review-packet";
 import { Timeline } from "#/components/timeline";
@@ -516,39 +515,17 @@ function Page({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** The workflow the item follows (ADR 0371), changeable until its build starts. */
+/**
+ * The workflow the item follows: its project's, pinned when its pipeline started (ADR 0492). There
+ * is no per-item override, so it is shown, not chosen; the project's workflow is set in Settings.
+ */
 function WorkflowLine({ detail }: { detail: WorkItemDetail }) {
-  const queryClient = useQueryClient();
-  const [busy, setBusy] = useState(false);
   const { item, workflows } = detail;
   if (workflows.length === 0 && !item.workflow) return null;
-  const changeable = ["intake", "triage", "spec"].includes(item.stage);
-  async function change(name: string) {
-    setBusy(true);
-    try {
-      await op("workItem.setWorkflow", { workItemId: item.id, workflow: name || null });
-      toast.success(name ? `Follows ${name} now.` : "Follows the skeleton alone now.");
-      await queryClient.invalidateQueries({ queryKey: ["workItem", item.id] });
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="work-item-workflow">
       <span className="text-muted-foreground">Workflow</span>
-      {changeable ? (
-        <OptionSelect
-          aria-label="Workflow"
-          value={item.workflow ?? ""}
-          disabled={busy}
-          options={[{ value: "", label: "The skeleton alone" }, ...workflows.map((w) => w.name)]}
-          onChange={(v) => void change(v)}
-        />
-      ) : (
-        <span className="font-medium">{item.workflow ?? "The skeleton alone"}</span>
-      )}
+      <span className="font-medium">{item.workflow ?? "The skeleton alone"}</span>
       {item.workflowReason && (
         <span className="text-muted-foreground text-xs">{item.workflowReason}</span>
       )}

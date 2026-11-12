@@ -53,11 +53,13 @@ export const timelineQuery = (workItemId: string) =>
   });
 
 /** How often the Planning tab re-reads while it is open. */
-export const PLANNING_POLL_MS = 3_000;
+/** A fallback only: the engine pushes `planning.changed` to the live socket (spec 26). */
+export const PLANNING_POLL_MS = 30_000;
 
 /**
- * A work item's planning (spec 20). sf-app streams changes over Server-Sent Events; the client door
- * has no planning stream yet, so the desktop re-reads while the tab is open (spec 40 M3, as built).
+ * A work item's planning (spec 20). The engine pushes a change to the desktop's live socket for
+ * whoever has the view open, and the Planning tab re-reads then (spec 26); this slow poll covers a
+ * dropped socket.
  */
 export const planningQuery = (workItemId: string) =>
   queryOptions({
@@ -98,6 +100,25 @@ export const workListQuery = (orgId: string) =>
   queryOptions({
     queryKey: ["work", orgId],
     queryFn: () => read("workItem.list", { orgId, limit: 100 }),
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
+
+/**
+ * Every org's recent work items, merged newest first: the shell's lists, pins and search (ADR 0460).
+ * The rail's org scope filters this on the client.
+ */
+export const workListsQuery = (orgIds: string[]) =>
+  queryOptions({
+    queryKey: ["work", "all", orgIds],
+    queryFn: async () => {
+      const lists = await Promise.all(
+        orgIds.map((orgId) => read("workItem.list", { orgId, limit: 100 })),
+      );
+      return lists
+        .flatMap((l) => l.items)
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    },
     staleTime: 10_000,
     refetchInterval: 15_000,
   });

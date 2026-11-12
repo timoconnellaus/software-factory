@@ -1,6 +1,7 @@
 // The Planning tab's logic (spec 20, layout A), kept out of the components so it is tested directly:
 // the session pill's state, provenance chips, what changed since the previous spec revision, and the
 // gate bar's counts.
+import { isSensitiveQuestion } from "@software-factory/runner-contract";
 import type { OpOutput } from "./ops.ts";
 
 export type PlanningView = OpOutput<"planning.get">;
@@ -165,15 +166,10 @@ export function answerText(kind: string, values: string[]): string {
   return kind === "multiple-choice" ? kept.join(", ") : (kept[0] ?? "");
 }
 
-/** Mirrors NEVER_BULK_ACCEPTED_DOMAINS in packages/core (the server decides; this greys the button). */
-const NEVER_BULK = new Set(["security", "privacy", "security-privacy"]);
+/** The one sensitive-question check, shared with the server (ADR 0042, review of #71). */
+export { isSensitiveQuestion };
 
 /** Whether "Accept remaining defaults" covers a question (ADR 0042). */
 export function bulkAcceptable(q: PlanningQuestion): boolean {
-  return (
-    q.status === "open" &&
-    q.defaultAnswer !== null &&
-    !q.irreversible &&
-    !NEVER_BULK.has(q.domain.toLowerCase())
-  );
+  return q.status === "open" && q.defaultAnswer !== null && !isSensitiveQuestion(q);
 }

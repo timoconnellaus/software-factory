@@ -4,16 +4,19 @@
 // the runner host. A minimal stdio server: newline-delimited JSON-RPC 2.0, `initialize`,
 // `tools/list`, `tools/call` and `ping`.
 import {
-  PLANNING_INPUTS,
   PLANNING_OPS,
   PLANNING_TOOL_DESCRIPTIONS,
+  PLANNING_TOOL_INPUTS,
   type PlanningOp,
 } from "@software-factory/runner-contract";
 import { z } from "zod";
+import { readHookState } from "./hooks.ts";
 import { callRelay, RelayError, type RelayInfo } from "./relay.ts";
 
 /** Operations the agent calls as tools. News and waits come through the hooks instead. */
-export const PLANNING_TOOL_OPS = PLANNING_OPS.filter((op) => op !== "planning.wait");
+export const PLANNING_TOOL_OPS = PLANNING_OPS.filter(
+  (op) => op !== "planning.wait" && op !== "planning.peek",
+);
 
 /** An MCP tool name for an operation: `question.ask` → `question_ask`. */
 export const toolName = (op: PlanningOp) => op.replace(".", "_");
@@ -24,7 +27,7 @@ export function planningTools() {
     name: toolName(op),
     description: PLANNING_TOOL_DESCRIPTIONS[op],
     // The shape the model writes (before the schema's transforms and defaults).
-    inputSchema: z.toJSONSchema(PLANNING_INPUTS[op], { io: "input", unrepresentable: "any" }),
+    inputSchema: z.toJSONSchema(PLANNING_TOOL_INPUTS[op], { io: "input", unrepresentable: "any" }),
   }));
 }
 
@@ -39,7 +42,7 @@ interface Request {
 export async function handleMcp(
   message: Request,
   relay: Pick<RelayInfo, "url" | "token">,
-  options: { fetch?: typeof fetch } = {},
+  options: { fetch?: typeof fetch; relayFile?: string } = {},
 ): Promise<Record<string, unknown> | null> {
   const reply = (result: unknown) => ({ jsonrpc: "2.0", id: message.id ?? null, result });
   const fail = (code: number, text: string) => ({
@@ -68,16 +71,24 @@ export async function handleMcp(
       const name = String(message.params?.name ?? "");
       const op = opFor(name);
       if (!op) return fail(-32602, `unknown tool ${name}`);
-      const args = (message.params?.arguments ?? {}) as Record<string, unknown>;
-      const parsed = PLANNING_INPUTS[op].safeParse(args);
+      const raw = (message.params?.arguments ?? {}) as Record<string, unknown>;
+      // The tool's own schema: delivery fields (ack, hold, cursor) are the hooks', never the
+      // model's, so anything outside it is dropped before the call (review of #67).
+      const parsed = PLANNING_TOOL_INPUTS[op].safeParse(raw);
       if (!parsed.success) {
         return reply({
           isError: true,
           content: [{ type: "text", text: `Invalid input: ${parsed.error.message}` }],
         });
       }
+      const args = { ...(parsed.data as Record<string, unknown>) };
+      // Asking for the gate, the agent has read what the hooks showed it: say so (spec 26).
+      if (op === "planning.ready" && options.relayFile) {
+        const shown = (await readHookState(options.relayFile)).shown;
+        if (shown !== undefined) args.ack = shown;
+      }
       try {
-        // The raw arguments: the cloud parses them with the same schema.
+        // The cloud parses them again with the operation's schema.
         const result = await callRelay(relay, op, args, {
           timeoutMs: 60_000,
           ...(options.fetch ? { fetch: options.fetch } : {}),
@@ -99,6 +110,7 @@ export async function handleMcp(
 /** Runs the server on stdin/stdout until stdin closes. */
 export async function serveMcp(
   relay: Pick<RelayInfo, "url" | "token">,
+  relayFile?: string,
   io: { input: NodeJS.ReadableStream; output: NodeJS.WritableStream } = {
     input: process.stdin,
     output: process.stdout,
@@ -124,7 +136,7 @@ export async function serveMcp(
         continue;
       }
       pending.push(
-        handleMcp(message, relay).then((answer) => {
+        handleMcp(message, relay, relayFile ? { relayFile } : {}).then((answer) => {
           if (answer) io.output.write(`${JSON.stringify(answer)}\n`);
         }),
       );

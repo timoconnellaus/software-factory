@@ -19,6 +19,9 @@ d1.batch([toStatement(env.DB, db.updateTable(...)), guardChanged(env.DB, "name")
 | 0030 | `core_runners`, `core_runner_shares`, `core_jobs`, `core_runs`, `core_run_events`, `core_artifacts`, `core_leases`, `core_channel_requests` |
 | 0040 | `core_connector_events` (webhook delivery dedupe), `core_verify_checks` (`factory/verify` per head SHA); `core_incidents.root_cause`, `proposed_fix` |
 | 0170 | `core_run_steers` (a person's messages into a live run, ADR 0400) |
+| 0260 | `core_repositories` (a project's GitHub repositories, ADR 0490; backfilled one per project; the repo columns stay on `core_projects` as an unread mirror until a later drop); `core_work_items.repository_id`, `core_verify_checks.repository_id` |
+| 0261 | `core_work_items` rebuilt: statuses `backlog`, `planning`, `ready`, `queued`; `priority`, `rank`, `acceptance_criteria`, `released_at`, `released_by`, `pulled_at`; `core_work_item_links` (waits for) (ADR 0491) |
+| 0262 | `core_work_items.shaping_started_at` (shaping stages before release, ADR 0493) |
 
 `SCHEMA_VERSION` equals the highest migration on this branch (40). Parallel builds number their
 migrations from the block they claim in `docs/parallel-work.md`.

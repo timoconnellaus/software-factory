@@ -1,9 +1,13 @@
-// The Planning tab, layout A (spec 20; mockups planning-three-pane, planning-full-screen and
-// planning-session-states): questions | spec | chat, the gate bar at the bottom, the session pill,
-// a full-screen toggle (F / Esc) and tabs on a phone. It reports who has it open (presence).
-// Ported from sf-app for spec 40 M3. sf-app's tab follows a Server-Sent-Events stream; the client
-// door has no planning stream, so here `planningQuery` re-reads every few seconds while the tab is
-// mounted, and the item (its gates) is re-read whenever the planning view changes.
+// The Planning tab (spec 20; restyled for spec 41, design ItemPlan and PlanFocus): questions | the
+// plan | chat, the gate bar at the bottom and the session pill. Docked in the work item, chat folds
+// to a strip; F gives planning the whole window (focus mode, the shell hides its chrome), Esc gives
+// it back. Only what the planning operations support today: new ways to steer the planner are the
+// planning build's. It reports who has it open (presence).
+// Ported from sf-app for spec 40 M3. Spec 26: the engine pushes `planning.changed` to the desktop's
+// live socket for whoever has this view open (presence), and the tab re-reads then; the slow poll
+// in `planningQuery` is only a fallback. Planning answers go through `planning.answer` (no Touch ID,
+// except for security, privacy and irreversible questions); chat sends after the planner's current
+// step (Enter) or interrupts it (⌘-Enter); Stop, Pause and "Let the planner finish alone" steer it.
 
 import { ago, errorMessage } from "@software-factory/client/format";
 import type { WorkItemDetail } from "@software-factory/client/ops";
@@ -15,6 +19,7 @@ import {
   gateSummary,
   initialAnswer,
   isChanged,
+  isSensitiveQuestion,
   markTags,
   type PlanningQuestion,
   type PlanningView,
@@ -24,6 +29,7 @@ import {
 import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import { Checkbox } from "@software-factory/ui/components/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -34,134 +40,243 @@ import {
 } from "@software-factory/ui/components/dialog";
 import { Input } from "@software-factory/ui/components/input";
 import { Kbd } from "@software-factory/ui/components/kbd";
+import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouteContext } from "@tanstack/react-router";
+import {
+  CheckIcon,
+  Maximize2Icon,
+  MessageSquareIcon,
+  PauseIcon,
+  PlayIcon,
+  XIcon,
+  ZapIcon,
+} from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { toast } from "sonner";
+import { onPlanningChanged } from "../bridge.ts";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { op, submitKey } from "../lib/op.ts";
 import { planningQuery } from "../lib/queries.ts";
+import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
+import { setFocus, updateViewState } from "../lib/view-state.ts";
+import { OpenTerminal } from "./open-terminal.tsx";
 
-type Pane = "questions" | "spec" | "chat";
 /** How often an open Planning tab says it is still here. */
 const PRESENCE_MS = 20_000;
 
-export function Planning({ detail }: { detail: WorkItemDetail }) {
+export function Planning({
+  detail,
+  mode,
+}: {
+  detail: WorkItemDetail;
+  /** Docked in the work item's Plan tab, or focus: the whole window (spec 41). */
+  mode: "docked" | "focus";
+}) {
   const { item } = detail;
   const planning = useQuery(planningQuery(item.id));
   useLive(item.id, planning.data);
   usePresence(item.id);
-  const [full, setFull] = useState(false);
-  const [pane, setPane] = useState<Pane>("questions");
+  const focus = mode === "focus";
+  // Docked, chat folds to a strip on the right; in focus it stays open.
+  const [chatOpen, setChatOpen] = useState(false);
   const [draft, setDraft] = useState<{ text: string; questionId?: string }>({ text: "" });
 
+  // F gives planning the whole window, Esc gives it back (not while typing).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable=true]")) return;
-      if (e.key === "Escape") setFull(false);
+      if (document.querySelector("[role=dialog]")) return;
+      if (e.key === "Escape" && focus) updateViewState((s) => setFocus(s, null));
       else if ((e.key === "f" || e.key === "F") && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        setFull((f) => !f);
+        updateViewState((s) => setFocus(s, focus ? null : item.id));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [focus, item.id]);
 
   const view = planning.data;
   if (!view) {
     return (
-      <Card className="px-5 py-6 text-muted-foreground text-sm">
+      <div className="px-[22px] py-6 text-ink-muted">
         {planning.error ? errorMessage(planning.error) : "Loading the planning view…"}
-      </Card>
+      </div>
     );
   }
   const discuss = (questionId: string, text = "") => {
     setDraft({ text, questionId });
-    setPane("chat");
+    setChatOpen(true);
   };
+  const showChat = focus || chatOpen;
 
   return (
     <div
-      className={cn(
-        "grid gap-3",
-        full && "fixed inset-0 z-50 grid-rows-[auto_auto_minmax(0,1fr)_auto] bg-background p-4",
-      )}
+      className="flex min-h-0 min-w-0 flex-1 flex-col bg-page"
       data-testid="planning"
-      data-fullscreen={full ? "true" : "false"}
+      data-fullscreen={focus ? "true" : "false"}
     >
-      <SessionHeader
-        view={view}
-        title={full ? `#${item.number} · ${item.title}` : null}
-        full={full}
-        onFull={() => setFull((f) => !f)}
-        workItemId={item.id}
-      />
-      <div className="flex gap-1 md:hidden" role="tablist" data-testid="planning-phone-tabs">
-        {(["questions", "spec", "chat"] as const).map((p) => (
-          <Button
-            key={p}
-            size="sm"
-            variant={pane === p ? "default" : "outline"}
-            role="tab"
-            aria-selected={pane === p}
-            onClick={() => setPane(p)}
-          >
-            {p === "questions"
-              ? `Questions ${view.questions.filter((q) => q.status === "open").length}`
-              : p === "spec"
-                ? "Spec"
-                : "Chat"}
-          </Button>
-        ))}
-      </div>
-      <div
-        className={cn(
-          "grid gap-3 md:grid-cols-[minmax(240px,1fr)_minmax(0,1.6fr)] xl:grid-cols-[minmax(260px,1fr)_minmax(0,1.6fr)_minmax(260px,1fr)]",
-          full && "min-h-0",
-        )}
-      >
+      {!focus && <SessionHeader view={view} detail={detail} />}
+      <div className="flex min-h-0 flex-1 border-line-soft border-t">
         <Questions
           view={view}
           workItemId={item.id}
           onDiscuss={discuss}
-          className={cn(pane !== "questions" && "hidden md:grid", full && "min-h-0 overflow-auto")}
+          className={cn(
+            "w-[300px] flex-none overflow-y-auto border-line-soft border-r px-3 py-3",
+            focus && "w-[336px]",
+          )}
         />
         <Spec
           view={view}
           onOverturn={(a) => {
             setDraft({ text: `Overturn this assumption and ask me instead: “${a}”` });
-            setPane("chat");
+            setChatOpen(true);
           }}
-          className={cn(pane !== "spec" && "hidden md:grid", full && "min-h-0 overflow-auto")}
+          className="min-w-0 flex-1 overflow-y-auto"
         />
-        <Chat
-          view={view}
-          workItemId={item.id}
-          draft={draft}
-          onDraft={setDraft}
-          className={cn(
-            pane !== "chat" && "hidden xl:grid",
-            pane === "chat" && "md:col-span-2 xl:col-span-1",
-            full && "min-h-0",
-          )}
-        />
+        {showChat ? (
+          <Chat
+            view={view}
+            workItemId={item.id}
+            draft={draft}
+            onDraft={setDraft}
+            onClose={focus ? undefined : () => setChatOpen(false)}
+            className="w-[330px] flex-none border-line-soft border-l"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setChatOpen(true)}
+            className="flex w-10 flex-none flex-col items-center gap-2 border-line-soft border-l bg-panel pt-3 text-ink-3 hover:text-ink"
+            data-testid="chat-strip"
+            aria-label="Open the chat"
+          >
+            <MessageSquareIcon className="size-4" />
+            {view.messages.length > 0 && (
+              <span className="flex size-4 items-center justify-center rounded-full bg-status-running font-semibold text-[10px] text-white">
+                {view.messages.length}
+              </span>
+            )}
+            <span className="[writing-mode:vertical-rl]">Chat</span>
+          </button>
+        )}
       </div>
       <GateBar view={view} detail={detail} />
     </div>
   );
 }
 
+/** The session's pill: the planner's state, with its dot. */
+export function SessionPill({ view }: { view: PlanningView }) {
+  const pill = sessionPill(view.session, view.present.length);
+  if (!pill) {
+    return (
+      <span className="text-ink-muted text-xs">
+        No planning session: this item's spec was planned in one-shot rounds.
+      </span>
+    );
+  }
+  const dot =
+    pill.state === "attached" || pill.state === "working"
+      ? "running"
+      : pill.state === "waiting" || pill.state === "gate"
+        ? "waiting"
+        : pill.state === "ended"
+          ? "done"
+          : "idle";
+  return (
+    <span
+      className="flex h-7 items-center gap-2 rounded-[7px] bg-selected px-2.5"
+      data-testid="session-pill"
+      data-state={pill.state}
+      title={pill.detail ?? undefined}
+    >
+      <StatusDot status={dot} />
+      {pill.label}
+    </span>
+  );
+}
+
+/** Docked: one line above the panes with the session, who's here, and the way into focus. */
+function SessionHeader({ view, detail }: { view: PlanningView; detail: WorkItemDetail }) {
+  const [moving, setMoving] = useState(false);
+  const canMove =
+    !!view.session && (view.session.waitingForRunner || view.session.status === "interrupted");
+  const pill = sessionPill(view.session, view.present.length);
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-[22px] py-2">
+      <SessionPill view={view} />
+      {pill?.detail && (
+        <span className="text-ink-muted text-xs" data-testid="session-detail">
+          {pill.detail}
+        </span>
+      )}
+      <span className="grow" />
+      {view.present.length > 0 && (
+        <span className="flex items-center gap-1 text-ink-muted text-xs">
+          <StatusDot status="done" /> {view.present.map((p) => p.name).join(", ")} here
+        </span>
+      )}
+      {canMove && (
+        <Button variant="outline" size="md" onClick={() => setMoving(true)}>
+          Continue on another runner…
+        </Button>
+      )}
+      <OpenTerminal detail={detail} stage="spec" />
+      <Button
+        size="md"
+        onClick={() => updateViewState((s) => setFocus(s, detail.item.id))}
+        data-testid="fullscreen"
+      >
+        <Maximize2Icon className="size-3.5" />
+        Focus <Kbd className="bg-transparent text-primary-foreground/70">F</Kbd>
+      </Button>
+      <MoveDialog
+        open={moving}
+        onOpenChange={setMoving}
+        runner={view.session?.runner?.name ?? null}
+        workItemId={detail.item.id}
+      />
+    </div>
+  );
+}
+
 /**
- * Re-reads the item (for its gates) whenever the polled planning view changes. Stands in for sf-app's
- * Server-Sent Events, which invalidated both; the planning view itself polls (`planningQuery`).
+ * Re-reads the planning view when the engine pushes a change, and the item (for its gates) whenever
+ * the planning view changes (spec 26; the poll in `planningQuery` is only a fallback).
  */
 function useLive(workItemId: string, view: PlanningView | undefined) {
   const queryClient = useQueryClient();
   const seen = useRef<PlanningView | undefined>(undefined);
+  // The engine says this view changed (spec 26): re-read it now, not at the next poll.
+  useEffect(
+    () =>
+      onPlanningChanged((id) => {
+        // "*": the live socket (re)connected, so anything may have changed meanwhile.
+        if (id !== workItemId && id !== "*") return;
+        void queryClient.invalidateQueries({ queryKey: ["workItem", workItemId, "planning"] });
+      }),
+    [workItemId, queryClient],
+  );
+  // Back in front, re-read at once: the view may have missed pushes while hidden (review of #78).
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void queryClient.invalidateQueries({ queryKey: ["workItem", workItemId, "planning"] });
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [workItemId, queryClient]);
   useEffect(() => {
     if (!view) return;
     const first = seen.current === undefined;
@@ -178,6 +293,12 @@ function usePresence(workItemId: string) {
     const say = (open: boolean) =>
       op("planning.presence", { workItemId, open }).catch(() => undefined);
     void say(true);
+    // Back in front: say so at once, not at the next beat (review of #78).
+    const back = () => {
+      if (!stopped && document.visibilityState === "visible") void say(true);
+    };
+    window.addEventListener("focus", back);
+    document.addEventListener("visibilitychange", back);
     const timer = setInterval(() => {
       if (!stopped && document.visibilityState === "visible") void say(true);
     }, PRESENCE_MS);
@@ -187,84 +308,11 @@ function usePresence(workItemId: string) {
       stopped = true;
       clearInterval(timer);
       window.removeEventListener("pagehide", leave);
+      window.removeEventListener("focus", back);
+      document.removeEventListener("visibilitychange", back);
       void say(false);
     };
   }, [workItemId]);
-}
-
-function SessionHeader({
-  view,
-  title,
-  full,
-  onFull,
-  workItemId,
-}: {
-  view: PlanningView;
-  title: string | null;
-  full: boolean;
-  onFull: () => void;
-  workItemId: string;
-}) {
-  const pill = sessionPill(view.session, view.present.length);
-  const [moving, setMoving] = useState(false);
-  const canMove =
-    !!view.session && (view.session.waitingForRunner || view.session.status === "interrupted");
-  const dot =
-    pill?.state === "attached" || pill?.state === "working"
-      ? "running"
-      : pill?.state === "waiting" || pill?.state === "gate"
-        ? "waiting"
-        : pill?.state === "ended"
-          ? "done"
-          : "idle";
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {title && <div className="font-semibold">{title}</div>}
-      {pill ? (
-        <div
-          className={cn(
-            "flex items-center gap-2 rounded-full border px-3 py-1 text-sm",
-            pill.state === "waiting" && "border-status-waiting/50 bg-status-waiting/10",
-          )}
-          data-testid="session-pill"
-          data-state={pill.state}
-          title={pill.detail ?? undefined}
-        >
-          <StatusDot status={dot} />
-          {pill.label}
-        </div>
-      ) : (
-        <span className="text-muted-foreground text-sm">
-          No planning session: this item's spec was planned in one-shot rounds.
-        </span>
-      )}
-      {pill?.detail && (
-        <span className="text-muted-foreground text-xs" data-testid="session-detail">
-          {pill.detail}
-        </span>
-      )}
-      <span className="grow" />
-      {view.present.length > 0 && (
-        <span className="flex items-center gap-1 text-muted-foreground text-xs">
-          <StatusDot status="done" /> {view.present.map((p) => p.name).join(", ")} here
-        </span>
-      )}
-      {canMove && (
-        <Button size="sm" variant="outline" onClick={() => setMoving(true)}>
-          Continue on another runner…
-        </Button>
-      )}
-      <Button size="sm" variant="ghost" onClick={onFull} data-testid="fullscreen">
-        {full ? "⤡ Exit full screen" : "⤢ Full screen"} <Kbd>{full ? "Esc" : "F"}</Kbd>
-      </Button>
-      <MoveDialog
-        open={moving}
-        onOpenChange={setMoving}
-        runner={view.session?.runner?.name ?? null}
-        workItemId={workItemId}
-      />
-    </div>
-  );
 }
 
 function MoveDialog({
@@ -318,6 +366,10 @@ function MoveDialog({
 }
 
 // ---- questions ----
+// Design ItemPlan / PlanFocus: answered questions are compact rows on top (a tick, the answer and a
+// "default" or "changed by you" tag); each open question lists its options with the recommended one
+// already selected and badged, the reason beside it, and "Accept recommended" answers in one click.
+// Skip (spec 26) answers with `skipped`: the planner decides it.
 
 function Questions({
   view,
@@ -336,15 +388,39 @@ function Questions({
   const ordered = [...open].sort(
     (a, b) => Number(b.id === focused) - Number(a.id === focused) || a.position - b.position,
   );
+  const me = useMe();
+  const total = view.questions.length;
   return (
-    <section className={cn("grid content-start gap-3", className)} data-testid="questions-pane">
-      <div className="font-semibold text-sm">
-        Questions <span className="text-muted-foreground">· open {open.length}</span>
+    <section className={cn("flex flex-col gap-2", className)} data-testid="questions-pane">
+      <div className="flex items-center gap-2.5 px-1 pb-1 font-semibold">
+        Questions
+        <span className="h-1 flex-1 overflow-hidden rounded-full bg-line">
+          <span
+            className="block h-full rounded-full bg-status-running"
+            style={{ width: `${total ? (100 * (total - open.length)) / total : 0}%` }}
+          />
+        </span>
+        <span className="font-mono font-normal text-ink-muted text-xs">
+          {total - open.length} of {total}
+        </span>
       </div>
-      {view.questions.length === 0 && (
+      {total === 0 && (
         <Card className="px-4 py-5 text-muted-foreground text-sm">
           No questions yet. The planning agent asks them as it drafts the spec.
         </Card>
+      )}
+      {answered.length > 0 && (
+        <div className="flex flex-col gap-1.5" data-testid="answered">
+          {answered.map((q) => (
+            <AnsweredRow
+              key={`${q.id}:${q.answerRevision}`}
+              question={q}
+              workItemId={workItemId}
+              me={me}
+              total={total}
+            />
+          ))}
+        </div>
       )}
       {ordered.map((q) => (
         <QuestionCard
@@ -352,62 +428,88 @@ function Questions({
           question={q}
           workItemId={workItemId}
           focused={q.id === focused}
+          total={total}
+          messages={view.messages.filter((m) => m.questionId === q.id).length}
           onDiscuss={() => onDiscuss(q.id)}
         />
       ))}
-      {answered.length > 0 && (
-        <Card className="gap-1.5 px-4 py-3" data-testid="answered">
-          <div className="font-semibold text-sm">Answered</div>
-          {answered.map((q) => (
-            <AnsweredRow key={`${q.id}:${q.answerRevision}`} question={q} workItemId={workItemId} />
-          ))}
-        </Card>
-      )}
     </section>
   );
 }
 
-function AnsweredRow({ question, workItemId }: { question: PlanningQuestion; workItemId: string }) {
+/** The signed-in user's id, from the shell's route context (for "changed by you"). */
+function useMe(): string | null {
+  const context = useRouteContext({ strict: false }) as { session?: { user: { id: string } } };
+  return context.session?.user.id ?? null;
+}
+
+function AnsweredRow({
+  question: q,
+  workItemId,
+  me,
+  total,
+}: {
+  question: PlanningQuestion;
+  workItemId: string;
+  me: string | null;
+  total: number;
+}) {
   const [editing, setEditing] = useState(false);
   if (editing) {
     return (
       <QuestionCard
-        question={question}
+        question={q}
         workItemId={workItemId}
         focused={false}
+        total={total}
+        messages={0}
         onDone={() => setEditing(false)}
       />
     );
   }
-  const changed = !question.acceptedDefault && question.answer !== question.defaultAnswer;
+  const tag = q.skipped
+    ? { label: "skipped · the planner decides", changed: true }
+    : q.acceptedAlone
+      ? { label: "default · finish alone", changed: false }
+      : answeredTag(q, me);
   return (
-    <div className="flex items-start gap-2 text-sm" data-testid={`answered-${question.id}`}>
-      <StatusDot status="done" className="mt-1.5" />
-      <div className="grow">
-        <span className="text-muted-foreground">
-          {question.number ?? "·"}. {question.prompt}
-        </span>{" "}
-        <b className="font-medium">{question.answer ?? "—"}</b>
-        <span className="text-muted-foreground text-xs">
-          {" "}
-          · {changed ? "changed" : "default"}
-          {question.answerRevision > 1 ? " · revised" : ""}
+    <button
+      type="button"
+      disabled={!q.planning}
+      onClick={() => setEditing(true)}
+      title={q.planning ? "Change this answer" : undefined}
+      className="flex w-full items-start gap-2.5 rounded-lg bg-selected px-3 py-2 text-left enabled:hover:bg-line-soft"
+      data-testid={`answered-${q.id}`}
+      data-tag={tag.label}
+    >
+      <span className="mt-px flex size-4 flex-none items-center justify-center rounded-full bg-status-running text-white">
+        <CheckIcon className="size-2.5" strokeWidth={3.5} />
+      </span>
+      <span className="min-w-0 grow">
+        <span className="flex items-baseline gap-1.5">
+          <span className="font-mono text-[10.5px] text-ink-muted">Q{q.number ?? "·"}</span>
+          <span className="font-medium text-[13px]">{q.prompt}</span>
         </span>
-        {question.note && (
-          <div className="text-muted-foreground text-xs">Note: {question.note}</div>
-        )}
-      </div>
-      {question.planning && (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-6 px-2 text-xs"
-          onClick={() => setEditing(true)}
-        >
-          Change
-        </Button>
-      )}
-    </div>
+        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12.5px] text-ink-3">
+          <span className="truncate">{q.skipped ? "Skipped" : (q.answer ?? "—")}</span>
+          <span
+            className={cn(
+              "flex-none rounded-full px-1.5 py-px text-[10.5px]",
+              tag.changed
+                ? "bg-status-running/12 text-status-running"
+                : "bg-panel text-ink-3 shadow-[0_0_0_1px_var(--line)]",
+            )}
+          >
+            {tag.label}
+          </span>
+          {q.answerRevision > 1 && (
+            <span className="flex-none text-[10.5px] text-ink-muted">revised</span>
+          )}
+          <ReadReceipt at={q.answerDeliveredAt} />
+        </span>
+        {q.note && <span className="mt-0.5 block text-ink-muted text-xs">Note: {q.note}</span>}
+      </span>
+    </button>
   );
 }
 
@@ -415,85 +517,181 @@ function QuestionCard({
   question: q,
   workItemId,
   focused,
+  total,
+  messages,
   onDiscuss,
   onDone,
 }: {
   question: PlanningQuestion;
   workItemId: string;
   focused: boolean;
+  total: number;
+  /** Chat messages about this question. */
+  messages: number;
   onDiscuss?: () => void;
   onDone?: () => void;
 }) {
   const options = questionOptions(q);
-  const [values, setValues] = useState<string[]>(() => initialAnswer(q));
+  const recommended = recommendedValues(q);
+  const [values, setValues] = useState<string[]>(() =>
+    q.answer ? initialAnswer(q) : recommended.length ? recommended : initialAnswer(q),
+  );
   const [other, setOther] = useState("");
   const [note, setNote] = useState(q.note ?? "");
   const [noting, setNoting] = useState(!!q.note);
   const { decide, pending } = useDecide();
+  const [sending, setSending] = useState(false);
   const choice = q.kind === "single-choice" || q.kind === "multiple-choice" || q.kind === "yes-no";
+  /**
+   * A planning question is answered with `planning.answer` (spec 26): no Touch ID, except for a
+   * security, privacy or irreversible one. A question outside a planning session stays a decision.
+   */
+  const submit = async (input: { answer?: string; skipped?: boolean }) => {
+    const note_ = note.trim() ? { note: note.trim() } : {};
+    if (!q.planning) {
+      return decide({
+        kind: "question.answer",
+        workItemId,
+        questionId: q.id,
+        answer: input.answer ?? "",
+        ...note_,
+      });
+    }
+    if (needsTouchId(q)) {
+      return decide({
+        kind: "planning.answer",
+        workItemId,
+        questionId: q.id,
+        questionRevision: q.revision,
+        ...input,
+        ...note_,
+      });
+    }
+    setSending(true);
+    try {
+      await op(
+        "planning.answer",
+        { questionId: q.id, questionRevision: q.revision, ...input, ...note_ },
+        { idempotencyKey: submitKey() },
+      );
+      return true;
+    } catch (error) {
+      toast.error(errorMessage(error));
+      return false;
+    } finally {
+      setSending(false);
+    }
+  };
+  const multiple = q.kind === "multiple-choice";
   const chosen = other.trim() ? [...values.filter((v) => options.includes(v)), other] : values;
-  const answer = answerText(
-    q.kind,
-    q.kind === "multiple-choice" ? chosen : other.trim() ? [other] : values,
-  );
+  const answer = answerText(q.kind, multiple ? chosen : other.trim() ? [other] : values);
+  const accepting = q.status === "open" && holdsRecommendation(q, values, other);
   const toggle = (option: string) =>
     setValues((v) =>
-      q.kind === "multiple-choice"
-        ? v.includes(option)
-          ? v.filter((x) => x !== option)
-          : [...v, option]
-        : [option],
+      multiple ? (v.includes(option) ? v.filter((x) => x !== option) : [...v, option]) : [option],
     );
+  const optionRow = (option: string, i: number, control: (id: string) => ReactNode) => {
+    const selected = values.includes(option);
+    const id = `${q.id}-option-${i}`;
+    return (
+      <label
+        key={option}
+        htmlFor={id}
+        className={cn(
+          "flex cursor-pointer items-center gap-2.5 rounded-lg border border-line bg-panel px-3 py-2.5 text-[13px]",
+          selected && "border-status-running ring-1 ring-status-running",
+        )}
+        data-testid="question-option"
+        data-selected={selected ? "true" : "false"}
+      >
+        {control(id)}
+        <span className="grow">{option}</span>
+        {recommended.includes(option) && (
+          <span className="flex-none rounded-full bg-status-waiting/18 px-2 py-0.5 font-medium text-[11px] text-status-waiting">
+            Recommended
+          </span>
+        )}
+      </label>
+    );
+  };
   return (
     <Card
       className={cn(
-        "gap-2.5 px-4 py-3",
+        "gap-3 px-3.5 py-3.5",
         q.status === "open" && "shadow-waiting",
-        focused && "ring-2 ring-status-running/50",
+        focused && "ring-2 ring-status-running/40",
       )}
       data-testid={`question-${q.id}`}
     >
-      <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-        <span>Q{q.number ?? "?"}</span>
+      <div className="flex flex-wrap items-center gap-2 text-ink-muted text-xs">
+        <span>
+          Question {q.number ?? "?"} of {total}
+        </span>
+        {focused && <span className="text-status-running">asked next</span>}
+        <span className="grow" />
         <Badge variant="outline">{q.domain}</Badge>
-        {q.blocking && <span>blocking</span>}
-        {q.irreversible && (
-          <span className="text-status-waiting">irreversible · answer it yourself</span>
+        {messages > 0 && onDiscuss && (
+          <button
+            type="button"
+            onClick={onDiscuss}
+            className="flex items-center gap-1 text-status-running hover:underline"
+          >
+            <MessageSquareIcon className="size-3" />
+            {messages} {messages === 1 ? "message" : "messages"}
+          </button>
         )}
-        {q.escalated && <span className="text-status-waiting">escalated</span>}
-        {focused && <span className="text-status-running">the agent asks this next</span>}
       </div>
-      <div className="font-semibold text-sm">{q.prompt}</div>
+      {(q.irreversible || q.escalated || !q.blocking) && (
+        <div className="-mt-1.5 flex flex-wrap gap-2 text-xs">
+          {!q.blocking && <span className="text-ink-muted">not blocking</span>}
+          {q.irreversible && (
+            <span className="text-status-waiting">irreversible · answer it yourself</span>
+          )}
+          {q.escalated && <span className="text-status-waiting">escalated</span>}
+        </div>
+      )}
+      <div className="font-semibold text-[14px] leading-snug">{q.prompt}</div>
       {q.context && (
-        <div className="text-muted-foreground text-xs [&_p]:my-1">
+        <div className="text-ink-3 text-xs [&_p]:my-1">
           <Markdown>{q.context}</Markdown>
         </div>
       )}
-      {choice && (
-        <fieldset className="grid gap-1.5">
+      {choice && !multiple && (
+        <RadioGroup
+          value={values[0] ?? ""}
+          onValueChange={(v) => setValues([v])}
+          aria-label={q.prompt}
+          className="gap-2"
+        >
+          {options.map((option, i) =>
+            optionRow(option, i, (id) => (
+              <RadioGroupItem
+                id={id}
+                value={option}
+                className="border-ink-muted data-[state=checked]:border-status-running data-[state=checked]:text-status-running [&_svg]:fill-status-running"
+              />
+            )),
+          )}
+        </RadioGroup>
+      )}
+      {multiple && (
+        <fieldset className="grid gap-2">
           <legend className="sr-only">{q.prompt}</legend>
-          {options.map((option) => {
-            const isDefault = q.defaultValues?.includes(option);
-            return (
-              <label
-                key={option}
-                className={cn(
-                  "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm",
-                  values.includes(option) && "border-foreground/40 bg-accent",
-                )}
-              >
-                <input
-                  type={q.kind === "multiple-choice" ? "checkbox" : "radio"}
-                  name={q.id}
-                  checked={values.includes(option)}
-                  onChange={() => toggle(option)}
-                />
-                <span className="grow">{option}</span>
-                {isDefault && <span className="text-muted-foreground text-xs">recommended</span>}
-              </label>
-            );
-          })}
+          {options.map((option, i) =>
+            optionRow(option, i, (id) => (
+              <Checkbox
+                id={id}
+                checked={values.includes(option)}
+                onCheckedChange={() => toggle(option)}
+              />
+            )),
+          )}
         </fieldset>
+      )}
+      {q.recommendationReason && (
+        <div className="border-status-waiting border-l-2 pl-3 text-[12.5px] text-ink-3 leading-relaxed [&_p]:my-0">
+          <Markdown>{q.recommendationReason}</Markdown>
+        </div>
       )}
       {q.kind === "number" && (
         <Input
@@ -503,21 +701,22 @@ function QuestionCard({
           aria-label={q.prompt}
         />
       )}
-      {(q.kind === "text" || choice) && (
+      {q.kind === "text" && (
         <Textarea
-          rows={q.kind === "text" ? 2 : 1}
-          placeholder={q.kind === "text" ? (q.defaultAnswer ?? "Your answer") : "Other…"}
-          value={q.kind === "text" ? (values[0] ?? "") : other}
-          onChange={(e) =>
-            q.kind === "text" ? setValues([e.target.value]) : setOther(e.target.value)
-          }
-          aria-label={q.kind === "text" ? q.prompt : "Another answer"}
+          rows={2}
+          placeholder={q.defaultAnswer ?? "Your answer"}
+          value={values[0] ?? ""}
+          onChange={(e) => setValues([e.target.value])}
+          aria-label={q.prompt}
         />
       )}
-      {q.recommendationReason && (
-        <div className="text-muted-foreground text-xs [&_p]:my-0.5">
-          <Markdown>{q.recommendationReason}</Markdown>
-        </div>
+      {choice && (
+        <Input
+          placeholder="Other…"
+          value={other}
+          onChange={(e) => setOther(e.target.value)}
+          aria-label="Another answer"
+        />
       )}
       {noting && (
         <Input
@@ -527,30 +726,38 @@ function QuestionCard({
           aria-label="Note"
         />
       )}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
         <Button
           size="sm"
-          disabled={!answer || pending !== null}
+          disabled={!answer || pending !== null || sending}
+          className="bg-status-running text-white hover:bg-status-running/90"
           onClick={async () => {
-            const done = await decide({
-              kind: "question.answer",
-              workItemId,
-              questionId: q.id,
-              answer,
-              ...(note.trim() ? { note: note.trim() } : {}),
-            });
-            if (done) onDone?.();
+            if (await submit({ answer })) onDone?.();
           }}
           data-testid={`answer-${q.id}`}
         >
-          {q.status === "answered" ? "Change answer" : "Answer"}
+          {accepting ? "Accept recommended" : q.status === "answered" ? "Change answer" : "Answer"}
         </Button>
+        {q.planning && q.status === "open" && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={pending !== null || sending}
+            title="The planner decides it, and says so in the plan"
+            onClick={async () => {
+              if (await submit({ skipped: true })) onDone?.();
+            }}
+            data-testid={`skip-${q.id}`}
+          >
+            Skip
+          </Button>
+        )}
         {!noting && (
           <Button size="sm" variant="ghost" onClick={() => setNoting(true)}>
             Add a note
           </Button>
         )}
-        {onDiscuss && (
+        {onDiscuss && messages === 0 && (
           <Button size="sm" variant="ghost" onClick={onDiscuss}>
             Discuss
           </Button>
@@ -562,6 +769,24 @@ function QuestionCard({
         )}
       </div>
     </Card>
+  );
+}
+
+/** Security, privacy and irreversible planning questions are still answered with Touch ID. */
+const needsTouchId = (q: Pick<PlanningQuestion, "domain" | "irreversible">) =>
+  isSensitiveQuestion(q);
+
+/** "✓ Read": when an answer or a message reached the planner (spec 26). */
+function ReadReceipt({ at }: { at: string | null | undefined }) {
+  if (!at) return null;
+  return (
+    <span
+      className="flex flex-none items-center gap-0.5 text-[10.5px] text-ink-muted"
+      title={`Read by the planner ${ago(at)}`}
+      data-testid="read-receipt"
+    >
+      <CheckIcon className="size-2.5" /> Read
+    </span>
   );
 }
 
@@ -648,9 +873,9 @@ function Spec({
     </Markdown>
   );
   return (
-    <Card className={cn("content-start gap-0 py-0", className)} data-testid="living-spec">
-      <div className="flex flex-wrap items-center gap-2 border-b px-4 pt-3 pb-2">
-        <div className="font-semibold text-sm">Spec</div>
+    <section className={cn("bg-panel", className)} data-testid="living-spec">
+      <div className="sticky top-0 z-10 flex h-11 flex-wrap items-center gap-2 border-line-soft border-b bg-panel px-6">
+        <div className="font-semibold">Plan</div>
         {spec && (
           <Badge variant="outline">
             rev {spec.version} ·{" "}
@@ -664,8 +889,8 @@ function Spec({
           No spec yet. The planning agent drafts it, then revises it as you answer.
         </div>
       ) : (
-        <div className="grid gap-4 px-4 py-3 text-sm">
-          <div className="text-sm [&_h1]:font-semibold [&_h1]:text-base [&_h2]:mt-3 [&_h2]:font-semibold [&_li]:ml-4 [&_li]:list-disc [&_ol>li]:list-decimal [&_p]:my-1.5 [&_code]:font-mono [&_code]:text-xs">
+        <div className="mx-auto grid max-w-[760px] gap-4 px-8 py-6 leading-relaxed">
+          <div className="[&_h1]:mb-3 [&_h1]:font-semibold [&_h1]:text-[20px] [&_h2]:mt-5 [&_h2]:mb-1 [&_h2]:font-medium [&_h2]:text-[11px] [&_h2]:text-ink-muted [&_h2]:uppercase [&_h2]:tracking-[0.06em] [&_h2]:mt-3 [&_h2]:font-semibold [&_li]:ml-4 [&_li]:list-disc [&_ol>li]:list-decimal [&_p]:my-1.5 [&_code]:font-mono [&_code]:text-xs">
             <Markdown components={components}>{markTags(spec.bodyMd)}</Markdown>
           </div>
           {!/^#{1,4}\s*acceptance criteria/im.test(spec.bodyMd) && (
@@ -766,7 +991,7 @@ function Spec({
           )}
         </div>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -777,12 +1002,14 @@ function Chat({
   workItemId,
   draft,
   onDraft,
+  onClose,
   className,
 }: {
   view: PlanningView;
   workItemId: string;
   draft: { text: string; questionId?: string };
   onDraft: (d: { text: string; questionId?: string }) => void;
+  onClose?: (() => void) | undefined;
   className?: string;
 }) {
   const [busy, setBusy] = useState(false);
@@ -794,17 +1021,26 @@ function Chat({
   }, [count]);
   const working =
     view.session && ["working", "yielding"].includes(view.session.status) && view.session.activity;
-  async function send() {
+  const session = view.session;
+  const canInterrupt = !!session?.canInterrupt;
+  async function send(interrupt = false) {
     const text = draft.text.trim();
     if (!text) return;
     setBusy(true);
     try {
-      await op(
+      const sent = await op(
         "chat.send",
-        { workItemId, text, ...(draft.questionId ? { questionId: draft.questionId } : {}) },
+        {
+          workItemId,
+          text,
+          ...(draft.questionId ? { questionId: draft.questionId } : {}),
+          ...(interrupt ? { interrupt: true } : {}),
+        },
         { idempotencyKey: submitKey() },
       );
       onDraft({ text: "" });
+      // An interrupt that couldn't happen still delivers: say when (spec 26).
+      if (interrupt && !sent.interrupted && sent.note) toast(capitalise(sent.note));
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
@@ -812,12 +1048,25 @@ function Chat({
     }
   }
   return (
-    <Card
-      className={cn("grid-rows-[auto_minmax(0,1fr)_auto] content-start gap-0 py-0", className)}
-      data-testid="chat-pane"
-    >
-      <div className="border-b px-4 pt-3 pb-2 font-semibold text-sm">Chat</div>
-      <div className="grid max-h-[60vh] content-start gap-2 overflow-auto px-4 py-3 text-sm">
+    <section className={cn("flex min-h-0 flex-col bg-panel", className)} data-testid="chat-pane">
+      <div className="flex h-11 flex-none items-center gap-2 px-4 font-semibold">
+        Chat
+        <span className="grow" />
+        {session && !["ended", "moved"].includes(session.status) && (
+          <PauseButton workItemId={workItemId} paused={session.paused} />
+        )}
+        {onClose && (
+          <button
+            type="button"
+            aria-label="Fold the chat"
+            onClick={onClose}
+            className="flex size-6 items-center justify-center rounded-md text-ink-3 hover:bg-selected"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        )}
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-2">
         {view.messages.length === 0 && (
           <div className="text-muted-foreground text-xs">
             Ask the planning agent anything, or tell it what to change. It reads the chat while it
@@ -828,8 +1077,10 @@ function Chat({
           <div
             key={m.id}
             className={cn(
-              "grid gap-0.5 rounded-md px-3 py-2",
-              m.author === "agent" ? "bg-muted" : "bg-accent",
+              "grid gap-0.5 rounded-[10px] px-3 py-2",
+              m.author === "agent"
+                ? "bg-selected"
+                : "ml-6 bg-ink text-window [&_.text-muted-foreground]:text-window/70 [&_.text-foreground]:text-window",
               m.kind === "gate" && "border border-status-waiting/50",
             )}
             data-testid={`message-${m.id}`}
@@ -839,6 +1090,7 @@ function Chat({
               {m.kind === "gate" && <Badge variant="outline">spec gate: changes</Badge>}
               {m.questionId && <Chip tag={`Q${numbers.get(m.questionId) ?? "?"}`} />}
               <span className="grow" />
+              {m.author === "person" && <ReadReceipt at={m.deliveredAt} />}
               <span>{ago(m.createdAt)}</span>
             </div>
             <div className="[&_code]:font-mono [&_code]:text-xs [&_p]:my-0.5">
@@ -847,13 +1099,23 @@ function Chat({
           </div>
         ))}
         {working && (
-          <div className="text-muted-foreground text-xs italic" data-testid="agent-activity">
-            Planning agent · {String(view.session?.activity)}…
+          <div
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs shadow-[0_0_0_1px_var(--line)]"
+            data-testid="agent-activity"
+          >
+            <StatusDot status="running" />
+            <span className="grow text-ink-3">{capitalise(String(view.session?.activity))}</span>
+            {canInterrupt && <StopButton workItemId={workItemId} />}
+          </div>
+        )}
+        {session?.paused && (
+          <div className="text-status-waiting text-xs" data-testid="planner-paused">
+            Paused: answers and messages wait until someone resumes it.
           </div>
         )}
         <div ref={end} />
       </div>
-      <div className="grid gap-1.5 border-t px-4 py-3">
+      <div className="grid flex-none gap-1.5 border-line-soft border-t px-4 py-3">
         {draft.questionId && (
           <div className="flex items-center gap-2 text-muted-foreground text-xs">
             About <Chip tag={`Q${numbers.get(draft.questionId) ?? "?"}`} />
@@ -869,24 +1131,149 @@ function Chat({
         )}
         <Textarea
           rows={2}
-          placeholder="Ask the planning agent, or tell it what to change… (Enter to send)"
+          placeholder="Ask the planner, or tell it what to change…"
           value={draft.text}
           onChange={(e) => onDraft({ ...draft, text: e.target.value })}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void send();
+              // ⌘-Enter interrupts the planner's current step; Enter waits for it (spec 26).
+              void send(e.metaKey && canInterrupt);
             }
           }}
           data-testid="chat-input"
         />
-        <div className="flex justify-end">
-          <Button size="sm" disabled={!draft.text.trim() || busy} onClick={send}>
+        <div
+          className="flex items-center gap-1.5 whitespace-nowrap text-[11px] text-ink-muted"
+          data-testid="chat-hint"
+        >
+          <Kbd>↵</Kbd> after its step
+          <span className="grow" />
+          {canInterrupt ? (
+            <>
+              <Kbd>⌘↵</Kbd> interrupt
+            </>
+          ) : (
+            <span title="This runner can't interrupt the planner: messages arrive after its step">
+              no interrupt here
+            </span>
+          )}
+          <Button
+            size="sm"
+            className="ml-1"
+            disabled={!draft.text.trim() || busy}
+            onClick={() => send(false)}
+          >
             Send
           </Button>
         </div>
       </div>
-    </Card>
+    </section>
+  );
+}
+
+const capitalise = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** Stops the planner's current step (spec 26): the session stays, and it waits for you. */
+function StopButton({ workItemId }: { workItemId: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      className="font-medium text-destructive hover:underline disabled:opacity-50"
+      onClick={async () => {
+        setBusy(true);
+        try {
+          const r = await op("planning.stop", { workItemId }, { idempotencyKey: submitKey() });
+          if (!r.stopped && r.note) toast(capitalise(r.note));
+        } catch (error) {
+          toast.error(errorMessage(error));
+        } finally {
+          setBusy(false);
+        }
+      }}
+      data-testid="stop-planner"
+    >
+      Stop
+    </button>
+  );
+}
+
+/** Pauses the planner (news waits) or resumes it (spec 26). */
+function PauseButton({ workItemId, paused }: { workItemId: string; paused: boolean }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      disabled={busy}
+      className="h-6 px-2 font-normal text-xs"
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await op(
+            paused ? "planning.resume" : "planning.pause",
+            { workItemId },
+            {
+              idempotencyKey: submitKey(),
+            },
+          );
+        } catch (error) {
+          toast.error(errorMessage(error));
+        } finally {
+          setBusy(false);
+        }
+      }}
+      data-testid={paused ? "resume-planner" : "pause-planner"}
+    >
+      {paused ? <PlayIcon className="size-3" /> : <PauseIcon className="size-3" />}
+      {paused ? "Resume" : "Pause"}
+    </Button>
+  );
+}
+
+/**
+ * "Let the planner finish alone" (spec 26, ADR 0470): the recommended answers are accepted now and as
+ * the planner asks, except security, privacy, irreversible and no-default questions; approval stays
+ * yours. Shows who turned it on, and turns off on a click.
+ */
+function FinishAlone({ view, workItemId }: { view: PlanningView; workItemId: string }) {
+  const [busy, setBusy] = useState(false);
+  const on = view.session?.finishAlone ?? null;
+  const set = async (value: boolean) => {
+    setBusy(true);
+    try {
+      await op("planning.finishAlone", { workItemId, on: value }, { idempotencyKey: submitKey() });
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (on) {
+    return (
+      <span className="flex items-center gap-2 text-sm" data-testid="finish-alone-on">
+        <ZapIcon className="size-3.5 text-status-running" />
+        Finishing alone · set by {on.byName} {ago(on.at)}
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => set(false)}>
+          Turn off
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      disabled={busy}
+      title="Accept the recommended answers now and as the planner asks. Security, privacy and irreversible questions still wait for you, and you still approve the plan."
+      onClick={() => set(true)}
+      data-testid="finish-alone"
+    >
+      <ZapIcon className="size-3.5" />
+      Let the planner finish alone
+    </Button>
   );
 }
 
@@ -898,11 +1285,32 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
   const [changes, setChanges] = useState(false);
   const open = view.questions.filter((q) => q.status === "open");
   const bulk = open.filter(bulkAcceptable).length;
+  // Planning questions are bulk-accepted without Touch ID (spec 26); others stay a decision.
+  const planningOnly = open.every((q) => q.planning);
+  const acceptPlanning = async () => {
+    try {
+      const r = await op(
+        "planning.acceptDefaults",
+        { workItemId: item.id },
+        { idempotencyKey: submitKey() },
+      );
+      toast.success(
+        r.skipped.length
+          ? `Accepted ${r.accepted.length}; ${r.skipped.length} must be answered one by one`
+          : `Accepted ${r.accepted.length} recommended answer${r.accepted.length === 1 ? "" : "s"}`,
+      );
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  };
   const specGate = detail.gates.find((g) => g.kind === "spec" && g.status === "pending");
   const canApprove = !!specGate && detail.viewer.isApprover;
   const partial = view.spec?.coverage.filter((c) => (c as { status: string }).status === "partial");
   return (
-    <Card className="flex-row flex-wrap items-center gap-2 px-4 py-2.5" data-testid="gate-bar">
+    <div
+      className="flex flex-none flex-wrap items-center gap-2 border-line-soft border-t bg-panel px-[22px] py-2.5"
+      data-testid="gate-bar"
+    >
       <span className="text-muted-foreground text-sm" data-testid="planning-progress">
         {gateSummary(view)}
       </span>
@@ -912,16 +1320,23 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         </span>
       )}
       <span className="grow" />
+      {view.session && !["ended", "moved"].includes(view.session.status) && !specGate && (
+        <FinishAlone view={view} workItemId={item.id} />
+      )}
       {open.length > 0 && (
         <Button
           variant="outline"
           size="sm"
           disabled={bulk === 0 || pending !== null}
           title={bulk === 0 ? "The open questions need an answer one by one" : undefined}
-          onClick={() => decide({ kind: "question.acceptDefaults", workItemId: item.id })}
+          onClick={() =>
+            planningOnly
+              ? acceptPlanning()
+              : decide({ kind: "question.acceptDefaults", workItemId: item.id })
+          }
           data-testid="accept-defaults"
         >
-          Accept remaining defaults
+          Accept {bulk} recommended
         </Button>
       )}
       {specGate ? (
@@ -959,6 +1374,6 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         confirm="Send to the planning agent"
         onConfirm={(note) => decide({ kind: "spec.requestChanges", workItemId: item.id, note })}
       />
-    </Card>
+    </div>
   );
 }

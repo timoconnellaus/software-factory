@@ -10,6 +10,7 @@ import {
   type ContainerOptions,
   createContainerRunner,
   createLocalRunner,
+  createSpritesRunner,
   credentialForAccount,
   credentialFrom,
   dockerRuntime,
@@ -17,8 +18,14 @@ import {
   type LocalRunnerConfig,
   type ModelCredential,
   nodeExec,
+  readSpritesToken,
   reapContainers,
   reapOrphans,
+  reapSprites,
+  type SandboxApi,
+  type SpritesOptions,
+  spritePrefix,
+  spritesApi,
 } from "@software-factory/runner-local";
 import {
   accountConfigDirs,
@@ -32,6 +39,7 @@ import { checkoutDirs } from "./checkouts.ts";
 import type { Paths, RunnerConfig } from "./config.ts";
 import { FETCH_NAMESPACE, hostGit } from "./git.ts";
 import { RunnerHost } from "./host.ts";
+import { hostLoad, LoadGate, type LoadReading, loadPolicySchema } from "./load.ts";
 import { findOnPath } from "./pairing.ts";
 import type { SelfUpdate } from "./self-update.ts";
 
@@ -86,6 +94,30 @@ export const containerDirs = (
   runtime: dockerRuntime({ exec, bin: dockerBin(config) }),
 });
 
+/** The most a sprite may live (ADR 0480), from runner.json. */
+export const spriteLifetimeMs = (config: Pick<RunnerConfig, "sprites">) =>
+  (config.sprites?.maxLifetimeMinutes ?? 240) * 60_000;
+
+/** A sprites runner's dirs and API, for reaping and `doctor` (ADR 0480). */
+export async function spriteDirs(
+  config: Pick<RunnerConfig, "sprites" | "runnerId">,
+  dirs: Paths,
+  api?: SandboxApi,
+) {
+  return {
+    spritesDir: dirs.spritesDir,
+    runsDir: dirs.runsDir,
+    namePrefix: spritePrefix(config.runnerId),
+    maxAgeMs: spriteLifetimeMs(config),
+    api:
+      api ??
+      spritesApi({
+        token: await readSpritesToken(dirs.spritesTokenFile),
+        ...(config.sprites?.apiUrl ? { apiUrl: config.sprites.apiUrl } : {}),
+      }),
+  };
+}
+
 export function buildRunner(
   config: RunnerConfig,
   dirs: Paths,
@@ -94,8 +126,12 @@ export function buildRunner(
     fetch?: typeof fetch;
     log?: (m: string) => void;
     local?: Partial<LocalRunnerConfig>;
+    /** The load average and CPU count (tests inject them; ADR 0552). */
+    loadReading?: () => LoadReading;
     /** Container isolation's overrides (tests: a scripted runtime, a credential). */
     container?: Partial<ContainerOptions>;
+    /** Sprites isolation's overrides (tests: the fake API, a credential). */
+    sprites?: Partial<SpritesOptions>;
     /** The runner's self-update (ADR 0360), and what to do once it has updated. */
     selfUpdate?: SelfUpdate;
     onUpdated?: () => void;
@@ -118,10 +154,11 @@ export function buildRunner(
   });
   const accounts = accountPaths(dirs);
   const containers = config.isolation === "container";
-  // A stream-json session (ADR 0450) runs on the host only: a container job keeps tmux.
-  const sessionMode = containers ? "tmux" : config.session;
-  if (containers && config.session === "stream-json") {
-    log("session: stream-json is not available with container isolation yet; using tmux");
+  const sprites = config.isolation === "sprites";
+  // A stream-json session (ADR 0450) runs on the host only: a container or sprite job keeps tmux.
+  const sessionMode = containers || sprites ? "tmux" : config.session;
+  if ((containers || sprites) && config.session === "stream-json") {
+    log(`session: stream-json is not available with ${config.isolation} isolation yet; using tmux`);
   }
   const localConfig: LocalRunnerConfig = {
     exec,
@@ -152,26 +189,48 @@ export function buildRunner(
     session: sessionMode,
     ...options.local,
   };
-  // ADR 0430: a container per job when the owner opts in; else the worktree and Claude's sandbox.
-  const adapter = containers
-    ? createContainerRunner({
+  // ADR 0430: a container per job when the owner opts in; ADR 0480: a sprite per job; else the
+  // worktree and Claude's sandbox.
+  const adapter = sprites
+    ? createSpritesRunner({
         ...localConfig,
-        container: {
-          containersDir: dirs.containersDir,
-          bin: dockerBin(config),
+        sprites: {
+          tokenFile: dirs.spritesTokenFile,
+          spritesDir: dirs.spritesDir,
+          namePrefix: spritePrefix(config.runnerId),
           modelCredential: hostModelCredential(config),
           fetchNamespace: FETCH_NAMESPACE,
-          ...(config.container?.allowedHosts
-            ? { allowedHosts: config.container.allowedHosts }
-            : {}),
-          ...(config.container?.cpus ? { cpus: config.container.cpus } : {}),
-          ...(config.container?.memory ? { memory: config.container.memory } : {}),
-          ...(config.container?.pids ? { pidsLimit: config.container.pids } : {}),
+          ...(config.sprites?.apiUrl ? { apiUrl: config.sprites.apiUrl } : {}),
+          ...(config.sprites?.allowedHosts ? { allowedHosts: config.sprites.allowedHosts } : {}),
+          size: {
+            ...(config.sprites?.cpus ? { cpus: config.sprites.cpus } : {}),
+            ...(config.sprites?.memoryMb ? { memoryMb: config.sprites.memoryMb } : {}),
+            ...(config.sprites?.storageGb ? { storageGb: config.sprites.storageGb } : {}),
+          },
+          maxLifetimeMs: spriteLifetimeMs(config),
           log,
-          ...options.container,
+          ...options.sprites,
         },
       })
-    : createLocalRunner(localConfig);
+    : containers
+      ? createContainerRunner({
+          ...localConfig,
+          container: {
+            containersDir: dirs.containersDir,
+            bin: dockerBin(config),
+            modelCredential: hostModelCredential(config),
+            fetchNamespace: FETCH_NAMESPACE,
+            ...(config.container?.allowedHosts
+              ? { allowedHosts: config.container.allowedHosts }
+              : {}),
+            ...(config.container?.cpus ? { cpus: config.container.cpus } : {}),
+            ...(config.container?.memory ? { memory: config.container.memory } : {}),
+            ...(config.container?.pids ? { pidsLimit: config.container.pids } : {}),
+            log,
+            ...options.container,
+          },
+        })
+      : createLocalRunner(localConfig);
   const host = new RunnerHost({
     accounts: {
       report: () => accountsReport(accounts),
@@ -193,17 +252,48 @@ export function buildRunner(
             },
             running,
           ).catch(() => [] as string[])
-        : [];
+        : sprites
+          ? await spriteDirs(config, dirs, options.sprites?.api)
+              .then((d) => reapSprites(d, running))
+              .catch((err) => {
+                // Never quiet: a sprite that wasn't destroyed may still be running and billed.
+                log(
+                  `REAPING SPRITES FAILED, some may still be running: ${err instanceof Error ? err.message : err}`,
+                );
+                return [] as string[];
+              })
+          : [];
       const local = await reapOrphans(
         {
           ...hostDirs(dirs, exec),
           ...(options.local?.tmux ? { tmux: options.local.tmux } : {}),
+          ...(options.local?.procs ? { procs: options.local.procs } : {}),
+          // Marked run branches left by crashed jobs, in the owner's checkouts too (ADR 0551).
+          checkouts: {
+            dirs: checkoutDirs(config),
+            exclude: [dirs.reposDir, dirs.worktreesDir],
+            exec,
+          },
         },
         running,
       );
       return [...new Set([...reaped, ...local])];
     },
     liveJobsFile: liveJobsFile(dirs),
+    // Claim nothing heavy, then nothing at all, while the machine is overloaded (ADR 0552).
+    load: new LoadGate(
+      loadPolicySchema.parse(config.load ?? {}),
+      options.loadReading ?? hostLoad,
+      log,
+    ),
+    // A sprites runner sweeps while it runs (ADR 0480): sprites no live job holds, or past their
+    // lifetime, so none is left billing between restarts.
+    ...(sprites
+      ? {
+          sweep: async (running: Set<string>) =>
+            reapSprites(await spriteDirs(config, dirs, options.sprites?.api), running),
+        }
+      : {}),
     log,
     ...(options.selfUpdate ? { selfUpdate: options.selfUpdate } : {}),
     ...(options.onUpdated ? { onUpdated: options.onUpdated } : {}),

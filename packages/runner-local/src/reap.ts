@@ -1,14 +1,30 @@
 // After a host crash, and for `sf-runner doctor`: the job sessions (`sf-*` on the factory's tmux
-// socket) and job worktrees (`<worktreesDir>/sf-*`) whose job the host no longer runs. Reaping
-// kills those sessions, removes those worktrees from their checkouts (and their local run branches,
-// run dirs and attachments). The cloud fails those runs on its own once their leases lapse
-// (ADR 0035). Nothing outside the factory's socket and worktrees dir is ever touched.
+// socket), job processes (a Claude whose command line names `<runsDir>/<jobId>/claude-settings.json`,
+// ADR 0550), job worktrees (`<worktreesDir>/sf-*`) and marked run branches (ADR 0551) whose job the
+// host no longer runs. Reaping kills those sessions, stops those processes (TERM, then KILL), removes
+// those worktrees from their checkouts (and their local run branches, run dirs and attachments) and
+// deletes those branches. The cloud fails those runs on its own once their leases lapse (ADR 0035).
+// Nothing outside the factory's socket, its runs and worktrees dirs and its marked branches is ever
+// touched.
 import { readdir, readFile, realpath, rm } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import { removeRunDir } from "@software-factory/harness-claude";
+import { basename, dirname, join, sep } from "node:path";
+import { RUN_SETTINGS_FILE, removeRunDir } from "@software-factory/harness-claude";
 import { isRunBranch, WORKTREE_JOB_FILE } from "./adapter.ts";
+import {
+  deleteRunBranch,
+  isMarkedRunBranch,
+  runBranchDisposable,
+  sweepRunBranches,
+} from "./branches.ts";
 import { type CheckoutSearch, duplicateCheckouts, isUnder, scanCheckouts } from "./checkouts.ts";
 import { type Exec, nodeExec } from "./exec.ts";
+import {
+  HarnessStillRunning,
+  hostProcs,
+  type Procs,
+  type StopOptions,
+  stopHarness,
+} from "./procs.ts";
 import { jobIdOfSession, type TmuxOptions, tmuxCli } from "./tmux.ts";
 
 export interface LocalHostDirs {
@@ -18,6 +34,14 @@ export interface LocalHostDirs {
   attachmentsDir?: string;
   exec?: Exec;
   tmux?: Omit<TmuxOptions, "exec">;
+  /** How processes are read and signalled (default `ps` and `kill`). */
+  procs?: Procs;
+  stop?: StopOptions;
+  /**
+   * The checkouts whose marked run branches are swept (`runner.json` `checkouts`), besides the
+   * ones the job worktrees hang off.
+   */
+  checkouts?: CheckoutSearch;
 }
 
 export interface JobWorktree {
@@ -88,8 +112,14 @@ async function removeJobWorktree(dirs: LocalHostDirs, w: JobWorktree): Promise<v
   await rm(w.path, { recursive: true, force: true });
   if (w.checkout) {
     await exec("git", ["worktree", "prune"], { cwd: w.checkout });
-    if (w.branch && isRunBranch(w.branch)) {
-      await exec("git", ["branch", "-D", w.branch], { cwd: w.checkout });
+    // Only a branch the factory marked as its own (ADR 0551) that loses nothing, or an unmarked
+    // factory run branch from before the marker (as before).
+    const marked = w.branch ? await isMarkedRunBranch(w.checkout, w.branch, exec) : false;
+    if (
+      w.branch &&
+      (marked ? await runBranchDisposable(w.checkout, w.branch, exec) : isRunBranch(w.branch))
+    ) {
+      await deleteRunBranch(w.checkout, w.branch, exec);
     }
   }
   await removeRunDir(join(dirs.runsDir, w.jobId));
@@ -98,12 +128,53 @@ async function removeJobWorktree(dirs: LocalHostDirs, w: JobWorktree): Promise<v
   );
 }
 
+export interface JobProcess {
+  jobId: string;
+  pid: number;
+  settingsPath: string;
+}
+
 /**
- * Kills `sf-*` sessions and removes `sf-*` worktrees for jobs not in `running`. Returns the job ids
- * it cleaned up.
+ * The runner user's processes running a job's harness: `--settings <runsDir>/<jobId>/
+ * claude-settings.json` on their command line (a process that only names the file isn't one).
+ */
+export async function jobProcesses(dirs: LocalHostDirs): Promise<JobProcess[]> {
+  const procs = dirs.procs ?? hostProcs(dirs.exec ?? nodeExec);
+  const prefix = dirs.runsDir.endsWith(sep) ? dirs.runsDir : `${dirs.runsDir}${sep}`;
+  const uid = procs.uid?.() ?? null;
+  const out: JobProcess[] = [];
+  const pattern = new RegExp(
+    `(?:^|\\s)--settings(?:=|\\s+)${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^/\\s]+)/${RUN_SETTINGS_FILE.replace(/\./g, "\\.")}(?:\\s|$)`,
+  );
+  for (const p of await procs.list()) {
+    if (uid !== null && p.uid !== undefined && p.uid !== uid) continue;
+    const m = pattern.exec(p.command);
+    if (m?.[1]) {
+      out.push({ jobId: m[1], pid: p.pid, settingsPath: `${prefix}${m[1]}/${RUN_SETTINGS_FILE}` });
+    }
+  }
+  return out;
+}
+
+/** The checkouts to sweep for marked run branches. */
+async function sweepTargets(dirs: LocalHostDirs, worktrees: JobWorktree[]): Promise<string[]> {
+  const out = new Set(worktrees.map((w) => w.checkout).filter((c): c is string => !!c));
+  if (dirs.checkouts) {
+    for (const c of await scanCheckouts(dirs.checkouts).catch(() => [])) out.add(c.path);
+  }
+  return [...out];
+}
+
+/**
+ * Kills `sf-*` sessions, stops job processes, removes `sf-*` worktrees and sweeps marked run
+ * branches for jobs not in `running`. Returns the job ids it cleaned up. Throws
+ * `HarnessStillRunning` (after cleaning up everything else) when a job's processes survived TERM
+ * and KILL.
  */
 export async function reapOrphans(dirs: LocalHostDirs, running: Set<string>): Promise<string[]> {
-  const tmux = tmuxCli({ ...dirs.tmux, ...(dirs.exec ? { exec: dirs.exec } : {}) });
+  const exec = dirs.exec ?? nodeExec;
+  const tmux = tmuxCli({ ...dirs.tmux, exec });
+  const procs = dirs.procs ?? hostProcs(exec);
   const reaped = new Set<string>();
   for (const s of await tmux.jobSessions().catch(() => [])) {
     const jobId = jobIdOfSession(s.name);
@@ -111,16 +182,43 @@ export async function reapOrphans(dirs: LocalHostDirs, running: Set<string>): Pr
     await tmux.kill(s.name).catch(() => {});
     reaped.add(jobId);
   }
-  for (const w of await jobWorktrees(dirs)) {
+  // Whether or not tmux answered: a Claude left running is found by its settings path.
+  const survived: string[] = [];
+  const orphans = await jobProcesses({ ...dirs, procs }).catch(() => [] as JobProcess[]);
+  for (const settingsPath of new Set(
+    orphans.filter((p) => !running.has(p.jobId)).map((p) => p.settingsPath),
+  )) {
+    await stopHarness(procs, settingsPath, dirs.stop).catch((err) => {
+      survived.push(err instanceof Error ? err.message : String(err));
+    });
+    reaped.add(orphans.find((p) => p.settingsPath === settingsPath)?.jobId ?? settingsPath);
+  }
+  const worktrees = await jobWorktrees(dirs);
+  for (const w of worktrees) {
     if (running.has(w.jobId)) continue;
     await removeJobWorktree(dirs, w).catch(() => {});
     reaped.add(w.jobId);
+  }
+  for (const checkout of await sweepTargets(dirs, worktrees)) {
+    await sweepRunBranches(checkout, { exec }).catch(() => []);
+  }
+  if (survived.length) {
+    throw new HarnessStillRunning(
+      "",
+      [],
+      `reaped ${[...reaped].join(", ")}; ${survived.join("; ")}`,
+    );
   }
   return [...reaped];
 }
 
 export interface Finding {
-  kind: "duplicate-checkouts" | "orphan-session" | "orphan-worktree";
+  kind:
+    | "duplicate-checkouts"
+    | "orphan-session"
+    | "orphan-worktree"
+    | "orphan-process"
+    | "orphan-branch";
   message: string;
   /** Whether `--fix` can repair it without touching the owner's own checkouts. */
   fixable: boolean;
@@ -128,7 +226,7 @@ export interface Finding {
 
 /**
  * What `sf-runner doctor` checks: one checkout per remote under the `checkouts` dirs, and no job
- * session or worktree without a live job.
+ * session, process, worktree or marked run branch without a live job.
  */
 export async function diagnose(
   options: LocalHostDirs & { checkouts: CheckoutSearch; live: Set<string> },
@@ -151,13 +249,36 @@ export async function diagnose(
       fixable: true,
     });
   }
-  for (const w of await jobWorktrees(options)) {
+  for (const p of await jobProcesses(options).catch(() => [] as JobProcess[])) {
+    if (options.live.has(p.jobId)) continue;
+    findings.push({
+      kind: "orphan-process",
+      message: `process ${p.pid} is job ${p.jobId}'s Claude, and the host doesn't run that job`,
+      fixable: true,
+    });
+  }
+  const worktrees = await jobWorktrees(options);
+  for (const w of worktrees) {
     if (options.live.has(w.jobId)) continue;
     findings.push({
       kind: "orphan-worktree",
       message: `job worktree ${w.path}${w.checkout ? ` (of ${w.checkout})` : ""} has no running job`,
       fixable: true,
     });
+  }
+  for (const checkout of await sweepTargets(options, worktrees)) {
+    for (const b of await sweepRunBranches(checkout, {
+      dryRun: true,
+      ...(options.exec ? { exec: options.exec } : {}),
+    }).catch(() => [])) {
+      findings.push({
+        kind: "orphan-branch",
+        message: b.disposable
+          ? `run branch ${b.branch} in ${checkout} was left by a job that no worktree runs`
+          : `run branch ${b.branch} in ${checkout} was left by a job, with commits that aren't the factory's or pushed; left for you to delete`,
+        fixable: b.disposable,
+      });
+    }
   }
   return findings;
 }

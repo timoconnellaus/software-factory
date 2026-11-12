@@ -6,6 +6,7 @@ import {
   type InvokeResult,
   invoke,
   OperationError,
+  SCHEDULER,
 } from "../src/index.ts";
 import { fakeServices, fakeUserToken } from "../src/testing/index.ts";
 
@@ -16,6 +17,28 @@ export const deps: InvokeDeps = {
   services,
   deliver: async (ids) => {
     delivered.push(ids);
+    // As the engine does (ADR 0491): a `queue.pull` message runs the pull, as the scheduler, right
+    // after the call that asked for it commits. Its refusals are the cron's to retry.
+    if (ids.length === 0) return;
+    const { results } = await env.DB.prepare(
+      "SELECT payload FROM core_outbox WHERE kind = 'queue.pull' AND id IN (SELECT value FROM json_each(?))",
+    )
+      .bind(JSON.stringify(ids))
+      .all<{ payload: string }>();
+    for (const row of results) {
+      const { projectId } = JSON.parse(row.payload) as { projectId: string };
+      await invoke(
+        deps,
+        "queue.pull",
+        { projectId },
+        {
+          actor: SCHEDULER,
+          origin: { surface: "test" },
+        },
+      ).catch((error) => {
+        if (!(error instanceof OperationError)) throw error;
+      });
+    }
   },
 };
 
@@ -185,7 +208,7 @@ export async function onboard(
 export async function newItem(w: Awaited<ReturnType<typeof world>>, title = "Add dark mode") {
   return ok<{ workItemId: string; number: number; branch: string; outcome: string }>(
     "workItem.create",
-    { projectId: w.projectId, title, body: `Please ${title.toLowerCase()}.` },
+    { state: "queued", projectId: w.projectId, title, body: `Please ${title.toLowerCase()}.` },
     w.human,
   );
 }
@@ -201,4 +224,48 @@ export async function first<T>(sql: string, ...params: unknown[]): Promise<T> {
   const [row] = await rows<T>(sql, ...params);
   if (!row) throw new Error(`no row: ${sql}`);
   return row;
+}
+
+/**
+ * A second repository for a project. `repository.add` refuses one until protection is tracked per
+ * repository (ADR 0490 §8), so this checks that refusal and inserts the row the way a later
+ * release will allow, to test the code paths that must already key by repository.
+ */
+export async function secondRepository(
+  w: { projectId: string; orgId: string; userId: string; human: Actor },
+  repo: { recordId: string; repoId: number; name: string; defaultBranch?: string },
+): Promise<{ id: string; projectId: string; name: string; defaultBranch: string }> {
+  const refused = await refusal(
+    call(
+      "repository.add",
+      { projectId: w.projectId, installationRecordId: repo.recordId, repoId: repo.repoId },
+      w.human,
+    ),
+  );
+  if (refused.code !== "conflict") throw refused;
+  const record = await first<{ installation_id: string }>(
+    "SELECT installation_id FROM core_github_installations WHERE id = ?",
+    repo.recordId,
+  );
+  const id = `repo_${crypto.randomUUID().replaceAll("-", "")}`;
+  const defaultBranch = repo.defaultBranch ?? "main";
+  await env.DB.prepare(
+    `INSERT INTO core_repositories (id, org_id, project_id, owner, name, default_branch, github_installation_id,
+       installation_record_id, github_repo_id, created_at, created_by)
+     VALUES (?, ?, ?, 'timoconnellaus', ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      id,
+      w.orgId,
+      w.projectId,
+      repo.name,
+      defaultBranch,
+      record.installation_id,
+      repo.recordId,
+      repo.repoId,
+      new Date().toISOString(),
+      w.userId,
+    )
+    .run();
+  return { id, projectId: w.projectId, name: repo.name, defaultBranch };
 }

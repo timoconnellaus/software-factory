@@ -35,6 +35,12 @@ export interface OpMap {
   "planning.get": Def<typeof operations.planningGet>;
   "planning.presence": Def<typeof operations.planningPresence>;
   "planning.move": Def<typeof operations.planningMove>;
+  "planning.answer": Def<typeof operations.planningAnswer>;
+  "planning.acceptDefaults": Def<typeof operations.planningAcceptDefaults>;
+  "planning.stop": Def<typeof operations.planningStop>;
+  "planning.pause": Def<typeof operations.planningPause>;
+  "planning.resume": Def<typeof operations.planningResume>;
+  "planning.finishAlone": Def<typeof operations.planningFinishAlone>;
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;
@@ -72,6 +78,10 @@ export interface OpMap {
   "desktopDevice.list": Def<typeof operations.desktopDeviceList>;
   "desktopDevice.revoke": Def<typeof operations.desktopDeviceRevoke>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
+  "mergeQueue.list": Def<typeof operations.mergeQueueList>;
+  "repository.list": Def<typeof operations.repositoryList>;
+  "cliToken.list": Def<typeof operations.cliTokenList>;
+  "cliToken.revoke": Def<typeof operations.cliTokenRevoke>;
 }
 
 export type OpName = keyof OpMap;

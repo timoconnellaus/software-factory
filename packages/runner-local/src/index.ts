@@ -2,10 +2,13 @@
 // on the runner host. The runner host (`local/runner-host`) loads it; nothing in the core or the
 // contract imports it.
 export * from "./adapter.ts";
+export * from "./branches.ts";
 export * from "./checkouts.ts";
 export * from "./container/index.ts";
 export * from "./exec.ts";
+export * from "./procs.ts";
 export * from "./reap.ts";
+export * from "./sprites/index.ts";
 export * from "./stream.ts";
 export * from "./terminal.ts";
 export * from "./tmux.ts";

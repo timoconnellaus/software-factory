@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { CAPABILITIES, type Capability } from "@software-factory/runner-contract";
 import { z } from "zod";
+import { loadPolicySchema } from "./load.ts";
 
 export const DEFAULT_BASE_URL = "https://sf-engine.zerobsai.com";
 /** The app, where a person approves `sf-runner login` (when the engine's link is relative). */
@@ -42,11 +43,28 @@ export const configSchema = z.object({
    */
   autoUpdate: z.boolean().default(true),
   /**
+   * Back off claiming under load (ADR 0552), as multiples of the CPU count: heavy jobs stop when
+   * the 1-minute load average passes `heavyStop` (1.5), light ones too past `lightStop` (2.0), and
+   * each resumes below its stop × `resumeFactor` (0.8). On by default; `enabled: false` turns it off.
+   */
+  load: loadPolicySchema.optional(),
+  /**
+   * Test only: how long a pending update waits before the host takes light jobs only, and before it
+   * takes nothing (ADR 0520; defaults 30 and 60 minutes). Leave it out of a real runner.json.
+   */
+  updateCaps: z
+    .object({
+      heavyAfterMinutes: z.number().min(0).max(1_440).optional(),
+      allAfterMinutes: z.number().min(0).max(1_440).optional(),
+    })
+    .strict()
+    .optional(),
+  /**
    * Where jobs run (ADR 0430): `sandbox` (default) is a worktree with Claude Code's OS sandbox on
    * this machine (ADR 0270); `container` is a Docker container per job, every stage with
-   * permissions off.
+   * permissions off; `sprites` is a cloud sandbox per job on Sprites, made by this host (ADR 0480).
    */
-  isolation: z.enum(["sandbox", "container"]).default("sandbox"),
+  isolation: z.enum(["sandbox", "container", "sprites"]).default("sandbox"),
   /** Container isolation's settings (ADR 0430). */
   container: z
     .object({
@@ -76,6 +94,34 @@ export const configSchema = z.object({
     })
     .strict()
     .optional(),
+  /**
+   * Sprites isolation's settings (ADR 0480): a fresh sprite per job, made by this host with the
+   * owner's Sprites token. The token is not here: `sf-runner sprites login` keeps it in its own
+   * 0600 file next to this one. The model credential is the active Claude account's token.
+   */
+  sprites: z
+    .object({
+      /** The Sprites API (default `https://api.sprites.dev`). */
+      apiUrl: z.string().url().optional(),
+      /** More egress hosts for every job on this runner, on top of the stage's. */
+      allowedHosts: z.array(z.string().min(1).max(260)).max(100).optional(),
+      /** Each sprite's size, sent at creation (defaults: 4 CPUs, 8192 MB, 50 GB). */
+      cpus: z.number().int().min(1).max(16).optional(),
+      memoryMb: z.number().int().min(1024).max(65_536).optional(),
+      storageGb: z.number().int().min(10).max(500).optional(),
+      /**
+       * The most a sprite may live, in minutes (default 240): Claude is stopped then, and the
+       * host's sweep destroys any of its sprites older than this.
+       */
+      maxLifetimeMinutes: z
+        .number()
+        .int()
+        .min(10)
+        .max(24 * 60)
+        .optional(),
+    })
+    .strict()
+    .optional(),
   /** Test only: clone/push URL per canonical GitHub URL. */
   repoUrlMap: z.record(z.string(), z.string()).optional(),
 });
@@ -100,6 +146,10 @@ export interface Paths {
    * credential env files (ADR 0430). Under the data dir: Docker Desktop shares the home dir.
    */
   containersDir: string;
+  /** The owner's Sprites token (ADR 0480): 0600, under the config dir every run denies. */
+  spritesTokenFile: string;
+  /** Sprites jobs' host-side dirs (`<spritesDir>/sf-<jobId>/`: the job repo and mirrored files). */
+  spritesDir: string;
   /**
    * Claude accounts (ADR 0410): the registry (the active name, each account's kind; no secret),
    * the token files (0600), both under the config dir every run denies, and each account's Claude
@@ -138,6 +188,8 @@ export function paths(
     worktreesDir: join(dataDir, "worktrees"),
     attachmentsDir: join(dataDir, "attachments"),
     containersDir: join(dataDir, "containers"),
+    spritesTokenFile: join(configDir, "sprites.token"),
+    spritesDir: join(dataDir, "sprites"),
     accountsFile: join(configDir, "accounts.json"),
     accountTokensDir: join(configDir, "accounts"),
     accountConfigsDir: join(dataDir, "accounts"),

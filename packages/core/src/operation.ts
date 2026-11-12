@@ -6,6 +6,7 @@ import type {
   CoreOrganizationTable,
   CorePendingActionsTable,
   CoreProjectsTable,
+  CoreRepositoriesTable,
   CoreWorkItemsTable,
   Db,
 } from "@software-factory/db";
@@ -43,6 +44,8 @@ export type OutboxMessage =
    * pushes to open Planning tabs and wakes the agent's wait.
    */
   | { kind: "planning.changed"; payload: { workItemId: string } }
+  /** Run `queue.pull` for a project after this call commits (ADR 0491). */
+  | { kind: "queue.pull"; payload: { projectId: string } }
   /**
    * A person steered a run (spec 31, ADR 0400): sf-engine wakes the work item's hub, so the runner
    * host's held steer call answers at once.
@@ -64,6 +67,7 @@ export type OutboxKind = OutboxMessage["kind"];
 
 export type WorkItemRow = Selectable<CoreWorkItemsTable>;
 export type ProjectRow = Selectable<CoreProjectsTable>;
+export type RepositoryRow = Selectable<CoreRepositoriesTable>;
 export type OrgRow = Selectable<CoreOrganizationTable>;
 export type PendingActionRow = Selectable<CorePendingActionsTable>;
 
@@ -74,6 +78,13 @@ export interface Scope {
   workItemId: string | null;
   workItem: WorkItemRow | null;
   project: ProjectRow | null;
+  /** The project's repositories, oldest first (ADR 0490). Empty without a project. */
+  repositories: RepositoryRow[];
+  /**
+   * The repository the call is about: the work item's; else the input's `repositoryId`; else the
+   * project's only one. Null when none applies (no repository, or several and none named).
+   */
+  repository: RepositoryRow | null;
   /** The project's policy at `policySha`; null when missing or malformed (fails closed). */
   policy: ProjectPolicy | null;
   policySha: string | null;
@@ -89,6 +100,8 @@ export interface Scope {
 export interface ScopeRef {
   workItemId?: string | null;
   projectId?: string | null;
+  /** A repository of the project (ADR 0490); names the project too when `projectId` is absent. */
+  repositoryId?: string | null;
   orgId?: string | null;
   jobId?: string | null;
   questionId?: string | null;
@@ -117,6 +130,11 @@ export interface HandlerContext {
   floor: FloorParse;
   /** Set when this call is the approved re-run of a pending action. */
   approval?: PendingActionRow;
+  /**
+   * The desktop sent a valid presence proof for exactly this call (ADR 0391). Lets a
+   * `desktopDecidable` operation still ask for one for some inputs (spec 26).
+   */
+  presence?: boolean;
   /** Queue a write. Writes, guards, the audit row and outbox rows commit in one D1 batch. */
   write(statement: Compilable | D1PreparedStatement): void;
   /** Abort the whole batch unless the previous write changed at least one row (ADR 0050). */
@@ -176,6 +194,19 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    * operations that grant authority (device logins, runner registration, kill switch off).
    */
   presenceDecidable?: true;
+  /**
+   * A person-only operation (browser-only) that a desktop device may also run *without* a presence
+   * proof. The CLI and MCP surfaces stay refused, so an agent holding a token can't; gates keep their
+   * presence proof. It covers (spec 26; ADR 0042, 0391 and 0470 as amended):
+   * - `planning.answer` and `planning.acceptDefaults`: answering the planner is a conversation, not a
+   *   gate (the owner's decision of 2026-11-12: "touch id approvals is overkill. We'll assume the
+   *   user's computer is secure"). Security, privacy and irreversible answers still ask for a proof
+   *   (`ctx.presence`);
+   * - `planning.finishAlone`: the standing form of that bulk accept, within the same limits;
+   * - `planning.stop`, `planning.pause`, `planning.resume` and `chat.send` with `interrupt`: steering
+   *   the planner, which changes nothing it has decided.
+   */
+  desktopDecidable?: true;
   /**
    * The gate always asks a person, whatever the autonomy policy or overrides say (a workflow's gate
    * step, ADR 0371). `deny` still refuses.

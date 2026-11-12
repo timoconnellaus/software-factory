@@ -15,6 +15,7 @@ import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
+import { pullQueuedWork } from "./pull.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
@@ -48,6 +49,7 @@ export default {
     await expireQuietRuns(env, now);
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);
+    await pullQueuedWork(env);
     await runAdjudicator(env);
     // Once an hour: the improver (ADR 0373) decides running trials and starts the next one.
     if (now.getUTCMinutes() === 23) await runImprover(env, now);
@@ -96,9 +98,11 @@ export async function expireQuietRuns(env: Env, now: Date): Promise<number> {
 export async function recheckProtection(env: Env, now: Date, limit = 5): Promise<number> {
   const before = new Date(now.getTime() - PROTECTION_RECHECK_MS).toISOString();
   const { results } = await env.DB.prepare(
-    `SELECT p.repo_owner, p.repo_name FROM core_projects p
+    `SELECT r.owner AS repo_owner, r.name AS repo_name FROM core_projects p
+     JOIN core_repositories r ON r.id = (
+       SELECT id FROM core_repositories WHERE project_id = p.id ORDER BY created_at, id LIMIT 1)
      LEFT JOIN core_project_protection x ON x.project_id = p.id
-     WHERE p.installation_record_id IS NOT NULL AND (x.checked_at IS NULL OR x.checked_at < ?)
+     WHERE r.installation_record_id IS NOT NULL AND (x.checked_at IS NULL OR x.checked_at < ?)
      ORDER BY x.checked_at LIMIT ?`,
   )
     .bind(before, limit)

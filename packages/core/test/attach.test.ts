@@ -380,7 +380,7 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     // A factory PR closing is left to its Workflow.
     const own = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Own work", eventId: uid("e") },
+      { state: "queued", projectId: w.projectId, title: "Own work", eventId: uid("e") },
       w.human,
     );
     await env.DB.prepare("UPDATE core_work_items SET pr_number = 77 WHERE id = ?")

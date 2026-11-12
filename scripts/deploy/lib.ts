@@ -184,13 +184,127 @@ export function wrangler(
   }
 }
 
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
 /**
- * Extra `wrangler deploy` arguments for a Worker: a Worker that declares `DEPLOYED_SHA` in its vars
- * gets the commit being deployed (ADR 0360: sf-engine tells runners which code to run). Anything
+ * Extra `wrangler deploy` arguments for a Worker. A Worker that declares `DEPLOYED_SHA` in its vars
+ * gets the commit being deployed (ADR 0360), and one that declares `RUNNER_SHA` gets the last
+ * commit that changed runner code (ADR 0520): sf-engine tells runners which code to run. Anything
  * that isn't a full commit SHA is left out, so a dev deploy keeps the empty default.
  */
-export function deployArgs(config: WranglerConfig, sha: string | null): string[] {
-  if (!config.vars || !("DEPLOYED_SHA" in config.vars)) return [];
-  if (!sha || !/^[0-9a-f]{40}$/.test(sha)) return [];
-  return ["--var", `DEPLOYED_SHA:${sha}`];
+export function deployArgs(
+  config: WranglerConfig,
+  sha: string | null,
+  runnerSha: string | null = null,
+): string[] {
+  const args: string[] = [];
+  const declares = (name: string) => !!config.vars && name in config.vars;
+  if (declares("DEPLOYED_SHA") && sha && FULL_SHA.test(sha)) {
+    args.push("--var", `DEPLOYED_SHA:${sha}`);
+  }
+  if (declares("RUNNER_SHA") && runnerSha && FULL_SHA.test(runnerSha)) {
+    args.push("--var", `RUNNER_SHA:${runnerSha}`);
+  }
+  return args;
+}
+
+/**
+ * The code a runner host runs (ADR 0520): `local/runner-host`, every `packages/runner-*` and
+ * `packages/harness-*`, and what they depend on in the workspace, followed through `dependencies`,
+ * `optionalDependencies` and `peerDependencies` on `workspace:` versions. Not `devDependencies`:
+ * the host runs its sources with Node's type stripping, so tooling (tsconfig, test helpers) never
+ * runs on it.
+ */
+export const RUNNER_ROOTS = ["local/runner-host", "packages/runner-*", "packages/harness-*"];
+
+/**
+ * Repo files outside the packages that change what a runner installs or runs, `pnpm-lock.yaml`
+ * included: a runner installs its own commit's lockfile, so a resolution change only reaches it
+ * through an update (a lockfile-only bump then moves runners too, which is the safe side).
+ */
+export const RUNNER_REPO_FILES = [
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  ".nvmrc",
+];
+
+/** Workspace package folders (repo-relative) by package name, from pnpm-workspace.yaml. */
+export function workspacePackages(base = root): Map<string, string> {
+  const text = readFileSync(join(base, "pnpm-workspace.yaml"), "utf8");
+  const globs: string[] = [];
+  let inPackages = false;
+  for (const line of text.split("\n")) {
+    if (/^packages:\s*$/.test(line)) inPackages = true;
+    else if (/^\S/.test(line)) inPackages = false;
+    else if (inPackages) {
+      const m = line.match(/^\s+-\s+["']?([^"'#\s]+)["']?/);
+      if (m?.[1]) globs.push(m[1]);
+    }
+  }
+  const dirs: string[] = [];
+  for (const glob of globs) {
+    if (glob.endsWith("/*")) {
+      const parent = glob.slice(0, -2);
+      if (!existsSync(join(base, parent))) continue;
+      for (const entry of readdirSync(join(base, parent), { withFileTypes: true })) {
+        if (entry.isDirectory()) dirs.push(`${parent}/${entry.name}`);
+      }
+    } else dirs.push(glob);
+  }
+  const byName = new Map<string, string>();
+  for (const dir of dirs.sort()) {
+    const file = join(base, dir, "package.json");
+    if (!existsSync(file)) continue;
+    const name = (JSON.parse(readFileSync(file, "utf8")) as { name?: string }).name;
+    if (name) byName.set(name, dir);
+  }
+  return byName;
+}
+
+const matches = (dir: string, pattern: string) =>
+  pattern.endsWith("*") ? dir.startsWith(pattern.slice(0, -1)) : dir === pattern;
+
+/** The folders of the runner's code: RUNNER_ROOTS and their workspace dependency closure. */
+export function runnerPackageDirs(base = root): string[] {
+  const packages = workspacePackages(base);
+  const out = new Set<string>();
+  const visit = (dir: string) => {
+    if (out.has(dir)) return;
+    out.add(dir);
+    const pkg = JSON.parse(readFileSync(join(base, dir, "package.json"), "utf8")) as Record<
+      string,
+      Record<string, string> | undefined
+    >;
+    for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+      for (const [name, version] of Object.entries(pkg[field] ?? {})) {
+        const target = packages.get(name);
+        if (target && String(version).startsWith("workspace:")) visit(target);
+      }
+    }
+  };
+  for (const dir of packages.values()) {
+    if (RUNNER_ROOTS.some((pattern) => matches(dir, pattern))) visit(dir);
+  }
+  return [...out].sort();
+}
+
+/**
+ * The commit runners should run (ADR 0520): the last commit on `sha`'s first-parent line (main's
+ * own commits, each of which passed CI and the merge gate) that changed the runner's code. Null
+ * when git can't tell: no history (a shallow clone), or no such commit. The deploy then leaves
+ * `RUNNER_SHA` unset and runners get `sha` itself, which is always safe: they just update more
+ * often than they need to.
+ */
+export function runnerSha(sha: string, base = root): string | null {
+  const run = (...args: string[]) =>
+    execFileSync("git", args, { cwd: base, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    if (run("rev-parse", "--is-shallow-repository").trim() === "true") return null;
+    const paths = [...runnerPackageDirs(base), ...RUNNER_REPO_FILES];
+    const found = run("log", "-1", "--first-parent", "--format=%H", sha, "--", ...paths).trim();
+    return FULL_SHA.test(found) ? found : null;
+  } catch {
+    return null;
+  }
 }

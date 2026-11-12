@@ -21,6 +21,9 @@
 //                     | use <name> | remove <name>
 //                                  Claude accounts on this host (ADR 0410): new jobs use the
 //                                  active one; credentials never leave this machine
+//   sf-runner sprites login [--no-check] | status | logout
+//                                  the owner's Sprites token (ADR 0480), on stdin, kept 0600
+//                                  here: with "isolation": "sprites" each job runs in a sprite
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile } from "node:fs/promises";
@@ -31,15 +34,22 @@ import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import {
   checkRunningContainer,
   checkRunningHarness,
+  checkRunningSprite,
   currentImage,
   diagnose,
   diagnoseContainers,
+  diagnoseSprites,
   ensureImage,
   jobIdOfSession,
   nodeExec,
   readContainerRecord,
+  readSpriteRecord,
+  readSpritesToken,
   reapContainers,
   reapOrphans,
+  reapSprites,
+  spritePrefix,
+  spritesApi,
   tmuxAtLeast,
   tmuxCli,
 } from "@software-factory/runner-local";
@@ -68,6 +78,7 @@ import {
   hostDirs,
   hostModelCredential,
   liveJobsFile,
+  spriteDirs,
 } from "./runner.ts";
 import {
   createSelfUpdater,
@@ -79,6 +90,7 @@ import {
   UPDATE_EXIT_CODE,
 } from "./self-update.ts";
 import { serviceFor, unsupported } from "./service.ts";
+import { spritesCommand } from "./sprites-cli.ts";
 import { linger, lingerHint } from "./systemd.ts";
 
 const dirs = paths();
@@ -278,6 +290,8 @@ async function run() {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+  // The desktop app asks its runner to stop claiming before it restarts to update (spec 40 M4).
+  process.on("SIGUSR2", () => void host.drain());
   await host.start();
   // The host's timers keep the process alive.
 }
@@ -301,6 +315,12 @@ async function startSelfUpdate(
       exec: nodeExec,
       installDeps: pnpmInstall(nodeExec),
       log,
+      ...(config.updateCaps?.heavyAfterMinutes !== undefined
+        ? { heavyAfterMs: config.updateCaps.heavyAfterMinutes * 60_000 }
+        : {}),
+      ...(config.updateCaps?.allAfterMinutes !== undefined
+        ? { allAfterMs: config.updateCaps.allAfterMinutes * 60_000 }
+        : {}),
     });
     const { sha, update } = updater.report();
     log(
@@ -452,7 +472,7 @@ async function doctor(args: string[]) {
     });
     // Without a live-jobs list every job would look orphaned: don't report or fix those.
     const orphan = (f: { kind: string }) =>
-      f.kind === "orphan-worktree" || f.kind === "orphan-session";
+      f.kind === "orphan-worktree" || f.kind === "orphan-session" || f.kind === "orphan-process";
     const relevant = live ? findings : findings.filter((f) => !orphan(f));
     if (relevant.length === 0) {
       return live
@@ -463,7 +483,7 @@ async function doctor(args: string[]) {
       console.log(`  - ${f.message}${f.fixable ? "" : " (not fixable here)"}`);
     if (!values.fix) throw new Error(`${relevant.length} problem(s); run sf-runner doctor --fix`);
     if (live) {
-      const reaped = await reapOrphans(hostDirs(dirs), live);
+      const reaped = await reapOrphans({ ...hostDirs(dirs), checkouts: search }, live);
       if (reaped.length) {
         console.log(`  fixed: removed the sessions and worktrees of ${reaped.join(", ")}`);
       }
@@ -525,6 +545,43 @@ async function doctor(args: string[]) {
       return `${name} from ${configured.container?.env?.[name] ? "runner.json" : "sf-runner's environment"} (account "${account.name}")`;
     });
   }
+  if (configured?.isolation === "sprites") {
+    // ADR 0480: a sprite per job, made with the owner's Sprites token.
+    let apiUp = false;
+    await check("Sprites token and API", async () => {
+      const token = await readSpritesToken(dirs.spritesTokenFile);
+      await spritesApi({
+        token,
+        ...(configured.sprites?.apiUrl ? { apiUrl: configured.sprites.apiUrl } : {}),
+      }).check();
+      apiUp = true;
+      return `${dirs.spritesTokenFile} (${token.length} characters), API ok`;
+    });
+    if (apiUp) {
+      await check("sprite jobs (no sprite or job dir without a job)", async () => {
+        const live = await liveJobs();
+        if (!live) return "not checked: the running service doesn't report its jobs";
+        const sd = await spriteDirs(configured, dirs);
+        const findings = await diagnoseSprites(sd, live);
+        if (findings.length === 0) return "ok";
+        for (const f of findings) console.log(`  - ${f}`);
+        if (!values.fix)
+          throw new Error(`${findings.length} left over; run sf-runner doctor --fix`);
+        const reaped = await reapSprites(sd, live);
+        return `fixed: removed ${reaped.join(", ")}`;
+      });
+    }
+    await check("model credential for sprites (the active Claude account)", async () => {
+      const account = await activeAccount(accountPaths(dirs));
+      const credential = await hostModelCredential(configured)(undefined, account);
+      if (!credential) {
+        throw new Error(
+          "none: add a token account (`claude setup-token | sf-runner account add <name> --token-stdin`, then `sf-runner account use <name>`)",
+        );
+      }
+      return `${Object.keys(credential.env)[0]} from ${account.token ? `token account "${account.name}"` : `account "${account.name}"`}`;
+    });
+  }
   await check("running jobs' harness (permission mode, setting sources, settings)", async () => {
     const live = await liveJobs();
     // Unknown live set (an old host): check every run dir that has a launch record.
@@ -533,13 +590,29 @@ async function doctor(args: string[]) {
     let bad = 0;
     for (const jobId of jobs) {
       const runDir = join(dirs.runsDir, jobId);
-      // A container job's Claude is checked inside its container (ADR 0430).
-      const checked = (await readContainerRecord(runDir))
-        ? await checkRunningContainer(
-            runDir,
-            configured ? containerDirs(configured, dirs).runtime : undefined,
-          )
-        : await checkRunningHarness(runDir);
+      // A container job's Claude is checked inside its container (ADR 0430), a sprite job's in its
+      // sprite (ADR 0480).
+      const sprite = await readSpriteRecord(runDir);
+      let checked: Awaited<ReturnType<typeof checkRunningHarness>>;
+      if (sprite) {
+        try {
+          const { api } = await spriteDirs(configured ?? { runnerId: "r_unknown0" }, dirs);
+          checked = await checkRunningSprite(runDir, api);
+        } catch (err) {
+          bad++;
+          lines.push(
+            `${jobId}: its sprite can't be checked: ${err instanceof Error ? err.message : err}`,
+          );
+          continue;
+        }
+      } else if (await readContainerRecord(runDir)) {
+        checked = await checkRunningContainer(
+          runDir,
+          configured ? containerDirs(configured, dirs).runtime : undefined,
+        );
+      } else {
+        checked = await checkRunningHarness(runDir);
+      }
       if (!checked) {
         if (live) lines.push(`${jobId}: no launch record (started by an older runner?)`);
         continue;
@@ -549,7 +622,7 @@ async function doctor(args: string[]) {
         lines.push(`${jobId}: harness-config-mismatch: ${checked.problems.join("; ")}`);
       } else {
         lines.push(
-          `${jobId}: ${checked.record.mode}${checked.record.isolation === "container" ? " in its container" : ""}, as launched`,
+          `${jobId}: ${checked.record.mode}${sprite ? " in its sprite" : checked.record.isolation === "container" ? " in its container" : ""}, as launched`,
         );
       }
     }
@@ -692,10 +765,27 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     });
     if (code !== 0) process.exit(code);
   },
+  sprites: async (args) => {
+    const configured = await loadConfig(dirs.configFile).catch(() => null);
+    const code = await spritesCommand(args, {
+      tokenFile: dirs.spritesTokenFile,
+      namePrefix: configured ? spritePrefix(configured.runnerId) : null,
+      isolation: configured?.isolation ?? null,
+      readStdin,
+      api: (token) =>
+        spritesApi({
+          token,
+          ...(configured?.sprites?.apiUrl ? { apiUrl: configured.sprites.apiUrl } : {}),
+        }),
+      readToken: () => readSpritesToken(dirs.spritesTokenFile),
+      log: (line) => console.log(line),
+    });
+    if (code !== 0) process.exit(code);
+  },
 };
 const fn = command ? commands[command] : undefined;
 if (!fn) {
-  console.log("usage: sf-runner login|run|status|doctor [--fix]|install|uninstall|account");
+  console.log("usage: sf-runner login|run|status|doctor [--fix]|install|uninstall|account|sprites");
   process.exit(command ? 2 : 0);
 }
 fn(rest).catch((err) => {

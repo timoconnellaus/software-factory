@@ -59,7 +59,11 @@ export type ReadOpName =
   | "setup.status"
   | "runner.list"
   | "protection.ruleset"
-  | "desktopDevice.list";
+  | "desktopDevice.list"
+  | "mergeQueue.list"
+  | "config.get"
+  | "repository.list"
+  | "cliToken.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,
@@ -71,7 +75,7 @@ export async function op<N extends Exclude<OpName, DecisionOp>>(
 }
 
 /** A gate decision: Touch ID shows the engine's summary of exactly this call (ADR 0381). */
-export async function decide<N extends DecisionOp>(
+export async function decide<N extends DecisionOp | "planning.answer">(
   name: N,
   input: OpInput<N>,
   options: { idempotencyKey?: string } = {},
