@@ -46,6 +46,8 @@ async function readStdin() {
 async function main() {
   const { settings, command, tmpdir } = await readStdin();
   if (typeof command !== "string" || !settings) throw new Error("no settings or command on stdin");
+  // srt hands the command TMPDIR=$CLAUDE_CODE_TMPDIR, else the shared /tmp/claude: the check's own.
+  if (typeof tmpdir === "string") process.env.CLAUDE_CODE_TMPDIR = tmpdir;
   await SandboxManager.initialize(settings);
   const wrapped = await SandboxManager.wrapWithSandbox(command);
   const env = typeof tmpdir === "string" ? { ...process.env, TMPDIR: tmpdir } : process.env;

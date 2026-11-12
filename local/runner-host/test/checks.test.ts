@@ -366,6 +366,8 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
             `echo x > ${homedir()}/${probe} && echo WROTE-HOME`,
             "curl -sS -m 5 https://example.com >/dev/null && echo REACHED-NETWORK",
             "echo ok > here && cat here",
+            // The command's temp is the check's own, never srt's shared /tmp/claude.
+            'echo "TMPDIR=$TMPDIR"',
           ].join("; "),
           timeoutMs: 30_000,
         },
@@ -378,6 +380,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       await expect(readFile(join(homedir(), probe), "utf8")).rejects.toThrow();
       expect(r.output).toContain("ok");
       expect(await readFile(join(dir, "here"), "utf8")).toBe("ok\n");
+      expect(r.output).toContain(`TMPDIR=${join(root, "tmp")}`);
     },
     60_000,
   );
