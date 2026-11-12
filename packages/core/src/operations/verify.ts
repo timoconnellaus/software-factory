@@ -22,7 +22,7 @@ import {
   storedTestFindings,
   verifyCheckOutput,
 } from "../verify/packet.ts";
-import { executedChecks, hostChecksOn } from "../verify/proof.ts";
+import { type CheckRun, executedChecks, hostChecksOn, notRunLines } from "../verify/proof.ts";
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
 import { requireQueueHead } from "./merge-queue.ts";
@@ -200,10 +200,15 @@ export const reviewPacketRecord = defineOperation({
       .selectAll()
       .where("work_item_id", "=", w.id)
       .where("head_sha", "=", input.headSha)
+      // The primary key (work_item_id, head_sha, name) of migration 0270; one row per check.
+      .limit(CHECK_ROWS_MAX)
       .execute();
     const hostChecks = hostChecksOn(w);
     const declared = hostChecks
-      ? declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name)
+      ? declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => ({
+          name: c.name,
+          run: c.run,
+        }))
       : [];
     // The approved spec's criteria: the links to checks a person approved (ADR 0501).
     const spec = await ctx.db
@@ -233,15 +238,8 @@ export const reviewPacketRecord = defineOperation({
       hostChecks,
       specCriteria,
       declaredChecks: declared,
-      checksRun: ran.map((r) => ({
-        name: r.name,
-        command: r.command,
-        exitCode: r.exit_code,
-        timedOut: r.timed_out === 1,
-        durationMs: r.duration_ms,
-        logTail: r.log_tail,
-        round: r.round,
-      })),
+      requiredCi: ctx.scope.policy?.protection.requiredChecks ?? [],
+      checksRun: ran.map(checkRunOf),
     });
     const id = newId("reviewPacket");
     ctx.write(
@@ -340,10 +338,36 @@ export const ciRead = defineOperation({
   },
 });
 
+/** The most check rows one SHA holds: run.handBack stores only declared checks (at most 20). */
+const CHECK_ROWS_MAX = 60;
+
+/** A stored check result (core_check_results) as the verdict reads it. */
+function checkRunOf(r: {
+  name: string;
+  command: string;
+  exit_code: number | null;
+  timed_out: number;
+  duration_ms: number;
+  log_tail: string;
+  round: number;
+  not_run: string | null;
+}): CheckRun {
+  return {
+    name: r.name,
+    command: r.command,
+    exitCode: r.exit_code,
+    timedOut: r.timed_out === 1,
+    durationMs: r.duration_ms,
+    logTail: r.log_tail,
+    round: r.round,
+    notRun: r.not_run,
+  };
+}
+
 export const checksForHead = defineOperation({
   name: "checks.forHead",
   description:
-    "The project's declared checks for a work item and how they ran on one commit, as the runner host reported them (ADR 0501): each check's command, exit code, duration and log tail. `passed` is true only when every declared check passed on that SHA; a new head has no results until checks run on it. The Workflow reads this after a build; the review packet uses the same results.",
+    "The project's declared checks for a work item and how they ran on one commit, as the runner host reported them (ADR 0501): each check's command, exit code, duration and log tail. A result for another command than the one declared now is ignored. `failing` lists checks that failed or didn't run there; `notRun` lists checks the runner could not run (no isolation, the sandbox could not start), which are not failures: a person decides at the merge gate. `passed` is true only when every declared check passed on that SHA; a new head has no results until checks run on it. The Workflow reads this after a build; the review packet uses the same results.",
   risk: "read",
   actors: ["agent", "human"],
   permission: "member",
@@ -359,11 +383,18 @@ export const checksForHead = defineOperation({
         durationMs: z.number(),
         logTail: z.string(),
         round: z.number(),
+        notRun: z.string().nullable().optional(),
         passed: z.boolean(),
       }),
     ),
-    /** Why the checks don't pass on the SHA, one line each. */
+    /** Why the checks fail on the SHA, one line each (a build sent back can fix these). */
     failing: z.array(z.string()),
+    /**
+     * Checks the runner could not run there, with why (third review, B3): not failures. The item
+     * goes on to verify and the merge gate, where they show as not run and a person decides.
+     */
+    notRun: z.array(z.string()),
+    /** Every declared check passed on the SHA (none failed, none not run). */
     passed: z.boolean(),
   }),
   async handler(input, ctx) {
@@ -373,29 +404,23 @@ export const checksForHead = defineOperation({
       .selectAll()
       .where("work_item_id", "=", w.id)
       .where("head_sha", "=", input.headSha)
+      // The primary key (work_item_id, head_sha, name) of migration 0270; one row per check.
+      .limit(CHECK_ROWS_MAX)
       .execute();
     // An instance from before v8 has no host checks: nothing declared, so nothing fails here.
     const declared = hostChecksOn(w)
-      ? declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name)
+      ? declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => ({
+          name: c.name,
+          run: c.run,
+        }))
       : [];
-    const executed = executedChecks(
-      input.headSha,
-      declared,
-      ran.map((r) => ({
-        name: r.name,
-        command: r.command,
-        exitCode: r.exit_code,
-        timedOut: r.timed_out === 1,
-        durationMs: r.duration_ms,
-        logTail: r.log_tail,
-        round: r.round,
-      })),
-    );
+    const executed = executedChecks(input.headSha, declared, ran.map(checkRunOf));
     return {
-      declared,
+      declared: declared.map((d) => d.name),
       results: [...executed.results.filter((r) => r !== null), ...executed.extra],
       failing: executed.reasons,
-      passed: executed.reasons.length === 0,
+      notRun: notRunLines(executed.notRun),
+      passed: executed.reasons.length === 0 && executed.notRun.length === 0,
     };
   },
 });
@@ -848,6 +873,15 @@ export const prAutoMerge = defineOperation({
         intact
           ? `the tests aren't intact on ${input.headSha.slice(0, 7)} (${intact.findings?.length ?? 0} finding(s)): a person decides`
           : "the review packet has no tests-intact check: a person decides",
+      );
+    }
+    // A declared check the runner could not run proves nothing (ADR 0501, third review): a person.
+    const executed = parseObject(packet?.sections ?? null).executed as
+      | { notRun?: { name?: unknown }[] }
+      | undefined;
+    if (Array.isArray(executed?.notRun) && executed.notRun.length > 0) {
+      refuse(
+        `some checks could not be run on this runner (${executed.notRun.map((n) => String(n.name)).join(", ")}): a person decides`,
       );
     }
     const merged = await ctx.services.github.mergePullRequest(repo, {

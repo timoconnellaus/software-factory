@@ -110,9 +110,60 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     const run = await verifyRun(w, head);
     expect(run).toMatchObject({ conclusion: "success" });
     expect(String(run?.output?.summary)).toContain(
-      "### Checks run by the factory\n- lint: passed (`pnpm lint`, exit 0, 1 s)\n- tests: passed (`pnpm tests`, exit 0, 1 s)",
+      "### Checks run by the factory\n- lint: passed (`pnpm lint`, exit 0, 1 s)\n- tests: passed (`pnpm test`, exit 0, 1 s)",
     );
     expect(String(run?.output?.summary)).toContain("Criteria proven by an executed check: 0/1");
+  });
+
+  it("goes on to verify and the merge gate when the runner could not run the checks: said plainly, never passed or proven, no build burned", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    const reason = "the sandbox could not start: bwrap: setting up uid map: Permission denied";
+    await runStage(w, item.workItemId, "build", () => ({
+      ...build(),
+      checks: [
+        { name: "lint", exitCode: null, notRun: reason },
+        { name: "tests", exitCode: null, notRun: reason },
+        // Not a declared check: refused, never stored.
+        { name: "proves-everything", exitCode: 0 },
+      ],
+    }));
+    const rows = await all<{ name: string; not_run: string | null; exit_code: number | null }>(
+      "SELECT name, not_run, exit_code FROM core_check_results WHERE work_item_id = ? ORDER BY name",
+      item.workItemId,
+    );
+    expect(rows).toEqual([
+      { name: "lint", not_run: reason, exit_code: null },
+      { name: "tests", not_run: reason, exit_code: null },
+    ]);
+    // No question at build, no second build: straight to verify.
+    await runStage(w, item.workItemId, "verify", () => linkedPass);
+    await gateOpen(item.workItemId, "merge");
+    expect(
+      await all("SELECT id FROM core_questions WHERE work_item_id = ?", item.workItemId),
+    ).toEqual([]);
+    expect(
+      await all(
+        "SELECT id FROM core_runs WHERE work_item_id = ? AND stage = 'build'",
+        item.workItemId,
+      ),
+    ).toHaveLength(1);
+    const packet = await first<{ sections: string }>(
+      "SELECT sections FROM core_review_packets WHERE work_item_id = ?",
+      item.workItemId,
+    );
+    const sections = JSON.parse(packet?.sections ?? "{}");
+    expect(sections.verdict.warnings).toContainEqual(
+      expect.stringContaining(
+        `these checks could not be run on this runner: ${reason} (lint, tests)`,
+      ),
+    );
+    expect(sections.executed.results).toMatchObject([
+      { name: "lint", passed: false, notRun: reason },
+      { name: "tests", passed: false, notRun: reason },
+    ]);
+    expect(sections.proof.every((p: { proven: boolean }) => !p.proven)).toBe(true);
   });
 
   it("refuses check results that didn't run on the run's head", async () => {
@@ -338,7 +389,7 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
       ),
     );
     expect(q.prompt).toMatch(/checks still fail/);
-    expect(q.context).toMatch(/check tests failed .*`pnpm tests` exited 1/);
+    expect(q.context).toMatch(/check tests failed .*`pnpm test` exited 1/);
     await itemStatus(item.workItemId, "waiting");
     await ok(
       "question.answer",

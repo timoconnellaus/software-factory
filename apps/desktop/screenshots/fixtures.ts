@@ -4,6 +4,45 @@
 // the app's own bridge talks to the main process.
 import type { OpInput, OpName, OpOutput } from "@software-factory/client/ops";
 
+/**
+ * `?fixture=notrun`: the runner could not run the checks (the sandbox could not start), so the item
+ * went on to the merge gate with them shown as not run (ADR 0501, third review).
+ */
+let seenNotRun = false;
+const notRunFixture = () => {
+  const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
+  seenNotRun ||= where.includes("fixture=notrun");
+  return seenNotRun;
+};
+const NOT_RUN_REASON = "the sandbox could not start: bwrap: setting up uid map: Permission denied";
+/** The proof when the checks weren't run: nothing proven, the spec's links left unproven. */
+const notProven = <T extends { provenBy: string[]; unproven: string[] }>(proof: T[]): T[] =>
+  proof.map((p) => ({
+    ...p,
+    proven: false,
+    provenBy: [],
+    unproven: [...p.unproven, ...p.provenBy],
+  }));
+const NOT_RUN_EXECUTED = {
+  declared: ["lint", "tests"],
+  results: ["lint", "tests"].map((name) => ({
+    name,
+    command: `pnpm ${name === "tests" ? "test" : name}`,
+    exitCode: null,
+    timedOut: false,
+    durationMs: 0,
+    logTail: `not run: ${NOT_RUN_REASON}`,
+    round: 0,
+    notRun: NOT_RUN_REASON,
+    passed: false,
+  })),
+  extra: [],
+  notRun: [
+    { name: "lint", reason: NOT_RUN_REASON },
+    { name: "tests", reason: NOT_RUN_REASON },
+  ],
+};
+
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
 
@@ -383,33 +422,35 @@ function detail(id: string): OpOutput<"workItem.get"> {
             runner: { verdict: "pass", checks: PACKET_CHECKS },
             // Spec 51 PR B (Workflow v8, ADR 0501): the checks the runner host ran itself on the
             // head, and each criterion's proof. Only the approved spec's links prove a criterion.
-            executed: {
-              declared: ["lint", "tests"],
-              results: [
-                {
-                  name: "lint",
-                  command: "pnpm lint",
-                  exitCode: 0,
-                  timedOut: false,
-                  durationMs: 14_000,
-                  logTail: "",
-                  round: 0,
-                  passed: true,
+            executed: notRunFixture()
+              ? NOT_RUN_EXECUTED
+              : {
+                  declared: ["lint", "tests"],
+                  results: [
+                    {
+                      name: "lint",
+                      command: "pnpm lint",
+                      exitCode: 0,
+                      timedOut: false,
+                      durationMs: 14_000,
+                      logTail: "",
+                      round: 0,
+                      passed: true,
+                    },
+                    {
+                      name: "tests",
+                      command: "pnpm test",
+                      exitCode: 0,
+                      timedOut: false,
+                      durationMs: 52_000,
+                      logTail: "",
+                      round: 1,
+                      passed: true,
+                    },
+                  ],
+                  extra: [],
                 },
-                {
-                  name: "tests",
-                  command: "pnpm test",
-                  exitCode: 0,
-                  timedOut: false,
-                  durationMs: 52_000,
-                  logTail: "",
-                  round: 1,
-                  passed: true,
-                },
-              ],
-              extra: [],
-            },
-            proof: [
+            proof: (notRunFixture() ? notProven : <T>(p: T) => p)([
               {
                 criterion: CRITERIA[0],
                 proven: true,
@@ -454,7 +495,7 @@ function detail(id: string): OpOutput<"workItem.get"> {
                 reviewerMet: true,
                 opinion: "review.ts › the merge gate reads the guard's findings (read, no test)",
               },
-            ],
+            ]),
             evidencePass: true,
             evidenceReasons: [],
           },

@@ -96,6 +96,14 @@ const GATE_FILES: { test: (p: string) => boolean; what: string }[] = [
     what: "lint config",
   },
   { test: (p) => /(^|\/)turbo\.json$/.test(p), what: "the task pipeline that runs the checks" },
+  {
+    // What install runs and resolves (third review, 4): allowed build scripts, overrides, hooks.
+    test: (p) =>
+      /(^|\/)(pnpm-workspace\.yaml|\.npmrc|\.pnpmfile\.c?js|\.yarnrc(\.yml)?|bunfig\.toml)$/.test(
+        p,
+      ),
+    what: "the package manager's config (what install runs and resolves)",
+  },
 ];
 
 /** What kind of gate file a path is, or null. */
@@ -143,6 +151,35 @@ const THRESHOLD_FILE =
 /** In package.json: the scripts that run checks, and test-runner config keys. */
 const PACKAGE_GATE =
   /^\s*"(test|tests|lint|typecheck|check|checks|ci|verify|coverage|e2e)(:[\w:.-]*)?"\s*:|^\s*"(vitest|jest|c8|nyc|ava|mocha|biome|eslintConfig)"\s*:/;
+/**
+ * In package.json, what install itself runs or resolves (third review, 4): lifecycle scripts, the
+ * `scripts` block, the package manager and its overrides and allowed build scripts.
+ */
+const PACKAGE_INSTALL =
+  /^\s*"((pre|post)?install|prepare|(pre|post)prepare|prepublish(Only)?|(pre|post)pack|scripts|packageManager|overrides|resolutions|pnpm|patchedDependencies|onlyBuiltDependencies|neverBuiltDependencies|trustedDependencies)"\s*:/;
+/**
+ * In package.json, any other script: a `"name": "command"` line whose value isn't a version range
+ * (a dependency) or a path, and whose key isn't the package's own metadata.
+ */
+const PACKAGE_SCRIPT_LINE = /^\s*"([^"]+)"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,?\s*$/;
+const NOT_A_SCRIPT_KEY =
+  /^(name|version|description|main|module|browser|types|typings|type|license|author|homepage|url|email|directory|private|sideEffects|engines|node|unpkg|jsdelivr|funding|access|registry|tag)$/;
+const VERSION_LIKE =
+  /^(\^|~|>|<|=|\*|\d|v\d|x$|latest$|next$|workspace:|catalog:|npm:|file:|link:|portal:|patch:|git|github:|https?:|\.{0,2}\/)/;
+
+function scriptLike(text: string): boolean {
+  const m = PACKAGE_SCRIPT_LINE.exec(text);
+  if (!m?.[1] || m[2] === undefined) return false;
+  const [key, value] = [m[1], m[2].trim()];
+  if (key.startsWith(".") || key.startsWith("/") || NOT_A_SCRIPT_KEY.test(key)) return false;
+  return value !== "" && !VERSION_LIKE.test(value) && /\s|&&|\||;/.test(value);
+}
+
+/** Lockfiles, and the test tooling whose resolution in one decides what the checks run. */
+const LOCKFILE =
+  /(^|\/)(pnpm-lock\.yaml|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|bun\.lockb?)$/;
+const TEST_TOOLING =
+  /(^|[\s'"/@])(vitest|@vitest\/[\w-]+|jest|@jest\/[\w-]+|ts-jest|mocha|ava|c8|nyc|playwright|@playwright\/test|cypress|typescript|tsx|ts-node|@biomejs\/[\w-]+|eslint|@cloudflare\/vitest-pool-workers|vite|esbuild|turbo)@/;
 /** In tsconfig: what the compiler (and so typecheck) looks at. */
 const TSCONFIG_SCOPE = /^\s*"(include|exclude|files|references)"\s*:/;
 const STRICT_OFF =
@@ -282,7 +319,12 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
       // A rename with no content change has no patch: nothing to read, nothing changed.
       const pureRename = f.status === "renamed" && (f.changes === undefined || f.changes === 0);
       if (
-        (test || gate || code || PACKAGE_JSON.test(f.path) || TSCONFIG.test(f.path)) &&
+        (test ||
+          gate ||
+          code ||
+          PACKAGE_JSON.test(f.path) ||
+          TSCONFIG.test(f.path) ||
+          LOCKFILE.test(f.path)) &&
         f.status !== "removed" &&
         f.status !== "unchanged" &&
         !pureRename
@@ -301,7 +343,11 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
     const pkg = PACKAGE_JSON.test(f.path);
     const tsconfig = TSCONFIG.test(f.path);
     let pkgGate = false;
+    let installGate = false;
+    let scriptGate = false;
     let scopeGate = false;
+    const lockfile = LOCKFILE.test(f.path);
+    const tooling = new Set<string>();
     const thresholds = test || gate !== null || THRESHOLD_FILE.test(f.path);
     const removedThresholds = new Map<string, { value: number; line: number }>();
     for (const [i, l] of lines.entries()) {
@@ -315,6 +361,30 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
           message:
             "a script that runs the checks, or the test runner's config, changed in package.json",
         });
+      }
+      if (pkg && !installGate && PACKAGE_INSTALL.test(l.text)) {
+        installGate = true;
+        add({
+          kind: "gate-file",
+          path: f.path,
+          line: l.line,
+          text: clip(l.text),
+          message:
+            "what install runs or resolves changed in package.json (a lifecycle script, the scripts, the package manager or its overrides)",
+        });
+      } else if (pkg && !pkgGate && !scriptGate && scriptLike(l.text)) {
+        scriptGate = true;
+        add({
+          kind: "gate-file",
+          path: f.path,
+          line: l.line,
+          text: clip(l.text),
+          message: "a script in package.json changed: scripts decide what the checks run",
+        });
+      }
+      if (lockfile) {
+        const m = TEST_TOOLING.exec(l.text);
+        if (m?.[2]) tooling.add(m[2]);
       }
       if (tsconfig && !scopeGate && TSCONFIG_SCOPE.test(l.text)) {
         scopeGate = true;
@@ -413,6 +483,15 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
           });
         }
       }
+    }
+    if (tooling.size > 0) {
+      add({
+        kind: "gate-file",
+        path: f.path,
+        line: null,
+        text: null,
+        message: `the lockfile changes how the test tooling resolves: ${[...tooling].sort().join(", ")}`,
+      });
     }
   }
 

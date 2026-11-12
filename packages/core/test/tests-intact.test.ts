@@ -84,6 +84,52 @@ describe("tests intact (ADR 0500)", () => {
     expect(kinds([mod("src/layout.ts", patch("+fit(box);"))])).toEqual([]);
   });
 
+  it("finds what decides what the checks run: install and lifecycle scripts, any script, the package manager's config, the lockfile's test tooling (third review)", () => {
+    const messages = (files: ChangedFile[]) =>
+      testsIntact(SHA, files)
+        .findings.filter((f) => f.kind === "gate-file")
+        .map((f) => f.message);
+    // A postinstall script: what install runs.
+    expect(
+      messages([mod("package.json", patch('+    "postinstall": "node scripts/patch-vitest.js",'))]),
+    ).toEqual([expect.stringMatching(/what install runs or resolves changed in package.json/)]);
+    // Any other script whose body is a command: scripts decide what a check like `pnpm test` runs.
+    expect(
+      messages([mod("packages/a/package.json", patch('+    "pretest": "rm -rf test/slow",'))]),
+    ).toHaveLength(1);
+    expect(
+      messages([mod("package.json", patch('+    "unit": "vitest run --passWithNoTests",'))]),
+    ).toEqual(["a script in package.json changed: scripts decide what the checks run"]);
+    // A dependency bump is not a script.
+    expect(
+      messages([mod("package.json", patch('-    "zod": "^3.24.0",', '+    "zod": "^3.25.0",'))]),
+    ).toEqual([]);
+    expect(
+      messages([mod("package.json", patch('+  "packageManager": "pnpm@10.24.0",'))]),
+    ).toHaveLength(1);
+    for (const f of ["pnpm-workspace.yaml", ".npmrc", ".pnpmfile.cjs"]) {
+      expect(messages([mod(f, patch("+x"))])).toEqual([
+        expect.stringMatching(/the package manager's config/),
+      ]);
+    }
+    // The lockfile moves vitest to another version: the test tooling resolves differently.
+    expect(
+      messages([
+        mod(
+          "pnpm-lock.yaml",
+          patch(
+            "-  vitest@3.2.4(@types/node@24.0.0):",
+            "+  vitest@3.2.5(@types/node@24.0.0):",
+            "+  zod@3.25.0:",
+          ),
+        ),
+      ]),
+    ).toEqual(["the lockfile changes how the test tooling resolves: vitest"]);
+    expect(messages([mod("pnpm-lock.yaml", patch("+  zod@3.25.0:"))])).toEqual([]);
+    // A lockfile GitHub didn't return: unknown never reads as intact.
+    expect(kinds([{ path: "pnpm-lock.yaml", status: "modified" }])).toEqual(["unreadable"]);
+  });
+
   it("finds a commented-out test case", () => {
     expect(
       kinds([mod("src/a.test.ts", patch('-it("works", () => {', '+// it("works", () => {'))]),

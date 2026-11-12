@@ -101,8 +101,9 @@ export type WorkItemOutcome =
  * - v8 (spec 51, ADR 0501): the runner host runs the project's checks after the build session and
  *   sends failures back into the same session. After `build #b: advance`, `build #b: checks` reads
  *   the results on the pushed head; any declared check still failing there asks a person
- *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. The reviewer
- *   is told the checks' names to link criteria to.
+ *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. A check the
+ *   runner could not run is not a failure: the item goes on to verify and the merge gate, which say
+ *   so and leave the criteria it would prove Not proven. The reviewer is told the checks' names.
  */
 export const WORKFLOW_VERSION = 8;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
@@ -554,8 +555,12 @@ class ItemFlow {
             headSha,
           });
           checkNames = (checked.declared as string[]) ?? [];
-          if (checked.passed !== true) {
-            const failing = (checked.failing as string[]) ?? [];
+          // Only a check that ran and failed (or didn't run on this head) sends the build back. One
+          // the runner could not run (no isolation, the sandbox could not start) is nothing a
+          // build can fix and burns no build attempt: the item goes on to verify and the merge
+          // gate, where it shows as not run and a person decides (third review, B3).
+          const failing = (checked.failing as string[] | undefined) ?? [];
+          if (failing.length > 0) {
             await this.askChecksFailing(meta, b, headSha, failing);
             note = [
               "The factory's checks failed on your last head, and a person sent it back to build:",

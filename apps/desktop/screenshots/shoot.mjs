@@ -14,8 +14,8 @@ const here = import.meta.dirname;
 const repo = resolve(here, "../../..");
 const out = resolve(repo, "docs/screenshots/desktop-shell");
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const W = 1440;
-const H = 900;
+const W = Number(process.env.SHOOT_W ?? 1440);
+const H = Number(process.env.SHOOT_H ?? 900);
 
 /** Each screen: its route, what to do before the shot, and its design file. */
 export const SCREENS = [
@@ -42,6 +42,13 @@ export const SCREENS = [
   {
     name: "item-review-criteria",
     path: "/work/wi_13?tab=review",
+    design: "ItemReview.html",
+    scrollTo: '[data-testid="factory-checks"]',
+  },
+  // The runner could not run the checks (ADR 0501, third review): shown plainly, not passed.
+  {
+    name: "item-review-not-run",
+    path: "/work/wi_13?tab=review&fixture=notrun",
     design: "ItemReview.html",
     scrollTo: '[data-testid="factory-checks"]',
   },
@@ -108,6 +115,8 @@ async function shoot(cdp, url, file, theme, keys = [], scrollTo = null) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
+  // A fixture variant is read once per page load: load it afresh for each theme.
+  if (url.includes("fixture=")) await cdp.send("Page.navigate", { url: "about:blank" });
   await cdp.send("Page.navigate", { url });
   await sleep(1600);
   for (const k of keys) {

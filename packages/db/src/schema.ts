@@ -648,6 +648,8 @@ export interface CoreCheckResultsTable {
   log_tail: string;
   round: Generated<number>;
   created_at: string;
+  /** Why the runner could not run it (migration 0271); null for a check that ran. */
+  not_run: string | null;
 }
 
 export interface CoreRunSteersTable {

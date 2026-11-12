@@ -1286,6 +1286,9 @@ export function finishRun(
   });
 }
 
+/** How long a work item keeps a check result (ADR 0501): enough for its verify and merge. */
+const CHECK_RESULTS_DAYS = 30;
+
 export const runHandBack = defineOperation({
   name: "run.handBack",
   description:
@@ -1343,6 +1346,18 @@ export const runHandBack = defineOperation({
     // failed keeps its own reason: its results are stored where they can be placed, or dropped.
     let checks = input.checks.map((c) => ({ ...c, logTail: redactSecrets(c.logTail) }));
     const dropped: string[] = [];
+    // Only the checks this job was given (third review, 5): a result under any other name is
+    // refused, never stored where a criterion could link to it.
+    const declaredNames = new Set(
+      declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name.toLowerCase()),
+    );
+    const undeclared = checks.filter((c) => !declaredNames.has(c.name.toLowerCase()));
+    if (undeclared.length > 0) {
+      dropped.push(
+        ...undeclared.map((c) => `${c.name}@${c.headSha.slice(0, 7)} (not a declared check)`),
+      );
+      checks = checks.filter((c) => declaredNames.has(c.name.toLowerCase()));
+    }
     if (checks.length > 0) {
       const repo = await repoRef(ctx, requireRepository(ctx));
       // A build's head is the one it pushed (checked on GitHub above); a verify job's is the head
@@ -1395,12 +1410,25 @@ export const runHandBack = defineOperation({
         log_tail: c.logTail,
         round: c.round,
         created_at: ctx.now,
+        // Not run (third review, B3): stored as such, never as a failure or a pass.
+        not_run: c.notRun ?? null,
       };
       ctx.write(
         ctx.db
           .insertInto("core_check_results")
           .values({ work_item_id: w.id, head_sha: c.headSha, name: c.name, ...row })
           .onConflict((oc) => oc.columns(["work_item_id", "head_sha", "name"]).doUpdateSet(row)),
+      );
+    }
+    // Pruning (Cloudflare cost rule): an item keeps its check results for CHECK_RESULTS_DAYS; older
+    // ones (heads long replaced) go when it hands back again. On the primary key's prefix.
+    if (checks.length) {
+      const cutoff = new Date(Date.parse(ctx.now) - CHECK_RESULTS_DAYS * 86_400_000).toISOString();
+      ctx.write(
+        ctx.db
+          .deleteFrom("core_check_results")
+          .where("work_item_id", "=", w.id)
+          .where("created_at", "<", cutoff),
       );
     }
     if (checks.length || dropped.length) {
@@ -1416,6 +1444,7 @@ export const runHandBack = defineOperation({
             exitCode: c.exitCode,
             timedOut: c.timedOut,
             round: c.round,
+            ...(c.notRun ? { notRun: c.notRun } : {}),
           })),
         },
       });

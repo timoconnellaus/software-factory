@@ -155,7 +155,14 @@ interface StageOut {
   result?: unknown;
   outcome?: "completed" | "failed";
   push?: Push;
-  checks?: { name: string; exitCode: number; command?: string; headSha?: string; round?: number }[];
+  checks?: {
+    name: string;
+    exitCode: number | null;
+    command?: string;
+    headSha?: string;
+    round?: number;
+    notRun?: string;
+  }[];
 }
 
 export async function runStage(
@@ -201,11 +208,20 @@ export async function runStage(
         ? {
             checks: out.checks.map((c) => ({
               name: c.name,
-              command: c.command ?? `pnpm ${c.name}`,
+              // The command the job carries for it (what the host runs), unless the test says.
+              command:
+                c.command ??
+                job.checks?.commands.find((x) => x.name === c.name)?.run ??
+                `pnpm ${c.name}`,
               exitCode: c.exitCode,
+              ...(c.notRun ? { notRun: c.notRun } : {}),
               timedOut: false,
               durationMs: 1200,
-              logTail: c.exitCode === 0 ? "ok" : `${c.name}: 1 failing`,
+              logTail: c.notRun
+                ? `not run: ${c.notRun}`
+                : c.exitCode === 0
+                  ? "ok"
+                  : `${c.name}: 1 failing`,
               headSha: c.headSha ?? headSha ?? String(job.context.headSha ?? ""),
               round: c.round ?? 0,
             })),

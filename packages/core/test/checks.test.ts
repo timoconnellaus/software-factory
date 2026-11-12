@@ -7,6 +7,7 @@ import {
   executedChecks,
   FOREMAN,
   isStaticCheck,
+  notRunLines,
   parseFloor,
   parseProjectPolicy,
   policyImpact,
@@ -113,7 +114,7 @@ describe("executed checks and proof (pure)", () => {
       ],
       executed,
       ciWith("e2e"),
-      { specCriteria: ["Dark mode persists [checks: e2e]", "Untagged"] },
+      { specCriteria: ["Dark mode persists [checks: e2e]", "Untagged"], requiredCi: ["e2e"] },
     );
     expect(proof.map((p) => [p.proven, p.provenBy, p.notCounted, p.linkedBy])).toEqual([
       [true, ["e2e"], [], "spec"],
@@ -121,16 +122,34 @@ describe("executed checks and proof (pure)", () => {
     ]);
   });
 
-  it("matches criteria to the spec by their text, never by position", () => {
+  it("lets a CI check prove only when the project's config requires it, never a job the PR added", () => {
+    const executed = executedChecks(SHA, [], []);
+    const proof = proveCriteria(
+      [{ criterion: "Dark mode persists", met: true, evidence: "x" }],
+      executed,
+      ciWith("e2e"),
+      { specCriteria: ["Dark mode persists [checks: e2e]"], requiredCi: ["ci", "factory/verify"] },
+    );
+    expect(proof).toMatchObject([{ proven: false, provenBy: [], notCounted: ["e2e"] }]);
+    // factory/verify is the factory's own verdict: never proof of a criterion.
+    const own = proveCriteria([], executed, ciWith("factory/verify"), {
+      specCriteria: ["A [checks: factory/verify]"],
+      requiredCi: ["factory/verify"],
+    });
+    expect(own).toMatchObject([{ proven: false }]);
+  });
+
+  it("counts the spec's criteria: a reworded one inherits nothing, one left out is Not proven, a repeat counts once", () => {
     const executed = executedChecks(SHA, ["tests", "e2e"], [ran("tests", 0), ran("e2e", 0)]);
     const proof = proveCriteria(
       [
-        // Reworded by the reviewer: it inherits nothing from the spec's first criterion.
+        // Reworded by the reviewer: not the spec's criterion, so it isn't counted at all.
         { criterion: "Dark mode is remembered", met: true, evidence: "x", checks: ["e2e"] },
-        // The spec's own text (case and a trailing stop aside), in another position.
-        { criterion: "the toggle switches the theme.", met: true, evidence: "x" },
+        // The spec's own text (case and a trailing stop aside), in another position, twice.
+        { criterion: "the toggle switches the theme.", met: true, evidence: "first" },
+        { criterion: "The toggle switches the theme", met: false, evidence: "second" },
         // A tag the reviewer wrote on a criterion is not the spec's link.
-        { criterion: "Something new [checks: tests]", met: true, evidence: "x" },
+        { criterion: "Something else [checks: tests]", met: true, evidence: "x" },
       ],
       executed,
       ciWith(),
@@ -139,13 +158,53 @@ describe("executed checks and proof (pure)", () => {
           "Dark mode persists [checks: e2e]",
           "The toggle switches the theme [checks: tests, lint]",
           "Something else",
+          "Left out by the reviewer [checks: e2e]",
         ],
       },
     );
-    expect(proof.map((p) => [p.proven, p.provenBy, p.notCounted, p.linkedBy])).toEqual([
-      [false, [], ["e2e"], "reviewer"],
-      [true, ["tests"], [], "spec"],
-      [false, [], [], "reviewer"],
+    expect(
+      proof.map((p) => [p.criterion, p.proven, p.provenBy, p.linkedBy, p.reviewerMet]),
+    ).toEqual([
+      ["Dark mode persists", true, ["e2e"], "spec", false],
+      ["The toggle switches the theme", true, ["tests"], "spec", true],
+      ["Something else", false, [], "reviewer", true],
+      ["Left out by the reviewer", true, ["e2e"], "spec", false],
+    ]);
+    expect(proof[0]?.opinion).toMatch(/did not address/);
+    // The proven count is over the spec's four criteria, whatever the reviewer listed.
+    expect(proof).toHaveLength(4);
+  });
+
+  it("never passes or proves a check the runner could not run, nor one that ran another command", () => {
+    const executed = executedChecks(
+      SHA,
+      [
+        { name: "tests", run: "pnpm tests" },
+        { name: "e2e", run: "pnpm e2e" },
+      ],
+      [
+        { ...ran("tests", null), notRun: "the sandbox could not start: bwrap: no user namespaces" },
+        { ...ran("e2e", 0), command: "true" },
+      ],
+    );
+    // Not run is not a failure: no verdict reason, its own list.
+    expect(executed.notRun).toEqual([
+      { name: "tests", reason: "the sandbox could not start: bwrap: no user namespaces" },
+    ]);
+    expect(executed.reasons).toEqual([
+      expect.stringMatching(/check e2e didn't run on ccccccc as declared: it ran `true`/),
+    ]);
+    expect(notRunLines(executed.notRun)).toEqual([
+      expect.stringMatching(
+        /^these checks could not be run on this runner: the sandbox could not start: bwrap: no user namespaces \(tests\)/,
+      ),
+    ]);
+    const proof = proveCriteria([], executed, ciWith(), {
+      specCriteria: ["A [checks: tests]", "B [checks: e2e]"],
+    });
+    expect(proof.map((p) => [p.proven, p.unproven])).toEqual([
+      [false, ["tests"]],
+      [false, ["e2e"]],
     ]);
   });
 

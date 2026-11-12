@@ -9,8 +9,10 @@ import {
   type CheckRun,
   type CriterionProof,
   checkLines,
+  type DeclaredCheck,
   type ExecutedChecks,
   executedChecks,
+  notRunLines,
   proveCriteria,
 } from "./proof.ts";
 import { type RiskFlag, riskFlags } from "./risk.ts";
@@ -42,8 +44,10 @@ export interface PacketInput {
   sameModelAsImplementer: boolean;
   /** What the runner said (kept in the packet; never decides). */
   runnerVerdict?: "pass" | "fail" | undefined;
-  /** The checks the project declares for this item (ADR 0501), by name. */
-  declaredChecks?: readonly string[] | undefined;
+  /** The checks the project declares for this item (ADR 0501): names, and the commands now. */
+  declaredChecks?: readonly (string | DeclaredCheck)[] | undefined;
+  /** The CI checks the project's config requires: the only CI runs that may prove a criterion. */
+  requiredCi?: readonly string[] | undefined;
   /** What the runner host ran on this SHA (core_check_results). */
   checksRun?: readonly CheckRun[] | undefined;
   /**
@@ -133,6 +137,8 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
     warnings.push("the runner reported green, but CI on GitHub isn't: CI decides (spec 04)");
   }
 
+  // Checks the runner could not run: said plainly, never a pass, never a failure (third review, B3).
+  warnings.push(...notRunLines(executed.notRun));
   if (hostChecks && executed.declared.length === 0) {
     warnings.push(
       "the project declares no checks, so the factory ran none itself: only CI and the reviewer's report back this verdict (ADR 0501)",
@@ -158,6 +164,7 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   const proof = hostChecks
     ? proveCriteria(evidence.criteria, executed, ci, {
         specCriteria: input.specCriteria,
+        requiredCi: input.requiredCi,
         gateFilesChanged: intact.findings.some((f) => f.kind === "gate-file"),
       })
     : [];

@@ -14,7 +14,8 @@ import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Panel, SectionTitle } from "./shell-list.tsx";
 
 /** A check the host did not run (no isolation, no container, no sandbox): never a pass. */
-const notRun = (r: CheckOutcome) => r.exitCode === null && r.logTail.startsWith("not run");
+const notRun = (r: CheckOutcome) =>
+  !!r.notRun || (r.exitCode === null && r.logTail.startsWith("not run"));
 
 function outcome(r: CheckOutcome): string {
   if (r.passed) return `exit ${r.exitCode}`;
@@ -33,6 +34,20 @@ export function FactoryChecks({ packet }: { packet: ParsedPacket }) {
   return (
     <section className="flex flex-col gap-2" data-testid="factory-checks">
       <SectionTitle note={note}>Checks run by the factory</SectionTitle>
+      {executed.notRun.length > 0 && (
+        <Panel className="text-amber-700 dark:text-amber-400" data-testid="checks-not-run">
+          {[...new Set(executed.notRun.map((n) => n.reason))].map((reason) => (
+            <div key={reason}>
+              These checks could not be run on this runner: {reason} (
+              {executed.notRun
+                .filter((n) => n.reason === reason)
+                .map((n) => n.name)
+                .join(", ")}
+              ). They are not passed, and the criteria they would prove are Not proven: you decide.
+            </div>
+          ))}
+        </Panel>
+      )}
       {rows.length === 0 ? (
         <Panel className="text-ink-muted">
           The project declares no checks: only CI backs this verdict.
@@ -46,13 +61,25 @@ export function FactoryChecks({ packet }: { packet: ParsedPacket }) {
               data-testid="factory-check"
             >
               <div className="flex flex-wrap items-center gap-2">
-                <StatusDot status={!result ? "idle" : result.passed ? "done" : "failed"} />
+                <StatusDot
+                  status={
+                    !result
+                      ? "idle"
+                      : result.passed
+                        ? "done"
+                        : notRun(result)
+                          ? "waiting"
+                          : "failed"
+                  }
+                />
                 <span className="font-mono text-[12.5px]">{name}</span>
                 <span className="text-ink-3 text-xs">
                   {result ? (
                     <>
-                      <code className="font-mono">{result.command}</code> · {outcome(result)} ·{" "}
-                      {Math.max(1, Math.round(result.durationMs / 1000))} s
+                      <code className="font-mono">{result.command}</code> · {outcome(result)}
+                      {notRun(result)
+                        ? ""
+                        : ` · ${Math.max(1, Math.round(result.durationMs / 1000))} s`}
                       {result.round
                         ? ` · after ${result.round} fix round${result.round === 1 ? "" : "s"}`
                         : ""}

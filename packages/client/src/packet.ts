@@ -225,12 +225,15 @@ const checkOutcome = z.object({
   durationMs: z.number(),
   logTail: z.string().default(""),
   round: z.number().default(0),
+  /** Why the runner could not run it (ADR 0501, third review): never passed, never proven. */
+  notRun: z.string().nullable().optional(),
   passed: z.boolean(),
 });
 const executedSection = z.object({
   declared: z.array(z.string()),
   results: z.array(checkOutcome.nullable()),
   extra: z.array(checkOutcome).default([]),
+  notRun: z.array(z.object({ name: z.string(), reason: z.string() })).default([]),
 });
 const proofSection = z.array(
   z.object({
@@ -260,6 +263,8 @@ export function packetExecuted(p: ParsedPacket): {
   extra: CheckOutcome[];
   /** Set when the merge queue carried this packet to a new head: the SHA the checks ran on. */
   ranOn: string | null;
+  /** Declared checks the runner could not run on this SHA, with why: a person decides. */
+  notRun: { name: string; reason: string }[];
 } | null {
   const r = executedSection.safeParse(p.sections.executed);
   if (!r.success) return null;
@@ -268,6 +273,7 @@ export function packetExecuted(p: ParsedPacket): {
     rows: r.data.declared.map((name, i) => ({ name, result: r.data.results[i] ?? null })),
     extra: r.data.extra,
     ranOn: typeof ranOn === "string" ? ranOn : null,
+    notRun: r.data.notRun,
   };
 }
 
