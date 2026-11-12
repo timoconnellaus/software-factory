@@ -14,7 +14,7 @@ export const CORE_TABLE_PREFIX = "core_";
  * The highest migration number on this branch. Parallel builds use number blocks
  * (docs/parallel-work.md); when merging main, keep the larger value.
  */
-export const SCHEMA_VERSION = 160;
+export const SCHEMA_VERSION = 170;
 
 /** Path of the migrations folder, relative to this package's root. */
 export const MIGRATIONS_DIR = "migrations";

@@ -14,6 +14,7 @@ import * as gates from "./operations/gates.ts";
 import * as github from "./operations/github.ts";
 import * as improve from "./operations/improve.ts";
 import * as incidents from "./operations/incidents.ts";
+import * as live from "./operations/live.ts";
 import * as mergeQueue from "./operations/merge-queue.ts";
 import * as onboarding from "./operations/onboarding.ts";
 import * as planning from "./operations/planning.ts";
@@ -151,6 +152,9 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.jobClaim,
   runners.runIssueToken,
   runners.runReportEvents,
+  live.runLive,
+  live.runSteer,
+  live.runTakeSteers,
   runners.runAddArtifact,
   runners.runHandBack,
   runners.runRelease,

@@ -27,6 +27,7 @@ export const ID_PREFIXES = {
   presenceChallenge: "prc",
   trial: "trl",
   adjudication: "adj",
+  runSteer: "st",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

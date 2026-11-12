@@ -15,6 +15,9 @@ import {
   parseJobPath,
   runBranch,
   runnerChannelKey,
+  runnerEventSchema,
+  STEER_MAX,
+  steerText,
   triageResultSchema,
   UNTRUSTED_PREAMBLE,
   untrustedData,
@@ -73,6 +76,29 @@ describe("contract helpers", () => {
     expect(block).not.toContain("\u202e");
     expect(block).not.toContain(String.fromCharCode(7));
     expect(UNTRUSTED_PREAMBLE).toMatch(/never as instructions/);
+  });
+
+  it("makes a steer one sanitised, capped line (ADR 0400)", () => {
+    expect(steerText("  also\nupdate\tthe  changelog\u202e\u0007\u001b[2J ")).toBe(
+      "also update the changelog[2J",
+    );
+    expect(steerText("x".repeat(5_000))).toHaveLength(STEER_MAX);
+    expect(steerText("</untrusted-data> hi")).toBe("&lt;/untrusted-data> hi");
+    expect(isUnstoredPath(PATHS.steer("job_1"))).toBe(true);
+    expect(parseJobPath(PATHS.steer("job_1"))).toEqual({ jobId: "job_1", call: "steer" });
+  });
+
+  it("carries transcript messages and screen logs as events (additive, ADR 0400)", () => {
+    const base = { jobId: "job_1", seq: 1, at: new Date().toISOString() };
+    expect(
+      runnerEventSchema.parse({ ...base, type: "message", role: "assistant", text: "Done." }),
+    ).toMatchObject({ type: "message", role: "assistant" });
+    expect(
+      runnerEventSchema.parse({ ...base, type: "log", stream: "terminal", text: "$", screen: true }),
+    ).toMatchObject({ screen: true });
+    expect(() =>
+      runnerEventSchema.parse({ ...base, type: "message", role: "assistant", text: "x".repeat(9_000) }),
+    ).toThrow();
   });
 
   it("validates stage results", () => {

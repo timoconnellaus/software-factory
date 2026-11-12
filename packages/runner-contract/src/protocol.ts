@@ -13,6 +13,7 @@
 //   attachments att:<job>:<uuid>               NOT stored: the job's work item's attachments (list)
 //   attachment  att:<job>:<uuid>               NOT stored: one attachment's bytes (ADR 0310)
 //   planning    plan:<job>:<uuid>              NOT stored: a planning operation (ADR 0350)
+//   steer       steer:<job>:<uuid>             NOT stored: a held wait for the run's steers (ADR 0400)
 //
 // Every job-scoped call carries the job's fencing token; after a takeover or a lost lease the cloud
 // answers 409 with code `fenced`, and the host must stop the run (ADR 0035).
@@ -29,6 +30,8 @@ import type {
   HeartbeatResponse,
   PlanningCallRequest,
   ReleaseRequest,
+  SteersRequest,
+  SteersResponse,
   TokenResponse,
 } from "./wire.ts";
 
@@ -43,7 +46,11 @@ export const PATHS = {
   attachments: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/attachments`,
   attachment: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/attachment`,
   planning: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/planning`,
+  steer: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/steer`,
 } as const;
+
+/** How long the cloud holds a steer call with nothing queued (ADR 0400). */
+export const STEER_WAIT_MAX_MS = 25_000;
 
 /**
  * Device login (ADR 0056): the two calls `sf-runner login` makes before it has a key. Unsigned;
@@ -68,6 +75,7 @@ export const JOB_CALLS = [
   "attachments",
   "attachment",
   "planning",
+  "steer",
 ] as const;
 export type JobCall = (typeof JOB_CALLS)[number];
 
@@ -83,7 +91,13 @@ export function parseJobPath(path: string): { jobId: string; call: JobCall } | n
 /** Calls whose responses the cloud never stores (a secret, or a file's bytes). */
 export function isUnstoredPath(path: string): boolean {
   const call = parseJobPath(path)?.call;
-  return call === "token" || call === "attachments" || call === "attachment" || call === "planning";
+  return (
+    call === "token" ||
+    call === "attachments" ||
+    call === "attachment" ||
+    call === "planning" ||
+    call === "steer"
+  );
 }
 
 /** A refused channel call. `code` is the cloud's refusal code (`fenced`, `killed`, …). */
@@ -121,6 +135,12 @@ export interface ControlPlaneClient {
    * a refusal throws ChannelCallError (409 `fenced` means the session is over).
    */
   planning?(jobId: string, body: PlanningCallRequest): Promise<unknown>;
+  /**
+   * Waits for the run's steers (ADR 0400): answers at once with any queued, else when one is sent
+   * or after about `waitMs`. Taking them marks them delivered (at most once). `signal` aborts the
+   * wait when the session ends.
+   */
+  steers?(jobId: string, body: SteersRequest, signal?: AbortSignal): Promise<SteersResponse>;
 }
 
 /** Content-hash id for an artifact, so uploading it twice is a no-op. */
@@ -137,7 +157,12 @@ export function httpControlPlane(config: {
   now?: () => Date;
 }): ControlPlaneClient {
   const doFetch = config.fetch ?? fetch;
-  async function call<T>(path: string, idempotencyKey: string, payload: unknown): Promise<T> {
+  async function call<T>(
+    path: string,
+    idempotencyKey: string,
+    payload: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const body = JSON.stringify(payload);
     const headers = await signRunnerRequest({
       key: config.key,
@@ -152,6 +177,7 @@ export function httpControlPlane(config: {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
       body,
+      ...(signal ? { signal } : {}),
     });
     if (!response.ok) {
       const text = await response.text();
@@ -208,5 +234,8 @@ export function httpControlPlane(config: {
     // Not stored: a wait or news read moves the session's cursor, and a write refuses a repeat.
     planning: (jobId, body) =>
       call(PATHS.planning(jobId), `plan:${jobId}:${crypto.randomUUID()}`, body),
+    // Not stored: each wait is new, and taking a steer marks it delivered.
+    steers: (jobId, body, signal) =>
+      call(PATHS.steer(jobId), `steer:${jobId}:${crypto.randomUUID()}`, body, signal),
   };
 }
