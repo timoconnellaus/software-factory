@@ -17,13 +17,15 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
-import { workItemQuery } from "../lib/queries.ts";
+import { op } from "../lib/op.ts";
+import { useRefreshAfterDecision, workItemQuery } from "../lib/queries.ts";
 import { CriteriaList, MergeDecision, useOpenedFullDiff, VerdictPanel } from "./review-parts.tsx";
 import { Chip, Field, PageHeader, Panel, SectionTitle } from "./shell-list.tsx";
 
 type Gate = Inbox["gates"][number];
 type Question = Inbox["questions"][number];
 type Planning = Inbox["planning"][number];
+type ReleaseFlag = Inbox["releaseFlags"][number];
 
 /** The line above a decision's title: its kind as a chip, then the item and project in mono. */
 function Above({ kind, meta }: { kind: string; meta: string }) {
@@ -396,6 +398,67 @@ export function PlanningDetail({
             Open the plan
           </Link>
         </Button>
+      </Panel>
+    </div>
+  );
+}
+
+/**
+ * A shaped item flagged at release (spec 52, Q4): its workflow's shaping stages changed since it
+ * was shaped. The person chooses: shape it again under the current workflow, or accept the shaping
+ * done and deliver it under the current workflow. Delivery runs on the current version either way.
+ */
+export function ReleaseFlagDetail({
+  flag,
+  projectName,
+}: {
+  flag: ReleaseFlag;
+  projectName: string;
+}) {
+  const refresh = useRefreshAfterDecision();
+  const [busy, setBusy] = useState<"reshape" | "accept" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const choose = async (choice: "reshape" | "accept") => {
+    setBusy(choice);
+    setError(null);
+    try {
+      await op("workItem.releaseChoice", { workItemId: flag.workItemId, choice });
+      await refresh(flag.workItemId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-4" data-testid={`release-flag-${flag.workItemId}`}>
+      <PageHeader
+        above={<Above kind="Release" meta={`#${flag.number} · ${projectName}`} />}
+        title={`#${flag.number} ${flag.title}`}
+        sub={`Shaped under workflow version ${flag.shapedUnder}; its shaping changed in version ${flag.current}.`}
+        testId="inbox-title"
+      />
+      <Panel needsYou className="gap-3">
+        <p className="m-0">{flag.reason}</p>
+        <p className="m-0 text-ink-muted">Either way it is delivered under the current workflow.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            onClick={() => void choose("reshape")}
+            disabled={busy !== null}
+            data-testid="release-reshape"
+          >
+            Shape it again
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void choose("accept")}
+            disabled={busy !== null}
+            data-testid="release-accept"
+          >
+            Accept the shaping and release
+          </Button>
+        </div>
+        {error && <p className="m-0 text-destructive">{error}</p>}
       </Panel>
     </div>
   );

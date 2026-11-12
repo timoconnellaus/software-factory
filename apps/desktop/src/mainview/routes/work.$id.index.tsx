@@ -62,6 +62,7 @@ import {
   runnersQuery,
   timelineQuery,
   useRefreshAfterDecision,
+  workflowQuery,
   workItemQuery,
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
@@ -98,7 +99,12 @@ export const Route = createRoute({
     Promise.all([
       // The org's board: what an item before release can wait for (its edit dialog).
       queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
-      queryClient.ensureQueryData(workItemQuery(params.id)),
+      // Then its project's workflow, whose name the Details panel shows (spec 52 PR (d)).
+      queryClient
+        .ensureQueryData(workItemQuery(params.id))
+        .then((d) =>
+          queryClient.ensureQueryData(workflowQuery(d.item.projectId)).catch(() => null),
+        ),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
       queryClient.ensureQueryData(attachmentsQuery(params.id)).catch(() => null),
@@ -843,6 +849,14 @@ function Details({ detail }: { detail: WorkItemDetail }) {
         )}
         <Row label="Started">{ago(item.createdAt)}</Row>
         {item.statusReason && <Row label="Now">{item.statusReason}</Row>}
+        {item.readinessHint && (
+          // The readiness pre-check's hint (spec 23): advice for the person, never a block.
+          <Row label="Readiness">
+            <span className="text-muted-foreground" data-testid="readiness-hint">
+              {item.readinessHint}
+            </span>
+          </Row>
+        )}
       </Rows>
     </Panel>
   );
@@ -875,9 +889,14 @@ function Taken({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) => v
  */
 function WorkflowLine({ detail }: { detail: WorkItemDetail }) {
   const { item } = detail;
+  // The item pins the workflow by what the config names (an org workflow's id, `wf_…`); people
+  // read its name, which `project.workflow` gives as its label.
+  const project = useQuery(workflowQuery(item.projectId));
+  const named = project.data?.workflow;
+  const label = named && item.workflow === named.name ? named.label : item.workflow;
   return (
     <span data-testid="work-item-workflow">
-      {item.workflow ?? "The skeleton alone"}
+      {label ?? "The skeleton alone"}
       {item.workflowReason && (
         <span className="mt-0.5 block text-ink-3 text-xs">{item.workflowReason}</span>
       )}

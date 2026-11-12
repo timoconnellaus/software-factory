@@ -3,6 +3,7 @@
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
 import * as adjudicator from "./operations/adjudicator.ts";
+import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
 import * as backlog from "./operations/backlog.ts";
@@ -24,6 +25,7 @@ import * as planning from "./operations/planning.ts";
 import * as projects from "./operations/projects.ts";
 import * as protection from "./operations/protection.ts";
 import * as questions from "./operations/questions.ts";
+import * as reconcile from "./operations/reconcile.ts";
 import * as runners from "./operations/runners.ts";
 import * as specs from "./operations/specs.ts";
 import * as terminal from "./operations/terminal.ts";
@@ -41,6 +43,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   projects.repositoryUpdate,
   backlog.workItemRelease,
   backlog.workItemShape,
+  backlog.workItemReleaseChoice,
   backlog.workItemShaped,
   backlog.workItemMove,
   backlog.workItemUpdate,
@@ -99,6 +102,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   questions.planningAnswer,
   questions.planningAcceptDefaults,
   questions.planningFinishAlone,
+  questions.questionAnswerFromEdit,
   questions.questionEscalate,
   questions.questionUpdate,
   questions.questionDelete,
@@ -112,6 +116,14 @@ export const OPERATIONS: readonly AnyOperation[] = [
   planning.chatReply,
   planning.planningNews,
   planning.planningPeek,
+  planning.specEdit,
+  artifacts.artifactAdd,
+  artifacts.artifactUpdate,
+  artifacts.artifactDelete,
+  artifacts.artifactShow,
+  artifacts.artifactGet,
+  artifacts.artifactRead,
+  planning.specReleaseEdit,
   planning.planningWait,
   planning.planningYield,
   planning.planningReady,
@@ -193,6 +205,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.runReportEvents,
   live.runLive,
   live.runSteer,
+  live.runReportArchiveMissing,
   live.runTakeSteers,
   live.runTakeover,
   terminal.runTerminalAttach,
@@ -216,6 +229,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
   workflows.orgConfigGet,
   workflows.orgConfigRollback,
   workflows.stageTypeList,
+  reconcile.reconcileReport,
+  reconcile.reconcileStreak,
 ];
 
 const byName = new Map<string, AnyOperation>();

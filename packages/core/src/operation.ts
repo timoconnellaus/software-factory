@@ -191,6 +191,23 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
     input: z.output<I>,
     at: { scope: Scope; floor: FloorParse; db: Db },
   ) => RiskClass | Promise<RiskClass>;
+  /**
+   * A `review` answer that only an org owner or admin may decide, not the project's approvers (a
+   * project config save that loosens its org workflow, spec 52 Q6). The pending action is assigned
+   * to the org's admins and marked so `approval.decide` asks for one.
+   */
+  decidedByOrgAdmin?: (
+    input: z.output<I>,
+    at: { scope: Scope; floor: FloorParse; db: Db },
+  ) => Promise<boolean>;
+  /**
+   * The handler reads nothing an org workflow decides (stages, agents, spec size, retries, checks,
+   * review sections), and nor does the gate for it: a polled read. The scope then doesn't resolve
+   * the project's org workflow: `policy` is the project's config as saved (spec 52 PR (d), cost).
+   */
+  skipsOrgWorkflow?: true;
+  /** A permission that depends on the resolved scope (who may decide a pending action). */
+  permissionOf?: (input: z.output<I>, at: { scope: Scope; db: Db }) => Promise<Permission>;
   input: I;
   output: O;
   /** Actor types that may call it at all (checked before the gate). */
@@ -239,7 +256,9 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    *   (`ctx.presence`);
    * - `planning.finishAlone`: the standing form of that bulk accept, within the same limits;
    * - `planning.stop`, `planning.pause`, `planning.resume` and `chat.send` with `interrupt`: steering
-   *   the planner, which changes nothing it has decided.
+   *   the planner, which changes nothing it has decided;
+   * - `workItem.releaseChoice`: a person's choice for an item flagged at release (spec 52, Q4),
+   *   which holds work back or releases it under the gates that apply anyway.
    */
   desktopDecidable?: true;
   /**

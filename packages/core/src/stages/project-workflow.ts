@@ -11,7 +11,8 @@ import {
   same,
 } from "../policy/impact.ts";
 import {
-  isOrgWorkflowId,
+  type AgentConfig,
+  onOrgWorkflow,
   type ProjectPolicy,
   type SlotName,
   type StepConfig,
@@ -19,6 +20,7 @@ import {
 } from "../policy/project-policy.ts";
 import { SOFTWARE } from "./builtins.ts";
 import { compileProjectWorkflow, slotStepId } from "./compile.ts";
+import { type AnyStageType, SIZE_RANK, type Size } from "./contract.ts";
 import { summarise, workflowImpact } from "./impact.ts";
 import type { OrgConfig } from "./org-config.ts";
 import { stageType } from "./registry.ts";
@@ -38,10 +40,56 @@ export function projectWorkflowById(org: OrgConfig, id: string): WorkflowDefinit
   return org.workflows.find((w) => w.id === id) ?? null;
 }
 
+export type OverrideApprovals = ProjectPolicy["workflowOverrideApprovals"];
+
+/**
+ * How overrides apply. `requested`: each as the project wrote it (what a save asks for, so it is
+ * classified against what applies now). `effective`: what an item runs, the stricter of the org's
+ * value and the override, unless the override was approved as a loosening against the org's current
+ * value (`approvals`).
+ */
+export type OverrideMode =
+  | { kind: "requested" }
+  | { kind: "effective"; approvals: OverrideApprovals };
+
+/**
+ * The stricter of the org's value and a project's override, per overridable setting (spec 52, Q5,
+ * fourth review): more items get a spec, every required check of either, every review section of
+ * either. A setting whose direction isn't policy (`retryLimit`) takes the override. Unknown
+ * settings take the org's value.
+ */
+function stricterOf(key: string, org: unknown, override: unknown): unknown {
+  if (key === "requiredFrom")
+    return SIZE_RANK[override as Size] < SIZE_RANK[org as Size] ? override : org;
+  if (key === "requiredChecks")
+    return [...new Set([...((override as string[]) ?? []), ...((org as string[]) ?? [])])];
+  if (key === "sections") {
+    // No list means every section.
+    if (org === undefined || override === undefined) return undefined;
+    return [...new Set([...(override as string[]), ...(org as string[])])];
+  }
+  if (key === "retryLimit") return override;
+  return org;
+}
+
+/** Whether `override` in place of the org's `value` for `key` loosens, by the type's own rules. */
+export function overrideLoosens(
+  type: AnyStageType,
+  settings: unknown,
+  key: string,
+  override: unknown,
+): boolean {
+  const before = type.settings.safeParse(settings ?? {});
+  const after = type.settings.safeParse({ ...(settings as object), [key]: override });
+  if (!before.success || !after.success) return true;
+  return type.impact(before.data, after.data, "s").some((c) => c.class === "loosens");
+}
+
 /** The definition with a project's overrides applied: only `overridable` settings, each valid. */
 export function applyOverrides(
   def: WorkflowDefinition,
   overrides: WorkflowOverrides,
+  mode: OverrideMode = { kind: "requested" },
 ): Result<WorkflowDefinition> {
   const stages = def.stages.map((s) => ({ ...s }));
   for (const [stageId, values] of Object.entries(overrides)) {
@@ -55,16 +103,105 @@ export function applyOverrides(
           ok: false,
           error: `a project can't override ${stage.name}'s ${key}${allowed.length ? ` (only ${allowed.join(", ")})` : ""}`,
         };
-    const settings = { ...(stage.settings as object), ...values };
-    const parsed = type?.settings.safeParse(settings);
+    const orgSettings = (type?.settings.safeParse(stage.settings ?? {}) ?? { success: false }) as
+      | { success: true; data: Record<string, unknown> }
+      | { success: false };
+    let applied: Record<string, unknown> = { ...(stage.settings as object), ...values };
+    if (mode.kind === "effective" && type && orgSettings.success) {
+      applied = { ...(stage.settings as object) };
+      for (const [key, value] of Object.entries(values)) {
+        const orgValue = orgSettings.data[key];
+        const approval = mode.approvals[stageId]?.[key];
+        const approved = approval !== undefined && same(approval.orgValue, orgValue);
+        if (approved || !overrideLoosens(type, stage.settings, key, value)) applied[key] = value;
+        else {
+          const merged = stricterOf(key, orgValue, value);
+          // Fail closed: a merge the type still calls looser than the org's value isn't used.
+          applied[key] = overrideLoosens(type, stage.settings, key, merged) ? orgValue : merged;
+        }
+        if (applied[key] === undefined) delete applied[key];
+      }
+    }
+    const parsed = type?.settings.safeParse(applied);
     if (!parsed?.success)
       return {
         ok: false,
         error: `${stage.name}'s override isn't valid: ${parsed?.error.issues[0]?.message ?? "unknown type"}`,
       };
-    stage.settings = settings;
+    stage.settings = applied;
   }
   return { ok: true, value: { ...def, stages } };
+}
+
+/**
+ * The overrides a save stores (spec 52, fourth review): only what differs from the org workflow's
+ * value, so a tightening the org makes later reaches the project; and, for each override looser
+ * than the org's value, its approval. `approve` (an approved loosening save) stamps every looser
+ * override with the org version and value it was approved against; otherwise an approval carries
+ * over only for an override the save leaves as it was.
+ */
+export function normaliseOverrides(
+  policy: ProjectPolicy,
+  org: OrgConfig,
+  orgVersion: number,
+  previous: ProjectPolicy | null,
+  approve: boolean,
+): { workflowOverrides: WorkflowOverrides; workflowOverrideApprovals: OverrideApprovals } {
+  const empty = { workflowOverrides: {}, workflowOverrideApprovals: {} };
+  if (!onOrgWorkflow(policy)) return empty;
+  const def = projectWorkflowById(org, policy.workflow);
+  if (!def) return empty;
+  const overrides: WorkflowOverrides = {};
+  const approvals: OverrideApprovals = {};
+  const carried = previous && previous.workflow === policy.workflow ? previous : null;
+  for (const [stageId, values] of Object.entries(policy.workflowOverrides)) {
+    const stage = def.stages.find((s) => s.id === stageId);
+    const type = stage ? stageType(stage.type) : undefined;
+    const parsed = stage && type ? type.settings.safeParse(stage.settings ?? {}) : null;
+    for (const [key, value] of Object.entries(values)) {
+      const orgValue = parsed?.success ? (parsed.data as Record<string, unknown>)[key] : undefined;
+      if (parsed?.success && same(orgValue, value)) continue;
+      overrides[stageId] = { ...overrides[stageId], [key]: value };
+      if (!stage || !type || !overrideLoosens(type, stage.settings, key, value)) continue;
+      const before = carried?.workflowOverrideApprovals[stageId]?.[key];
+      const unchanged = same(carried?.workflowOverrides[stageId]?.[key], value);
+      const approval = approve
+        ? { orgVersion, orgValue }
+        : unchanged && before
+          ? before
+          : undefined;
+      if (approval) approvals[stageId] = { ...approvals[stageId], [key]: approval };
+    }
+  }
+  return { workflowOverrides: overrides, workflowOverrideApprovals: approvals };
+}
+
+/**
+ * The project's approved loosening overrides that `org` no longer honours: the org moved the value
+ * an override was approved against, and the override is still looser than the new one. Each lapses
+ * (the stricter value applies) and the org's admins are told.
+ */
+export function lapsedOverrides(
+  policy: ProjectPolicy,
+  org: OrgConfig,
+): { stageId: string; key: string }[] {
+  if (!onOrgWorkflow(policy)) return [];
+  const def = projectWorkflowById(org, policy.workflow);
+  if (!def) return [];
+  const out: { stageId: string; key: string }[] = [];
+  for (const [stageId, keys] of Object.entries(policy.workflowOverrideApprovals)) {
+    const stage = def.stages.find((s) => s.id === stageId);
+    const type = stage ? stageType(stage.type) : undefined;
+    const parsed = stage && type ? type.settings.safeParse(stage.settings ?? {}) : null;
+    for (const [key, approval] of Object.entries(keys)) {
+      const value = policy.workflowOverrides[stageId]?.[key];
+      if (value === undefined || !stage || !type || !parsed?.success) continue;
+      const orgValue = (parsed.data as Record<string, unknown>)[key];
+      if (same(approval.orgValue, orgValue)) continue;
+      if (overrideLoosens(type, stage.settings, key, value)) out.push({ stageId, key });
+    }
+  }
+  return out;
 }
 
 const SLOT_AFTER: Record<string, SlotName> = {
@@ -89,7 +226,8 @@ const READ_TODAY: Record<string, readonly string[]> = {
  * reconciler's switch-over.
  */
 export function runsOnToday(def: WorkflowDefinition): string | null {
-  const later = "today's engine can't run it until the switch-over to the reconciler";
+  const later =
+    "the factory can only run workflows shaped like Software until the reconciler takes over";
   const core = def.stages.filter((s) => s.type !== "agent-check" && s.type !== "decision");
   const want = SOFTWARE.stages;
   if (
@@ -162,15 +300,19 @@ function slotWorkflow(def: WorkflowDefinition): WorkflowConfig {
   };
 }
 
-/** The org workflow a project runs, with its overrides; why not, if it can't run it. */
+/**
+ * The org workflow a project runs, with its overrides; why not, if it can't run it. `mode` defaults
+ * to what an item runs (`effective`, with the project's approvals).
+ */
 export function resolveProjectWorkflow(
   policy: ProjectPolicy,
   org: OrgConfig,
+  mode: OverrideMode = { kind: "effective", approvals: policy.workflowOverrideApprovals },
 ): Result<WorkflowDefinition> | null {
-  if (!isOrgWorkflowId(policy.workflow)) return null;
+  if (!onOrgWorkflow(policy)) return null;
   const base = projectWorkflowById(org, policy.workflow);
   if (!base) return { ok: false, error: `the org has no workflow ${policy.workflow}` };
-  const applied = applyOverrides(base, policy.workflowOverrides);
+  const applied = applyOverrides(base, policy.workflowOverrides, mode);
   if (!applied.ok) return applied;
   const why = runsOnToday(applied.value);
   return why ? { ok: false, error: why } : applied;
@@ -209,23 +351,36 @@ export function effectivePolicy(policy: ProjectPolicy, org: OrgConfig): Result<P
       workflows: [workflow],
       workflow: workflow.name,
       workflowOverrides: {},
+      workflowOverrideApprovals: {},
     },
   };
 }
 
 /** The definition a project's config runs: its org workflow resolved, else its slot workflow. */
-function definitionOf(policy: ProjectPolicy, org: OrgConfig): WorkflowDefinition | null {
-  const resolved = resolveProjectWorkflow(policy, org);
+function definitionOf(
+  policy: ProjectPolicy,
+  org: OrgConfig,
+  mode?: OverrideMode,
+): WorkflowDefinition | null {
+  const resolved = resolveProjectWorkflow(policy, org, mode);
   if (!resolved) return compileProjectWorkflow(policy, policy.workflow);
   return resolved.ok ? resolved.value : null;
+}
+
+/** The agents a config's workflow hands to: the org's on an org workflow, else the project's. */
+function agentsOf(policy: ProjectPolicy, org: OrgConfig): AgentConfig[] {
+  return onOrgWorkflow(policy) ? org.agents : policy.agents;
 }
 
 /**
  * `policyImpact` with the org workflow in view: a change of the project's workflow or overrides is
  * classified by comparing the definitions it runs before and after (spec 52: "A project override
  * that loosens against the org workflow's value loosens"; switching workflows compares the two, ADR
- * 0492 §3), instead of `policyImpact`'s fail-closed placeholder. The agent judging slot steps of a
- * project moving onto an org workflow is the org's: its classification is the org's (Q16).
+ * 0492 §3), instead of `policyImpact`'s fail-closed placeholder. `before` is what runs now (its
+ * overrides as they apply, approvals and all); `after` is what the save asks for (its overrides as
+ * written), so an override that applies only once approved is classified as the loosening it is. A
+ * judging stage is compared by what its agent is told (the agent's definition), not by its name, so
+ * a same-named org agent that passes everything isn't the project's judge (Q16).
  */
 export function configImpact(
   impact: PolicyImpact,
@@ -238,7 +393,7 @@ export function configImpact(
     (c) => c.summary !== ORG_WORKFLOW_UNRESOLVED,
   );
   const was = definitionOf(before, org);
-  const now = definitionOf(after, org);
+  const now = definitionOf(after, org, { kind: "requested" });
   if (!was || !now) {
     changes.push({
       path: "workflow",
@@ -248,8 +403,6 @@ export function configImpact(
     });
     return summarise(changes);
   }
-  // Agents differ between a project's slot workflow and the org's: a different judge loosens
-  // (workflowImpact's agent rule), and a different builder is practice.
   // Stage by stage: which workflow it is (id, name, template) is the switch below, not a change of
   // the workflow's identity, which workflowImpact would fail closed on.
   const asWas = {
@@ -259,7 +412,8 @@ export function configImpact(
     description: was.description,
     template: was.template,
   };
-  for (const c of workflowImpact(was, asWas).changes)
+  const agents = { before: agentsOf(before, org), after: agentsOf(after, org) };
+  for (const c of workflowImpact(was, asWas, agents).changes)
     changes.push({ ...c, path: `workflow.${c.path}` });
   if (!same(before.workflow, after.workflow) && (was.id !== now.id || was.name !== now.name))
     changes.push({

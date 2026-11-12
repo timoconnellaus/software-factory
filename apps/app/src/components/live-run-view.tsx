@@ -20,6 +20,66 @@ import { WebTerminal } from "./web-terminal";
 
 export type View = "chat" | "transcript" | "terminal" | "web";
 
+/**
+ * How reading the archive went, when it didn't simply work (AGENTS.md "Cloudflare cost"): loading,
+ * couldn't read it (try again), or the log is missing (reported as an incident). Never an empty run.
+ */
+function ArchiveNotice({
+  state,
+  loading,
+  onRetry,
+  incident,
+}: {
+  state: LiveView["archive"] | null;
+  loading: boolean;
+  onRetry?: (() => void) | undefined;
+  /** The incident opened for it (one per run), once there is one. */
+  incident: { workItemId: string; number: number } | null;
+}) {
+  if (state === "missing") {
+    return (
+      <div role="alert" className="text-destructive text-sm" data-testid="live-archive-missing">
+        This run's log is missing from the archive.{" "}
+        {incident ? (
+          <a href={`/work/${incident.workItemId}`} className="underline">
+            Reported as incident #{incident.number}.
+          </a>
+        ) : (
+          <span className="text-muted-foreground">Reporting it…</span>
+        )}
+      </div>
+    );
+  }
+  if (state === "failed") {
+    return (
+      <div
+        role="alert"
+        className="flex flex-wrap items-center gap-2 text-sm"
+        data-testid="live-archive-failed"
+      >
+        <span className="text-muted-foreground">
+          {loading
+            ? "Reading this run's log from the archive…"
+            : "Couldn't read this run's log from the archive."}
+        </span>
+        {onRetry && !loading && (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            Try again
+          </Button>
+        )}
+      </div>
+    );
+  }
+  if (loading) {
+    return (
+      <div className="text-muted-foreground text-sm" data-testid="live-archive-loading">
+        Reading this run's log from the archive…
+      </div>
+    );
+  }
+  return null;
+}
+
 /** The live view itself, from a `run.live` answer (rendered on its own in tests). */
 export function LiveRunView({
   data,
@@ -28,8 +88,14 @@ export function LiveRunView({
   onTakeover = async () => {},
   initialView,
   workItemId,
+  archiveLoading = false,
+  onRetry,
 }: {
   data: LiveView;
+  /** A page of an archived run is being read (R2 is slower than D1). */
+  archiveLoading?: boolean;
+  /** Reads again, after the archive couldn't be read. */
+  onRetry?: () => void;
   me: string;
   /** For the web terminal's socket; without it the view isn't offered. */
   workItemId?: string;
@@ -109,6 +175,12 @@ export function LiveRunView({
           )}
         </ToggleGroup>
       </div>
+      <ArchiveNotice
+        state={data.archive ?? null}
+        loading={archiveLoading}
+        onRetry={onRetry}
+        incident={data.archiveMissing?.incident ?? null}
+      />
       {shown === "chat" ? (
         // The chat has its own composer and takeover (spec 37).
         <LiveChat data={data} me={me} onSteer={onSteer} onTakeover={onTakeover} />
@@ -117,7 +189,13 @@ export function LiveRunView({
       ) : shown === "terminal" ? (
         <Terminal text={terminalText(events)} />
       ) : (
-        <Transcript items={transcriptItems(events, steers)} me={me} truncated={data.truncated} />
+        <Transcript
+          items={transcriptItems(events, steers)}
+          me={me}
+          truncated={data.truncated}
+          archived={data.archived ?? false}
+          unreadable={data.archive === "failed" || data.archive === "missing"}
+        />
       )}
       {shown !== "chat" &&
         run.active &&
@@ -155,16 +233,30 @@ function Transcript({
   items,
   me,
   truncated,
+  archived,
+  unreadable,
 }: {
   items: TranscriptItem[];
   me: string;
   truncated: boolean;
+  archived: boolean;
+  /** The archive couldn't be read: the notice above says so, so nothing claims the log is empty. */
+  unreadable: boolean;
 }) {
   const { ref, onScroll } = useStickToBottom(items.length);
   return (
     <div ref={ref} onScroll={onScroll} className={PANE} data-testid="live-stream">
+      {archived && (
+        <div className="text-zinc-500" data-testid="live-archived">
+          Archived: this run ended over 30 days ago, so its log is read from the archive.
+        </div>
+      )}
       {truncated && <div className="text-zinc-500">… earlier events not shown</div>}
-      {items.length === 0 && <div className="text-zinc-500">Nothing yet: the run is starting.</div>}
+      {items.length === 0 && !unreadable && (
+        <div className="text-zinc-500">
+          {archived ? "Nothing in the archive for this run." : "Nothing yet: the run is starting."}
+        </div>
+      )}
       {items.map((item) => (
         <TranscriptRow key={item.key} item={item} me={me} />
       ))}

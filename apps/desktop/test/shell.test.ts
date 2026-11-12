@@ -170,7 +170,8 @@ describe("org scope", () => {
     expect(waitingCount(client)).toBe(0);
     expect(client.running.map((i) => i.number)).toEqual([3]);
     const personal = scopeInbox(inbox, orgOf, "org_personal");
-    expect(waitingCount(personal)).toBe(3);
+    // Two gates, a question and #16's release flag (spec 52, Q4).
+    expect(waitingCount(personal)).toBe(4);
     const global = {
       ...inbox,
       gates: [{ ...(inbox.gates[0] as Inbox["gates"][number]), projectId: null }],
@@ -221,17 +222,18 @@ describe("the Inbox list", () => {
   const setup = ANSWERS["setup.status"]?.({ orgId: "org_personal" }) ?? null;
   const entries = inboxEntries(inbox, setup);
 
-  it("groups merges, specs, questions, then notices", () => {
+  it("groups merges, specs, questions, approvals, then notices", () => {
     expect(entries.map((e) => `${e.group}:${e.key}`)).toEqual([
       "Merges:wi_13",
       "Specs:wi_12",
       "Questions:wi_11",
+      "Approvals:wi_16",
       "Notices:protection-prj_factory",
       "Notices:setup",
     ]);
     expect(
       inboxEntries(inbox, { ...(setup as NonNullable<typeof setup>), complete: true }),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
   });
 
   it("selects ?item=, else the first; nothing when empty", () => {

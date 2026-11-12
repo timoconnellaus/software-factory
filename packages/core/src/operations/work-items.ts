@@ -10,6 +10,7 @@ import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { endPlanningSessions } from "../planning.ts";
 import { specRequired } from "../policy/project-policy.ts";
+import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
@@ -21,6 +22,8 @@ import {
   priority,
   priorityIndex,
   priorityOf,
+  RELEASE_CHOICES,
+  releaseFlagOf,
   releaseRefusal,
   requestPull,
   requestPullsAfterEnd,
@@ -162,6 +165,10 @@ export const workItemCreate = defineOperation({
     outcome: z.enum(["created", "attached", "duplicate"]),
     /** Where a created item is now: `running` when the pull started it at once. */
     status: z.string().optional(),
+    /** The readiness pre-check's hint for the person who released it (spec 23): ignorable. */
+    hint: z.string().optional(),
+    /** Set when the readiness pre-check parked it in the Backlog (spec 23). */
+    needsInfo: z.object({ waitingOn: z.string(), reason: z.string() }).optional(),
   }),
   async handler(input, ctx) {
     const project = requireProject(ctx);
@@ -262,8 +269,29 @@ export const workItemCreate = defineOperation({
       acceptanceCriteria: input.acceptanceCriteria ?? null,
     });
     await linkNewItem(ctx, { id: created.id, org_id: project.org_id }, input.waitsFor);
+    // Marked ready or released at once: the readiness pre-check runs (spec 23), and an unclear
+    // request lands in the Backlog with a question to its requester instead.
+    const parked =
+      input.state === "ready" || input.state === "queued"
+        ? await parkIfNotReady(
+            ctx,
+            {
+              id: created.id,
+              project_id: project.id,
+              org_id: project.org_id,
+              number: project.next_number,
+              title,
+              requester_user_id: requester,
+              body: input.body,
+              parent_work_item_id: null,
+              kind: "change",
+              source: input.source,
+            },
+            input.state,
+          )
+        : null;
     // Create and release: the pull runs right after this commits, in its own batch.
-    if (input.state === "queued") requestPull(ctx, project.id);
+    if (input.state === "queued" && !parked) requestPull(ctx, project.id);
     ctx.write(
       ctx.db
         .insertInto("core_intake_keys")
@@ -279,7 +307,19 @@ export const workItemCreate = defineOperation({
       number: project.next_number,
       branch: created.branch,
       outcome: "created" as const,
-      status: input.state,
+      status: parked ? "backlog" : input.state,
+      ...(!parked && input.state !== "backlog" && ctx.actor.type === "human"
+        ? (() => {
+            const hint = readinessHint({
+              title,
+              body: input.body,
+              parent_work_item_id: null,
+              kind: "change",
+            });
+            return hint ? { hint } : {};
+          })()
+        : {}),
+      ...(parked ? { needsInfo: { waitingOn: parked.waitingOn, reason: parked.reason } } : {}),
     };
   },
 });
@@ -341,6 +381,18 @@ export const workItemGet = defineOperation({
       body: z.string(),
       specRequired: z.boolean().nullable(),
       specDecisionReason: z.string().nullable(),
+      /** The readiness pre-check's hint while it hasn't started (spec 23): ignorable. */
+      readinessHint: z.string().nullable(),
+      /** Set while parked in the Backlog for a requester's answers (spec 23). */
+      needsInfo: z
+        .object({
+          waitingOn: z.string(),
+          reason: z.string(),
+          source: z.string(),
+          questionIds: z.array(z.string()),
+          heading: z.string(),
+        })
+        .nullable(),
       domains: z.array(z.string()),
       headSha: z.string().nullable(),
       prNumber: z.number().nullable(),
@@ -539,6 +591,19 @@ export const workItemGet = defineOperation({
         body: w.body,
         specRequired: w.spec_required === null ? null : w.spec_required === 1,
         specDecisionReason: w.spec_decision_reason,
+        readinessHint: ["backlog", "ready"].includes(w.status) ? readinessHint(w) : null,
+        needsInfo: (() => {
+          const m = needsInfoOf(w.needs_info);
+          return m
+            ? {
+                waitingOn: m.waitingOn,
+                reason: m.reason,
+                source: m.source,
+                questionIds: m.questionIds,
+                heading: m.heading,
+              }
+            : null;
+        })(),
         domains: parseJson<string[]>(w.domains, []),
         headSha: w.head_sha,
         prNumber: w.pr_number,
@@ -661,6 +726,8 @@ export const workItemTimeline = defineOperation({
   name: "workItem.timeline",
   description:
     "A work item's timeline, straight from the audit journal (spec 13): every operation on it with actor, gate decision, outcome and reason, oldest first.",
+  // Polled: reads nothing an org workflow decides (spec 52 PR (d), cost).
+  skipsOrgWorkflow: true,
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
@@ -1138,6 +1205,22 @@ export const inboxList = defineOperation({
       }),
     ),
     wipHolds: z.array(z.object({ projectId: z.string(), waitingBuilds: z.number() })),
+    /**
+     * Items flagged at release for this person (spec 52, Q4): their workflow's shaping stages
+     * changed since they were shaped. The choices are workItem.releaseChoice's.
+     */
+    releaseFlags: z.array(
+      z.object({
+        workItemId: z.string(),
+        projectId: z.string(),
+        number: z.number(),
+        title: z.string(),
+        reason: z.string(),
+        shapedUnder: z.number(),
+        current: z.number(),
+        choices: z.array(z.enum(RELEASE_CHOICES)),
+      }),
+    ),
     /** "Protection on `main` changed" (ADR 0280): projects whose protection went red after ok. */
     protection: z.array(
       z.object({
@@ -1161,7 +1244,7 @@ export const inboxList = defineOperation({
       .select("organization_id")
       .where("user_id", "=", me)
       .$if(!!input.orgId, (q) => q.where("organization_id", "=", input.orgId ?? ""));
-    const [pending, questionRows, running, runnerRows, holds, drift, planningRows] =
+    const [pending, questionRows, running, runnerRows, holds, drift, planningRows, flagged] =
       await readBatch(ctx.d1, [
         ctx.db
           .selectFrom("core_pending_actions")
@@ -1264,6 +1347,13 @@ export const inboxList = defineOperation({
           .where("core_planning_sessions.status", "not in", ["ended", "moved"])
           .orderBy("core_planning_sessions.announced_at", "desc")
           .limit(50),
+        // Spec 52, Q4: by core_work_items_release_flag_idx (migration 0285), this person's only.
+        ctx.db
+          .selectFrom("core_work_items")
+          .select(["id", "project_id", "number", "title", "release_flag"])
+          .where("release_flag_user_id", "=", me)
+          .where("org_id", "in", myOrgs)
+          .limit(50),
       ]);
     const gates = pending
       .filter((g) => g.assignee_user_id === me)
@@ -1338,6 +1428,23 @@ export const inboxList = defineOperation({
         announcedAt: p.announced_at ?? "",
       })),
       wipHolds: holds.map((h) => ({ projectId: h.project_id, waitingBuilds: Number(h.n) })),
+      releaseFlags: flagged.flatMap((f) => {
+        const flag = releaseFlagOf(f.release_flag);
+        return flag
+          ? [
+              {
+                workItemId: f.id,
+                projectId: f.project_id,
+                number: f.number,
+                title: f.title,
+                reason: flag.reason,
+                shapedUnder: flag.shapedUnder,
+                current: flag.current,
+                choices: [...RELEASE_CHOICES],
+              },
+            ]
+          : [];
+      }),
       protection: drift.map((d) => {
         const problems = parseJson<string[]>(d.problems, []);
         return {

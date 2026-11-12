@@ -5,12 +5,21 @@
 import { json, parseJson } from "@software-factory/db";
 import {
   chatReplyInputSchema,
+  droppedEdits,
+  type EditFootprint,
+  editFootprint,
+  mentions,
   PLANNING_INTERRUPT_LINES,
+  pinSchema,
   planningNewsInputSchema,
   planningPeekInputSchema,
   planningReadyInputSchema,
   planningWaitInputSchema,
+  rekeyFootprint,
+  sameFootprint,
   specReviseInputSchema,
+  structureMoves,
+  whyNotKept,
 } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -20,6 +29,7 @@ import {
   batchDue,
   type Delivered,
   enqueuePlanningJob,
+  guardCurrentSpec,
   guardNoUnreadPersonNews,
   hasUnreadPersonNews,
   interruptPlanning,
@@ -33,10 +43,13 @@ import {
   planningReadyEvent,
   presentPeople,
   readNews,
+  STANDING_EDITS_MAX,
+  standingEdits,
   takeBackFromGate,
   wakeSession,
   withdrawSpecGate,
 } from "../planning.ts";
+import { liveArtifact } from "../planning-visuals.ts";
 import { approverIds } from "../scope.ts";
 import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
@@ -451,6 +464,15 @@ export const specRevise = defineOperation({
         "the spec is waiting at the gate: wait for a decision (changes arrive in the chat)",
       );
     }
+    // A person's edit stays word for word (ADR 0471): the planner asks before changing it.
+    const dropped = droppedEdits(input.specMd, await standingEdits(ctx, w.id));
+    if (dropped.length) {
+      throw new OperationError(
+        "conflict",
+        `a person edited the plan, and this revision doesn't keep their wording: ${await describeEdits(ctx, dropped, input.specMd)}. Keep each word for word in its section, as many times as they wrote it, or ask them in the chat.`,
+        { editIds: dropped.map((e) => e.id) },
+      );
+    }
     const latest = await ctx.db
       .selectFrom("core_specs")
       .select((eb) => eb.fn.max("version").as("v"))
@@ -465,6 +487,7 @@ export const specRevise = defineOperation({
         .where("work_item_id", "=", w.id)
         .where("status", "=", "draft"),
     );
+    guardCurrentSpec(ctx, w, "the plan is still the version this revision replaces");
     ctx.write(
       ctx.db.insertInto("core_specs").values({
         id: specId,
@@ -481,12 +504,20 @@ export const specRevise = defineOperation({
         created_at: ctx.now,
       }),
     );
+    // Guarded: a person's edit committed meanwhile changes the current plan, and this revision
+    // (checked against the edits as they were) must not overwrite it (review of #85).
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
         .set({ current_spec_id: specId, updated_at: ctx.now })
-        .where("id", "=", w.id),
+        .where("id", "=", w.id)
+        .where((eb) =>
+          w.current_spec_id === null
+            ? eb("current_spec_id", "is", null)
+            : eb("current_spec_id", "=", w.current_spec_id),
+        ),
     );
+    ctx.guardChanged("the plan is still the version this revision replaces");
     markWorking(ctx, session, "revising the spec");
     logPlanning(ctx, w.id, "spec.revised", { specId, version, summary: input.summary ?? null });
     ctx.change({
@@ -836,6 +867,20 @@ export const planningReady = defineOperation({
       );
     }
     guardNoUnreadPersonNews(ctx, w.id, read);
+    // Every person's standing edit must still be in the plan going to the gate (review of #85).
+    const spec = await ctx.db
+      .selectFrom("core_specs")
+      .select("body_md")
+      .where("id", "=", w.current_spec_id)
+      .executeTakeFirst();
+    const notKept = droppedEdits(spec?.body_md ?? "", await standingEdits(ctx, w.id));
+    if (notKept.length) {
+      throw new OperationError(
+        "conflict",
+        `the plan doesn't keep these edits word for word: ${await describeEdits(ctx, notKept, spec?.body_md ?? "")}. Restore them with spec_revise, or ask the person in the chat to release the edit (they can, under the plan)`,
+        { editIds: notKept.map((e) => e.id) },
+      );
+    }
     const open = await ctx.db
       .selectFrom("core_questions")
       .select("number")
@@ -900,6 +945,17 @@ export const chatSend = defineOperation({
     replyTo: z.string().min(1).optional(),
     /** Stop the planner's current step so it reads this now (⌘-Enter, ADR 0470). */
     interrupt: z.boolean().optional(),
+    /** Spec 21: a comment pinned to a spot in an artifact (the element, and where it is). */
+    pin: pinSchema.optional(),
+    /** A comment on plan lines (spec 27): the plan version, the lines and what they read. */
+    anchor: z
+      .object({
+        specId: z.string().min(1),
+        lineStart: z.number().int().nonnegative(),
+        lineEnd: z.number().int().nonnegative(),
+        quote: z.string().max(4_000),
+      })
+      .optional(),
   }),
   output: z.object({
     messageId: z.string(),
@@ -911,6 +967,29 @@ export const chatSend = defineOperation({
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     await assertAbout(ctx, w.id, input.questionId, input.replyTo);
+    if (input.pin) await liveArtifact(ctx, w.id, input.pin.artifactId);
+    if (input.anchor) {
+      const anchored = await ctx.db
+        .selectFrom("core_specs")
+        .select(["work_item_id", "body_md"])
+        .where("id", "=", input.anchor.specId)
+        .executeTakeFirst();
+      if (anchored?.work_item_id !== w.id) {
+        throw new OperationError("not_found", "no such plan version");
+      }
+      // The quote is what those lines of that version say (review of #85, round 2).
+      const { lineStart, lineEnd, quote } = input.anchor;
+      const said = anchored.body_md
+        .split("\n")
+        .slice(lineStart, lineEnd + 1)
+        .join("\n");
+      if (lineEnd < lineStart || said !== quote) {
+        throw new OperationError(
+          "invalid_input",
+          "the comment's quote isn't what those lines of the plan say: look again",
+        );
+      }
+    }
     const messageId = newId("planningMessage");
     ctx.write(
       ctx.db.insertInto("core_planning_messages").values({
@@ -921,6 +1000,8 @@ export const chatSend = defineOperation({
         text: input.text,
         question_id: input.questionId ?? null,
         reply_to: input.replyTo ?? null,
+        anchor: input.anchor ? JSON.stringify(input.anchor) : null,
+        pin: input.pin ? JSON.stringify(input.pin) : null,
         created_at: ctx.now,
       }),
     );
@@ -1134,6 +1215,257 @@ export const planningResume = defineOperation({
   },
 });
 
+export const specEdit = defineOperation({
+  name: "spec.edit",
+  description:
+    "A person edits lines of the work item's living plan (spec 27, ADR 0471): the source lines lineStart..lineEnd (0-based, inclusive) of the current version, which must still read `before`, become `after`. A new plan version by this person; the planner hears it, keeps the wording word for word, and records the answers it settles. While the spec waits at the gate, it takes it back.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  browserOnly: true,
+  desktopDecidable: true,
+  input: z.object({
+    workItemId,
+    specId: z.string().min(1),
+    lineStart: z.number().int().nonnegative(),
+    lineEnd: z.number().int().nonnegative(),
+    before: z.string().max(20_000),
+    after: z.string().max(20_000),
+  }),
+  output: z.object({ specId: z.string(), version: z.number(), editId: z.string() }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    if (input.lineEnd < input.lineStart) {
+      throw new OperationError("invalid_input", "lineEnd comes before lineStart");
+    }
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no open planning session");
+    if (w.current_spec_id !== input.specId) {
+      throw new OperationError(
+        "conflict",
+        "the plan changed since you started editing: look again",
+      );
+    }
+    const spec = await ctx.db
+      .selectFrom("core_specs")
+      .selectAll()
+      .where("id", "=", input.specId)
+      .executeTakeFirst();
+    if (!spec) throw new OperationError("not_found", "no such plan version");
+    const lines = spec.body_md.split("\n");
+    if (input.lineEnd >= lines.length) {
+      throw new OperationError("invalid_input", "those lines aren't in the plan");
+    }
+    const current = lines.slice(input.lineStart, input.lineEnd + 1).join("\n");
+    if (current !== input.before) {
+      throw new OperationError(
+        "conflict",
+        "those lines changed since you started editing: look again",
+      );
+    }
+    if (input.after === input.before) {
+      throw new OperationError("invalid_input", "nothing changed");
+    }
+    // The edit must be whole blocks, and read in the plan as it reads alone (review of #85, round 2).
+    const planned = editFootprint(spec.body_md, input.lineStart, input.lineEnd, input.after);
+    if (!planned.ok) throw new OperationError("invalid_input", planned.reason);
+    // A tag that says a question decided this line must be true (review of #85): an edit can't
+    // put [Q3] on a line while Q3 is still open.
+    const added = [...input.after.matchAll(/\[Q(\d+)\]/g)]
+      .map((m) => Number(m[1]))
+      .filter((n) => !input.before.includes(`[Q${n}]`));
+    if (added.length) {
+      const tagged = await ctx.db
+        .selectFrom("core_questions")
+        .select(["number", "status"])
+        .where("work_item_id", "=", w.id)
+        .where("number", "in", added)
+        .execute();
+      const notDecided = added.filter(
+        (n) => tagged.find((q) => q.number === n)?.status !== "answered",
+      );
+      if (notDecided.length) {
+        throw new OperationError(
+          "invalid_input",
+          `${notDecided.map((n) => `Q${n}`).join(", ")} isn't answered yet, so a line can't cite it as decided: answer it first, or tag the line [assumption]`,
+        );
+      }
+    }
+    // An edit after the spec was approved would land on a plan nobody builds (review of #85).
+    if ((await takeBackFromGate(ctx, w, "a person edited the plan")) === "decided") {
+      throw new OperationError(
+        "conflict",
+        "the plan was just approved: edits no longer reach it. Ask the approver to send it back if it must change",
+      );
+    }
+    const body = planned.result;
+    const latest = await ctx.db
+      .selectFrom("core_specs")
+      .select((eb) => eb.fn.max("version").as("v"))
+      .where("work_item_id", "=", w.id)
+      .executeTakeFirst();
+    const version = (latest?.v ?? 0) + 1;
+    const specIdValue = newId("spec");
+    const editId = newId("specEdit");
+    ctx.write(
+      ctx.db
+        .updateTable("core_specs")
+        .set({ status: "superseded" })
+        .where("work_item_id", "=", w.id)
+        .where("status", "=", "draft"),
+    );
+    guardCurrentSpec(ctx, w, "the plan is still the version edited");
+    ctx.write(
+      ctx.db.insertInto("core_specs").values({
+        id: specIdValue,
+        work_item_id: w.id,
+        version,
+        body_md: body,
+        acceptance_criteria: spec.acceptance_criteria,
+        assumptions: spec.assumptions,
+        coverage: spec.coverage,
+        clarifications: spec.clarifications,
+        summary: "edited by a person",
+        status: "draft",
+        created_by: ctx.actor.id,
+        created_at: ctx.now,
+      }),
+    );
+    // Guarded: the plan must still be the one the person edited when this commits.
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ current_spec_id: specIdValue, updated_at: ctx.now })
+        .where("id", "=", w.id)
+        .where("current_spec_id", "=", input.specId),
+    );
+    ctx.guardChanged("the plan is still the version edited");
+    // A person's edit that moves structure (a heading renamed, inserted, deleted or reordered above,
+    // a parent item reworded) carries the edits it moves along, in this batch, so nobody is stuck
+    // (fourth review of #85).
+    const moves = structureMoves(
+      spec.body_md,
+      body,
+      input.lineStart,
+      input.lineEnd,
+      input.after.trim() === "" ? 0 : input.after.split("\n").length,
+    );
+    const standing = (await standingEdits(ctx, w.id)).map((e) => {
+      const footprint = rekeyFootprint(e.footprint, moves);
+      return { ...e, moved: !sameFootprint(footprint, e.footprint), footprint };
+    });
+    for (const e of standing.filter((x) => x.moved)) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_spec_edits")
+          .set({ footprint: JSON.stringify(e.footprint) })
+          .where("id", "=", e.id)
+          .where("replaced_by", "is", null),
+      );
+    }
+    // A person's later word stands: an earlier edit this one overrides (it removed a block that edit
+    // wrote, or wrote back what that edit removed) is retired. Any other edit the plan stops keeping
+    // stays, listed as not kept with the reason, until a person releases it: never dropped silently.
+    const mine = { id: editId, footprint: planned.footprint };
+    const key = (k: { section: string; parent?: string; text: string }) =>
+      `${k.section}␟${k.parent ?? ""}␟${k.text}`;
+    const removedKeys = new Set(planned.footprint.gone.map(key));
+    const covered = droppedEdits(body, [mine, ...standing])
+      .filter((e) => e.id !== editId)
+      .filter(
+        (e) =>
+          e.footprint.blocks.some((b) => removedKeys.has(key(b))) ||
+          e.footprint.gone.some(
+            (g) => droppedEdits(body, [{ footprint: { blocks: [], gone: [g] } }]).length > 0,
+          ),
+      );
+    // Retire first, then count: an edit that frees slots isn't refused (fourth review of #85, 4).
+    if (standing.length - covered.length + 1 > STANDING_EDITS_MAX) {
+      throw new OperationError(
+        "conflict",
+        `this plan already holds ${STANDING_EDITS_MAX} people's edits the planner must keep: release some (under the plan) before editing more`,
+      );
+    }
+    if (covered.length) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_spec_edits")
+          .set({ replaced_by: editId })
+          .where(
+            "id",
+            "in",
+            covered.map((e) => e.id),
+          )
+          .where("replaced_by", "is", null),
+      );
+    }
+    ctx.write(
+      ctx.db.insertInto("core_spec_edits").values({
+        id: editId,
+        work_item_id: w.id,
+        spec_id: specIdValue,
+        base_spec_id: input.specId,
+        line_start: input.lineStart,
+        line_end: input.lineEnd,
+        before: input.before,
+        after: input.after,
+        author_id: ctx.actor.id,
+        created_at: ctx.now,
+        footprint: JSON.stringify(planned.footprint),
+      }),
+    );
+    logPlanning(ctx, w.id, "spec.edited", { editId, specId: specIdValue, version });
+    await wakeSession(ctx, w);
+    ctx.change({ entity: "spec", id: specIdValue, after: { version, editId } });
+    return { specId: specIdValue, version, editId };
+  },
+});
+
+export const specReleaseEdit = defineOperation({
+  name: "spec.releaseEdit",
+  description:
+    "A person lets the planner reword their edit to the plan (spec 27, review of #85): the edit stops standing, so a revision no longer has to keep it word for word. The planner hears it.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  browserOnly: true,
+  desktopDecidable: true,
+  input: z.object({ workItemId, editId: z.string().min(1) }),
+  output: z.object({ editId: z.string(), released: z.boolean() }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const edit = await ctx.db
+      .selectFrom("core_spec_edits")
+      .select(["id", "work_item_id", "released_at", "replaced_by"])
+      .where("id", "=", input.editId)
+      .executeTakeFirst();
+    if (!edit || edit.work_item_id !== w.id) throw new OperationError("not_found", "no such edit");
+    if (edit.released_at || edit.replaced_by) return { editId: edit.id, released: false };
+    ctx.write(
+      ctx.db
+        .updateTable("core_spec_edits")
+        .set({ released_at: ctx.now, released_by: ctx.actor.id })
+        .where("id", "=", edit.id)
+        .where("released_at", "is", null),
+    );
+    // The planner hears it as this person's message, like any word of theirs.
+    const messageId = newId("planningMessage");
+    ctx.write(
+      ctx.db.insertInto("core_planning_messages").values({
+        id: messageId,
+        work_item_id: w.id,
+        author_kind: "person",
+        author_id: ctx.actor.id,
+        text: "You may reword my edit to the plan now; keep its meaning.",
+        created_at: ctx.now,
+      }),
+    );
+    logPlanning(ctx, w.id, "chat.message", { messageId, releasedEdit: edit.id });
+    await wakeSession(ctx, w);
+    return { editId: edit.id, released: true };
+  },
+});
+
 const questionView = z.object({
   id: z.string(),
   number: z.number().nullable(),
@@ -1154,6 +1486,17 @@ const questionView = z.object({
   acceptedDefault: z.boolean(),
   /** Accepted under a person's "finish alone" instruction; answeredBy is that person. */
   acceptedAlone: z.boolean(),
+  /** Recorded by the planner from this person's plan edit (spec 27). */
+  answeredViaEdit: z.string().nullable(),
+  /** Spec 21: links to the planner's mockups. */
+  artifactId: z.string().nullable(),
+  optionArtifacts: z.record(z.string(), z.string()).nullable(),
+  optionValues: z.record(z.string(), z.record(z.string(), z.string())).nullable(),
+  control: z.string().nullable(),
+  unit: z.string().nullable(),
+  min: z.number().nullable(),
+  max: z.number().nullable(),
+  step: z.number().nullable(),
   skipped: z.boolean(),
   /** When this answer reached the planning agent (a read receipt); null until then. */
   answerDeliveredAt: z.string().nullable(),
@@ -1184,6 +1527,8 @@ export const planningGet = defineOperation({
   name: "planning.get",
   description:
     "The Planning view (spec 20): the session (state, runner, whether it waits for its runner), every question with its answer, the current spec and the one before it (to highlight what changed), the chat, who is here, and the log's cursor.",
+  // Polled: reads nothing an org workflow decides (spec 52 PR (d), cost).
+  skipsOrgWorkflow: true,
   risk: "read",
   actors: ["human"],
   permission: "member",
@@ -1205,6 +1550,8 @@ export const planningGet = defineOperation({
         pausedBy: z.string().nullable(),
         /** Its runner can interrupt the current step (⌘-Enter, Stop); else messages wait for the step. */
         canInterrupt: z.boolean(),
+        /** Spec 21: the artifact the planner put on screen last. */
+        shownArtifactId: z.string().nullable(),
         /** "Let the planner finish alone" is on: who set it and when (ADR 0470). */
         finishAlone: z.object({ by: z.string(), byName: z.string(), at: z.string() }).nullable(),
         focusedQuestionId: z.string().nullable(),
@@ -1235,49 +1582,118 @@ export const planningGet = defineOperation({
         kind: z.string(),
         deliveredAt: z.string().nullable(),
         createdAt: z.string(),
+        /** Spec 21: a comment pinned to a spot in an artifact. */
+        pin: pinSchema.nullable(),
+        /** A comment on plan lines (spec 27). */
+        anchor: z
+          .object({
+            specId: z.string(),
+            lineStart: z.number(),
+            lineEnd: z.number(),
+            quote: z.string(),
+          })
+          .nullable(),
+      }),
+    ),
+    /** Spec 21: the planner's mockups, diagrams and documents (latest revision, no content). */
+    artifacts: z.array(
+      z.object({
+        id: z.string(),
+        kind: z.string(),
+        title: z.string(),
+        description: z.string().nullable(),
+        revision: z.number(),
+        keep: z.boolean(),
+        controls: z.array(z.string()),
+        size: z.number(),
+        updatedAt: z.string(),
+      }),
+    ),
+    /** People's standing edits to the plan (spec 27): the planner keeps them word for word. */
+    edits: z.array(
+      z.object({
+        id: z.string(),
+        specId: z.string(),
+        lineStart: z.number(),
+        lineEnd: z.number(),
+        before: z.string(),
+        after: z.string(),
+        authorId: z.string(),
+        authorName: z.string(),
+        createdAt: z.string(),
+        /** Whether the current plan keeps it word for word (shown at the gate when it doesn't). */
+        kept: z.boolean(),
+        /** Why the plan doesn't keep it (its section is gone, what it removed is back…). */
+        whyNotKept: z.string().nullable(),
+        /** Lines the planner wrote that mention what this edit removed (listed, not refused). */
+        mentions: z.array(z.string()),
+        /** The blocks it wrote, by section and parent: the plan's blocks that show as this person's. */
+        blocks: z.array(z.object({ section: z.string(), parent: z.string(), text: z.string() })),
       }),
     ),
     present: z.array(z.object({ userId: z.string(), name: z.string() })),
   }),
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
-    const [session, questions, specs, messages, last, present] = await Promise.all([
-      ctx.db
-        .selectFrom("core_planning_sessions")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("created_at", "desc")
-        .limit(1)
-        .executeTakeFirst(),
-      ctx.db
-        .selectFrom("core_questions")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .where("status", "!=", "withdrawn")
-        .orderBy("position")
-        .orderBy("created_at")
-        .execute(),
-      ctx.db
-        .selectFrom("core_specs")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("version", "desc")
-        .limit(2)
-        .execute(),
-      ctx.db
-        .selectFrom("core_planning_messages")
-        .selectAll()
-        .where("work_item_id", "=", w.id)
-        .orderBy("created_at")
-        .limit(500)
-        .execute(),
-      ctx.db
-        .selectFrom("core_planning_events")
-        .select((eb) => eb.fn.max("id").as("id"))
-        .where("work_item_id", "=", w.id)
-        .executeTakeFirst(),
-      presentPeople(ctx, w.id),
-    ]);
+    const [session, questions, specs, messages, last, present, edits, artifacts] =
+      await Promise.all([
+        ctx.db
+          .selectFrom("core_planning_sessions")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("created_at", "desc")
+          .limit(1)
+          .executeTakeFirst(),
+        ctx.db
+          .selectFrom("core_questions")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .where("status", "!=", "withdrawn")
+          .orderBy("position")
+          .orderBy("created_at")
+          .execute(),
+        ctx.db
+          .selectFrom("core_specs")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("version", "desc")
+          .limit(2)
+          .execute(),
+        ctx.db
+          .selectFrom("core_planning_messages")
+          .selectAll()
+          .where("work_item_id", "=", w.id)
+          .orderBy("created_at")
+          .limit(500)
+          .execute(),
+        ctx.db
+          .selectFrom("core_planning_events")
+          .select((eb) => eb.fn.max("id").as("id"))
+          .where("work_item_id", "=", w.id)
+          .executeTakeFirst(),
+        presentPeople(ctx, w.id),
+        standingEdits(ctx, w.id),
+        ctx.db
+          .selectFrom("core_planning_artifacts as a")
+          .innerJoin("core_planning_artifact_revisions as r", (j) =>
+            j.onRef("r.artifact_id", "=", "a.id").onRef("r.revision", "=", "a.revision"),
+          )
+          .select([
+            "a.id",
+            "a.kind",
+            "a.title",
+            "a.description",
+            "a.revision",
+            "a.keep",
+            "a.updated_at",
+            "r.controls",
+            "r.size",
+          ])
+          .where("a.work_item_id", "=", w.id)
+          .where("a.deleted_at", "is", null)
+          .orderBy("a.created_at")
+          .execute(),
+      ]);
     const runner = session?.runner_id
       ? await ctx.db
           .selectFrom("core_runners")
@@ -1293,6 +1709,7 @@ export const planningGet = defineOperation({
       ...new Set([
         ...messages.filter((m) => m.author_kind === "person").map((m) => m.author_id),
         ...(session?.finish_alone_by ? [session.finish_alone_by] : []),
+        ...edits.map((e) => e.author_id),
       ]),
     ];
     if (ids.length) {
@@ -1317,6 +1734,8 @@ export const planningGet = defineOperation({
       createdBy: s.created_by,
     });
     const current = specs.find((s) => s.id === w.current_spec_id) ?? specs[0];
+    // Edits are kept in order, each taking the copies it wrote (review of #85, round 2).
+    const notKept = new Set(current ? droppedEdits(current.body_md, edits).map((e) => e.id) : []);
     const previous = specs.find((s) => current && s.version < current.version);
     const open = session && OPEN_SESSION.includes(session.status);
     return {
@@ -1333,6 +1752,7 @@ export const planningGet = defineOperation({
             yieldRequested: session.yield_requested_at !== null,
             paused: session.paused_at !== null,
             pausedBy: session.paused_by,
+            shownArtifactId: session.shown_artifact_id,
             canInterrupt: ["steer", "interrupt"].every((c) =>
               (
                 parseJson<{ capabilities?: string[] }>(runner?.manifest ?? "{}", {}).capabilities ??
@@ -1375,6 +1795,19 @@ export const planningGet = defineOperation({
         note: q.note,
         acceptedDefault: q.accepted_default === 1,
         acceptedAlone: q.accepted_alone === 1,
+        answeredViaEdit: q.answered_via_edit,
+        artifactId: q.artifact_id,
+        optionArtifacts: q.option_artifacts
+          ? parseJson<Record<string, string>>(q.option_artifacts, {})
+          : null,
+        optionValues: q.option_values
+          ? parseJson<Record<string, Record<string, string>>>(q.option_values, {})
+          : null,
+        control: q.control,
+        unit: q.unit,
+        min: q.min,
+        max: q.max,
+        step: q.step,
         skipped: q.skipped === 1,
         answerDeliveredAt: q.answer_delivered_at,
         answeredBy: q.answered_by,
@@ -1400,8 +1833,71 @@ export const planningGet = defineOperation({
         kind: m.kind,
         deliveredAt: m.delivered_at,
         createdAt: m.created_at,
+        pin: m.pin ? parseJson<z.output<typeof pinSchema> | null>(m.pin, null) : null,
+        anchor: m.anchor
+          ? parseJson<{ specId: string; lineStart: number; lineEnd: number; quote: string }>(
+              m.anchor,
+              { specId: "", lineStart: 0, lineEnd: 0, quote: "" },
+            )
+          : null,
+      })),
+      artifacts: artifacts.map((a) => ({
+        id: a.id,
+        kind: a.kind,
+        title: a.title,
+        description: a.description,
+        revision: a.revision,
+        keep: a.keep === 1,
+        controls: parseJson<string[]>(a.controls, []),
+        size: a.size,
+        updatedAt: a.updated_at,
+      })),
+      edits: edits.map((e) => ({
+        kept: !notKept.has(e.id),
+        whyNotKept: current && notKept.has(e.id) ? whyNotKept(current.body_md, e.footprint) : null,
+        mentions: current ? mentions(current.body_md, e.footprint) : [],
+        blocks: e.footprint.blocks.map((b) => ({ ...b, parent: b.parent ?? "" })),
+        id: e.id,
+        specId: e.spec_id,
+        lineStart: e.line_start,
+        lineEnd: e.line_end,
+        before: e.before,
+        after: e.after,
+        authorId: e.author_id,
+        authorName: people.get(e.author_id) ?? e.author_id,
+        createdAt: e.created_at,
       })),
       present,
     };
   },
 });
+
+/** Names edits for a refusal: each edit's words (or what it removed), its section and its author. */
+async function describeEdits(
+  ctx: HandlerContext,
+  edits: {
+    after: string;
+    before: string;
+    author_id: string;
+    footprint: EditFootprint;
+  }[],
+  md: string,
+): Promise<string> {
+  const ids = [...new Set(edits.map((e) => e.author_id))];
+  const names = new Map<string, string>();
+  for (const u of await ctx.db
+    .selectFrom("core_user")
+    .select(["id", "name", "github_login"])
+    .where("id", "in", ids)
+    .execute())
+    names.set(u.id, u.name || u.github_login || u.id);
+  return edits
+    .map((e) => {
+      const section = (e.footprint.blocks[0] ?? e.footprint.gone[0])?.section;
+      const what = e.after.trim()
+        ? JSON.stringify(e.after.trim())
+        : `removing ${JSON.stringify(e.before.trim())}`;
+      return `${what}${section ? ` (in ${section})` : ""} by ${names.get(e.author_id) ?? e.author_id}: ${whyNotKept(md, e.footprint)}`;
+    })
+    .join("; ");
+}

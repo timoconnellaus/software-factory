@@ -35,6 +35,8 @@ function detail(
       body: "",
       specRequired: false,
       specDecisionReason: "sized small, below the spec threshold (medium)",
+      readinessHint: null,
+      needsInfo: null,
       domains: [],
       headSha: null,
       prNumber: null,
@@ -213,6 +215,7 @@ describe("the inbox", () => {
       runners: [],
       planning: [],
       wipHolds: [{ projectId: "p2", waitingBuilds: 2 }],
+      releaseFlags: [],
       protection: [],
     };
     const groups = groupByProject(inbox);

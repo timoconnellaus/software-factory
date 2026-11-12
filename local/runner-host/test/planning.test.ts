@@ -266,10 +266,16 @@ describe("a planning job on the runner host (spec 20)", () => {
       .map((l) => JSON.parse(l) as { id: number; result: Record<string, unknown> });
     const list = replies.find((r) => r.id === 2)?.result.tools as { name: string }[];
     expect(list.map((t) => t.name).sort()).toEqual([
+      "artifact_add",
+      "artifact_delete",
+      "artifact_read",
+      "artifact_show",
+      "artifact_update",
       "chat_reply",
       "planning_news",
       "planning_ready",
       "planning_yield",
+      "question_answerFromEdit",
       "question_ask",
       "question_delete",
       "question_focus",

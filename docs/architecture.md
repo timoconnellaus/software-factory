@@ -27,8 +27,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 - **Planning** is a live agent session on a runner (ADR 0300): the planning agent works through
   operations over the runner channel (a projected planning MCP server), and kim-style hooks
   (`PostToolUse`, `UserPromptSubmit`, `Stop`) bring answers and chat back from the planning log. It
-  holds a light slot (ADR 0301). Mockups render on a sandboxed origin; kept artifacts land in `.kim/`
-  with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
+  holds a light slot (ADR 0301). Mockups are kept in D1 by revision and render in sandboxed frames
+  with an opaque origin (ADR 0472); kept artifacts land in `.kim/` with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
   channel path, `/runner/v1/jobs/:id/planning`, scoped by the job and fenced by its lease; the
   runner host relays them for the harness, so the runner key never leaves it. Every change is a row
   in the **planning log** (`core_planning_events`, its id the agent's cursor) and a
@@ -74,12 +74,26 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   workflows; `compileProjectWorkflow` expresses a project's slot workflow as a stage list. Nothing at
   run time reads them yet (build plan PR (a)). An **org config** (`core_org_configs`, migration 0280)
   holds the org's workflows and agents as versions, edited through `workflow.*`, `agent.save` and
-  `orgConfig.*`; a loosening save is `self-modify` for an org admin, and the built-in workflows
-  accept only tightening saves. A project may name an org workflow by id (`workflow: "wf_…"`) with
+  `orgConfig.*`; a loosening save is `self-modify` for an org admin (the classifier is an
+  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one. A
+  project may name an org workflow by id (`workflow: "wf_…"`) with
   `workflowOverrides` of the few settings each type lists as `overridable` (spec 52 PR (d)); until
   the switch-over, today's Workflow runs it through `effectivePolicy` (the scope's `policy`; config
   operations read `rawPolicy`), under the org config version the item pinned
-  (`core_work_items.org_config_version`, migration 0282).
+  (`core_work_items.org_config_version`, migration 0282). Overrides apply as the stricter of the
+  org's value and the project's, unless an org admin approved the looser one against the org's
+  value (`workflowOverrideApprovals`; it lapses when the org moves that value). The parsed org
+  config is cached per isolate by (org, version). The **reconciler** (ADR 0511) is
+  `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**, off the Workflow's
+  path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
+  its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each
+  stage history through the reconciler and writes one verdict row per item (`core_reconcile_items`,
+  migration 0281; `reconcile.report`). It drives nothing. It compares stage order and skips only;
+  everything else (jobs, gates, send-back targets, retries, slot steps, ends other than Done) counts
+  as a divergence, and `reconcile.streak` says "comparison incomplete" and what is missing until it
+  is compared. Known differences are reported by name and count as divergences until settled: the
+  merge queue's moved head (`queue-head-moved`, settled with spec 53's babysitter). The
+  switch-over is its own PR once 20 ended items in a row agree.
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`

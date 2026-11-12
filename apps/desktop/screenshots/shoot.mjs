@@ -43,10 +43,39 @@ export const SCREENS = [
   { name: "item-plan", path: "/work/wi_12?tab=plan", design: "ItemPlan.html" },
   { name: "plan-focus", path: "/work/wi_12?tab=plan", design: "PlanFocus.html", keys: ["f"] },
   {
+    name: "plan-mockups",
+    path: "/work/wi_12?tab=plan&pane=mockups",
+    design: "PlanFocusMockup.html",
+    keys: ["f"],
+    storage: { "sf-mockups": "on" },
+  },
+  {
+    name: "plan-canvas",
+    path: "/work/wi_12?tab=plan&pane=canvas",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    storage: { "sf-mockups": "on" },
+  },
+  {
     name: "plan-focus-alone",
     path: "/work/wi_12?tab=plan&fixture=alone",
     design: "PlanFocus.html",
     keys: ["f"],
+  },
+  // Second review of #85: nested lists, a fence, kept edits and comments on each.
+  {
+    name: "plan-blocks",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "plan-block-comments",
+  },
+  {
+    name: "plan-edits-dropped",
+    path: "/work/wi_12?tab=plan&fixture=dropped",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "your-edits",
   },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
@@ -69,6 +98,9 @@ export const SCREENS = [
     design: "WorkBacklog.html",
   },
   { name: "ready", path: "/work?view=ready", design: "WorkReady.html" },
+  // Spec 52, Q4: a shaped item whose workflow's shaping changed waits on a person's choice. No
+  // design of its own: it follows the Inbox's approval page.
+  { name: "inbox-release-flag", path: "/?item=wi_16", design: "InboxQuestion.html" },
   { name: "planning-empty", path: "/work?view=planning", design: "WorkReady.html" },
   { name: "item-backlog", path: "/work/wi_21", design: "ItemBacklog.html" },
   { name: "item-ready-blocked", path: "/work/wi_site_2", design: "ItemBacklog.html" },
@@ -152,7 +184,7 @@ const valued = new Set(["--out", "--size", "--tag"]);
 const only = args.filter((a, i) => !a.startsWith("--") && !valued.has(args[i - 1]));
 const screens = only.length ? SCREENS.filter((s) => only.includes(s.name)) : SCREENS;
 
-async function shoot(cdp, url, file, theme, keys = [], clicks = []) {
+async function shoot(cdp, url, file, theme, keys = [], clicks = [], scrollTo = null) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
@@ -172,6 +204,13 @@ async function shoot(cdp, url, file, theme, keys = [], clicks = []) {
       expression: `document.querySelector(${JSON.stringify(selector)})?.click()`,
     });
     await sleep(500);
+  }
+  if (scrollTo) {
+    // Bring a part of the view into sight (a test id), centred.
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[data-testid="${scrollTo}"]')?.scrollIntoView({ block: "center" })`,
+    });
+    await sleep(300);
   }
   const shot = await cdp.send("Page.captureScreenshot", {
     format: "png",
@@ -223,9 +262,22 @@ try {
       // A fresh view state per shot: one tab, the Personal org.
       await cdp.send("Page.navigate", { url: base });
       await sleep(300);
-      await cdp.send("Runtime.evaluate", { expression: "localStorage.clear()" });
+      await cdp.send("Runtime.evaluate", {
+        // A screen may set per-device settings first (e.g. mockups on, spec 21).
+        expression: `localStorage.clear(); ${Object.entries(s.storage ?? {})
+          .map(([k, v]) => `localStorage.setItem(${JSON.stringify(k)}, ${JSON.stringify(v)});`)
+          .join(" ")}`,
+      });
       const file = resolve(out, `${s.name}-${theme}${tag ? `-${tag}` : ""}.png`);
-      await shoot(cdp, `${base}${s.query ?? ""}#${s.path}`, file, theme, s.keys, s.clicks);
+      await shoot(
+        cdp,
+        `${base}${s.query ?? ""}#${s.path}`,
+        file,
+        theme,
+        s.keys,
+        s.clicks,
+        s.scrollTo,
+      );
     }
   }
   if (withDesign) {
