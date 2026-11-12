@@ -259,18 +259,25 @@ export interface RunnerAdapter<
    */
   steer?(session: S, text: string): Promise<void>;
   /**
-   * Optional (ADR 0501): run one command in the job's workspace, where the session runs (in its
-   * container, for a containerised runner), and return its exit code and combined output. The host
-   * runs the project's checks through it; without it the host runs them as a local process in
-   * `workspace.path`. An isolated runner (a container) must have one, so the code under test never
-   * runs on the host. Must honour `timeoutMs` and `signal` (exitCode null, timedOut true).
+   * Optional (ADR 0501): run one check command under the job's isolation (in a container, for a
+   * containerised runner) and return its exit code and combined output. `dir` is a clean copy of
+   * the commit being checked, made by the host (no ignored files, no git dir): the command runs
+   * there, never in the session's workspace. Without `exec` the host runs checks only under its
+   * own OS sandbox, and where it has none it reports them not run. Must honour `timeoutMs` and
+   * `signal` (exitCode null, timedOut true on a timeout).
    */
   exec?(
     job: Job,
     workspace: W,
-    command: { run: string; timeoutMs: number },
+    command: { run: string; timeoutMs: number; dir: string },
     signal: AbortSignal,
   ): Promise<ExecResult>;
+  /**
+   * Optional (ADR 0501): the adapter's own tamper check of the workspace's git dir, run by the host
+   * before any host git command that follows code the job ran (the checks, a fix round). Returns
+   * what it found (empty when untouched); anything found fails the job without a push.
+   */
+  checkWorkspace?(job: Job, workspace: W): Promise<string[]>;
   /**
    * Optional (ADR 0501): after `session.ended`, give the same session another turn with `text`
    * (a failing check's command, exit code and log tail) and report that turn, ending with its own

@@ -28,6 +28,7 @@ import {
   noteUsage,
   useAccount,
 } from "./accounts.ts";
+import { checkSandbox } from "./check-sandbox.ts";
 import { checkoutDirs } from "./checkouts.ts";
 import type { Paths, RunnerConfig } from "./config.ts";
 import { FETCH_NAMESPACE, hostGit } from "./git.ts";
@@ -182,6 +183,19 @@ export function buildRunner(
     git,
     maxConcurrent: config.maxConcurrent,
     maxLight: config.maxLight,
+    // ADR 0501: a job without a container runs its checks under the host's OS sandbox, never as the
+    // owner; none of the runner's own dirs or the owner's checkouts are readable there.
+    checkSandbox: containers
+      ? null
+      : checkSandbox({
+          protectPaths: [
+            dirs.configDir,
+            dirs.runsDir,
+            dirs.reposDir,
+            dirs.worktreesDir,
+            ...checkoutDirs(config),
+          ],
+        }),
     heartbeatMs: config.heartbeatMs,
     reapOrphans: async (running) => {
       // Container jobs first, with plain file operations: their job repos are never touched by git.

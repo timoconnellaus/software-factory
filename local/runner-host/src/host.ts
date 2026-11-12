@@ -15,7 +15,7 @@ import {
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
 import type { HostGit } from "./git.ts";
-import { type JobReport, runJob } from "./job.ts";
+import { type JobReport, type RunJobOptions, runJob } from "./job.ts";
 import { writeLiveJobs } from "./live-jobs.ts";
 import type { SelfUpdate } from "./self-update.ts";
 
@@ -35,6 +35,11 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
   onEvent?: (e: RunnerEvent) => void;
   onJobDone?: (report: JobReport) => void;
   fetch?: typeof fetch;
+  /**
+   * The OS-sandboxed exec for the project's checks when the adapter has none (ADR 0501,
+   * ./check-sandbox.ts). Absent or null: checks are reported not run.
+   */
+  checkSandbox?: RunJobOptions<W, S>["checkSandbox"];
   /** Tidies up after a crash: jobs this adapter still holds that the host isn't running. */
   reapOrphans?: (running: Set<string>) => Promise<string[]>;
   /** Runs once at start, after `reapOrphans` and before the first claim (the repo migration). */
@@ -262,6 +267,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       },
       ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
       ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
+      ...(this.options.checkSandbox ? { checkSandbox: this.options.checkSandbox } : {}),
     })
       .then((report) => {
         this.log(

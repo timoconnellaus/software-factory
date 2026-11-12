@@ -642,7 +642,21 @@ export function createContainerRunner(
     // check goes to a person rather than back into the session.
     async exec(_job, workspace, command, signal) {
       if (!isContainer(workspace)) throw new Error("this job has no container to run checks in");
-      return execInCheckContainer(runtime, exec, workspace.container.agent, command, signal);
+      const { pnpmStore } = jobDirs(dirname(workspace.jobRoot), workspace.name);
+      return execInCheckContainer(
+        runtime,
+        exec,
+        workspace.container.agent,
+        command,
+        signal,
+        pnpmStore,
+      );
+    },
+
+    // The job repo's tamper check, again, before the host's git follows a check or a fix round
+    // (ADR 0501): the same check `afterSession` runs.
+    async checkWorkspace(_job, workspace) {
+      return isContainer(workspace) ? checkJobGitDir(workspace.container.repo) : [];
     },
   };
 }

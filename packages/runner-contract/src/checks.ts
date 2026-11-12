@@ -56,6 +56,47 @@ export type ExecutedCheck = z.infer<typeof executedCheckSchema>;
 export const checkPassed = (c: Pick<ExecutedCheck, "exitCode" | "timedOut">) =>
   c.exitCode === 0 && !c.timedOut;
 
+/**
+ * What the host reports for a check it would not run: there is no isolated place to run the
+ * project's code on this runner (no container `exec`, no OS sandbox). The check fails, so the
+ * verdict can't pass on it and a person is asked (ADR 0501, amended 2026-11-12).
+ */
+export const NOT_RUN_NO_ISOLATION = "not run: no isolated exec on this runner";
+
+/** Token shapes a log tail may carry (a test that dumps its env), each with what replaces it. */
+const SECRET_SHAPES: readonly [RegExp, string][] = [
+  [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, "[redacted]"],
+  [/\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}/g, "[redacted]"],
+  [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[redacted]"],
+  [/\bxox[abposr]-[A-Za-z0-9-]{10,}/g, "[redacted]"],
+  [/\bnpm_[A-Za-z0-9]{30,}/g, "[redacted]"],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, "[redacted]"],
+  [/\b(Bearer|token)(\s+)[A-Za-z0-9._~+/-]{20,}=*/gi, "$1$2[redacted]"],
+  // NAME_TOKEN=…, AWS_SECRET_ACCESS_KEY=…, DB_PASSWORD: … (env dumps, config prints)
+  [
+    /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIAL)[A-Za-z0-9_]*)(\s*[=:]\s*)("?)[^\s"]{4,}\3/gi,
+    "$1$2$3[redacted]$3",
+  ],
+  [
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
+    "[redacted private key]",
+  ],
+];
+
+/**
+ * A log tail with secrets taken out (ADR 0501): known token shapes, `NAME_TOKEN=…` style
+ * assignments, private keys, and the job's own secrets (`known`, e.g. its job tokens) wherever
+ * they appear. The host redacts before the hand-back; the cloud redacts again before it stores.
+ */
+export function redactSecrets(text: string, known: readonly string[] = []): string {
+  let out = text;
+  for (const secret of known) {
+    if (secret.length >= 8) out = out.split(secret).join("[redacted]");
+  }
+  for (const [shape, replacement] of SECRET_SHAPES) out = out.replace(shape, replacement);
+  return out;
+}
+
 /** The end of `text`, at most `max` characters, cut at a line where it can. */
 export function logTail(text: string, max = CHECK_LOG_TAIL_MAX): string {
   if (text.length <= max) return text;

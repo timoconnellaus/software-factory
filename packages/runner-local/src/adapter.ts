@@ -964,6 +964,11 @@ export function createLocalRunner(
      * that turn to its own end.
      */
     async *continueSession(job, session, text, signal) {
+      // Off for stream-json sessions until it is tested against a real one (PR #73 review): the
+      // failing check goes to a person instead.
+      if (session.stream) {
+        throw new Error("a stream-json session can't take a fix round yet");
+      }
       await this.steer?.(session, text);
       yield* this.events(job, session, signal);
     },

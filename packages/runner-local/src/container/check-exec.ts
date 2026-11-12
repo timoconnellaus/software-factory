@@ -1,8 +1,12 @@
 // The project's checks for a container job (ADR 0501 on top of ADR 0430). The host runs each check
 // through the adapter's `exec`; for a container job that is a fresh container from the agent's own
-// spec (the same image, user, mounts and limits, so it sees exactly the job repo the agent saw),
-// with no network at all and no model credential. Never a process on the host: the project's code
-// under test stays inside the isolation the agent had.
+// image, user and limits, with no network at all, no model credential and no terminal. Never a
+// process on the host: the project's code under test stays inside the isolation the agent had.
+//
+// It sees only the clean tree the host made of the commit under check (mounted at the agent's work
+// path, so paths look the same), the job's pnpm store (content-addressed, checked on read) and a
+// temporary HOME. Not the job repo, its git dir, the run dir or the agent's home: nothing the check
+// runs can leave anything for the host's git or the next session (ADR 0501, amended 2026-11-12).
 //
 // The agent's container has stopped by then (its session ended), so this never shares it.
 import type { ExecResult as CheckExecResult } from "@software-factory/runner-contract";
@@ -15,18 +19,43 @@ const OUTPUT_MAX = 256_000;
 
 let seq = 0;
 
-/** The spec a check runs in: the agent's, minus the network, the credential and the terminal. */
-export function checkSpec(agent: ContainerSpec, run: string, n: number): ContainerSpec {
+/** What a check container mounts: the clean tree and, when the job has one, its pnpm store. */
+export interface CheckTree {
+  /** The host's clean copy of the commit under check. */
+  dir: string;
+  pnpmStore?: string;
+}
+
+/** The spec a check runs in: the agent's image and limits, the clean tree, nothing else. */
+export function checkSpec(
+  agent: ContainerSpec,
+  run: string,
+  n: number,
+  tree: CheckTree,
+): ContainerSpec {
   const { envFile: _secret, networkAlias: _alias, detachKeys: _keys, ...rest } = agent;
   const env = Object.fromEntries(
-    Object.entries(agent.env).filter(([k]) => !/^(HTTPS?_PROXY|NO_PROXY|ALL_PROXY)$/i.test(k)),
+    Object.entries(agent.env).filter(([k]) => !/^(HTTPS?_PROXY|NO_PROXY|ALL_PROXY|HOME)$/i.test(k)),
   );
   return {
     ...rest,
     name: `${agent.name}-check-${n}`,
     entrypoint: "/bin/sh",
     command: ["-c", run],
-    env: { ...env, CI: "1", FORCE_COLOR: "0" },
+    mounts: [
+      { source: tree.dir, target: agent.workdir, readOnly: false },
+      ...(tree.pnpmStore
+        ? [{ source: tree.pnpmStore, target: tree.pnpmStore, readOnly: false }]
+        : []),
+    ],
+    env: {
+      ...env,
+      // A HOME of its own on the container's tmpfs, never the agent's (its Claude state).
+      HOME: "/tmp",
+      ...(tree.pnpmStore ? { npm_config_store_dir: tree.pnpmStore } : {}),
+      CI: "1",
+      FORCE_COLOR: "0",
+    },
     network: "none",
     labels: { ...agent.labels, [JOB_LABEL]: agent.labels[JOB_LABEL] ?? "", [ROLE_LABEL]: "check" },
     interactive: false,
@@ -41,10 +70,14 @@ export async function execInCheckContainer(
   runtime: ContainerRuntime,
   exec: Exec,
   agent: ContainerSpec,
-  command: { run: string; timeoutMs: number },
+  command: { run: string; timeoutMs: number; dir: string },
   signal: AbortSignal,
+  pnpmStore?: string,
 ): Promise<CheckExecResult> {
-  const spec = checkSpec(agent, command.run, ++seq);
+  const spec = checkSpec(agent, command.run, ++seq, {
+    dir: command.dir,
+    ...(pnpmStore ? { pnpmStore } : {}),
+  });
   const [bin = "docker"] = runtime.runArgv(spec);
   const args = dockerRunArgs(spec).filter((a) => a !== "-d");
   const stop = new AbortController();

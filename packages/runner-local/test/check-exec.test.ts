@@ -37,8 +37,8 @@ const runtime = (removed: string[]) =>
   }) as unknown as ContainerRuntime;
 
 describe("checks in a container (ADR 0501)", () => {
-  it("runs the agent's image and mounts with no network, no credential and no terminal", () => {
-    const spec = checkSpec(agent, "pnpm test", 1);
+  it("runs the agent's image on the clean tree only, with no network, credential or terminal", () => {
+    const spec = checkSpec(agent, "pnpm test", 1, { dir: "/t/tree-0", pnpmStore: "/w/pnpm-store" });
     expect(spec).toMatchObject({
       name: "sf-job-1-agent-check-1",
       image: "sha256:abc",
@@ -47,11 +47,20 @@ describe("checks in a container (ADR 0501)", () => {
       command: ["-c", "pnpm test"],
       network: "none",
       interactive: false,
-      mounts: agent.mounts,
       labels: { "software-factory.job": "job_1", "software-factory.role": "check" },
     });
+    // The clean tree at the work path, the pnpm store; never the job repo, its git dir or a home.
+    expect(spec.mounts).toEqual([
+      { source: "/t/tree-0", target: "/w/repo", readOnly: false },
+      { source: "/w/pnpm-store", target: "/w/pnpm-store", readOnly: false },
+    ]);
     expect(spec.envFile).toBeUndefined();
-    expect(spec.env).toEqual({ HOME: "/w/home", CI: "1", FORCE_COLOR: "0" });
+    expect(spec.env).toEqual({
+      HOME: "/tmp",
+      npm_config_store_dir: "/w/pnpm-store",
+      CI: "1",
+      FORCE_COLOR: "0",
+    });
     const args = dockerRunArgs(spec);
     expect(args).not.toContain("--env-file");
     expect(args).not.toContain("-t");
@@ -67,7 +76,7 @@ describe("checks in a container (ADR 0501)", () => {
       runtime([]),
       exec,
       agent,
-      { run: "pnpm test", timeoutMs: 5_000 },
+      { run: "pnpm test", dir: "/t/tree-0", timeoutMs: 5_000 },
       new AbortController().signal,
     );
     expect(out).toEqual({ exitCode: 0, timedOut: false, output: "2 passed\n" });
@@ -88,7 +97,7 @@ describe("checks in a container (ADR 0501)", () => {
       runtime(removed),
       exec,
       agent,
-      { run: "sleep 100", timeoutMs: 50 },
+      { run: "sleep 100", dir: "/t/tree-0", timeoutMs: 50 },
       new AbortController().signal,
     );
     expect(out).toMatchObject({ exitCode: null, timedOut: true });

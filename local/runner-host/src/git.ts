@@ -299,6 +299,30 @@ export function hostGit(options: HostGitOptions) {
       return (await git(worktree, ["status", "--porcelain"])).trim().length > 0;
     },
 
+    /**
+     * Writes the tree of `sha` into `dest` (an empty directory) and nothing else: no ignored files
+     * the session left (`node_modules`, `dist/`, caches), no git dir (ADR 0501). Through a
+     * throwaway index, so the worktree's own index is untouched, and with `checkout-index` rather
+     * than `git archive`, which would honour an `export-ignore` the agent wrote.
+     */
+    async exportTree(worktree: string, sha: string, dest: string, index: string): Promise<void> {
+      if (!/^[0-9a-f]{40}$/.test(sha)) throw new GitError(`not a commit: ${sha}`);
+      const indexEnv = { ...env(), GIT_INDEX_FILE: index };
+      for (const args of [
+        ["read-tree", sha],
+        ["checkout-index", "--all", "--force", `--prefix=${dest.replace(/\/?$/, "/")}`],
+      ]) {
+        const result = await exec("git", [...base, ...args], {
+          cwd: worktree,
+          timeoutMs: 10 * 60_000,
+          env: indexEnv,
+        });
+        if (result.code !== 0) {
+          throw new GitError(`git ${args[0]} exited ${result.code}: ${result.stderr.trim()}`);
+        }
+      }
+    },
+
     /** Commits whatever the session left uncommitted, so a build never loses work. */
     async commitLeftovers(worktree: string, message: string): Promise<boolean> {
       if (!(await this.dirty(worktree))) return false;
@@ -308,15 +332,21 @@ export function hostGit(options: HostGitOptions) {
     },
 
     /**
-     * Pushes HEAD to the run branch with the job token. Never forces, never pushes anything else.
+     * Pushes HEAD (or `commit`) to the run branch with the job token. Never forces, never pushes
+     * anything else.
      */
     async pushRunBranch(
       job: Job,
       worktree: string,
       token: { token: string; pushBranch: string },
+      /** The commit to push (the last one the checks ran on, ADR 0501); default HEAD. */
+      commit?: string,
     ): Promise<string> {
       assertPushable(job, token.pushBranch);
-      const sha = await this.headSha(worktree);
+      if (commit !== undefined && !/^[0-9a-f]{40}$/.test(commit)) {
+        throw new GitError(`not a commit: ${commit}`);
+      }
+      const sha = commit ?? (await this.headSha(worktree));
       await git(
         worktree,
         [
