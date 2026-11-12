@@ -231,6 +231,26 @@ describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
     expect(results.map((r) => r.detail).join("\n")).toMatch(/USING INDEX \w+ \(status=\?/);
   });
 
+  it("job.claim reads the queue in claim order from its index: no sort of the queued jobs", async () => {
+    const seen: Recorded[] = [];
+    await (await channel(recordingEnv(env, seen), w.runner.runnerId)).claim({
+      claimId: uid("claim-"),
+      manifest: MANIFEST,
+      capacity: { max: 2, inUse: 0, accepting: true },
+    });
+    const claim = seen.find((r) => /WITH q AS/.test(r.sql));
+    if (!claim) throw new Error("the claim query didn't run");
+    const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${claim.sql}`)
+      .bind(...claim.params)
+      .all<{ id: number; parent: number; detail: string }>();
+    // The CTE q: core_jobs through core_jobs_queue_idx, and no temp B-tree under it.
+    const q = results.find((r) => /^(MATERIALIZE|CO-ROUTINE) q$/.test(r.detail));
+    if (!q) throw new Error(`no q in the plan:\n${results.map((r) => r.detail).join("\n")}`);
+    const under = results.filter((r) => r.parent === q.id).map((r) => r.detail);
+    expect(under.join("\n")).toMatch(/core_jobs_queue_idx/);
+    expect(under.join("\n")).not.toMatch(/TEMP B-TREE/);
+  });
+
   for (const path of HOT_PATHS) {
     it(`${path.name}: no SCAN of a growing table`, async () => {
       const seen: Recorded[] = [];
