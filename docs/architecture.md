@@ -52,7 +52,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   (`core_project_policies`, keyed `v<N>`), edited on `/projects/<id>/settings` through
   `config.get` / `config.preview` / `config.save` / `config.rollback` / `config.export`.
   `policyImpact` classifies each change. A loosening save is `self-modify` and is applied when an
-  approver approves it.
+  approver approves it. Workflows (ADR 0371) fill the skeleton's three slots, and Workflow v6 runs
+  their steps (`workflow.gate`, `workflow.record`). Agents (ADR 0372) carry a role and tier that
+  the runner's claim resolves to a model.
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`

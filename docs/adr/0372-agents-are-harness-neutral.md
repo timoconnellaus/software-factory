@@ -42,3 +42,10 @@ name a model or a harness: the same "Backend Agent" must run on any runner that 
   like using the recorded harness and model.
 - V1 implements the Claude adapter only. The runner-side owner map and caps are declared through
   the runner contract's capabilities when a second harness exists.
+
+> Amended 2026-11-12 (spec 09 M2, as built): agents have no permission fields yet. Work steps run as
+> read-only `verify`-stage jobs with the verify harness profile, and the build agent keeps the
+> project's build harness. So an agent can't widen anything, and narrowing comes later. The tier
+> is resolved at claim time from the job's `tier` (`resolveModel(role, modelRoles, tier)`), and the
+> `light` defaults are in `model-roles.ts`. The runner-side owner map and caps wait for a second
+> harness.

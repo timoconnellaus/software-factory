@@ -265,7 +265,12 @@ export const workItemGet = defineOperation({
       headSha: z.string().nullable(),
       prNumber: z.number().nullable(),
       policySha: z.string().nullable(),
+      /** The workflow it follows (ADR 0371), null for the skeleton alone, and why. */
+      workflow: z.string().nullable(),
+      workflowReason: z.string().nullable(),
     }),
+    /** The workflows it could follow (of the version it started under), for "change workflow". */
+    workflows: z.array(z.object({ name: z.string(), description: z.string() })),
     stages: z.array(stageView),
     spec: z
       .object({
@@ -435,7 +440,14 @@ export const workItemGet = defineOperation({
         headSha: w.head_sha,
         prNumber: w.pr_number,
         policySha: w.policy_sha,
+        workflow: w.workflow,
+        workflowReason: w.workflow_reason,
       },
+      workflows:
+        (ctx.scope.pinnedPolicy ?? policy)?.workflows.map((x) => ({
+          name: x.name,
+          description: x.description,
+        })) ?? [],
       stages: stages.map((s) => ({
         stage: s.stage,
         attempt: s.attempt,
@@ -521,8 +533,8 @@ export const workItemGet = defineOperation({
         : null,
       approvers: {
         rule: policy?.approvers.length
-          ? "named in .factory/policy.json"
-          : "org owners and admins (no approvers named in .factory/policy.json)",
+          ? "named in the project's config"
+          : "org owners and admins (no approvers named in the project's config)",
         users: approverUserIds.flatMap((id) => {
           const u = approverUsers.find((a) => a.id === id);
           return u ? [{ id: u.id, name: u.name, githubLogin: u.github_login }] : [];
@@ -634,11 +646,27 @@ export const workItemTriage = defineOperation({
     specRequired: z.boolean(),
     reason: z.string(),
     specId: z.string(),
+    /** The workflow picked (ADR 0371), or null for the skeleton alone. */
+    workflow: z.string().nullable(),
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const policy = ctx.scope.policy;
     if (!policy) throw new OperationError("denied", "no valid policy");
+    // The foreman's workflow pick is binding but bounded (ADR 0005, 0371): only a workflow of the
+    // version the item started under, and a workflow can only add steps to the skeleton.
+    const shape = ctx.scope.pinnedPolicy ?? policy;
+    const picked = input.result.workflow
+      ? (shape.workflows.find(
+          (x) => x.name.toLowerCase() === input.result.workflow?.toLowerCase(),
+        ) ?? null)
+      : null;
+    const workflow = w.kind === "attached" ? null : (picked?.name ?? null);
+    const workflowReason = workflow
+      ? (input.result.workflowReason ?? "picked by triage")
+      : input.result.workflow
+        ? `triage asked for "${input.result.workflow}", which this project doesn't have: the skeleton alone`
+        : null;
     // An attached PR is already built: spec and build are skipped whatever its size (spec 05).
     const decision =
       w.kind === "attached"
@@ -685,6 +713,8 @@ export const workItemTriage = defineOperation({
           spec_decision_reason: reason,
           domains: JSON.stringify(input.result.domains),
           current_spec_id: specId,
+          workflow,
+          workflow_reason: workflowReason,
           updated_at: ctx.now,
         })
         .where("id", "=", w.id),
@@ -692,10 +722,16 @@ export const workItemTriage = defineOperation({
     ctx.change({
       entity: "work_item",
       id: w.id,
-      before: { size: w.size, specRequired: w.spec_required },
-      after: { size: input.result.size, specRequired: decision.required, reason },
+      before: { size: w.size, specRequired: w.spec_required, workflow: w.workflow },
+      after: {
+        size: input.result.size,
+        specRequired: decision.required,
+        reason,
+        workflow,
+        workflowReason,
+      },
     });
-    return { size: input.result.size, specRequired: decision.required, reason, specId };
+    return { size: input.result.size, specRequired: decision.required, reason, specId, workflow };
   },
 });
 
@@ -1195,3 +1231,107 @@ function runnerUpdate(
   if (!r.version || !desired || r.version === desired) return null;
   return { state: "behind", reason: null };
 }
+
+export const workItemSetWorkflow = defineOperation({
+  name: "workItem.setWorkflow",
+  description:
+    "Change which of the project's workflows a work item follows (ADR 0371), or `null` for the skeleton alone. Only until its build starts: after that its steps are already running. A person's call; triage makes the first pick.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ workItemId, workflow: z.string().max(60).nullable() }),
+  output: z.object({ workflow: z.string().nullable() }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    if (!["intake", "triage", "spec"].includes(w.stage)) {
+      throw new OperationError(
+        "conflict",
+        `the build has started (stage ${w.stage}): the workflow can no longer change`,
+      );
+    }
+    const shape = ctx.scope.pinnedPolicy ?? ctx.scope.policy;
+    let workflow: string | null = null;
+    if (input.workflow !== null) {
+      const found = shape?.workflows.find(
+        (x) => x.name.toLowerCase() === input.workflow?.toLowerCase(),
+      );
+      if (!found) throw new OperationError("not_found", `no workflow called "${input.workflow}"`);
+      workflow = found.name;
+    }
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ workflow, workflow_reason: "changed by a person", updated_at: ctx.now })
+        .where("id", "=", w.id),
+    );
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      before: { workflow: w.workflow },
+      after: { workflow },
+    });
+    return { workflow };
+  },
+});
+
+export const workflowGate = defineOperation({
+  name: "workflow.gate",
+  description:
+    "A workflow's gate step (ADR 0371): a person decides before the work item goes on. Always waits for a person, whatever the autonomy policy: the named approver, or the project's approvers. The Workflow calls it; approving lets the item continue, rejecting ends it, sending back returns it to build.",
+  risk: "plan",
+  alwaysReview: true,
+  assignee: (input) => input.approver ?? null,
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({
+    workItemId,
+    workflow: z.string().max(60),
+    stepId: z.string().max(40),
+    name: z.string().max(80),
+    approver: z.string().max(100).optional(),
+    instructions: z.string().max(4_000).optional(),
+  }),
+  output: z.object({ passed: z.boolean() }),
+  async handler(input, ctx) {
+    requireWorkItem(ctx);
+    ctx.change({
+      entity: "work_item",
+      id: input.workItemId,
+      after: { gateStep: input.stepId, passed: true },
+    });
+    return { passed: true };
+  },
+});
+
+export const workflowRecord = defineOperation({
+  name: "workflow.record",
+  description:
+    "Record what one of a workflow's steps did (ADR 0371), for the timeline: a work step's advisory verdict (passed, sent back, asked) with its summary, or a step its condition skipped. The Workflow calls it.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({
+    workItemId,
+    workflow: z.string().max(60),
+    slot: z.enum(["afterSpec", "beforeVerify", "afterVerify"]),
+    stepId: z.string().max(40),
+    name: z.string().max(80),
+    outcome: z.enum(["passed", "sentBack", "asked", "skipped"]),
+    summary: z.string().max(4_000),
+  }),
+  output: z.object({ ok: z.boolean() }),
+  async handler(input, ctx) {
+    requireWorkItem(ctx);
+    ctx.change({
+      entity: "work_item",
+      id: input.workItemId,
+      after: {
+        step: `${input.workflow} → ${input.name}`,
+        slot: input.slot,
+        outcome: input.outcome,
+        summary: input.summary,
+      },
+    });
+    return { ok: true };
+  },
+});

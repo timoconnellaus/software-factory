@@ -207,6 +207,9 @@ export interface CoreWorkItemsTable {
   size: Size | null;
   spec_required: Bool | null;
   spec_decision_reason: string | null;
+  /** 0141 (ADR 0371): the workflow triage picked; null is the skeleton alone. */
+  workflow: string | null;
+  workflow_reason: string | null;
   domains: Generated<JsonText>;
   current_spec_id: string | null;
   branch: string;
@@ -489,6 +492,8 @@ export interface CoreJobsTable {
   pool: Generated<"heavy" | "light">;
   pinned_runner_id: string | null;
   planning_session_id: string | null;
+  /** 0141 (ADR 0372): standard | light; null is standard. */
+  tier: string | null;
 }
 
 export type RunStatus =

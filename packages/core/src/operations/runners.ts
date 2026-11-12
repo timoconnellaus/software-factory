@@ -5,6 +5,7 @@
 import { json, parseJson } from "@software-factory/db";
 import {
   type artifactSchema,
+  CAPABILITIES,
   type Capability,
   type CapabilityManifest,
   canRun,
@@ -25,7 +26,7 @@ import {
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId, newRunnerId } from "../ids.ts";
-import { resolveModel } from "../model-roles.ts";
+import { MODEL_TIERS, resolveModel } from "../model-roles.ts";
 import {
   defineOperation,
   type HandlerContext,
@@ -323,6 +324,10 @@ export const jobEnqueue = defineOperation({
     role: z.enum(MODEL_ROLES),
     prompt: z.string().min(1).max(200_000),
     context: z.record(z.string(), z.unknown()).default({}),
+    /** The agent's model tier (ADR 0372); the runner's claim resolves it to a model. */
+    tier: z.enum(MODEL_TIERS).default("standard"),
+    /** Capabilities the agent needs on top of the stage's. */
+    agentRequires: z.array(z.enum(CAPABILITIES)).max(10).default([]),
     sessionTimeoutMs: z
       .number()
       .int()
@@ -333,7 +338,9 @@ export const jobEnqueue = defineOperation({
   output: z.object({ jobId: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const requires = ctx.scope.policy?.requires[input.stage] ?? [];
+    const requires = [
+      ...new Set([...(ctx.scope.policy?.requires[input.stage] ?? []), ...input.agentRequires]),
+    ];
     const id = newId("job");
     ctx.write(
       ctx.db.insertInto("core_jobs").values({
@@ -349,9 +356,14 @@ export const jobEnqueue = defineOperation({
         session_timeout_ms: input.sessionTimeoutMs,
         created_at: ctx.now,
         pool: stagePool(input.stage),
+        tier: input.tier === "standard" ? null : input.tier,
       }),
     );
-    ctx.change({ entity: "job", id, after: { stage: input.stage, role: input.role, requires } });
+    ctx.change({
+      entity: "job",
+      id,
+      after: { stage: input.stage, role: input.role, tier: input.tier, requires },
+    });
     return { jobId: id };
   },
 });
@@ -568,6 +580,7 @@ async function buildJob(
     prompt: string;
     context: string;
     session_timeout_ms: number;
+    tier?: string | null;
   },
   run: { id: string; run_no: number; branch: string; fencing_token: number },
   item: WorkItemRow,
@@ -607,7 +620,7 @@ async function buildJob(
     harness: {
       id: job.harness as Job["harness"]["id"],
       role,
-      model: resolveModel(role, policy?.modelRoles),
+      model: resolveModel(role, policy?.modelRoles, job.tier === "light" ? "light" : "standard"),
       prompt: job.prompt,
       // From the project's config version (ADR 0370, 0270), never the run's own branch.
       ...(harnessProfile ? { profile: harnessProfile } : {}),

@@ -21,7 +21,10 @@ const footer = (shape: string) =>
     "```",
   ].join("\n");
 
-export function triagePrompt(item: ItemBrief): string {
+export function triagePrompt(
+  item: ItemBrief,
+  workflows: { name: string; description: string }[] = [],
+): string {
   return [
     `You are triaging work item #${item.number} for the software factory. Read the repository (AGENTS.md, CONTEXT.md, docs/) but change nothing.`,
     "",
@@ -32,8 +35,17 @@ export function triagePrompt(item: ItemBrief): string {
     "Size it: small (one clear change, no design choices), medium (a few files or one real decision), large (new behaviour across the system, or several decisions).",
     "Draft its acceptance criteria (checkable statements) and list the decision domains it touches (product, architecture, security, ...).",
     "You may ask to skip or require a spec (`specRequested`), but the autonomy policy decides.",
+    ...(workflows.length
+      ? [
+          "",
+          "Pick the project workflow that fits this work best (`workflow`, by name) and say why (`workflowReason`). Omit `workflow` if none fits. The workflows:",
+          ...workflows.map((w) => `- ${w.name}${w.description ? `: ${w.description}` : ""}`),
+        ]
+      : []),
     footer(
-      '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "summary": "..." }',
+      workflows.length
+        ? '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "workflow": "name (optional)", "workflowReason": "...", "summary": "..." }'
+        : '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "summary": "..." }',
     ),
   ].join("\n");
 }
@@ -73,7 +85,14 @@ export function specPrompt(
 
 export function buildPrompt(
   item: ItemBrief,
-  input: { criteria: string[]; specPath: string | null; note: string | null; attempt: number },
+  input: {
+    criteria: string[];
+    specPath: string | null;
+    note: string | null;
+    attempt: number;
+    /** The build agent's standing instructions (ADR 0372), appended. */
+    instructions?: string;
+  },
 ): string {
   return [
     `Implement work item #${item.number}: ${item.title}`,
@@ -89,6 +108,7 @@ export function buildPrompt(
     `Before you start, the runner merged the latest \`${item.defaultBranch ?? "main"}\` into this branch (ADR 0320). If \`git status\` shows a merge in progress, resolve every conflict first, keeping the intent of both sides, then \`git commit --no-edit\`. Never rebase, reset or force-push. A renumbered ADR or migration that collides with one on \`${item.defaultBranch ?? "main"}\` takes the next free number (docs/parallel-work.md, if the repo has it).`,
     "",
     "Commit your work on the current branch with focused commits. Run the project's lint, typecheck and tests before you finish. Don't change `.factory/` unless the work item is about it.",
+    input.instructions ? `\nThe project's instructions for this build:\n${input.instructions}` : "",
     footer('{ "notes": "anything the reviewer should know (optional)" }'),
   ].join("\n");
 }
@@ -129,6 +149,46 @@ export function attachedTriagePrompt(
     "Draft its acceptance criteria from the PR's title, body and diff: checkable statements of what the PR claims to do, which an independent reviewer will check. List the decision domains it touches (product, architecture, security, ...).",
     footer(
       '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "summary": "..." }',
+    ),
+  ].join("\n");
+}
+
+/**
+ * A workflow's work step (ADR 0371): an advisory check on the branch, read-only. It passes, sends
+ * the item back to build with notes, or asks a person. The project's instructions come from the
+ * step and its agent; they never reach verify's or the reviewer's prompt.
+ */
+export function stepPrompt(
+  item: ItemBrief,
+  input: {
+    workflow: string;
+    step: string;
+    slot: "afterSpec" | "beforeVerify" | "afterVerify";
+    instructions: string;
+    criteria: string[];
+    headSha: string | null;
+    specPath: string | null;
+  },
+): string {
+  const where =
+    input.slot === "afterSpec"
+      ? "The spec is approved and nothing is built yet."
+      : input.slot === "beforeVerify"
+        ? `The build is done${input.headSha ? ` (at ${input.headSha})` : ""}; verify hasn't run yet.`
+        : `Verify passed${input.headSha ? ` at ${input.headSha}` : ""}; a person reviews it next.`;
+  return [
+    `You are the "${input.step}" step of the "${input.workflow}" workflow, for work item #${item.number}: ${item.title}. ${where} Read the repository and the branch, but change nothing.`,
+    "",
+    item.body,
+    "",
+    input.specPath ? `The approved spec is ${input.specPath} on this branch.` : "",
+    `Acceptance criteria:\n${input.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n") || "(none recorded)"}`,
+    "",
+    `Your instructions:\n${input.instructions || "(none: review what the step's name says)"}`,
+    "",
+    "Your verdict is advisory. `pass` lets the item go on. `sendBack` returns it to the builder: say exactly what to change in `notes`. `ask` puts up to 5 questions to a person first (`questions`, each with a prompt and options).",
+    footer(
+      '{ "verdict": "pass|sendBack|ask", "summary": "...", "notes": "what to change (for sendBack)", "questions": [{ "prompt": "...", "options": ["..."] }] }',
     ),
   ].join("\n");
 }

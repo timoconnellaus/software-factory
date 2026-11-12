@@ -23,13 +23,17 @@ import {
   invoke,
   isOperationError,
   mergeQueueEvent,
+  type ProjectPolicy,
+  parseProjectPolicy,
   type RunEventPayload,
   runEvent,
+  SLOTS,
 } from "@software-factory/core";
 import {
   type JobStage,
   type ModelRole,
   specResultSchema,
+  stepResultSchema,
   triageResultSchema,
   verifyResultSchema,
 } from "@software-factory/runner-contract";
@@ -39,6 +43,7 @@ import {
   buildPrompt,
   type ItemBrief,
   specPrompt,
+  stepPrompt,
   triagePrompt,
   verifyPrompt,
 } from "./prompts.ts";
@@ -75,7 +80,14 @@ export type WorkItemOutcome =
  *   timeout, never auto-accepting), and the spec gate. Request changes goes into the same session
  *   (`planning.note`); a decision ends it (`planning.end`).
  */
-export const WORKFLOW_VERSION = 5;
+/**
+ * - v6 (spec 09 M2, ADR 0371): the item's workflow fills the skeleton's three slots. Triage is told
+ *   the project's workflows (`workflow: options`) and picks one; before build, `workflow: plan`
+ *   journals the item's workflow, its steps (conditions decided) and the build agent. Each step runs
+ *   under `slot:<slot>:<round>:<index>:<id>`: a work step as a read-only job (advisory: pass, send
+ *   back to build, or ask), a gate step through `workflow.gate` (always a person).
+ */
+export const WORKFLOW_VERSION = 6;
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
 export const CI_WAIT = "10 minutes";
 export const CI_ROUNDS = 12;
@@ -156,6 +168,96 @@ interface Meta extends ItemBrief {
   questionTimeoutMs: number;
 }
 
+type SlotName = (typeof SLOTS)[number];
+
+interface PlannedAgent {
+  name: string;
+  role: string;
+  tier: "standard" | "light";
+  instructions: string;
+  requires: string[];
+}
+
+interface PlannedStep {
+  id: string;
+  kind: "work" | "gate";
+  name: string;
+  instructions: string;
+  approver?: string;
+  agent?: PlannedAgent;
+  /** Why its condition skips it for this item; absent when it runs. */
+  skip?: string;
+}
+
+/** An item's workflow, decided once before build (v6, ADR 0371). */
+export interface WorkflowPlan {
+  name: string;
+  slots: Record<SlotName, PlannedStep[]>;
+  build: PlannedAgent | null;
+}
+
+const SIZE_RANK: Record<string, number> = { small: 0, medium: 1, large: 2 };
+
+/** Resolves a workflow's steps against its agents and the item's size and domains. Pure. */
+export function planWorkflow(
+  policy: ProjectPolicy | null,
+  workflow: string | null,
+  size: string | null,
+  domainsJson: string | null,
+): WorkflowPlan | null {
+  const def = workflow
+    ? policy?.workflows.find((w) => w.name.toLowerCase() === workflow.toLowerCase())
+    : undefined;
+  if (!policy || !def) return null;
+  let domains: string[] = [];
+  try {
+    domains = domainsJson ? (JSON.parse(domainsJson) as string[]) : [];
+  } catch {
+    domains = [];
+  }
+  const agentOf = (name: string | undefined): PlannedAgent | null => {
+    const a = name
+      ? policy.agents.find((x) => x.name.toLowerCase() === name.toLowerCase())
+      : undefined;
+    return a
+      ? {
+          name: a.name,
+          role: a.role,
+          tier: a.tier,
+          instructions: a.instructions,
+          requires: [...a.requires],
+        }
+      : null;
+  };
+  const slots = Object.fromEntries(
+    SLOTS.map((slot) => [
+      slot,
+      def.slots[slot].map((s): PlannedStep => {
+        let skip: string | undefined;
+        if (
+          s.when?.sizeAtLeast &&
+          (SIZE_RANK[size ?? ""] ?? -1) < (SIZE_RANK[s.when.sizeAtLeast] ?? 0)
+        ) {
+          skip = `only for ${s.when.sizeAtLeast} work and up (this is ${size ?? "unsized"})`;
+        } else if (s.when?.domain && !domains.includes(s.when.domain)) {
+          skip = `only when the work touches ${s.when.domain}`;
+        }
+        const agent = s.kind === "work" ? agentOf(s.agent) : null;
+        return {
+          id: s.id,
+          kind: s.kind,
+          name: s.name,
+          instructions: s.instructions,
+          ...(s.approver ? { approver: s.approver } : {}),
+          ...(agent ? { agent } : {}),
+          ...(skip ? { skip } : {}),
+        };
+      }),
+    ]),
+  ) as Record<SlotName, PlannedStep[]>;
+  return { name: def.name, slots, build: agentOf(def.core.build) };
+}
+
 export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
   override async run(
     event: WorkflowEvent<WorkItemParams>,
@@ -184,6 +286,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(4);
       case 5:
         return flow.runV1(5);
+      case 6:
+        return flow.runV1(6);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -203,7 +307,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 | 5 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       const meta = await this.meta();
@@ -215,12 +319,14 @@ class ItemFlow {
       await this.act("branch: ensure", "branch.ensure", { workItemId: id });
 
       // Triage: the foreman sizes the item on a runner; code decides the spec gate from policy.
+      // v6: it also picks one of the project's workflows (ADR 0371).
+      const options = version >= 6 ? await this.workflowOptions() : [];
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
         "triage",
         "triage",
-        triagePrompt(meta),
+        triagePrompt(meta, options),
         {},
         (r) => triageResultSchema.safeParse(r),
       );
@@ -286,6 +392,20 @@ class ItemFlow {
         }
         const committed = await this.act("spec: commit", "spec.commit", { workItemId: id });
         specPath = String(committed.path);
+      }
+      // v6: the workflow is fixed from here on (a person could change it until now), and its
+      // afterSpec steps run once, before the build.
+      const plan = version >= 6 ? await this.workflowPlan() : null;
+      let slotNote: string | null = null;
+      if (plan) {
+        const after = await this.runSlot(meta, plan, "afterSpec", 0, {
+          criteria,
+          specPath,
+          headSha: null,
+        });
+        if (after.kind === "sendBack") slotNote = after.note;
+      }
+      if (recorded.specRequired === true) {
         await this.act("build: enter", "workItem.enterStage", { workItemId: id, stage: "build" });
       } else {
         await this.act("build: enter", "workItem.enterStage", {
@@ -298,7 +418,7 @@ class ItemFlow {
       // Build → verify → merge gate, looping back on failures and send-backs.
       let failures = 0;
       let conflicts = 0;
-      let note: string | null = null;
+      let note: string | null = slotNote;
       const failed = async (b: number, reason: string, run: RunResult | null) => {
         failures++;
         if (failures > meta.retryLimit) {
@@ -340,12 +460,19 @@ class ItemFlow {
           `build #${b}`,
           "build",
           "implement",
-          buildPrompt(meta, { criteria, specPath, note, attempt: b }),
+          buildPrompt(meta, {
+            criteria,
+            specPath,
+            note,
+            attempt: b,
+            ...(plan?.build ? { instructions: plan.build.instructions } : {}),
+          }),
           {
             criteria,
             specPath,
             note,
           },
+          plan?.build ? { tier: plan.build.tier, requires: plan.build.requires } : undefined,
         );
         if (build.outcome === "cancelled") {
           note = null;
@@ -372,6 +499,18 @@ class ItemFlow {
           continue;
         }
         const headSha = String(advanced.sha);
+
+        if (plan) {
+          const before = await this.runSlot(meta, plan, "beforeVerify", b, {
+            criteria,
+            specPath,
+            headSha,
+          });
+          if (before.kind === "sendBack") {
+            note = await failed(b, before.note, build);
+            continue;
+          }
+        }
 
         await this.act(`verify #${b}: enter`, "workItem.enterStage", {
           workItemId: id,
@@ -465,6 +604,18 @@ class ItemFlow {
             verify,
           );
           continue;
+        }
+
+        if (plan) {
+          const after = await this.runSlot(meta, plan, "afterVerify", b, {
+            criteria,
+            specPath,
+            headSha,
+          });
+          if (after.kind === "sendBack") {
+            note = await failed(b, after.note, verify);
+            continue;
+          }
         }
 
         const pr = await this.act(`merge #${b}: open PR`, "pr.open", {
@@ -1353,12 +1504,150 @@ class ItemFlow {
   }
 
   /** Queues a stage job and waits for its run to finish (or stall). Holds no slot while queued. */
+  // ---- v6: workflows (spec 09 M2, ADR 0371) ----
+
+  /** The workflows triage may pick from: those of the config version the item started under. */
+  async workflowOptions(): Promise<{ name: string; description: string }[]> {
+    const text = await this.step.do("workflow: options", async () => {
+      const policy = await this.pinnedPolicy();
+      return JSON.stringify(
+        (policy?.workflows ?? []).map((w) => ({ name: w.name, description: w.description })),
+      );
+    });
+    return JSON.parse(text) as { name: string; description: string }[];
+  }
+
+  /**
+   * The item's workflow, fixed before the build: its steps per slot with their agents resolved and
+   * conditions decided (from triage's size and domains), and the build agent. Journaled once.
+   */
+  async workflowPlan(): Promise<WorkflowPlan> {
+    const text = await this.step.do("workflow: plan", async () => {
+      const row = await this.env.DB.prepare(
+        "SELECT workflow, size, domains FROM core_work_items WHERE id = ?",
+      )
+        .bind(this.workItemId)
+        .first<{ workflow: string | null; size: string | null; domains: string | null }>();
+      const policy = await this.pinnedPolicy();
+      const plan = planWorkflow(
+        policy,
+        row?.workflow ?? null,
+        row?.size ?? null,
+        row?.domains ?? null,
+      );
+      return JSON.stringify(plan);
+    });
+    return JSON.parse(text) as WorkflowPlan;
+  }
+
+  /** The config version the item was created under (ADR 0370 §5), parsed; null if there is none. */
+  private async pinnedPolicy() {
+    const row = await this.env.DB.prepare(
+      `SELECT p.raw FROM core_work_items w
+       JOIN core_project_policies p ON p.project_id = w.project_id
+         AND p.sha = COALESCE(w.policy_sha, (SELECT policy_sha FROM core_projects WHERE id = w.project_id))
+       WHERE w.id = ?`,
+    )
+      .bind(this.workItemId)
+      .first<{ raw: string }>();
+    if (!row) return null;
+    const parsed = parseProjectPolicy(row.raw);
+    return parsed.ok ? parsed.policy : null;
+  }
+
+  /**
+   * Runs one slot's steps in order. A work step's `sendBack` stops the slot and returns the note;
+   * `ask` puts its questions to a person and goes on once they're answered. A gate step waits for a
+   * person: rejected ends the item.
+   */
+  async runSlot(
+    meta: Meta,
+    plan: WorkflowPlan,
+    slot: SlotName,
+    round: number,
+    input: { criteria: string[]; specPath: string | null; headSha: string | null },
+  ): Promise<{ kind: "pass" } | { kind: "sendBack"; note: string }> {
+    const id = this.workItemId;
+    const steps = plan.slots[slot];
+    for (const [i, s] of steps.entries()) {
+      const name = `slot:${slot}:${round}:${i}:${s.id}`;
+      const record = (outcome: "passed" | "sentBack" | "asked" | "skipped", summary: string) =>
+        this.act(`${name}: record`, "workflow.record", {
+          workItemId: id,
+          workflow: plan.name,
+          slot,
+          stepId: s.id,
+          name: s.name,
+          outcome,
+          summary,
+        });
+      if (s.skip) {
+        await record("skipped", s.skip);
+        continue;
+      }
+      if (s.kind === "gate") {
+        const decided = await this.gate(meta, name, "workflow.gate", {
+          workItemId: id,
+          workflow: plan.name,
+          stepId: s.id,
+          name: s.name,
+          ...(s.approver ? { approver: s.approver } : {}),
+          ...(s.instructions ? { instructions: s.instructions } : {}),
+        });
+        if (decided.decision === "approved") continue;
+        if (decided.decision === "sent_back" || decided.decision === "changes_requested") {
+          return { kind: "sendBack", note: `${s.name}: ${decided.note ?? "sent back"}` };
+        }
+        throw new Ended("rejected", `${s.name} rejected${decided.note ? `: ${decided.note}` : ""}`);
+      }
+      const agent = s.agent as PlannedAgent;
+      const { parsed } = await this.runWithRetries(
+        meta,
+        name,
+        "verify",
+        agent.role as ModelRole,
+        stepPrompt(meta, {
+          workflow: plan.name,
+          step: s.name,
+          slot,
+          instructions: [agent.instructions, s.instructions].filter(Boolean).join("\n\n"),
+          criteria: input.criteria,
+          headSha: input.headSha,
+          specPath: input.specPath,
+        }),
+        {
+          step: { workflow: plan.name, slot, id: s.id },
+          criteria: input.criteria,
+          headSha: input.headSha,
+        },
+        (r) => stepResultSchema.safeParse(r),
+        { tier: agent.tier, requires: agent.requires },
+      );
+      if (parsed.verdict === "sendBack") {
+        await record("sentBack", parsed.summary);
+        return { kind: "sendBack", note: `${s.name}: ${parsed.notes ?? parsed.summary}` };
+      }
+      if (parsed.verdict === "ask" && parsed.questions.length > 0) {
+        await record("asked", parsed.summary);
+        await this.act(`${name}: ask`, "question.ask", {
+          workItemId: id,
+          questions: parsed.questions,
+        });
+        await this.waitForAnswers(meta, name);
+        continue;
+      }
+      await record("passed", parsed.summary);
+    }
+    return { kind: "pass" };
+  }
+
   async runJob(
     name: string,
     stage: JobStage,
     role: ModelRole,
     prompt: string,
     context: Json,
+    agent?: { tier: "standard" | "light"; requires: string[] },
   ): Promise<RunResult> {
     const { jobId } = (await this.act(`${name}: enqueue`, "job.enqueue", {
       workItemId: this.workItemId,
@@ -1367,6 +1656,7 @@ class ItemFlow {
       prompt,
       context,
       sessionTimeoutMs: JOB_TIMEOUT_MS,
+      ...(agent ? { tier: agent.tier, agentRequires: agent.requires } : {}),
     })) as { jobId: string };
     for (let i = 1; ; i++) {
       const sfx = i === 1 ? "" : ` #${i}`;
@@ -1433,10 +1723,11 @@ class ItemFlow {
     prompt: string,
     context: Json,
     parse: (result: unknown) => { success: true; data: T } | { success: false },
+    agent?: { tier: "standard" | "light"; requires: string[] },
   ): Promise<{ run: RunResult; parsed: T }> {
     let failures = 0;
     for (let a = 1; ; a++) {
-      const run = await this.runJob(`${name} run ${a}`, stage, role, prompt, context);
+      const run = await this.runJob(`${name} run ${a}`, stage, role, prompt, context, agent);
       if (run.outcome === "cancelled") continue;
       const parsed = run.outcome === "completed" ? parse(run.result) : { success: false as const };
       if (parsed.success) return { run, parsed: parsed.data };

@@ -19,6 +19,7 @@ import { Route as AppCliConnectRouteImport } from './routes/_app/cli.connect'
 import { Route as AppRunnersConnectRouteImport } from './routes/_app/runners.connect'
 import { Route as AppWorkIndexRouteImport } from './routes/_app/work.index'
 import { Route as AppProjectsProjectIdSettingsRouteImport } from './routes/_app/projects.$projectId.settings'
+import { Route as AppProjectsProjectIdWorkflowsRouteImport } from './routes/_app/projects.$projectId.workflows'
 import { Route as AppWorkIdIndexRouteImport } from './routes/_app/work.$id.index'
 import { Route as AppWorkIdReviewRouteImport } from './routes/_app/work.$id.review'
 
@@ -72,6 +73,12 @@ const AppProjectsProjectIdSettingsRoute =
     path: '/projects/$projectId/settings',
     getParentRoute: () => AppRoute,
   } as any)
+const AppProjectsProjectIdWorkflowsRoute =
+  AppProjectsProjectIdWorkflowsRouteImport.update({
+    id: '/projects/$projectId/workflows',
+    path: '/projects/$projectId/workflows',
+    getParentRoute: () => AppRoute,
+  } as any)
 const AppWorkIdIndexRoute = AppWorkIdIndexRouteImport.update({
   id: '/work/$id/',
   path: '/work/$id/',
@@ -93,6 +100,7 @@ export interface FileRoutesByFullPath {
   '/runners/connect': typeof AppRunnersConnectRoute
   '/work/': typeof AppWorkIndexRoute
   '/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
+  '/projects/$projectId/workflows': typeof AppProjectsProjectIdWorkflowsRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
   '/work/$id/': typeof AppWorkIdIndexRoute
 }
@@ -106,6 +114,7 @@ export interface FileRoutesByTo {
   '/runners/connect': typeof AppRunnersConnectRoute
   '/work': typeof AppWorkIndexRoute
   '/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
+  '/projects/$projectId/workflows': typeof AppProjectsProjectIdWorkflowsRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
   '/work/$id': typeof AppWorkIdIndexRoute
 }
@@ -121,6 +130,7 @@ export interface FileRoutesById {
   '/_app/runners/connect': typeof AppRunnersConnectRoute
   '/_app/work/': typeof AppWorkIndexRoute
   '/_app/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
+  '/_app/projects/$projectId/workflows': typeof AppProjectsProjectIdWorkflowsRoute
   '/_app/work/$id/review': typeof AppWorkIdReviewRoute
   '/_app/work/$id/': typeof AppWorkIdIndexRoute
 }
@@ -136,6 +146,7 @@ export interface FileRouteTypes {
     | '/runners/connect'
     | '/work/'
     | '/projects/$projectId/settings'
+    | '/projects/$projectId/workflows'
     | '/work/$id/review'
     | '/work/$id/'
   fileRoutesByTo: FileRoutesByTo
@@ -149,6 +160,7 @@ export interface FileRouteTypes {
     | '/runners/connect'
     | '/work'
     | '/projects/$projectId/settings'
+    | '/projects/$projectId/workflows'
     | '/work/$id/review'
     | '/work/$id'
   id:
@@ -163,6 +175,7 @@ export interface FileRouteTypes {
     | '/_app/runners/connect'
     | '/_app/work/'
     | '/_app/projects/$projectId/settings'
+    | '/_app/projects/$projectId/workflows'
     | '/_app/work/$id/review'
     | '/_app/work/$id/'
   fileRoutesById: FileRoutesById
@@ -244,6 +257,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProjectsProjectIdSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/projects/$projectId/workflows': {
+      id: '/_app/projects/$projectId/workflows'
+      path: '/projects/$projectId/workflows'
+      fullPath: '/projects/$projectId/workflows'
+      preLoaderRoute: typeof AppProjectsProjectIdWorkflowsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/work/$id/': {
       id: '/_app/work/$id/'
       path: '/work/$id'
@@ -270,6 +290,7 @@ interface AppRouteChildren {
   AppRunnersConnectRoute: typeof AppRunnersConnectRoute
   AppWorkIndexRoute: typeof AppWorkIndexRoute
   AppProjectsProjectIdSettingsRoute: typeof AppProjectsProjectIdSettingsRoute
+  AppProjectsProjectIdWorkflowsRoute: typeof AppProjectsProjectIdWorkflowsRoute
   AppWorkIdReviewRoute: typeof AppWorkIdReviewRoute
   AppWorkIdIndexRoute: typeof AppWorkIdIndexRoute
 }
@@ -283,6 +304,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppRunnersConnectRoute: AppRunnersConnectRoute,
   AppWorkIndexRoute: AppWorkIndexRoute,
   AppProjectsProjectIdSettingsRoute: AppProjectsProjectIdSettingsRoute,
+  AppProjectsProjectIdWorkflowsRoute: AppProjectsProjectIdWorkflowsRoute,
   AppWorkIdReviewRoute: AppWorkIdReviewRoute,
   AppWorkIdIndexRoute: AppWorkIdIndexRoute,
 }

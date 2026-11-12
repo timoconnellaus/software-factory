@@ -165,6 +165,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    * decides per input (a kill switch may be turned on from a terminal, not off).
    */
   browserOnly?: true | ((input: z.output<I>) => boolean);
+  /**
+   * The gate always asks a person, whatever the autonomy policy or overrides say (a workflow's gate
+   * step, ADR 0371). `deny` still refuses.
+   */
+  alwaysReview?: boolean;
+  /** Who should decide a `review` (a GitHub login); falls back to the approvers. */
+  assignee?: (input: z.output<I>) => string | null;
   /** Which inbox card a `review` answer becomes. Default `approval`. */
   gateKind?: "spec" | "merge" | "approval";
   /**
