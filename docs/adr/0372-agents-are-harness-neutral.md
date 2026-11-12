@@ -49,3 +49,5 @@ name a model or a harness: the same "Backend Agent" must run on any runner that 
 > is resolved at claim time from the job's `tier` (`resolveModel(role, modelRoles, tier)`), and the
 > `light` defaults are in `model-roles.ts`. The runner-side owner map and caps wait for a second
 > harness.
+
+> Amended 2026-11-12 ([ADR 0510](0510-workflows-are-ordered-stages-of-stage-types.md), [ADR 0513](0513-skills-are-shared-by-the-org-and-attached-where-used.md), spec 52, not built yet): agents move to the org and are reused across workflows. An agent gains `skills`, always attached; the harness adapter projects a run's skills.
