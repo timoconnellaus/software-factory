@@ -160,6 +160,15 @@ export interface GitHubService {
     repo: RepoRef,
     input: { branch: string; path: string; content: string; message: string },
   ): Promise<{ commitSha: string }>;
+  /**
+   * Commits several files to `branch` in ONE commit (spec 22: the spec and its `.kim/` artifacts
+   * land together); returns the new commit SHA. Through the Git Data API: blobs, a tree on the
+   * branch's head, a commit, and a fast-forward of the branch.
+   */
+  commitFiles(
+    repo: RepoRef,
+    input: { branch: string; files: { path: string; content: string }[]; message: string },
+  ): Promise<{ commitSha: string }>;
   /** Opens a PR from `head` into `base`, or returns the open one for `head`. */
   openPullRequest(
     repo: RepoRef,
