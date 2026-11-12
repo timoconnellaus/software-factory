@@ -23,3 +23,4 @@ export * from "./specs.ts";
 export * from "./terminal.ts";
 export * from "./verify.ts";
 export * from "./work-items.ts";
+export * from "./workflows.ts";

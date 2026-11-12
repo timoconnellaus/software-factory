@@ -13,6 +13,7 @@ import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
 import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
 import { openIncident } from "./incidents.ts";
 import { pendingActionId, workItemId } from "./shared.ts";
+import { applyApprovedOrgConfig, ORG_CONFIG_WRITES } from "./workflows.ts";
 
 const decisionOutput = z.object({
   pendingActionId: z.string(),
@@ -135,6 +136,14 @@ export const approvalDecide = defineOperation({
       (CONFIG_WRITES as readonly string[]).includes(pa.operation)
     ) {
       await applyApprovedConfig(ctx, pa);
+    }
+    // So is an org config proposal (spec 52 PR (b)): an org admin approves it (Q6).
+    if (
+      input.decision === "approved" &&
+      !decided.alreadyDecided &&
+      (ORG_CONFIG_WRITES as readonly string[]).includes(pa.operation)
+    ) {
+      await applyApprovedOrgConfig(ctx, pa);
     }
     return decided;
   },

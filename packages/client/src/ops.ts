@@ -78,6 +78,17 @@ export interface OpMap {
   "desktopDevice.list": Def<typeof operations.desktopDeviceList>;
   "desktopDevice.revoke": Def<typeof operations.desktopDeviceRevoke>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
+  // Org workflows (spec 52 PR (b)).
+  "workflow.list": Def<typeof operations.workflowList>;
+  "workflow.get": Def<typeof operations.workflowGet>;
+  "workflow.preview": Def<typeof operations.workflowPreview>;
+  "workflow.save": Def<typeof operations.workflowSave>;
+  "workflow.createFromTemplate": Def<typeof operations.workflowCreateFromTemplate>;
+  "workflow.archive": Def<typeof operations.workflowArchive>;
+  "agent.save": Def<typeof operations.agentSave>;
+  "orgConfig.get": Def<typeof operations.orgConfigGet>;
+  "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
+  "stageType.list": Def<typeof operations.stageTypeList>;
 }
 
 export type OpName = keyof OpMap;
