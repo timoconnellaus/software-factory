@@ -17,7 +17,7 @@ CLI command and the desktop app.
    owner, name, default branch, installation, GitHub repo id, the template-policy PR. A repository
    belongs to one project; a GitHub repository is in at most one project.
 2. **Project ids stay.** Migration 0260 keeps each existing `core_projects` row as the project and
-   moves its repo columns to one backfilled repository (`repo_` + the project id's hex). This is the
+   copies its repo columns to one backfilled repository (`repo_` + the project id's hex). This is the
    least disruptive direction: no `project_id` anywhere changes, so work items, config versions,
    URLs and the clients keep working. (The alternative, keeping the rows as repositories and creating
    new projects, would re-point every `project_id`.)
@@ -36,10 +36,16 @@ CLI command and the desktop app.
    default). A project with no repository edits its config in the app only. Repository-specific
    settings in the config apply to all of the project's repositories.
 
+7. **The migration is additive.** 0260 adds and backfills; the repo columns stay on `core_projects`
+   (written as a mirror, never read) until a later migration drops them once this code is live, so
+   the code deployed before it keeps working through the deploy and a failed deploy breaks nothing.
+
 ## Consequences
-- Every reader of repo fields goes through the repository row; the type checker finds them because
-  the columns are gone from `core_projects`.
-- The protection verdict and the merge queue are still keyed by project. That is exact while every
-  project has one repository; they get a `repository_id` before the UI offers a second repository.
+- Every reader of repo fields goes through the repository row. Webhook lookups key work items and
+  verify checks by repository, so two repositories with the same PR number or head never touch
+  each other's items.
+- The merge queue is computed per repository. The protection verdict stays per project, recorded
+  only for the project's first repository, until per-repository protection lands (before the UI
+  offers a second repository).
 - `project.update` keeps working as a fix on the project's repository; `repository.update` is the
   per-repository form.

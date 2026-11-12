@@ -517,7 +517,7 @@ export const workItemGet = defineOperation({
           .orderBy("created_at", "desc")
           .limit(1),
         // Where the item stands in the merge queue (ADR 0330); empty outside the merge stage.
-        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : ""),
+        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : "", w.repository_id),
         ctx.db
           .selectFrom("core_work_item_links as l")
           .innerJoin("core_work_items as t", "t.id", "l.waits_for_id")

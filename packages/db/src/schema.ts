@@ -115,6 +115,14 @@ export interface CoreProjectsTable {
   next_number: Generated<number>;
   created_at: Iso;
   created_by: string;
+  /**
+   * @deprecated Since 0260 (ADR 0490) the repo lives in core_repositories. Only project.create
+   * writes these, as a mirror for code deployed before 0260; nothing reads them. A later migration
+   * drops them.
+   */
+  repo_owner: string;
+  /** @deprecated See `repo_owner`. Unique with it: a project with no repository writes its id. */
+  repo_name: string;
 }
 
 /**
@@ -620,6 +628,8 @@ export interface CoreRunSteersTable {
   text: string;
   created_at: Iso;
   delivered_at: Iso | null;
+  /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
+  kind: Generated<"message" | "takeover">;
 }
 
 /** A person opening a run's web terminal (spec 35, ADR 0440). */
@@ -694,6 +704,8 @@ export interface CoreVerifyChecksTable {
   title: string;
   review_packet_id: string | null;
   updated_at: Iso;
+  /** 0260 (ADR 0490): the repository the head SHA is in. */
+  repository_id: string | null;
 }
 
 // ---- 0060: onboarding (installations, connect state, runner device login) ----

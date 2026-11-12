@@ -119,25 +119,24 @@ describe("migration 0260: a project is not a repository (ADR 0490)", () => {
     ]);
   });
 
-  it("keeps project ids, numbers and config versions, without the repo columns", async () => {
+  it("keeps project ids, numbers and config versions (the repo columns stay until a later drop)", async () => {
     const project = await db
-      .prepare("SELECT * FROM core_projects WHERE id = ?")
+      .prepare(
+        "SELECT id, name, slug, policy_sha, next_number, repo_owner FROM core_projects WHERE id = ?",
+      )
       .bind(`prj_${hex("a")}`)
       .first<Record<string, unknown>>();
     expect(project).toEqual({
       id: `prj_${hex("a")}`,
-      org_id: "o1",
-      factory_id: "fac_1",
       name: "Factory",
       slug: "factory",
       policy_sha: "v2",
       next_number: 4,
-      created_at: NOW,
-      created_by: "u1",
+      repo_owner: "acme",
     });
   });
 
-  it("keeps the rows that reference projects (no cascade on the rebuild)", async () => {
+  it("keeps every row that references projects, with no dangling foreign key", async () => {
     const count = async (sql: string) => (await db.prepare(sql).first<{ n: number }>())?.n;
     expect(await count("SELECT count(*) AS n FROM core_project_policies")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM core_project_protection")).toBe(1);
@@ -150,9 +149,15 @@ describe("migration 0260: a project is not a repository (ADR 0490)", () => {
       await count("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'core_0260_%'"),
     ).toBe(0);
     expect(await count("SELECT count(*) AS n FROM core_repositories")).toBe(2);
+    // Every foreign key holds after the migrations (a deferred check can't hide an orphan).
+    expect((await db.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
   });
 
-  it("points every work item at its project's repository", async () => {
+  it("points every work item and verify check at its project's repository", async () => {
+    const check = await db
+      .prepare("SELECT repository_id FROM core_verify_checks WHERE head_sha = 'abc'")
+      .first();
+    expect(check).toEqual({ repository_id: `repo_${hex("a")}` });
     const item = await db
       .prepare("SELECT project_id, repository_id FROM core_work_items WHERE id = 'wi_1'")
       .first();

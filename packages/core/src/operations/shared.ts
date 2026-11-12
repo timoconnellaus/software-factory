@@ -44,7 +44,7 @@ export function requireRepository(ctx: HandlerContext): RepositoryRow {
   const n = ctx.scope.repositories.length;
   if (ctx.scope.workItem && n > 0) {
     throw new OperationError(
-      "conflict",
+      "not_found",
       `work item #${ctx.scope.workItem.number} has no repository yet: choose one of project ${project.name}'s ${n} repositories`,
     );
   }
@@ -54,6 +54,25 @@ export function requireRepository(ctx: HandlerContext): RepositoryRow {
       ? `project ${project.name} has no repository`
       : `project ${project.name} has ${n} repositories: name one (repositoryId)`,
   );
+}
+
+/**
+ * The repository a work item uses (ADR 0490): its own, else its project's only one (an item created
+ * by code from before 0260 may have none recorded). Null when neither applies.
+ */
+export async function itemRepository(
+  db: HandlerContext["db"],
+  item: Pick<WorkItemRow, "repository_id" | "project_id">,
+): Promise<RepositoryRow | null> {
+  const rows = await db
+    .selectFrom("core_repositories")
+    .selectAll()
+    .$if(!!item.repository_id, (q) => q.where("id", "=", item.repository_id ?? ""))
+    .$if(!item.repository_id, (q) => q.where("project_id", "=", item.project_id))
+    .limit(2)
+    .execute();
+  if (item.repository_id) return rows[0] ?? null;
+  return rows.length === 1 ? (rows[0] ?? null) : null;
 }
 
 /** A repository's `owner/name`. */

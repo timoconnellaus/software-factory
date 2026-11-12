@@ -211,12 +211,14 @@ function liveView(terminal: LiveView["terminal"], active = true): LiveView {
       startedAt: new Date(0).toISOString(),
       endedAt: null,
       takeover: null,
+      mode: "terminal",
     },
     events: [],
     lastSeq: 0,
     truncated: false,
     steers: [],
     steer: { allowed: true, reason: null, max: 2000 },
+    takeover: { allowed: false, reason: null, requested: false },
     terminal,
   };
 }

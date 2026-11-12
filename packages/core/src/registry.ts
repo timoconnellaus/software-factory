@@ -169,6 +169,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   live.runLive,
   live.runSteer,
   live.runTakeSteers,
+  live.runTakeover,
   terminal.runTerminalAttach,
   terminal.runTerminalDetach,
   terminal.runTerminalHost,

@@ -49,3 +49,8 @@ says how Claude runs there:
 - `findTranscript` / `parseTranscript` / `checkOutputLog`: the check output and final message from a
   session's transcript (Orca's per-profile `CLAUDE_CONFIG_DIR` homes are searched too).
 - `streamJsonToEvents` and `headlessArgs` (the same factory flags, then `-p`) for headless `claude -p` runs.
+- A two-way stream-json session (ADR 0450): `projectHarness(…, { session: "stream" })` launches
+  with `STREAM_FLAGS` (and `--session-id`, recorded as `launch.stream.sessionId`), so ADR 0270's
+  check covers it. `stream-json.ts`: `streamLineEvents` (one output line → bounded contract events),
+  `userMessageLine`, `interruptLine`, `denyPermissionLine`; `launch.ts`: `resumeArgv` /
+  `resumeCommand`, the interactive `claude --resume <id>` with the run's settings for a takeover.

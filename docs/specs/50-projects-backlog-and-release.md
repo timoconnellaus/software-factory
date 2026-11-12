@@ -46,11 +46,22 @@ Nothing changes for a user.
     to one project in one org, as today).
   - Backfill: **one repository per existing project**, with the project's repo columns. Its id is
     `repo_` + the project id's hex, so it is deterministic and a test can predict it.
-  - `core_projects` is rebuilt without the repo columns (`repo_owner`, `repo_name`,
-    `default_branch`, `github_installation_id`, `installation_record_id`, `github_repo_id`,
-    `policy_pr_url`). Project ids, names, slugs, numbers and config versions are unchanged, so every
-    `project_id` elsewhere stays valid. Foreign keys are deferred for the rebuild, as in 0080.
-  - `core_work_items.repository_id` (nullable), backfilled with the project's repository.
+  - **Additive only.** The repo columns stay on `core_projects` for this release: the code deployed
+    before it reads them until the Worker deploy lands, and a failed deploy must leave production
+    working. Nothing reads them from this release on; `project.create` still writes them as a mirror
+    (a project with no repository writes `''` and its own id, to keep their UNIQUE). A later
+    migration, once this code is live, backfills a repository for any project created in that gap
+    and drops the columns (a rebuild: see 0261 on copying aside the rows of cascading tables).
+  - `core_work_items.repository_id` (nullable), backfilled with the project's repository, with
+    indexes on `(repository_id, pr_number)` and `(repository_id, head_sha)`.
+  - `core_verify_checks.repository_id`, backfilled: `factory/verify` per head SHA is per repository.
+- **Lookups by repository.** Everything that finds a work item from a webhook keys it by the
+  repository, never by the project alone: `verify.refresh` by `(repository_id, pr_number)` and
+  `(repository_id, head_sha)` (so closing B#5 never touches A#5), the push check by
+  `(repository_id, number)`. A job's repository is the item's, else the project's only one
+  (`itemRepository`, the same rule in the engine's Workflow); a claim checks it before anything is
+  claimed, and an item with none waits with the reason instead of blocking the queue. The Workflow
+  fails rather than assume a default branch.
 - **Scope** (`resolveScope`) gains `repository`: the work item's repository; else the input's
   `repositoryId`; else the project's repository when it has exactly one; else null. Both the
   batched and the unbatched paths, still one D1 round trip.
@@ -91,11 +102,13 @@ Nothing changes for a user.
   else the project's only repository. A project with no repository can't import; it edits its config
   in the app. Adding a second repository never changes the config. Repository-specific settings in
   the config (harness profile, protection `onRed`) apply to every repository of the project.
-- **Per-repository state that stays keyed by project** (correct while a project has one repository,
-  which is every project after the backfill): the protection verdict (`core_project_protection`)
-  and the merge queue. Both get a `repository_id` in a follow-up before multi-repository projects
-  are offered in the UI; until then `repository.add` on a project that already has one is allowed
-  through the API only, and the spec's tests cover it.
+- **The merge queue is per repository**: entries stay in `core_merge_queue` (keyed by project), and
+  the head, positions and the next wake are computed among the items of the same repository, since
+  each lands on its own repository's default branch.
+- **Protection stays per project for now**: `core_project_protection` holds the verdict of the
+  project's **first** repository. A check of any other repository is computed and shown but not
+  recorded, so it can't overwrite the first one's. Per-repository protection (and Setup showing
+  every repository) is a follow-up before the UI offers a second repository.
 
 ## States and stages: what is fixed and what belongs to the workflow
 Two separate things, which the schema and the operations keep apart:
@@ -260,8 +273,9 @@ it gets its own spec and ADR).
 
 ## Acceptance criteria
 1. Migration 0260 on a database with projects gives each exactly one repository with the same
-   owner, name, default branch, installation and repo id, and each work item that repository; no
-   project id changes and every project's config version is unchanged (test against real D1).
+   owner, name, default branch, installation and repo id, and each work item and verify check that
+   repository; no project id changes, every project's config version is unchanged, and
+   `PRAGMA foreign_key_check` is clean (test against real D1).
 2. Every existing flow behaves as before for a one-repository project: Setup, New work, attach,
    verify, the merge queue, protection, the runner's job repo, the webhook lookups (the existing
    suites pass with only setup-helper changes).

@@ -45,32 +45,47 @@ interface QueueRow {
   title: string;
 }
 
-/** The project's open entries, head first, as one query (for `readBatch`). An entry whose work item ended is skipped. */
-export function queuedEntriesQuery(ctx: HandlerContext, project: string) {
-  return ctx.db
-    .selectFrom("core_merge_queue as q")
-    .innerJoin("core_work_items as w", "w.id", "q.work_item_id")
-    .select([
-      "q.id",
-      "q.work_item_id",
-      "q.workflow_id",
-      "q.pending_action_id",
-      "q.approved_sha",
-      "q.head_sha",
-      "q.enqueued_at",
-      "w.number",
-      "w.title",
-    ])
-    .where("q.project_id", "=", project)
-    .where("q.status", "=", "queued")
-    .where("w.status", "in", [...OPEN_ITEM])
-    .orderBy("q.enqueued_at", "asc")
-    .orderBy("q.id", "asc");
+/**
+ * The project's open entries, head first, as one query (for `readBatch`). An entry whose work item
+ * ended is skipped. With `repositoryId`, only that repository's queue (ADR 0490).
+ */
+export function queuedEntriesQuery(
+  ctx: HandlerContext,
+  project: string,
+  repositoryId?: string | null,
+) {
+  return (
+    ctx.db
+      .selectFrom("core_merge_queue as q")
+      .innerJoin("core_work_items as w", "w.id", "q.work_item_id")
+      .select([
+        "q.id",
+        "q.work_item_id",
+        "q.workflow_id",
+        "q.pending_action_id",
+        "q.approved_sha",
+        "q.head_sha",
+        "q.enqueued_at",
+        "w.number",
+        "w.title",
+      ])
+      .where("q.project_id", "=", project)
+      // One queue per repository (ADR 0490): an item lands on its own repository's default branch.
+      .$if(repositoryId !== undefined, (q) => q.where("w.repository_id", "=", repositoryId ?? ""))
+      .where("q.status", "=", "queued")
+      .where("w.status", "in", [...OPEN_ITEM])
+      .orderBy("q.enqueued_at", "asc")
+      .orderBy("q.id", "asc")
+  );
 }
 
 /** The project's open entries, head first. */
-export async function queuedEntries(ctx: HandlerContext, project: string): Promise<QueueRow[]> {
-  return queuedEntriesQuery(ctx, project).execute();
+export async function queuedEntries(
+  ctx: HandlerContext,
+  project: string,
+  repositoryId?: string | null,
+): Promise<QueueRow[]> {
+  return queuedEntriesQuery(ctx, project, repositoryId).execute();
 }
 
 /** The work item's open entry, if it has one. */
@@ -91,7 +106,7 @@ async function openEntry(ctx: HandlerContext, item: string) {
  */
 export async function releaseMergeQueue(
   ctx: HandlerContext,
-  item: Pick<WorkItemRow, "id" | "project_id">,
+  item: Pick<WorkItemRow, "id" | "project_id" | "repository_id">,
   status: Exclude<MergeQueueStatus, "queued">,
   reason: string,
 ): Promise<boolean> {
@@ -110,7 +125,9 @@ export async function releaseMergeQueue(
     before: { status: "queued" },
     after: { status, reason },
   });
-  const next = (await queuedEntries(ctx, item.project_id)).find((e) => e.work_item_id !== item.id);
+  const next = (await queuedEntries(ctx, item.project_id, item.repository_id)).find(
+    (e) => e.work_item_id !== item.id,
+  );
   if (next?.workflow_id) {
     ctx.emit({
       kind: "workflow.event",
@@ -136,7 +153,7 @@ export async function requireQueueHead(
 ): Promise<void> {
   const entry = await openEntry(ctx, item.id);
   if (!entry) return;
-  const head = (await queuedEntries(ctx, item.project_id))[0];
+  const head = (await queuedEntries(ctx, item.project_id, item.repository_id))[0];
   if (head?.work_item_id !== item.id) {
     throw new OperationError(
       "conflict",
@@ -166,7 +183,7 @@ async function positionOf(
   ctx: HandlerContext,
   item: WorkItemRow,
 ): Promise<z.infer<typeof position>> {
-  const entries = await queuedEntries(ctx, item.project_id);
+  const entries = await queuedEntries(ctx, item.project_id, item.repository_id);
   const i = entries.findIndex((e) => e.work_item_id === item.id);
   if (i < 0) {
     return { queued: false, entryId: null, position: null, head: false, ahead: [], headSha: null };
@@ -219,7 +236,7 @@ export const mergeQueueEnter = defineOperation({
         after: { status: "queued", headSha: input.headSha },
       });
       // The position read below runs before this write commits: count this entry at the back.
-      const entries = await queuedEntries(ctx, w.project_id);
+      const entries = await queuedEntries(ctx, w.project_id, w.repository_id);
       return {
         queued: true,
         entryId: id,
@@ -298,7 +315,7 @@ export const mergeQueueUpdate = defineOperation({
     const project = requireProject(ctx);
     const entry = await openEntry(ctx, w.id);
     if (!entry) throw new OperationError("conflict", "not in the merge queue");
-    const head = (await queuedEntries(ctx, w.project_id))[0];
+    const head = (await queuedEntries(ctx, w.project_id, w.repository_id))[0];
     if (head?.work_item_id !== w.id) {
       throw new OperationError("conflict", "only the head of the merge queue is updated");
     }

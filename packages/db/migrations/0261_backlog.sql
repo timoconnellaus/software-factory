@@ -3,10 +3,16 @@
 -- its pipeline starts; `planning` is reserved for part C (planning before release) so it needs no
 -- second rebuild. Items gain a priority and a manual rank, and "waits for" links between items.
 --
--- SQLite can't alter a CHECK, so core_work_items is rebuilt as in 0080. Dropping it runs ON DELETE
--- CASCADE in its children even with foreign keys deferred (see 0260), so the rows of the tables that
--- cascade from it are copied aside and put back: core_merge_queue and core_attachments (every
--- `REFERENCES core_work_items (id) ON DELETE CASCADE` up to 0260).
+-- SQLite can't alter a CHECK, so core_work_items is rebuilt as in 0080. Two things to know:
+-- - Dropping a parent table deletes its rows first, and that runs ON DELETE CASCADE in its children
+--   even with foreign keys deferred (D1 can't turn foreign keys off). So the rows of the tables that
+--   cascade from core_work_items are copied aside and put back: core_merge_queue and
+--   core_attachments (every `REFERENCES core_work_items (id) ON DELETE CASCADE` up to 0260). A
+--   later rebuild must do the same for whatever cascades from it then.
+-- - The children without an action (stages, jobs, runs, …) keep their rows and point at the
+--   rebuilt table by name. The deferred violations the drop records are discarded by
+--   `PRAGMA defer_foreign_keys = off`, not re-checked, so this relies on every id being copied
+--   back; packages/db/test/upgrade.test.ts runs `PRAGMA foreign_key_check` after it to prove it.
 
 CREATE TABLE core_0261_merge_queue AS SELECT * FROM core_merge_queue;
 CREATE TABLE core_0261_attachments AS SELECT * FROM core_attachments;
@@ -103,6 +109,7 @@ CREATE INDEX core_work_items_org_idx ON core_work_items (org_id, status);
 CREATE INDEX core_work_items_requester_idx ON core_work_items (requester_user_id, status);
 CREATE INDEX core_work_items_pr_idx ON core_work_items (project_id, pr_number);
 CREATE INDEX core_work_items_repository_idx ON core_work_items (repository_id, pr_number);
+CREATE INDEX core_work_items_repository_head_idx ON core_work_items (repository_id, head_sha);
 -- The pull (ADR 0491): a project's queued items by priority, then rank.
 CREATE INDEX core_work_items_pull_idx ON core_work_items (project_id, status, priority, rank);
 

@@ -278,8 +278,8 @@ describe("Connect GitHub: verifying the installation", () => {
         "INSERT INTO core_factories (id, org_id, name, created_at, created_by) VALUES (?, ?, 'Default', ?, ?)",
       ).bind(factoryId, p.orgId, now, p.userId),
       env.DB.prepare(
-        "INSERT INTO core_projects (id, org_id, factory_id, name, slug, created_at, created_by) VALUES (?, ?, ?, 'software-factory', 'software-factory', ?, ?)",
-      ).bind(projectId, p.orgId, factoryId, now, p.userId),
+        "INSERT INTO core_projects (id, org_id, factory_id, name, slug, repo_owner, repo_name, created_at, created_by) VALUES (?, ?, ?, 'software-factory', 'software-factory', ?, ?, ?, ?)",
+      ).bind(projectId, p.orgId, factoryId, p.login, repoName, now, p.userId),
       env.DB.prepare(
         "INSERT INTO core_repositories (id, org_id, project_id, owner, name, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
       ).bind(`repo_${projectId.slice(4)}`, p.orgId, projectId, p.login, repoName, now, p.userId),

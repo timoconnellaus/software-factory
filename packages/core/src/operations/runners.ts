@@ -44,6 +44,7 @@ import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
 import {
   fencingToken,
+  itemRepository,
   jobId,
   repoRef,
   requireRepository,
@@ -484,10 +485,24 @@ export async function placementRefusal(
     harness: string;
     pinnedRunnerId?: string | null;
   },
-  item: Pick<WorkItemRow, "id" | "org_id" | "project_id" | "requester_user_id">,
+  item: Pick<WorkItemRow, "id" | "org_id" | "project_id" | "requester_user_id"> & {
+    repository_id?: string | null;
+  },
   project: Pick<ProjectRow, "id" | "factory_id" | "policy_sha">,
 ): Promise<{ reason: string; wip?: true; waitReason?: string } | null> {
   if (!manifest) return { reason: "runner has not reported a manifest" };
+  // Checked before anything is claimed (ADR 0490): an item with no repository waits, with the
+  // reason, and never blocks the jobs behind it.
+  if (
+    "repository_id" in item &&
+    !(await itemRepository(ctx.db, {
+      repository_id: item.repository_id ?? null,
+      project_id: item.project_id,
+    }))
+  ) {
+    const reason = "the work item has no repository: choose one of its project's";
+    return { reason, waitReason: reason };
+  }
   // A planning resume goes back to its session's runner (ADR 0300), and only a runner with a light
   // pool takes planning at all (ADR 0301).
   if (job.pinnedRunnerId && job.pinnedRunnerId !== runner.id) {
@@ -693,14 +708,8 @@ async function buildJob(
   leaseExpiresAt: string,
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
-  // The item's repository (ADR 0490): it was fixed when the item was pulled.
-  const repository = item.repository_id
-    ? await ctx.db
-        .selectFrom("core_repositories")
-        .selectAll()
-        .where("id", "=", item.repository_id)
-        .executeTakeFirst()
-    : undefined;
+  // The item's repository (ADR 0490); placementRefusal already checked there is one.
+  const repository = await itemRepository(ctx.db, item);
   if (!repository) {
     throw new OperationError("conflict", `work item #${item.number} has no repository`);
   }
@@ -1049,6 +1058,14 @@ export const runReportEvents = defineOperation({
         ? (last.state as "preparing" | "running" | "collecting")
         : null;
     const started = input.events.find((e) => e.type === "session.started");
+    // A stream session handed to a person (ADR 0450): its resume command is the run's takeover.
+    const handed = input.events.findLast((e) => e.type === "takeover");
+    const takeover =
+      handed?.type === "takeover"
+        ? { label: "Resume in a terminal", hint: handed.hint }
+        : started?.type === "session.started" && started.takeover
+          ? started.takeover
+          : null;
     if (isActive(run.status)) {
       ctx.write(
         ctx.db
@@ -1056,9 +1073,7 @@ export const runReportEvents = defineOperation({
           .set({
             last_event_at: ctx.now,
             ...(mapped ? { status: mapped } : {}),
-            ...(started?.type === "session.started" && started.takeover
-              ? { takeover: json(started.takeover) }
-              : {}),
+            ...(takeover ? { takeover: json(takeover) } : {}),
           })
           .where("id", "=", run.id),
       );
