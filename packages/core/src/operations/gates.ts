@@ -3,7 +3,8 @@
 // review.sendBack, approval.decide). A decision updates the pending action and sends
 // `approval-<id>` to the Workflow in the same batch; the Workflow then re-runs the operation with
 // the approval, or loops back.
-import type { GateDecisionKind } from "@software-factory/db";
+import type { CoreDatabase, GateDecisionKind } from "@software-factory/db";
+import type { ExpressionBuilder } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
@@ -45,9 +46,48 @@ export function phoneMayDecidePending(pa: { operation: string; risk: string }): 
 export const PHONE_REFUSES_PENDING =
   "this change is approved on the desktop app or the website, not the phone: approve this on the desktop app or the website";
 
+export const PHONE_REFUSES_CANCEL =
+  "this work item waits on a change that is approved on the desktop app or the website, not the phone: cancel it on the desktop app or the website";
+
+/**
+ * Cancelling a work item rejects its open pending actions (ADR 0541 amendment, third review). From
+ * the phone that would reject a config change or a self-modify action, which the phone may not
+ * decide, so the phone can't cancel an item while one is open. Guarded in the batch too, so one
+ * opened meanwhile also refuses. Withdrawing a spec gate because a person wrote (a take-back) isn't
+ * this: it decides nothing and the gate opens again.
+ */
+export async function refusePhoneCancel(ctx: HandlerContext, workItemId: string): Promise<void> {
+  if (ctx.actor.type !== "human" || ctx.origin.surface !== "mobile") return;
+  const undecidable = (eb: ExpressionBuilder<CoreDatabase, "core_pending_actions">) =>
+    eb.and([
+      eb("work_item_id", "=", workItemId),
+      eb("status", "=", "pending"),
+      eb.or([eb("operation", "in", [...CONFIG_WRITES]), eb("risk", "=", "self-modify")]),
+    ]);
+  const open = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select("id")
+    .where(undecidable)
+    .limit(1)
+    .executeTakeFirst();
+  if (open) throw new OperationError("forbidden", PHONE_REFUSES_CANCEL, { decideElsewhere: true });
+  ctx.guardExists(
+    "no gate the phone may not decide",
+    ctx.db
+      .selectFrom("core_work_items")
+      .select("id")
+      .where("id", "=", workItemId)
+      .where(({ not, exists, selectFrom }) =>
+        not(exists(selectFrom("core_pending_actions").select("id").where(undecidable))),
+      ),
+  );
+}
+
 /**
  * Decides a pending action once. Every operation that decides one goes through here, so the
- * phone's limit (`phoneMayDecidePending`) holds whichever operation it calls. A repeat of the same decision is a no-op that reports
+ * phone's limit (`phoneMayDecidePending`) holds whichever operation it calls; it may only be called
+ * from an operation that declares `decidesPending` (invoke() refuses the write otherwise), and no
+ * other write may set a pending action's status but a `close` or an `apply`. A repeat of the same decision is a no-op that reports
  * `alreadyDecided`; a contradicting one is a conflict (spec 12, criterion 3).
  */
 export function decidePending(
@@ -66,7 +106,8 @@ export function decidePending(
     throw new OperationError("conflict", `already decided: ${pa.decision ?? pa.status}`);
   }
   const gateOpenMs = Date.parse(ctx.now) - Date.parse(pa.created_at);
-  ctx.write(
+  ctx.writePendingStatus(
+    "decide",
     ctx.db
       .updateTable("core_pending_actions")
       .set({
@@ -128,6 +169,7 @@ async function gateFor(
 
 export const approvalDecide = defineOperation({
   name: "approval.decide",
+  decidesPending: true,
   description:
     "Approve or reject any pending action by id (the generic gate card). Spec and merge gates have their own operations (spec.approve, review.merge, …) with richer outcomes. Approvers only.",
   risk: "write",
@@ -172,6 +214,7 @@ export const approvalDecide = defineOperation({
 
 export const specApprove = defineOperation({
   name: "spec.approve",
+  decidesPending: true,
   description:
     "Approve a work item's spec at the spec gate. The Workflow then commits the spec to the work item's branch under docs/specs/ and starts the build. Approvers only; a second approval reports alreadyDecided.",
   risk: "write",
@@ -191,6 +234,7 @@ export const specApprove = defineOperation({
 
 export const specRequestChanges = defineOperation({
   name: "spec.requestChanges",
+  decidesPending: true,
   description:
     "Send a work item's spec back to planning with a note. The Workflow revises the spec (it can loop any number of times) and asks again. Approvers only.",
   risk: "write",
@@ -213,6 +257,7 @@ export const specRequestChanges = defineOperation({
 
 export const reviewMerge = defineOperation({
   name: "review.merge",
+  decidesPending: true,
   description:
     "Merge a work item from its review packet (the merge gate, ADR 0041). The factory merges through the GitHub App. Records whether the full diff was opened first. With `headSha` (the phone always sends it, spec 60), the approval is for that commit only: a gate whose head has moved refuses it with `conflict`. Approvers only.",
   risk: "write",
@@ -249,6 +294,7 @@ export const reviewMerge = defineOperation({
 
 export const reviewSendBack = defineOperation({
   name: "review.sendBack",
+  decidesPending: true,
   description:
     "Send a work item back to build from its review packet, with a note (required). Opens a factory incident proposing a `.factory/` fix (V1 improvement loop). Approvers only.",
   risk: "write",
