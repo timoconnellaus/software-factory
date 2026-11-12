@@ -64,7 +64,7 @@ function listed(extra: Partial<Listed> = {}): Listed {
 
 describe("the overview", () => {
   it("counts what runs and lists the queue in pull order", () => {
-    expect(runningNow(items).map((i) => i.number)).toEqual([26, 25, 9, 3]);
+    expect(runningNow(items).map((i) => i.number)).toEqual([26, 42, 9, 3]);
     const q = queued([
       ...FACTORY_ITEMS,
       {
@@ -74,7 +74,7 @@ describe("the overview", () => {
         priority: "urgent",
       },
     ]);
-    expect(q.map((i) => i.number)).toEqual([31, 30]);
+    expect(q.map((i) => i.number)).toEqual([31, 43]);
   });
 
   it("counts runners online", () => {
@@ -133,7 +133,8 @@ describe("runner rows", () => {
     expect(load[0]?.stateText).toBe("Paused: load 19.3 on 10 cores");
     const off = runnerRows([health({ state: "offline" })], [listed()], clock);
     expect(off[0]).toMatchObject({
-      stateText: "Offline since 09:58",
+      stateText: "Offline",
+      lastSeenAt: "2026-11-12T09:58:00.000Z",
       heavy: "0 of 2",
       light: "0 of 6",
     });
@@ -151,9 +152,10 @@ describe("runner rows", () => {
 describe("incidents", () => {
   it("are the incident work items, open until the fix lands", () => {
     const rows = incidentRows(items);
-    expect(rows.map((r) => [r.number, r.fromNumber, r.what, r.open])).toEqual([
-      [28, 8, "Had a run that failed", true],
-      [21, 4, "Was sent back at review", false],
+    // The title as the factory wrote it: what went wrong and where from aren't guessed from it.
+    expect(rows.map((r) => [r.number, r.title, r.open])).toEqual([
+      [40, "Factory incident: #8 had a run that failed", true],
+      [41, "Factory incident: #4 was sent back at review", false],
     ]);
     expect(fixText(rows[0] as (typeof rows)[number])).toBe("Waiting: Packet ready");
     expect(fixText(rows[1] as (typeof rows)[number])).toBe("Fixed");

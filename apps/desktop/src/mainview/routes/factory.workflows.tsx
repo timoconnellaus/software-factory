@@ -41,7 +41,7 @@ export const Route = createRoute({
 
 function WorkflowsPage() {
   const search = Route.useSearch();
-  const { projects, project, config } = useProjectConfig(search.project);
+  const { projects, project, projectsRead, config } = useProjectConfig(search.project);
   const doc = config.data?.current?.policy ?? null;
   const workflows = doc ? workflowList(doc) : [];
   const running = workflows.find((w) => w.current) ?? null;
@@ -55,7 +55,7 @@ function WorkflowsPage() {
         sub="A workflow fills the factory's fixed stages with steps of its own. Spec approval, verify and the merge gate always come from the factory. A project runs one workflow."
         actions={<ProjectPicker projects={projects} project={project} from="/factory/workflows" />}
       />
-      <ConfigState project={project} config={config} />
+      <ConfigState projectsRead={projectsRead} project={project} config={config} />
       {doc && (
         <>
           {workflows.length === 0 ? (

@@ -88,7 +88,7 @@ export const ITEMS: Summary[] = [
  * ITEMS; the shell's tests pin ITEMS alone.
  */
 export const FACTORY_ITEMS: Summary[] = [
-  item(28, "Factory incident: #8 had a run that failed", "merge", "waiting", {
+  item(40, "Factory incident: #8 had a run that failed", "merge", "waiting", {
     kind: "incident",
     source: "incident",
     statusReason: "Packet ready",
@@ -96,18 +96,18 @@ export const FACTORY_ITEMS: Summary[] = [
     createdAt: ago(60 * 22),
     updatedAt: ago(50),
   }),
-  item(21, "Factory incident: #4 was sent back at review", "done", "done", {
+  item(41, "Factory incident: #4 was sent back at review", "done", "done", {
     kind: "incident",
     source: "incident",
     prUrl: "https://github.com/example/software-factory/pull/44",
     createdAt: ago(60 * 50),
     updatedAt: ago(60 * 45),
   }),
-  item(25, "Keep the runner count fresh", "merge", "running", {
+  item(42, "Keep the runner count fresh", "merge", "running", {
     statusReason: "Merge queue: CI on the merged head",
     updatedAt: ago(12),
   }),
-  item(30, "Show the budget in the status bar", "intake", "queued", {
+  item(43, "Show the budget in the status bar", "intake", "queued", {
     releasedAt: ago(25),
     updatedAt: ago(25),
   }),
@@ -911,8 +911,8 @@ export const ANSWERS: Answers = {
       input.projectId === FACTORY
         ? [
             {
-              workItemId: "wi_25",
-              number: 25,
+              workItemId: "wi_42",
+              number: 42,
               title: "Keep the runner count fresh",
               headSha: "9c41e07d2b",
               enqueuedAt: ago(12),

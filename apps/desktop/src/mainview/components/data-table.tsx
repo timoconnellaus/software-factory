@@ -1,5 +1,7 @@
 // A table in a white card (design: the Factory and Settings tables) and a figure tile, from
 // packages/ui's Table and the shell's Panel. Header cells are quiet and small; rows are 13px.
+
+import { ago } from "@software-factory/client/format";
 import {
   Table,
   TableBody,
@@ -22,18 +24,21 @@ const isClassed = (h: Head): h is { label: React.ReactNode; className: string } 
 
 export function TablePanel({
   head,
+  fixed = false,
   children,
   className,
   ...props
 }: {
   head: Head[];
+  /** A fixed layout: the header cells' widths size the columns, so sibling tables line up. */
+  fixed?: boolean;
   children: React.ReactNode;
   className?: string;
   "data-testid"?: string;
 }) {
   return (
     <Panel className={cn("overflow-hidden p-0", className)} {...props}>
-      <Table className="text-[13px]">
+      <Table className={cn("text-[13px]", fixed && "table-fixed")}>
         <TableHeader>
           <TableRow className="border-line-soft hover:bg-transparent">
             {head.map((h, i) => (
@@ -90,4 +95,17 @@ export function Stat({
 /** A quiet line for an empty table or section. */
 export function Empty({ children }: { children: React.ReactNode }) {
   return <Panel className="text-ink-muted text-[13px]">{children}</Panel>;
+}
+
+/** The full date and time of a moment: "Thursday 12 November 2026 at 9:58 am". */
+export const fullDate = (iso: string) =>
+  new Date(iso).toLocaleString("en-AU", { dateStyle: "full", timeStyle: "short" });
+
+/** A moment as "3h ago", with the full date and time on hover. */
+export function When({ iso, className }: { iso: string; className?: string }) {
+  return (
+    <time dateTime={iso} title={fullDate(iso)} className={className}>
+      {ago(iso)}
+    </time>
+  );
 }

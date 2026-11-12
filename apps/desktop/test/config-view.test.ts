@@ -1,11 +1,14 @@
 // The Policy, Agents and Workflows pages' wording (spec 41, slice 5), from a config document as
 // `config.get` returns it. The defaults these pages assume for a field the document leaves out are
 // pinned to the schema's, so they can't drift.
-import { projectPolicySchema } from "@software-factory/core";
+import { DEFAULT_MODEL_ROLES, projectPolicySchema } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import { POLICY_DOC } from "../screenshots/fixtures.ts";
 import {
   agentRows,
+  autonomyText,
+  configProject,
+  MODEL_ROLES,
   modelRoleRows,
   POLICY_DEFAULTS,
   policySections,
@@ -14,6 +17,7 @@ import {
   workflowList,
 } from "../src/mainview/lib/config-view.ts";
 import { tabTitle } from "../src/mainview/lib/places.ts";
+import { orgScope } from "../src/mainview/lib/scope.ts";
 
 const value = (doc: Record<string, unknown>, key: string) =>
   policySections(doc)
@@ -56,6 +60,26 @@ describe("policy", () => {
     );
   });
 
+  it("words autonomy from the gate's table and the project's overrides", () => {
+    expect(autonomyText({ autonomyPolicy: "balanced" })?.text).toBe(
+      "Agents go ahead with writing code. A person approves accepting a spec, spending and reaching outside.",
+    );
+    expect(autonomyText({ autonomyPolicy: "cautious" })?.text).toBe(
+      "Agents do nothing on their own. A person approves writing code, accepting a spec, spending and reaching outside.",
+    );
+    expect(autonomyText({ autonomyPolicy: "autonomous" })?.text).toBe(
+      "Agents go ahead with writing code, spending and reaching outside. A person approves accepting a spec.",
+    );
+    // An override changes what the page says, as it changes what the gate decides.
+    const tightened = { autonomyPolicy: "autonomous", overrides: { agent: { outbound: "deny" } } };
+    expect(autonomyText(tightened)?.text).toBe(
+      "Agents go ahead with writing code and spending. A person approves accepting a spec. Agents never do reaching outside.",
+    );
+    expect(autonomyText({ autonomyPolicy: "reckless" })).toBeNull();
+    // The floor isn't readable: the page says it can only tighten what it shows.
+    expect(value(POLICY_DOC, "floor")).toBe("Can only tighten this");
+  });
+
   it("says which version is current", () => {
     expect(versionLine({ version: 12, source: "app", createdBy: "owner" })).toBe(
       "Version 12, from app, by owner.",
@@ -70,6 +94,10 @@ describe("agents", () => {
       ["Builder", "standard", 4, ["Software: build"]],
       ["Spec critic", "light", 2, ["Software: Spec critic"]],
     ]);
+  });
+
+  it("has runner-contract's model roles", () => {
+    expect([...MODEL_ROLES].sort()).toEqual(Object.keys(DEFAULT_MODEL_ROLES).sort());
   });
 
   it("shows a model role's choice only when the project made one", () => {
@@ -105,5 +133,29 @@ describe("workflows", () => {
   it("has tab titles", () => {
     expect(tabTitle("/factory/policy", () => null)).toBe("Policy");
     expect(tabTitle("/factory/workflows?workflow=Docs", () => null)).toBe("Workflows");
+  });
+});
+
+describe("which project's config", () => {
+  const projects = [
+    { id: "prj_factory", orgId: "org_personal" },
+    { id: "prj_crm", orgId: "org_client" },
+    { id: "prj_site", orgId: "org_client" },
+  ];
+  const session = {
+    personalOrgId: "org_personal",
+    orgs: [{ id: "org_personal" }, { id: "org_client" }],
+  };
+
+  it("picks among the rail's org's projects, as the page does", () => {
+    const org = orgScope(session, "org_client");
+    expect(configProject(projects, org, undefined).project?.id).toBe("prj_crm");
+    expect(configProject(projects, org, "prj_site").project?.id).toBe("prj_site");
+    // A project from another org isn't shown under this one.
+    expect(configProject(projects, org, "prj_factory").project?.id).toBe("prj_crm");
+    expect(configProject(projects, orgScope(session, undefined), undefined).project?.id).toBe(
+      "prj_factory",
+    );
+    expect(orgScope(session, "org_gone")).toBeNull();
   });
 });
