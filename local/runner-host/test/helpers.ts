@@ -27,6 +27,7 @@ import {
   type RunnerEvent,
   runnerChannelKey,
   type StoredArtifact,
+  stagePool,
   type TerminalSize,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
@@ -64,6 +65,15 @@ export interface FakeCloud {
   planning: (call: { jobId: string; op: string; input: Record<string, unknown> }) => unknown;
   /** What the heartbeat answers as `desiredVersion` (ADR 0360); undefined leaves it out. */
   desiredVersion?: string | null;
+  /** What the heartbeat answers as `minRunnerCompat` (ADR 0520); undefined leaves it out. */
+  minRunnerCompat?: number;
+  /**
+   * Hand out a queued job only when the claim's capacity has room in its pool (ADR 0301), as the
+   * engine does. Off: the next queued job, whatever the capacity says.
+   */
+  pools?: boolean;
+  /** The capacity each claim reported. */
+  claimCapacities: ClaimRequest["capacity"][];
   /** Steers queued per job (ADR 0400); the steer call takes them. */
   steers: Map<string, { id: string; text: string; at: string; kind?: "message" | "takeover" }[]>;
   steerCalls: number;
@@ -86,6 +96,7 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
     handbacks: new Map(),
     released: new Map(),
     heartbeats: [],
+    claimCapacities: [],
     commands: [],
     tokens: 0,
     fenced: new Set(),
@@ -111,6 +122,9 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
                 ...(cloud.desiredVersion !== undefined
                   ? { desiredVersion: cloud.desiredVersion }
                   : {}),
+                ...(cloud.minRunnerCompat !== undefined
+                  ? { minRunnerCompat: cloud.minRunnerCompat }
+                  : {}),
                 leases: hb.activeJobs.map((j) => ({
                   jobId: j.jobId,
                   expiresAt: new Date(Date.now() + 600_000).toISOString(),
@@ -119,8 +133,18 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
             };
           }
           if (path === PATHS.claim) {
-            const { claimId } = body as ClaimRequest;
-            const job = cloud.claims.get(claimId) ?? cloud.queue.shift() ?? null;
+            const { claimId, capacity } = body as ClaimRequest;
+            cloud.claimCapacities.push(capacity);
+            const fits = (j: Job) =>
+              !cloud.pools ||
+              (stagePool(j.stage) === "light"
+                ? (capacity.light?.inUse ?? 0) < (capacity.light?.max ?? 0)
+                : capacity.inUse < capacity.max);
+            const next = cloud.claims.has(claimId) ? -1 : cloud.queue.findIndex(fits);
+            const job =
+              cloud.claims.get(claimId) ??
+              (next >= 0 ? cloud.queue.splice(next, 1)[0] : null) ??
+              null;
             if (job) cloud.claims.set(claimId, job);
             return { body: { job } };
           }
