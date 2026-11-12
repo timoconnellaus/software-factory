@@ -7,6 +7,8 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   code: number;
+  /** The command was killed for running past its timeout (its exit code says nothing). */
+  timedOut?: boolean;
 }
 
 export type Exec = (
@@ -40,7 +42,13 @@ export const nodeExec: Exec = (command, args, options = {}) =>
             : error
               ? 1
               : 0;
-        resolve({ stdout: String(stdout), stderr: String(stderr || (error?.message ?? "")), code });
+        const killed = !!error && (error as { killed?: boolean }).killed === true;
+        resolve({
+          stdout: String(stdout),
+          stderr: String(stderr || (error?.message ?? "")),
+          code,
+          ...(killed && !options.signal?.aborted ? { timedOut: true } : {}),
+        });
       },
     );
   });

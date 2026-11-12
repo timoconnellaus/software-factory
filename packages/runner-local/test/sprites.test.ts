@@ -9,7 +9,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { PROMPT_FILE, PROMPT_POINTER } from "@software-factory/harness-claude";
-import { type AdapterEvent, type Job, RESULT_FILE } from "@software-factory/runner-contract";
+import {
+  type AdapterEvent,
+  isReleaseIncomplete,
+  type Job,
+  RESULT_FILE,
+} from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createSpritesRunner,
@@ -419,7 +424,13 @@ describe("a sprite job's session", { timeout: 30_000 }, () => {
     const session = await w.runner.startSession(j, ws, signal());
     const token = await readFile(w.tokenFile, "utf8");
     await rm(w.tokenFile);
-    await expect(w.runner.release(j, ws, session)).rejects.toThrow(/may still be running/);
+    const err = await w.runner.release(j, ws, session).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(String(err)).toMatch(/may still be running/);
+    // The host must not report it released (ADR 0550).
+    expect(isReleaseIncomplete(err)).toBe(true);
     expect(w.api.sprites.size).toBe(1);
     // With the token back, a second release destroys it.
     await writeFile(w.tokenFile, token, { mode: 0o600 });
