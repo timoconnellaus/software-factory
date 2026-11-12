@@ -51,7 +51,7 @@ import {
   waitsText,
 } from "../lib/backlog.ts";
 import { OpError, op, submitKey } from "../lib/op.ts";
-import { openItem } from "../lib/places.ts";
+import { peekItem } from "../lib/places.ts";
 import { boardsQuery, workflowQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { PageArea, PageHeader, Panel } from "./shell-list.tsx";
@@ -211,7 +211,7 @@ function Pri({ priority }: { priority: Priority }) {
 function ItemCell({ item }: { item: BacklogItem }) {
   return (
     <td className="py-2.5 pr-3">
-      <Link {...openItem(item.id)} className="font-medium hover:underline">
+      <Link {...peekItem(item.id)} className="font-medium hover:underline">
         <span className="mr-1.5 font-mono font-normal text-[12px] text-ink-muted">
           #{item.number}
         </span>
@@ -229,7 +229,7 @@ function WaitsFor({ item }: { item: BacklogItem }) {
       {item.waitsFor.map((w) => (
         <Link
           key={w.id}
-          {...openItem(w.id)}
+          {...peekItem(w.id)}
           title={`${w.title} (${w.status})`}
           className={cn(
             "font-mono text-[12px] hover:underline",
