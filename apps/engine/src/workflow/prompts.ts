@@ -115,17 +115,33 @@ export function buildPrompt(
 
 export function verifyPrompt(
   item: ItemBrief,
-  input: { criteria: string[]; headSha: string },
+  input: {
+    criteria: string[];
+    headSha: string;
+    /**
+     * The factory's own checks (ADR 0501), which the runner host runs itself. null: an instance
+     * from before v7, whose reviewer still runs and reports the checks.
+     */
+    checks?: string[] | null;
+  },
 ): string {
+  const factoryChecks = input.checks !== undefined && input.checks !== null;
   return [
     `Review work item #${item.number} (${item.title}) at ${input.headSha} as an independent reviewer. Change nothing.`,
     "",
-    "Run the project's tests, lint and typecheck and report each as a check. Check every acceptance criterion one by one and give evidence (a test name, a file and line, a command's output).",
+    factoryChecks
+      ? [
+          `The factory runs the project's checks itself on this commit${input.checks?.length ? `: ${input.checks.map((c) => `\`${c}\``).join(", ")}` : ""}, and CI runs on the pull request. Their results decide; you don't need to run or report them.`,
+          "Check every acceptance criterion one by one: say whether it is met and why (a test name, a file and line). For each, list in `checks` the names of the checks that prove it: the factory's checks above or CI check names. A criterion is marked proven only when a check you link passed; your judgement alone is shown as opinion.",
+        ].join("\n")
+      : "Run the project's tests, lint and typecheck and report each as a check. Check every acceptance criterion one by one and give evidence (a test name, a file and line, a command's output).",
     `Acceptance criteria:\n${input.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`,
     "",
     "Then give your own verdict as the reviewer, with notes, and flag risks (security, data loss, a `.factory/` change).",
     footer(
-      '{ "summary": "...", "checks": [{ "name": "tests", "status": "pass|fail|skipped", "detail": "..." }], "criteria": [{ "criterion": "...", "met": true, "evidence": "..." }], "reviewer": { "role": "review", "verdict": "approve|request_changes", "notes": "..." }, "riskFlags": ["..."] }',
+      factoryChecks
+        ? '{ "summary": "...", "criteria": [{ "criterion": "...", "met": true, "evidence": "...", "checks": ["tests"] }], "reviewer": { "role": "review", "verdict": "approve|request_changes", "notes": "..." }, "riskFlags": ["..."] }'
+        : '{ "summary": "...", "checks": [{ "name": "tests", "status": "pass|fail|skipped", "detail": "..." }], "criteria": [{ "criterion": "...", "met": true, "evidence": "..." }], "reviewer": { "role": "review", "verdict": "approve|request_changes", "notes": "..." }, "riskFlags": ["..."] }',
     ),
   ].join("\n");
 }

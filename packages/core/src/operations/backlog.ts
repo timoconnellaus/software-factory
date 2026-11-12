@@ -12,7 +12,7 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import { type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
+import { onOrgWorkflow, type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
 import {
   type NeedsInfo,
   needsInfoOf,
@@ -153,6 +153,12 @@ export function startPipeline(
         status_reason: null,
         pulled_at: ctx.now,
         policy_sha: pin.trial?.candidateSha ?? project.policy_sha,
+        // Release takes the org's current config version too (spec 52, Q4).
+        org_config_version: (eb) =>
+          eb
+            .selectFrom("core_organization")
+            .select("config_version")
+            .where("id", "=", project.org_id),
         trial_id: pin.trial?.id ?? null,
         workflow,
         workflow_reason: workflow ? "the project's workflow" : null,
@@ -653,6 +659,11 @@ export async function shapeNow(ctx: HandlerContext, w: WorkItemRow) {
           shaping_started_at: ctx.now,
           // The version shaping runs under; the pull pins delivery's again at release.
           policy_sha: project.policy_sha,
+          org_config_version: (eb) =>
+            eb
+              .selectFrom("core_organization")
+              .select("config_version")
+              .where("id", "=", project.org_id),
           workflow,
           workflow_reason: workflow ? "the project's workflow" : null,
           updated_at: ctx.now,
@@ -1264,11 +1275,16 @@ export const projectWorkflow = defineOperation({
     const named = policy.workflow
       ? policy.workflows.find((w) => w.name.toLowerCase() === policy.workflow?.toLowerCase())
       : undefined;
+    // On an org workflow the resolved config names it by id (`wf_…`) and carries its name as the
+    // description (spec 52 PR (d)): people read the name.
+    const org = onOrgWorkflow(ctx.scope.rawPolicy);
     const workflow = named
       ? {
           name: named.name,
-          label: named.name[0]?.toUpperCase() + named.name.slice(1),
-          description: named.description,
+          label: org
+            ? named.description || named.name
+            : named.name[0]?.toUpperCase() + named.name.slice(1),
+          description: org ? "" : named.description,
           builtIn: false,
         }
       : {

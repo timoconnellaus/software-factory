@@ -5,6 +5,8 @@
 
 import {
   CAPABILITIES,
+  type CheckCommand,
+  checkName,
   harnessProfileSchema,
   JOB_STAGES,
   MODEL_ROLES,
@@ -18,6 +20,25 @@ export const POLICY_PATH = ".factory/policy.json";
 
 const sizes = ["small", "medium", "large"] as const;
 export type SizeName = (typeof sizes)[number];
+
+/** An org workflow's id (spec 52, ADR 0510): what a project's `workflow` names once it runs one. */
+export const ORG_WORKFLOW_ID = /^wf_[a-z0-9_]{1,60}$/;
+export const isOrgWorkflowId = (name: string | null | undefined): name is string =>
+  !!name && ORG_WORKFLOW_ID.test(name);
+
+/**
+ * Whether the project runs an org workflow: `workflow` is shaped like an org workflow id and no slot
+ * workflow in the config has that name. A slot workflow named like one before spec 52 PR (d) stays a
+ * slot workflow, so an existing config runs exactly as before; only new slot workflows may not take
+ * such a name (`config.save` refuses one).
+ */
+export function onOrgWorkflow(
+  policy: { workflow: string | null; workflows: readonly { name: string }[] } | null,
+): policy is { workflow: string; workflows: readonly { name: string }[] } {
+  if (!policy || !isOrgWorkflowId(policy.workflow)) return false;
+  const named = policy.workflow.toLowerCase();
+  return !policy.workflows.some((w) => w.name.toLowerCase() === named);
+}
 
 /** Names people read and steps refer to. */
 const label = z.string().trim().min(1).max(60);
@@ -66,6 +87,20 @@ export const stepSchema = z
   .strict();
 export type StepConfig = z.infer<typeof stepSchema>;
 
+/**
+ * A check the factory runs itself (ADR 0501): the runner host runs `run` in the job's worktree on
+ * the head it hands back. Its result, not an agent's report, is what the verdict uses. Removing or
+ * changing one loosens the config (a person).
+ */
+export const checkDeclSchema = z
+  .object({
+    name: checkName,
+    run: z.string().trim().min(1).max(1_000),
+    timeoutMinutes: z.number().int().min(1).max(60).default(15),
+  })
+  .strict();
+export type CheckDecl = z.infer<typeof checkDeclSchema>;
+
 export const SLOTS = ["afterSpec", "beforeVerify", "afterVerify"] as const;
 export type SlotName = (typeof SLOTS)[number];
 
@@ -90,6 +125,8 @@ export const workflowSchema = z
      * the workflow, so it has none; verify and the reviewer stay code's own (ADR 0371).
      */
     core: z.object({ build: label.optional() }).strict().default({}),
+    /** Checks this workflow adds to the project's own (ADR 0501). */
+    checks: z.array(checkDeclSchema).max(10).default([]),
   })
   .strict();
 export type WorkflowConfig = z.infer<typeof workflowSchema>;
@@ -194,6 +231,11 @@ export const projectPolicySchema = z
       })
       .strict()
       .default({ onRed: "warn", requiredChecks: [...DEFAULT_REQUIRED_CHECKS] }),
+    /**
+     * The project's checks (ADR 0501): lint, typecheck, tests, whatever proves the work. The runner
+     * host runs them on the head SHA after every build; the verdict needs each to pass there.
+     */
+    checks: z.array(checkDeclSchema).max(10).default([]),
     /** Review packet sections in order (ADR 0020, spec 14). */
     reviewPacket: z.object({ sections: z.array(z.string().min(1)).min(1) }).optional(),
     /** Agents steps hand to (ADR 0372). */
@@ -201,10 +243,20 @@ export const projectPolicySchema = z
     /** Named workflows (ADR 0371). The project runs the one named by `workflow` (ADR 0492). */
     workflows: z.array(workflowSchema).max(20).default([]),
     /**
-     * The project's workflow, by name (ADR 0492): every item follows it. Null: the skeleton alone.
-     * There is no per-item override.
+     * The project's workflow (ADR 0492): every item follows it. Null: the skeleton alone. An org
+     * workflow by id (`wf_…`, spec 52 PR (d)), or a slot workflow above by name. There is no
+     * per-item override.
      */
     workflow: z.string().min(1).max(100).nullable().default(null),
+    /**
+     * The project's overrides of its org workflow's stage settings (spec 52, Q5): `{ [stageId]: {
+     * setting: value } }`, only the settings each stage type lists as `overridable`, checked
+     * against the org workflow when saved. Only with an org workflow.
+     */
+    workflowOverrides: z
+      .record(z.string().min(1).max(40), z.record(z.string().min(1).max(40), z.unknown()))
+      .default({})
+      .refine((o) => Object.keys(o).length <= 20, "at most 20 stages can be overridden"),
     /**
      * Self-improvement (ADR 0373): the factory trials practice changes on the next `trialSize`
      * items, at most `weeklyCap` a week. Turning it on is a policy change for a person.
@@ -233,7 +285,16 @@ export const projectPolicySchema = z
   .superRefine((policy, ctx) => {
     const error = workflowsError(policy.agents, policy.workflows);
     if (error) ctx.addIssue({ code: "custom", path: ["workflows"], message: error });
-    const named = policy.workflow?.toLowerCase();
+    const org = onOrgWorkflow(policy);
+    if (!org && Object.keys(policy.workflowOverrides).length > 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["workflowOverrides"],
+        message: "overrides apply to an org workflow: set `workflow` to one (wf_…) first",
+      });
+    const checks = checksError(policy.checks, policy.workflows);
+    if (checks) ctx.addIssue({ code: "custom", path: ["checks"], message: checks });
+    const named = org ? undefined : policy.workflow?.toLowerCase();
     if (named && !policy.workflows.some((w) => w.name.toLowerCase() === named)) {
       ctx.addIssue({
         code: "custom",
@@ -242,6 +303,38 @@ export const projectPolicySchema = z
       });
     }
   });
+
+/** Two checks with one name would make a criterion's link ambiguous. */
+function checksError(project: CheckDecl[], workflows: WorkflowConfig[]): string | null {
+  for (const list of [project, ...workflows.map((w) => [...project, ...w.checks])]) {
+    const seen = new Set<string>();
+    for (const c of list) {
+      const key = c.name.toLowerCase();
+      if (seen.has(key)) return `two checks are called "${c.name}"`;
+      seen.add(key);
+    }
+  }
+  return null;
+}
+
+/**
+ * The checks an item runs (ADR 0501): the project's, then its workflow's, as the job carries them.
+ * Empty when the project declares none.
+ */
+export function declaredChecks(
+  policy: Pick<ProjectPolicy, "checks" | "workflows"> | null,
+  workflow: string | null,
+): CheckCommand[] {
+  if (!policy) return [];
+  const w = workflow
+    ? policy.workflows.find((x) => x.name.toLowerCase() === workflow.toLowerCase())
+    : undefined;
+  return [...policy.checks, ...(w?.checks ?? [])].map((c) => ({
+    name: c.name,
+    run: c.run,
+    timeoutMs: c.timeoutMinutes * 60_000,
+  }));
+}
 
 /** Cross-references between agents and workflows that the schema alone can't check. */
 function workflowsError(agents: AgentConfig[], workflows: WorkflowConfig[]): string | null {
@@ -299,6 +392,10 @@ export function parseProjectPolicy(raw: string): PolicyParse {
   } catch {
     return { ok: false, error: "policy is not JSON" };
   }
+  // Approvals of looser overrides are the factory's own record (core_override_approvals), never
+  // a document's: a field of that name in a saved or imported config is dropped, not honoured.
+  if (value && typeof value === "object" && !Array.isArray(value))
+    delete (value as Record<string, unknown>).workflowOverrideApprovals;
   const parsed = projectPolicySchema.safeParse(value);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];

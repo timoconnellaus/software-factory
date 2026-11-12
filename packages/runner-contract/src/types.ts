@@ -92,6 +92,12 @@ export const CAPABILITIES = [
   "container-isolation",
   "interrupt",
   "terminal",
+  /**
+   * The runner host runs the project's checks a job carries and reports them on the hand-back
+   * (ADR 0501). A job with checks is placed only on a runner that declares it (ADR 0520's
+   * compatibility rule): an older runner would drop the field and hand back with none.
+   */
+  "checks",
   "cloud-sandbox",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
@@ -293,6 +299,38 @@ export interface RunnerAdapter<
    */
   steer?(session: S, text: string): Promise<void>;
   /**
+   * Optional (ADR 0501): run one check command under the job's isolation (in a container, for a
+   * containerised runner) and return its exit code and combined output. `dir` is a clean copy of
+   * the commit being checked, made by the host (no ignored files, no git dir): the command runs
+   * there, never in the session's workspace. Without `exec` the host runs checks only under its
+   * own OS sandbox, and where it has none it reports them not run. Must honour `timeoutMs` and
+   * `signal` (exitCode null, timedOut true on a timeout).
+   */
+  exec?(
+    job: Job,
+    workspace: W,
+    command: { run: string; timeoutMs: number; dir: string },
+    signal: AbortSignal,
+  ): Promise<ExecResult>;
+  /**
+   * Optional (ADR 0501): the adapter's own tamper check of the workspace's git dir, run by the host
+   * before any host git command that follows code the job ran (the checks, a fix round). Returns
+   * what it found (empty when untouched); anything found fails the job without a push.
+   */
+  checkWorkspace?(job: Job, workspace: W): Promise<string[]>;
+  /**
+   * Optional (ADR 0501): after `session.ended`, give the same session another turn with `text`
+   * (a failing check's command, exit code and log tail) and report that turn, ending with its own
+   * `session.ended`. Only for an adapter whose session is still alive after its turn; without it
+   * the host hands a failing check to a person.
+   */
+  continueSession?(
+    job: Job,
+    session: S,
+    text: string,
+    signal: AbortSignal,
+  ): AsyncIterable<AdapterEvent>;
+  /**
    * Optional, with the `interrupt` capability (ADR 0470): stop the agent's current step (Claude
    * Code's Escape), then submit `text` as `steer` does. The text is the factory's own fixed line,
    * never a person's words.
@@ -313,6 +351,24 @@ export interface RunnerAdapter<
    * when the session or the bridge ends. `close` must be safe to call twice.
    */
   openTerminal?(session: S, options: OpenTerminalOptions): Promise<TerminalBridge>;
+}
+
+/** What `exec` returns. */
+export interface ExecResult {
+  exitCode: number | null;
+  timedOut: boolean;
+  /** stdout and stderr interleaved; the host keeps only the tail. */
+  output: string;
+  /**
+   * Set when the command was not run at all, with why (a job with no container, a sandbox that
+   * could not start). Reported "not run": never a pass, and never sent to a fix round (ADR 0501).
+   */
+  notRun?: string;
+  /**
+   * Where it ran (ADR 0501, fourth review): a check container, the OS sandbox, or the weaker OS
+   * sandbox of a Mac runner whose owner opted in. Reported with the check; the gate names the last.
+   */
+  isolation?: "container" | "sandbox" | "weaker-sandbox";
 }
 
 /** What the host hands `openTerminal` (ADR 0440). */

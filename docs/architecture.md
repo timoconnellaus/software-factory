@@ -75,8 +75,16 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   run time reads them yet (build plan PR (a)). An **org config** (`core_org_configs`, migration 0280)
   holds the org's workflows and agents as versions, edited through `workflow.*`, `agent.save` and
   `orgConfig.*`; a loosening save is `self-modify` for an org admin (the classifier is an
-  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one.
-  Projects keep running their own config until PR (d). The **reconciler** (ADR 0511) is
+  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one. A
+  project may name an org workflow by id (`workflow: "wf_…"`) with
+  `workflowOverrides` of the few settings each type lists as `overridable` (spec 52 PR (d)); until
+  the switch-over, today's Workflow runs it through `effectivePolicy` (the scope's `policy`; config
+  operations read `rawPolicy`), under the org config version the item pinned
+  (`core_work_items.org_config_version`, migration 0282). Overrides apply as the stricter of the
+  org's value and the project's, unless an org admin approved that looser value for that org
+  version (`core_override_approvals`, written only by the approve path; carried to a new version only
+  where the org left the value unchanged). The parsed org
+  config is cached per isolate by (org, version). The **reconciler** (ADR 0511) is
   `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**, off the Workflow's
   path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
   its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each
@@ -97,7 +105,10 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
   0231). The packet's **tests-intact** guard reads GitHub's diff for weakened tests, suppressions
   and gate-file edits; its findings go to a person and block an auto-approved merge, never the
-  verdict (ADR 0500, 0515). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
+  verdict (ADR 0500, 0515). The runner host runs the project's declared **checks** itself on the head
+  SHA after a build (through the adapter's `exec`), sends a failure back into the same session, and
+  hands back the results; the verdict uses them, not the agent's report, and a criterion is
+  **Proven** only by a check that passed (Workflow v8, ADR 0501). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,

@@ -20,6 +20,8 @@ export const WORKFLOW_FEATURES = [
   "workflow-plan",
   /** v7: a shaped item waits for its release before delivery (spec 50 part C). */
   "release-wait",
+  /** v8: the runner host runs the project's checks; their results decide (spec 51, ADR 0501). */
+  "host-checks",
 ] as const;
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 
@@ -30,6 +32,7 @@ const v4 = [...v3, "merge-queue"] as const;
 const v5 = [...v4, "planning-spec"] as const;
 const v6 = [...v5, "workflow-plan"] as const;
 const v7 = [...v6, "release-wait"] as const;
+const v8 = [...v7, "host-checks"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -40,6 +43,7 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   5: new Set(v5),
   6: new Set(v6),
   7: new Set(v7),
+  8: new Set(v8),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */
