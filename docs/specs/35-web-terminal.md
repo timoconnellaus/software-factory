@@ -85,7 +85,10 @@ sandbox later.
 - Scrollback beyond the visible screen in the web terminal (tmux keeps it; a person can scroll in a
   `tmux attach`).
 - Letting someone other than the runner's owner type, or handing typing over.
-- A web terminal in the desktop app (spec 40) or the CLI.
+- A web terminal in the desktop app (spec 40) or the CLI. *Amended 2026-11-12:* the desktop app's
+  came in spec 42 (ADR 0500): the client door's `terminal` socket for desktop tokens, the same attach,
+  and this spec's client and xterm.js view moved to `packages/client` and shared. The CLI's is still
+  out of scope.
 
 ## Acceptance criteria
 1. On a running build, the runner's owner opens Web terminal on the Live tab and sees the live
