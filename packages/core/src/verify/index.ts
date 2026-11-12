@@ -6,3 +6,4 @@ export * from "./ci.ts";
 export * from "./packet.ts";
 export * from "./protection.ts";
 export * from "./risk.ts";
+export * from "./tests-intact.ts";

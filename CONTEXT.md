@@ -22,8 +22,15 @@ control plane, a Workflow or a gate.
 _Avoid_: pipeline (for the whole thing), instance, control plane (that is the Cloudflare side)
 
 **Project**
-One repo inside a factory, configured by its committed `.factory/` directory.
-_Avoid_: repo (when you mean the configured unit), app
+A body of work inside a factory (a product, a launch, Marketing): org → project → work item → run.
+It has one config (versions in the app, ADR 0370) and zero or more repositories (ADR 0490).
+_Avoid_: repo (a project is not a repository), app
+
+**Repository**
+A GitHub repository of a project, reached through the org's GitHub App installation: owner, name,
+default branch. A GitHub repository is in at most one project. A work item uses one repository,
+chosen when it is created (the project's only one by default) and fixed once its pipeline starts.
+_Avoid_: project (when you mean the repo), repo record
 
 **Requester**
 The user a work item is for. Placement rules such as `route: requester-first` prefer the
@@ -185,8 +192,17 @@ _Avoid_: hidden test, eval
 What a person reviews at a gate: a verdict row, what changed, criteria with evidence, reviewer
 notes, screenshots, risk flags, the diff and a preview link. Sections are set per project in
 `.factory/` (`reviewPacket.sections`). It also backs the `factory/verify` check. The packet in the
-app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
+app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments. Its **Tests
+intact** section is always shown (ADR 0500).
 _Avoid_: PR summary, report
+
+**Tests intact**
+The factory's own check, in code, that a diff doesn't weaken the tests the build is judged by:
+deleted, removed, skipped or commented-out tests, new lint or type suppressions, lowered thresholds
+and edits to gate files (`.factory/`, CI workflows, test and lint config), read from GitHub's diff at
+the head SHA (ADR 0500). A **finding** is for a person: it never fails the verdict, no agent judges
+it, and it blocks the check-only auto-merge. Findings belong to one SHA's review packet.
+_Avoid_: test tampering check, reviewer finding
 
 **CLI token**
 What `sf login` gets once a person approves its code in the app: acts as that person on the `cli`
@@ -434,6 +450,24 @@ _Avoid_: pipeline (the skeleton), stage list
 **Step**
 One entry in a workflow slot: a **work** step hands to an agent and is advisory; a **gate** step
 hands to a person and is enforced.
+
+**Stage type**, **workflow template**, **stage template** (designed, spec 52, not built)
+A stage type is built-in code with a fixed contract (what it runs, produces and needs, its evidence,
+screen, gate and reversibility); a workflow will be an org-level ordered list of stages, each an
+instance of a stage type, split into **shaping** stages (before release) and **delivery** stages.
+Templates are ready-made workflows (Software, Marketing) or stage types with default settings
+(ADR 0510).
+
+**Skill** (designed, spec 52, not built)
+How the team does one thing, written once (instructions plus files), versioned and owned by the
+org, attached to an agent, a stage, or built into a stage type. The factory may propose an edit;
+only a person accepts one (ADR 0513).
+_Avoid_: playbook, recipe
+
+**Autopilot** (designed, spec 52, not built)
+A trigger (schedule or event), an agent, its skills, an instruction and an output target: work the
+factory starts on its own. It files through the backlog, never merges or deploys (ADR 0514).
+_Avoid_: cron job, bot
 
 **Agent** (config)
 A harness-neutral profile: model role and tier, instructions, abstract permissions, capabilities.

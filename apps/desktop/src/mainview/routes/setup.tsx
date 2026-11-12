@@ -19,6 +19,11 @@ import type { SetupStatus } from "@software-factory/client/ops";
 import { LOGIN_COMMAND } from "@software-factory/client/runner-pairing";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@software-factory/ui/components/collapsible";
 import { Input } from "@software-factory/ui/components/input";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
@@ -28,11 +33,13 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { RunnerState } from "../../shared/rpc.ts";
 import { bun, onRunner } from "../bridge.ts";
+import { PageArea } from "../components/shell-list.tsx";
+import { useOrgScope } from "../components/shell-sidebar.tsx";
 import { ExternalLink, openExternal, saveFile, WEBSITE_URL } from "../lib/external.tsx";
 import { OpError, op, read, submitKey } from "../lib/op.ts";
 import { reposQuery, runnersQuery, setupStatusQuery } from "../lib/queries.ts";
 import { useSession } from "../lib/session.ts";
-import { appRoute } from "./_app.tsx";
+import { settingsLayout } from "./_settings.tsx";
 
 /** Desktop devices (ADR 0381), the same key as sf-app's Setup. */
 const desktopDevicesQuery = () =>
@@ -42,7 +49,7 @@ const desktopDevicesQuery = () =>
   });
 
 export const Route = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayout,
   path: "/setup",
   // Everything the page shows, in one batch. The checklist reads GitHub, so it isn't awaited: the
   // page shows its skeleton until it comes.
@@ -83,7 +90,9 @@ function useRefreshSetup() {
 
 function SetupPage() {
   const session = useSession();
-  const orgId = session.personalOrgId ?? "";
+  // The org the rail has chosen; under All, the Personal org.
+  const orgId = useOrgScope() ?? session.personalOrgId ?? "";
+  const orgName = session.orgs.find((o) => o.id === orgId)?.name ?? "your org";
   const status = useQuery({ ...setupStatusQuery(orgId), enabled: !!orgId });
   const refresh = useRefreshSetup();
   const [checking, setChecking] = useState(false);
@@ -98,21 +107,23 @@ function SetupPage() {
   }
 
   return (
-    <main className="mx-auto grid w-full grid-cols-[minmax(0,1fr)] max-w-[860px] gap-4 p-4 md:p-6">
+    <PageArea className="max-w-[860px]">
       <div className="flex flex-wrap items-end gap-2">
         <div className="grow">
-          <h1 className="font-semibold text-2xl tracking-tight">Setup</h1>
-          <p className="text-muted-foreground text-sm" data-testid="setup-progress">
+          <h1 className="m-0 font-semibold text-[18px] tracking-[-0.015em]">
+            Finish setting up {orgName}
+          </h1>
+          <p className="m-0 text-ink-3" data-testid="setup-progress">
             {status.data
               ? status.data.complete
                 ? "Everything is connected. New work can run end to end."
-                : `${done} of ${status.data.steps.length} done`
+                : `${done} of ${status.data.steps.length} done. The factory takes no work until the first four are green.`
               : "Checking…"}
           </p>
         </div>
         <Button
           size="sm"
-          variant="ghost"
+          variant="outline"
           disabled={checking}
           onClick={checkAgain}
           data-testid="setup-check-again"
@@ -136,7 +147,7 @@ function SetupPage() {
       ))}
       <Runners />
       <DesktopDevices />
-    </main>
+    </PageArea>
   );
 }
 
@@ -259,7 +270,7 @@ function AddProject({ orgId, open: initiallyOpen }: { orgId: string; open: boole
   const [open, setOpen] = useState(initiallyOpen);
   if (!open) {
     return (
-      <Button size="sm" variant="ghost" onClick={() => setOpen(true)} data-testid="add-project">
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)} data-testid="add-project">
         Add another project
       </Button>
     );
@@ -591,13 +602,13 @@ function SendToAdmin({
   open: boolean;
 }) {
   return (
-    <details className="grid gap-1.5" open={open} data-testid="send-to-admin">
-      <summary className="cursor-pointer text-xs">
+    <Collapsible className="grid gap-1.5" defaultOpen={open} data-testid="send-to-admin">
+      <CollapsibleTrigger className="w-fit cursor-pointer text-left text-xs underline">
         {open
           ? "You're not an admin of this repo: send this to the repo admin"
           : "Not a repo admin? Send to the repo admin"}
-      </summary>
-      <div className="grid gap-2 pt-2">
+      </CollapsibleTrigger>
+      <CollapsibleContent className="grid gap-2 pt-2">
         <pre className="whitespace-pre-wrap rounded bg-muted px-3 py-2 font-mono text-xs">
           {protection.adminMessage}
         </pre>
@@ -616,8 +627,8 @@ function SendToAdmin({
           </Button>
           <DownloadLinks projectId={projectId} protection={protection} />
         </div>
-      </div>
-    </details>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -654,16 +665,20 @@ function ProjectDetails({ project }: { project: ProjectState }) {
           }
         />
         <span className="font-semibold">{project.name}</span>
-        <ExternalLink
-          href={`https://github.com/${project.repo.owner}/${project.repo.name}`}
-          className="font-mono text-muted-foreground text-xs underline"
-        >
-          {project.repo.owner}/{project.repo.name}@{project.repo.defaultBranch}
-        </ExternalLink>
+        {project.repo && (
+          <ExternalLink
+            href={`https://github.com/${project.repo.owner}/${project.repo.name}`}
+            className="font-mono text-muted-foreground text-xs underline"
+          >
+            {project.repo.owner}/{project.repo.name}@{project.repo.defaultBranch}
+          </ExternalLink>
+        )}
       </div>
-      <details className="text-sm">
-        <summary className="cursor-pointer text-muted-foreground text-xs">Details</summary>
-        <div className="grid gap-1.5 pt-2">
+      <Collapsible>
+        <CollapsibleTrigger className="cursor-pointer text-ink-muted text-xs">
+          Details ▾
+        </CollapsibleTrigger>
+        <CollapsibleContent className="grid gap-1.5 pt-2">
           <div>
             GitHub:{" "}
             {project.connection.status === "connected"
@@ -702,7 +717,7 @@ function ProjectDetails({ project }: { project: ProjectState }) {
             </span>
             <Button
               size="sm"
-              variant="ghost"
+              variant="outline"
               disabled={busy || project.connection.status !== "connected"}
               onClick={resync}
               data-testid="resync-policy"
@@ -712,12 +727,12 @@ function ProjectDetails({ project }: { project: ProjectState }) {
           </div>
           {project.protection && project.protection.state !== "ok" && (
             <div className="text-muted-foreground text-xs">
-              {project.repo.defaultBranch} not yet protected:{" "}
+              {project.repo?.defaultBranch ?? "The default branch"} not yet protected:{" "}
               {project.protection.problems.join("; ")}
             </div>
           )}
-        </div>
-      </details>
+        </CollapsibleContent>
+      </Collapsible>
     </Card>
   );
 }
@@ -753,7 +768,7 @@ function DesktopDevices() {
             {!d.revokedAt && (
               <Button
                 size="sm"
-                variant="ghost"
+                variant="outline"
                 disabled={busy === d.id}
                 onClick={() => revoke(d.id)}
               >
