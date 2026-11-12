@@ -58,6 +58,8 @@ export interface UpdatesDeps {
 export const EVERY_MS = 6 * 3_600_000;
 /** After a failed check or download. */
 export const RETRY_MS = 30 * 60_000;
+/** The door's update_required asks for a check at most this often (ADR 0393). */
+export const ON_DEMAND_GAP_MS = 10 * 60_000;
 
 const MOVE =
   "Move Software Factory to your Applications folder (and open it from there) to get updates.";
@@ -79,6 +81,7 @@ export function installProblem(appPath: string, writable: (p: string) => void): 
 export class Updates {
   state: UpdateState = { ready: false, version: null, error: null, needsMove: false };
   private retry: unknown = null;
+  private lastOnDemand = Number.NEGATIVE_INFINITY;
   private readonly d: Required<UpdatesDeps>;
 
   constructor(
@@ -99,6 +102,17 @@ export class Updates {
     if ((await this.d.updater.getLocalInfo()).channel === "dev") return;
     await this.check();
     this.d.setInterval(() => void this.check(), EVERY_MS);
+  }
+
+  /**
+   * The door said this build is too old (ADR 0393): check now, but at most once every
+   * ON_DEMAND_GAP_MS, however many requests are refused. Dev builds never update.
+   */
+  async checkNow(now = Date.now()): Promise<void> {
+    if (now - this.lastOnDemand < ON_DEMAND_GAP_MS) return;
+    this.lastOnDemand = now;
+    if ((await this.d.updater.getLocalInfo()).channel === "dev") return;
+    await this.check();
   }
 
   private set(patch: Partial<UpdateState>) {

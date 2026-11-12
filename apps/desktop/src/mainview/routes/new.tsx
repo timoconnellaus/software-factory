@@ -57,8 +57,13 @@ export const Route = createRoute({
       .ensureQueryData(projectsQuery(session.orgs.map((o) => o.id)))
       .catch(() => []);
     const project = defaultProject(projects, deps.project);
+    const board = queryClient
+      .ensureQueryData(boardsQuery(session.orgs.map((o) => o.id)))
+      .catch(() => null);
     if (project) {
       await Promise.all([
+        board,
+        queryClient.ensureQueryData(configQuery(project.id)).catch(() => null),
         queryClient.ensureQueryData(routingQuery(project.id)).catch(() => null),
         queryClient.ensureQueryData(openPullsQuery(project.id)).catch(() => null),
       ]);

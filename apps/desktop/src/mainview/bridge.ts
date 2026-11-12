@@ -1,6 +1,6 @@
 // The view's end of the RPC (ADR 0390). Everything privileged is in the main process.
 import Electrobun, { Electroview } from "electrobun/view";
-import type { AppRPC, RunnerState, Session, TerminalEvent } from "../shared/rpc.ts";
+import type { AppRPC, RunnerState, Session, TerminalEvent, UpdateStatus } from "../shared/rpc.ts";
 import { bunRequests } from "./request.ts";
 
 type Listener<T> = (v: T) => void;
@@ -10,6 +10,7 @@ const listeners = {
   inbox: new Set<Listener<number>>(),
   planning: new Set<Listener<string>>(),
   navigate: new Set<Listener<string>>(),
+  update: new Set<Listener<UpdateStatus>>(),
   terminal: new Set<Listener<TerminalEvent>>(),
 };
 
@@ -32,6 +33,9 @@ const rpc = Electroview.defineRPC<AppRPC>({
       },
       navigate: ({ path }) => {
         for (const l of listeners.navigate) l(path);
+      },
+      updateChanged: (u) => {
+        for (const l of listeners.update) l(u);
       },
       terminalEvent: (e) => {
         for (const l of listeners.terminal) l(e);
@@ -63,4 +67,5 @@ export const onInbox = (l: Listener<number>) => on("inbox", l);
 /** A Planning view this person has open changed on the engine (spec 26). */
 export const onPlanningChanged = (l: Listener<string>) => on("planning", l);
 export const onNavigate = (l: Listener<string>) => on("navigate", l);
+export const onUpdate = (l: Listener<UpdateStatus>) => on("update", l);
 export const onTerminal = (l: Listener<TerminalEvent>) => on("terminal", l);

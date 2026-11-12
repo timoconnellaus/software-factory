@@ -48,6 +48,7 @@ import { ExternalLink } from "../lib/external.tsx";
 import { OpError, op } from "../lib/op.ts";
 import {
   attachmentsQuery,
+  boardsQuery,
   planningQuery,
   runnersQuery,
   timelineQuery,
@@ -83,8 +84,10 @@ export const Route = createRoute({
   },
   // Everything the page renders, in one request: the item (with its spec, questions, gates, runs
   // and packet), its timeline, the runners (for runner names), and the planning view (spec 20).
-  loader: ({ context: { queryClient }, params }) =>
+  loader: ({ context: { queryClient, session }, params }) =>
     Promise.all([
+      // The org's board: what an item before release can wait for (its edit dialog).
+      queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
       queryClient.ensureQueryData(workItemQuery(params.id)),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),

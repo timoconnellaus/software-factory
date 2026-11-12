@@ -14,7 +14,7 @@ import { useOrgScope, useScopedInbox } from "../components/shell-sidebar.tsx";
 import { BacklogPage, PlanningPage, ReadyPage } from "../components/work-backlog.tsx";
 import { ProjectPage } from "../components/work-project.tsx";
 import { openItem } from "../lib/places.ts";
-import { boardsQuery, workListsQuery } from "../lib/queries.ts";
+import { boardsQuery, configQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import {
   cardState,
@@ -43,11 +43,16 @@ export const Route = createRoute({
     ...(typeof s.project === "string" ? { project: s.project } : {}),
     ...(s.layout === "board" || s.layout === "list" ? { layout: s.layout } : {}),
   }),
-  loader: ({ context: { queryClient, session } }) => {
+  loaderDeps: ({ search }) => ({ project: search.project, view: search.view }),
+  // The lists, and a project's config (its workflow) on its page.
+  loader: ({ context: { queryClient, session }, deps }) => {
     const orgIds = session.orgs.map((o) => o.id);
     return Promise.all([
       queryClient.ensureQueryData(workListsQuery(orgIds)),
       queryClient.ensureQueryData(boardsQuery(orgIds)),
+      deps.project && !deps.view
+        ? queryClient.ensureQueryData(configQuery(deps.project))
+        : Promise.resolve(null),
     ]).catch(() => null);
   },
   component: WorkRoute,
