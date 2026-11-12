@@ -24,13 +24,14 @@ const INPUTS: Record<string, Record<string, unknown>[]> = {
   "approval.decide": [{ decision: "approved" }, { decision: "rejected" }],
   "chat.send": [{ interrupt: true }],
   "killSwitch.set": [{ on: false }],
+  "review.merge": [{}, { mergeWithoutChecks: true }],
 };
 
 function how(name: string, surface: DeviceSurface, input: Record<string, unknown>): How {
   const op = OPERATIONS.find((o) => o.name === name);
   if (!op) throw new Error(name);
   if (deviceDecidable(op, surface, input)) return "one tap";
-  if (presenceSurfaceAllowed(op, surface)) return "proof";
+  if (presenceSurfaceAllowed(op, surface, input)) return "proof";
   return "refused";
 }
 
@@ -107,6 +108,10 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "desktop": "refused",
           "mobile": "proof",
         },
+        "orgConfig.adoptProjectWorkflows": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
         "orgConfig.rollback": {
           "desktop": "refused",
           "mobile": "refused",
@@ -143,7 +148,11 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "desktop": "proof",
           "mobile": "one tap",
         },
-        "review.merge": {
+        "review.merge {"mergeWithoutChecks":true}": {
+          "desktop": "proof",
+          "mobile": "refused",
+        },
+        "review.merge {}": {
           "desktop": "proof",
           "mobile": "proof",
         },
@@ -177,6 +186,10 @@ describe("device decidability (ADR 0541 decision 5)", () => {
         },
         "spec.requestChanges": {
           "desktop": "proof",
+          "mobile": "one tap",
+        },
+        "workItem.releaseChoice": {
+          "desktop": "one tap",
           "mobile": "one tap",
         },
         "workflow.archive": {

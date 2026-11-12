@@ -5,15 +5,17 @@ import { has, WORKFLOW_FEATURES, WORKFLOW_VERSION_FEATURES } from "../src/index.
 describe("Workflow features per version", () => {
   it("has a row for every version, each adding to the one before, and nothing for an unknown one", () => {
     const versions = Object.keys(WORKFLOW_VERSION_FEATURES).map(Number);
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 11]); // v8–v10: other builds' numbers
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 11]); // v9–v10: other builds' numbers
     expect([...(WORKFLOW_VERSION_FEATURES[1] ?? [])]).toEqual([]);
     expect([...(WORKFLOW_VERSION_FEATURES[11] ?? [])]).toEqual([...WORKFLOW_FEATURES]);
+    expect(has(7, "host-checks")).toBe(false);
+    expect(has(8, "host-checks")).toBe(true);
     expect(has(null, "verify-packet")).toBe(false);
     expect(has(undefined, "verify-packet")).toBe(false);
     expect(has(99, "verify-packet")).toBe(false);
   });
 
-  it("answers exactly what the `version >= N` checks it replaced answered, for v1 to v7", () => {
+  it("answers exactly what the `version >= N` checks it replaced answered, for v1 to v7 (host-checks, v8, came with the table)", () => {
     // The thresholds the Workflow compared against before the table (work-item.ts on main).
     const since = {
       "verify-packet": 2,
@@ -24,9 +26,10 @@ describe("Workflow features per version", () => {
       "release-wait": 7,
       "babysitter-delivery": 11,
     } as const;
-    expect(Object.keys(since).sort()).toEqual([...WORKFLOW_FEATURES].sort());
+    const older = WORKFLOW_FEATURES.filter((f): f is keyof typeof since => f in since);
+    expect(older.sort()).toEqual(Object.keys(since).sort());
     for (let v = 1; v <= 7; v++) {
-      for (const f of WORKFLOW_FEATURES) expect(has(v, f), `v${v} ${f}`).toBe(v >= since[f]);
+      for (const f of older) expect(has(v, f), `v${v} ${f}`).toBe(v >= since[f]);
     }
   });
 });

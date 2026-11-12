@@ -10,6 +10,8 @@ import { describe, expect, it } from "vitest";
 const OWN = [
   "0242_plan_edits.sql",
   "0243_planning_artifacts.sql",
+  "0282_project_org_workflows.sql",
+  "0285_release_flag.sql",
   "0370_needs_info.sql",
   "0371_work_item_title_index.sql",
 ];
@@ -24,6 +26,10 @@ const COLUMNS = [
   "core_planning_sessions.shown_artifact_id",
   "core_planning_artifact_revisions.controls",
   "core_work_items.needs_info",
+  "core_work_items.org_config_version",
+  "core_pending_actions.decider",
+  "core_work_items.release_flag",
+  "core_work_items.release_flag_user_id",
 ];
 
 async function columns(db: D1Database): Promise<Set<string>> {

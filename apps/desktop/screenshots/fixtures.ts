@@ -5,6 +5,45 @@
 import type { OpInput, OpName, OpOutput } from "@software-factory/client/ops";
 import { planBlocks } from "@software-factory/client/planning";
 
+/**
+ * `?fixture=notrun`: the runner could not run the checks (the sandbox could not start), so the item
+ * went on to the merge gate with them shown as not run (ADR 0501, third review).
+ */
+let seenNotRun = false;
+const notRunFixture = () => {
+  const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
+  seenNotRun ||= where.includes("fixture=notrun");
+  return seenNotRun;
+};
+const NOT_RUN_REASON = "this Mac runner has no container runtime";
+/** The proof when the checks weren't run: nothing proven, the spec's links left unproven. */
+const notProven = <T extends { provenBy: string[]; unproven: string[] }>(proof: T[]): T[] =>
+  proof.map((p) => ({
+    ...p,
+    proven: false,
+    provenBy: [],
+    unproven: [...p.unproven, ...p.provenBy],
+  }));
+const NOT_RUN_EXECUTED = {
+  declared: ["lint", "tests"],
+  results: ["lint", "tests"].map((name) => ({
+    name,
+    command: `pnpm ${name === "tests" ? "test" : name}`,
+    exitCode: null,
+    timedOut: false,
+    durationMs: 0,
+    logTail: `not run: ${NOT_RUN_REASON}`,
+    round: 0,
+    notRun: NOT_RUN_REASON,
+    passed: false,
+  })),
+  extra: [],
+  notRun: [
+    { name: "lint", reason: NOT_RUN_REASON },
+    { name: "tests", reason: NOT_RUN_REASON },
+  ],
+};
+
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
 
@@ -65,6 +104,14 @@ function pre(
     ...extra,
   });
 }
+
+/** #16 was shaped, and its workflow's shaping stages changed before release (spec 52, Q4). */
+const RELEASE_FLAG_16 = {
+  reason:
+    "#16 was shaped under org config v3; its workflow's shaping stages changed in v5. Shape it again under the current workflow, or accept the shaping already done and deliver it under the current workflow.",
+  shapedUnder: 3,
+  current: 5,
+};
 
 export const ITEMS: Summary[] = [
   item(13, "Guard the tests in verify", "merge", "waiting", {
@@ -348,6 +395,16 @@ const INBOX: OpOutput<"inbox.list"> = {
   ],
   planning: [],
   wipHolds: [],
+  releaseFlags: [
+    {
+      workItemId: "wi_16",
+      projectId: FACTORY,
+      number: 16,
+      title: "Record usage for every run",
+      ...RELEASE_FLAG_16,
+      choices: ["reshape", "accept"],
+    },
+  ],
   protection: [
     {
       projectId: FACTORY,
@@ -424,6 +481,7 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         createdAt: i.createdAt,
         updatedAt: i.updatedAt,
         waitsFor,
+        ...(i.id === "wi_16" ? { releaseFlag: RELEASE_FLAG_16 } : {}),
         blockedBy: waitsFor.filter((w) => w.status !== "done"),
       };
     });
@@ -446,7 +504,7 @@ const STAGES_IN_ORDER = [
 ] as const;
 
 /**
- * `project.workflow`: Factory names its workflow, Website runs the built-in one, CRM defines
+ * `project.workflow`: Factory runs an org workflow, Website runs the built-in one, CRM defines
  * workflows and names none (it fails closed: work is captured, never released).
  */
 function workflowOf(projectId: string): OpOutput<"project.workflow"> {
@@ -461,12 +519,8 @@ function workflowOf(projectId: string): OpOutput<"project.workflow"> {
   }
   const workflow =
     projectId === FACTORY
-      ? {
-          name: "software",
-          label: "Software",
-          description: "Plan, build, verify, review",
-          builtIn: false,
-        }
+      ? // On an org workflow (spec 52 PR (d)): named by its id, read by its name.
+        { name: "wf_ship_it", label: "Ship it", description: "", builtIn: false }
       : {
           name: "software",
           label: "Software (built in)",
@@ -546,10 +600,10 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       headSha: atMerge ? "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f" : null,
       prNumber: atMerge ? 51 : null,
       policySha: "5da8988",
-      workflow: "software",
+      workflow: "wf_ship_it",
       workflowReason: "the project's default",
     },
-    workflows: [{ name: "software", description: "Plan, build, verify, review" }],
+    workflows: [{ name: "wf_ship_it", description: "Ship it" }],
     stages,
     spec: {
       id: `spec_${n}`,
@@ -697,6 +751,82 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
               total: 0,
             },
             runner: { verdict: "pass", checks: PACKET_CHECKS },
+            // Spec 51 PR B (Workflow v8, ADR 0501): the checks the runner host ran itself on the
+            // head, and each criterion's proof. Only the approved spec's links prove a criterion.
+            executed: notRunFixture()
+              ? NOT_RUN_EXECUTED
+              : {
+                  declared: ["lint", "tests"],
+                  results: [
+                    {
+                      name: "lint",
+                      command: "pnpm lint",
+                      exitCode: 0,
+                      timedOut: false,
+                      durationMs: 14_000,
+                      logTail: "",
+                      round: 0,
+                      passed: true,
+                    },
+                    {
+                      name: "tests",
+                      command: "pnpm test",
+                      exitCode: 0,
+                      timedOut: false,
+                      durationMs: 52_000,
+                      logTail: "",
+                      round: 1,
+                      passed: true,
+                    },
+                  ],
+                  extra: [],
+                },
+            proof: (notRunFixture() ? notProven : <T>(p: T) => p)([
+              {
+                criterion: CRITERIA[0],
+                proven: true,
+                provenBy: ["tests"],
+                unproven: [],
+                notCounted: [],
+                linkedBy: "spec",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "guard.test.ts › flags removed and skipped tests",
+              },
+              {
+                criterion: CRITERIA[1],
+                proven: true,
+                provenBy: ["tests"],
+                unproven: [],
+                notCounted: [],
+                linkedBy: "spec",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "guard.test.ts › flags biome-ignore and ts-expect-error",
+              },
+              {
+                criterion: CRITERIA[2],
+                proven: false,
+                provenBy: [],
+                unproven: [],
+                notCounted: ["tests"],
+                linkedBy: "reviewer",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "packet.test.ts › includes guard findings",
+              },
+              {
+                criterion: CRITERIA[3],
+                proven: false,
+                provenBy: [],
+                unproven: [],
+                notCounted: [],
+                linkedBy: "reviewer",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "review.ts › the merge gate reads the guard's findings (read, no test)",
+              },
+            ]),
             evidencePass: true,
             evidenceReasons: [],
           },
@@ -1416,7 +1546,10 @@ export const ANSWERS: Answers = {
           contractVersion: "1",
           runnerKind: "local",
           harnesses: ["claude-code"],
-          capabilities: [],
+          capabilities: ["checks"],
+          // What the runner's doctor says (ADR 0501, fifth review): OrbStack stopped on this Mac.
+          checksNote:
+            "not run here: this Mac runner has no container runtime (OrbStack is not answering): start it, or set checks.weakerMacSandbox",
         },
         capacityMax: 2,
         light: { max: 6, inUse: 2 },

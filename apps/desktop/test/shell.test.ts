@@ -170,7 +170,8 @@ describe("org scope", () => {
     expect(waitingCount(client)).toBe(0);
     expect(client.running.map((i) => i.number)).toEqual([3]);
     const personal = scopeInbox(inbox, orgOf, "org_personal");
-    expect(waitingCount(personal)).toBe(3);
+    // Two gates, a question and #16's release flag (spec 52, Q4).
+    expect(waitingCount(personal)).toBe(4);
     const global = {
       ...inbox,
       gates: [{ ...(inbox.gates[0] as Inbox["gates"][number]), projectId: null }],
@@ -221,17 +222,18 @@ describe("the Inbox list", () => {
   const setup = ANSWERS["setup.status"]?.({ orgId: "org_personal" }) ?? null;
   const entries = inboxEntries(inbox, setup);
 
-  it("groups merges, specs, questions, then notices", () => {
+  it("groups merges, specs, questions, approvals, then notices", () => {
     expect(entries.map((e) => `${e.group}:${e.key}`)).toEqual([
       "Merges:wi_13",
       "Specs:wi_12",
       "Questions:wi_11",
+      "Approvals:wi_16",
       "Notices:protection-prj_factory",
       "Notices:setup",
     ]);
     expect(
       inboxEntries(inbox, { ...(setup as NonNullable<typeof setup>), complete: true }),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
   });
 
   it("selects ?item=, else the first; nothing when empty", () => {
@@ -461,6 +463,39 @@ describe("the merge gate's words", () => {
       status: "waiting",
     });
     expect(verdictHeadline({ ...packet, verdict: "fail" }).status).toBe("failed");
+  });
+
+  it("never heads a packet with checks not run as plain Passed, until a person merged without them", () => {
+    const executed = {
+      declared: ["tests"],
+      results: [
+        {
+          name: "tests",
+          command: "pnpm test",
+          exitCode: null,
+          timedOut: false,
+          durationMs: 0,
+          logTail: "not run: this Mac runner has no container runtime",
+          round: 0,
+          notRun: "this Mac runner has no container runtime",
+          passed: false,
+        },
+      ],
+      notRun: [{ name: "tests", reason: "this Mac runner has no container runtime" }],
+    };
+    const notRun = { ...packet, sections: { ...packet.sections, executed } };
+    expect(verdictHeadline(notRun)).toEqual({
+      text: "Passed, but one check could not be run",
+      status: "waiting",
+    });
+    const waived = {
+      ...notRun,
+      sections: {
+        ...notRun.sections,
+        notRunWaived: { by: "usr_1", at: "2026-11-12T00:00:00.000Z", checks: ["tests"] },
+      },
+    };
+    expect(verdictHeadline(waived).text).not.toMatch(/could not be run/);
   });
 
   it("chips the checks, criteria, reviewer and risk", () => {

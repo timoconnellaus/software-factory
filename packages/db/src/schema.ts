@@ -309,9 +309,19 @@ export interface CoreWorkItemsTable {
   workflow_id: string;
   workflow_version: number | null;
   policy_sha: string | null;
+  /**
+   * 0282 (spec 52 PR (d)): the org config version the item runs its org workflow under, pinned with
+   * `policy_sha` when shaping starts and again at the pull. Null: the org's current one (an item
+   * from before, or an org with no config).
+   */
+  org_config_version: number | null;
   parent_work_item_id: string | null;
   /** 0370 (spec 23): a parked item's needs-info marker, JSON; null when not parked. */
   needs_info: string | null;
+  /** A shaped item's release flag (spec 52 Q4, migration 0285): JSON, null when not flagged. */
+  release_flag: string | null;
+  /** Who must choose for a flagged item (migration 0285); null when not flagged. */
+  release_flag_user_id: string | null;
   created_at: Iso;
   updated_at: Iso;
   closed_at: Iso | null;
@@ -485,6 +495,20 @@ export interface CorePendingActionsTable {
   note: string | null;
   opened_full_diff: Bool | null;
   gate_open_ms: number | null;
+  /** `org-admin`: only an org owner or admin decides it (a project's org workflow loosened, migration 0282). */
+  decider: "org-admin" | null;
+}
+
+/** An org admin's approval of a looser project override, for one org version (migration 0282). */
+export interface CoreOverrideApprovalsTable {
+  project_id: string;
+  org_id: string;
+  org_version: number;
+  stage_id: string;
+  setting: string;
+  value: JsonText;
+  approved_by: string;
+  approved_at: Iso;
 }
 
 export interface CoreReviewPacketsTable {
@@ -713,6 +737,25 @@ export interface CoreRunEventsTable {
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */
+/** The factory's own check results, per work item and commit (migration 0270, ADR 0501). */
+export interface CoreCheckResultsTable {
+  work_item_id: string;
+  head_sha: string;
+  name: string;
+  run_id: string;
+  command: string;
+  exit_code: number | null;
+  timed_out: Generated<number>;
+  duration_ms: number;
+  log_tail: string;
+  round: Generated<number>;
+  created_at: string;
+  /** Why the runner could not run it (migration 0271); null for a check that ran. */
+  not_run: string | null;
+  /** Where it ran (migration 0272): container, sandbox or weaker-sandbox; null before. */
+  isolation: string | null;
+}
+
 export interface CoreRunSteersTable {
   id: string;
   run_id: string;
@@ -1206,6 +1249,7 @@ export interface CoreDatabase {
   core_questions: CoreQuestionsTable;
   core_specs: CoreSpecsTable;
   core_pending_actions: CorePendingActionsTable;
+  core_override_approvals: CoreOverrideApprovalsTable;
   core_review_packets: CoreReviewPacketsTable;
   core_incidents: CoreIncidentsTable;
   core_audit: CoreAuditTable;
@@ -1218,6 +1262,7 @@ export interface CoreDatabase {
   core_run_archive_chunks: CoreRunArchiveChunksTable;
   core_run_archive_leases: CoreRunArchiveLeasesTable;
   core_run_steers: CoreRunSteersTable;
+  core_check_results: CoreCheckResultsTable;
   core_run_terminal_attaches: CoreRunTerminalAttachesTable;
   core_artifacts: CoreArtifactsTable;
   core_leases: CoreLeasesTable;

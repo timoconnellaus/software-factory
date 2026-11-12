@@ -3,16 +3,19 @@
 // SCAN of a growing table. To guard another path, add a scenario to HOT_PATHS.
 import { env } from "cloudflare:workers";
 import {
+  clearOrgConfigCache,
   invoke,
   r2AttachmentBlobs,
   recentOutcomes,
+  resolveScope,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
+import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
-import worker from "../src/index.ts";
+import worker, { pruneCheckResults } from "../src/index.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import { archiveRunEvents, pruneExpired } from "../src/retention.ts";
 import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
@@ -178,8 +181,61 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // The hourly check results prune (ADR 0501, fifth review), with a row past its cutoff to read.
+    name: "the check results prune",
+    run: async (e) => {
+      await env.DB.prepare(
+        `INSERT OR REPLACE INTO core_check_results
+           (work_item_id, head_sha, name, run_id, command, exit_code, timed_out, duration_ms,
+            log_tail, round, created_at)
+         SELECT work_item_id, ?, 'plan-guard', id, 'true', 0, 0, 1, '', 0, '2000-01-01T00:00:00.000Z'
+         FROM core_runs WHERE job_id = ?`,
+      )
+        .bind("a".repeat(40), job?.jobId ?? "")
+        .run();
+      // Its item is open, so the row is read, looked up and kept; limit 1 moves the cursor.
+      return pruneCheckResults(e.DB, new Date(), 1);
+    },
+  },
+  {
     name: "the hourly prunes (retention)",
     run: (e) => pruneExpired(e.DB, new Date()),
+  },
+  {
+    // Spec 52 PR (d): a polled read on a project that runs an org workflow, with nothing cached, so
+    // the org config's version and document are read: point reads by primary key. The timeline
+    // (skipsOrgWorkflow) reads neither. (workItem.get's own reads aren't registered here yet.)
+    name: "polled reads of an item on an org workflow",
+    run: async (e) => {
+      const o = await world();
+      await ok(
+        "workflow.save",
+        { orgId: o.orgId, baseVersion: 0, workflow: { ...SOFTWARE, id: "wf_ship", name: "Ship" } },
+        o.human,
+      );
+      const cfg = await ok<{
+        current: { version: number; policy: Record<string, unknown> | null } | null;
+      }>("config.get", { projectId: o.projectId }, o.human);
+      const policy = cfg.current?.policy ?? {};
+      await ok(
+        "config.save",
+        {
+          projectId: o.projectId,
+          baseVersion: cfg.current?.version ?? 0,
+          policy: { ...policy, workflow: "wf_ship", workflows: [], agents: [] },
+        },
+        o.human,
+      );
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "backlog", projectId: o.projectId, title: "Polled" },
+        o.human,
+      );
+      clearOrgConfigCache();
+      const scope = await resolveScope(createDb(e.DB), { workItemId: item.workItemId });
+      if (scope.policy?.workflow !== "wf_ship") throw new Error("the org workflow didn't resolve");
+      return as(e, "workItem.timeline", { workItemId: item.workItemId }, o.human);
+    },
   },
   {
     // Last two: they end the test's run 31 days ago, archive it, and read it back.

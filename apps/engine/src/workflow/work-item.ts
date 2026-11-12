@@ -31,10 +31,12 @@ import {
   parseProjectPolicy,
   type RunEventPayload,
   releaseEvent,
+  resolveOrgWorkflow,
   runEvent,
   SLOTS,
   WORKFLOW_VERSION_FEATURES,
 } from "@software-factory/core";
+import { createDb } from "@software-factory/db";
 import {
   type JobStage,
   type ModelRole,
@@ -102,19 +104,28 @@ export type WorkItemOutcome =
  *   and waits for `release-<item>` (`release: wait #k`, re-checking on each timeout), which the pull
  *   sends when a person released it and there is room. Delivery (the workflow's slots, build,
  *   verify, the merge gate) follows.
+ * - v8 (spec 51, ADR 0501): the runner host runs the project's checks after the build session and
+ *   sends failures back into the same session. After `build #b: advance`, `build #b: checks` reads
+ *   the results on the pushed head; any declared check still failing there asks a person
+ *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. A check the
+ *   runner could not run is not a failure: the item goes on to verify and the merge gate, which say
+ *   so and leave the criteria it would prove Not proven. The reviewer is told the checks' names.
  */
 /*
- * v11 (spec 53, ADR 0580; v8–v10 are other builds' numbers): approving the merge gate no longer
+ * v11 (spec 53, ADR 0580; v9–v10 are other builds' numbers): approving the merge gate no longer
  * makes the item land itself. It enters its repository's queue for the babysitter
  * (`merge #b: deliver: enqueue`) and waits for `delivered-<item>` (`merge #b: deliver: wait #i`,
  * re-reading its entry after each timeout, `merge #b: deliver: read #i`); the engine's deliverer
- * updates, CIs and merges it. An incident's check-only auto-merge still lands itself, as v7.
+ * updates, CIs and merges it. v11 has every feature of v8 (the host's checks). An incident's check-only auto-merge still lands itself, as v7.
  */
 /** Whether the table has a row for `version`: an instance on any other version errors. */
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
 export const WORKFLOW_VERSION = 11;
+/** v8: the answers when the factory's checks still fail after the session's fixes. */
+export const CHECKS_BUILD_AGAIN = "Build again with the failure";
+export const CHECKS_STOP = "Stop this work item";
 /** How long a shaped item waits for its release before it re-reads whether it was released. */
 export const RELEASE_WAIT = "12 hours";
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
@@ -536,6 +547,37 @@ class ItemFlow {
         }
         const headSha = String(advanced.sha);
 
+        // v8: the factory's own checks on the pushed head (ADR 0501). The host already sent any
+        // failure back into the same session up to the retry limit; one still failing goes to a
+        // person, never a cold retry.
+        let checkNames: string[] = [];
+        if (has(version, "host-checks")) {
+          const checked = await this.act(`build #${b}: checks`, "checks.forHead", {
+            workItemId: id,
+            headSha,
+          });
+          checkNames = (checked.declared as string[]) ?? [];
+          // Only a check that ran and failed (or didn't run on this head) sends the build back. One
+          // the runner could not run (no isolation, the sandbox could not start) is nothing a
+          // build can fix and burns no build attempt: the item goes on to verify and the merge
+          // gate, where it shows as not run and a person decides (third review, B3).
+          const failing = (checked.failing as string[] | undefined) ?? [];
+          if (failing.length > 0) {
+            await this.askChecksFailing(meta, b, headSha, failing);
+            note = [
+              "The factory's checks failed on your last head, and a person sent it back to build:",
+              ...failing.map((x) => `- ${x}`),
+            ].join("\n");
+            await this.act(`build #${b}: checks failed`, "workItem.enterStage", {
+              workItemId: id,
+              stage: "build",
+              closeAs: "failed",
+              reason: `checks failed on ${headSha.slice(0, 7)}`,
+            });
+            continue;
+          }
+        }
+
         if (plan) {
           const before = await this.runSlot(meta, plan, "beforeVerify", b, {
             criteria,
@@ -565,7 +607,11 @@ class ItemFlow {
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha }),
+          verifyPrompt(meta, {
+            criteria,
+            headSha,
+            checks: has(version, "host-checks") ? checkNames : null,
+          }),
           {
             criteria,
             headSha,
@@ -796,11 +842,21 @@ class ItemFlow {
         }
         // The PR is already open: pr.open returns it (and whether it touches `.factory/`).
         const pr = await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id });
+        // v8: the verify job runs the project's checks on the PR's head before the reviewer (ADR
+        // 0501); the reviewer is told their names, to link criteria to. Before v8: as it was.
+        let checkNames: string[] | null = null;
+        if (has(version, "host-checks")) {
+          const declared = await this.act(`verify #${b}: check names`, "checks.forHead", {
+            workItemId: id,
+            headSha,
+          });
+          checkNames = (declared.declared as string[]) ?? [];
+        }
         const verify = await this.runJob(
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha }),
+          verifyPrompt(meta, { criteria, headSha, checks: checkNames }),
           { criteria, headSha },
         );
         if (verify.outcome === "cancelled") {
@@ -1468,6 +1524,45 @@ class ItemFlow {
   }
 
   /**
+   * v8: the factory's checks still fail on the build's head after the session's own fixes (ADR
+   * 0501). A person decides: build again (with the failure as the note) or stop the item.
+   */
+  async askChecksFailing(meta: Meta, b: number, headSha: string, failing: string[]) {
+    const name = `build #${b}: checks failing`;
+    const asked = await this.act(`${name}: ask`, "question.ask", {
+      workItemId: this.workItemId,
+      questions: [
+        {
+          domain: "engineering",
+          prompt: `The project's checks still fail on ${headSha.slice(0, 7)}, the head of work item #${meta.number}'s build, after the build session tried to fix them. Build again, or stop the item?`,
+          context: [
+            "The runner host ran the checks itself and sent each failure back into the same build session, up to the project's retry limit. What still fails:",
+            ...failing.map((x) => `- ${x}`),
+            "The full log tails are in the run's check results.",
+          ].join("\n"),
+          options: [CHECKS_BUILD_AGAIN, CHECKS_STOP],
+          defaultAnswer: CHECKS_STOP,
+          recommendation: CHECKS_BUILD_AGAIN,
+          recommendationReason:
+            "A new build session starts from the branch as it is, with the failure as its note.",
+          blocking: true,
+        },
+      ],
+    });
+    await this.waitForAnswers(meta, name);
+    const questionId = (asked.questionIds as string[])[0];
+    const answer = await this.step.do(`${name}: answer`, async () => {
+      const row = await this.env.DB.prepare("SELECT answer FROM core_questions WHERE id = ?")
+        .bind(questionId)
+        .first<{ answer: string | null }>();
+      return row?.answer ?? CHECKS_STOP;
+    });
+    if (answer === CHECKS_STOP) {
+      throw new Ended("failed", `stopped: the checks fail on ${headSha.slice(0, 7)}`);
+    }
+  }
+
+  /**
    * v3: no CI has reported on the head at all. That's the repo's setup (Actions off, a run waiting
    * for approval, no workflow on `pull_request`), not the build, so a person is asked to fix it and
    * re-check, or to stop the item; no build retry is spent (ADR 0320).
@@ -1696,19 +1791,36 @@ class ItemFlow {
     return JSON.parse(text) as WorkflowPlan;
   }
 
-  /** The config version the item was created under (ADR 0370 §5), parsed; null if there is none. */
+  /**
+   * The config version the item was created under (ADR 0370 §5), parsed; null if there is none. On
+   * an org workflow (spec 52 PR (d)), resolved under the org config version the item pinned.
+   */
   private async pinnedPolicy() {
     const row = await this.env.DB.prepare(
-      `SELECT p.raw FROM core_work_items w
+      `SELECT p.raw, w.org_id, w.project_id, w.org_config_version FROM core_work_items w
        JOIN core_project_policies p ON p.project_id = w.project_id
          AND p.sha = COALESCE(w.policy_sha, (SELECT policy_sha FROM core_projects WHERE id = w.project_id))
        WHERE w.id = ?`,
     )
       .bind(this.workItemId)
-      .first<{ raw: string }>();
+      .first<{
+        raw: string;
+        org_id: string;
+        project_id: string;
+        org_config_version: number | null;
+      }>();
     if (!row) return null;
     const parsed = parseProjectPolicy(row.raw);
-    return parsed.ok ? parsed.policy : null;
+    if (!parsed.ok) return null;
+    return (
+      await resolveOrgWorkflow(
+        createDb(this.env.DB),
+        row.org_id,
+        parsed.policy,
+        row.org_config_version,
+        row.project_id,
+      )
+    ).policy;
   }
 
   /**
