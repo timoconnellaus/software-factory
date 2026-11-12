@@ -92,6 +92,27 @@ export interface CoreOrgConfigsTable {
   created_at: Iso;
 }
 
+/** Spec 52 PR (c): the shadow reconciler's prediction at each Workflow transition (migration 0281). */
+export interface CoreReconcileShadowTable {
+  id: string;
+  work_item_id: string;
+  org_id: string;
+  seq: number;
+  observed: string;
+  predicted: string;
+  agrees: number;
+  created_at: Iso;
+}
+
+/** Spec 52 PR (c): an item that reached Done under shadow, and how many transitions diverged. */
+export interface CoreReconcileItemsTable {
+  work_item_id: string;
+  org_id: string;
+  transitions: number;
+  divergences: number;
+  finished_at: Iso;
+}
+
 export interface CoreMemberTable {
   id: string;
   organization_id: string;
@@ -1048,6 +1069,8 @@ export interface CoreDatabase {
   core_repositories: CoreRepositoriesTable;
   core_project_policies: CoreProjectPoliciesTable;
   core_org_configs: CoreOrgConfigsTable;
+  core_reconcile_shadow: CoreReconcileShadowTable;
+  core_reconcile_items: CoreReconcileItemsTable;
   core_config_trials: CoreConfigTrialsTable;
   core_adjudications: CoreAdjudicationsTable;
   core_project_protection: CoreProjectProtectionTable;

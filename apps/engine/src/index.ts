@@ -16,6 +16,7 @@ import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
 import { pullQueuedWork } from "./pull.ts";
+import { pruneReconcileShadow } from "./reconcile-shadow.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
@@ -53,6 +54,8 @@ export default {
     await runAdjudicator(env);
     // Once an hour: the improver (ADR 0373) decides running trials and starts the next one.
     if (now.getUTCMinutes() === 23) await runImprover(env, now);
+    // Once an hour: the shadow reconciler's old rows (spec 52 PR (c)), a bounded batch.
+    if (now.getUTCMinutes() === 41) await pruneReconcileShadow(env, now);
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
       await sweepStrayAttachmentBlobs(env.DB, r2AttachmentBlobs(env.ATTACHMENTS), now);

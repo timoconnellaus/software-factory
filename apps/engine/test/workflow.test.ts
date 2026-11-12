@@ -39,6 +39,17 @@ function asDefinitionSays(rows: { stage: string; status: string }[]) {
   );
 }
 
+/** The shadow reconciler's verdict on an item (spec 52 PR (c)): every transition it predicted. */
+async function shadowAgrees(workItemId: string) {
+  const rows = await all<{ observed: string; predicted: string; agrees: number }>(
+    "SELECT observed, predicted, agrees FROM core_reconcile_shadow WHERE work_item_id = ? ORDER BY created_at, seq",
+    workItemId,
+  );
+  expect(rows.length).toBeGreaterThan(0);
+  expect(rows.filter((r) => r.agrees !== 1)).toEqual([]);
+  return rows.map((r) => r.observed);
+}
+
 describe("the work-item Workflow", () => {
   it("runs a small item end to end: triage skips the spec, build, verify, merge gate, merged", async () => {
     const w = await world();
@@ -78,6 +89,21 @@ describe("the work-item Workflow", () => {
       "done:done",
     ]);
     expect(stages.find((s) => s.stage === "spec")?.reason).toMatch(/below the spec threshold/);
+    // The reconciler in shadow predicted every transition, and the item counts toward the streak.
+    expect(await shadowAgrees(item.workItemId)).toEqual([
+      "enter triage",
+      "skip spec",
+      "enter build",
+      "enter verify",
+      "enter merge",
+      "end done",
+    ]);
+    expect(
+      await first<{ transitions: number; divergences: number }>(
+        "SELECT transitions, divergences FROM core_reconcile_items WHERE work_item_id = ?",
+        item.workItemId,
+      ),
+    ).toEqual({ transitions: 6, divergences: 0 });
     // The compiled Software definition passes and skips the same stages (spec 52 PR (a)).
     const parsed = parseProjectPolicy(JSON.stringify(BALANCED));
     if (!parsed.ok) throw new Error(parsed.error);
@@ -242,6 +268,8 @@ describe("the work-item Workflow", () => {
       "SELECT stage, status FROM core_stages WHERE work_item_id = ? AND stage IN ('build', 'verify', 'merge') ORDER BY started_at, rowid",
       item.workItemId,
     );
+    // The shadow reconciler sent both back to build too.
+    await shadowAgrees(item.workItemId);
     // Both loops ran inside the one instance: verify → build on a failed check, merge → build on a send-back.
     expect(stages.map((s) => `${s.stage}:${s.status}`)).toEqual([
       "build:done",

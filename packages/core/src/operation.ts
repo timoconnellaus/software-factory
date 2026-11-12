@@ -51,6 +51,19 @@ export type OutboxMessage =
    * host's held steer call answers at once.
    */
   | { kind: "run.steered"; payload: { workItemId: string } }
+  /**
+   * The Workflow moved a work item (spec 52 PR (c), ADR 0511): sf-engine's shadow reconciler compares
+   * each transition with what it would have done. Drives nothing.
+   */
+  | {
+      kind: "reconcile.shadow";
+      payload: {
+        workItemId: string;
+        /** When the transition was made: its stage rows start then, so the history before is older. */
+        at: string;
+        observed: ({ kind: "skip"; stage: string } | { kind: "enter"; stage: string })[];
+      };
+    }
   /** A device was revoked (ADR 0541): sf-engine closes its live socket in the person's ClientHub. */
   | { kind: "device.revoked"; payload: { userId: string; deviceId: string } }
   /** A notification for a person (web push in spec 15). `url` is the deep link. */

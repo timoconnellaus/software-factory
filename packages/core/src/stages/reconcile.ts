@@ -185,7 +185,7 @@ export function gateStep(
  * consumes (a Marketing draft); then the nearest later builder (a slot step before the build sends
  * a note to it); else the stage itself.
  */
-function producerOf(def: WorkflowDefinition, inst: StageInstance): string {
+export function producerOf(def: WorkflowDefinition, inst: StageInstance): string {
   const at = def.stages.findIndex((s) => s.id === inst.id);
   const produces = (s: StageInstance, kinds: readonly string[]) =>
     stageType(s.type)?.produces.some((k) => kinds.includes(k)) ?? false;
@@ -206,6 +206,12 @@ function producerOf(def: WorkflowDefinition, inst: StageInstance): string {
   return (
     earlier(["git-head"]) ?? earlier(stageType(inst.type)?.consumes ?? []) ?? later() ?? inst.id
   );
+}
+
+/** Where a send-back from the stage `stageId` goes (see `producerOf`). */
+export function sendBackTo(def: WorkflowDefinition, stageId: string): string {
+  const inst = def.stages.find((s) => s.id === stageId);
+  return inst ? producerOf(def, inst) : stageId;
 }
 
 /** The type's next action for the current entry. Types without `next()` aren't run by the reconciler yet. */

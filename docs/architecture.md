@@ -72,8 +72,14 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   workflows; `compileProjectWorkflow` expresses a project's slot workflow as a stage list. Nothing at
   run time reads them yet (build plan PR (a)). An **org config** (`core_org_configs`, migration 0280)
   holds the org's workflows and agents as versions, edited through `workflow.*`, `agent.save` and
-  `orgConfig.*`; a loosening save is `self-modify` for an org admin, and the built-in workflows
-  accept only tightening saves. Projects keep running their own config until PR (d).
+  `orgConfig.*`; a loosening save is `self-modify` for an org admin (the classifier is an
+  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one.
+  Projects keep running their own config until PR (d). The **reconciler** (ADR 0511) is
+  `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**: every
+  `workItem.enterStage` and a finish at Done emit `reconcile.shadow`, and sf-engine records what the
+  reconciler would have done next to what the Workflow did (`core_reconcile_shadow`,
+  `core_reconcile_items`, migration 0281; `reconcile.report`, `reconcile.streak`). It drives
+  nothing; the switch-over is its own PR once 20 finished items in a row agree.
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`

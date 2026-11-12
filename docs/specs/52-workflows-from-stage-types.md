@@ -1151,8 +1151,12 @@ screen needs).
    `workflowTemplate.list`. **Built-in workflows** Attached PR and Incident are listed read-only and
    accept only tightening saves (a loosening one is refused). Projects still run their own config
    and the engine is unchanged: org workflows are visible and editable but not yet used.
-4. **(c) The reconciler in shadow** (migration **0281**: `core_item_stages`, `core_item_steps`,
-   `core_reconcile_shadow`, `core_work_items.reconcile_rev`, `next_check_at`). `reconcile()`, the
+4. **(c) The reconciler in shadow** (migration **0281**: `core_reconcile_shadow`,
+   `core_reconcile_items`; as built, `core_item_stages`, `core_item_steps`, `reconcile_rev` and
+   `next_check_at` move to the switch-over, since nothing writes them while the Workflow drives).
+   As built in two PRs: (c1) `reconcile()` and `next()`, pure; (c2) the shadow recorder, which compares
+   stage transitions (entered, skipped, sent back, Done) at each `workItem.enterStage`; steps inside a
+   stage, slot steps and failed or rejected ends are not compared yet. `reconcile()`, the
    snapshot loader and `next()` for Software's types. It runs on the outbox and the cron beside the
    Workflow, drives nothing, and records what it would do next to what the Workflow did; a report
    per item and the **agreement streak** (consecutive finished items with no divergence). The

@@ -944,6 +944,18 @@ export const workItemEnterStage = defineOperation({
         ended_at: input.stage === "done" ? ctx.now : null,
       }),
     );
+    // The shadow reconciler compares this transition with what it would have done (spec 52 PR (c)).
+    ctx.emit({
+      kind: "reconcile.shadow",
+      payload: {
+        workItemId: w.id,
+        at: ctx.now,
+        observed: [
+          ...input.skipped.map((x) => ({ kind: "skip" as const, stage: x.stage })),
+          { kind: "enter" as const, stage: input.stage },
+        ],
+      },
+    });
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -1028,6 +1040,11 @@ export const workItemFinish = defineOperation({
       ctx.write(
         ctx.db.updateTable("core_work_items").set({ stage: "done" }).where("id", "=", w.id),
       );
+      // The shadow reconciler's end of the item (spec 52 PR (c)): it should have predicted Done.
+      ctx.emit({
+        kind: "reconcile.shadow",
+        payload: { workItemId: w.id, at: ctx.now, observed: [{ kind: "enter", stage: "done" }] },
+      });
     }
     ctx.emit({
       kind: "notify",

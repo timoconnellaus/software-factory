@@ -97,6 +97,9 @@ export interface OpMap {
   "orgConfig.get": Def<typeof operations.orgConfigGet>;
   "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
   "stageType.list": Def<typeof operations.stageTypeList>;
+  // The reconciler in shadow (spec 52 PR (c)).
+  "reconcile.report": Def<typeof operations.reconcileReport>;
+  "reconcile.streak": Def<typeof operations.reconcileStreak>;
   "mergeQueue.list": Def<typeof operations.mergeQueueList>;
   "repository.list": Def<typeof operations.repositoryList>;
   "cliToken.list": Def<typeof operations.cliTokenList>;
