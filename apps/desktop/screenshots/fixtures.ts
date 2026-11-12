@@ -3,6 +3,7 @@
 // (docs/design/factory-ui) so the build and the design can be compared side by side. Never shipped:
 // the app's own bridge talks to the main process.
 import type { OpInput, OpName, OpOutput } from "@software-factory/client/ops";
+import { planBlocks } from "@software-factory/client/planning";
 
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
@@ -865,6 +866,15 @@ function question(n: number, prompt: string, extra: Partial<PlanningQ>): Plannin
     note: null,
     acceptedDefault: false,
     acceptedAlone: false,
+    answeredViaEdit: null,
+    artifactId: null,
+    optionArtifacts: null,
+    optionValues: null,
+    control: null,
+    unit: null,
+    min: null,
+    max: null,
+    step: null,
     skipped: false,
     answerDeliveredAt: ago(29),
     answeredBy: ME,
@@ -888,6 +898,19 @@ const alone = () => {
   return seenAlone;
 };
 
+/** `?fixture=dropped`: an edit the plan no longer keeps (second review of #85 screenshot). */
+let seenDropped = false;
+const dropped = () => {
+  seenDropped ||= (globalThis.location?.hash ?? "").includes("fixture=dropped");
+  return seenDropped;
+};
+
+/** The blocks an edit wrote, by section, as the server stores them. */
+const wrote = (after: string) =>
+  planBlocks(PLAN_MD)
+    .filter((b) => planBlocks(after).some((a) => a.text === b.text))
+    .map(({ section, parent, text }) => ({ section, parent, text }));
+
 function kept(n: number, prompt: string, answer: string, options: string[]): PlanningQ {
   return question(n, prompt, {
     options,
@@ -901,6 +924,38 @@ function kept(n: number, prompt: string, answer: string, options: string[]): Pla
   });
 }
 
+/** Spec 21: the two mockups question 7 chooses between (design PlanFocusMockup). */
+const MOCKUP_STYLE = `<style>
+:root { --accent: #2563eb; }
+body { margin: 0; font: 15px/1.4 -apple-system, system-ui, sans-serif; color: #1c1c1e; background: #f1f1ef; }
+.app { display: grid; grid-template-columns: 220px 1fr; min-height: 800px; }
+nav { background: #fff; border-right: 1px solid #e3e3e0; padding: 24px 16px; }
+nav div { height: 10px; border-radius: 5px; background: #e3e3e0; margin: 14px 0; width: 70%; }
+nav div.on { background: #1c1c1e; width: 50%; }
+main { padding: 40px 48px; }
+h1 { font-size: 26px; margin: 0 0 20px; }
+.row { display: flex; align-items: center; justify-content: space-between; background: #fff; border: 1px solid #e3e3e0; border-radius: 12px; padding: 18px 20px; margin-bottom: 12px; font-size: 17px; }
+.row.on { border: 2px solid var(--accent); }
+.row small { display: block; color: #6e6e73; font-size: 14px; }
+.ok { color: #17603a; } .link { color: var(--accent); }
+.switch { width: 52px; height: 30px; border-radius: 15px; background: var(--accent); position: relative; }
+.switch::after { content: ""; position: absolute; right: 4px; top: 4px; width: 22px; height: 22px; border-radius: 11px; background: #fff; }
+</style>`;
+const MOCKUP_A = `<!doctype html><html><head>${MOCKUP_STYLE}</head><body><div class="app">
+<nav><div></div><div class="on"></div><div></div><div></div></nav>
+<main><h1 data-name="page title">Connections</h1>
+<div class="row" data-name="github row">GitHub <span class="ok">Connected</span></div>
+<div class="row on" data-name="import setting"><span>Take work from issues<small>Label factory</small></span><span class="switch" data-name="import switch"></span></div>
+<div class="row" data-name="open issues">14 open issues <span class="link">Review</span></div>
+</main></div></body></html>`;
+const MOCKUP_B = `<!doctype html><html><head>${MOCKUP_STYLE}</head><body><div class="app">
+<nav><div></div><div></div><div class="on"></div><div></div></nav>
+<main><h1 data-name="page title">Factory · project</h1>
+<div class="row" data-name="workflow row">Workflow <span>Software</span></div>
+<div class="row" data-name="repositories row">Repositories <span>1</span></div>
+<div class="row on" data-name="import setting"><span>Take work from issues<small>Its own label and authors</small></span><span class="switch" data-name="import switch"></span></div>
+</main></div></body></html>`;
+
 const PLAN_MD = `# Take work from GitHub issues
 
 ## Goal
@@ -909,9 +964,20 @@ A labelled GitHub issue from a trusted author becomes a work item in the backlog
 ## Scope
 - The GitHub App webhook takes \`issues\` events for connected repositories [repo]
 - Only issues with the \`factory\` label come in [Q1]
+  - the label name is set on the GitHub connection
+  - relabelling an open issue brings it in
 - Authors must be org members or collaborators; anything else is ignored and logged [Q2]
-- New items land in the inbox of the project that owns the repository [Q3]
+- New items land in the Backlog of the project that owns the repository [Q3]
 - The issue gets one comment with a link to the item, and is closed when the item merges [Q4]
+
+  The comment is posted by the App, never with a person's token.
+
+## Webhook filter
+\`\`\`yaml
+on:
+  issues:
+    types: [opened, labeled]
+\`\`\`
 
 ## Out of scope
 - Issues from repositories that are not connected, pull request comments [request]
@@ -939,6 +1005,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
           paused: false,
           pausedBy: null,
           canInterrupt: true,
+          shownArtifactId: null,
           finishAlone: alone() ? { by: ME, byName: "You", at: ago(6) } : null,
           focusedQuestionId: "pq_6",
           runner: { id: RUNNER, name: "M5", online: true, lastSeenAt: ago(0) },
@@ -957,11 +1024,13 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             "Anyone",
           ]),
           question(3, "Where do they land?", {
-            options: ["The org inbox", "The project's inbox"],
+            options: ["The org inbox", "The project's inbox", "Backlog"],
             defaultValues: ["The org inbox"],
             defaultAnswer: "The org inbox",
             recommendation: "The org inbox",
-            answer: "The project's inbox",
+            answer: "Backlog",
+            // Spec 27: recorded by the planner from the person's edit of the plan.
+            answeredViaEdit: "pe_1",
           }),
           kept(4, "What goes back to the issue?", "A link, then closed on merge", [
             "A link, then closed on merge",
@@ -986,6 +1055,20 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             recommendation: "Show a notice on the item, change nothing",
             recommendationReason:
               "A released item has an approved plan. Changing it silently would break what you approved, and sending it back would stall a build for a typo fix.",
+          }),
+          // Spec 21: a choice between two mockups (design PlanFocusMockup).
+          question(7, "Where does the import setting live?", {
+            status: "open",
+            answer: null,
+            answeredBy: null,
+            answeredAt: null,
+            options: ["GitHub connection", "On each project"],
+            defaultValues: ["GitHub connection"],
+            defaultAnswer: "GitHub connection",
+            recommendation: "GitHub connection",
+            recommendationReason:
+              "The label and the trusted authors belong to the connection. A project only chooses whether to take issues from its repositories.",
+            optionArtifacts: { "GitHub connection": "art_a", "On each project": "art_b" },
           }),
         ]
       : [],
@@ -1015,6 +1098,8 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             replyTo: null,
             kind: "chat",
             deliveredAt: ago(20),
+            anchor: null,
+            pin: null,
             createdAt: ago(20),
           },
           {
@@ -1027,8 +1112,201 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             replyTo: null,
             kind: "chat",
             deliveredAt: ago(12),
+            anchor: null,
+            pin: null,
             createdAt: ago(12),
           },
+          {
+            id: "m4",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Show the label name here.",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(6),
+            anchor: null,
+            // Spec 21: a comment pinned to the switch in mockup A.
+            pin: {
+              artifactId: "art_a",
+              element: "import switch",
+              selector: null,
+              x: 1040,
+              y: 214,
+              fx: 0.5,
+              fy: 0.5,
+              width: 1280,
+            },
+            createdAt: ago(6),
+          },
+          {
+            id: "m5",
+            author: "agent",
+            authorId: "planner",
+            authorName: "Planner",
+            text: "Done: the switch now reads “Take work labelled factory” (revision 2).",
+            questionId: null,
+            // Spec 21: the planner's reply to the pinned comment.
+            replyTo: "m4",
+            kind: "chat",
+            deliveredAt: ago(5),
+            anchor: null,
+            pin: null,
+            createdAt: ago(5),
+          },
+          {
+            id: "m3",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Does a bot account count as a collaborator here?",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(3),
+            pin: null,
+            // Spec 27: a comment on a line of the plan.
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 10,
+              lineEnd: 10,
+              quote:
+                "- Authors must be org members or collaborators; anything else is ignored and logged [Q2]",
+            },
+            createdAt: ago(3),
+          },
+          {
+            id: "m6",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Does this cover a label renamed on GitHub?",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(2),
+
+            pin: null,
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 8,
+              lineEnd: 8,
+              quote: "  - the label name is set on the GitHub connection",
+            },
+            createdAt: ago(2),
+          },
+          {
+            id: "m7",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Add edited too, so a label added later counts.",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(1),
+
+            pin: null,
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 17,
+              lineEnd: 21,
+              quote: "```yaml\non:\n  issues:\n    types: [opened, labeled]\n```",
+            },
+            createdAt: ago(1),
+          },
+        ]
+      : [],
+    artifacts: live
+      ? [
+          {
+            id: "art_a",
+            kind: "mockup",
+            title: "A: GitHub connection",
+            description:
+              "One switch for the org. The label and trusted authors are set once, next to the thing they belong to.",
+            revision: 2,
+            keep: false,
+            controls: ["--accent"],
+            size: MOCKUP_A.length,
+            updatedAt: ago(5),
+          },
+          {
+            id: "art_b",
+            kind: "mockup",
+            title: "B: On each project",
+            description:
+              "Each project turns it on and sets its own label. More control, and more places to keep in step.",
+            revision: 1,
+            keep: false,
+            controls: ["--accent"],
+            size: MOCKUP_B.length,
+            updatedAt: ago(9),
+          },
+        ]
+      : [],
+    // Spec 27: the person's edit of the Q3 line, which the planner kept.
+    edits: live
+      ? [
+          {
+            id: "pe_1",
+            specId: "spec_wi_12",
+            lineStart: 11,
+            lineEnd: 11,
+            before: "- New items land in the inbox of the project that owns the repository [Q3]",
+            after: "- New items land in the Backlog of the project that owns the repository [Q3]",
+            authorId: ME,
+            authorName: "You",
+            createdAt: ago(4),
+            kept: true,
+            whyNotKept: null,
+            mentions: [],
+            blocks: wrote(
+              "- New items land in the Backlog of the project that owns the repository [Q3]",
+            ),
+          },
+          {
+            id: "pe_2",
+            specId: "spec_wi_12",
+            lineStart: 9,
+            lineEnd: 9,
+            before: "  - relabelling brings it in",
+            after: "  - relabelling an open issue brings it in",
+            authorId: ME,
+            authorName: "You",
+            createdAt: ago(3),
+            kept: true,
+            whyNotKept: null,
+            mentions: [],
+            blocks: wrote("  - relabelling an open issue brings it in"),
+          },
+          // Second review of #85: an edit the plan no longer keeps holds the gate until released.
+          ...(dropped()
+            ? [
+                {
+                  id: "pe_3",
+                  specId: "spec_wi_12",
+                  lineStart: 12,
+                  lineEnd: 12,
+                  before: "",
+                  after: "- A closed issue is reopened when its item fails",
+                  authorId: "u_ana",
+                  authorName: "Ana",
+                  createdAt: ago(2),
+                  kept: false,
+                  whyNotKept: "the plan doesn't have its words as written, in their place",
+                  mentions: ["- Reopening issues the factory closed is out of scope"],
+                  blocks: [
+                    {
+                      section: "Take work from GitHub issues › Scope",
+                      parent: "",
+                      text: "- A closed issue is reopened when its item fails",
+                    },
+                  ],
+                },
+              ]
+            : []),
         ]
       : [],
     present: live ? [{ userId: ME, name: "You" }] : [],
@@ -1113,6 +1391,15 @@ export const ANSWERS: Answers = {
   "workItem.timeline": () => TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),
+  "artifact.get": (input) => ({
+    artifactId: input.artifactId,
+    kind: "mockup",
+    title: input.artifactId === "art_a" ? "A: GitHub connection" : "B: On each project",
+    revision: input.artifactId === "art_a" ? 2 : 1,
+    latest: input.artifactId === "art_a" ? 2 : 1,
+    content: input.artifactId === "art_a" ? MOCKUP_A : MOCKUP_B,
+    controls: ["--accent"],
+  }),
   "run.live": () => liveView(),
   "runner.list": () => ({
     runners: [
