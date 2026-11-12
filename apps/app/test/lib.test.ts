@@ -1,5 +1,5 @@
 // The page logic the specs pin down, as pure functions.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runnerLabel, updateLabel } from "#/components/runner-health";
 import { duration } from "#/lib/format";
 import { groupByProject } from "#/lib/inbox";
@@ -39,8 +39,11 @@ function detail(
       headSha: null,
       prNumber: null,
       policySha: null,
+      workflow: null,
+      workflowReason: null,
       ...item,
     },
+    workflows: [],
     stages: [],
     spec: null,
     questions: [],
@@ -190,7 +193,16 @@ describe("the inbox", () => {
     ]);
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("shows a rate-limited runner's until time and an offline runner's last-seen time (spec 12, criterion 7)", () => {
+    // Pin the clock to local noon on a fixed day, so the times a minute either side are the same
+    // day whenever and wherever the test runs (the label adds the date for another day).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const pinned = new Date(2026, 10, 11, 12, 0, 0);
+    vi.setSystemTime(pinned);
     const base = {
       id: "r",
       name: "m5",
@@ -201,9 +213,8 @@ describe("the inbox", () => {
       lastSeenAt: null,
       update: null,
     };
-    // Today's times (the label adds the date for another day).
-    const soon = new Date(Date.now() + 60_000).toISOString();
-    const earlier = new Date(Date.now() - 60_000).toISOString();
+    const soon = new Date(pinned.getTime() + 60_000).toISOString();
+    const earlier = new Date(pinned.getTime() - 60_000).toISOString();
     expect(runnerLabel({ ...base, state: "rate-limited", rateLimitedUntil: soon })).toMatch(
       /^rate-limited until \d\d:\d\d$/,
     );

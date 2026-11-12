@@ -79,6 +79,11 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0305](0305-planning-artifacts-and-the-kim-folder.md) | Planning artifacts are stored in the factory and kept in `.kim/`; mockups render on a sandboxed origin |
 | [0306](0306-verify-checks-drift-from-the-spec.md) | Verify checks drift from the approved spec |
 | [0310](0310-work-item-attachments.md) | Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel |
+| [0370](0370-factory-config-lives-in-the-app.md) | Factory config lives in the app as versions; validated before save, loosening is self-modify, export/import `.factory/` (supersedes 0009, 0036) |
+| [0371](0371-workflows-are-presets-over-typed-slots.md) | Workflows are presets over three typed slots in a fixed skeleton (Workflow v6); work steps advisory, gate steps enforced |
+| [0372](0372-agents-are-harness-neutral.md) | Agents are harness-neutral (role + tier, instructions, abstract permissions); the runner resolves the model |
+| [0373](0373-the-factory-improves-its-own-practice.md) | The factory improves its own practice as trials with auto-rollback; policy stays with people |
+| [0374](0374-the-adjudicator-earns-approval-in-shadow-mode.md) | The adjudicator earns gate approvals in shadow mode (≥95% precision), never rejects, never merge/deploy/self-modify |
 | [0360](0360-runners-update-themselves-to-the-deployed-commit.md) | Runners update themselves to the deployed commit: when idle, fast-forward only, rolled back by a wrapper if the new code doesn't start |
 | [0380](0380-the-desktop-app-is-the-daily-ui.md) | The desktop app is the daily UI and the runner's supervisor |
 | [0381](0381-the-client-door-desktop-devices-and-presence.md) | One client door; desktop devices decide gates with a presence proof |

@@ -45,3 +45,5 @@ The gate needs a concrete policy per project, read only from the default branch.
 > bypassPermissions | plan`), extra `allow` rules and extra `allowedDomains` for the sandbox. It can
 > only pick a mode and add to allowlists; the sandbox and the deny rules are fixed in
 > `harness-claude`. The engine puts it on each job (`harness.profile`) from the default branch's policy.
+
+> Amended 2026-11-12 ([ADR 0370](0370-factory-config-lives-in-the-app.md), spec 09): the schema stays, but the document now lives in the app as versions. `policy.sync` from the push webhook is retired, and `.factory/policy.json` is only an export/import format. M2 adds `agents` and `workflows` ([ADR 0371](0371-workflows-are-presets-over-typed-slots.md), [0372](0372-agents-are-harness-neutral.md)).

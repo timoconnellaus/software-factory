@@ -3,7 +3,7 @@
 // the template-policy PR; the Setup checklist.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { POLICY_PATH, parseProjectPolicy } from "../src/index.ts";
+import { POLICY_PATH } from "../src/index.ts";
 import { fakeUserToken, protectedGuards } from "../src/testing/index.ts";
 import {
   call,
@@ -298,8 +298,15 @@ describe("Connect GitHub: verifying the installation", () => {
       github_installation_id: installationId,
       installation_record_id: done.installation?.id,
       github_repo_id: repoId,
-      policy_sha: head,
+      // The repo's policy, imported as the first config version (ADR 0370).
+      policy_sha: "v1",
     });
+    const v1 = await first<{ source: string; raw: string }>(
+      "SELECT source, raw FROM core_project_policies WHERE project_id = ? AND version = 1",
+      projectId,
+    );
+    expect(v1.source).toBe("import");
+    expect(JSON.parse(v1.raw)).toEqual(POLICY);
   });
 });
 
@@ -332,6 +339,8 @@ describe("the installation webhooks keep the record current", () => {
     expect(listed.projects[0]?.connection.status).toBe("suspended");
 
     await ok("github.installation", { ...base, action: "unsuspended", repositories: null }, INTAKE);
+    const head = (await github.getBranchSha(w.repo, "main")) as string;
+    await github.setFile(w.repo, head, POLICY_PATH, JSON.stringify(POLICY));
     await ok("policy.resync", { projectId: w.projectId }, w.human);
 
     await ok(
@@ -408,100 +417,39 @@ describe("the repo picker", () => {
   });
 });
 
-describe("the policy syncs itself", () => {
-  it("on every push to the default branch", async () => {
-    const w = await world(null);
-    const after = await github.push(w.repo, "main", undefined, [POLICY_PATH]);
-    await github.setFile(w.repo, after, POLICY_PATH, JSON.stringify(POLICY));
-    const r = await ok<{ outcome: string; policy: { valid: boolean } }>(
-      "push.observe",
-      {
-        repo: { owner: w.repo.owner, name: w.repo.repo },
-        ref: "refs/heads/main",
-        before: "0".repeat(39) + "1",
-        after,
-        pusher: "timoconnellaus",
-        pusherIsApp: false,
-      },
-      INTAKE,
+describe("importing the repo's policy (config lives in the app, ADR 0370)", () => {
+  it("imports a valid .factory/policy.json from the default branch's head as a new version", async () => {
+    const w = await world();
+    const head = (await github.getBranchSha(w.repo, "main")) as string;
+    await github.setFile(w.repo, head, POLICY_PATH, JSON.stringify({ ...POLICY, wipLimit: 2 }));
+    const r = await ok<{ valid: boolean; sha: string }>(
+      "policy.resync",
+      { projectId: w.projectId },
+      w.human,
     );
-    expect(r).toMatchObject({ outcome: "policy", policy: { valid: true } });
+    expect(r.valid).toBe(true);
+    expect(r.sha).toMatch(/^v\d+$/);
     const listed = await ok<{ projects: { policySha: string; policy: { state: string } }[] }>(
       "project.list",
       { orgId: w.orgId },
       w.human,
     );
-    expect(listed.projects[0]).toMatchObject({ policySha: after, policy: { state: "valid" } });
+    expect(listed.projects[0]).toMatchObject({ policySha: r.sha, policy: { state: "valid" } });
   });
 
-  it("re-syncs by hand from the default branch's head", async () => {
+  it("refuses an invalid or missing file, and changes nothing", async () => {
     const w = await world();
+    const missing = await refusal(call("policy.resync", { projectId: w.projectId }, w.human));
+    expect(missing.code).toBe("not_found");
     const head = (await github.getBranchSha(w.repo, "main")) as string;
     await github.setFile(w.repo, head, POLICY_PATH, "{ not json");
-    const r = await ok<{ valid: boolean; error: string; sha: string }>(
-      "policy.resync",
-      { projectId: w.projectId },
-      w.human,
+    const bad = await refusal(call("policy.resync", { projectId: w.projectId }, w.human));
+    expect(bad.code).toBe("invalid_input");
+    const row = await first<{ policy_sha: string }>(
+      "SELECT policy_sha FROM core_projects WHERE id = ?",
+      w.projectId,
     );
-    expect(r).toMatchObject({ valid: false, error: "policy is not JSON", sha: head });
-  });
-});
-
-describe("Create policy PR", () => {
-  it("opens a PR from factory/setup-policy with a Balanced template naming the person", async () => {
-    const w = await world(null);
-    const login = `gh-${w.userId}`;
-    const pr = await ok<{ url: string; number: number; branch: string }>(
-      "policy.proposeTemplate",
-      { projectId: w.projectId },
-      w.human,
-    );
-    expect(pr.branch).toBe("factory/setup-policy");
-    const state = await github.state(w.repo);
-    expect(state.pulls).toEqual([
-      expect.objectContaining({ head: "factory/setup-policy", base: "main", state: "open" }),
-    ]);
-    const content = state.files["factory/setup-policy"]?.[POLICY_PATH] as string;
-    const parsed = parseProjectPolicy(content);
-    expect(parsed.ok).toBe(true);
-    expect(JSON.parse(content)).toMatchObject({
-      autonomyPolicy: "balanced",
-      approvers: [login],
-      backupOwner: login,
-    });
-    const listed = await ok<{ projects: { policy: { prUrl: string } }[] }>(
-      "project.list",
-      { orgId: w.orgId },
-      w.human,
-    );
-    expect(listed.projects[0]?.policy.prUrl).toBe(pr.url);
-
-    // The App's push to its own setup branch isn't a confinement violation.
-    const observed = await ok<{ outcome: string }>(
-      "push.observe",
-      {
-        repo: { owner: w.repo.owner, name: w.repo.repo },
-        ref: "refs/heads/factory/setup-policy",
-        before: "0".repeat(40),
-        after: state.refs["factory/setup-policy"],
-        pusher: "software-factory-test[bot]",
-        pusherIsApp: true,
-      },
-      INTAKE,
-    );
-    expect(observed.outcome).toBe("ok");
-  });
-
-  it("is a human action, and refuses when the branch already has a policy", async () => {
-    const w = await world(null);
-    const agent = await refusal(
-      call("policy.proposeTemplate", { projectId: w.projectId }, { type: "agent", id: "foreman" }),
-    );
-    expect(["forbidden", "denied"]).toContain(agent.code);
-    const head = (await github.getBranchSha(w.repo, "main")) as string;
-    await github.setFile(w.repo, head, POLICY_PATH, JSON.stringify(POLICY));
-    const r = await refusal(call("policy.proposeTemplate", { projectId: w.projectId }, w.human));
-    expect(r.code).toBe("conflict");
+    expect(row.policy_sha).toBe(w.policySha);
   });
 });
 
