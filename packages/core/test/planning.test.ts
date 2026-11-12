@@ -376,6 +376,57 @@ describe("planning sessions (spec 20)", () => {
     expect(run.status).toBe("cancelled");
   });
 
+  it("a runner waiting to update starts no planning session, and asks an idle one to yield once it claims nothing (ADR 0520)", async () => {
+    const w = await world();
+    const m5 = await runner(w);
+    const sha = "c".repeat(40);
+    const waiting = (claims: "all" | "light" | "none") => ({
+      sha: "a".repeat(40),
+      autoUpdate: true,
+      update: { state: "waiting", target: sha, reason: "update pending", claims },
+    });
+    const beat = (version: unknown, activeJobs: { jobId: string; fencingToken: number }[] = []) =>
+      ok("runner.heartbeat", { manifest, capacity: pools(6), activeJobs, version }, m5);
+
+    // An update is pending (still claiming as usual): a new planning session isn't placed here,
+    // though a triage job is.
+    await beat(waiting("all"));
+    const item = await newItem(w, "Plan me");
+    await ok("branch.ensure", { workItemId: item.workItemId }, FOREMAN);
+    const started = await ok<{ sessionId: string; jobId: string }>(
+      "planning.start",
+      { workItemId: item.workItemId },
+      FOREMAN,
+    );
+    const triage = await newItem(w, "Triage me");
+    await ok("branch.ensure", { workItemId: triage.workItemId }, FOREMAN);
+    await ok(
+      "job.enqueue",
+      { workItemId: triage.workItemId, stage: "triage", role: "triage", prompt: "Size it" },
+      FOREMAN,
+    );
+    expect((await claim(m5))?.stage).toBe("triage");
+    expect(await claim(m5)).toBeNull();
+    // Updated: it reports current, and the planning job is placed.
+    await beat({ sha, autoUpdate: true, update: { state: "current", target: sha, reason: null } });
+    const job = await claim(m5);
+    expect(job?.jobId).toBe(started.jobId);
+    if (!job) throw new Error("expected the planning job");
+    await agent(m5, job, "planning.wait", {});
+    await env.DB.prepare("UPDATE core_planning_sessions SET idle_since = ? WHERE id = ?")
+      .bind(new Date(Date.now() - 10 * 60_000).toISOString(), started.sessionId)
+      .run();
+    const held = [{ jobId: job.jobId, fencingToken: job.lease.fencingToken }];
+
+    // The next update has waited past its first cap: light only, no yield yet.
+    await beat(waiting("light"), held);
+    expect((await agent<PlanningNews>(m5, job, "planning.wait", {})).yield).toBe(false);
+    // Past the second cap it claims nothing, so it never reaches the claim path's yield: the
+    // heartbeat asks the idle session to yield instead.
+    await beat(waiting("none"), held);
+    expect((await agent<PlanningNews>(m5, job, "planning.wait", {})).yield).toBe(true);
+  });
+
   it("yields the oldest idle session only when the light pool is full and nobody is there, and resumes the same conversation on the same runner (criterion 5)", async () => {
     const w = await world();
     const m5 = await runner(w);

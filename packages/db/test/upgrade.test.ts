@@ -43,8 +43,8 @@ describe("migration 0260: a project is not a repository (ADR 0490)", () => {
         .bind(P1, NOW),
       db
         .prepare(
-          `INSERT INTO core_projects (id, org_id, factory_id, name, slug, repo_owner, repo_name, created_at, created_by)
-         VALUES (?, 'o1', 'fac_1', 'Site', 'site', 'acme', 'site', ?, 'u1')`,
+          `INSERT INTO core_projects (id, org_id, factory_id, name, slug, repo_owner, repo_name, policy_sha, created_at, created_by)
+         VALUES (?, 'o1', 'fac_1', 'Site', 'site', 'acme', 'site', 'v1', ?, 'u1')`,
         )
         .bind(P2, NOW),
       db
@@ -52,6 +52,12 @@ describe("migration 0260: a project is not a repository (ADR 0490)", () => {
           "INSERT INTO core_project_policies (project_id, sha, ref, raw, valid, received_at, version, source) VALUES (?, 'v2', 'app', '{}', 1, ?, 2, 'app')",
         )
         .bind(P1, NOW),
+      db
+        .prepare(
+          `INSERT INTO core_project_policies (project_id, sha, ref, raw, valid, received_at, version, source)
+           VALUES (?, 'v1', 'app', '{"version":1,"workflows":[{"name":"Ship","slots":{}}]}', 1, ?, 1, 'app')`,
+        )
+        .bind(P2, NOW),
       db
         .prepare(
           "INSERT INTO core_project_protection (project_id, state, problems, warnings, trigger, checked_at, changed_at) VALUES (?, 'ok', '[]', '[]', 'daily', ?, ?)",
@@ -81,6 +87,11 @@ describe("migration 0260: a project is not a repository (ADR 0490)", () => {
       db
         .prepare(
           "INSERT INTO core_verify_checks (project_id, head_sha, work_item_id, status, title, updated_at) VALUES (?, 'abc', 'wi_1', 'queued', 't', ?)",
+        )
+        .bind(P1, NOW),
+      db
+        .prepare(
+          "INSERT INTO core_attachments (id, work_item_id, org_id, project_id, filename, content_type, size_bytes, sha256, blob_key, uploader_type, uploader_id, created_at) VALUES ('att_1', 'wi_1', 'o1', ?, 'a.png', 'image/png', 1, 'x', 'k', 'human', 'u1', ?)",
         )
         .bind(P1, NOW),
     ]);
@@ -133,12 +144,13 @@ describe("migration 0260: a project is not a repository (ADR 0490)", () => {
 
   it("keeps every row that references projects, with no dangling foreign key", async () => {
     const count = async (sql: string) => (await db.prepare(sql).first<{ n: number }>())?.n;
-    expect(await count("SELECT count(*) AS n FROM core_project_policies")).toBe(1);
+    expect(await count("SELECT count(*) AS n FROM core_project_policies")).toBe(3);
     expect(await count("SELECT count(*) AS n FROM core_project_protection")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM core_stages")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM core_config_trials")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM core_merge_queue")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM core_verify_checks")).toBe(1);
+    expect(await count("SELECT count(*) AS n FROM core_attachments")).toBe(1);
     expect(
       await count("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'core_0260_%'"),
     ).toBe(0);
@@ -175,5 +187,68 @@ describe("migration 0260: a project is not a repository (ADR 0490)", () => {
         .bind(NOW)
         .run(),
     ).rejects.toThrow(/FOREIGN KEY/);
+  });
+});
+
+describe("migration 0261: backlog, ready, queued (ADR 0491)", () => {
+  it("names a project's only workflow in a new config version, and leaves the others (ADR 0492)", async () => {
+    const site = await db
+      .prepare(
+        "SELECT p.policy_sha, pp.raw, pp.source, pp.parent_version FROM core_projects p JOIN core_project_policies pp ON pp.project_id = p.id AND pp.sha = p.policy_sha WHERE p.id = ?",
+      )
+      .bind(`prj_${hex("b")}`)
+      .first<{ policy_sha: string; raw: string; source: string; parent_version: number }>();
+    expect(site).toMatchObject({ policy_sha: "v2", source: "migrated", parent_version: 1 });
+    expect(JSON.parse(site?.raw ?? "{}")).toMatchObject({ workflow: "Ship" });
+    // A config with no workflows is left as it was.
+    const factory = await db
+      .prepare("SELECT policy_sha FROM core_projects WHERE id = ?")
+      .bind(`prj_${hex("a")}`)
+      .first<{ policy_sha: string }>();
+    expect(factory?.policy_sha).toBe("v2");
+    expect(
+      (
+        await db
+          .prepare("SELECT count(*) AS n FROM core_project_policies WHERE project_id = ?")
+          .bind(`prj_${hex("a")}`)
+          .first<{ n: number }>()
+      )?.n,
+    ).toBe(1);
+  });
+
+  it("keeps every item, its merge-queue entry and attachments, and adds the new states", async () => {
+    // UPGRADE_DB was migrated to the latest in the 0210 block above, with rows from before 0210.
+    const item = await db
+      .prepare(
+        "SELECT status, priority, rank, repository_id, pulled_at FROM core_work_items WHERE id = 'wi_1'",
+      )
+      .first();
+    expect(item).toEqual({
+      status: "running",
+      priority: 2,
+      rank: 0,
+      repository_id: `repo_${hex("a")}`,
+      pulled_at: null,
+    });
+    expect(
+      (await db.prepare("SELECT count(*) AS n FROM core_merge_queue").first<{ n: number }>())?.n,
+    ).toBe(1);
+    expect(
+      (await db.prepare("SELECT count(*) AS n FROM core_attachments").first<{ n: number }>())?.n,
+    ).toBe(1);
+    await db.prepare("UPDATE core_work_items SET status = 'backlog' WHERE id = 'wi_1'").run();
+    await expect(
+      db.prepare("UPDATE core_work_items SET status = 'someday' WHERE id = 'wi_1'").run(),
+    ).rejects.toThrow(/CHECK/);
+    // Stages are the workflow's, not the schema's: a workflow-defined stage needs no migration.
+    await db.prepare("UPDATE core_work_items SET stage = 'review' WHERE id = 'wi_1'").run();
+    await expect(
+      db
+        .prepare(
+          "INSERT INTO core_work_item_links (work_item_id, waits_for_id, created_at, created_by) VALUES ('wi_1', 'wi_1', ?, 'u1')",
+        )
+        .bind(NOW)
+        .run(),
+    ).rejects.toThrow(/CHECK/);
   });
 });

@@ -21,17 +21,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@software-factory/ui/components/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@software-factory/ui/components/select";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { PinIcon, PinOffIcon } from "lucide-react";
 import { useState } from "react";
@@ -474,9 +467,11 @@ function Details({ detail }: { detail: WorkItemDetail }) {
         <Row label="From">
           {item.requesterUserId === me ? "You" : "Someone else"}, in {item.source}
         </Row>
-        <Row label="Workflow">
-          <WorkflowPicker detail={detail} />
-        </Row>
+        {(detail.workflows.length > 0 || item.workflow) && (
+          <Row label="Workflow">
+            <WorkflowLine detail={detail} />
+          </Row>
+        )}
         <Row label="Approvers">
           {detail.approvers.users
             .map((u) => (u.id === me ? "you" : (u.githubLogin ?? u.name)))
@@ -520,49 +515,19 @@ function Taken({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) => v
   );
 }
 
-/** The workflow the item follows (ADR 0371), changeable until its build starts. */
-function WorkflowPicker({ detail }: { detail: WorkItemDetail }) {
-  const queryClient = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const { item, workflows } = detail;
-  const changeable = ["intake", "triage", "spec"].includes(item.stage) && workflows.length > 0;
-  const SKELETON = "__skeleton__";
-  async function change(name: string) {
-    setBusy(true);
-    try {
-      await op("workItem.setWorkflow", {
-        workItemId: item.id,
-        workflow: name === SKELETON ? null : name,
-      });
-      toast.success(name !== SKELETON ? `Follows ${name} now.` : "Follows the skeleton alone now.");
-      await queryClient.invalidateQueries({ queryKey: ["workItem", item.id] });
-    } catch (error) {
-      toast.error(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-  if (!changeable) {
-    return (
-      <span data-testid="work-item-workflow" title={item.workflowReason ?? undefined}>
-        {item.workflow ?? "The skeleton alone"}
-      </span>
-    );
-  }
+/**
+ * The workflow the item follows: its project's, pinned when its pipeline started (ADR 0492). There
+ * is no per-item override, so it is shown, not chosen; the project's workflow is set in Settings.
+ */
+function WorkflowLine({ detail }: { detail: WorkItemDetail }) {
+  const { item } = detail;
   return (
-    <Select value={item.workflow ?? SKELETON} disabled={busy} onValueChange={(v) => void change(v)}>
-      <SelectTrigger className="h-7 w-full" data-testid="work-item-workflow">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value={SKELETON}>The skeleton alone</SelectItem>
-        {workflows.map((w) => (
-          <SelectItem key={w.name} value={w.name}>
-            {w.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <span data-testid="work-item-workflow">
+      {item.workflow ?? "The skeleton alone"}
+      {item.workflowReason && (
+        <span className="mt-0.5 block text-ink-3 text-xs">{item.workflowReason}</span>
+      )}
+    </span>
   );
 }
 

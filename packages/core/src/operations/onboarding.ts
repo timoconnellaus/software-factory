@@ -572,19 +572,30 @@ export const setupStatus = defineOperation({
       },
       {
         key: "policy" as const,
-        done: connected.length > 0 && withPolicy.length === connected.length,
+        done:
+          connected.length > 0 &&
+          withPolicy.length === connected.length &&
+          !withPolicy.some((p) => p.policy.workflowUnchosen),
         detail: !connected.length
           ? "Created with the project, in Settings"
-          : withPolicy.length === connected.length
-            ? connected.map((p) => `${p.name}: config v${p.configVersion ?? "?"}`).join(", ")
-            : connected
-                .filter((p) => p.policy.state !== "valid")
-                .map((p) =>
-                  p.policy.state === "missing" || p.policy.state === "none"
-                    ? `${p.name} has no factory config: open its Settings`
-                    : `${p.name}: ${p.policy.error} (fix it in Settings)`,
+          : withPolicy.some((p) => p.policy.workflowUnchosen)
+            ? withPolicy
+                .filter((p) => p.policy.workflowUnchosen)
+                .map(
+                  (p) =>
+                    `${p.name} defines workflows but runs none: choose the project's workflow in its Settings (nothing can be released until then)`,
                 )
-                .join("; "),
+                .join("; ")
+            : withPolicy.length === connected.length
+              ? connected.map((p) => `${p.name}: config v${p.configVersion ?? "?"}`).join(", ")
+              : connected
+                  .filter((p) => p.policy.state !== "valid")
+                  .map((p) =>
+                    p.policy.state === "missing" || p.policy.state === "none"
+                      ? `${p.name} has no factory config: open its Settings`
+                      : `${p.name}: ${p.policy.error} (fix it in Settings)`,
+                  )
+                  .join("; "),
       },
       {
         key: "runner" as const,

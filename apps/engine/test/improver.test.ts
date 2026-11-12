@@ -10,7 +10,7 @@ async function finishedItems(w: Awaited<ReturnType<typeof world>>, n: number) {
   for (let i = 0; i < n; i++) {
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: `Item ${i}` },
+      { state: "queued", projectId: w.projectId, title: `Item ${i}` },
       w.human,
     );
     await env.DB.prepare("UPDATE core_work_items SET status = 'done', updated_at = ? WHERE id = ?")
