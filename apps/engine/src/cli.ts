@@ -8,6 +8,7 @@
 //   `read`-risk operations. A desktop call may carry a presence proof, which the door redeems
 //   (presence.redeem) before it runs the call with `origin.presence` set to exactly that decision.
 // - `batch` runs up to 20 `read`-risk calls in parallel (the desktop app's page loads).
+// - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
 // MCP is meant to come through the same door.
 import {
@@ -25,6 +26,7 @@ import {
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
 import { STATUS } from "./channel.ts";
+import { clientHub } from "./client-hub.ts";
 import { invokeDeps } from "./deps.ts";
 
 export const CLI_PREFIX = "/cli/v1/";
@@ -58,6 +60,16 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
     return reply({ operations: describeOperations() });
+  }
+  // The desktop app's live connection (spec 40 M2b): the token says who, the person's ClientHub
+  // holds the socket. CLI tokens may listen too; MCP will.
+  if (path === "live" && request.method === "GET") {
+    const who = await authenticate(request, env);
+    if (!who) return unauthenticated();
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+      return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
+    }
+    return clientHub(env, who.userId).fetch(request);
   }
   if (request.method !== "POST") return reply({ error: "not found", code: "not_found" }, 404);
   let body: Record<string, unknown>;
