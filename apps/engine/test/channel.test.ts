@@ -12,7 +12,7 @@ import {
 import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { EngineApi } from "../src/rpc.ts";
-import { all, first, MANIFEST, ok, uid, world } from "./helpers.ts";
+import { all, first, MANIFEST, ok, uid, waitFor, world } from "./helpers.ts";
 
 const base = "https://sf-engine.example";
 const engineFetch: typeof fetch = async (input, init) =>
@@ -137,6 +137,10 @@ describe("the signed runner channel", () => {
       if (!job) await new Promise((r) => setTimeout(r, 50));
     }
     if (!job) throw new Error("no job");
+    // The setup's claim was signed now; the beats below are signed earlier.
+    await env.DB.prepare("UPDATE core_runners SET last_signed_at = NULL WHERE id = ?")
+      .bind(w.runner.runnerId)
+      .run();
     const held = [{ jobId: job.jobId, fencingToken: job.lease.fencingToken }];
     let n = 0;
     const send = async (capacityMax: number, at: Date) => {
@@ -207,12 +211,97 @@ describe("the signed runner channel", () => {
     expect(await capacity()).toBe(4);
   });
 
-  it("answers a replayed request id from the store without running the handler again", async () => {
+  it("an old claim replayed gets nothing and writes nothing; a lost response's retry gets its job", async () => {
     const w = await world();
+    let n = 0;
+    const claim = async (claimId: string, at: Date, capacityMax: number, key?: string) => {
+      const body = JSON.stringify({
+        claimId,
+        manifest: MANIFEST,
+        capacity: { max: capacityMax, inUse: 0, accepting: true },
+      });
+      const res = await worker.fetch(
+        new Request(`${base}${PATHS.claim}`, {
+          method: "POST",
+          headers: await signRunnerRequest({
+            key: w.runner.key,
+            runner: w.runner.runnerId,
+            method: "POST",
+            path: PATHS.claim,
+            body,
+            idempotencyKey: key ?? `claim:order-${String(++n).padStart(4, "0")}`,
+            now: at,
+          }),
+          body,
+        }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { job: { jobId: string } | null }).job;
+    };
+    const capacity = async () =>
+      (
+        await first<{ capacity_max: number }>(
+          "SELECT capacity_max FROM core_runners WHERE id = ?",
+          w.runner.runnerId,
+        )
+      )?.capacity_max;
+    const now = Date.now();
+    // An empty claim, then a newer one, then work arrives.
+    expect(await claim("claim-old-empty", new Date(now - 60_000), 1, "claim:old-empty")).toBeNull();
+    expect(await claim("claim-newer", new Date(now - 40_000), 3)).toBeNull();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Replayed" },
+      w.human,
+    );
+    await waitFor("a queued job", () =>
+      first(
+        "SELECT id FROM core_jobs WHERE work_item_id = ? AND status = 'queued'",
+        item.workItemId,
+      ),
+    );
+    // The old empty claim replayed: nothing, and its old capacity isn't written back.
+    expect(await claim("claim-old-empty", new Date(now - 60_000), 1, "claim:old-empty")).toBeNull();
+    expect(await capacity()).toBe(3);
+    expect(
+      await all(
+        "SELECT 1 FROM core_jobs WHERE work_item_id = ? AND status = 'queued'",
+        item.workItemId,
+      ),
+    ).toHaveLength(1);
+    // Out of order: a claim signed before the last accepted one gets nothing either.
+    expect(await claim("claim-late", new Date(now - 50_000), 2)).toBeNull();
+    // A real claim, then its exact retry after a lost response: the same job.
+    const got = await claim("claim-real", new Date(now - 30_000), 3, "claim:real");
+    expect(got).not.toBeNull();
+    const retried = await claim("claim-real", new Date(now - 30_000), 3, "claim:real");
+    expect(retried?.jobId).toBe(got?.jobId);
+  });
+
+  it("a retried claim gets the same job, never a second, without the idempotency store", async () => {
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Replay" },
+      w.human,
+    );
+    await ok(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Next" },
+      w.human,
+    );
+    await waitFor("two queued jobs", async () => {
+      const rows = await all(
+        "SELECT 1 FROM core_jobs WHERE project_id = ? AND status = 'queued'",
+        w.projectId,
+      );
+      return rows.length >= 2;
+    });
     const body = JSON.stringify({
       claimId: "claim-replay-1",
       manifest: MANIFEST,
-      capacity: { max: 1, inUse: 0, accepting: true },
+      capacity: { max: 4, inUse: 0, accepting: true },
     });
     const signed = async () =>
       new Request(`${base}${PATHS.claim}`, {
@@ -227,15 +316,81 @@ describe("the signed runner channel", () => {
         }),
         body,
       });
-    const first_ = await worker.fetch(await signed(), env);
-    const again = await worker.fetch(await signed(), env);
-    expect(await again.text()).toBe(await first_.text());
-    expect(again.headers.get("x-sf-replayed")).toBe("1");
-    const audits = await all(
-      "SELECT id FROM core_audit WHERE operation = 'job.claim' AND actor_id = ?",
+    // Two at once (a retry racing the first) and one after: one job, the same one each time.
+    const answers = await Promise.all([
+      worker.fetch(await signed(), env),
+      worker.fetch(await signed(), env),
+    ]);
+    const later = await worker.fetch(await signed(), env);
+    const jobs = new Set<string>();
+    for (const res of [...answers, later]) {
+      if (res.status === 409) continue; // the loser of the race: "the state changed"
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-sf-replayed")).toBeNull();
+      const out = (await res.json()) as { job: { jobId: string; workItem: { id: string } } | null };
+      if (out.job) jobs.add(out.job.jobId);
+    }
+    expect(jobs.size).toBe(1);
+    const claimed = await all<{ id: string }>(
+      "SELECT id FROM core_jobs WHERE runner_id = ? AND claim_id = 'claim-replay-1'",
       w.runner.runnerId,
     );
-    expect(audits).toHaveLength(1);
+    expect(claimed.map((j) => j.id)).toEqual([...jobs]);
+    expect(
+      await all("SELECT 1 FROM core_runs WHERE work_item_id = ?", item.workItemId),
+    ).toHaveLength(1);
+    // Audited once as a claim: not its retries (a race's loser is recorded as a conflict); and
+    // nothing stored for it.
+    expect(
+      await all(
+        "SELECT id FROM core_audit WHERE operation = 'job.claim' AND actor_id = ? AND outcome = 'ok'",
+        w.runner.runnerId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      await all(
+        "SELECT 1 FROM core_channel_requests WHERE runner_id = ? AND idempotency_key LIKE 'claim:%'",
+        w.runner.runnerId,
+      ),
+    ).toEqual([]);
+
+    // A stored call (hand-back events) is still answered from the store on a replay.
+    const [jobId] = [...jobs];
+    const lease = await first<{ fencing_token: number }>(
+      "SELECT fencing_token FROM core_leases WHERE work_item_id = ?",
+      item.workItemId,
+    );
+    const eventsBody = JSON.stringify({
+      fencingToken: lease?.fencing_token,
+      events: [
+        {
+          type: "log",
+          stream: "terminal",
+          text: "hi",
+          jobId,
+          seq: 1,
+          at: new Date().toISOString(),
+        },
+      ],
+    });
+    const path = PATHS.events(jobId as string);
+    const signedEvents = async () =>
+      new Request(`${base}${path}`, {
+        method: "POST",
+        headers: await signRunnerRequest({
+          key: w.runner.key,
+          runner: w.runner.runnerId,
+          method: "POST",
+          path,
+          body: eventsBody,
+          idempotencyKey: `events:${jobId}:replay-1`,
+        }),
+        body: eventsBody,
+      });
+    const firstEvents = await worker.fetch(await signedEvents(), env);
+    const againEvents = await worker.fetch(await signedEvents(), env);
+    expect(await againEvents.text()).toBe(await firstEvents.text());
+    expect(againEvents.headers.get("x-sf-replayed")).toBe("1");
   });
 
   it("maps a fenced write to 409 with code `fenced`, and never stores the job token", async () => {

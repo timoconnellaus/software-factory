@@ -67,3 +67,5 @@ loosen permissions.
 > Usage comes from the harness transcript as a `usage` artifact. The digest is a list in Settings.
 
 > Amended 2026-11-12 ([ADR 0513](0513-skills-are-shared-by-the-org-and-attached-where-used.md), spec 52, not built yet): skill edits are trialled like other practice changes, but the factory only **proposes** them; a person accepts. Edits to the Checks reviewer's skills are policy.
+
+> Amended 2026-11-12 (spec 52's answers, questions 13 and 17): **agent instructions follow the skill rule**: the improver only proposes an instruction edit, a person accepts it, and the accepted edit runs as a trial (the tier stays practice; the factory no longer applies it itself). Trials stay **per project**, also when the workflow is the org's: a trial changes the agent or skill only for the project it runs in, and promotion to the org's definition is a person's org config save. The `autoApprove` setting (ADR 0515) is policy, never practice: the improver can't touch it.

@@ -29,18 +29,21 @@ Fresh session? Read [`docs/handoff.md`](docs/handoff.md), then [`docs/parallel-w
   work item allows. (ADR 0010, 0025, 0033)
 - **Policy is enforced in code and is not AI-configurable.** Gates live in the Workflow state
   machine, never in a prompt. The foreman picks a route only within them. Loosening an autonomy policy
-  or the floor is a human-only change, and merge, deploy and self-modify always go to a human.
+  or the floor is a human-only change, and self-modify always goes to a human. Merge and deploy go to
+  a human unless the workflow's `autoApprove` setting ("dark factory mode"), which only a person can
+  turn on, holds for that exact SHA, every condition checked in code (amended 2026-11-12, ADR 0515).
   Config is a versioned app setting, written only through operations; a save that loosens it is
   self-modify, and an invalid one is refused. The factory may change its own *practice* (how work
   is done) as trials that roll back automatically, never *policy* (what's allowed).
-  (ADR 0005, 0008, 0370, 0373)
+  (ADR 0005, 0008, 0370, 0373, 0515)
 - **Code asks for a model role, never a model id.** (ADR 0018)
 - **Runners are adapters.** The core knows only the runner contract and capabilities. It never
   imports Orca or any other runner. Runner-specific features are optional capabilities the adapter
   declares. (ADR 0014)
-- **Nothing reaches main except through `factory/verify` and the merge gate.** Local sessions can do
-  anything locally, but every PR, whatever its source, needs the `factory/verify` check from the
-  org's App on its head SHA, with no admin bypass. (ADR 0020, 0021, 0037)
+- **Nothing reaches main except through `factory/verify` and the merge gate** (decided by a person,
+  or by `autoApprove` under ADR 0515). Local sessions can do anything locally, but every PR, whatever
+  its source, needs the `factory/verify` check from the org's App on its head SHA, with no admin
+  bypass. (ADR 0020, 0021, 0037)
 - **Model credentials stay with the runner's owner.** The factory never stores provider keys or
   subscriptions; repo access is the per-job token, nothing else. (ADR 0023, 0033)
 
@@ -70,6 +73,9 @@ Each rule is checkable in review; the query-plan guard
 10. Expensive clients (the GitHub App, imported keys) are built once per isolate, not per call.
 11. Each wrangler config sets `observability.head_sampling_rate` and `limits.cpu_ms`, with the
     reason for the value beside it.
+12. Machine-frequency operations (heartbeat, presence, held waits, an empty claim, log batches)
+    write no audit row unless state changed (`audit: { changesOnly }`, ADR 0590). A runner's audit
+    `input` is its digest, not the body.
 
 ## Tooling
 
