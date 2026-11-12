@@ -12,13 +12,10 @@ import {
   type Refusal,
   toRefusal,
 } from "@software-factory/core";
-import {
-  parseTerminalPath,
-  TERMINAL_PATHS,
-  type TerminalMode,
-} from "@software-factory/runner-contract";
+import { parseTerminalPath } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
 import { planningHub } from "./planning-hub.ts";
+import { attachTerminal, type TerminalAttachResult } from "./terminal-attach.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 
 /** `ms` is the time spent inside the engine, so the caller can tell it apart from the hop. */
@@ -80,49 +77,8 @@ export class EngineApi extends WorkerEntrypoint<Env> {
     workItemId: string,
     runId: string,
     options: EngineInvokeOptions,
-  ): Promise<
-    | { ok: true; jobId: string; mode: TerminalMode; attachId: string; path: string }
-    | { ok: false; error: Refusal }
-  > {
-    const deps = invokeDeps(this.env);
-    let attached: { attachId: string; jobId: string; mode: TerminalMode };
-    try {
-      const result = await invoke(deps, "run.terminal.attach", { workItemId, runId }, options);
-      if (result.status !== "ok") {
-        return {
-          ok: false,
-          error: { code: "unavailable", message: "the attach is held for review" },
-        };
-      }
-      attached = result.output as typeof attached;
-    } catch (error) {
-      if (isOperationError(error)) return { ok: false, error: toRefusal(error) };
-      throw error;
-    }
-    const relay = terminalRelay(this.env, attached.jobId);
-    const admitted = await relay.admit({
-      attachId: attached.attachId,
-      userId: options.actor.id,
-      workItemId,
-      mode: attached.mode,
-    });
-    if (!admitted.ok) {
-      // Refused for room: the attach closes at once.
-      await invoke(
-        deps,
-        "run.terminal.detach",
-        { workItemId, attachId: attached.attachId },
-        options,
-      ).catch(() => {});
-      return { ok: false, error: { code: "conflict", message: admitted.reason } };
-    }
-    return {
-      ok: true,
-      jobId: attached.jobId,
-      mode: attached.mode,
-      attachId: attached.attachId,
-      path: `${TERMINAL_PATHS.view(attached.jobId)}?ticket=${admitted.ticket}`,
-    };
+  ): Promise<TerminalAttachResult> {
+    return attachTerminal(this.env, workItemId, runId, options);
   }
 
   /**

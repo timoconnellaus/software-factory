@@ -299,7 +299,10 @@ function detail(id: string): OpOutput<"workItem.get"> {
     ],
     runs: [
       run(1, "triage", 60 * 26, 60 * 26 - 3, "succeeded", "Sized medium; spec required"),
-      run(2, "spec", 60 * 25, 60 * 23, "succeeded", "Spec approved after one round"),
+      // A live planning session has a live spec run (its terminal is what Open terminal opens).
+      base.stage === "spec"
+        ? run(2, "spec", 60 * 25, null, null, null, true)
+        : run(2, "spec", 60 * 25, 60 * 23, "succeeded", "Spec approved after one round"),
       ...(base.stage === "build" || base.stage === "verify" || atMerge
         ? [
             run(
@@ -712,6 +715,37 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
   };
 }
 
+/**
+ * Whether the viewer may open a run's terminal (spec 42): `?terminal=watch` or `?terminal=none`
+ * before the hash shows a watcher or a runner that can't share its terminal; the owner otherwise.
+ */
+function liveView(): OpOutput<"run.live"> {
+  const mode = new URLSearchParams(globalThis.location?.search ?? "").get("terminal") ?? "type";
+  return {
+    run: null,
+    events: [],
+    lastSeq: 0,
+    truncated: false,
+    steers: [],
+    steer: { allowed: false, reason: null, max: 2_000 },
+    takeover: { allowed: false, reason: null, requested: false },
+    terminal:
+      mode === "none"
+        ? {
+            allowed: false,
+            mode: null,
+            reason: "This runner can't share its terminal: update it to use the web terminal.",
+          }
+        : mode === "watch"
+          ? {
+              allowed: true,
+              mode: "watch",
+              reason: "Only the runner's owner can type: it runs on their machine.",
+            }
+          : { allowed: true, mode: "type", reason: null },
+  };
+}
+
 type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
 
 export const ANSWERS: Answers = {
@@ -731,6 +765,7 @@ export const ANSWERS: Answers = {
   "workItem.timeline": () => TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),
+  "run.live": () => liveView(),
   "runner.list": () => ({
     runners: [
       {

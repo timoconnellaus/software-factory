@@ -136,7 +136,36 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   fan-out (the assignee, or the org's owners and admins), and the app's live socket. **M3 is built** (`desktop-m3-screens`): the inbox, New work (with
   attachments over the door as `{ $bytes }`), the work item with Planning and its timeline, the
   review packet (Merge and Send back through Touch ID), Setup and attach, ported into
-  `apps/desktop`; the shared logic is in `packages/client`. Next: M4 (signing and updates).
+  `apps/desktop`; the shared logic is in `packages/client`.
+  **M4a is built** (`desktop-m4`, PR #80): signed, notarized canary releases from
+  `.github/workflows/desktop-release.yml` to `downloads.zerobsai.com/desktop` (R2 `sf-desktop-releases`),
+  and the in-app updater, which applies only a higher version signed by its own Team ID and
+  accepted by Gatekeeper, and never cancels a running job unless the person says so. **Stable is
+  off** until the owner does the steps in `docs/deploying.md` ("Before stable releases": `release`
+  environment on `main` only, a required reviewer with no admin bypass, a `v*` tag ruleset), then
+  sets `DESKTOP_STABLE_ENABLED`. **The canary upload needs a new bucket-scoped R2 token**
+  (`DESKTOP_R2_ACCESS_KEY_ID`/`DESKTOP_R2_SECRET_ACCESS_KEY` in the `release` environment; the owner
+  creates it, steps in `docs/deploying.md`). The workflow runs in the GitHub environment `release`,
+  whose other secrets are set: `MACOS_CERT_P12`/`MACOS_CERT_PASSWORD` (the Developer ID Application
+  identity only), `MACOS_SIGNING_IDENTITY`, `APPLE_TEAM_ID`, and the notarization key `ASC_KEY_P8`,
+  `ASC_KEY_ID`, `ASC_ISSUER_ID`. Electrobun signs and notarizes itself; signing from a build hook
+  breaks the seal (it rewrites `Resources/version.json` after every hook). The download zip is the
+  plain notarized app, not Electrobun's self-extracting wrapper (whose Setup window waited for a click
+  and failed when translocated). The Developer ID is in the M5's login keychain, for local signed
+  builds; CI is where releases are signed. After the first canary release, check that
+  `https://downloads.zerobsai.com/desktop/canary-macos-arm64-update-v2.json` and
+  `…/canary-macos-arm64-Software-Factory.zip` load, and that an installed canary updates to the next.
+  **On hold (2026-11-12):** M4b (the Secure Enclave key, Touch ID approvals; the owner decided it's
+  overkill, so don't ask for an App ID or provisioning profile) and M5 (the website keeps everything
+  until the desktop app has the Factory and Settings sections). Signed builds use a software key and
+  the engine refuses software keys for gate decisions (`DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in
+  production). Why it stays empty: tested on the M5, no keychain restriction protects the desktop
+  token or the software key from a local agent, because the app's `bun` runs any script under the
+  app's signature. So gate decisions are not available from a signed desktop build; the owner is
+  deciding between approving on the phone, the Touch ID helper, or container-only runners. Next: the client door's `update_required` version handshake. Traps in `apps/desktop`:
+  stage files explicitly on branches without its `.gitignore` (a `git add -A` once committed 138k
+  lines of `.hutch/` and `build/`); Electrobun's request proxy is a function, so RPC names like `call`
+  hit `Function.prototype` (use `bunRequests`, `src/mainview/request.ts`).
 - **The desktop shell and look** (block AD, [spec 41](specs/41-desktop-shell-and-look.md),
   [ADR 0460](adr/0460-the-desktop-shell-and-look.md), branch `timoconnellaus/desktop-shell`): slice 1
   of the approved design (`docs/design/factory-ui/`). The window shell (toolbar, tabs, ⌘K, org rail,
