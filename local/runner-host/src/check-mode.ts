@@ -4,7 +4,8 @@
 //   - macOS with a container runtime that answers: a fresh check container per check
 //     (runner-local's `localCheckContainer`), with its own loopback, its own egress proxy, and every
 //     process gone with it;
-//   - macOS without one: nothing runs ("not run: this Mac runner has no container runtime"), unless
+//   - macOS without one: nothing runs (`NO_MAC_CONTAINER_LINE`, "not run: this Mac runner has no
+//     container runtime (OrbStack is not answering): …"), unless
 //     the runner's owner set `checks.weakerMacSandbox` in runner.json: then the macOS OS sandbox,
 //     and the merge gate says the checks ran in the weaker sandbox.
 // `sf-runner doctor` reports the same mode (`checkModeReport`).
@@ -16,6 +17,13 @@ import type { Exec } from "./checks.ts";
 
 /** The reason every check of a Mac runner with no container runtime (and no opt-in) reports. */
 export const NO_MAC_CONTAINER = "this Mac runner has no container runtime";
+
+/**
+ * What a Mac `sandbox` runner with no container runtime says, in one line (fifth review): every
+ * declared check comes back not run with it, and doctor and Factory > Runners say the same. The
+ * runner still declares `checks`, so the item builds and reaches the gate, where a person decides.
+ */
+export const NO_MAC_CONTAINER_LINE = `${NO_MAC_CONTAINER} (OrbStack is not answering): start it, or set checks.weakerMacSandbox`;
 
 export type CheckModeName = "container" | "sandbox" | "weaker-sandbox" | "none";
 
@@ -58,10 +66,7 @@ export async function checkModeReport(
           }
         : { mode: "none", why: `no container runtime (${problem}), and sandbox-exec is missing` };
     }
-    return {
-      mode: "none",
-      why: `${NO_MAC_CONTAINER} (${problem}): declared checks are reported not run. Install OrbStack or Docker Desktop, or set checks.weakerMacSandbox in runner.json to use the weaker macOS sandbox`,
-    };
+    return { mode: "none", why: NO_MAC_CONTAINER_LINE };
   }
   if (platform === "linux") {
     return options.sandboxAvailable
@@ -110,7 +115,7 @@ export function localChecks(
       exitCode: null,
       timedOut: false,
       output: `no container runtime: ${p}`,
-      notRun: NO_MAC_CONTAINER,
+      notRun: NO_MAC_CONTAINER_LINE,
     };
   };
 }

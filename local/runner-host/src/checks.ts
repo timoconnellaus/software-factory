@@ -288,12 +288,22 @@ export async function carryTree(src: string, dest: string): Promise<void> {
 
 /**
  * The adapter's manifest with what this host adds itself: `checks` (ADR 0501), since the host, not
- * the adapter, runs them (reporting "not run" where it has no isolated exec).
+ * the adapter, runs them, when `declare` (fifth review): every `sandbox` runner and every runner
+ * whose adapter has its own exec, whether or not a check can run right now (one that can't comes
+ * back not run with the reason, and the gate asks a person). A runner whose jobs live elsewhere (a
+ * sprite runner) never declares it. `note` is the one line on where checks run here, or why not.
  */
-export function hostManifest(manifest: CapabilityManifest): CapabilityManifest {
-  return manifest.capabilities.includes("checks")
-    ? manifest
-    : { ...manifest, capabilities: [...manifest.capabilities, "checks"] };
+export function hostManifest(
+  manifest: CapabilityManifest,
+  declare = true,
+  note?: string,
+): CapabilityManifest {
+  const without = manifest.capabilities.filter((c) => c !== "checks");
+  return {
+    ...manifest,
+    capabilities: declare ? [...without, "checks"] : without,
+    ...(note ? { checksNote: note.slice(0, 300) } : {}),
+  };
 }
 
 /** Whether a job carries checks for the host to run. */

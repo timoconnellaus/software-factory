@@ -2,6 +2,7 @@
 // (git worktrees + tmux, ADR 0380) with the Claude harness. This is the one place that names a
 // runner adapter; the host loop and the job lifecycle only see the contract.
 
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_IDENTITY, type HarnessAccount } from "@software-factory/harness-claude";
@@ -36,12 +37,13 @@ import {
   noteUsage,
   useAccount,
 } from "./accounts.ts";
-import { localChecks } from "./check-mode.ts";
-import { checkSandbox } from "./check-sandbox.ts";
+import { type CheckModeName, checkModeReport, localChecks } from "./check-mode.ts";
+import { checkSandbox, sandboxAvailable, sandboxTrial } from "./check-sandbox.ts";
 import { checkoutDirs } from "./checkouts.ts";
 import { checkSettingsSchema, type Paths, type RunnerConfig } from "./config.ts";
 import { FETCH_NAMESPACE, hostGit } from "./git.ts";
 import { RunnerHost } from "./host.ts";
+import { APPARMOR_USERNS } from "./linux.ts";
 import { hostLoad, LoadGate, type LoadReading, loadPolicySchema } from "./load.ts";
 import { findOnPath } from "./pairing.ts";
 import type { SelfUpdate } from "./self-update.ts";
@@ -96,6 +98,90 @@ export const containerDirs = (
   runsDir: dirs.runsDir,
   runtime: dockerRuntime({ exec, bin: dockerBin(config) }),
 });
+
+/** The OS sandbox's options for a `sandbox` runner's checks: the runner's dirs none may read. */
+export const checkSandboxOptions = (config: RunnerConfig, dirs: Paths) => ({
+  protectPaths: [
+    dirs.configDir,
+    dirs.runsDir,
+    dirs.reposDir,
+    dirs.worktreesDir,
+    ...checkoutDirs(config),
+  ],
+  socketsDir: dirs.checkSocketsDir,
+  checksDir: dirs.checksDir,
+});
+
+/**
+ * Whether this runner can run a job's checks, in which mode, and why (ADR 0501): what the host
+ * declares as `checks` and what `sf-runner doctor` prints. A container runner checks in its check
+ * containers; a sprite runner runs none here; a `sandbox` runner as ./check-mode.ts says, and an OS
+ * sandbox only when its start-up trial passes (on Ubuntu, naming AppArmor's userns restriction).
+ */
+export async function checkReadiness(
+  config: RunnerConfig,
+  dirs: Paths,
+  exec: Exec = nodeExec,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ mode: CheckModeName; why: string; ok: boolean }> {
+  const isolation = config.isolation ?? "sandbox";
+  if (isolation === "container") {
+    return {
+      mode: "container",
+      why: "a container runner: each check in a fresh check container from the agent image, with no network",
+      ok: true,
+    };
+  }
+  if (isolation !== "sandbox") {
+    return {
+      mode: "none",
+      why: `a ${isolation} runner runs no checks on this machine, so it doesn't declare \`checks\``,
+      ok: false,
+    };
+  }
+  const report = await checkModeReport({
+    platform,
+    weakerMacSandbox: config.checks?.weakerMacSandbox ?? false,
+    runtime: platform === "darwin" ? dockerRuntime({ exec, bin: dockerBin(config) }) : null,
+    sandboxAvailable: sandboxAvailable(platform),
+  });
+  if (report.mode === "none" || report.mode === "container") {
+    return { ...report, ok: report.mode === "container" };
+  }
+  const trial = await sandboxTrial(checkSandboxOptions(config, dirs));
+  if (trial.ok) return { ...report, ok: true };
+  const restricted =
+    platform === "linux" &&
+    (await readFile(APPARMOR_USERNS, "utf8").catch(() => "")).trim() === "1";
+  return {
+    mode: "none",
+    why: `the check sandbox's start-up trial failed: ${trial.reason}${
+      restricted
+        ? `. AppArmor restricts unprivileged user namespaces here (${APPARMOR_USERNS} = 1): add an AppArmor profile for bwrap or set the sysctl to 0, as Claude Code's sandboxing docs describe`
+        : ""
+    }`,
+    ok: false,
+  };
+}
+
+/** Readiness as one line: doctor's and Factory > Runners'. */
+export const checkLine = (r: { mode: CheckModeName; why: string }) =>
+  `${r.mode === "none" ? "not run here" : r.mode}: ${r.why}`;
+
+/** `fn`, answered from its last result for `ms` after it settled. */
+function every<T>(ms: number, fn: () => Promise<T>): () => Promise<T> {
+  let last: { at: number; value: Promise<T> } | undefined;
+  return () => {
+    if (!last || Date.now() - last.at > ms) {
+      const value = fn();
+      last = { at: Date.now(), value };
+      value.catch(() => {
+        last = undefined;
+      });
+    }
+    return last.value;
+  };
+}
 
 /** The most a sprite may live (ADR 0480), from runner.json. */
 export const spriteLifetimeMs = (config: Pick<RunnerConfig, "sprites">) =>
@@ -285,19 +371,15 @@ export function buildRunner(
               tmpSize: `${Math.round(checkSettings.tmpGb * 1024)}m`,
             },
             runtime: checkRuntime,
-            sandbox: checkSandbox({
-              protectPaths: [
-                dirs.configDir,
-                dirs.runsDir,
-                dirs.reposDir,
-                dirs.worktreesDir,
-                ...checkoutDirs(config),
-              ],
-              socketsDir: dirs.checkSocketsDir,
-              checksDir: dirs.checksDir,
-            }),
+            sandbox: checkSandbox(checkSandboxOptions(config, dirs)),
           }),
     checksDir: dirs.checksDir,
+    // Fifth review: a `sandbox` runner always declares `checks` (a check that can't run comes back
+    // not run with the reason, and the gate asks a person); a container runner's adapter has its
+    // own exec; a sprite runner never declares it. The one line doctor prints rides on the
+    // manifest, asked again every 10 minutes, never per heartbeat.
+    declareChecks: (config.isolation ?? "sandbox") === "sandbox",
+    checksNote: every(10 * 60_000, async () => checkLine(await checkReadiness(config, dirs, exec))),
     heartbeatMs: config.heartbeatMs,
     reapOrphans: async (running) => {
       // Container jobs first, with plain file operations: their job repos are never touched by git.

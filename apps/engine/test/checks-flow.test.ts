@@ -320,6 +320,49 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     expect(job.checks?.commands).toHaveLength(2);
   });
 
+  it("says why a build that carries checks waits when no online runner declares `checks` (fifth review)", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await waitFor("a queued build job", () =>
+      first("SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'build'", item.workItemId),
+    );
+    // Every other runner is offline, and this one now reports no `checks` (a sprite runner): the
+    // build waits, saying why.
+    await env.DB.prepare("UPDATE core_runners SET last_seen_at = ? WHERE id != ?")
+      .bind("2026-01-01T00:00:00.000Z", w.runner.runnerId)
+      .run();
+    const without = { ...MANIFEST, capabilities: ["hooks", "headless"] };
+    await ok(
+      "runner.heartbeat",
+      { manifest: without, capacity: { max: 4, inUse: 0, accepting: true }, activeJobs: [] },
+      w.runnerActor,
+    );
+    const refused = await ok<{ job: Job | null }>(
+      "job.claim",
+      {
+        claimId: uid("claim-"),
+        manifest: without,
+        capacity: { max: 4, inUse: 0, accepting: true },
+      },
+      w.runnerActor,
+    );
+    expect(refused.job).toBeNull();
+    const waiting = await first<{ wait_reason: string | null }>(
+      "SELECT wait_reason FROM core_jobs WHERE work_item_id = ? AND stage = 'build'",
+      item.workItemId,
+    );
+    expect(waiting?.wait_reason).toBe("no runner that can run this project's checks is online");
+    // A runner that declares `checks` takes it.
+    await ok(
+      "runner.heartbeat",
+      { manifest: MANIFEST, capacity: { max: 4, inUse: 0, accepting: true }, activeJobs: [] },
+      w.runnerActor,
+    );
+    const job = await runStage(w, item.workItemId, "build", () => build());
+    expect(job.checks?.commands).toHaveLength(2);
+  });
+
   it("drops results on a commit that isn't on the head's history (an amended fix round), and keeps the run", async () => {
     const w = await world(CHECKS);
     const item = await create(w);
