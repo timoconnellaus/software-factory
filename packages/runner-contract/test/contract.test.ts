@@ -58,6 +58,9 @@ describe("contract helpers", () => {
     expect(parseJobPath("/runner/v1/jobs/job_1/nope")).toBeNull();
     expect(isUnstoredPath(PATHS.token("job_1"))).toBe(true);
     expect(isUnstoredPath(PATHS.events("job_1"))).toBe(false);
+    // The heartbeat is idempotent and too frequent to store; a claim is stored (it takes a job).
+    expect(isUnstoredPath(PATHS.heartbeat)).toBe(true);
+    expect(isUnstoredPath(PATHS.claim)).toBe(false);
     // Attachment reads are never stored either (ADR 0310).
     expect(parseJobPath(PATHS.attachment("job_1"))).toEqual({ jobId: "job_1", call: "attachment" });
     expect(isUnstoredPath(PATHS.attachments("job_1"))).toBe(true);

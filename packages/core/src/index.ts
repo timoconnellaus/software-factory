@@ -15,6 +15,7 @@ export * from "./model-roles.ts";
 export * from "./operation.ts";
 export {
   type AttachmentView,
+  SWEEP_CURSOR_KEY,
   sweepStrayAttachmentBlobs,
 } from "./operations/attachments.ts";
 export {

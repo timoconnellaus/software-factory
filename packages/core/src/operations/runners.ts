@@ -246,6 +246,10 @@ function reportRunnerState(
     accounts?: RunnerAccounts | undefined;
     /** Only the heartbeat carries it; a claim leaves the stored value alone. */
     compat?: number | null;
+    /** A heartbeat's signed time: the update applies only when it is newer than the last one. */
+    signedAt?: number | undefined;
+    /** Signed no later than the last accepted heartbeat: report nothing, write nothing. */
+    stale?: boolean;
   },
 ): { pendingAccount: string | null } {
   // The owner's pick is done once the runner reports it active, and moot once the runner reports
@@ -255,6 +259,7 @@ function reportRunnerState(
     requested !== null &&
     report.accounts !== undefined &&
     (report.accounts.active === requested || !report.accounts.names.includes(requested));
+  if (report.stale) return { pendingAccount: requested !== null && !settled ? requested : null };
   ctx.write(
     ctx.db
       .updateTable("core_runners")
@@ -282,9 +287,21 @@ function reportRunnerState(
         ...(report.accounts ? { accounts: json(report.accounts) } : {}),
         ...(report.compat !== undefined ? { compat: report.compat } : {}),
         ...(settled ? { account_requested: null, account_requested_at: null } : {}),
+        ...(report.signedAt !== undefined ? { last_signed_at: report.signedAt } : {}),
       })
-      .where("id", "=", runner.id),
+      .where("id", "=", runner.id)
+      .$if(report.signedAt !== undefined, (q) =>
+        q.where((eb) =>
+          eb.or([
+            eb("last_signed_at", "is", null),
+            eb("last_signed_at", "<", report.signedAt ?? 0),
+          ]),
+        ),
+      ),
   );
+  // No batch guard (it would cost an insert and a delete per beat, and a failed one would cost the
+  // beat's lease renewals): a stale heartbeat never gets here, and this condition only keeps the
+  // newer of two racing heartbeats' runner state.
   return { pendingAccount: requested !== null && !settled ? requested : null };
 }
 
@@ -366,14 +383,28 @@ export const runnerHeartbeat = defineOperation({
   }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
+    // A heartbeat isn't stored by the channel, so a captured one could be replayed within the
+    // signing window. One signed no later than the last accepted (a replay, `sf-runner doctor`'s
+    // beat in the same second as the service's, a clock put back) doesn't change the runner's
+    // reported state, which only a newer heartbeat may. It still renews its leases below, fenced as
+    // always: the guard must never cost a running job its lease.
+    const signedAt = ctx.origin.signedAt;
+    const stale =
+      signedAt !== undefined && runner.last_signed_at !== null && signedAt <= runner.last_signed_at;
     const { pendingAccount } = reportRunnerState(ctx, runner, {
       ...input,
       compat: input.compat ?? null,
+      signedAt,
+      stale,
     });
     // The runner claims nothing until an update it is waiting for (ADR 0520): free its light pool
     // by asking an idle planning session (nobody there, nothing undelivered) to yield, as a full
     // pool would. Its resume is pinned to this runner and placed once it has updated.
-    if (input.version?.update.state === "waiting" && input.version.update.claims === "none") {
+    if (
+      !stale &&
+      input.version?.update.state === "waiting" &&
+      input.version.update.claims === "none"
+    ) {
       await requestYield(ctx, runner.id);
     }
     const commands: (

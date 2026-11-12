@@ -1,0 +1,204 @@
+// Every hot path's queries use an index (AGENTS.md, "Cloudflare cost", rule 1): each scenario runs a
+// path through the real code against the migrated schema, and fails if any statement it ran plans a
+// SCAN of a growing table. To guard another path, add a scenario to HOT_PATHS.
+import { env } from "cloudflare:workers";
+import {
+  invoke,
+  r2AttachmentBlobs,
+  recentOutcomes,
+  sweepStrayAttachmentBlobs,
+} from "@software-factory/core";
+import { createDb } from "@software-factory/db";
+import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
+import { beforeAll, describe, expect, it } from "vitest";
+import { invokeDeps } from "../src/deps.ts";
+import worker from "../src/index.ts";
+import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
+import { growingScans, type Recorded, recordingEnv } from "./query-plans.ts";
+
+let w: World;
+let job: { jobId: string; fencingToken: number } | null = null;
+
+async function channel(e: Env, runnerId: string) {
+  return httpControlPlane({
+    baseUrl: "https://sf-engine.example",
+    runnerId,
+    key: await runnerChannelKey("test-channel-secret", runnerId, 1),
+    fetch: async (input, init) => worker.fetch(new Request(input, init), e),
+  });
+}
+
+const as = (e: Env, op: string, input: unknown, actor: World["human"]) =>
+  invoke(invokeDeps(e), op, input, { actor, origin: { surface: "test" } });
+
+/** The latest past minute :17 (a future one would expire the test's live lease). */
+function minute17(): number {
+  const d = new Date();
+  d.setUTCMinutes(17, 0, 0);
+  return d.getTime() > Date.now() ? d.getTime() - 3_600_000 : d.getTime();
+}
+
+/** The registered hot paths: each runs once, then every statement it ran is EXPLAINed. */
+const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
+  {
+    // The minute cron, on the minute that also sweeps attachment blobs and runs the improver.
+    name: "the minute cron",
+    run: (e) => worker.scheduled({ scheduledTime: minute17(), cron: "* * * * *", noRetry() {} }, e),
+  },
+  {
+    name: "runner heartbeat (signed channel: authenticate, idempotency, operation)",
+    run: async (e) =>
+      (await channel(e, w.runner.runnerId)).heartbeat({
+        manifest: MANIFEST,
+        capacity: { max: 2, inUse: job ? 1 : 0, accepting: true },
+        activeJobs: job ? [{ jobId: job.jobId, fencingToken: job.fencingToken }] : [],
+      }),
+  },
+  {
+    name: "job.claim with nothing to claim",
+    run: async (e) =>
+      (await channel(e, w.runner.runnerId)).claim({
+        claimId: uid("claim-"),
+        manifest: MANIFEST,
+        capacity: { max: 2, inUse: 0, accepting: true },
+      }),
+  },
+  {
+    name: "job.claim with a queued job",
+    run: async (e) => {
+      await ok(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "Plan me" },
+        w.human,
+      );
+      return (await channel(e, w.runner.runnerId)).claim({
+        claimId: uid("claim-"),
+        manifest: MANIFEST,
+        capacity: { max: 2, inUse: 0, accepting: true },
+      });
+    },
+  },
+  {
+    name: "the held steer poll (run.takeSteers)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 0,
+      });
+    },
+  },
+  {
+    // Every planning call finds its session by the job. The test's job is dressed as a planning
+    // run for the call, so the real lookup runs (and is refused: there is no session).
+    name: "a planning call's session lookup",
+    run: async (e) => {
+      if (!job) return null;
+      const stage = (sql: string) => env.DB.prepare(sql).bind(job?.jobId).run();
+      const was = await env.DB.prepare("SELECT stage FROM core_runs WHERE job_id = ?")
+        .bind(job.jobId)
+        .first<string>("stage");
+      await stage("UPDATE core_runs SET stage = 'planning' WHERE job_id = ?");
+      try {
+        return await as(e, "planning.wait", { ...job, timeoutMs: 0 }, w.runnerActor).catch(
+          (error: { message?: string }) => {
+            if (!/planning session is over/.test(error.message ?? "")) throw error;
+          },
+        );
+      } finally {
+        await env.DB.prepare("UPDATE core_runs SET stage = ? WHERE job_id = ?")
+          .bind(was, job.jobId)
+          .run();
+      }
+    },
+  },
+  { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
+  {
+    name: "workItem.list by org (polled)",
+    run: (e) => as(e, "workItem.list", { orgId: w.orgId }, w.human),
+  },
+  {
+    name: "workItem.list by project (polled)",
+    run: (e) => as(e, "workItem.list", { projectId: w.projectId }, w.human),
+  },
+  {
+    name: "workItem.list by project and status",
+    run: (e) =>
+      as(e, "workItem.list", { projectId: w.projectId, status: ["queued", "running"] }, w.human),
+  },
+  {
+    // The improver's history of finished items (improve.scan, config.trial.resolve).
+    name: "recentOutcomes",
+    run: (e) => recentOutcomes(createDb(e.DB), w.projectId, { limit: 10 }),
+  },
+  {
+    // The hourly stray-blob sweep with a blob to check (an empty bucket runs no D1 query).
+    name: "the attachment sweep",
+    run: async (e) => {
+      await env.ATTACHMENTS.put(`${w.orgId}/plans/att_plan`, new Uint8Array([1]));
+      return sweepStrayAttachmentBlobs(
+        e.DB,
+        r2AttachmentBlobs(env.ATTACHMENTS),
+        new Date(Date.now() + 2 * 3_600_000),
+      );
+    },
+  },
+];
+
+describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
+  beforeAll(async () => {
+    w = await world();
+    // A running job, so the heartbeat and steer paths carry one.
+    await ok("workItem.create", { state: "queued", projectId: w.projectId, title: "Run" }, w.human);
+    const c = await channel(env, w.runner.runnerId);
+    for (let i = 0; i < 100 && !job; i++) {
+      const claimed = await c.claim({
+        claimId: uid("claim-"),
+        manifest: { ...MANIFEST, capabilities: [...MANIFEST.capabilities, "steer"] },
+        capacity: { max: 4, inUse: 0, accepting: true },
+      });
+      if (claimed.job) {
+        job = { jobId: claimed.job.jobId, fencingToken: claimed.job.lease.fencingToken };
+      } else await new Promise((r) => setTimeout(r, 50));
+    }
+    if (!job) throw new Error("no job to run the heartbeat and steer paths with");
+  });
+
+  it("catches a scan (the guard itself works)", async () => {
+    const seen: Recorded[] = [];
+    await recordingEnv(env, seen)
+      .DB.prepare("SELECT id FROM core_audit a WHERE a.outcome = ? LIMIT 1")
+      .bind("ok")
+      .first();
+    expect(await growingScans(env.DB, seen)).toEqual([
+      expect.objectContaining({ table: "core_audit", detail: "SCAN a" }),
+    ]);
+  });
+
+  it("a status-filtered list reads only that status's rows (no walk of every item)", async () => {
+    const seen: Recorded[] = [];
+    await as(
+      recordingEnv(env, seen),
+      "workItem.list",
+      { projectId: w.projectId, status: ["queued"] },
+      w.human,
+    );
+    const list = seen.find(
+      (r) => /from "core_work_items"/.test(r.sql) && /"status" in/.test(r.sql),
+    );
+    if (!list) throw new Error("the list query didn't run");
+    const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${list.sql}`)
+      .bind(...list.params)
+      .all<{ detail: string }>();
+    expect(results.map((r) => r.detail).join("\n")).toMatch(/USING INDEX \w+ \(status=\?/);
+  });
+
+  for (const path of HOT_PATHS) {
+    it(`${path.name}: no SCAN of a growing table`, async () => {
+      const seen: Recorded[] = [];
+      await path.run(recordingEnv(env, seen));
+      expect(seen.length).toBeGreaterThan(0);
+      expect(await growingScans(env.DB, seen)).toEqual([]);
+    });
+  }
+});
