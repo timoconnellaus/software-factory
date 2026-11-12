@@ -79,8 +79,8 @@ describe("checks the factory runs itself (spec 51, ADR 0451)", () => {
       "SELECT verdict, sections FROM core_review_packets WHERE work_item_id = ?",
       item.workItemId,
     );
-    expect(packet.verdict).toBe("pass");
-    const sections = JSON.parse(packet.sections);
+    expect(packet?.verdict).toBe("pass");
+    const sections = JSON.parse(packet?.sections ?? "{}");
     expect(sections.proof).toMatchObject([{ proven: true, provenBy: ["tests"] }]);
     expect(sections.executed.results).toMatchObject([
       { name: "lint", passed: true },
