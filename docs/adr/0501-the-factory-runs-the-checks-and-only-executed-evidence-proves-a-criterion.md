@@ -309,3 +309,12 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 >    cutoff after a cursor in `core_meta` (on `core_check_results_created_idx`), looks their items up
 >    by primary key in one batch, deletes those whose item ended, and moves the cursor (back to the
 >    start at the end), so rows read no longer grow with the number of finished items.
+> 7. **A `sandbox` runner always declares `checks`** (back to the earlier decision; #115 had briefly
+>    declared it only where a check could run, which left items stalled at build with no wait
+>    reason). With no check exec, each declared check comes back not run with the reason (a Mac:
+>    "this Mac runner has no container runtime (OrbStack is not answering): start it, or set
+>    checks.weakerMacSandbox"), the item builds and reaches the gate, and the explicit
+>    merge-without-checks decision applies. `sf-runner doctor` and Factory > Runners (the manifest's
+>    `checksNote`, read by runner.list) say the same in one line. A sprite runner never declares
+>    `checks`; a build that carries checks then waits with "no runner that can run this project's
+>    checks is online" when no online runner declares it.
