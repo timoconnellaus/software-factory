@@ -30,6 +30,8 @@ CREATE INDEX core_planning_sessions_job_idx ON core_planning_sessions (current_j
 -- The minute cron's pruneChannelStore: expired desktop sign-ins and presence challenges.
 CREATE INDEX core_desktop_auth_requests_expires_idx ON core_desktop_auth_requests (expires_at);
 CREATE INDEX core_presence_challenges_expires_idx ON core_presence_challenges (expires_at);
+-- …and expired phone pairing offers (migration 0310).
+CREATE INDEX core_pair_offers_expires_idx ON core_pair_offers (expires_at);
 
 -- Indexes nothing reads (every package and app grepped), each a row written on every write:
 -- no query filters work items by requester; PR lookups use (repository_id, pr_number)
