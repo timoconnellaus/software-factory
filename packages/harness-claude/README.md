@@ -24,6 +24,10 @@ says how Claude runs there:
     caches in the run's temp dir.
   - **The per-run git config** (an identity for commits, no helper), in a private run dir outside the worktree.
   - Runner hooks (`hooks`), but never `PreToolUse`, `PermissionRequest` or `Elicitation` ones.
+  - **`isolation: "container"`** (ADR 0430), for a runner that runs each job in its own container.
+    The container is the floor there, so Claude's sandbox is off (`enabled` and `failIfUnavailable`
+    are `false`), and every stage defaults to `bypassPermissions` (`CONTAINER_MODES`; a profile's
+    mode still wins). Everything else above is unchanged, and the launch record says `isolation`.
 - **The launch** (`launch.ts`): `claudeArgv` is the exact command,
   `claude --permission-mode <mode> --setting-sources project,local --settings <run settings> --strict-mcp-config [--model …]`,
   with no user settings, so the owner's own Claude config never applies.
@@ -45,3 +49,8 @@ says how Claude runs there:
 - `findTranscript` / `parseTranscript` / `checkOutputLog`: the check output and final message from a
   session's transcript (Orca's per-profile `CLAUDE_CONFIG_DIR` homes are searched too).
 - `streamJsonToEvents` and `headlessArgs` (the same factory flags, then `-p`) for headless `claude -p` runs.
+- A two-way stream-json session (ADR 0450): `projectHarness(…, { session: "stream" })` launches
+  with `STREAM_FLAGS` (and `--session-id`, recorded as `launch.stream.sessionId`), so ADR 0270's
+  check covers it. `stream-json.ts`: `streamLineEvents` (one output line → bounded contract events),
+  `userMessageLine`, `interruptLine`, `denyPermissionLine`; `launch.ts`: `resumeArgv` /
+  `resumeCommand`, the interactive `claude --resume <id>` with the run's settings for a takeover.

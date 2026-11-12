@@ -19,5 +19,6 @@ export * from "./protection.ts";
 export * from "./questions.ts";
 export * from "./runners.ts";
 export * from "./specs.ts";
+export * from "./terminal.ts";
 export * from "./verify.ts";
 export * from "./work-items.ts";

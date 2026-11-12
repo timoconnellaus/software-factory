@@ -490,6 +490,11 @@ export interface CoreRunnersTable {
   update_state: string | null;
   update_target: string | null;
   update_reason: string | null;
+  /** 0180 (ADR 0410): the runner's Claude accounts as it last reported them (names only). */
+  accounts: JsonText | null;
+  /** The account the owner asked for, until the runner reports it active. */
+  account_requested: string | null;
+  account_requested_at: Iso | null;
 }
 
 export interface CoreRunnerSharesTable {
@@ -578,6 +583,19 @@ export interface CoreRunSteersTable {
   text: string;
   created_at: Iso;
   delivered_at: Iso | null;
+  /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
+  kind: Generated<"message" | "takeover">;
+}
+
+/** A person opening a run's web terminal (spec 35, ADR 0440). */
+export interface CoreRunTerminalAttachesTable {
+  id: string;
+  run_id: string;
+  work_item_id: string;
+  user_id: string;
+  mode: "type" | "watch";
+  opened_at: Iso;
+  closed_at: Iso | null;
 }
 
 export interface CoreArtifactsTable {
@@ -903,6 +921,7 @@ export interface CoreDatabase {
   core_runs: CoreRunsTable;
   core_run_events: CoreRunEventsTable;
   core_run_steers: CoreRunSteersTable;
+  core_run_terminal_attaches: CoreRunTerminalAttachesTable;
   core_artifacts: CoreArtifactsTable;
   core_leases: CoreLeasesTable;
   core_channel_requests: CoreChannelRequestsTable;

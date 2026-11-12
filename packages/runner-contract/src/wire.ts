@@ -11,12 +11,19 @@ import {
   HARNESSES,
   JOB_STAGES,
   MODEL_ROLES,
+  SESSION_MODES,
 } from "./types.ts";
 
 const iso = z.iso.datetime({ offset: true });
 
 /** Most characters of one `message` event's text; the runner clips longer ones. */
 export const MESSAGE_MAX = 8_000;
+/** Most characters of one `tool.result` event's output (ADR 0450). */
+export const TOOL_OUTPUT_MAX = 4_000;
+/** Most characters of a `turn` event's error (ADR 0450). */
+export const TURN_ERROR_MAX = 2_000;
+/** Most characters of a `takeover` event's hint (ADR 0450). */
+export const TAKEOVER_HINT_MAX = 4_000;
 const sha = z.string().regex(/^[0-9a-f]{7,64}$/);
 const fencingToken = z.number().int().nonnegative();
 const id = z.string().min(1).max(100);
@@ -149,6 +156,8 @@ export const runnerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("session.started"),
     sessionRef: z.string(),
     takeover: takeoverSchema.optional(),
+    /** How the session runs (ADR 0450). Optional, additive: absent is a terminal. */
+    mode: z.enum(SESSION_MODES).optional(),
   }),
   z.object({
     ...eventBase,
@@ -179,6 +188,43 @@ export const runnerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("tool"),
     name: z.string(),
     input: z.string().max(8_000).optional(),
+    /** Pairs the call with its `tool.result` (ADR 0450). Optional, additive. */
+    id: z.string().max(100).optional(),
+  }),
+  /**
+   * A stream session's tool result, its call's `id` as `toolId` (ADR 0450). Additive: only a
+   * runner with `chat`, at the engine's deployed commit, sends it.
+   */
+  z.object({
+    ...eventBase,
+    type: z.literal("tool.result"),
+    toolId: z.string().max(100),
+    output: z.string().max(TOOL_OUTPUT_MAX),
+    isError: z.boolean().optional(),
+  }),
+  /** One turn of a stream session ended (ADR 0450): counts only, never cost. Additive. */
+  z.object({
+    ...eventBase,
+    type: z.literal("turn"),
+    outcome: z.enum(["success", "error"]),
+    durationMs: z.number().int().nonnegative().optional(),
+    turns: z.number().int().nonnegative().optional(),
+    usage: z
+      .object({
+        inputTokens: z.number().int().nonnegative(),
+        outputTokens: z.number().int().nonnegative(),
+        cacheReadTokens: z.number().int().nonnegative(),
+        cacheWriteTokens: z.number().int().nonnegative(),
+      })
+      .optional(),
+    error: z.string().max(TURN_ERROR_MAX).optional(),
+  }),
+  /** A stream session stopped so a person can resume it in a terminal (ADR 0450). Additive. */
+  z.object({
+    ...eventBase,
+    type: z.literal("takeover"),
+    sessionId: z.string().max(100),
+    hint: z.string().max(TAKEOVER_HINT_MAX),
   }),
   z.object({
     ...eventBase,
@@ -300,6 +346,28 @@ export const runnerVersionSchema = z.object({
 });
 export type RunnerVersion = z.infer<typeof runnerVersionSchema>;
 
+/**
+ * A Claude account's name on a host (ADR 0410). `default` is whatever `claude` uses with no account
+ * set. Names only: an account's credential never leaves its host.
+ */
+export const ACCOUNT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const DEFAULT_ACCOUNT = "default";
+export const accountNameSchema = z.string().regex(ACCOUNT_NAME, "lower-case letters, digits and -");
+
+/** The host's Claude accounts, as it reports them on the heartbeat (ADR 0410). */
+export const runnerAccountsSchema = z.object({
+  /** Every account on the host, `default` included. */
+  names: z.array(accountNameSchema).min(1).max(32),
+  /** The one new jobs use. */
+  active: accountNameSchema,
+  /** Accounts whose last run hit a usage limit: when, and what Claude said. */
+  limits: z
+    .array(z.object({ name: accountNameSchema, at: iso, message: z.string().max(500) }))
+    .max(32)
+    .default([]),
+});
+export type RunnerAccounts = z.infer<typeof runnerAccountsSchema>;
+
 export const heartbeatRequestSchema = z.object({
   manifest: capabilityManifestSchema,
   capacity: capacitySchema,
@@ -309,12 +377,16 @@ export const heartbeatRequestSchema = z.object({
   rateLimitedUntil: iso.nullable().optional(),
   /** The runner's own code version and where its self-update stands (ADR 0360). Optional: older hosts omit it. */
   version: runnerVersionSchema.optional(),
+  /** The host's Claude accounts, names only (ADR 0410). Optional: older hosts omit it. */
+  accounts: runnerAccountsSchema.optional(),
 });
 
 export const runnerCommandSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("cancel"), jobId: id, reason: z.string() }),
   z.object({ kind: z.literal("steer"), jobId: id, text: z.string() }),
   z.object({ kind: z.literal("drain") }),
+  /** The owner picked this account for new jobs (ADR 0410). Older hosts ignore it. */
+  z.object({ kind: z.literal("account.use"), name: accountNameSchema }),
 ]);
 
 export const heartbeatResponseSchema = z.object({
@@ -391,9 +463,35 @@ export const steersRequestSchema = z.object({
   waitMs: z.number().int().min(0).max(60_000).optional(),
 });
 export const steersResponseSchema = z.object({
-  steers: z.array(z.object({ id: z.string(), text: z.string(), at: iso })),
+  steers: z.array(
+    z.object({
+      id: z.string(),
+      text: z.string(),
+      at: iso,
+      /**
+       * `takeover`: stop the stream session for a person (ADR 0450), not a message to type.
+       * Optional, additive: absent is a message.
+       */
+      kind: z.enum(["message", "takeover"]).optional(),
+    }),
+  ),
 });
 export type SteersRequest = z.infer<typeof steersRequestSchema>;
+
+/**
+ * The held terminal call (ADR 0440): answers with the job relay's socket URL, carrying a one-use
+ * ticket, when someone is waiting to watch and no host is connected; else `connect: null` after
+ * about `waitMs` (at most TERMINAL_WAIT_MAX_MS).
+ */
+export const terminalCallRequestSchema = z.object({
+  fencingToken,
+  waitMs: z.number().int().min(0).max(60_000).optional(),
+});
+export const terminalCallResponseSchema = z.object({
+  connect: z.object({ url: z.string() }).nullable(),
+});
+export type TerminalCallRequest = z.infer<typeof terminalCallRequestSchema>;
+export type TerminalCallResponse = z.infer<typeof terminalCallResponseSchema>;
 export type SteersResponse = z.infer<typeof steersResponseSchema>;
 
 /** Every non-2xx answer from the channel carries this body. */

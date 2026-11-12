@@ -134,12 +134,12 @@ const ownerState = (owner: string) => ({
 });
 
 describe("runner-local adapter", { timeout: 30_000 }, () => {
-  it("declares hooks, takeover, own hardware, attachments and steer; no browser, no auto-register", async () => {
+  it("declares hooks, takeover, own hardware, attachments, steer and terminal; no browser, no auto-register", async () => {
     const { runner } = await world();
     const m = await runner.manifest();
     expect(m.runnerKind).toBe("local");
     expect([...m.capabilities].sort()).toEqual(
-      ["hooks", "own-hardware", "steer", "ui-takeover", "work-item-attachments"].sort(),
+      ["hooks", "own-hardware", "steer", "terminal", "ui-takeover", "work-item-attachments"].sort(),
     );
   });
 
@@ -673,6 +673,96 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     expect(findings).toEqual([
       expect.objectContaining({ kind: "duplicate-checkouts", fixable: false }),
     ]);
+  });
+
+  it("launches on the host's active account, taken when the workspace is prepared (ADR 0410)", async () => {
+    let active = { name: "work", configDir: join(tmpdir(), "sf-acc-work") };
+    const usage: [string, string | null][] = [];
+    const w = await world(
+      { onPrompt: (_s, append) => append({ event: "Stop" }) },
+      { account: () => active, onAccountUsage: (a, l) => usage.push([a, l]) },
+    );
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    // Switched after the job was prepared: the job keeps its account.
+    active = { name: "other", configDir: join(tmpdir(), "sf-acc-other") };
+    const script = await readFile(ws.launchScript, "utf8");
+    expect(script).toContain(`CLAUDE_CONFIG_DIR=${join(tmpdir(), "sf-acc-work")}`);
+    expect(ws.launch).toMatchObject({ account: "work" });
+    const session = await w.runner.startSession(job(), ws, signal);
+    expect(session).toMatchObject({ account: "work", configDir: join(tmpdir(), "sf-acc-work") });
+    const ended = (await drain(w.runner.events(job(), session, signal))).at(-1);
+    expect(ended).toMatchObject({ type: "session.ended", outcome: "completed" });
+    // A clean run clears the account's usage limit.
+    expect(usage).toEqual([["work", null]]);
+    await w.runner.release(job(), ws, session);
+  });
+
+  it("fails a job that hits its account's usage limit, and says which account (ADR 0410)", async () => {
+    const usage: [string, string | null][] = [];
+    const w = await world(
+      {
+        onPrompt: (_s, append) =>
+          append({
+            event: "StopFailure",
+            error: "rate_limit",
+            message: "You've hit your usage limit · resets 5pm",
+          }),
+      },
+      {
+        account: () => ({ name: "work", configDir: join(tmpdir(), "sf-acc-work") }),
+        onAccountUsage: (a, l) => usage.push([a, l]),
+      },
+    );
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    const session = await w.runner.startSession(job(), ws, signal);
+    const events = (await drain(w.runner.events(job(), session, signal))).filter(
+      (e) => e.type !== "log",
+    );
+    expect(events).toContainEqual({
+      type: "agent.status",
+      status: "error",
+      message: `usage limit on Claude account "work": You've hit your usage limit · resets 5pm`,
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "session.ended",
+      outcome: "failed",
+      summary: expect.stringContaining('usage limit on Claude account "work"'),
+    });
+    expect(usage).toEqual([["work", "You've hit your usage limit · resets 5pm"]]);
+    await w.runner.release(job(), ws, session);
+  });
+
+  it("carries a resumed planning session's conversation into the account it resumes on", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sf-acc-dirs-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const oldDir = join(root, "old");
+    const newDir = join(root, "new");
+    const w = await world(
+      {},
+      {
+        account: () => ({ name: "new", configDir: newDir }),
+        accountConfigDirs: () => [oldDir, newDir],
+      },
+    );
+    const planningJob = job({
+      stage: "planning",
+      harness: { id: "claude-code", role: "triage", prompt: "plan it" },
+      planning: { sessionId: "ps_carry", sessionRef: "sess-carry", resume: true },
+    });
+    const worktree = join(await realpathOf(join(w.root)), "worktrees", "sf-plan-ps-carry");
+    const project = worktree.replace(/[^A-Za-z0-9]/g, "-");
+    await mkdir(join(oldDir, "projects", project), { recursive: true });
+    await writeFile(join(oldDir, "projects", project, "sess-carry.jsonl"), "{}\n");
+    const ws = await w.runner.prepareWorkspace(planningJob, new AbortController().signal, {
+      planningRelay: { url: "http://127.0.0.1:1", token: "t" },
+    });
+    expect(ws.path).toBe(worktree);
+    expect(await readFile(join(newDir, "projects", project, "sess-carry.jsonl"), "utf8")).toBe(
+      "{}\n",
+    );
+    await w.runner.release(planningJob, ws, undefined);
   });
 
   it("reads tmux versions", () => {
