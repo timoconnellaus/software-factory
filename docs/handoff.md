@@ -127,6 +127,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   attachments over the door as `{ $bytes }`), the work item with Planning and its timeline, the
   review packet (Merge and Send back through Touch ID), Setup and attach, ported into
   `apps/desktop`; the shared logic is in `packages/client`. Next: M4 (signing and updates).
+- **The desktop shell and look** (block AD, [spec 41](specs/41-desktop-shell-and-look.md),
+  [ADR 0460](adr/0460-the-desktop-shell-and-look.md), branch `timoconnellaus/desktop-shell`): slice 1
+  of the approved design (`docs/design/factory-ui/`). The window shell (toolbar, tabs, ⌘K, org rail,
+  sidebar, nested lists, status bar, focus mode), the look as `packages/ui` tokens (`desktop.css`),
+  and the existing screens restyled. Later slices wait on specs 50 and 51, chat and the hosts web
+  terminal (spec 41 lists them).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

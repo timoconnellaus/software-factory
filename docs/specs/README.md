@@ -50,6 +50,7 @@ and the factory's own planning stage writes specs in this same format.
 | [38](38-runner-updates-without-draining.md) | Runner updates without draining on every deploy: keep claiming until idle, caps at 30 and 60 minutes, `minRunnerCompat`, `RUNNER_SHA` from the deploy | 08 |
 | [39](39-runner-host-readopts-live-jobs.md) | The runner host re-adopts its live jobs after a restart, so an update needs no idle moment (spec only) | 30, 38 |
 | [40](40-desktop-app.md) | The desktop app (Electrobun): the client door, desktop devices with Touch ID presence proofs, `apps/desktop`, the website shrinks to auth | 07, 08 |
+| [41](41-desktop-shell-and-look.md) | The desktop shell and look: slice 1 of the approved UI design (toolbar, org rail, sidebar, nested lists, status bar, tokens), the existing screens restyled; later slices listed | 40 |
 | [50](50-projects-backlog-and-release.md) | Projects, repositories, backlog and release: a project has zero or more repositories, work starts in a backlog and is released, the factory pulls queued items by priority under an active limit, "waits for" links, a project runs one workflow | 05, 06, 09 |
 | [wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md) | Work item attachments (picker, drag-and-drop, paste; R2; runs read them) | 01, 03, 13 |
 | [wi-4](wi-4-let-s-improve-the-event-log-so-it-s-usef.md) | A readable event log: one pure module (`packages/timeline`) words each audit entry for the dashboard's timeline and `sf timeline` | 07, 13 |

@@ -1,17 +1,20 @@
 // This Mac (spec 40 M2): the supervised runner, the device key, open at login, sign out.
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import { Checkbox } from "@software-factory/ui/components/checkbox";
+import { Label } from "@software-factory/ui/components/label";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createRoute } from "@tanstack/react-router";
 import { useEffect } from "react";
 import type { RunnerState } from "../../shared/rpc.ts";
 import { bun, onRunner } from "../bridge.ts";
+import { PageArea, PageHeader } from "../components/shell-list.tsx";
 import { useDesktopSession } from "../lib/desktop-session.ts";
-import { appRoute } from "./_app.tsx";
+import { settingsLayout } from "./_settings.tsx";
 
 export const Route = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayout,
   path: "/settings",
   component: SettingsPage,
 });
@@ -36,8 +39,11 @@ export function SettingsPage() {
   useEffect(() => onRunner((s) => client.setQueryData(["runner"], s)), [client]);
   const r = runner.data;
   return (
-    <main className="mx-auto grid w-full max-w-[1200px] gap-4 p-4 md:p-6">
-      <h1 className="font-semibold text-2xl tracking-tight">This Mac</h1>
+    <PageArea>
+      <PageHeader
+        title="This Mac"
+        sub="Yours, not the org's: this Mac's runner, how it proves it's you, and how it starts."
+      />
       <div className="grid max-w-2xl gap-4">
         <Card className="gap-3 px-5 py-4" data-testid="runner">
           <div className="flex items-center gap-2 font-semibold">
@@ -83,19 +89,16 @@ export function SettingsPage() {
               ? "Decisions are signed by a key in this Mac's Secure Enclave: approving asks for Touch ID."
               : "This build has a software key (not signed for the Secure Enclave)."}
           </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
+          <Label className="flex items-center gap-2 font-normal">
+            <Checkbox
               checked={login.data?.enabled ?? false}
-              onChange={async (e) =>
-                client.setQueryData(
-                  ["login-item"],
-                  await bun.loginItem({ enable: e.target.checked }),
-                )
+              onCheckedChange={async (v) =>
+                client.setQueryData(["login-item"], await bun.loginItem({ enable: v === true }))
               }
+              data-testid="login-item"
             />
             Open at login
-          </label>
+          </Label>
           <Button
             size="sm"
             variant="outline"
@@ -106,6 +109,6 @@ export function SettingsPage() {
           </Button>
         </Card>
       </div>
-    </main>
+    </PageArea>
   );
 }
