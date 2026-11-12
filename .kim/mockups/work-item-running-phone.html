@@ -1,0 +1,59 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{background:#f1f1ef;color:#1c1c1e;font:15px/1.4 'Geist',system-ui,sans-serif;display:flex;flex-direction:column;min-height:100vh}
+.mono{font-family:'Geist Mono',ui-monospace,monospace;font-size:12px;color:#6e6e73}
+.muted{color:#6e6e73;font-size:13px}
+.bar{display:flex;align-items:center;gap:10px;padding:14px 16px 8px}
+.bar h1{margin:0;font-size:22px;font-weight:600;letter-spacing:-.02em;flex:1}
+.chips{display:flex;gap:6px;padding:0 16px 10px;overflow-x:auto}
+.chip{flex:none;padding:6px 12px;border-radius:999px;background:#fff;box-shadow:0 0 0 1px #e3e3e0;font-size:13px;font-weight:500;white-space:nowrap}
+.chip.on{background:#1c1c1e;color:#fafafa;box-shadow:none}
+.list{flex:1;padding:2px 12px 12px;display:flex;flex-direction:column;gap:8px;overflow:auto}
+.sec{padding:10px 4px 2px;font-size:12px;font-weight:500;color:#6e6e73}
+.card{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:14px;background:#fff;box-shadow:0 0 0 1px #e3e3e0,0 1px 2px rgba(0,0,0,.04);text-decoration:none;color:inherit}
+.card.need{box-shadow:0 0 0 1.5px #f0b541,0 1px 2px rgba(0,0,0,.04)}
+.row{display:flex;align-items:center;gap:8px}
+.t{font-weight:600;line-height:1.3}
+.badge{font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.a{background:#fdecc8;color:#7a4a00}.b{background:#e3edfd;color:#1d4ed8}.g{background:#e4f4e8;color:#17603a}.z{background:#ececea;color:#3a3a3e}
+.dot{width:8px;height:8px;border-radius:999px;display:inline-block;flex:none}
+.btn{flex:1;height:44px;border-radius:11px;border:0;font:inherit;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.p{background:#1c1c1e;color:#fafafa}.o{background:#fff;box-shadow:0 0 0 1px #e3e3e0;color:#1c1c1e}
+.tabs{flex:none;display:flex;align-items:center;justify-content:space-around;height:64px;padding:0 8px 6px;background:#fff;box-shadow:0 -1px 0 #e3e3e0}
+.tab{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;font-weight:500;color:#6e6e73;min-width:64px;position:relative}
+.tab.on{color:#1c1c1e}
+.tab i{font-style:normal;width:22px;height:22px;display:block}
+.cnt{position:absolute;top:-4px;right:12px;min-width:17px;height:17px;border-radius:999px;background:#f59e0b;color:#fff;font-size:10.5px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.fab{width:56px;height:56px;border-radius:18px;background:#1c1c1e;color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 20px rgba(0,0,0,.22)}
+.seg{display:flex;margin:0 16px 10px;padding:3px;border-radius:11px;background:#e7e7e4}
+.seg span{flex:1;text-align:center;padding:7px 0;border-radius:8px;font-size:13px;font-weight:500;color:#55555a}
+.seg .on{background:#fff;color:#1c1c1e;box-shadow:0 0 0 1px #e3e3e0}
+svg{display:block}
+</style><style>
+.top{display:flex;align-items:center;gap:10px;padding:12px 14px 6px}
+.top .tt{flex:1;min-width:0}.top .tt b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ptabs{display:flex;gap:4px;margin:4px 14px 8px;padding:3px;border-radius:11px;background:#e7e7e4}
+.ptabs span{flex:1;text-align:center;padding:7px 0;border-radius:8px;font-size:13px;font-weight:500;color:#55555a}
+.ptabs .on{background:#fff;color:#1c1c1e;box-shadow:0 0 0 1px #e3e3e0}
+.opt{display:flex;align-items:center;gap:10px;min-height:46px;padding:8px 12px;border-radius:11px;box-shadow:0 0 0 1px #e3e3e0;background:#fff}
+.opt.on{box-shadow:0 0 0 1.5px #2563eb;background:#f3f7ff}
+.radio{width:16px;height:16px;border-radius:999px;box-shadow:inset 0 0 0 1.5px #c4c4c0;flex:none}.on .radio{box-shadow:inset 0 0 0 5px #2563eb}
+.why{padding:2px 0 2px 10px;border-left:2px solid #f0b541;color:#55555a;font-size:13.5px;line-height:1.45}
+.done{display:flex;gap:10px;padding:10px 12px;border-radius:12px;background:#e9e9e6}
+.tick{width:18px;height:18px;border-radius:999px;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px;font-size:11px}
+.gate{flex:none;display:flex;gap:8px;padding:10px 12px 14px;background:#fff;box-shadow:0 -1px 0 #e3e3e0}
+.doc{flex:1;overflow:auto;background:#fff;padding:14px 18px 18px;display:flex;flex-direction:column;gap:6px}
+.doc h2{margin:0 0 4px;font-size:19px;letter-spacing:-.02em}.h{margin-top:10px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#6e6e73}
+.li{display:flex;gap:8px;padding:3px 8px;margin:0 -8px;border-radius:7px;line-height:1.45}.li i{font-style:normal;color:#a3a3a0}
+.src{font-family:'Geist Mono',monospace;font-size:10.5px;padding:0 5px;border-radius:4px;background:#ececea;color:#55555a;margin-left:4px;white-space:nowrap}
+.kb{flex:none;background:#d7d9de;padding:8px 6px 14px;display:flex;flex-direction:column;gap:6px}.kb div{display:flex;gap:5px;justify-content:center}.kb span{flex:1;max-width:34px;height:38px;border-radius:6px;background:#fff;box-shadow:0 1px 0 #9a9ca1}
+</style></head><body><div class="top"><span data-name="back button" style="font-size:20px">‹</span><div class="tt"><span class="mono">#9 · Factory · Build</span><b>Find new lint and type suppressions</b></div><span class="badge b">Builder working</span></div><div class="list" style="padding-top:4px">
+<div class="muted" data-name="handoff" style="padding:2px 4px">You released this · 2 h ago → Planner</div>
+<div class="card" data-name="plan card"><div class="row"><b>Planner</b><span class="muted">2 h ago</span></div><div>Plan approved by you. Four tasks.</div><div style="border-top:1px solid #f1f1ef;padding-top:4px"><div class="row" style="height:30px"><span style="width:15px;height:15px;border-radius:4px;flex:none;background:#1c1c1e"></span><span style="flex:1;color:#1c1c1e">Find added suppressions in a diff</span></div><div class="row" style="height:30px"><span style="width:15px;height:15px;border-radius:4px;flex:none;box-shadow:inset 0 0 0 1.5px #2563eb;background:#e3edfd"></span><span style="flex:1;color:#1c1c1e">Record them on the review packet</span><span class=muted style=color:#1d4ed8>repairing</span></div><div class="row" style="height:30px"><span style="width:15px;height:15px;border-radius:4px;flex:none;box-shadow:inset 0 0 0 1.5px #c4c4c0"></span><span style="flex:1;color:#8a8a86">Block the check-only auto-merge</span></div><div class="row" style="height:30px"><span style="width:15px;height:15px;border-radius:4px;flex:none;box-shadow:inset 0 0 0 1.5px #c4c4c0"></span><span style="flex:1;color:#8a8a86">Show them in the packet</span></div></div></div>
+<div class="muted" style="padding:2px 4px">Moved from Planning to Build · 1 h ago → Builder</div>
+<div class="card" data-name="live run card" style="box-shadow:0 0 0 1.5px #2563eb"><div class="row"><b>Builder</b><span class="muted">now</span><span class="badge b" style="margin-left:auto">Live</span></div><div>Task 2: the packet test fails on the new section. Fixing the fixture.</div>
+<div class="mono" style="padding:8px 10px;border-radius:9px;background:#f6f6f4;color:#3a3a3e">Edit packages/core/test/packet.test.ts</div>
+<div class="row" style="gap:12px;font-size:13px"><span class="row" style="gap:6px"><span class="dot" style="background:#22a55a"></span>lint</span><span class="row" style="gap:6px"><span class="dot" style="background:#22a55a"></span>typecheck</span><span class="row" style="gap:6px"><span class="dot" style="background:#dc2626"></span>tests · 1 failing</span></div></div>
+</div><div class="gate" data-name="composer" style="align-items:center"><div style="flex:1;height:44px;border-radius:12px;box-shadow:0 0 0 1px #d6d6d2;display:flex;align-items:center;padding:0 12px;color:#8a8a86">Message the builder…</div><button class="btn o" data-name="pause button" style="flex:none;width:44px">❙❙</button><button class="btn o" data-name="stop button" style="flex:none;width:58px;color:#b42318">Stop</button></div></body></html>

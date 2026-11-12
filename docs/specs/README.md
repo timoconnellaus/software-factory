@@ -39,6 +39,7 @@ and the factory's own planning stage writes specs in this same format.
 | [23](23-triage-questions-and-critic.md) | Planning M4: triage questions, the readiness check and the spec critic | 20 |
 | [24](24-planning-splits.md) | Planning splits a work item | 20 |
 | [25](25-verify-drift-check.md) | Verify checks drift from the spec | 04 |
+| [51](51-verify-from-the-factorys-own-evidence.md) | Verify decides from evidence the factory produced: the tests-intact guard, checks run by the runner host on the head SHA, criteria Proven only by executed evidence | 04, 25, 09 |
 | [30](30-runner-local-without-orca.md) | runner-local: agents in tmux on the host, status from hooks, no Orca (piece 1 of the hosts plan) | 03 |
 | [31](31-watch-and-steer-runs.md) | Watch and steer runs from the dashboard: the Live tab (transcript, terminal), `run.steer` for the runner's owner (piece 2 of the hosts plan) | 30 |
 | [32](32-claude-accounts-on-a-host.md) | Claude accounts on a host: several per host, manual switching on the host or from Setup, credentials never leave the host (piece 3 of the hosts plan) | 30 |
@@ -72,3 +73,9 @@ Mockups for every R1 screen are in [`.kim/mockups/`](../../.kim/mockups/); the d
 ## Planning
 Specs 20–25 make planning work the way kim does ([ADR 0300](../adr/0300-planning-is-a-live-session-on-a-runner.md), plan in [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)). Build them in order: 20 → 21 → 22, then 23; 24 and 25 can run alongside after 20 and 04.
 [Spec 26](26-planning-loop-to-kim.md) fixes what 20 built weaker than kim and adds the design's steering; it comes before 21 ([audit](../reviews/2026-11-12-planning-against-kim.md)).
+
+## Workflows from stage types
+[Spec 52](52-workflows-from-stage-types.md) is a design for later: workflows built from built-in
+stage types and defined per org, skills and autopilots, the generic review packet and a reconciler
+([ADRs 0510–0514](../adr/0510-workflows-are-ordered-stages-of-stage-types.md)). Don't build it until
+its "When to start" holds.

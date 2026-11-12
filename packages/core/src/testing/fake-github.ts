@@ -14,7 +14,9 @@ import type {
 } from "../services.ts";
 import { PROTECTION_EVENTS } from "../verify/protection.ts";
 
-type Touch = string | { path: string; status: ChangedFile["status"] };
+type Touch =
+  | string
+  | { path: string; status: ChangedFile["status"]; previousPath?: string; patch?: string };
 
 interface RepoState {
   refs: Record<string, string>;
@@ -266,6 +268,26 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
     }
     return files;
   };
+  /** The patches and renames the commits between base and head carry, last one wins (ADR 0500). */
+  const detailsBetween = (state: RepoState, base: string, head: string) => {
+    const touched = touchesBetween(state, base, head);
+    const out = new Map<string, Omit<ChangedFile, "path" | "status">>();
+    const stop = state.refs[base] ?? base;
+    for (
+      let at: string | null | undefined = state.refs[head] ?? head;
+      at && at !== stop && !isAncestor(state, at, stop);
+      at = state.parents[at]
+    ) {
+      for (const t of state.touched?.[at] ?? []) {
+        if (typeof t === "string" || out.has(t.path) || !touched.has(t.path)) continue;
+        out.set(t.path, {
+          ...(t.previousPath ? { previousPath: t.previousPath } : {}),
+          ...(t.patch !== undefined ? { patch: t.patch } : {}),
+        });
+      }
+    }
+    return out;
+  };
 
   const github: FakeGitHub = {
     app: FAKE_APP,
@@ -445,9 +467,12 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       return [...touchesBetween(await load(r), base, head).keys()];
     },
     async compareFiles(r, base, head) {
-      return [...touchesBetween(await load(r), base, head)].map(([path, status]) => ({
+      const state = await load(r);
+      const details = detailsBetween(state, base, head);
+      return [...touchesBetween(state, base, head)].map(([path, status]) => ({
         path,
         status,
+        ...details.get(path),
       }));
     },
     async readFile(r, path, ref) {
