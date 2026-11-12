@@ -11,7 +11,7 @@
 // Uses CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment (or a wrangler login).
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { deployArgs, findWorkers, migrationsOf, root, wrangler } from "./lib.ts";
+import { deployArgs, findWorkers, migrationsOf, root, runnerSha, wrangler } from "./lib.ts";
 
 const step = process.argv[2] ?? "all";
 const workers = findWorkers();
@@ -46,7 +46,12 @@ function deployedSha(): string | null {
 function deployWorkers() {
   const sha = deployedSha();
   console.log(`Deploying commit ${sha ?? "(unknown)"}`);
-  for (const { dir, config } of workers) wrangler(dir, ["deploy", ...deployArgs(config, sha)]);
+  // What runners are asked to run (ADR 0520). Unknown (a shallow clone): they get `sha` itself.
+  const runner = sha ? runnerSha(sha) : null;
+  console.log(`Runner code at ${runner ?? `(unknown from git history; runners get ${sha})`}`);
+  for (const { dir, config } of workers) {
+    wrangler(dir, ["deploy", ...deployArgs(config, sha, runner)]);
+  }
 }
 
 switch (step) {

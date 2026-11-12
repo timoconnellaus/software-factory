@@ -517,6 +517,8 @@ export interface CoreRunnersTable {
   /** The account the owner asked for, until the runner reports it active. */
   account_requested: string | null;
   account_requested_at: Iso | null;
+  /** 0290 (ADR 0520): the runner's RUNNER_COMPAT as it last reported; null (never) counts as 1. */
+  compat: number | null;
 }
 
 export interface CoreRunnerSharesTable {
