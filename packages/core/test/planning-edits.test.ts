@@ -705,7 +705,7 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
     const refused = await refusal(
       agent("question.answerFromEdit", { questionId: q, answer: "agent", editId }),
     );
-    expect(refused.message).toContain("the words it changed");
+    expect(refused.message).toContain("one-tap confirm");
     // Words already there before the edit don't count either.
     expect(
       (
@@ -758,15 +758,34 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
       agent("question.answerFromEdit", { questionId: q, answer: "Postgres", editId: e.editId }),
     );
     expect(negated.code).toBe("conflict");
-    // The whole changed span, as written, is the person's words.
+    expect(
+      (
+        await refusal(
+          agent("question.answerFromEdit", {
+            questionId: q,
+            answer: "not Postgres, use SQLite",
+            editId: e.editId,
+          }),
+        )
+      ).code,
+    ).toBe("conflict");
+    // A change that IS an option is recorded.
+    const exact = await edit(
+      w,
+      item.workItemId,
+      e.specId,
+      "- Database: not Postgres, use SQLite [Q1]",
+      "- Database: Postgres [Q1]",
+      5,
+    );
     await agent("question.answerFromEdit", {
       questionId: q,
-      answer: "not Postgres, use SQLite",
-      editId: e.editId,
+      answer: "Postgres",
+      editId: exact.editId,
     });
     expect(
       (await first<{ answer: string }>("SELECT answer FROM core_questions WHERE id = ?", q)).answer,
-    ).toBe("not Postgres, use SQLite");
+    ).toBe("Postgres");
   });
 
   it("carries a renamed heading's edits along, and lists edits under a deleted heading as not kept with why (third review of #85, 3)", async () => {
@@ -783,7 +802,8 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
     );
     expect(standing.map((e) => e.id)).toEqual([a.editId, renamed.editId]);
     expect(standing[0]?.footprint).toContain("In scope");
-    // Deleting the heading: the edit under it isn't dropped silently.
+    // Deleting the heading moves the edit under it to the section above, and it stays kept
+    // (fourth review of #85: a person's structural edit carries edits along).
     const w2 = await world();
     const p2 = await planning(w2);
     const s2 = await p2.agent<{ specId: string }>("spec.revise", SPEC);
@@ -795,12 +815,45 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
       w2.human,
     );
     expect(view.edits.find((e) => e.id === b.editId)).toMatchObject({
-      kept: false,
-      whyNotKept: expect.stringContaining("no longer in the plan"),
+      kept: true,
+      whyNotKept: null,
     });
     await p2.agent("planning.news");
-    expect((await refusal(p2.agent("planning.ready"))).message).toContain("no longer in the plan");
+    expect(await p2.agent("planning.ready")).toMatchObject({ round: 1 });
   });
+
+  it("carries a child's edit when someone rewords its parent, and retires before counting the 200 (fourth review of #85, 2 and 4)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const md = `${BODY}\n- parent\n  - child`;
+    const { specId } = await agent<{ specId: string }>("spec.revise", { ...SPEC, specMd: md });
+    const child = await edit(w, item.workItemId, specId, "  - child", "  - Ana's child", 6);
+    await edit(w, item.workItemId, child.specId, "- parent", "- parent, reworded", 5);
+    await agent("planning.news");
+    expect(await agent("planning.ready")).toMatchObject({ round: 1 });
+    const kept = await ok<{ edits: { id: string; kept: boolean }[] }>(
+      "planning.get",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    expect(kept.edits.find((e) => e.id === child.editId)?.kept).toBe(true);
+  });
+
+  it("counts the 200 standing edits after retiring what an edit overrides (fourth review of #85, 4)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const lines = Array.from({ length: 200 }, (_, i) => `- line ${i}`);
+    let { specId } = await agent<{ specId: string }>("spec.revise", {
+      ...SPEC,
+      specMd: lines.join("\n"),
+    });
+    for (let i = 0; i < 200; i++) {
+      specId = (await edit(w, item.workItemId, specId, `- line ${i}`, `- mine ${i}`, i)).specId;
+    }
+    // The 201st overrides the first edit: it retires it, so it fits.
+    const again = await edit(w, item.workItemId, specId, "- mine 0", "- mine again 0", 0);
+    expect(again.editId).toBeTruthy();
+  }, 120_000);
 
   it("records an answer from an edit only when it still stands, is newest, is about the question, and its author may answer (review of #85, 4)", async () => {
     const w = await world();

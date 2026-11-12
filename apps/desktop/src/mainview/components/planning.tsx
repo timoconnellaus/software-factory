@@ -16,7 +16,9 @@ import {
   appliedValues,
   blocks,
   bulkAcceptable,
+  changedSpan,
   chipTag,
+  editAnswer,
   gateSummary,
   initialAnswer,
   isChanged,
@@ -515,16 +517,18 @@ function Questions({
         </div>
       )}
       {ordered.map((q) => (
-        <QuestionCard
-          key={`${q.id}:${q.revision}`}
-          question={q}
-          workItemId={workItemId}
-          focused={q.id === focused}
-          total={total}
-          messages={view.messages.filter((m) => m.questionId === q.id).length}
-          onDiscuss={() => onDiscuss(q.id)}
-          {...(onPreview ? { onPreview } : {})}
-        />
+        <div key={`${q.id}:${q.revision}`} className="grid gap-1.5">
+          <EditConfirm question={q} view={view} me={me} />
+          <QuestionCard
+            question={q}
+            workItemId={workItemId}
+            focused={q.id === focused}
+            total={total}
+            messages={view.messages.filter((m) => m.questionId === q.id).length}
+            onDiscuss={() => onDiscuss(q.id)}
+            {...(onPreview ? { onPreview } : {})}
+          />
+        </div>
       ))}
     </section>
   );
@@ -1745,5 +1749,76 @@ function EditsNotKept({ view, workItemId }: { view: PlanningView; workItemId: st
         ))}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * A person edited an open question's line in the plan (fourth review of #85): the planner records
+ * an answer from an edit only when the change is exactly an option, so the person is offered a
+ * one-tap confirm instead. Not for security, privacy or irreversible questions, which keep their
+ * own answer path.
+ */
+function EditConfirm({
+  question: q,
+  view,
+  me,
+}: {
+  question: PlanningQuestion;
+  view: PlanningView;
+  me: string | null;
+}) {
+  const [sending, setSending] = useState(false);
+  if (q.status !== "open" || isSensitiveQuestion(q) || q.number === null) return null;
+  const tag = `[Q${q.number}]`;
+  const edit = [...view.edits].reverse().find((e) => e.authorId === me && e.after.includes(tag));
+  const span = edit ? changedSpan(edit.before, edit.after, tag) : null;
+  if (!edit || !span) return null;
+  const line = (edit.after.split("\n").find((l) => l.includes(tag)) ?? "")
+    .replace(tag, "")
+    .replace(/^\s*([-*+]|\d+[.)])\s+/, "")
+    .trim();
+  const exact = editAnswer(span, q.options);
+  const record = async (answer: string) => {
+    setSending(true);
+    try {
+      await op(
+        "planning.answer",
+        { questionId: q.id, questionRevision: q.revision, answer },
+        { idempotencyKey: submitKey() },
+      );
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <div
+      className="grid gap-1.5 rounded-lg border border-status-running/30 bg-status-running/5 px-3 py-2 text-xs"
+      data-testid={`edit-confirm-${q.id}`}
+    >
+      <span>
+        You edited Q{q.number}'s line to “{line}”. Record that as your answer?
+      </span>
+      <span className="flex flex-wrap gap-1.5">
+        {q.options.length > 0 ? (
+          q.options.map((o) => (
+            <Button
+              key={o}
+              size="xs"
+              variant={o === exact ? "default" : "outline"}
+              disabled={sending}
+              onClick={() => record(o)}
+            >
+              {o}
+            </Button>
+          ))
+        ) : (
+          <Button size="xs" disabled={sending} onClick={() => record(span)}>
+            Record “{span}”
+          </Button>
+        )}
+      </span>
+    </div>
   );
 }

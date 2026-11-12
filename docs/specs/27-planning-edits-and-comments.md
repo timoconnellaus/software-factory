@@ -156,3 +156,21 @@ on them), and sf-app's tab.
     comment on each) and `edits-dropped-*.png` (the edits list with one not kept, and Release).
 - Deferred: resolving comments, editing the structured lists (acceptance criteria, assumptions,
   coverage), and sf-app.
+- After the fourth review (#85):
+  - **An answer from an edit, simplified**: the planner records one only when the changed span IS
+    one of the question's options (case and edge punctuation aside), or, for a question with no
+    options, the whole changed span as written (`editAnswer` in runner-contract). Anything else
+    answers nothing. The app offers the person a one-tap confirm above the open question ("You
+    edited Q3's line to '…'. Record that as your answer?" with the options), except for security,
+    privacy and irreversible questions. The negation list is gone.
+  - **A person's structural edit carries edits along** (`structureMoves`, `rekeyFootprint`). Any
+    block outside the edited lines keeps its identity, so rewording a parent item, or inserting,
+    deleting or reordering headings ("Notes" becoming "Notes (2)"), re-keys the stored edits it
+    moves in the same batch. When the planner's revision breaks an edit, the refusal names the
+    edit, its author, its section and what differs (missing, moved, or what stands there instead).
+  - **Removed blocks match only as whole blocks** in their section. A longer line that mentions
+    one is allowed and listed under the edit ("the planner mentions something you removed: …")
+    with Release or Keep.
+  - The 200-edit cap counts after retiring what an edit overrides. ADR 0541 is amended to name
+    `spec.edit` and `spec.releaseEdit` as one tap on the phone.
+

@@ -1261,6 +1261,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             createdAt: ago(4),
             kept: true,
             whyNotKept: null,
+            mentions: [],
             blocks: wrote(
               "- New items land in the Backlog of the project that owns the repository [Q3]",
             ),
@@ -1277,6 +1278,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             createdAt: ago(3),
             kept: true,
             whyNotKept: null,
+            mentions: [],
             blocks: wrote("  - relabelling an open issue brings it in"),
           },
           // Second review of #85: an edit the plan no longer keeps holds the gate until released.
@@ -1294,6 +1296,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
                   createdAt: ago(2),
                   kept: false,
                   whyNotKept: "the plan doesn't have its words as written, in their place",
+                  mentions: ["- Reopening issues the factory closed is out of scope"],
                   blocks: [
                     {
                       section: "Take work from GitHub issues › Scope",

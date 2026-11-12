@@ -3,12 +3,15 @@
 // differently from how the person wrote them.
 import { describe, expect, it } from "vitest";
 import {
+  changedSpan,
   droppedEdits,
   type EditFootprint,
+  editAnswer,
   editFootprint,
+  mentions,
   planBlocks,
-  renameSections,
-  sectionRenames,
+  rekeyFootprint,
+  structureMoves,
   whyNotKept,
 } from "../src/plan-blocks.ts";
 
@@ -193,28 +196,67 @@ describe("third review of #85", () => {
     });
   });
 
-  it("keeps a replaced line out, even inside a longer one (2)", () => {
-    const e = edit("## Stack\n- Use MySQL", 1, 1, "- Use Postgres");
+  it("keeps a replaced line out as a whole block; a longer line mentioning it is listed, not refused (4th review, 3)", () => {
+    const e = edit("## Stack\n- Use MySQL\n- Auth: X", 1, 1, "- Use Postgres");
     expect(e.footprint.gone).toEqual([
       { section: "Stack", parent: "", text: "- Use MySQL", max: 0 },
     ]);
-    const back = `${e.result}\n- Use MySQL instead (Postgres rejected)`;
+    const mention = `${e.result}\n- Migration from Use MySQL is out of scope`;
+    expect(droppedEdits(mention, [e])).toEqual([]);
+    expect(mentions(mention, e.footprint)).toEqual(["- Migration from Use MySQL is out of scope"]);
+    const back = `${e.result}\n- Use MySQL`;
     expect(droppedEdits(back, [e])).toEqual([e]);
-    expect(whyNotKept(back, e.footprint)).toContain("Use MySQL");
+    expect(whyNotKept(back, e.footprint)).toContain("is back in Stack");
+    const tbd = edit("## Stack\n- TBD", 1, 1, "- Postgres");
+    expect(droppedEdits(`${tbd.result}\n- Auth: TBD`, [tbd])).toEqual([]);
   });
 
-  it("maps sections a heading rename moves, and says when a section is gone (3)", () => {
-    const md = "## Scope\n### Later\n- a\n## Out";
-    const renamed = md.replace("## Scope", "## In scope");
-    expect([...sectionRenames(md, renamed)]).toEqual([
-      ["Scope", "In scope"],
-      ["Scope › Later", "In scope › Later"],
-    ]);
-    const e = edit(md, 2, 2, "- mine");
-    expect(renameSections(e.footprint, sectionRenames(md, renamed)).blocks).toEqual([
-      { section: "In scope › Later", parent: "", text: "- mine" },
-    ]);
-    expect(whyNotKept("## Out\n- mine", e.footprint)).toContain("no longer in the plan");
+  it("carries edits along when a person's edit moves structure: a reworded parent, a heading inserted above, sections reordered (4th review, 2)", () => {
+    const md = "## Notes\n- parent\n  - child\n\n## Other\n- x";
+    const child = edit(md, 2, 2, "  - Ana's child");
+    // Someone rewords the parent: the child's edit follows.
+    const reworded = child.result.replace("- parent", "- parent, reworded");
+    const moves1 = structureMoves(child.result, reworded, 1, 1, 1);
+    const f1 = rekeyFootprint(child.footprint, moves1);
+    expect(droppedEdits(reworded, [{ footprint: f1 }])).toEqual([]);
+    expect(droppedEdits(reworded, [child])).toEqual([child]);
+    // A new "## Notes" inserted above: the old one becomes "Notes (2)", and the edit follows.
+    const inserted = `## Notes\n- new\n\n${child.result}`;
+    const f2 = rekeyFootprint(child.footprint, structureMoves(child.result, inserted, 0, -1, 3));
+    expect(f2.blocks[0]?.section).toBe("Notes (2)");
+    expect(droppedEdits(inserted, [{ footprint: f2 }])).toEqual([]);
+    // Sections reordered in one edit: blocks inside the edited lines keep their keys by text.
+    const x = edit(md, 5, 5, "- x mine");
+    const reordered = "## Other\n- x mine\n\n## Notes\n- parent\n  - child";
+    expect(droppedEdits(reordered, [x])).toEqual([]);
+  });
+
+  it("says exactly what differs when the planner breaks an edit", () => {
+    const e = edit("## Scope\n- a\n## Out\n- b", 1, 1, "- mine");
+    expect(whyNotKept("## Scope\n## Out\n- b\n- mine", e.footprint)).toContain(
+      "moved: it belongs in Scope",
+    );
+    expect(whyNotKept("## Scope\n- mine, reworded\n## Out\n- b", e.footprint)).toContain(
+      'the plan has "mine, reworded" there instead',
+    );
+  });
+
+  it("records an answer from an edit only when the change IS an option, or the whole span for a question with none (4th review, 1)", () => {
+    const span = (after: string) => changedSpan("- Database: TBD [Q3]", after, "[Q3]");
+    const options = ["Postgres", "SQLite"];
+    for (const after of [
+      "- Database: anything but Postgres [Q3]",
+      "- Database: Postgres is out [Q3]",
+      "- Database: kein Postgres [Q3]",
+      "- Database: maybe Postgres? [Q3]",
+      "- Database: SQLite now, Postgres later [Q3]",
+      "- Database: Postgres or SQLite [Q3]",
+      "- Database: Postgres with replicas [Q3]",
+    ]) {
+      expect(editAnswer(span(after), options)).toBeNull();
+    }
+    expect(editAnswer(span("- Database: postgres. [Q3]"), options)).toBe("Postgres");
+    expect(editAnswer(span("- Database: SQLite on disk [Q3]"), [])).toBe("SQLite on disk");
   });
 
   it("accepts an edit of a fence inside a 10. item (7)", () => {

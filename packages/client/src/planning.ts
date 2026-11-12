@@ -170,7 +170,9 @@ export function answerText(kind: string, values: string[]): string {
  * what an answer sets in its mockup, and a mockup's frame size, shared with the server. */
 export {
   appliedValues,
+  changedSpan,
   dedent,
+  editAnswer,
   editWrote,
   foldSpace,
   frameSize,
