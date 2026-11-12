@@ -19,4 +19,7 @@ CREATE TABLE core_org_configs (
 -- The org's current version; null until its first save.
 ALTER TABLE core_organization ADD COLUMN config_version INTEGER;
 
+-- orgConfig.get's pending org config saves: an indexed read per org, not every org's pending actions.
+CREATE INDEX core_pending_actions_org_idx ON core_pending_actions (org_id, status, created_at);
+
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 280) WHERE key = 'schema_version';

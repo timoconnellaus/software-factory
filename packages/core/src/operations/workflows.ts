@@ -579,6 +579,7 @@ export const orgConfigGet = defineOperation({
       .where("pa.status", "=", "pending")
       .where("pa.operation", "in", [...ORG_CONFIG_WRITES])
       .orderBy("pa.created_at", "desc")
+      .limit(50)
       .execute();
     return {
       version,
