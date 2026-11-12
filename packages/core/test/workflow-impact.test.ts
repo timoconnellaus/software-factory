@@ -160,7 +160,7 @@ describe("what a judge is told is policy (third review)", () => {
   const withSecurity = withStages(SOFTWARE, (s) => [...s.slice(0, 3), SECURITY, ...s.slice(3)]);
   const told = (def: WorkflowDefinition, id: string, instructions: string) =>
     withStages(def, (s) =>
-      s.map((x) => (x.id === id ? { ...x, settings: { ...x.settings, instructions } } : x)),
+      s.map((x) => (x.id === id ? { ...x, settings: { ...(x.settings as object), instructions } } : x)),
     );
   it("telling an agent check to pass everything loosens", () => {
     const strict = told(withSecurity, "security", "Send back any change to auth without tests.");
