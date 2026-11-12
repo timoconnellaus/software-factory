@@ -318,3 +318,24 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 >    `checksNote`, read by runner.list) say the same in one line. A sprite runner never declares
 >    `checks`; a build that carries checks then waits with "no runner that can run this project's
 >    checks is online" when no online runner declares it.
+
+> **Amended 2026-11-13 (follow-ups to the fifth review).**
+>
+> 1. **A runner limit is a failure a person decides, not a fix round.** A check stopped by one of the
+>    runner's own limits is reported in `notRun` with the reason prefixed `failed: ` (runner-contract's
+>    `RUNNER_LIMIT`): "failed: the check ran out of memory (limit 4 GB)", "… ran out of processes
+>    (limit 4096 processes)", "… filled its /tmp (limit 1 GB)", "… ran out of disk (limit 10.0 GB …)".
+>    So it is never a pass and never goes to a fix round (no attempt is burned on something the agent
+>    can't win), and the gate says it failed on that limit rather than "not run". The check container
+>    runs without `--rm` so `docker inspect` can say `OOMKilled`; a few lines of shell after the
+>    check's own shell report the cgroup's `oom_kill` and `pids.events` max counts and /tmp's free
+>    space (a check could forge that line, which only sends its own failure to a person). The disk
+>    bound is measured every 15 s while a check runs (its whole dir), and a check past it is stopped.
+> 2. **A runner reaps only its own.** Every container and network carries `software-factory.runner`
+>    with the runner's id beside the job label, and both reapers match on it: two runners on one
+>    Docker daemon never remove each other's. One without the label (from before) is reaped by none.
+> 3. **The egress proxy refuses every IPv6 form with an IPv4 address inside** (IPv4-compatible,
+>    NAT64 and local-use NAT64, SIIT, 6to4, Teredo), after normalising the spelling; an IPv4-mapped
+>    address is checked as its IPv4.
+> 4. **The weaker macOS sandbox finds the user's `/var/folders` from `getconf`**
+>    (`DARWIN_USER_TEMP_DIR`, `DARWIN_USER_CACHE_DIR`), never TMPDIR, which the launchd job doesn't set.
