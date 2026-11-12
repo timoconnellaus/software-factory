@@ -5,7 +5,7 @@ import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Link } from "@tanstack/react-router";
-import { ago } from "#/lib/format";
+import { ago } from "@software-factory/client/format";
 import type { Inbox } from "#/lib/ops";
 import { rulesetDownloadPath } from "#/lib/ruleset";
 

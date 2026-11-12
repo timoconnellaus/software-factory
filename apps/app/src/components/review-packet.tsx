@@ -17,7 +17,7 @@ import {
   packetExtras,
   packetSections,
   parsePacket,
-} from "#/lib/packet";
+} from "@software-factory/client/packet";
 import { useSession } from "#/lib/session";
 import { NoteDialog, useDecide } from "./decisions.tsx";
 

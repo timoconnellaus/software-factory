@@ -22,10 +22,10 @@ import { Attachments } from "#/components/attachments";
 import { Planning } from "#/components/planning";
 import { ReviewPacket } from "#/components/review-packet";
 import { Timeline } from "#/components/timeline";
-import { ago, capitalise, duration, errorMessage, STAGE_LABEL } from "#/lib/format";
+import { ago, capitalise, duration, errorMessage, STAGE_LABEL } from "@software-factory/client/format";
 import { op } from "#/lib/op";
 import { OpError, type WorkItemDetail } from "#/lib/ops";
-import { parsePacket } from "#/lib/packet";
+import { parsePacket } from "@software-factory/client/packet";
 import {
   attachmentsQuery,
   planningQuery,
@@ -35,7 +35,7 @@ import {
   workItemQuery,
 } from "#/lib/queries";
 import { useProjects, useSession } from "#/lib/session";
-import { agentTime, stageSteps, statusOf, yourTime } from "#/lib/work-item";
+import { agentTime, stageSteps, statusOf, yourTime } from "@software-factory/client/work-item";
 
 const TABS = ["timeline", "planning", "runs", "review"] as const;
 type Tab = (typeof TABS)[number];

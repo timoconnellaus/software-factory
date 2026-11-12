@@ -4,7 +4,7 @@
 // file keeps the layout and the gate matching.
 import { describeEntry } from "@software-factory/timeline";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
-import { clock, duration } from "#/lib/format";
+import { clock, duration } from "@software-factory/client/format";
 import type { TimelineEntry, WorkItemDetail } from "#/lib/ops";
 
 const DECISION_KIND: Record<string, string> = {

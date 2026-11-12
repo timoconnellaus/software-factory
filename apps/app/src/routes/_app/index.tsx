@@ -10,8 +10,8 @@ import { FinishSetupCard } from "#/components/finish-setup";
 import { GateCard, QuestionCard } from "#/components/inbox-cards";
 import { ProtectionChangedCard } from "#/components/protection-card";
 import { RunnerHealth } from "#/components/runner-health";
-import { ago, errorMessage, STAGE_LABEL } from "#/lib/format";
-import { gateWorkItemIds, groupByProject } from "#/lib/inbox";
+import { ago, errorMessage, STAGE_LABEL } from "@software-factory/client/format";
+import { gateWorkItemIds, groupByProject } from "@software-factory/client/inbox";
 import { inboxQuery, setupStatusQuery, workItemQuery, workListQuery } from "#/lib/queries";
 import { useProjects } from "#/lib/session";
 

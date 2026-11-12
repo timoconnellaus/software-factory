@@ -13,12 +13,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
-import { ago } from "#/lib/format";
+import { ago } from "@software-factory/client/format";
 import { op, submitKey } from "#/lib/op";
 import { OpError, type SetupStatus } from "#/lib/ops";
 import { reposQuery, runnersQuery, setupStatusQuery } from "#/lib/queries";
 import { rulesetDownloadPath } from "#/lib/ruleset";
-import { LOGIN_COMMAND, pairCommand } from "#/lib/runner-pairing";
+import { LOGIN_COMMAND, pairCommand } from "@software-factory/client/runner-pairing";
 import { useSession } from "#/lib/session";
 
 interface SetupSearch {

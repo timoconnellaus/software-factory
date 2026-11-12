@@ -22,7 +22,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { toast } from "sonner";
-import { ago, errorMessage } from "#/lib/format";
+import { ago, errorMessage } from "@software-factory/client/format";
 import { op, submitKey } from "#/lib/op";
 import type { WorkItemDetail } from "#/lib/ops";
 import {
@@ -38,7 +38,7 @@ import {
   type PlanningView,
   questionOptions,
   sessionPill,
-} from "#/lib/planning";
+} from "@software-factory/client/planning";
 import { planningQuery } from "#/lib/queries";
 import { NoteDialog, useDecide } from "./decisions.tsx";
 

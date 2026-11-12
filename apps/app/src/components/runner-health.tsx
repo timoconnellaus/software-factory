@@ -1,51 +1,14 @@
 // The runner health line (spec 12): each of your runners with a status dot: online, busy n/cap,
 // rate-limited until T, offline since T.
-import { type Status, StatusDot } from "@software-factory/ui/components/status-dot";
+import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
 import { Link } from "@tanstack/react-router";
-import { ago, clock } from "#/lib/format";
-import type { Inbox } from "#/lib/ops";
+import type { Inbox } from "@software-factory/client/ops";
+import { RUNNER_DOT, runnerLabel, updateLabel } from "@software-factory/client/runners";
+
+export { runnerLabel, updateLabel };
 
 type Runner = Inbox["runners"][number];
-
-const DOT: Record<Runner["state"], Status> = {
-  online: "done",
-  busy: "running",
-  "rate-limited": "waiting",
-  offline: "failed",
-  draining: "idle",
-};
-
-/** How the runner's code stands (ADR 0360), or "" when it's current. */
-export function updateLabel(r: Runner): string {
-  if (!r.update) return "";
-  if (r.update.state === "behind") return "updating to the latest version";
-  const what = r.update.state === "blocked" ? "can't update" : "update rolled back";
-  return r.update.reason ? `${what}: ${r.update.reason}` : what;
-}
-
-export function runnerLabel(r: Runner): string {
-  // With a light pool (ADR 0301): "heavy 1/2 · light 2/6".
-  const slots = r.light
-    ? `heavy ${r.inUse}/${r.max} · light ${r.light.inUse}/${r.light.max}`
-    : `${r.inUse}/${r.max}`;
-  switch (r.state) {
-    case "online":
-      return `online · ${slots}`;
-    case "busy":
-      return r.light ? `busy · ${slots}` : `busy ${slots}`;
-    case "rate-limited":
-      return r.rateLimitedUntil
-        ? `rate-limited until ${clock(r.rateLimitedUntil)}`
-        : "rate-limited";
-    case "offline":
-      return r.lastSeenAt
-        ? `offline since ${clock(r.lastSeenAt)} (${ago(r.lastSeenAt)})`
-        : "offline · never seen";
-    case "draining":
-      return `draining · ${slots}`;
-  }
-}
 
 export function RunnerHealth({
   runners,
@@ -80,7 +43,7 @@ export function RunnerHealth({
           data-state={r.state}
           title={`${r.name}: ${runnerLabel(r)}${updateLabel(r) ? ` · ${updateLabel(r)}` : ""}`}
         >
-          <StatusDot status={DOT[r.state]} />
+          <StatusDot status={RUNNER_DOT[r.state]} />
           <span className="shrink-0 font-mono">{r.name}</span>
           <span className={cn("text-muted-foreground", compact && "truncate")}>
             {runnerLabel(r)}

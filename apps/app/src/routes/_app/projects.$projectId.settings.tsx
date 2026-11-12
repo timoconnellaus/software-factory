@@ -28,7 +28,7 @@ import {
   strs,
   useConfigDraft,
 } from "#/components/config-editor";
-import { ago } from "#/lib/format";
+import { ago } from "@software-factory/client/format";
 import { op, submitKey } from "#/lib/op";
 import { OpError } from "#/lib/ops";
 import { adjudicatorQuery, configQuery, trialsQuery } from "#/lib/queries";

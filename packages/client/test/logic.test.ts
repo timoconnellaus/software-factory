@@ -1,12 +1,12 @@
-// The page logic the specs pin down, as pure functions.
+// The page logic the specs pin down, as pure functions (both sf-app and the desktop app use it).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runnerLabel, updateLabel } from "#/components/runner-health";
-import { duration } from "#/lib/format";
-import { groupByProject } from "#/lib/inbox";
-import type { Inbox, WorkItemDetail } from "#/lib/ops";
-import { keptOnRunner, packetSections, parsePacket } from "#/lib/packet";
-import { answerChoices, bulkAcceptable } from "#/lib/questions";
-import { agentTime, stageSteps, yourTime } from "#/lib/work-item";
+import { duration } from "../src/format.ts";
+import { groupByProject } from "../src/inbox.ts";
+import type { Inbox, WorkItemDetail } from "../src/ops.ts";
+import { runnerLabel, updateLabel } from "../src/runners.ts";
+import { keptOnRunner, packetSections, parsePacket } from "../src/packet.ts";
+import { answerChoices, bulkAcceptable } from "../src/questions.ts";
+import { agentTime, stageSteps, yourTime } from "../src/work-item.ts";
 
 const NOW = "2026-11-11T10:00:00.000Z";
 
@@ -307,7 +307,7 @@ describe("work item detail", () => {
 
 describe("the verify stage's sections (spec 04)", () => {
   it("counts CI on the head SHA, not the runner's checks, and surfaces why", async () => {
-    const { checkCounts, packetExtras } = await import("#/lib/packet");
+    const { checkCounts, packetExtras } = await import("../src/packet.ts");
     const p = parsePacket({
       id: "rp_1",
       headSha: "a".repeat(40),
@@ -339,7 +339,7 @@ describe("the verify stage's sections (spec 04)", () => {
 
 describe("runner pairing (incident 2026-11-11-bootstrap)", () => {
   it("copies a ready-to-run command that pipes only the key", async () => {
-    const { pairCommand } = await import("#/lib/runner-pairing");
+    const { pairCommand } = await import("../src/runner-pairing.ts");
     expect(pairCommand("r_abc123")).toBe(
       "pbpaste | local/runner-host/bin/sf-runner pair --runner-id r_abc123 --key-stdin",
     );

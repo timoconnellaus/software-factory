@@ -14,12 +14,18 @@
     "dev": "sh scripts/bundle.sh dev && sh scripts/run.sh"
   },
   "dependencies": {
+    "@software-factory/client": "workspace:*",
+    "@software-factory/core": "workspace:*",
+    "@software-factory/timeline": "workspace:*",
     "@software-factory/ui": "workspace:*",
     "@tanstack/react-query": "5.105.3",
     "@tanstack/react-router": "1.170.46",
+    "lucide-react": "1.67.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "sonner": "2.0.8"
+    "react-markdown": "10.1.0",
+    "sonner": "2.0.8",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@software-factory/config": "workspace:*",

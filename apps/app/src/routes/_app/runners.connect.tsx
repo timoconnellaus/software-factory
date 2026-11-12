@@ -11,7 +11,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { op, submitKey } from "#/lib/op";
 import { OpError } from "#/lib/ops";
-import { LOGIN_COMMAND } from "#/lib/runner-pairing";
+import { LOGIN_COMMAND } from "@software-factory/client/runner-pairing";
 
 export const Route = createFileRoute("/_app/runners/connect")({
   validateSearch: (s: Record<string, unknown>): { code?: string } =>

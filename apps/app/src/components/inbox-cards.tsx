@@ -8,11 +8,11 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { ago } from "#/lib/format";
+import { ago } from "@software-factory/client/format";
 import type { Inbox } from "#/lib/ops";
-import { checkCounts, packetCounts, parsePacket } from "#/lib/packet";
+import { checkCounts, packetCounts, parsePacket } from "@software-factory/client/packet";
 import { workItemQuery } from "#/lib/queries";
-import { answerChoices } from "#/lib/questions";
+import { answerChoices } from "@software-factory/client/questions";
 import { NoteDialog, useDecide } from "./decisions.tsx";
 
 type Gate = Inbox["gates"][number];
