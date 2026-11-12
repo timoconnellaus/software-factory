@@ -4,7 +4,8 @@ import { call, first, newItem, ok, POLICY, refusal, rows, uid, world } from "./h
 
 describe("intake", () => {
   it("creates once per event, ignores a redelivery, and attaches a new event with the same dedupe key", async () => {
-    const w = await world();
+    // An intake may create and release only where the config lets agents release (ADR 0491).
+    const w = await world({ ...POLICY, release: { agents: true } });
     const event = {
       projectId: w.projectId,
       title: "Fix login",
@@ -13,7 +14,7 @@ describe("intake", () => {
     };
     const one = await ok<{ workItemId: string; outcome: string }>(
       "workItem.create",
-      { ...event, eventId: "d1" },
+      { state: "queued", ...event, eventId: "d1" },
       {
         type: "intake",
         id: "github",
@@ -24,19 +25,19 @@ describe("intake", () => {
     const intake = { type: "intake" as const, id: "github" };
     const created = await ok<{ workItemId: string; outcome: string }>(
       "workItem.create",
-      { ...event, eventId: "d1", requesterUserId: w.userId },
+      { state: "queued", ...event, eventId: "d1", requesterUserId: w.userId },
       intake,
     );
     expect(created.outcome).toBe("created");
     const again = await ok<{ workItemId: string; outcome: string }>(
       "workItem.create",
-      { ...event, eventId: "d1", requesterUserId: w.userId },
+      { state: "queued", ...event, eventId: "d1", requesterUserId: w.userId },
       intake,
     );
     expect(again).toMatchObject({ workItemId: created.workItemId, outcome: "duplicate" });
     const attached = await ok<{ workItemId: string; outcome: string }>(
       "workItem.create",
-      { ...event, eventId: "d2", body: "a comment", requesterUserId: w.userId },
+      { state: "queued", ...event, eventId: "d2", body: "a comment", requesterUserId: w.userId },
       intake,
     );
     expect(attached).toMatchObject({ workItemId: created.workItemId, outcome: "attached" });

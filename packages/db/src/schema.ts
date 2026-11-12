@@ -231,6 +231,11 @@ export interface CoreBatchGuardTable {
 
 export type Stage = "intake" | "triage" | "spec" | "build" | "verify" | "merge" | "done";
 export type WorkItemStatus =
+  // 0261 (ADR 0491): before the pipeline; `shaping` is spec 50 part C's.
+  | "backlog"
+  | "shaping"
+  | "ready"
+  | "queued"
   | "running"
   | "waiting"
   | "paused"
@@ -281,6 +286,29 @@ export interface CoreWorkItemsTable {
   closed_at: Iso | null;
   /** 0260 (ADR 0490): the repository it uses; null when none is chosen yet. */
   repository_id: string | null;
+  /** 0261 (ADR 0491): 0 urgent, 1 high, 2 normal, 3 low. */
+  priority: Generated<number>;
+  /** 0261: the order within a priority, lower first. */
+  rank: Generated<number>;
+  /** 0261: JSON string[] written while shaping; null when none. */
+  acceptance_criteria: JsonText | null;
+  released_at: Iso | null;
+  released_by: string | null;
+  /** 0261: when the pipeline started (the pull). */
+  pulled_at: Iso | null;
+  /** 0262 (ADR 0493): when its Workflow started to run the shaping stages, before release. */
+  shaping_started_at: Iso | null;
+  /** 0262: when the shaping stages finished, and the default branch's head then. */
+  shaped_at: Iso | null;
+  shaped_base_sha: string | null;
+}
+
+/** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
+export interface CoreWorkItemLinksTable {
+  work_item_id: string;
+  waits_for_id: string;
+  created_at: Iso;
+  created_by: string;
 }
 
 export interface CoreIntakeKeysTable {
@@ -335,6 +363,8 @@ export interface CoreQuestionsTable {
   status: Generated<"open" | "answered" | "withdrawn">;
   answer: string | null;
   accepted_default: Generated<Bool>;
+  /** ADR 0470: accepted under a person's "finish alone" instruction (answered_by is that person). */
+  accepted_alone: Generated<Bool>;
   answered_by: string | null;
   answered_at: Iso | null;
   planning_round: number;
@@ -352,6 +382,10 @@ export interface CoreQuestionsTable {
   revision: Generated<number>;
   answer_revision: Generated<number>;
   note: string | null;
+  /** Spec 26: the person skipped it; the planning agent decides. */
+  skipped: Generated<Bool>;
+  /** Spec 26: when this answer revision reached the planning agent. */
+  answer_delivered_at: Iso | null;
   planning_session_id: string | null;
   updated_at: Iso | null;
 }
@@ -607,6 +641,8 @@ export interface CoreRunSteersTable {
   text: string;
   created_at: Iso;
   delivered_at: Iso | null;
+  /** ADR 0470: stop the agent's current step before submitting the text. */
+  interrupt: Generated<Bool>;
   /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
   kind: Generated<"message" | "takeover">;
 }
@@ -798,6 +834,18 @@ export interface CorePlanningSessionsTable {
   activity: string | null;
   focused_question_id: string | null;
   announced_at: Iso | null;
+  /** ADR 0470: a person paused the planner; news doesn't wake it until resumed. */
+  paused_at: Iso | null;
+  paused_by: string | null;
+  /** ADR 0470: who told the planner to finish alone, and when; null while it's off. */
+  finish_alone_by: string | null;
+  finish_alone_at: Iso | null;
+  /** Spec 26: the highest cursor handed to the harness; a hook's ack is clamped to it. */
+  handed_cursor: Generated<number>;
+  /** Spec 26: JSON `{ questionId: answer revision }` handed out, for read receipts. */
+  handed_answers: string | null;
+  /** Spec 26: the last "away" notice, so questions and replies notify once per burst. */
+  notified_at: Iso | null;
   replaces_session_id: string | null;
   created_by: string;
   created_at: Iso;
@@ -827,6 +875,8 @@ export interface CorePlanningMessagesTable {
   kind: Generated<"chat" | "gate">;
   delivered_at: Iso | null;
   created_at: Iso;
+  /** Spec 26: the steer this message was typed as; delivered when the host takes it. */
+  steer_id: string | null;
 }
 
 export interface CorePlanningPresenceTable {
@@ -932,6 +982,7 @@ export interface CoreDatabase {
   core_kill_switches: CoreKillSwitchesTable;
   core_batch_guard: CoreBatchGuardTable;
   core_work_items: CoreWorkItemsTable;
+  core_work_item_links: CoreWorkItemLinksTable;
   core_intake_keys: CoreIntakeKeysTable;
   core_intake_events: CoreIntakeEventsTable;
   core_stages: CoreStagesTable;

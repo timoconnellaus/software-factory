@@ -3,7 +3,7 @@
 // - A gate decision arriving through `call` is refused: it needs `decide` (ADR 0381).
 // - `decide` signs with the device key; Touch ID is the key's own prompt (sf-keys).
 // - A revoked token turns into "signed out" (`signedOut`), not an error.
-import { DECISION_OPS, refuseDecisionCall } from "../shared/decisions.ts";
+import { DECIDE_OPS, DECISION_OPS, refuseDecisionCall } from "../shared/decisions.ts";
 import type { CallResult } from "../shared/rpc.ts";
 import { type Door, type Signer, UnauthenticatedError } from "./door.ts";
 
@@ -73,7 +73,7 @@ export function operationHandlers(deps: {
           error: "sign in again: this Mac has no device key",
         };
       }
-      if (!DECISION_OPS.has(op)) {
+      if (!DECIDE_OPS.has(op)) {
         return { ok: false, code: "invalid_input", error: `${op} isn't a gate decision` };
       }
       return guarded(() => deps.door().decide(op, input, sign, idempotencyKey), SIGNED_OUT);

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { newId } from "../ids.ts";
 import { classifyIncident, ROOT_CAUSES } from "../incidents/classify.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { startPipeline } from "./backlog.ts";
 import { createWorkItem, requireProject, requireWorkItem, workItemId } from "./shared.ts";
 
 export async function openIncident(
@@ -54,7 +55,10 @@ export async function openIncident(
     requesterUserId: w.requester_user_id,
     parentWorkItemId: w.id,
     number: project.next_number,
+    // The factory's own fix skips the backlog and the active limit (ADR 0491): started at once.
+    state: "queued",
   });
+  startPipeline(ctx, fix, project, { policy: ctx.scope.policy, trial: null });
   // createWorkItem pointed the audit row at the new item; this call is about the source item.
   ctx.subject({ workItemId: w.id });
   ctx.write(

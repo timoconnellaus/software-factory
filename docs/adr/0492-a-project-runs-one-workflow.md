@@ -26,3 +26,9 @@ live in each project's config version.
 - Workflow v6's step names don't change, so running instances replay unchanged. Items already past
   triage keep the workflow triage picked.
 - The work item page's workflow picker goes away; the project's workflow is set in config.
+
+> Amended 2026-11-12 (review of #69): no project silently loses its workflow on deploy. Migration
+> 0261 names the only workflow of a project that defines exactly one (a new `migrated` config
+> version). A project that defines several and names none fails closed: release refuses, the pull
+> starts nothing, Setup says to choose one. Items started before 0261 keep triage's pick. The work
+> item page shows the item's workflow read-only.

@@ -17,26 +17,30 @@ async function main(argv: string[]) {
   if (command === "mcp") {
     const relayFile = rest[0];
     if (!relayFile) throw new Error("usage: cli.ts mcp <relayFile>");
-    await serveMcp(await readRelay(relayFile));
+    await serveMcp(await readRelay(relayFile), relayFile);
     return;
   }
   if (command !== "hook") throw new Error("usage: cli.ts mcp|hook …");
   const [event, relayFile] = rest;
   if (!event || !relayFile) throw new Error("usage: cli.ts hook <event> <relayFile>");
   if (event === "stop") {
-    let text: string | null = null;
+    let result: Awaited<ReturnType<typeof runStopHook>> | null = null;
     try {
       await readStdin();
-      text = await runStopHook({ relayFile, relay: await readRelay(relayFile) });
+      result = await runStopHook({ relayFile, relay: await readRelay(relayFile) });
     } catch {
-      text = null;
+      result = null;
     }
-    // asyncRewake: exit 2 with the news on stderr wakes the model; 0 lets it stay stopped.
-    if (!text) process.exit(0);
-    process.stderr.write(`${text}\n`, () => process.exit(2));
+    // asyncRewake: exit 2 with the news on stderr wakes the model; 0 lets it stay stopped. What was
+    // shown is recorded only once it is written (spec 26).
+    if (!result?.response) process.exit(0);
+    process.stderr.write(`${result.response}\n`, () => {
+      result.save().finally(() => process.exit(2));
+    });
     return;
   }
   let response: Record<string, unknown> = {};
+  let save: () => Promise<void> = async () => {};
   try {
     const payload = JSON.parse((await readStdin()).trim() || "{}") as HookPayload;
     const hookEvent =
@@ -46,15 +50,19 @@ async function main(argv: string[]) {
           ? "UserPromptSubmit"
           : null;
     if (hookEvent) {
-      response = await runNewsHook(hookEvent, payload, {
+      ({ response, save } = await runNewsHook(hookEvent, payload, {
         relayFile,
         relay: await readRelay(relayFile),
-      });
+      }));
     }
   } catch {
     // The agent's work matters more than the news.
   }
-  process.stdout.write(`${JSON.stringify(response)}\n`, () => process.exit(0));
+  process.stdout.write(`${JSON.stringify(response)}\n`, () => {
+    save()
+      .catch(() => {})
+      .finally(() => process.exit(0));
+  });
 }
 
 await main(process.argv.slice(2)).catch((error) => {

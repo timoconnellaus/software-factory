@@ -71,7 +71,7 @@ const has = (t: string) => (e: End) => e.texts.some((m) => m.t === t);
 async function running(w: World, capabilities = [...MANIFEST.capabilities, "terminal" as const]) {
   const item = await ok<{ workItemId: string }>(
     "workItem.create",
-    { projectId: w.projectId, title: "Show me the terminal" },
+    { state: "queued", projectId: w.projectId, title: "Show me the terminal" },
     w.human,
   );
   const c = httpControlPlane({

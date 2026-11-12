@@ -5,7 +5,9 @@
 import { json, parseJson } from "@software-factory/db";
 import {
   chatReplyInputSchema,
+  PLANNING_INTERRUPT_LINES,
   planningNewsInputSchema,
+  planningPeekInputSchema,
   planningReadyInputSchema,
   planningWaitInputSchema,
   specReviseInputSchema,
@@ -16,8 +18,13 @@ import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import {
   batchDue,
+  type Delivered,
   enqueuePlanningJob,
+  guardNoUnreadPersonNews,
+  hasUnreadPersonNews,
+  interruptPlanning,
   logPlanning,
+  NEWS_EVENTS,
   newsEnvelope,
   OPEN_SESSION,
   openSession,
@@ -26,7 +33,9 @@ import {
   planningReadyEvent,
   presentPeople,
   readNews,
+  takeBackFromGate,
   wakeSession,
+  withdrawSpecGate,
 } from "../planning.ts";
 import { approverIds } from "../scope.ts";
 import { ACTIVE_RUN } from "./runners.ts";
@@ -96,13 +105,27 @@ export async function planningJob(
   return { session, runId: run.id };
 }
 
-/** The session is alive and doing something: the pill shows it. */
+/** Away notices for questions and replies go at most this often (one per burst). */
+const NOTIFY_BURST_MS = 2 * 60_000;
+
+/** How stale `agent_seen_at` may get before a look with nothing new writes it again. */
+const SEEN_REFRESH_MS = 30_000;
+
+/** The session is alive and doing something: the pill shows it. Writes only what changed. */
 function markWorking(ctx: HandlerContext, session: PlanningSessionRow, activity?: string) {
+  const status = session.status === "yielding" ? "yielding" : "working";
+  const unchanged =
+    session.status === status &&
+    session.idle_since === null &&
+    (activity === undefined || activity === session.activity) &&
+    session.agent_seen_at !== null &&
+    Date.parse(ctx.now) - Date.parse(session.agent_seen_at) < SEEN_REFRESH_MS;
+  if (unchanged) return;
   ctx.write(
     ctx.db
       .updateTable("core_planning_sessions")
       .set({
-        status: session.status === "yielding" ? "yielding" : "working",
+        status,
         idle_since: null,
         agent_seen_at: ctx.now,
         updated_at: ctx.now,
@@ -125,6 +148,40 @@ async function agentDrafted(ctx: HandlerContext): Promise<boolean> {
     .where("id", "=", w.current_spec_id)
     .executeTakeFirst();
   return spec?.created_by === ctx.actor.id;
+}
+
+/**
+ * After planning was announced, a question the agent asks or a reply it sends tells the owner, once
+ * per call, when nobody has the Planning view open (spec 26; kim notifies per burst).
+ */
+export async function notifyAway(
+  ctx: HandlerContext,
+  session: PlanningSessionRow,
+  event: "planning.question" | "planning.reply",
+  title: string,
+) {
+  if (!session.announced_at) return;
+  // Once per burst (kim's push settle): nothing more for two minutes after a notice.
+  if (
+    session.notified_at &&
+    Date.parse(ctx.now) - Date.parse(session.notified_at) < NOTIFY_BURST_MS
+  ) {
+    return;
+  }
+  const w = requireWorkItem(ctx);
+  if ((await presentPeople(ctx, w.id)).length) return;
+  ctx.write(
+    ctx.db
+      .updateTable("core_planning_sessions")
+      .set({ notified_at: ctx.now })
+      .where("id", "=", session.id),
+  );
+  const approvers = await approverIds(ctx.db, w.org_id, ctx.scope.policy);
+  const to = approvers.includes(w.requester_user_id) ? w.requester_user_id : (approvers[0] ?? null);
+  ctx.emit({
+    kind: "notify",
+    payload: { event, userId: to, workItemId: w.id, title, url: `/work/${w.id}?tab=planning` },
+  });
 }
 
 /** First draft + questions are in and the agent is waiting: tell the owner once (criterion 1). */
@@ -257,9 +314,21 @@ export const planningNote = defineOperation({
     ctx.write(
       ctx.db
         .updateTable("core_planning_sessions")
-        .set({ round, ready_spec_id: null, ready_at: null, at_gate: 0, updated_at: ctx.now })
+        .set({
+          round,
+          ready_spec_id: null,
+          ready_at: null,
+          at_gate: 0,
+          // Changes requested turn "finish alone" off (ADR 0470): the approver wants a say.
+          finish_alone_by: null,
+          finish_alone_at: null,
+          updated_at: ctx.now,
+        })
         .where("id", "=", session.id),
     );
+    if (session.finish_alone_by) {
+      logPlanning(ctx, w.id, "finish.alone", { on: false, reason: "changes requested" });
+    }
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -457,6 +526,12 @@ export const chatReply = defineOperation({
     );
     markWorking(ctx, session);
     logPlanning(ctx, w.id, "chat.reply", { messageId });
+    await notifyAway(
+      ctx,
+      session,
+      "planning.reply",
+      `The planner replied on #${w.number}: ${w.title}`,
+    );
     return { messageId };
   },
 });
@@ -498,7 +573,7 @@ const newsOutput = z.object({
 export const planningNews = defineOperation({
   name: "planning.news",
   description:
-    "The planning agent's news since its cursor (spec 20): answers, revised answers, people's chat messages and presence changes. Moves the session's cursor. The PostToolUse and UserPromptSubmit hooks call it.",
+    "The planning agent's news since its cursor (spec 20): answers, revised answers, people's chat messages and presence changes. A hook passes `ack` (the last cursor it showed the agent) and `hold`, so news it couldn't show comes again (spec 26); without `hold` the news is marked read at once (the agent's own planning_news call).",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -507,32 +582,143 @@ export const planningNews = defineOperation({
   scope: byJob,
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
-    const from = input.cursor ?? session.delivered_cursor;
+    const acked = await acknowledge(ctx, session, input.ack);
+    // A cursor only re-reads: never past what was delivered (review of #67).
+    const from = input.cursor === undefined ? acked : Math.min(input.cursor, acked);
     const news = await readNews(ctx, session.work_item_id, from);
-    deliver(ctx, session, news.cursor);
+    hand(ctx, session, news.cursor, news.delivered);
+    // Without `hold` the caller is the agent itself, which sees the result: read now.
+    if (!input.hold) deliver(ctx, session, news.cursor, news.delivered, acked);
     markWorking(ctx, session, input.activity);
     return { ...(await newsEnvelope(ctx, session)), cursor: news.cursor, events: news.events };
   },
 });
 
-/** Moves the session's cursor and marks the chat messages it carried as read. */
-function deliver(ctx: HandlerContext, session: PlanningSessionRow, cursor: number) {
-  if (cursor <= session.delivered_cursor) return;
+export const planningPeek = defineOperation({
+  name: "planning.peek",
+  description:
+    "Whether there is planning news after a cursor (default: the last one delivered), and whether the session must yield or has ended (spec 26). A read, so a hook's look between the agent's steps costs no write.",
+  risk: "read",
+  actors: ["runner"],
+  permission: "signed-in",
+  input: planningPeekInputSchema.extend(planningJobFields),
+  output: z.object({
+    latest: z.number(),
+    news: z.boolean(),
+    yield: z.boolean(),
+    ended: z.boolean(),
+  }),
+  scope: byJob,
+  async handler(input, ctx) {
+    const { session } = await planningJob(ctx, input);
+    const from = Math.max(input.cursor ?? 0, session.delivered_cursor);
+    const rows = await ctx.db
+      .selectFrom("core_planning_events")
+      .select(["id", "type"])
+      .where("work_item_id", "=", session.work_item_id)
+      .where("id", ">", from)
+      .orderBy("id", "desc")
+      .limit(200)
+      .execute();
+    return {
+      latest: rows[0]?.id ?? from,
+      news: rows.some((r) => (NEWS_EVENTS as readonly string[]).includes(r.type)),
+      yield: session.yield_requested_at !== null,
+      ended: !OPEN_SESSION.includes(session.status),
+    };
+  },
+});
+
+/**
+ * Marks read what a hook says the agent was shown (`ack`, spec 26). The ack is clamped to the
+ * highest cursor this session was actually handed, so nothing can mark unseen news read (review of
+ * #67). Receipts go to exactly the answer revisions handed out. Returns the cursor news continues from.
+ */
+async function acknowledge(
+  ctx: HandlerContext,
+  session: PlanningSessionRow,
+  ack: number | undefined,
+): Promise<number> {
+  const upTo = Math.min(ack ?? 0, session.handed_cursor);
+  if (upTo <= session.delivered_cursor) return session.delivered_cursor;
+  const shown = await readNews(ctx, session.work_item_id, session.delivered_cursor, upTo);
+  const handed = parseJson<Record<string, number>>(session.handed_answers ?? "{}", {});
+  deliver(ctx, session, upTo, {
+    // Only the revision handed out: a later revision stays unread until it is shown.
+    answers: shown.delivered.answers.flatMap((a) =>
+      handed[a.questionId] !== undefined
+        ? [{ ...a, revision: handed[a.questionId] as number }]
+        : [],
+    ),
+    messageIds: shown.delivered.messageIds,
+  });
+  return upTo;
+}
+
+/**
+ * Records what this call hands the harness: the cursor (the ceiling for a later ack) and each
+ * answer's revision (what its receipt will mean).
+ */
+function hand(
+  ctx: HandlerContext,
+  session: PlanningSessionRow,
+  cursor: number,
+  delivered: Delivered,
+) {
+  const handed = parseJson<Record<string, number>>(session.handed_answers ?? "{}", {});
+  for (const a of delivered.answers) handed[a.questionId] = a.revision;
+  if (cursor <= session.handed_cursor && !delivered.answers.length) return;
   ctx.write(
     ctx.db
       .updateTable("core_planning_sessions")
-      .set({ delivered_cursor: cursor })
-      .where("id", "=", session.id)
-      .where("delivered_cursor", "<", cursor),
+      .set({
+        handed_cursor: Math.max(cursor, session.handed_cursor),
+        handed_answers: JSON.stringify(handed),
+      })
+      .where("id", "=", session.id),
   );
-  ctx.write(
-    ctx.db
-      .updateTable("core_planning_messages")
-      .set({ delivered_at: ctx.now })
-      .where("work_item_id", "=", session.work_item_id)
-      .where("author_kind", "=", "person")
-      .where("delivered_at", "is", null),
-  );
+}
+
+/**
+ * Moves the session's cursor and marks exactly the answers (at their revision) and people's
+ * messages it carried as read (spec 26: read receipts; anything past the page stays unread).
+ */
+function deliver(
+  ctx: HandlerContext,
+  session: PlanningSessionRow,
+  cursor: number,
+  delivered: Delivered,
+  /** The cursor already moved to in this call (an `ack`). */
+  floor = session.delivered_cursor,
+) {
+  if (cursor > floor) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_sessions")
+        .set({ delivered_cursor: cursor })
+        .where("id", "=", session.id)
+        .where("delivered_cursor", "<", cursor),
+    );
+  }
+  if (delivered.messageIds.length) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_messages")
+        .set({ delivered_at: ctx.now })
+        .where("id", "in", delivered.messageIds)
+        .where("delivered_at", "is", null),
+    );
+  }
+  for (const a of delivered.answers) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_questions")
+        .set({ answer_delivered_at: ctx.now })
+        .where("id", "=", a.questionId)
+        .where("answer_revision", "=", a.revision)
+        .where("answer_delivered_at", "is", null),
+    );
+  }
 }
 
 export const planningWait = defineOperation({
@@ -547,13 +733,16 @@ export const planningWait = defineOperation({
   scope: byJob,
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
-    const from = input.cursor ?? session.delivered_cursor;
+    const acked = await acknowledge(ctx, session, input.ack);
+    const from = input.cursor === undefined ? acked : Math.min(input.cursor, acked);
     const news = await readNews(ctx, session.work_item_id, from);
     const envelope = await newsEnvelope(ctx, session);
     const dueAt = batchDue(news.userEvents, envelope.openQuestions, input.idleMs);
-    const due = dueAt !== null && dueAt <= Date.parse(ctx.now);
+    // A paused planner isn't woken by news until a person resumes it (ADR 0470).
+    const due = session.paused_at === null && dueAt !== null && dueAt <= Date.parse(ctx.now);
     if (due) {
-      deliver(ctx, session, news.cursor);
+      hand(ctx, session, news.cursor, news.delivered);
+      if (!input.hold) deliver(ctx, session, news.cursor, news.delivered, acked);
       markWorking(ctx, session);
       return { ...envelope, cursor: news.cursor, events: news.events, due, recheckAt: null };
     }
@@ -586,7 +775,7 @@ export const planningWait = defineOperation({
       cursor: from,
       events: [],
       due: false,
-      recheckAt: dueAt === null ? null : new Date(dueAt).toISOString(),
+      recheckAt: dueAt === null || session.paused_at ? null : new Date(dueAt).toISOString(),
     };
   },
 });
@@ -631,6 +820,17 @@ export const planningReady = defineOperation({
       return { specId: session.ready_spec_id, round: session.round };
     }
     if (!w.current_spec_id) throw new OperationError("conflict", "revise the spec first");
+    // No gate on stale news (ADR 0470): a person's answer or message the agent hasn't read yet.
+    // Checked now and guarded in the batch, so one arriving meanwhile fails this call instead.
+    const read = await acknowledge(ctx, session, input.ack);
+    const unread = await hasUnreadPersonNews(ctx, w.id, read);
+    if (unread) {
+      throw new OperationError(
+        "conflict",
+        `a person answered or wrote since you last looked (${unread} event${unread === 1 ? "" : "s"}): call planning_news, act on it, then ask for the gate again`,
+      );
+    }
+    guardNoUnreadPersonNews(ctx, w.id, read);
     const open = await ctx.db
       .selectFrom("core_questions")
       .select("number")
@@ -644,6 +844,9 @@ export const planningReady = defineOperation({
         `blocking questions are still open: ${open.map((q) => `Q${q.number ?? "?"}`).join(", ")}`,
       );
     }
+    // A gate the Workflow opened after a person took the spec back is stale: withdraw it, and the
+    // Workflow's next round opens the gate on this request (ADR 0470).
+    await withdrawSpecGate(ctx, w.id, "withdrawn: the planner asked for the gate again");
     ctx.write(
       ctx.db
         .updateTable("core_planning_sessions")
@@ -653,8 +856,11 @@ export const planningReady = defineOperation({
           at_gate: 1,
           updated_at: ctx.now,
         })
-        .where("id", "=", session.id),
+        .where("id", "=", session.id)
+        .where("at_gate", "=", 0)
+        .where("round", "=", session.round),
     );
+    ctx.guardChanged("the round hasn't moved since the planner looked");
     ctx.emit({
       kind: "workflow.event",
       payload: {
@@ -674,17 +880,29 @@ export const planningReady = defineOperation({
 export const chatSend = defineOperation({
   name: "chat.send",
   description:
-    "A person writes in the work item's planning chat, optionally about a question or replying to a message. It reaches the planning agent at once and wakes it (resuming a yielded session).",
+    "A person writes in the work item's planning chat, optionally about a question or replying to a message. It reaches the planning agent after its current step, or at once with `interrupt` (the agent's current step is stopped, ADR 0470), and wakes an idle or yielded session. While the spec waits at the gate it takes the spec back.",
   risk: "write",
   actors: ["human"],
   permission: "member",
+  // An interrupt comes only from a person in the app or on the desktop (review of #71); a plain
+  // message may come from anywhere a member may write.
+  browserOnly: (input) => input.interrupt === true,
+  desktopDecidable: true,
   input: z.object({
     workItemId,
     text: z.string().trim().min(1).max(20_000),
     questionId: z.string().min(1).optional(),
     replyTo: z.string().min(1).optional(),
+    /** Stop the planner's current step so it reads this now (⌘-Enter, ADR 0470). */
+    interrupt: z.boolean().optional(),
   }),
-  output: z.object({ messageId: z.string() }),
+  output: z.object({
+    messageId: z.string(),
+    /** Whether the planner was interrupted; otherwise it reads the message after its current step. */
+    interrupted: z.boolean(),
+    /** Why an interrupt asked for didn't happen. */
+    note: z.string().nullable(),
+  }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     await assertAbout(ctx, w.id, input.questionId, input.replyTo);
@@ -701,9 +919,24 @@ export const chatSend = defineOperation({
         created_at: ctx.now,
       }),
     );
-    logPlanning(ctx, w.id, "chat.message", { messageId });
+    logPlanning(ctx, w.id, "chat.message", { messageId, interrupt: input.interrupt ?? false });
+    const gate = await takeBackFromGate(ctx, w, "a person wrote in the chat");
     await wakeSession(ctx, w);
-    return { messageId };
+    let interrupted = false;
+    // The spec was approved a moment before this arrived: say so instead of losing it quietly.
+    let note: string | null =
+      gate === "decided"
+        ? "The spec was approved a moment ago, so the planner won't read this. Tell the approver if it changes anything."
+        : null;
+    if (input.interrupt && !note) {
+      const session = await openSession(ctx, w.id);
+      const result = session
+        ? await interruptPlanning(ctx, session, PLANNING_INTERRUPT_LINES.message)
+        : { interrupted: false, reason: "no planning session is open" };
+      interrupted = result.interrupted;
+      note = result.reason;
+    }
+    return { messageId, interrupted, note };
   },
 });
 
@@ -812,6 +1045,88 @@ export const planningMove = defineOperation({
   },
 });
 
+// ---- steering the planner (ADR 0470) ----
+
+export const planningStop = defineOperation({
+  name: "planning.stop",
+  description:
+    "A person stops the planning agent's current step (the activity line's Stop, ADR 0470). The session stays open: the agent ends its turn and waits. Needs a runner that can interrupt; an idle agent has nothing to stop.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  // Only a person, in the app or on the desktop: never a CLI or MCP token (review of #71).
+  browserOnly: true,
+  desktopDecidable: true,
+  input: z.object({ workItemId }),
+  output: z.object({ stopped: z.boolean(), note: z.string().nullable() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no open planning session");
+    const result = await interruptPlanning(ctx, session, PLANNING_INTERRUPT_LINES.stop);
+    if (result.interrupted) logPlanning(ctx, w.id, "planning.stopped", {});
+    return { stopped: result.interrupted, note: result.reason };
+  },
+});
+
+export const planningPause = defineOperation({
+  name: "planning.pause",
+  description:
+    "A person pauses the planning agent (ADR 0470): its current step is stopped, and news (answers, chat) doesn't wake it until someone resumes it with planning.resume. A paused session yields its runner slot when the light pool needs it, as an idle one does.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  // Only a person, in the app or on the desktop: never a CLI or MCP token (review of #71).
+  browserOnly: true,
+  desktopDecidable: true,
+  input: z.object({ workItemId }),
+  output: z.object({ paused: z.boolean(), interrupted: z.boolean() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no open planning session");
+    if (session.paused_at) return { paused: true, interrupted: false };
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_sessions")
+        .set({ paused_at: ctx.now, paused_by: ctx.actor.id, updated_at: ctx.now })
+        .where("id", "=", session.id),
+    );
+    logPlanning(ctx, w.id, "planning.paused", {});
+    const { interrupted } = await interruptPlanning(ctx, session, PLANNING_INTERRUPT_LINES.pause);
+    return { paused: true, interrupted };
+  },
+});
+
+export const planningResume = defineOperation({
+  name: "planning.resume",
+  description:
+    "A person resumes a paused planning agent (ADR 0470): it wakes at once with everything that arrived while it was paused, and a yielded session is resumed on its runner.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  // Only a person, in the app or on the desktop: never a CLI or MCP token (review of #71).
+  browserOnly: true,
+  desktopDecidable: true,
+  input: z.object({ workItemId }),
+  output: z.object({ resumed: z.boolean() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no open planning session");
+    if (!session.paused_at) return { resumed: false };
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_sessions")
+        .set({ paused_at: null, paused_by: null, updated_at: ctx.now })
+        .where("id", "=", session.id),
+    );
+    logPlanning(ctx, w.id, "planning.resumed", {});
+    await wakeSession(ctx, w, { resuming: true });
+    return { resumed: true };
+  },
+});
+
 const questionView = z.object({
   id: z.string(),
   number: z.number().nullable(),
@@ -830,6 +1145,11 @@ const questionView = z.object({
   answer: z.string().nullable(),
   note: z.string().nullable(),
   acceptedDefault: z.boolean(),
+  /** Accepted under a person's "finish alone" instruction; answeredBy is that person. */
+  acceptedAlone: z.boolean(),
+  skipped: z.boolean(),
+  /** When this answer reached the planning agent (a read receipt); null until then. */
+  answerDeliveredAt: z.string().nullable(),
   answeredBy: z.string().nullable(),
   answeredAt: z.string().nullable(),
   answerRevision: z.number(),
@@ -873,6 +1193,13 @@ export const planningGet = defineOperation({
         atGate: z.boolean(),
         ready: z.boolean(),
         yieldRequested: z.boolean(),
+        /** A person paused it (ADR 0470): news doesn't wake it until resumed. */
+        paused: z.boolean(),
+        pausedBy: z.string().nullable(),
+        /** Its runner can interrupt the current step (⌘-Enter, Stop); else messages wait for the step. */
+        canInterrupt: z.boolean(),
+        /** "Let the planner finish alone" is on: who set it and when (ADR 0470). */
+        finishAlone: z.object({ by: z.string(), byName: z.string(), at: z.string() }).nullable(),
         focusedQuestionId: z.string().nullable(),
         runner: z
           .object({
@@ -947,7 +1274,7 @@ export const planningGet = defineOperation({
     const runner = session?.runner_id
       ? await ctx.db
           .selectFrom("core_runners")
-          .select(["id", "name", "last_seen_at"])
+          .select(["id", "name", "last_seen_at", "manifest"])
           .where("id", "=", session.runner_id)
           .executeTakeFirst()
       : undefined;
@@ -956,7 +1283,10 @@ export const planningGet = defineOperation({
       Date.parse(ctx.now) - Date.parse(runner.last_seen_at) <= RUNNER_OFFLINE_MS;
     const people = new Map<string, string>();
     const ids = [
-      ...new Set(messages.filter((m) => m.author_kind === "person").map((m) => m.author_id)),
+      ...new Set([
+        ...messages.filter((m) => m.author_kind === "person").map((m) => m.author_id),
+        ...(session?.finish_alone_by ? [session.finish_alone_by] : []),
+      ]),
     ];
     if (ids.length) {
       for (const u of await ctx.db
@@ -994,6 +1324,22 @@ export const planningGet = defineOperation({
             atGate: session.at_gate === 1,
             ready: session.ready_spec_id !== null,
             yieldRequested: session.yield_requested_at !== null,
+            paused: session.paused_at !== null,
+            pausedBy: session.paused_by,
+            canInterrupt: ["steer", "interrupt"].every((c) =>
+              (
+                parseJson<{ capabilities?: string[] }>(runner?.manifest ?? "{}", {}).capabilities ??
+                []
+              ).includes(c),
+            ),
+            finishAlone:
+              session.finish_alone_by && session.finish_alone_at
+                ? {
+                    by: session.finish_alone_by,
+                    byName: people.get(session.finish_alone_by) ?? session.finish_alone_by,
+                    at: session.finish_alone_at,
+                  }
+                : null,
             focusedQuestionId: session.focused_question_id,
             runner: runner
               ? { id: runner.id, name: runner.name, online, lastSeenAt: runner.last_seen_at }
@@ -1021,6 +1367,9 @@ export const planningGet = defineOperation({
         answer: q.answer,
         note: q.note,
         acceptedDefault: q.accepted_default === 1,
+        acceptedAlone: q.accepted_alone === 1,
+        skipped: q.skipped === 1,
+        answerDeliveredAt: q.answer_delivered_at,
         answeredBy: q.answered_by,
         answeredAt: q.answered_at,
         answerRevision: q.answer_revision,

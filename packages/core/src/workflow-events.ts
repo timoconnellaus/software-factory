@@ -44,3 +44,9 @@ export const prHeadEvent = (workItemId: string) => `pr-head-${workItemId}`;
  * event only costs a timeout.
  */
 export const mergeQueueEvent = (workItemId: string) => `mergeq-${workItemId}`;
+
+/**
+ * A shaped work item was released and pulled (ADR 0493): its Workflow, waiting at `release: wait`
+ * after the shaping stages, goes on to delivery. Sent once, by the pull that starts it.
+ */
+export const releaseEvent = (workItemId: string) => `release-${workItemId}`;
