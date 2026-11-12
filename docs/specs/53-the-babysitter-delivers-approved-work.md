@@ -99,7 +99,19 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     repositories whose `next_check_at` has passed. It re-reads GitHub on the cron, which heals a lost
     webhook.
   - **One pass per repository at a time**: a compare-and-set on `core_delivery_state.rev`
-    (migration 0350), as ADR 0511 does per item.
+    (migration 0350), as ADR 0511 does per item. The key is the repository (an item with no
+    repository is never the babysitter's), and `rev` is a fencing token: every operation the pass
+    calls carries it and is refused once another pass took over (ADR 0586).
+  - **Bounded re-updates.** Each pass brings the head up to date again (a `main` that moved while CI
+    ran gets one more update and CI run), at most three update-branch requests per entry
+    (`mergeQueue.update`'s `maxUpdates`); past that the item goes back as `failed`.
+  - **A merge GitHub refuses is re-snapshotted**, never retried as is and not sent straight back to
+    build: the pass brings the head up to date again (a moved `main` updates it and CI runs there);
+    a refusal with nothing changed goes back as `failed` (PR (d) asks a person instead).
+  - **Only an open item merges.** `pr.merge` refuses an item that is no longer open, and for the
+    babysitter an entry no longer open in its queue, read before GitHub is asked and guarded in
+    the same batch. Cancelling an item withdraws its approved, unused actions too, not only its
+    pending ones.
 - **Merge method and order (decision 4):** merge commits only (`method: "merge"`), one PR at a time
   per repository, in approval order, each updated to the current default branch and CI'd once before
   it lands. The engine's own ordering stays; GitHub's merge queue is not used (ADR 0580 §4).

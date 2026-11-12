@@ -8,9 +8,11 @@
 // It is a reconcile pass, not a loop that waits: each pass reads the queue and GitHub afresh, does
 // what the state allows, and records when to look again. It is woken by the outbox (`delivery.wake`:
 // an entry joined or left, CI settled on a head it updated) and by the minute cron for queues whose
-// `next_check_at` has passed, which heals a lost webhook. Only one pass per queue runs at a time:
-// `core_delivery_state` is the engine's own bookkeeping (like the outbox's), claimed by a
-// compare-and-set; every change to factory state goes through operations as the BABYSITTER actor.
+// `next_check_at` has passed, which heals a lost webhook. Only one pass per repository runs at a
+// time: `core_delivery_state` is the engine's own bookkeeping (like the outbox's, ADR 0586), one
+// row per repository, claimed by a compare-and-set. Its `rev` is the pass's fencing token: every
+// operation the pass calls carries it (`lease`), so a pass that outlived its lease changes nothing,
+// GitHub included. Every change to factory state goes through operations as the BABYSITTER actor.
 import { BABYSITTER, invoke, isOperationError } from "@software-factory/core";
 import { invokeDeps } from "../deps.ts";
 
@@ -27,6 +29,25 @@ export const CI_MISSING_GIVE_UP_MS = 3 * CI_RECHECK_MS;
 const IDLE_RECHECK_MS = 60 * 60_000;
 /** Rounds of one wake: a pass, then again while something changed meanwhile. */
 const ROUNDS = 5;
+/**
+ * Update-branch requests per entry: a default branch that keeps moving while CI runs gets the head
+ * updated (and CI'd) at most this many times, then the item goes back (spec 53 review).
+ */
+export const MAX_UPDATES = 3;
+
+/** Test seam only: called after CI was read green and before pr.merge (deterministic races). */
+export const deliverTestSeams: { beforeLand: ((workItemId: string) => Promise<void>) | null } = {
+  beforeLand: null,
+};
+
+/** The pass's lease on its repository: sent with every operation it calls. */
+interface Lease {
+  key: string;
+  rev: number;
+}
+
+/** Another pass took the repository over: this one stops, changing nothing more. */
+class LeaseLost extends Error {}
 
 interface HeadRow {
   id: string;
@@ -46,18 +67,21 @@ type Called =
   | { status: "pending"; pendingActionId: string }
   | { status: "refused"; code: string; message: string };
 
-export const deliveryKey = (projectId: string, repositoryId: string | null) =>
-  `${projectId}:${repositoryId ?? ""}`;
+/**
+ * One key per repository, never a project-wide alias over the same queue head (an item with no
+ * repository is never the babysitter's: mergeQueue.enter refuses it).
+ */
+export const deliveryKey = (projectId: string, repositoryId: string) =>
+  `${projectId}:${repositoryId}`;
 
 /**
- * Runs the deliverer for one repository queue (`repositoryId` null: the project's items that record
- * no repository). Never throws an operation's refusal; a pass that throws otherwise frees the queue
- * and the cron looks again in a minute.
+ * Runs the deliverer for one repository's queue. Never throws an operation's refusal; a pass that
+ * throws otherwise frees the queue and the cron looks again in a minute.
  */
 export async function deliverRepository(
   env: Env,
   projectId: string,
-  repositoryId: string | null,
+  repositoryId: string,
   clock: () => Date = () => new Date(),
 ): Promise<void> {
   const key = deliveryKey(projectId, repositoryId);
@@ -71,7 +95,10 @@ export async function deliverRepository(
     if (rev === null) return; // another pass runs; it was told to go round again
     let next: Date | null = new Date(clock().getTime() + 60_000);
     try {
-      next = await pass(env, projectId, repositoryId, clock);
+      next = await pass(env, { key, rev }, projectId, repositoryId, clock);
+    } catch (error) {
+      if (error instanceof LeaseLost) return; // the pass that took over owns the row now
+      throw error;
     } finally {
       const t = clock().toISOString();
       const done = await env.DB.prepare(
@@ -110,14 +137,13 @@ export async function deliverDue(env: Env, now = new Date(), limit = 20): Promis
   const { results } = await env.DB.prepare(
     `SELECT DISTINCT q.project_id AS project_id, w.repository_id AS repository_id
      FROM core_merge_queue q JOIN core_work_items w ON w.id = q.work_item_id
-     LEFT JOIN core_delivery_state s
-       ON s.key = q.project_id || ':' || COALESCE(w.repository_id, '')
-     WHERE q.status = 'queued' AND q.driver = 'babysitter'
+     LEFT JOIN core_delivery_state s ON s.key = q.project_id || ':' || w.repository_id
+     WHERE q.status = 'queued' AND q.driver = 'babysitter' AND w.repository_id IS NOT NULL
        AND (s.key IS NULL OR s.next_check_at IS NULL OR s.next_check_at <= ?)
      LIMIT ?`,
   )
     .bind(t, limit)
-    .all<{ project_id: string; repository_id: string | null }>();
+    .all<{ project_id: string; repository_id: string }>();
   for (const r of results) {
     try {
       await deliverRepository(env, r.project_id, r.repository_id, () => new Date());
@@ -131,17 +157,19 @@ export async function deliverDue(env: Env, now = new Date(), limit = 20): Promis
 /** One pass: deliver heads until one has to wait. Returns when to look again (null: no need). */
 async function pass(
   env: Env,
+  lease: Lease,
   projectId: string,
-  repositoryId: string | null,
+  repositoryId: string,
   clock: () => Date,
 ): Promise<Date | null> {
   for (let i = 0; i < 20; i++) {
+    await renew(env, lease, clock());
     const head = await readHead(env, projectId, repositoryId);
     // An empty queue, or a head an older Workflow lands itself: its leave wakes us.
     if (!head || head.driver !== "babysitter") return head ? later(clock, IDLE_RECHECK_MS) : null;
     // A paused item (a kill switch) holds the head, as it did when it landed itself.
     if (head.item_status === "paused") return later(clock, IDLE_RECHECK_MS);
-    const waitMs = await deliverHead(env, head, clock);
+    const waitMs = await deliverHead(env, lease, head, clock);
     if (waitMs !== null) return later(clock, waitMs);
   }
   return later(clock, 60_000);
@@ -149,19 +177,30 @@ async function pass(
 
 const later = (clock: () => Date, ms: number) => new Date(clock().getTime() + ms);
 
+/** Extends the pass's lease before each head; a lease another pass took stops this one. */
+async function renew(env: Env, lease: Lease, now: Date): Promise<void> {
+  const held = await env.DB.prepare(
+    "UPDATE core_delivery_state SET running_until = ? WHERE key = ? AND rev = ? RETURNING rev",
+  )
+    .bind(new Date(now.getTime() + PASS_MS).toISOString(), lease.key, lease.rev)
+    .first<{ rev: number }>();
+  if (!held) throw new LeaseLost(`lease ${lease.key}@${lease.rev} was taken over`);
+}
+
 async function readHead(
   env: Env,
   projectId: string,
-  repositoryId: string | null,
+  repositoryId: string,
 ): Promise<HeadRow | null> {
-  // The same order as mergeQueue's queuedEntries: oldest open entry whose work item is still open.
+  // The same order as mergeQueue's queuedEntries for this repository: oldest open entry whose work
+  // item is still open.
   return env.DB.prepare(
     `SELECT q.id, q.work_item_id, q.pending_action_id, q.approved_sha, q.head_sha, q.driver,
             q.update_asked_at, q.updated_at, w.status AS item_status, w.number
      FROM core_merge_queue q JOIN core_work_items w ON w.id = q.work_item_id
      WHERE q.project_id = ?1 AND q.status = 'queued'
        AND w.status IN ('running', 'waiting', 'paused')
-       AND (?2 IS NULL OR w.repository_id = ?2)
+       AND w.repository_id = ?2
      ORDER BY q.enqueued_at ASC, q.id ASC LIMIT 1`,
   )
     .bind(projectId, repositoryId)
@@ -170,6 +209,7 @@ async function readHead(
 
 async function call(
   env: Env,
+  lease: Lease,
   op: string,
   input: unknown,
   opts: { approvalId?: string; idempotencyKey?: string } = {},
@@ -178,14 +218,17 @@ async function call(
     const r = await invoke(invokeDeps(env), op, input, {
       actor: BABYSITTER,
       origin: { surface: "cron", step: `deliver: ${op}` },
+      lease,
       ...(opts.approvalId ? { approvalId: opts.approvalId } : {}),
-      ...(opts.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
+      // The rev is part of the key: a refusal recorded for a stale pass never replays to the next.
+      ...(opts.idempotencyKey ? { idempotencyKey: `${opts.idempotencyKey}@${lease.rev}` } : {}),
     });
     return r.status === "ok"
       ? { status: "ok", output: (r.output ?? {}) as Record<string, unknown> }
       : { status: "pending", pendingActionId: r.pendingActionId };
   } catch (error) {
     if (!isOperationError(error)) throw error;
+    if (error.code === "fenced") throw new LeaseLost(error.message);
     return { status: "refused", code: error.code, message: error.message };
   }
 }
@@ -194,7 +237,12 @@ async function call(
  * Takes the head one step further. Returns how long to wait before looking again, or null when it
  * left the queue (merged, or handed back to its Workflow) and the next head may go.
  */
-async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<number | null> {
+async function deliverHead(
+  env: Env,
+  lease: Lease,
+  head: HeadRow,
+  clock: () => Date,
+): Promise<number | null> {
   const id = head.work_item_id;
   const end = async (
     status: "merged" | "left",
@@ -203,6 +251,7 @@ async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<
   ): Promise<null> => {
     const left = await call(
       env,
+      lease,
       "mergeQueue.leave",
       { workItemId: id, outcome: status, reason, delivery },
       { idempotencyKey: `deliver:${head.id}:leave` },
@@ -216,29 +265,52 @@ async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<
     return end("merged", "merged", "merged");
   }
 
-  const u = await call(env, "mergeQueue.update", { workItemId: id });
-  if (u.status !== "ok") {
-    return end("left", "failed", `the merge queue couldn't update the branch: ${refusal(u)}`);
-  }
-  const state = String(u.output.state);
-  const at = String(u.output.headSha);
-  if (state === "updating") {
-    const asked = head.update_asked_at ? Date.parse(head.update_asked_at) : clock().getTime();
-    if (clock().getTime() - asked < UPDATE_GIVE_UP_MS) return UPDATE_RECHECK_MS;
-    return end("left", "failed", "GitHub didn't finish merging the default branch in");
-  }
-  if (state === "conflict") return end("left", "conflict", String(u.output.reason ?? "conflict"));
-  if (state !== "current" && state !== "updated") {
-    return end(
-      "left",
-      "failed",
-      `the merge queue couldn't update the branch (${state}): ${String(u.output.reason ?? "")}`,
-    );
-  }
+  // Bring the head up to date (bounded: MAX_UPDATES requests per entry). Returns the head to
+  // land, or how long to wait (or null: it left).
+  const snapshot = async (): Promise<{ at: string; state: string } | { wait: number | null }> => {
+    const u = await call(env, lease, "mergeQueue.update", {
+      workItemId: id,
+      maxUpdates: MAX_UPDATES,
+    });
+    if (u.status !== "ok") {
+      return {
+        wait: await end(
+          "left",
+          "failed",
+          `the merge queue couldn't update the branch: ${refusal(u)}`,
+        ),
+      };
+    }
+    const state = String(u.output.state);
+    if (state === "updating") {
+      const asked = head.update_asked_at ? Date.parse(head.update_asked_at) : clock().getTime();
+      if (clock().getTime() - asked < UPDATE_GIVE_UP_MS) return { wait: UPDATE_RECHECK_MS };
+      return {
+        wait: await end("left", "failed", "GitHub didn't finish merging the default branch in"),
+      };
+    }
+    if (state === "conflict") {
+      return { wait: await end("left", "conflict", String(u.output.reason ?? "conflict")) };
+    }
+    if (state !== "current" && state !== "updated") {
+      return {
+        wait: await end(
+          "left",
+          "failed",
+          `the merge queue couldn't update the branch (${state}): ${String(u.output.reason ?? "")}`,
+        ),
+      };
+    }
+    return { at: String(u.output.headSha), state };
+  };
+
+  const snap = await snapshot();
+  if ("wait" in snap) return snap.wait;
+  const at = snap.at;
 
   // A head the queue brought up to date merges only on green CI there (ADR 0330).
   if (at !== head.approved_sha) {
-    const ci = await call(env, "ci.read", { workItemId: id, headSha: at });
+    const ci = await call(env, lease, "ci.read", { workItemId: id, headSha: at });
     const since = Date.parse(head.updated_at);
     const waited = clock().getTime() - (Number.isNaN(since) ? clock().getTime() : since);
     const ciState = ci.status === "ok" ? String(ci.output.state) : "unreadable";
@@ -261,19 +333,26 @@ async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<
     return end("left", "failed", "the babysitter lands only an approved merge");
   }
   const touchesFactoryConfig = await approvedFlag(env, head.pending_action_id);
+  await deliverTestSeams.beforeLand?.(id);
   const landed = await call(
     env,
+    lease,
     "pr.merge",
     { workItemId: id, headSha: at, touchesFactoryConfig },
     { approvalId: head.pending_action_id, idempotencyKey: `deliver:${head.id}:merge:${at}` },
   );
   if (landed.status === "ok") return end("merged", "merged", "merged");
-  // GitHub (or the gate) refused: the snapshot was stale. Hand it back rather than retry blindly.
-  return end(
-    "left",
-    "failed",
-    `pr.merge failed after approval: ${landed.status === "refused" ? landed.message : "still pending"}`,
-  );
+  const why = landed.status === "refused" ? landed.message : "still pending";
+  // GitHub refused the merge itself (the default branch moved since the snapshot): never retried as
+  // is. Re-snapshot: a moved default branch updates the head again (bounded) and CI runs there; a
+  // refusal with nothing changed goes back (spec 53 review; asking a person is PR d's).
+  if (landed.status === "refused" && landed.code === "conflict" && /merge refused/.test(why)) {
+    const again = await snapshot();
+    if ("wait" in again) return again.wait;
+    if (again.state === "updated") return CI_RECHECK_MS;
+    return end("left", "failed", `GitHub refused the merge and nothing had changed: ${why}`);
+  }
+  return end("left", "failed", `pr.merge failed after approval: ${why}`);
 }
 
 const refusal = (c: Called) =>

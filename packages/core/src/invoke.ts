@@ -60,6 +60,13 @@ export interface InvokeOptions {
   idempotencyKey?: string;
   /** The approved pending action this call carries out. */
   approvalId?: string;
+  /**
+   * An engine pass's lease (spec 53, ADR 0586): the babysitter's deliverer holds one per repository
+   * in `core_delivery_state` and every call it makes carries its key and rev. The call is refused
+   * when the rev is no longer current (another pass took over), before the handler runs and again
+   * in the call's own batch.
+   */
+  lease?: { key: string; rev: number };
 }
 
 export type InvokeResult<O = unknown> =
@@ -143,7 +150,7 @@ export async function runOperation<O = unknown>(
   rawInput: unknown,
   options: InvokeOptions,
 ): Promise<InvokeResult<O>> {
-  const { actor, origin, idempotencyKey, approvalId } = options;
+  const { actor, origin, idempotencyKey, approvalId, lease } = options;
   const d1 = deps.d1;
   const db = createDb(d1);
   const now = (deps.now?.() ?? new Date()).toISOString();
@@ -401,6 +408,29 @@ export async function runOperation<O = unknown>(
     fence = { workItemId: scope.workItemId, token };
   }
 
+  // 7b. An engine pass's lease (ADR 0586): a pass that lost its lease changes nothing, GitHub
+  // included, so it is checked before the handler and guarded again in the batch.
+  if (lease) {
+    const held = await db
+      .selectFrom("core_delivery_state")
+      .select("rev")
+      .where("key", "=", lease.key)
+      .executeTakeFirst();
+    if (held?.rev !== lease.rev) {
+      return refuse(
+        {
+          decision: gate.decision,
+          outcome: "fenced",
+          reason: `stale lease ${lease.key}@${lease.rev}`,
+        },
+        new OperationError("fenced", `stale lease: another pass holds ${lease.key}`, {
+          lease: lease.rev,
+          current: held?.rev ?? null,
+        }),
+      );
+    }
+  }
+
   // 8. Permission (humans).
   try {
     await checkPermission(db, actor, op.permission, scope, knownRole);
@@ -529,6 +559,15 @@ export async function runOperation<O = unknown>(
             .bind(fence.workItemId, fence.token),
         ]
       : []),
+    ...(lease
+      ? [
+          d1
+            .prepare(
+              "INSERT INTO core_batch_guard (name, ok) SELECT 'lease', EXISTS (SELECT 1 FROM core_delivery_state WHERE key = ? AND rev = ?)",
+            )
+            .bind(lease.key, lease.rev),
+        ]
+      : []),
     ...(approval
       ? [
           d1
@@ -559,7 +598,8 @@ export async function runOperation<O = unknown>(
   } catch (error) {
     const guard = failedGuard(error);
     const unique = /UNIQUE constraint failed/.test(String(error));
-    const fenced = guard && fence && /fence/.test(String(error));
+    const fenced =
+      guard && ((fence && /fence/.test(String(error))) || (lease && /lease/.test(String(error))));
     await audit(
       {
         decision: gate.decision,

@@ -3,7 +3,13 @@
 import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { isWaitTimeout, WORKFLOW_VERSION } from "../src/workflow/work-item.ts";
+import {
+  has,
+  isWaitTimeout,
+  WORKFLOW_FEATURES,
+  WORKFLOW_VERSION,
+  type WorkflowFeature,
+} from "../src/workflow/work-item.ts";
 import { first, ok, waitFor, world } from "./helpers.ts";
 
 // The step names v1 uses, as patterns. Each must still appear in the source: this list only grows.
@@ -118,6 +124,33 @@ describe("Workflow versions", () => {
     await expect(instance?.waitForStatus("errored")).resolves.toBeUndefined();
   });
 
+  // Before the table, v1–v7 switched each feature on at a version number and kept it for every later
+  // one. Their rows must reproduce exactly that (spec 53, Workflow versions).
+  it("v1–v7's rows of the feature table are today's `version >= N` switches, exactly", () => {
+    const since: Record<Exclude<WorkflowFeature, "babysitter-delivery">, number> = {
+      "ci-verify": 2,
+      "conflict-state": 3,
+      "merge-queue": 4,
+      "planning-stage": 5,
+      "workflow-slots": 6,
+      "release-wait": 7,
+    };
+    for (let v = 1; v <= 7; v++) {
+      const want = Object.entries(since)
+        .filter(([, n]) => v >= n)
+        .map(([f]) => f)
+        .sort();
+      expect([...(WORKFLOW_FEATURES[v] ?? [])].sort(), `v${v}`).toEqual(want);
+      expect(has(v, "babysitter-delivery"), `v${v}`).toBe(false);
+    }
+    // v11 is v7 plus the babysitter's delivery; v8–v10 have no row and run nothing.
+    expect([...(WORKFLOW_FEATURES[11] ?? [])].sort()).toEqual(
+      [...(WORKFLOW_FEATURES[7] ?? []), "babysitter-delivery"].sort(),
+    );
+    for (const v of [8, 9, 10]) expect(Object.hasOwn(WORKFLOW_FEATURES, v)).toBe(false);
+    expect(Math.max(...Object.keys(WORKFLOW_FEATURES).map(Number))).toBe(WORKFLOW_VERSION);
+  });
+
   it("only treats a real timeout as a timeout", () => {
     expect(
       isWaitTimeout(
@@ -139,19 +172,9 @@ describe("Workflow versions", () => {
     for (const name of V6_STEPS) expect(source, name).toContain(name);
     for (const name of V7_STEPS) expect(source, name).toContain(name);
     for (const name of V11_STEPS) expect(source, name).toContain(name);
-    // v7 instances still dispatch to the same flow, with v11's babysitter switched off.
-    expect(source).toContain("return flow.runV1(7);");
-    // v6 instances still dispatch to the same flow, with v7's release wait switched off.
-    expect(source).toContain("return flow.runV1(6);");
-    // v5 instances still dispatch to the same flow, with v6's workflow slots switched off.
-    expect(source).toContain("return flow.runV1(5);");
-    // v4 instances still dispatch to the same flow, with v5's planning session switched off.
-    expect(source).toContain("return flow.runV1(4);");
-    // v3 instances still dispatch to the same flow, with v4's merge queue switched off.
-    expect(source).toContain("return flow.runV1(3);");
-    // v2 instances still dispatch to the same flow, with v3's extra steps switched off.
-    expect(source).toContain("return flow.runV1(2);");
-    // v1 instances still dispatch to the same flow, with v2's extra steps switched off.
-    expect(source).toContain("return flow.runV1(1);");
+    // Every version dispatches to the same flow; its row of WORKFLOW_FEATURES switches the rest.
+    expect(source).toContain("return flow.runV1(version);");
+    // No feature is switched by comparing version numbers (spec 53, Workflow versions).
+    expect(source).not.toMatch(/version\s*(>=|<=|>|<)\s*\d/);
   });
 });

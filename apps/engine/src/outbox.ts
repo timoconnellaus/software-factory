@@ -118,7 +118,10 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
     case "delivery.wake":
       // The babysitter's deliverer for that repository queue (spec 53, ADR 0580). A pass already
       // running there is told to go round again instead.
-      await deliverRepository(env, message.payload.projectId, message.payload.repositoryId);
+      // An item with no repository is never the babysitter's (one lease per repository, ADR 0586).
+      if (message.payload.repositoryId) {
+        await deliverRepository(env, message.payload.projectId, message.payload.repositoryId);
+      }
       return;
     case "queue.pull":
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).

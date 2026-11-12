@@ -810,6 +810,8 @@ export interface CoreMergeQueueTable {
   outcome: DeliveryOutcome | null;
   /** 0350: when GitHub was last asked to merge the default branch in (update-branch). */
   update_asked_at: Iso | null;
+  /** 0350: how many times GitHub was asked to (the babysitter bounds it, spec 53 review). */
+  updates: Generated<number>;
 }
 
 export type MergeQueueDriver = "workflow" | "babysitter";

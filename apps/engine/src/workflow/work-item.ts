@@ -108,6 +108,66 @@ export type WorkItemOutcome =
  * re-reading its entry after each timeout, `merge #b: deliver: read #i`); the engine's deliverer
  * updates, CIs and merges it. An incident's check-only auto-merge still lands itself, as v7.
  */
+/**
+ * What each version does (spec 53, **Workflow versions**). A running instance replays on the code
+ * it started with, so a feature must never switch on inside an older version's instance: code asks
+ * `has(version, feature)`, never `version >= N`. One row per version, written out in full, and a
+ * merged row is never edited. A new version is the next number above what is on `main` when its PR
+ * merges; v8–v10 are unused here (other builds had claimed them).
+ */
+export type WorkflowFeature =
+  /** v2: the PR opens before verify; verify waits for CI and the packet's verdict decides. */
+  | "ci-verify"
+  /** v3: a PR GitHub can't merge is its own state; missing CI asks a person. */
+  | "conflict-state"
+  /** v4: approved merges land through the project's merge queue (`mergeV4`). */
+  | "merge-queue"
+  /** v5: the spec stage is a planning session. */
+  | "planning-stage"
+  /** v6: the item's workflow fills the skeleton's slots. */
+  | "workflow-slots"
+  /** v7: shaped items wait for their release. */
+  | "release-wait"
+  /** v11: the babysitter lands the approved merge; the item waits for `delivered-<item>`. */
+  | "babysitter-delivery";
+
+export const WORKFLOW_FEATURES: Readonly<Record<number, readonly WorkflowFeature[]>> = {
+  1: [],
+  2: ["ci-verify"],
+  3: ["ci-verify", "conflict-state"],
+  4: ["ci-verify", "conflict-state", "merge-queue"],
+  5: ["ci-verify", "conflict-state", "merge-queue", "planning-stage"],
+  6: ["ci-verify", "conflict-state", "merge-queue", "planning-stage", "workflow-slots"],
+  7: [
+    "ci-verify",
+    "conflict-state",
+    "merge-queue",
+    "planning-stage",
+    "workflow-slots",
+    "release-wait",
+  ],
+  11: [
+    "ci-verify",
+    "conflict-state",
+    "merge-queue",
+    "planning-stage",
+    "workflow-slots",
+    "release-wait",
+    "babysitter-delivery",
+  ],
+};
+
+/** Whether instances of `version` have `feature`. A version with no row has none. */
+export function has(version: number, feature: WorkflowFeature): boolean {
+  return Object.hasOwn(WORKFLOW_FEATURES, version)
+    ? (WORKFLOW_FEATURES[version] as readonly WorkflowFeature[]).includes(feature)
+    : false;
+}
+
+/** Whether the table has a row for `version`: an instance on any other version errors. */
+export const isKnownVersion = (version: number): boolean =>
+  Number.isInteger(version) && Object.hasOwn(WORKFLOW_FEATURES, version);
+
 export const WORKFLOW_VERSION = 11;
 /** How long a shaped item waits for its release before it re-reads whether it was released. */
 export const RELEASE_WAIT = "12 hours";
@@ -306,33 +366,17 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
       async (): Promise<number> => WORKFLOW_VERSION,
     );
     const flow = new ItemFlow(this.env, step, event.payload.workItemId, event.instanceId);
-    if (version >= 1 && version <= WORKFLOW_VERSION) {
-      // An attached PR's own path (spec 05), chosen by kind, whatever version the item started on
-      // (it merges directly, not through the merge queue: the App can't update a person's branch). "meta: item" is runV1's first step
-      // anyway and is read once, so every other item runs exactly the steps it ran before.
-      const meta = await flow.meta();
-      if (meta.kind === "attached") return flow.runAttached(version, meta);
+    if (!isKnownVersion(version)) {
+      throw new Error(`no implementation for Workflow version ${version}`);
     }
-    switch (version) {
-      case 1:
-        return flow.runV1(1);
-      case 2:
-        return flow.runV1(2);
-      case 3:
-        return flow.runV1(3);
-      case 4:
-        return flow.runV1(4);
-      case 5:
-        return flow.runV1(5);
-      case 6:
-        return flow.runV1(6);
-      case 7:
-        return flow.runV1(7);
-      case 11:
-        return flow.runV1(11);
-      default:
-        throw new Error(`no implementation for Workflow version ${version}`);
-    }
+    // An attached PR's own path (spec 05), chosen by kind, whatever version the item started on
+    // (it merges directly, not through the merge queue: the App can't update a person's branch).
+    // "meta: item" is runV1's first step anyway and is read once, so every other item runs exactly
+    // the steps it ran before.
+    const meta = await flow.meta();
+    if (meta.kind === "attached") return flow.runAttached(version, meta);
+    // Every version runs the same flow; what it does is its row of WORKFLOW_FEATURES.
+    return flow.runV1(version);
   }
 }
 
@@ -349,7 +393,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 11 = 1): Promise<WorkItemOutcome> {
+  async runV1(version = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       let meta = await this.meta();
@@ -362,7 +406,7 @@ class ItemFlow {
 
       // Triage: the foreman sizes the item on a runner; code decides the spec gate from policy.
       // v6: it also picks one of the project's workflows (ADR 0371).
-      const options = version >= 6 ? await this.workflowOptions() : [];
+      const options = has(version, "workflow-slots") ? await this.workflowOptions() : [];
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
@@ -385,8 +429,8 @@ class ItemFlow {
         let note: string | null = null;
         let answers: { prompt: string; answer: string }[] = [];
         // v5: the planning session (spec 20) instead of v1–v4's spec rounds below.
-        if (version >= 5) criteria = await this.planningStage(meta);
-        for (let k = 1; version < 5; k++) {
+        if (has(version, "planning-stage")) criteria = await this.planningStage(meta);
+        for (let k = 1; !has(version, "planning-stage"); k++) {
           const mayAsk = k <= QUESTION_ROUNDS;
           const specRun = await this.runWithRetries(
             meta,
@@ -437,10 +481,11 @@ class ItemFlow {
       }
       // v7: the shaping stages are done. Unreleased work waits here for its release (ADR 0493),
       // and delivery re-reads the item and its config as pinned at the pull.
-      if (version >= 7 && (await this.waitForRelease())) meta = await this.refreshMeta();
+      if (has(version, "release-wait") && (await this.waitForRelease()))
+        meta = await this.refreshMeta();
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
-      const plan = version >= 6 ? await this.workflowPlan() : null;
+      const plan = has(version, "workflow-slots") ? await this.workflowPlan() : null;
       let slotNote: string | null = null;
       if (plan) {
         const after = await this.runSlot(meta, plan, "afterSpec", 0, {
@@ -561,12 +606,12 @@ class ItemFlow {
           workItemId: id,
           stage: "verify",
         });
-        if (version >= 2) {
+        if (has(version, "ci-verify")) {
           // Open the PR first, so CI runs on this head while the reviewer works (spec 04). It
           // carries a factory/verify that isn't passing until the packet below says so.
           await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
         }
-        if (version >= 3 && (await this.unmergeable(b, headSha))) {
+        if (has(version, "conflict-state") && (await this.unmergeable(b, headSha))) {
           note = await conflicted(b, build);
           continue;
         }
@@ -602,9 +647,9 @@ class ItemFlow {
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        if (version >= 2) {
+        if (has(version, "ci-verify")) {
           let ci = await this.waitForCi(b, headSha, version);
-          for (let k = 1; version >= 3 && ci === "missing"; k++) {
+          for (let k = 1; has(version, "conflict-state") && ci === "missing"; k++) {
             // No CI at all is a setup problem the builder can't fix: ask a person (ADR 0320).
             await this.askNoCi(meta, b, k, headSha);
             ci = await this.waitForCi(b, headSha, version, k + 1);
@@ -626,8 +671,8 @@ class ItemFlow {
           riskFlags: r.riskFlags,
         });
         // v2: the packet's verdict (green CI on the head SHA + a complete packet) decides.
-        const passed = version >= 2 ? packet.verdict === "pass" : runnerPassed;
-        if (!passed && version >= 2) {
+        const passed = has(version, "ci-verify") ? packet.verdict === "pass" : runnerPassed;
+        if (!passed && has(version, "ci-verify")) {
           const reasons = Array.isArray(packet.reasons) ? (packet.reasons as string[]) : [];
           note = await failed(
             b,
@@ -671,7 +716,7 @@ class ItemFlow {
           workItemId: id,
           stage: "merge",
         });
-        if (version >= 4) {
+        if (has(version, "merge-queue")) {
           const landed = await this.mergeV4(
             meta,
             b,
@@ -704,7 +749,7 @@ class ItemFlow {
           continue;
         }
         let decided: Awaited<ReturnType<ItemFlow["gate"]>> | null = null;
-        if (version >= 2 && meta.kind === "incident") {
+        if (has(version, "ci-verify") && meta.kind === "incident") {
           // A check-only incident fix may merge without a person, if the project opted in and the
           // rule holds (ADR 0230). Refused: the normal merge gate below.
           const autoName = `merge #${b}: auto-merge`;
@@ -840,7 +885,7 @@ class ItemFlow {
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        await this.waitForCi(b, headSha);
+        await this.waitForCi(b, headSha, 2);
         const packet = await this.act(`verify #${b}: packet`, "reviewPacket.record", {
           workItemId: id,
           runId: verify.runId,
@@ -1182,7 +1227,7 @@ class ItemFlow {
         headSha,
       });
       if (ci.status !== "ok") return "unreadable"; // the packet records why and fails
-      if (version >= 3 && ci.output.mergeable === false) return "conflict";
+      if (has(version, "conflict-state") && ci.output.mergeable === false) return "conflict";
       const state = String(ci.output.state);
       if (state === "success" || state === "failure") return state;
       if (state === "missing" && i >= CI_MISSING_ROUNDS) return "missing";
@@ -1282,7 +1327,8 @@ class ItemFlow {
       return { kind: "done", reason: "merged" };
     }
     // v11: the approval only says this head may merge; the babysitter lands it (spec 53).
-    if (version >= 11) return this.deliverV11(b, headSha, decided.pendingActionId);
+    if (has(version, "babysitter-delivery"))
+      return this.deliverV11(b, headSha, decided.pendingActionId);
     const landed = await this.landV4(b, "queue", headSha, decided.pendingActionId, (at) => ({
       op: "pr.merge",
       input: input(at),
