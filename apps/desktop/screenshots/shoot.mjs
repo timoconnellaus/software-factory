@@ -2,8 +2,10 @@
 // (vite.config.ts here), drives Chrome headless over CDP at 1440×900, light and dark, and writes
 // docs/screenshots/desktop-shell/<screen>-<theme>.png. `--design` also shoots each screen's design
 // file to design/<file>.png, cropped to the window, for the side-by-side.
+// `--out <dir>` writes under docs/screenshots/<dir> instead; `--size WxH` shoots at that size (the
+// app's default window is 1200x800) and, with `--tag <t>`, names the files <screen>-<theme>-<t>.png.
 //
-//   node apps/desktop/screenshots/shoot.mjs [--design] [screen ...]
+//   node apps/desktop/screenshots/shoot.mjs [--design] [--out dir] [--size WxH --tag t] [screen ...]
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -12,11 +14,15 @@ import { createServer } from "vite";
 
 const here = import.meta.dirname;
 const repo = resolve(here, "../../..");
-// SHOT_OUT (relative to the repo), SHOT_W and SHOT_H shoot another folder or window size.
-const out = resolve(repo, process.env.SHOT_OUT ?? "docs/screenshots/desktop-shell");
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const W = Number(process.env.SHOT_W) || 1440;
-const H = Number(process.env.SHOT_H) || 900;
+const argv = process.argv.slice(2);
+const flag = (name) => {
+  const i = argv.indexOf(name);
+  return i >= 0 ? argv[i + 1] : undefined;
+};
+const out = resolve(repo, "docs/screenshots", flag("--out") ?? "desktop-shell");
+const [W, H] = (flag("--size") ?? "1440x900").split("x").map(Number);
+const tag = flag("--tag");
 
 /** Each screen: its route, what to do before the shot, and its design file. */
 export const SCREENS = [
@@ -24,7 +30,11 @@ export const SCREENS = [
   { name: "inbox-question", path: "/?item=wi_11", design: "InboxQuestion.html" },
   { name: "inbox-spec", path: "/?item=wi_12", design: "InboxMerge.html" },
   { name: "work-board", path: "/work", design: "WorkActive.html" },
-  { name: "work-project", path: "/work?project=prj_factory", design: "WorkActive.html" },
+  {
+    name: "work-project",
+    path: "/work?view=active&project=prj_factory",
+    design: "WorkActive.html",
+  },
   { name: "work-done", path: "/work?view=done", design: "WorkDone.html" },
   { name: "item-overview", path: "/work/wi_13", design: "ItemOverview.html" },
   // #9 has a live run with a takeover hint, so the header shows Pin, Open terminal and Cancel.
@@ -55,9 +65,10 @@ export const SCREENS = [
   { name: "update-required-download", path: "/", query: "?update=download", design: "Main.html" },
 ];
 
-const args = process.argv.slice(2);
+const args = argv;
 const withDesign = args.includes("--design");
-const only = args.filter((a) => !a.startsWith("--"));
+const valued = new Set(["--out", "--size", "--tag"]);
+const only = args.filter((a, i) => !a.startsWith("--") && !valued.has(args[i - 1]));
 const screens = only.length ? SCREENS.filter((s) => only.includes(s.name)) : SCREENS;
 
 /** A minimal CDP client over the browser's page websocket. */
@@ -101,7 +112,7 @@ async function connect(port) {
   throw new Error("Chrome didn't start");
 }
 
-async function shoot(cdp, url, file, theme, keys = []) {
+async function shoot(cdp, url, file, theme, keys = [], clicks = []) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
@@ -116,6 +127,12 @@ async function shoot(cdp, url, file, theme, keys = []) {
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...ev });
     await sleep(500);
   }
+  for (const selector of clicks) {
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector(${JSON.stringify(selector)})?.click()`,
+    });
+    await sleep(500);
+  }
   const shot = await cdp.send("Page.captureScreenshot", {
     format: "png",
     clip: { x: 0, y: 0, width: W, height: H, scale: 1 },
@@ -124,10 +141,16 @@ async function shoot(cdp, url, file, theme, keys = []) {
   console.log(`  ${file.replace(`${repo}/`, "")}`);
 }
 
-const server = await createServer({ configFile: resolve(here, "vite.config.ts") });
+// SF_SHOTS_PORT moves the view's server (and the browser's debugging port beside it) when another
+// session on the Mac already shoots on 5741.
+const viewPort = Number(process.env.SF_SHOTS_PORT ?? 5741);
+const server = await createServer({
+  configFile: resolve(here, "vite.config.ts"),
+  server: { port: viewPort, strictPort: true },
+});
 await server.listen();
-const base = "http://localhost:5741/";
-const port = 9333;
+const base = `http://localhost:${viewPort}/`;
+const port = viewPort + 3592;
 const chrome = spawn(
   CHROME,
   [
@@ -136,7 +159,7 @@ const chrome = spawn(
     `--window-size=${W},${H}`,
     "--hide-scrollbars",
     "--force-device-scale-factor=1",
-    `--user-data-dir=${resolve(repo, "node_modules/.cache/sf-shots-chrome")}`,
+    `--user-data-dir=${resolve(repo, `node_modules/.cache/sf-shots-chrome-${viewPort}`)}`,
     "about:blank",
   ],
   { stdio: "ignore" },
@@ -157,13 +180,8 @@ try {
       await cdp.send("Page.navigate", { url: base });
       await sleep(300);
       await cdp.send("Runtime.evaluate", { expression: "localStorage.clear()" });
-      await shoot(
-        cdp,
-        `${base}${s.query ?? ""}#${s.path}`,
-        resolve(out, `${s.name}-${theme}.png`),
-        theme,
-        s.keys,
-      );
+      const file = resolve(out, `${s.name}-${theme}${tag ? `-${tag}` : ""}.png`);
+      await shoot(cdp, `${base}${s.query ?? ""}#${s.path}`, file, theme, s.keys, s.clicks);
     }
   }
   if (withDesign) {

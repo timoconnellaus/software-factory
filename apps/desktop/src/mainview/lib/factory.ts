@@ -37,7 +37,8 @@ export interface RunnerRow {
   name: string;
   state: HealthRunner["state"] | "unknown";
   dot: Status;
-  /** "Online", "Offline since 09:58", "Busy: load 19.3 on 10 cores", "Draining". */
+  /** "Online", "Offline", "Paused: load 19.3 on 10 cores", "Draining". An offline runner's time is
+   * `lastSeenAt`, which the page shows relative, with the full date on hover. */
   stateText: string;
   heavy: string;
   light: string | null;
@@ -125,7 +126,7 @@ function stateText(h: HealthRunner | undefined, clock: (iso: string) => string):
   if (!h) return "Not reported";
   switch (h.state) {
     case "offline":
-      return h.lastSeenAt ? `Offline since ${clock(h.lastSeenAt)}` : "Never seen";
+      return h.lastSeenAt ? "Offline" : "Never seen";
     case "rate-limited":
       return h.rateLimitedUntil
         ? `Rate-limited until ${clock(h.rateLimitedUntil)}`
@@ -159,10 +160,10 @@ export interface IncidentRow {
   id: string;
   number: number;
   projectId: string;
-  /** What went wrong, from the fix item's title: "Had a run that failed". */
-  what: string;
-  /** The work item it is about (the title's "#8"), when the title names one. */
-  fromNumber: number | null;
+  /** The fix item's own title, as the factory wrote it. What went wrong and the item it came from
+   * aren't in `workItem.list` (they are `core_incidents.kind` and `source_work_item_id`): the page
+   * shows the title as it is rather than guessing them from its wording. */
+  title: string;
   open: boolean;
   status: Item["status"];
   stage: Item["stage"];
@@ -179,18 +180,11 @@ export interface IncidentRow {
 export function incidentRows(items: Item[]): IncidentRow[] {
   return items
     .filter((i) => i.kind === "incident")
-    .map((i) => {
-      const rest = i.title.replace(/^Factory incident:\s*/i, "");
-      const from = /^#(\d+)\s+(.+)$/.exec(rest);
-      const what = from?.[2] ?? rest;
-      return { i, what: what.charAt(0).toUpperCase() + what.slice(1), from: from?.[1] };
-    })
-    .map(({ i, what, from }) => ({
+    .map((i) => ({
       id: i.id,
       number: i.number,
       projectId: i.projectId,
-      what,
-      fromNumber: from ? Number(from) : null,
+      title: i.title,
       open: !CLOSED.has(i.status),
       status: i.status,
       stage: i.stage,

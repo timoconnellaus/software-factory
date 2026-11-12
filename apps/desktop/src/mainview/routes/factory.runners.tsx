@@ -9,7 +9,8 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { Cell, Empty, Row, TablePanel } from "../components/data-table.tsx";
+import { Cell, Empty, Row, TablePanel, When } from "../components/data-table.tsx";
+import { Reads } from "../components/read-state.tsx";
 import { PageArea, PageHeader, Panel } from "../components/shell-list.tsx";
 import { type RunnerRow, runnerRows } from "../lib/factory.ts";
 import { inboxQuery, runnersQuery } from "../lib/queries.ts";
@@ -51,59 +52,84 @@ function RunnersPage() {
           </Button>
         }
       />
-      {rows.length === 0 ? (
-        <Empty>
-          You have no runners yet.{" "}
-          <Link to="/setup" className="text-ink underline">
-            Pair one in Setup
-          </Link>
-        </Empty>
-      ) : (
-        <TablePanel head={["Runner", "State", "Heavy", "Light", "Version"]} data-testid="runners">
-          {rows.map((r) => (
-            <Row
-              key={r.id}
-              aria-current={r.id === chosen?.id ? "true" : undefined}
-              className={cn(r.id === chosen?.id && rows.length > 1 && "bg-selected/60")}
-              data-testid={`runner-${r.id}`}
-            >
-              <Cell className="font-medium">
-                <Link to="/factory/runners" search={{ runner: r.id }} className="hover:underline">
-                  {r.name}
-                </Link>
-              </Cell>
-              <Cell>
-                <span className="inline-flex items-center gap-2">
-                  <StatusDot status={r.dot} />
-                  {r.stateText}
-                </span>
-              </Cell>
-              <Cell className="tabular-nums">{r.heavy}</Cell>
-              <Cell className="tabular-nums">{r.light ?? "none"}</Cell>
-              <Cell className="min-w-[160px] whitespace-normal">
-                <span
-                  className={cn(
-                    "font-mono text-xs",
-                    r.updateNeedsYou ? "text-destructive" : "text-ink-3",
-                  )}
-                  title={r.versionText}
-                  data-testid="runner-version"
-                >
-                  {r.version ?? "unknown"} · {r.versionText}
-                </span>
-              </Cell>
-            </Row>
-          ))}
-        </TablePanel>
-      )}
-      {chosen && <RunnerDetails r={chosen} />}
+      <Reads queries={[listed, inbox]} what="the runners">
+        {() =>
+          rows.length === 0 ? (
+            <Empty>
+              You have no runners yet.{" "}
+              <Link to="/setup" className="text-ink underline">
+                Pair one in Setup
+              </Link>
+            </Empty>
+          ) : (
+            <>
+              <RunnerTable rows={rows} chosen={chosen?.id} />
+              {chosen && <RunnerDetails r={chosen} />}
+            </>
+          )
+        }
+      </Reads>
     </PageArea>
   );
 }
 
+function RunnerTable({ rows, chosen }: { rows: RunnerRow[]; chosen: string | undefined }) {
+  return (
+    <TablePanel head={["Runner", "State", "Heavy", "Light", "Version"]} data-testid="runners">
+      {rows.map((r) => (
+        <Row
+          key={r.id}
+          aria-current={r.id === chosen ? "true" : undefined}
+          className={cn(r.id === chosen && rows.length > 1 && "bg-selected/60")}
+          data-testid={`runner-${r.id}`}
+        >
+          <Cell className="font-medium">
+            <Link to="/factory/runners" search={{ runner: r.id }} className="hover:underline">
+              {r.name}
+            </Link>
+          </Cell>
+          <Cell>
+            <span className="inline-flex items-center gap-2">
+              <StatusDot status={r.dot} />
+              <StateText r={r} />
+            </span>
+          </Cell>
+          <Cell className="tabular-nums">{r.heavy}</Cell>
+          <Cell className="tabular-nums">{r.light ?? "none"}</Cell>
+          <Cell className="whitespace-normal">
+            {/* The sha and what the update is doing wrap as two pieces, never mid-phrase. */}
+            <span
+              className={cn(
+                "flex flex-wrap gap-x-1 font-mono text-xs",
+                r.updateNeedsYou ? "text-destructive" : "text-ink-3",
+              )}
+              title={r.versionText}
+              data-testid="runner-version"
+            >
+              <span className="whitespace-nowrap">{r.version ?? "unknown"} ·</span>
+              <span className="whitespace-nowrap">{r.versionText}</span>
+            </span>
+          </Cell>
+        </Row>
+      ))}
+    </TablePanel>
+  );
+}
+
+/** The state, with an offline runner's last word relative and its full date on hover. */
+function StateText({ r }: { r: RunnerRow }) {
+  if (r.stateText === "Offline" && r.lastSeenAt)
+    return (
+      <span>
+        Offline, last heard <When iso={r.lastSeenAt} />
+      </span>
+    );
+  return <span>{r.stateText}</span>;
+}
+
 function RunnerDetails({ r }: { r: RunnerRow }) {
   const rows: [string, ReactNode][] = [
-    ["State", r.stateText],
+    ["State", <StateText key="state" r={r} />],
     ["Harness", r.harnesses.length ? r.harnesses.join(", ") : "not reported"],
     ["Adapter", r.kind ?? "not reported"],
     [
@@ -123,7 +149,7 @@ function RunnerDetails({ r }: { r: RunnerRow }) {
         ? `${r.accounts.active}${r.accounts.names.length > 1 ? ` (of ${r.accounts.names.join(", ")})` : ""}`
         : "not reported",
     ],
-    ["Last heard", r.lastSeenAt ? clock(r.lastSeenAt) : "never"],
+    ["Last heard", r.lastSeenAt ? <When key="heard" iso={r.lastSeenAt} /> : "never"],
   ];
   return (
     <Panel className="max-w-[460px] gap-2.5" data-testid="runner-details">
