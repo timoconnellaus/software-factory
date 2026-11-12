@@ -276,6 +276,8 @@ function slotWorkflow(def: WorkflowDefinition): WorkflowConfig {
     description: def.name,
     slots,
     core: build ? { build } : {},
+    // An org workflow declares no checks of its own (ADR 0501): the project's own still run.
+    checks: [],
   };
 }
 
@@ -331,7 +333,7 @@ export function effectivePolicy(
       retryLimit: build.retryLimit,
       protection: { ...policy.protection, requiredChecks: [...verify.requiredChecks] },
       ...(verify.sections ? { reviewPacket: { sections: [...verify.sections] } } : {}),
-      agents: org.agents.map((a) => ({ ...a, requires: [...a.requires] })),
+      agents: namedAgents(def, org).map((a) => ({ ...a, requires: [...a.requires] })),
       workflows: [workflow],
       workflow: workflow.name,
       workflowOverrides: {},
@@ -350,9 +352,21 @@ function definitionOf(
   return resolved.ok ? resolved.value : null;
 }
 
-/** The agents a config's workflow hands to: the org's on an org workflow, else the project's. */
+/**
+ * The org's agents a workflow's stages name, and no others (sixth review): a project on an org
+ * workflow never sees an agent its workflow doesn't hand to, so another project's agent (its
+ * Builder, say) can't become this one's default by name.
+ */
+function namedAgents(def: WorkflowDefinition, org: OrgConfig): OrgConfig["agents"] {
+  const named = new Set(def.stages.flatMap((s) => (s.agent ? [s.agent.toLowerCase()] : [])));
+  return org.agents.filter((a) => named.has(a.name.toLowerCase()));
+}
+
+/** The agents a config's workflow hands to: the org's it names on an org workflow, else the project's. */
 function agentsOf(policy: ProjectPolicy, org: OrgConfig): AgentConfig[] {
-  return onOrgWorkflow(policy) ? org.agents : policy.agents;
+  if (!onOrgWorkflow(policy)) return policy.agents;
+  const def = definitionOf(policy, org, { kind: "requested" });
+  return def ? namedAgents(def, org) : [];
 }
 
 /**

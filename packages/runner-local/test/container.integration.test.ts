@@ -210,6 +210,8 @@ describe.skipIf(!hasTmux || !hasDocker)("a container job on the real Docker", ()
         extraMounts: [{ source: fake, target: fake, readOnly: true }],
         allowedHosts: [`host.docker.internal:${port}`],
         proxyAddHosts: ["host.docker.internal:host-gateway"],
+        // The stand-in upstream is on the host: only the runner's own tests may say so.
+        proxyPrivateOk: [`host.docker.internal:${port}`],
         modelCredential: () => ({ env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN } }),
         // `ps` shows `<node> <script> <args>` for the stand-in script: drop the interpreter.
         readCommand: (rt, name) => {

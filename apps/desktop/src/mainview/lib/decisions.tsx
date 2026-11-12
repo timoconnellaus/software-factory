@@ -21,7 +21,13 @@ import { useRefreshAfterDecision } from "./queries.ts";
 export type Decision =
   | { kind: "spec.approve"; workItemId: string }
   | { kind: "spec.requestChanges"; workItemId: string; note: string }
-  | { kind: "review.merge"; workItemId: string; openedFullDiff: boolean }
+  | {
+      kind: "review.merge";
+      workItemId: string;
+      openedFullDiff: boolean;
+      /** The person merges without the checks the runner could not run (ADR 0501): recorded. */
+      mergeWithoutChecks?: boolean;
+    }
   | { kind: "review.sendBack"; workItemId: string; note: string; openedFullDiff: boolean }
   | {
       kind: "question.answer";
@@ -78,7 +84,11 @@ export async function run(d: Decision): Promise<string> {
     case "review.merge": {
       const r = await decideOp(
         "review.merge",
-        { workItemId: d.workItemId, openedFullDiff: d.openedFullDiff },
+        {
+          workItemId: d.workItemId,
+          openedFullDiff: d.openedFullDiff,
+          ...(d.mergeWithoutChecks ? { mergeWithoutChecks: true } : {}),
+        },
         key,
       );
       return r.alreadyDecided ? "Already decided" : DONE[d.kind];

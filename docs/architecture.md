@@ -89,7 +89,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
   its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each
   stage history through the reconciler and writes one verdict row per item (`core_reconcile_items`,
-  migration 0281; `reconcile.report`). It drives nothing. It compares stage order and skips only;
+  migration 0281; `reconcile.report`). An item on an org workflow is compared with the org workflow
+  it pinned (its `org_config_version`), resolved with the project's overrides as the engine ran it. It drives nothing. It compares stage order and skips only;
   everything else (jobs, gates, send-back targets, retries, slot steps, ends other than Done) counts
   as a divergence, and `reconcile.streak` says "comparison incomplete" and what is missing until it
   is compared. Known differences are reported by name and count as divergences until settled: the
@@ -105,7 +106,10 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
   0231). The packet's **tests-intact** guard reads GitHub's diff for weakened tests, suppressions
   and gate-file edits; its findings go to a person and block an auto-approved merge, never the
-  verdict (ADR 0500, 0515). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
+  verdict (ADR 0500, 0515). The runner host runs the project's declared **checks** itself on the head
+  SHA after a build (through the adapter's `exec`), sends a failure back into the same session, and
+  hands back the results; the verdict uses them, not the agent's report, and a criterion is
+  **Proven** only by a check that passed (Workflow v8, ADR 0501). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,

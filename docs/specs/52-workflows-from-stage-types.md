@@ -1221,10 +1221,14 @@ screen needs).
    and at resolve time the stricter of the org's value and the override applies (`requiredFrom`: the
    smaller; `requiredChecks` and `sections`: both), unless an org admin approved that exact looser
    value for the org version being resolved (`core_override_approvals`, migration 0282, written only
-   by the approve path; never read from a config document or an imported file, whose
+   when an org admin approves a pending action whose decider is `org-admin`, and only for the looser
+   overrides that change itself brings or changes, never one it merely keeps; never read from a config document or an imported file, whose
    `workflowOverrideApprovals` field is dropped). A new org version carries an approval only where
    it leaves that setting's value unchanged; where the org moved it, the approval lapses, the
-   stricter applies, and the org's admins are notified (`workflow.overrideLapsed`). A loosening of the org workflow (an override, or a switch that drops a check) is
+   stricter applies, and the org's admins are notified (`workflow.overrideLapsed`). An override the
+   org's new version makes looser (it was as strict or stricter) has no approval: the stricter
+   applies, and the org's admins are told it needs an org admin's approval or removal
+   (`workflow.overrideNeedsApproval`). A loosening of the org workflow (an override, or a switch that drops a check) is
    decided by an org admin: the pending action carries `decider = 'org-admin'` (migration 0282) and
    `approval.decide` asks for one. A judging stage is compared by what its agent is (role, tier,
    instructions, requirements), not its name. An org change that would leave a project unable to
@@ -1250,8 +1254,11 @@ screen needs).
    delivery will run on, and the start is guarded on the org still being at that version: an item
    released under v2 whose shaping changed in v3 before it started goes back to Ready, flagged. And
    `accept` refuses once the org has saved past the version the flag named, flagging the item again
-against the current version so the person sees the new difference.
-   (d4) `orgConfig.adoptProjectWorkflows` (an org admin, from the app; `dryRun` reports what it
+   against the current version so the person sees the new difference. (d4) The shadow pass compares
+   an item on an org workflow with the org workflow it pinned (`org_config_version`, resolved with
+   the project's overrides and that version's approvals by `effectivePolicy`); before, such an item
+   had no comparable definition.
+   `orgConfig.adoptProjectWorkflows` (an org admin, from the app; `dryRun` reports what it
    would write) moves every project still on its own slot workflow, or the skeleton alone, onto an
    org workflow: one per distinct compiled workflow (identical ones shared; a different one under a
    taken name gets the project's slug), the agents its stages hand to added to the org's (a

@@ -8,7 +8,7 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext, type ProjectRow } from "../operation.ts";
 import type { FloorParse } from "../policy/gate.ts";
-import { type ImpactClass, type PolicyImpact, policyImpact } from "../policy/impact.ts";
+import { type ImpactClass, type PolicyImpact, policyImpact, same } from "../policy/impact.ts";
 import {
   isOrgWorkflowId,
   onOrgWorkflow,
@@ -268,6 +268,17 @@ async function storedDocument(
     looser: n.looser,
     orgVersion: version,
   };
+}
+
+/** Whether `after`'s override `l` was already in `before`, on the same workflow, with that value. */
+function kept(
+  before: ProjectPolicy | null,
+  after: ProjectPolicy,
+  l: { stageId: string; key: string; value: unknown },
+): boolean {
+  if (!before || !onOrgWorkflow(before) || before.workflow !== after.workflow) return false;
+  const was = before.workflowOverrides[l.stageId];
+  return !!was && Object.hasOwn(was, l.key) && same(was[l.key], l.value);
 }
 
 /**
@@ -680,7 +691,14 @@ export const configExport = defineOperation({
  */
 export async function applyApprovedConfig(
   ctx: HandlerContext,
-  pa: { id: string; operation: string; input: string; actor_id: string; created_at: string },
+  pa: {
+    id: string;
+    operation: string;
+    input: string;
+    actor_id: string;
+    created_at: string;
+    decider: string | null;
+  },
 ): Promise<{ version: number; sha: string }> {
   const project = requireProject(ctx);
   const input = JSON.parse(pa.input) as {
@@ -713,8 +731,14 @@ export async function applyApprovedConfig(
       policy,
     );
     raw = formatPolicy(stored.doc);
-    // Approved: its looser overrides apply for this org version, and only this one.
-    approveOverrides(ctx, project, stored);
+    // An org admin approved it: the looser overrides this change itself brings or changes apply,
+    // for this org version only. Never one it merely keeps, nor any a project approver decided: a
+    // kept looser override still takes the stricter value until an org admin approves it.
+    if (pa.decider === "org-admin")
+      approveOverrides(ctx, project, {
+        orgVersion: stored.orgVersion,
+        looser: stored.looser.filter((l) => !kept(ctx.scope.rawPolicy, policy, l)),
+      });
   }
   const written = await writeVersion(ctx, project, {
     raw,

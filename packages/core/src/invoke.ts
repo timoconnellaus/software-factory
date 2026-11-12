@@ -115,15 +115,33 @@ export function canonicalJson(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
 }
 
-/** Whether a device surface's presence proof may decide `op` at all (ADR 0391, 0541). */
-export function presenceSurfaceAllowed(op: AnyOperation, surface: DeviceSurface): boolean {
+/**
+ * Whether a device surface's presence proof may decide `op` at all (ADR 0391, 0541), and for this
+ * input when one is given: an input the phone refuses (`mobileRefuses`) takes no proof there.
+ */
+export function presenceSurfaceAllowed(
+  op: AnyOperation,
+  surface: DeviceSurface,
+  input?: unknown,
+): boolean {
+  if (surface === "mobile" && phoneRefuses(op, input)) return false;
   const surfaces = op.presenceSurfaces ?? (op.presenceDecidable ? ["desktop", "mobile"] : []);
   return surfaces.includes(surface);
 }
 
+/** Whether the phone may not decide this input of `op` at all (`mobileRefuses`). */
+export function phoneRefuses(op: AnyOperation, input: unknown): boolean {
+  return (
+    !!op.mobileRefuses &&
+    input !== null &&
+    typeof input === "object" &&
+    op.mobileRefuses(input as Record<string, unknown>)
+  );
+}
+
 async function presenceAllows(op: AnyOperation, origin: Origin, rawInput: unknown) {
   if (!isDeviceSurface(origin.surface) || !origin.presence) return false;
-  if (!presenceSurfaceAllowed(op, origin.surface)) return false;
+  if (!presenceSurfaceAllowed(op, origin.surface, rawInput)) return false;
   if (origin.presence.op !== op.name) return false;
   return origin.presence.inputDigest === (await inputDigest(rawInput));
 }
@@ -138,6 +156,7 @@ export function deviceDecidable(
   surface: DeviceSurface,
   input: Record<string, unknown>,
 ): boolean {
+  if (surface === "mobile" && phoneRefuses(op, input)) return false;
   if (op.desktopDecidable) return true;
   if (surface !== "mobile" || !op.mobileDecidable) return false;
   return op.mobileDecidable === true || op.mobileDecidable(input);

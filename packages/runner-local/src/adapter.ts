@@ -974,7 +974,9 @@ export function createLocalRunner(
       // conversation's file holds earlier turns: only messages from this session are sent.
       let tailing: string | null = null;
       let transcriptOffset = 0;
-      const since = session.startedAt - 5_000;
+      // A second call after a steer (the host sending a failing check back, ADR 0501) reports the
+      // turn that steer started: only what was said since it was typed.
+      const since = Math.max(session.startedAt, session.promptSentAt) - 5_000;
       /** What the agent said, not yet yielded, oldest first. */
       const said: { at: number | null; event: AdapterEvent }[] = [];
       const readSaid = async () => {
@@ -1320,6 +1322,24 @@ export function createLocalRunner(
 
     release,
 
+    /**
+     * Another turn in the same session (ADR 0501): Claude is still alive after its turn (in its tmux
+     * pane, or as the stream-json process), so the text goes in like a steer and `events()` follows
+     * that turn to its own end.
+     */
+    async *continueSession(job, session, text, signal) {
+      // Off for stream-json sessions until it is tested against a real one (PR #73 review): the
+      // failing check goes to a person instead.
+      if (session.stream) {
+        throw new Error("a stream-json session can't take a fix round yet");
+      }
+      // Between turns (after `session.ended`), so this text starts a turn of its own: the next
+      // `events()` call waits for its submit and Stop, not the ones before (ADR 0501). A steer typed
+      // mid-turn is #87's `steeredAt`, which this leaves alone.
+      if (steerText(text)) session.promptSentAt = Date.now();
+      await this.steer?.(session, text);
+      yield* this.events(job, session, signal);
+    },
     /**
      * A person's message (ADR 0400): one sanitised line, typed in short pieces so the TUI doesn't
      * take it as a paste (a long paste arrives truncated, incident 2026-11-11 #8), then Enter. Claude

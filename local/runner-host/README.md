@@ -44,10 +44,49 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    call is a `tool` event, a permission or idle notification is `waiting_input` (15 min, then the
    run fails), and `Stop` after the prompt ends the session.
 5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
-6. **Build only:** it commits any leftovers, then pushes `HEAD` to the run branch, and only there,
-   with a *fresh* job token. It never forces.
-7. It uploads artifacts: the diff, the terminal screen, check output from Claude's transcript, and a summary.
-8. It hands back `{ branch, headSha, result }`, releases the workspace, revokes the tokens and calls `release`.
+6. **The project's checks** (ADR 0501, `src/checks.ts`), when the job carries them: after a build
+   session's turn, it commits the leftovers and runs each check on a **clean copy of that commit**
+   (a throwaway index and `checkout-index`: no ignored files, no git dir), through the adapter's
+   `exec` (a container job: a check container with no network or credential), else under the OS
+   sandbox with the harness's floor (`src/check-sandbox.ts`: srt's `SandboxManager` through
+   `src/check-sandbox-child.mjs`, with the harness's deny lists, a temporary HOME and the job's
+   network allowlist; the settings never touch disk, the command's own exit decides and a signal
+   death fails, and after every check its process group and anything left with a cwd under its root
+   are killed). The trees live in the runner's checks dir (`~/.local/share/software-factory/runner/
+   checks`), which every agent's sandbox denies. With neither, or for a job with no container on a
+   container runner, or where the sandbox can't start, it runs nothing and reports the check
+   **not run** (never failed, never a fix round). On a container runner the check container has no
+   network: declare the install check as `pnpm install --offline --frozen-lockfile`, which installs
+   from a copy of the job's pnpm store made for that check. Each check runs in a dir of its own
+   (`r<round>-<i>/`: its tree, HOME, temp and pnpm store): the first on the export, each later one
+   on a copy of the tree the one before left, made after it was killed. So declare the install
+   first, and don't install again in later checks. **On a Mac** (`src/check-mode.ts`) a `sandbox`
+   runner runs each check in a fresh check container when OrbStack or Docker Desktop answers: its
+   own loopback (a test that starts a server works), its own egress proxy with the job's allowlist,
+   its own pnpm store, and every process gone with it. With no container runtime, checks are not
+   run, unless runner.json sets `"checks": { "weakerMacSandbox": true }`: then the macOS OS sandbox
+   below, which can't stop a process a check leaves from outliving it, and the merge gate says the
+   checks ran in the weaker sandbox. `sf-runner doctor` says which. A check container gets 2 CPUs and
+   4 GB of memory (`/tmp` a 1 GB tmpfs within it), and a tree past 10 GB isn't carried to the next
+   check; runner.json `checks` sets `cpus`, `memoryGb`, `tmpGb` and `maxTreeGb`. At most
+   `checks.maxConcurrent` (default 1) checks run at once, each counted as a heavy job, and a check
+   waits while the load backoff has stopped heavy work. Check containers, proxies and networks a
+   runner that died mid-check left are reaped at start-up and on the periodic sweep. Under the OS sandbox a check reads none of the
+   owner's home but the toolchain on its PATH, reaches no loopback but the sandbox's proxy (on macOS,
+   not even a server it starts itself), and fetches through the proxy (`NODE_USE_ENV_PROXY`, so
+   Node ≥ 24.5); srt's sockets go in `~/.local/share/software-factory/runner/s`. Before a job's
+   checks the host runs `sandboxTrial()`: where the sandbox can't start (Ubuntu's AppArmor
+   restriction on unprivileged user namespaces left on) every check is not run, with the reason. The host declares the `checks` capability, so only it gets jobs that
+   carry checks. A failure is typed into the same session (the command, exit code and log tail,
+   one steer) and the fix checked again, up to `fixRounds`. Before any host git after the session,
+   a check or a fix round, the git config and the adapter's `checkWorkspace` are checked again. An
+   attached PR's verify job runs them once, on the PR's head, before its reviewer session. The
+   results, with secrets redacted, go on the hand-back.
+7. **Build only:** it commits any leftovers (unless checks ran: then it pushes exactly the last
+   checked commit and never commits after it), then pushes to the run branch, and only there, with
+   a *fresh* job token. It never forces.
+8. It uploads artifacts: the diff, the terminal screen, check output from Claude's transcript, and a summary.
+9. It hands back `{ branch, headSha, result, checks }`, releases the workspace, revokes the tokens and calls `release`.
 
 A `409 fenced|killed`, or a cancel command, stops the session at once: no push and no hand-back.
 
@@ -519,6 +558,8 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 |---|---|
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
+| `src/checks.ts` | The project's checks (ADR 0501): clean trees, the git guards, failures back into the same session |
+| `src/check-sandbox.ts` | The OS sandbox a local check runs in (`srt` with the harness's floor), or none: checks not run |
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
 | `src/runner.ts` | Wires config → channel client + git + runner-local, its container runner with `isolation: container`, or its sprites runner with `isolation: sprites` (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
