@@ -110,7 +110,11 @@ export const ITEMS: Summary[] = [
     size: "medium",
     createdAt: ago(60 * 24),
   }),
-  pre(20, "Runner offline alert has no link to the runner", "backlog", { createdAt: ago(60 * 48) }),
+  // No repository chosen: releasing it is refused (the behaviour tests' refused release).
+  pre(20, "Runner offline alert has no link to the runner", "backlog", {
+    createdAt: ago(60 * 48),
+    repositoryId: null,
+  }),
   pre(17, "Dark mode for the review packet", "backlog", {
     priority: "low",
     size: "small",
@@ -335,6 +339,47 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
     counts.set(key, c);
   }
   return { items, counts: [...counts.values()] };
+}
+
+const STAGES_IN_ORDER = [
+  ["intake", "Intake", "shaping"],
+  ["triage", "Triage", "shaping"],
+  ["spec", "Spec", "shaping"],
+  ["build", "Build", "delivery"],
+  ["verify", "Verify", "delivery"],
+  ["merge", "Merge", "delivery"],
+  ["done", "Done", "delivery"],
+] as const;
+
+/**
+ * `project.workflow`: Factory names its workflow, Website runs the built-in one, CRM defines
+ * workflows and names none (it fails closed: work is captured, never released).
+ */
+function workflowOf(projectId: string): OpOutput<"project.workflow"> {
+  const stages = STAGES_IN_ORDER.map(([stage, label, phase]) => ({ stage, label, phase }));
+  if (projectId === CRM) {
+    return {
+      projectId,
+      workflow: null,
+      unavailable: "the project defines workflows but names none for its items",
+      stages,
+    };
+  }
+  const workflow =
+    projectId === FACTORY
+      ? {
+          name: "software",
+          label: "Software",
+          description: "Plan, build, verify, review",
+          builtIn: false,
+        }
+      : {
+          name: "software",
+          label: "Software (built in)",
+          description: "Triage, spec, build, verify and merge",
+          builtIn: true,
+        };
+  return { projectId, workflow, unavailable: null, stages };
 }
 
 /** A work item: before release it has no stages, runs, spec or gates yet (spec 50). */
@@ -880,6 +925,32 @@ function liveView(): OpOutput<"run.live"> {
 
 type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
 
+/** A refusal in the server's shape: the fake door answers `{ ok: false, code, error }`. */
+export class Refusal extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Writes the behaviour tests (screenshots/behave.mjs) make. Nothing changes: each answers as the
+ * server would, and the fake door records the call. Releasing #20 is refused as core refuses an
+ * item with no repository.
+ */
+const released = (input: { workItemId: string }) => {
+  const i = ITEMS.find((x) => x.id === input.workItemId);
+  if (i && !i.repositoryId) {
+    throw new Refusal(
+      "conflict",
+      `work item #${i.number} needs a repository: choose one of the project's 1 (workItem.update)`,
+    );
+  }
+  return { status: "queued", blockedBy: [] };
+};
+
 export const ANSWERS: Answers = {
   "org.list": () => ({
     userId: ME,
@@ -895,6 +966,7 @@ export const ANSWERS: Answers = {
   }),
   "workItem.get": (input) => detail(input.workItemId),
   "workItem.board": (input) => board(input),
+  "project.workflow": (input) => workflowOf(input.projectId),
   "config.get": (input) => ({
     projectId: input.projectId,
     current: {
@@ -947,4 +1019,14 @@ export const ANSWERS: Answers = {
     waitReason: null,
   }),
   "github.openPullRequests": () => ({ pulls: [] }),
+  "workItem.release": released,
+  "workItem.move": () => ({ status: "ready" }),
+  "workItem.update": (input) => ({ workItemId: input.workItemId }) as never,
+  "workItem.create": (input) =>
+    ({
+      workItemId: "wi_99",
+      number: 99,
+      status: input.state ?? "backlog",
+      outcome: "created",
+    }) as never,
 };

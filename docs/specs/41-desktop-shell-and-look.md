@@ -219,6 +219,20 @@ rather than shown empty:
   release, with the routing preview. Priority and one "waits for" item can be set. The workflow is
   shown, set by the project. The design's Triage it now and Plan it now need the same server work as
   above.
+- **The project's workflow** comes from **`project.workflow`** (a new read, member, risk `read`):
+  the workflow its config names, the built-in Software workflow when the config defines none
+  (ADR 0492), or none with the reason when the config defines workflows and names none (it fails
+  closed). It also returns the stages in order with each one's label and phase, which Planning
+  and the board's lanes use. New work and the project page show its label; a project with no
+  workflow says work can be captured but not released, and New work offers only the backlog.
+- **Review fixes** (2026-11-12): a bulk action reports every refusal with its item and the
+  server's reason, and the refused items stay selected; bulk actions and quick add run once
+  (busy, read-only while adding); Edit says what was saved and what was refused and stays open on
+  the refused part, and Esc with unsaved edits asks first. The header checkbox shows a partial
+  selection (`packages/ui` Checkbox, indeterminate). Behaviour tests drive the real view in
+  headless Chrome (`pnpm --filter @software-factory/desktop behave`, `screenshots/behave.mjs`).
+  The design's Readiness and From columns (Backlog) and Spec column (Ready) need server work:
+  `workItem.board` returns no triage readiness, no source and no spec state.
 - **The title bar**: every toolbar control (back, forward, sidebar, tabs, new tab, search, New
   item) is 28px with the 7px radius. Double-clicking its empty space zooms and unzooms the window;
   checked in the dev build's real window (`window/titlebar-before.png`, `titlebar-zoomed.png`).

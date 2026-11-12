@@ -7,10 +7,11 @@
 //
 //   node apps/desktop/screenshots/shoot.mjs [--design] [--out dir] [--size WxH --tag t] [screen ...]
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createServer } from "vite";
+import { connect } from "./cdp.mjs";
 
 const here = import.meta.dirname;
 const repo = resolve(here, "../../..");
@@ -75,6 +76,8 @@ export const SCREENS = [
     clicks: ['[data-testid="edit-item"]'],
   },
   { name: "work-new", path: "/new", design: "WorkNew.html" },
+  // A project whose config defines workflows and names none: captured, never released.
+  { name: "work-new-no-workflow", path: "/new?project=prj_crm", design: "WorkNew.html" },
   { name: "project", path: "/work?project=prj_factory", design: "WorkProject.html" },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
@@ -89,47 +92,6 @@ const withDesign = args.includes("--design");
 const valued = new Set(["--out", "--size", "--tag"]);
 const only = args.filter((a, i) => !a.startsWith("--") && !valued.has(args[i - 1]));
 const screens = only.length ? SCREENS.filter((s) => only.includes(s.name)) : SCREENS;
-
-/** A minimal CDP client over the browser's page websocket. */
-async function connect(port) {
-  for (let i = 0; i < 50; i++) {
-    try {
-      const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-      const page = targets.find((t) => t.type === "page");
-      if (page) {
-        const ws = new WebSocket(page.webSocketDebuggerUrl);
-        await new Promise((r, j) => {
-          ws.onopen = r;
-          ws.onerror = j;
-        });
-        let id = 0;
-        const waiting = new Map();
-        ws.onmessage = (m) => {
-          const msg = JSON.parse(String(m.data));
-          const w = waiting.get(msg.id);
-          if (w) {
-            waiting.delete(msg.id);
-            if (msg.error) w.reject(new Error(msg.error.message));
-            else w.resolve(msg.result);
-          }
-        };
-        return {
-          send: (method, params = {}) =>
-            new Promise((resolve, reject) => {
-              const n = ++id;
-              waiting.set(n, { resolve, reject });
-              ws.send(JSON.stringify({ id: n, method, params }));
-            }),
-          close: () => ws.close(),
-        };
-      }
-    } catch {
-      // Chrome is still starting.
-    }
-    await sleep(200);
-  }
-  throw new Error("Chrome didn't start");
-}
 
 async function shoot(cdp, url, file, theme, keys = [], clicks = []) {
   await cdp.send("Emulation.setEmulatedMedia", {
@@ -170,6 +132,10 @@ const server = await createServer({
 await server.listen();
 const base = `http://localhost:${viewPort}/`;
 const port = viewPort + 3592;
+// A fresh browser profile per run: a kept one restores typed text and shows autofill previews
+// (a Quick add once showed an earlier run's title as if it were its placeholder).
+const profile = resolve(repo, `node_modules/.cache/sf-shots-chrome-${viewPort}`);
+rmSync(profile, { recursive: true, force: true });
 const chrome = spawn(
   CHROME,
   [
@@ -178,7 +144,7 @@ const chrome = spawn(
     `--window-size=${W},${H}`,
     "--hide-scrollbars",
     "--force-device-scale-factor=1",
-    `--user-data-dir=${resolve(repo, `node_modules/.cache/sf-shots-chrome-${viewPort}`)}`,
+    `--user-data-dir=${profile}`,
     "about:blank",
   ],
   { stdio: "ignore" },

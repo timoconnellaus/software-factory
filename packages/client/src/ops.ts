@@ -86,6 +86,7 @@ export interface OpMap {
   "workItem.reorder": Def<typeof operations.workItemReorder>;
   "workItem.link": Def<typeof operations.workItemLink>;
   "workItem.unlink": Def<typeof operations.workItemUnlink>;
+  "project.workflow": Def<typeof operations.projectWorkflow>;
 }
 
 export type OpName = keyof OpMap;
@@ -119,3 +120,4 @@ export type LiveView = OpOutput<"run.live">;
 export type LiveEvent = LiveView["events"][number];
 export type LiveSteer = LiveView["steers"][number];
 export type BoardItem = OpOutput<"workItem.board">["items"][number];
+export type ProjectWorkflow = OpOutput<"project.workflow">;

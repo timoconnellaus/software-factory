@@ -15,8 +15,15 @@ export interface ItemRef {
   status: string;
 }
 
-/** A tab's title. A work item is "#12 Its title" once the app has it loaded, else "Work item". */
-export function tabTitle(path: string, findItem: (id: string) => ItemRef | null): string {
+/**
+ * A tab's title. A work item is "#12 Its title" once the app has it loaded, else "Work item"; a
+ * project's page is the project's name once loaded, else "Project".
+ */
+export function tabTitle(
+  path: string,
+  findItem: (id: string) => ItemRef | null,
+  findProject: (id: string) => string | null = () => null,
+): string {
   const pathname = path.split("?")[0] ?? "/";
   const item = /^\/work\/([^/]+)(\/review)?$/.exec(pathname);
   if (item?.[1]) {
@@ -30,7 +37,8 @@ export function tabTitle(path: string, findItem: (id: string) => ItemRef | null)
       const q = new URLSearchParams(path.split("?")[1] ?? "");
       const view = q.get("view");
       if (view && view in WORK_VIEW_TITLE) return WORK_VIEW_TITLE[view] as string;
-      return q.get("project") ? "A project" : "In the factory";
+      const project = q.get("project");
+      return project ? (findProject(project) ?? "Project") : "In the factory";
     }
     case "/new":
       return "New item";

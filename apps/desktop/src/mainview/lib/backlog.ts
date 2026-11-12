@@ -92,3 +92,32 @@ export function age(iso: string, now = Date.now()): string {
   if (h < 24) return `${h} h`;
   return `${Math.round(h / 24)} d`;
 }
+
+/**
+ * One refusal in a bulk report: the server's words with the item's number in front, unless they
+ * already name it ("work item #20 needs a repository …").
+ */
+export function refusalText(number: number, reason: string): string {
+  return reason.includes(`#${number}`) ? reason : `#${number}: ${reason}`;
+}
+
+/** A bulk action's one report: "Released 3 items. Not released: #20 …; #22 …". */
+export function bulkReport(
+  ok: number,
+  refusals: string[],
+  words: { done: (n: number) => string; not: string },
+): string {
+  const done = ok ? `${words.done(ok)}.` : "";
+  const not = refusals.length ? `${words.not}: ${refusals.join("; ")}` : "";
+  return [done, not].filter(Boolean).join(" ");
+}
+
+/** "title and priority", for a save's report. */
+export function fieldNames(keys: string[]): string {
+  const names = keys.map((k) =>
+    k === "repositoryId" ? "repository" : k === "body" ? "description" : k,
+  );
+  return names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}

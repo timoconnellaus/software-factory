@@ -8,8 +8,11 @@ import { ANSWERS } from "../screenshots/fixtures.ts";
 import {
   age,
   type BacklogItem,
+  bulkReport,
+  fieldNames,
   itemsIn,
   quickAddLines,
+  refusalText,
   releasable,
   releaseBlocker,
   waitsText,
@@ -129,5 +132,27 @@ describe("quick add", () => {
     expect(age("2026-11-12T11:30:00Z", now)).toBe("30 min");
     expect(age("2026-11-12T09:00:00Z", now)).toBe("3 h");
     expect(age("2026-11-09T12:00:00Z", now)).toBe("3 d");
+  });
+});
+
+describe("bulk reports and edits", () => {
+  const words = { done: (n: number) => `Released ${n} items`, not: "Not released" };
+  it("reports how many went through and every refusal, each with its item", () => {
+    const refused = [
+      refusalText(20, "work item #20 needs a repository"),
+      refusalText(22, "the project's config isn't valid"),
+    ];
+    expect(bulkReport(3, refused, words)).toBe(
+      "Released 3 items. Not released: work item #20 needs a repository; #22: the project's config isn't valid",
+    );
+    expect(bulkReport(0, refused.slice(0, 1), words)).toBe(
+      "Not released: work item #20 needs a repository",
+    );
+    expect(bulkReport(2, [], words)).toBe("Released 2 items.");
+  });
+
+  it("names the fields a save changed", () => {
+    expect(fieldNames(["title"])).toBe("title");
+    expect(fieldNames(["title", "body", "repositoryId"])).toBe("title, description and repository");
   });
 });

@@ -257,7 +257,12 @@ describe("places and search", () => {
     expect(tabTitle("/", find)).toBe("Inbox");
     expect(tabTitle("/work?view=done", find)).toBe("Done");
     expect(tabTitle("/work?view=backlog&project=prj_factory", find)).toBe("Backlog");
-    expect(tabTitle("/work?project=prj_factory", find)).toBe("A project");
+    expect(tabTitle("/work?project=prj_factory", find)).toBe("Project");
+    expect(
+      tabTitle("/work?project=prj_factory", find, (id) =>
+        id === "prj_factory" ? "Factory" : null,
+      ),
+    ).toBe("Factory");
     expect(tabTitle("/work", find)).toBe("In the factory");
     expect(tabTitle("/work/wi_13?tab=review", find)).toBe("#13 Guard the tests in verify");
     expect(tabTitle("/work/unknown", find)).toBe("Work item");

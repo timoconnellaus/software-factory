@@ -14,7 +14,7 @@ import { useOrgScope, useScopedInbox } from "../components/shell-sidebar.tsx";
 import { BacklogPage, PlanningPage, ReadyPage } from "../components/work-backlog.tsx";
 import { ProjectPage } from "../components/work-project.tsx";
 import { openItem } from "../lib/places.ts";
-import { boardsQuery, configQuery, workListsQuery } from "../lib/queries.ts";
+import { boardsQuery, configQuery, workflowQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import {
   cardState,
@@ -44,14 +44,28 @@ export const Route = createRoute({
     ...(s.layout === "board" || s.layout === "list" ? { layout: s.layout } : {}),
   }),
   loaderDeps: ({ search }) => ({ project: search.project, view: search.view }),
-  // The lists, and a project's config (its workflow) on its page.
+  // The lists; a project's config and workflow on its page; on Planning, the workflow (its stage
+  // labels) of each project with work being shaped.
   loader: ({ context: { queryClient, session }, deps }) => {
     const orgIds = session.orgs.map((o) => o.id);
+    const board = queryClient.ensureQueryData(boardsQuery(orgIds));
     return Promise.all([
       queryClient.ensureQueryData(workListsQuery(orgIds)),
-      queryClient.ensureQueryData(boardsQuery(orgIds)),
+      board,
       deps.project && !deps.view
-        ? queryClient.ensureQueryData(configQuery(deps.project))
+        ? Promise.all([
+            queryClient.ensureQueryData(configQuery(deps.project)),
+            queryClient.ensureQueryData(workflowQuery(deps.project)),
+          ])
+        : Promise.resolve(null),
+      deps.view === "planning"
+        ? board.then((b) =>
+            Promise.all(
+              [
+                ...new Set(b.items.filter((i) => i.status === "shaping").map((i) => i.projectId)),
+              ].map((id) => queryClient.ensureQueryData(workflowQuery(id))),
+            ),
+          )
         : Promise.resolve(null),
     ]).catch(() => null);
   },
