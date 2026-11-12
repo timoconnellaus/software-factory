@@ -12,6 +12,14 @@ import {
   nodeExec,
   reapOrphans,
 } from "@software-factory/runner-local";
+import {
+  accountConfigDirs,
+  accountPaths,
+  accountsReport,
+  activeAccount,
+  noteUsage,
+  useAccount,
+} from "./accounts.ts";
 import { checkoutDirs } from "./checkouts.ts";
 import type { Paths, RunnerConfig } from "./config.ts";
 import { hostGit } from "./git.ts";
@@ -43,6 +51,7 @@ export function buildRunner(
   } = {},
 ) {
   const exec = options.exec ?? nodeExec;
+  const log = options.log ?? ((m: string) => console.log(`[runner] ${m}`));
   const cp = httpControlPlane({
     baseUrl: config.baseUrl,
     runnerId: config.runnerId,
@@ -56,8 +65,18 @@ export function buildRunner(
     identity,
     ...(config.repoUrlMap ? { repoUrlMap: config.repoUrlMap } : {}),
   });
+  const accounts = accountPaths(dirs);
   const adapter = createLocalRunner({
     exec,
+    // Claude accounts (ADR 0410): a job takes the active one when its workspace is prepared.
+    account: () => activeAccount(accounts),
+    accountConfigDirs: () => accountConfigDirs(accounts),
+    onAccountUsage: (name, limit) => {
+      if (limit) log(`account "${name}" hit a usage limit: ${limit}`);
+      void noteUsage(accounts, name, limit).catch((err) => {
+        log(`account limits: ${err instanceof Error ? err.message : err}`);
+      });
+    },
     maxConcurrent: config.maxConcurrent,
     // ADR 0260 (amended by ADR 0380): jobs run as worktrees of the checkout this machine already
     // has for the remote, under the configured `checkouts` dirs; the host's clone only when none.
@@ -74,8 +93,11 @@ export function buildRunner(
     ...(config.capabilities ? { capabilities: config.capabilities } : {}),
     ...options.local,
   });
-  const log = options.log ?? ((m: string) => console.log(`[runner] ${m}`));
   const host = new RunnerHost({
+    accounts: {
+      report: () => accountsReport(accounts),
+      use: (name) => useAccount(accounts, name),
+    },
     adapter,
     cp,
     git,

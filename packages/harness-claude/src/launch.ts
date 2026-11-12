@@ -42,6 +42,12 @@ export interface LaunchRecord {
   settingsPaths: string[];
   pidFile: string;
   worktree: string;
+  /**
+   * The Claude account the run uses (ADR 0410), and its config dir (absent for `default`). Names and
+   * paths only, never a token. Older records have neither.
+   */
+  account?: string;
+  configDir?: string;
 }
 
 /** The exact argv for a run's Claude. */
@@ -98,15 +104,21 @@ export function launchUnsets(env: Record<string, string>): string[] {
 
 /**
  * The launch script a runner runs (with `/bin/sh`) in the job's terminal: it records its pid,
- * which `exec` hands to Claude, so the check can find the process without guessing.
+ * which `exec` hands to Claude, so the check can find the process without guessing. `account` is
+ * the lines that give Claude its account (`accountLaunchLines`, ADR 0410).
  */
-export function launchScript(record: LaunchRecord, unset: readonly string[]): string {
+export function launchScript(
+  record: LaunchRecord,
+  unset: readonly string[],
+  account: readonly string[] = [],
+): string {
   return [
     "#!/bin/sh",
     `# Written by the software factory runner for job ${record.jobId} (${record.stage}).`,
     "# The harness's own invocation (ADR 0270); the runner checks the live process against",
     `# ${LAUNCH_RECORD} before it sends the prompt.`,
     ...(unset.length ? [`unset ${unset.map(shellQuote).join(" ")}`] : []),
+    ...account,
     `cd ${shellQuote(record.worktree)} || exit 97`,
     `echo $$ > ${shellQuote(record.pidFile)} || exit 98`,
     `exec ${record.argv.map(shellQuote).join(" ")}`,

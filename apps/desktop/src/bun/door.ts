@@ -48,8 +48,29 @@ export class Door {
     return json as T;
   }
 
-  async call(op: string, input: unknown, presence?: unknown): Promise<CallResult> {
-    const { json } = await this.post("call", { op, input, ...(presence ? { presence } : {}) });
+  /**
+   * One operation. A form submit passes an idempotency key so a retry runs once. A call a gate holds
+   * for review answers `pending` (the door's 202), which the view shows as not done yet.
+   */
+  async call(
+    op: string,
+    input: unknown,
+    options: { presence?: unknown; idempotencyKey?: string } = {},
+  ): Promise<CallResult> {
+    const { presence, idempotencyKey } = options;
+    const { status, json } = await this.post("call", {
+      op,
+      input,
+      ...(presence ? { presence } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+    if (status === 202 && json.pending) {
+      return {
+        ok: false,
+        code: "pending",
+        error: `held for approval (${String(json.pendingActionId ?? "")})`,
+      };
+    }
     return "result" in json
       ? { ok: true, result: json.result }
       : { ok: false, code: String(json.code ?? "failed"), error: String(json.error ?? "failed") };
@@ -74,7 +95,12 @@ export class Door {
    * A gate decision (ADR 0391): a one-time challenge for this op and input, with the engine's
    * summary of the decision, signed (Touch ID shows the summary), then the call with the proof.
    */
-  async decide(op: string, input: unknown, sign: Signer): Promise<CallResult> {
+  async decide(
+    op: string,
+    input: unknown,
+    sign: Signer,
+    idempotencyKey?: string,
+  ): Promise<CallResult> {
     const digest = await inputDigest(input);
     const challenge = await this.call("presence.challenge", { op, input });
     if (!challenge.ok) return challenge;
@@ -98,6 +124,9 @@ export class Door {
         error: error instanceof Error ? error.message : "Touch ID was cancelled",
       };
     }
-    return this.call(op, input, { challengeId: c.challengeId, nonce: c.nonce, signature });
+    return this.call(op, input, {
+      presence: { challengeId: c.challengeId, nonce: c.nonce, signature },
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
   }
 }

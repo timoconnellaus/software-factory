@@ -32,6 +32,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | V | 0150–0159 | 0380–0389 | Run agents on hosts without Orca (`no-orca`): the plan, spec 30 (runner-local, tmux, hook status, delete runner-orca) and the later pieces' specs. Used: ADR 0380, no migrations | in progress |
 | W | 0160–0169 | 0390–0399 | The desktop app (`desktop-app`): spec 40. ADR 0130 promoted, the client door and desktop devices with presence proofs, `apps/desktop` on Electrobun, the website shrinks to auth | in progress |
 | X | 0170–0179 | 0400–0409 | Watch and steer runs from the dashboard (`hosts-watch-steer`): spec 31. Used: migration 0170; ADR 0400 | in progress |
+| Y | 0180–0189 | 0410–0419 | Claude accounts on a host (`hosts-accounts`): spec 32, plan piece 3. Accounts on the host, manual switching from the host or the dashboard (`runner.account.use`), the account in the harness launch. Used: migration 0180; ADR 0410 | in progress |
 | Z | 0190–0199 | 0420–0429 | Linux hosts (`hosts-linux`): spec 34. The systemd user service, platform paths, the harness sandbox on Linux, Linux doctor checks, the install path. Used: ADR 0420, no migrations | in progress |
 | AB | 0210–0219 | 0440–0449 | Projects, repositories, backlog and release (`work-model`): spec 50. A project has repositories (migration 0210, ADR 0440); backlog, ready, queued, `workItem.release`, waits-for links and the pull (migration 0211, ADR 0441); a project runs one workflow (ADR 0442) | in progress |
 

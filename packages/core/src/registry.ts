@@ -145,6 +145,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.runnerRegister,
   runners.runnerRotateKey,
   runners.runnerList,
+  runners.runnerAccountUse,
   devices.runnerDeviceStart,
   devices.runnerDevicePoll,
   devices.runnerDeviceLookup,

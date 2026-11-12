@@ -85,6 +85,40 @@ A **planning** job is a long-lived Claude session that plans one work item with 
   launch script unsets the credential variables and `CLAUDE_CODE_PLUGIN_DIRS`; the sandbox
   (ADR 0270) is what confines it. The status hook runs outside the sandbox, as every hook does: it
   only appends to the run's status file and always answers `{}`.
+- The model credential is yours and stays on this machine (ADR 0023, 0410): see Claude accounts
+  below. On `default` the launch leaves the environment as it is; on a named account it unsets
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CONFIG_DIR`, then
+  sets that account's.
+
+## Claude accounts (spec 32, ADR 0410)
+A host can run Claude with several accounts and you pick which one new jobs use. With none added,
+jobs use `default`: whatever `claude` uses on this machine, as before.
+```sh
+local/runner-host/bin/sf-runner account add work           # a login: runs claude in the account's
+                                                            # own config dir; log in, then /exit
+pbpaste | local/runner-host/bin/sf-runner account add ci --token-stdin
+                                                            # a `claude setup-token` token or an API
+                                                            # key (--oauth / --api-key if unsure)
+local/runner-host/bin/sf-runner account list                # * marks the active one
+local/runner-host/bin/sf-runner account use work            # new jobs use it; running jobs keep theirs
+local/runner-host/bin/sf-runner account remove ci           # not the active one, not one in use
+```
+- A **login** account's Claude config dir is `~/.local/share/software-factory/runner/accounts/<name>/`
+  (`CLAUDE_CONFIG_DIR` for its runs). A **token** is kept in
+  `~/.config/software-factory/accounts/<name>.token` (0600), which no run can read. The launch
+  script reads it into `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` just before starting Claude,
+  so no file the harness writes holds it. A token account gets a config dir too, seeded so Claude
+  skips its first-run screens. A token is visible to the commands Claude runs, as an
+  `ANTHROPIC_API_KEY` in the host's environment always was, so prefer login accounts.
+- The registry is `~/.config/software-factory/accounts.json`: the active name and each account's
+  kind, no secret. The service reads it for every job, so `account use` needs no restart.
+- You can also switch from the dashboard: Setup → Your runners → Claude account. That sends only the
+  name; the host switches on its next heartbeat. The heartbeat reports account names and the active
+  one, never a credential. Adding and removing accounts is only ever done here.
+- A run that hits a usage limit fails with "usage limit on Claude account …", and Setup shows it next
+  to that account until a run on it ends cleanly. Switch by hand; nothing rotates accounts for you.
+- A planning session resumed after a switch gets its conversation copied into the new account's
+  config dir, so `claude --resume` finds it.
 
 ## Connecting: `sf-runner login` (ADR 0056)
 From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
@@ -329,7 +363,8 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
 | `src/runner.ts` | Wires config → channel client + git + runner-local (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
-| `src/config.ts`, `src/cli.ts` | `sf-runner pair/run/status/doctor/install/uninstall` |
+| `src/accounts.ts`, `src/account-cli.ts` | Claude accounts on the host (ADR 0410): the registry, token files, config dirs, usage limits, `sf-runner account` |
+| `src/config.ts`, `src/cli.ts` | `sf-runner pair/run/status/doctor/install/uninstall/account` |
 | `src/service.ts`, `src/launchd.ts`, `src/systemd.ts` | The service by platform: launchd on macOS, a systemd user unit on Linux (ADR 0420) |
 | `src/linux.ts` | `doctor`'s Linux checks: bubblewrap, socat, a bwrap smoke run, user systemd, linger |
 | `scripts/linux-prereqs.sh`, `scripts/linux-check.sh` | Check a Linux box's packages; run the Linux-sensitive tests in a container |

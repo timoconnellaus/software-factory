@@ -1,6 +1,8 @@
 // Approve a runner's login code (ADR 0056): `sf-runner login` prints a code and a link here
 // (`/runners/connect?code=…`). The person checks the code matches their terminal, names the runner
 // and approves; the waiting CLI then receives its key. Nothing to copy.
+
+import { LOGIN_COMMAND } from "@software-factory/client/runner-pairing";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Input } from "@software-factory/ui/components/input";
@@ -11,7 +13,6 @@ import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { op, submitKey } from "#/lib/op";
 import { OpError } from "#/lib/ops";
-import { LOGIN_COMMAND } from "#/lib/runner-pairing";
 
 export const Route = createFileRoute("/_app/runners/connect")({
   validateSearch: (s: Record<string, unknown>): { code?: string } =>

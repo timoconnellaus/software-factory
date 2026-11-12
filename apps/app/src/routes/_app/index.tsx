@@ -1,5 +1,8 @@
 // Home is the Inbox (spec 12): what's waiting on you, grouped by project, the Running section and
 // the runner health line. `/?item=<workItemId>` (web push deep links) highlights that card.
+
+import { ago, errorMessage, STAGE_LABEL } from "@software-factory/client/format";
+import { gateWorkItemIds, groupByProject } from "@software-factory/client/inbox";
 import { Card } from "@software-factory/ui/components/card";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
@@ -11,8 +14,6 @@ import { FinishSetupCard } from "#/components/finish-setup";
 import { GateCard, QuestionCard } from "#/components/inbox-cards";
 import { ProtectionChangedCard } from "#/components/protection-card";
 import { RunnerHealth } from "#/components/runner-health";
-import { ago, errorMessage, STAGE_LABEL } from "#/lib/format";
-import { gateWorkItemIds, groupByProject } from "#/lib/inbox";
 import { inboxQuery, setupStatusQuery, workItemQuery, workListQuery } from "#/lib/queries";
 import { useProjects } from "#/lib/session";
 

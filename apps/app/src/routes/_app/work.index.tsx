@@ -1,10 +1,11 @@
 // A plain list of work items (the board is R2).
+
+import { ago, STAGE_LABEL } from "@software-factory/client/format";
 import { Card } from "@software-factory/ui/components/card";
 import { type Status, StatusBadge } from "@software-factory/ui/components/status-dot";
 import { Table, TableBody, TableCell, TableRow } from "@software-factory/ui/components/table";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ago, STAGE_LABEL } from "#/lib/format";
 import { workListQuery } from "#/lib/queries";
 import { useProjects, useSession } from "#/lib/session";
 
