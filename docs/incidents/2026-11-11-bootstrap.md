@@ -2,7 +2,7 @@
 
 The first factory incidents. They were found by hand while setting up V1 on production (the app's
 Setup page and the M5 runner), not opened by `incident.open`, because the factory wasn't running yet.
-There are eight (the fifth to eighth were found during the first real jobs). Each has the root-cause class the incident flow uses (`packages/core/src/incidents/classify.ts`)
+There are nine (the fifth to ninth were found during the first real jobs). Each has the root-cause class the incident flow uses (`packages/core/src/incidents/classify.ts`)
 and what in `.factory/` or the specs would have caught it. The first four are fixed on branch `bootstrap-fixes`, the fifth on `runner-orca-resolve-repo`, the sixth on `harness-permission-mode`.
 
 | # | What happened | Root cause class | Fixed by |
@@ -15,6 +15,7 @@ and what in `.factory/` or the specs would have caught it. The first four are fi
 | 6 | The job's Claude ran with `--permission-mode auto` although the factory projected `dontAsk`: the launcher added the owner's own mode, and a CLI flag beats a settings file | `runner` (launcher override + missing post-launch verification) | ADR 0270: the harness owns its launch command (no user settings, its own mode), the sandbox in every stage, the live process verified before the prompt, `harness-config-mismatch` kills and fails the job; `sf-runner doctor` checks running jobs (branch `harness-permission-mode`) |
 | 7 | Work item #1's PR conflicted with `main` from the start, so GitHub ran no CI; verify read "no CI" as a build failure and the retries couldn't fix it | `missing-check` (spec gap) | ADR 0320: branches merge the default branch before build, a conflict is its own state, missing CI asks a person (Workflow v3); then the merge queue (ADR 0330) |
 | 8 | Every job since #24 ran on the tail of its prompt: typed into the Claude terminal, a multi-kilobyte prompt arrived truncated | `runner` (prompt transport) | The prompt goes in `.factory-prompt.md` in the worktree; the terminal gets one short pointer line; `runner-sends-the-prompt-as-a-file` check |
+| 9 | Updating the M5's runner by hand cancelled #4's build, and the restarted service had no Orca on its `PATH` | `runner` (no update path) | ADR 0360: runners update themselves to the deployed commit when idle, with rollback; `install` adds Orca's bin directory and retries the bootstrap |
 
 ## 1. A project couldn't be fixed after creation
 **What happened.** The installation lookup failed (incident 2), Setup showed a toast that disappeared, and
@@ -287,6 +288,34 @@ Runs before 07:15 (#1's triage, spec, first build and verify) got their whole pr
 - **A smoke check:** the factory reading back what an agent was given. Whenever an agent's summary
   says its message was cut off, the run should fail as `runner`, not as the build. That isn't built
   yet.
+
+## 9. Updating the runner by hand cancelled a job and left it without Orca
+**What happened.** Rolling out the fix for #8 meant updating the M5's runner by hand, over SSH:
+`git pull`, then `sf-runner install`. Three things went wrong:
+- **The restart cancelled a job.** Work item #4's build was cut off mid-run. It counted as stalled
+  once its lease expired, and #4 lost a retry.
+- **The service didn't come back.** `launchctl bootstrap` failed with `5: Input/output error`
+  straight after `bootout`, so the runner was down until it was bootstrapped again by hand.
+- **The runner couldn't find Orca.** `install` captured the SSH session's `PATH`, which has no Orca
+  bin directory, so every `orca` call failed with `spawn orca ENOENT`. Adding the directory to the
+  service file by hand fixed it.
+
+**Root cause (`runner`: no update path).** Nothing kept a runner on the factory's code. A person had
+to notice the runner was behind, log in, and run commands whose effects depended on that shell.
+
+**Fix.** [ADR 0360](../adr/0360-runners-update-themselves-to-the-deployed-commit.md), spec 08.
+- **The engine says which version to run:** it knows the commit it was deployed from, and the
+  heartbeat tells the runner.
+- **The runner updates itself when idle:** it stops claiming, lets its jobs finish, fast-forwards
+  to exactly that commit, reinstalls and exits, and launchd starts the new code.
+- **Rollback:** a small `sh` wrapper reverts an update that doesn't start.
+- **`sf-runner install`:** puts Orca's bin directory on the service's `PATH`, and retries the
+  bootstrap.
+- **Visible:** the app's runner health line and `sf-runner status` show a runner that is behind,
+  blocked or rolled back.
+
+**What would have caught it.** A runner that reports its version: the cloud then knows it's
+running old code. That is now part of every heartbeat.
 
 ## Follow-ups (not done here)
 - ~~Add the spec-template rules from 1 and 3 when the stage-spec template is next touched.~~ Done
