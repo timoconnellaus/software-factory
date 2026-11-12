@@ -51,6 +51,7 @@ import {
 } from "@software-factory/runner-contract";
 import { exists, findCheckout, isUnder } from "./checkouts.ts";
 import { type Exec, nodeExec, run } from "./exec.ts";
+import { openTmuxTerminal } from "./terminal.ts";
 import {
   attachCommand,
   type PaneState,
@@ -149,6 +150,7 @@ export const DEFAULT_CAPABILITIES: Capability[] = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "terminal",
 ];
 
 /** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
@@ -806,6 +808,19 @@ export function createLocalRunner(
       }
       await sleep(200);
       await tmux.sendKeys(session.name, "Enter");
+    },
+
+    /**
+     * The web terminal (ADR 0440): a tmux control-mode client on the job's session, started while
+     * someone watches from the dashboard and closed when they leave.
+     */
+    openTerminal(session, options) {
+      return openTmuxTerminal({
+        ...options,
+        session: session.name,
+        socket: tmux.socket,
+        ...(config.tmux?.bin ? { bin: config.tmux.bin } : {}),
+      });
     },
   };
 }
