@@ -11,6 +11,7 @@ import {
   type CapabilityManifest,
   canRun,
   capabilityManifestSchema,
+  capacityPausedSchema,
   capacitySchema,
   JOB_STAGES,
   type Job,
@@ -254,6 +255,7 @@ function reportRunnerState(
         light_max: report.capacity.light?.max ?? null,
         light_in_use: report.capacity.light?.inUse ?? 0,
         accepting: report.capacity.accepting ? 1 : 0,
+        paused: report.capacity.paused ? json(report.capacity.paused) : null,
         ...(report.rateLimitedUntil !== undefined
           ? { rate_limited_until: report.rateLimitedUntil }
           : {}),
@@ -583,15 +585,31 @@ async function freePools(
   if (!runner.accepting) return null;
   if (runner.rate_limited_until && Date.parse(runner.rate_limited_until) > nowMs) return null;
   const active = await activeRunsByPool(ctx, runner.id);
+  // A pool the runner paused (ADR 0532: its load, or its tmux) gets nothing new.
+  const paused = (reported ? reported.paused : runnerPaused(runner))?.pools ?? [];
   if (runner.light_max === null) {
-    const any = Math.max(active.heavy + active.light, reported?.inUse ?? 0) < runner.capacity_max;
+    const any =
+      paused.length === 0 &&
+      Math.max(active.heavy + active.light, reported?.inUse ?? 0) < runner.capacity_max;
     return { heavy: any, light: any, split: false };
   }
   return {
-    heavy: Math.max(active.heavy, reported?.inUse ?? 0) < runner.capacity_max,
-    light: Math.max(active.light, reported?.light?.inUse ?? 0) < runner.light_max,
+    heavy:
+      !paused.includes("heavy") &&
+      Math.max(active.heavy, reported?.inUse ?? 0) < runner.capacity_max,
+    light:
+      !paused.includes("light") &&
+      Math.max(active.light, reported?.light?.inUse ?? 0) < runner.light_max,
     split: true,
   };
+}
+
+/** The pause a runner last reported (ADR 0532), or null. */
+function runnerPaused(
+  runner: Pick<RunnerRow, "paused">,
+): z.infer<typeof capacityPausedSchema> | null {
+  const parsed = capacityPausedSchema.safeParse(parseJson<unknown>(runner.paused, null));
+  return parsed.success ? parsed.data : null;
 }
 
 /**

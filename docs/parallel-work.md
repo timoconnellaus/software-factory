@@ -37,6 +37,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AA | 0200–0209 | 0430–0439 | Container per job (`hosts-containers`): spec 33, hosts plan piece 4. Used: ADR 0430, no migrations | in review |
 | AB | 0210–0219 | 0440–0449 | Web terminal in the dashboard (`hosts-web-terminal`): spec 35. The TerminalRelay Durable Object per job, the `terminal` held call and host socket, `run.terminal.*`, the tmux control-mode bridge, the Live tab's web terminal. Used: migration 0210; ADR 0440 | in progress |
 | AC | 0220–0229 | 0450–0459 | Chat UI on a stream-json session (`hosts-chat-ui`): spec 37. Used: migration 0220; ADR 0450 | in progress |
+| AK | 0300–0309 | 0530–0539 | Runners under load (`runner-tmux-robust`): spec 43, incident #11. No orphans, tmux errors aren't "gone", back off claiming under load, marked run branches. Used: migration 0300; ADRs 0530–0532 | in review |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.

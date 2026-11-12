@@ -17,6 +17,7 @@ import {
   ChannelCallError,
   type ControlPlaneClient,
   canRun,
+  isReleaseIncomplete,
   type Job,
   type JobState,
   RESULT_FILE,
@@ -43,6 +44,8 @@ export interface JobReport {
   handedBack: boolean;
   fenced: boolean;
   error?: string;
+  /** Release couldn't confirm the job's processes stopped (ADR 0530): not reported released. */
+  processesAlive?: boolean;
 }
 
 /** A stop that comes from the cloud: the run must end without handing back. */
@@ -318,6 +321,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let result: unknown;
   let stored: StoredArtifact[] = [];
   const notes: string[] = [];
+  const report: Pick<JobReport, "processesAlive"> = {};
 
   /**
    * The work item's attachments (ADR 0310), when the adapter declares `work-item-attachments`:
@@ -631,11 +635,28 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     clearTimeout(timer);
     clearInterval(flusher);
     await relay?.close().catch(() => {});
+    let processesAlive = false;
     await adapter.release(job, workspace, session).catch((err) => {
       error = `${error ? `${error}; ` : ""}release: ${err instanceof Error ? err.message : err}`;
+      // The job's processes may still be running (ADR 0530): it is never reported released.
+      if (isReleaseIncomplete(err)) processesAlive = true;
     });
     for (const token of tokens) await revokeToken(token, options.fetch);
-    if (!stopped || !(stopped as StopJob).fenced) {
+    if (processesAlive) {
+      log(`${job.jobId}: NOT released, its processes may still be running: ${error ?? ""}`);
+      await stream
+        .push({
+          type: "log",
+          stream: "stderr",
+          text: `runner: the job's processes may still be running; not releasing it (the lease lapses instead): ${error ?? ""}`.slice(
+            0,
+            2_000,
+          ),
+        })
+        .catch(() => {});
+      await stream.flush().catch(() => {});
+      report.processesAlive = true;
+    } else if (!stopped || !(stopped as StopJob).fenced) {
       await stream.push({ type: "job.state", state: "released" }).catch(() => {});
       await stream.flush().catch(() => {});
       await cp
@@ -659,6 +680,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     artifacts: stored,
     handedBack,
     fenced: stoppedNow?.fenced ?? false,
+    ...report,
     ...(summary ? { summary } : {}),
     ...(headSha ? { headSha } : {}),
     ...(error ? { error } : {}),

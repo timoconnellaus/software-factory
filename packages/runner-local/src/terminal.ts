@@ -81,6 +81,8 @@ export class ControlParser {
       output: (pane: string, bytes: Uint8Array) => void;
       block: (block: Block) => void;
       exit: (reason: string) => void;
+      /** `%pause <pane>`: tmux stopped sending the pane (pause-after); it must be continued. */
+      pause?: (pane: string) => void;
     },
   ) {}
 
@@ -123,9 +125,33 @@ export class ControlParser {
       this.on.output(pane, decodeOutput(line.subarray(space + 1)));
       return;
     }
+    // With pause-after, output comes as `%extended-output %<pane> <age> … : <value>`.
+    if (head.startsWith("%extended-output ")) {
+      const space = line.indexOf(0x20, 17);
+      if (space < 0) return;
+      // The value starts after the first " : " (the fields before it have no spaces-colon).
+      let at = -1;
+      for (let i = space; i + 2 < line.length + 1; i++) {
+        if (line[i] === 0x20 && line[i + 1] === 0x3a && line[i + 2] === 0x20) {
+          at = i;
+          break;
+        }
+      }
+      if (at < 0) return;
+      const pane = new TextDecoder().decode(line.subarray(17, space));
+      this.on.output(pane, decodeOutput(line.subarray(at + 3)));
+      return;
+    }
+    if (head.startsWith("%pause ")) {
+      this.on.pause?.(head.slice(7).trim());
+      return;
+    }
     if (head.startsWith("%exit")) this.on.exit(head.slice(5).trim() || "detached");
   }
 }
+
+/** Seconds a control client may fall behind before tmux pauses its pane (`pause-after`). */
+export const PAUSE_AFTER_S = 60;
 
 export interface TmuxTerminalOptions extends OpenTerminalOptions {
   /** The job's tmux session (`sf-<jobId>`). */
@@ -156,9 +182,15 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
     "/dev/null",
     "-C",
     "attach-session",
+    // pause-after (tmux 3.2+): a client that falls behind gets its pane paused (`%pause`), which
+    // the bridge continues and redraws, instead of tmux's "too far behind" path through
+    // control_discard(), where tmux 3.5a and 3.6a crash (SIGSEGV, ADR 0440 note 2026-11-12).
+    "-f",
+    `pause-after=${PAUSE_AFTER_S}`,
     "-t",
     `=${options.session}`,
   ]);
+  let bridge: TerminalBridge | null = null;
   const pending: { resolve: (b: Block) => void }[] = [];
   let pane: string | null = null;
   let exited = false;
@@ -175,6 +207,11 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
     },
     block: (block) => pending.shift()?.resolve(block),
     exit,
+    pause: (id) => {
+      if (id !== pane) return;
+      // Its output since the pause is gone: continue it and redraw the screen.
+      void command(`refresh-client -A '${id}:continue'`).then(() => bridge?.redraw());
+    },
   });
   child.stdout?.on("data", (chunk: Buffer) => parser.push(chunk));
   child.stderr?.on("data", (chunk: Buffer) => {
@@ -215,7 +252,7 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
   pane = id;
   size = { cols: Number(cols) || 80, rows: Number(rows) || 24 };
 
-  const bridge: TerminalBridge = {
+  bridge = {
     async write(data) {
       for (const keys of hexKeys(data)) {
         await command(`send-keys -t ${pane} -H ${keys.join(" ")}`);
@@ -246,6 +283,9 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
     },
     async close() {
       if (exited) return;
+      // Detach first, so tmux ends the client on its own terms (no output left queued for a
+      // client that has gone), then close its input; kill it only if it lingers.
+      if (child.stdin?.writable) child.stdin.write("detach-client\n");
       child.stdin?.end();
       const timer = setTimeout(() => child.kill(), 2_000);
       timer.unref?.();

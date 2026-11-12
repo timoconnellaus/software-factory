@@ -452,7 +452,7 @@ async function doctor(args: string[]) {
     });
     // Without a live-jobs list every job would look orphaned: don't report or fix those.
     const orphan = (f: { kind: string }) =>
-      f.kind === "orphan-worktree" || f.kind === "orphan-session";
+      f.kind === "orphan-worktree" || f.kind === "orphan-session" || f.kind === "orphan-process";
     const relevant = live ? findings : findings.filter((f) => !orphan(f));
     if (relevant.length === 0) {
       return live
@@ -463,7 +463,7 @@ async function doctor(args: string[]) {
       console.log(`  - ${f.message}${f.fixable ? "" : " (not fixable here)"}`);
     if (!values.fix) throw new Error(`${relevant.length} problem(s); run sf-runner doctor --fix`);
     if (live) {
-      const reaped = await reapOrphans(hostDirs(dirs), live);
+      const reaped = await reapOrphans({ ...hostDirs(dirs), checkouts: search }, live);
       if (reaped.length) {
         console.log(`  fixed: removed the sessions and worktrees of ${reaped.join(", ")}`);
       }

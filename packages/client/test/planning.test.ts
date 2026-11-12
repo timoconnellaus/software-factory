@@ -92,9 +92,27 @@ describe("the planning panes", () => {
       light: { inUse: 2, max: 6 },
       rateLimitedUntil: null,
       lastSeenAt: null,
+      paused: null,
       update: null,
     };
     expect(runnerLabel(r)).toBe("busy · heavy 1/2 · light 2/6");
     expect(runnerLabel({ ...r, state: "online" })).toBe("online · heavy 1/2 · light 2/6");
+    // ADR 0532: paused for load, heavy first, then everything.
+    expect(
+      runnerLabel({ ...r, paused: { reason: "load", pools: ["heavy"], load1: 16.04, cores: 10 } }),
+    ).toBe("runner busy: load 16.0 on 10 cores, no new heavy jobs · heavy 1/2 · light 2/6");
+    expect(
+      runnerLabel({
+        ...r,
+        state: "draining",
+        paused: { reason: "load", pools: ["heavy", "light"], load1: 26, cores: 10 },
+      }),
+    ).toBe("runner busy: load 26.0 on 10 cores, no new jobs · heavy 1/2 · light 2/6");
+    expect(runnerLabel({ ...r, paused: { reason: "tmux", pools: ["heavy", "light"] } })).toBe(
+      "runner busy: tmux not answering, no new jobs · heavy 1/2 · light 2/6",
+    );
+    expect(
+      runnerLabel({ ...r, state: "offline", paused: { reason: "tmux", pools: ["heavy"] } }),
+    ).toBe("offline · never seen");
   });
 });

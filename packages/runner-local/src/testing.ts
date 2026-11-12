@@ -10,6 +10,16 @@ import { type Exec, type ExecResult, nodeExec } from "./exec.ts";
 
 export * from "./container/testing.ts";
 
+/**
+ * Whether tests that start tmux control-mode clients should skip (spec 43): inside a factory job
+ * (the harness sets `SOFTWARE_FACTORY_RUN=1` for Claude and every command it runs), so a job's
+ * build or verify doesn't start short-lived tmux servers that tmux 3.5a/3.6a crash in
+ * (control_discard, incident #11 (2026-11-12)). `SF_TMUX_CONTROL_TESTS=1` runs them anyway.
+ */
+export function skipTmuxControlTests(env: Record<string, string | undefined> = process.env) {
+  return env.SOFTWARE_FACTORY_RUN === "1" && env.SF_TMUX_CONTROL_TESTS !== "1";
+}
+
 export interface FakeSession {
   name: string;
   cwd: string;
@@ -31,6 +41,8 @@ export interface ScriptedTmuxOptions {
   trustDialog?: boolean;
   /** Don't record SessionStart (Claude never comes up). */
   noSessionStart?: boolean;
+  /** A steer typed after the prompt doesn't record UserPromptSubmit (the test does, later). */
+  queueSteers?: boolean;
   /** What the agent does after the first prompt is submitted. */
   onPrompt?: (session: FakeSession, append: (line: Partial<StatusLine>) => void) => unknown;
   /** Runs everything that isn't tmux (default: the real thing). */
@@ -126,7 +138,10 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
             const text = s.typed;
             s.typed = "";
             s.submitted.push(text);
-            append(s, { event: "UserPromptSubmit" });
+            // Claude queues a message typed mid-turn: its turn (and the hook) comes after the Stop.
+            if (s.submitted.length === 1 || !options.queueSteers) {
+              append(s, { event: "UserPromptSubmit" });
+            }
             if (s.submitted.length === 1 && options.onPrompt) {
               await options.onPrompt(s, (line) => append(s, line));
             }

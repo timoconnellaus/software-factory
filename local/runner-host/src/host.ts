@@ -4,6 +4,7 @@
 // room. Each job runs concurrently through `runJob`, which also takes the dashboard's steers for its
 // session on a held channel call (ADR 0400). Nothing here knows which runner adapter it drives.
 import {
+  type CapacityPaused,
   ChannelCallError,
   type ControlPlaneClient,
   type Job,
@@ -60,6 +61,11 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
     report(): Promise<RunnerAccounts>;
     use(name: string): Promise<void>;
   };
+  /**
+   * Back off claiming under load (ADR 0532): which pools take nothing new for now (`LoadGate`).
+   * Reported on the heartbeat as `capacity.paused`.
+   */
+  load?: { check(): CapacityPaused | null };
 }
 
 interface Running {
@@ -191,7 +197,10 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       while (!this.stopped && !this.draining) {
         const room = await this.capacity();
         const light = room.light ?? { max: 0, inUse: 0 };
-        if (!room.accepting || (room.inUse >= room.max && light.inUse >= light.max)) break;
+        const paused = room.paused?.pools ?? [];
+        const heavyFull = room.inUse >= room.max || paused.includes("heavy");
+        const lightFull = light.inUse >= light.max || paused.includes("light");
+        if (!room.accepting || (heavyFull && lightFull)) break;
         this.pendingClaimId ??= crypto.randomUUID();
         const { job } = await this.options.cp.claim({
           claimId: this.pendingClaimId,
@@ -232,12 +241,19 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     const running = [...this.running.values()];
     const lightInUse = running.filter((r) => stagePool(r.job.stage) === "light").length;
     const heavyInUse = running.length - lightInUse;
+    // The adapter's own pause (its tmux not answering) first, else the load's (ADR 0532).
+    const paused = reported?.paused ?? this.options.load?.check() ?? undefined;
     return {
       max,
       // The adapter may see workspaces the host doesn't run (a crashed run): count them as heavy.
       inUse: Math.max(heavyInUse, (reported?.inUse ?? 0) - lightInUse),
-      accepting: !this.draining && !this.stopped && (reported?.accepting ?? true),
+      accepting:
+        !this.draining &&
+        !this.stopped &&
+        (reported?.accepting ?? true) &&
+        (paused?.pools.length ?? 0) < 2,
       light: { max: this.options.maxLight ?? 6, inUse: lightInUse },
+      ...(paused ? { paused } : {}),
     };
   }
 

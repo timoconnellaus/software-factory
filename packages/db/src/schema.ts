@@ -495,6 +495,8 @@ export interface CoreRunnersTable {
   /** The account the owner asked for, until the runner reports it active. */
   account_requested: string | null;
   account_requested_at: Iso | null;
+  /** 0300 (ADR 0532): why it takes nothing new in some pools (capacity.paused), or null. */
+  paused: JsonText | null;
 }
 
 export interface CoreRunnerSharesTable {

@@ -32,6 +32,7 @@ import { checkoutDirs } from "./checkouts.ts";
 import type { Paths, RunnerConfig } from "./config.ts";
 import { FETCH_NAMESPACE, hostGit } from "./git.ts";
 import { RunnerHost } from "./host.ts";
+import { hostLoad, LoadGate, type LoadReading, loadPolicySchema } from "./load.ts";
 import { findOnPath } from "./pairing.ts";
 import type { SelfUpdate } from "./self-update.ts";
 
@@ -94,6 +95,8 @@ export function buildRunner(
     fetch?: typeof fetch;
     log?: (m: string) => void;
     local?: Partial<LocalRunnerConfig>;
+    /** The load average and CPU count (tests inject them; ADR 0532). */
+    loadReading?: () => LoadReading;
     /** Container isolation's overrides (tests: a scripted runtime, a credential). */
     container?: Partial<ContainerOptions>;
     /** The runner's self-update (ADR 0360), and what to do once it has updated. */
@@ -198,12 +201,25 @@ export function buildRunner(
         {
           ...hostDirs(dirs, exec),
           ...(options.local?.tmux ? { tmux: options.local.tmux } : {}),
+          ...(options.local?.procs ? { procs: options.local.procs } : {}),
+          // Marked run branches left by crashed jobs, in the owner's checkouts too (ADR 0531).
+          checkouts: {
+            dirs: checkoutDirs(config),
+            exclude: [dirs.reposDir, dirs.worktreesDir],
+            exec,
+          },
         },
         running,
       );
       return [...new Set([...reaped, ...local])];
     },
     liveJobsFile: liveJobsFile(dirs),
+    // Claim nothing heavy, then nothing at all, while the machine is overloaded (ADR 0532).
+    load: new LoadGate(
+      loadPolicySchema.parse(config.load ?? {}),
+      options.loadReading ?? hostLoad,
+      log,
+    ),
     log,
     ...(options.selfUpdate ? { selfUpdate: options.selfUpdate } : {}),
     ...(options.onUpdated ? { onUpdated: options.onUpdated } : {}),
