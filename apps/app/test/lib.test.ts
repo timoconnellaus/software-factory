@@ -201,12 +201,15 @@ describe("the inbox", () => {
       lastSeenAt: null,
       update: null,
     };
-    expect(
-      runnerLabel({ ...base, state: "rate-limited", rateLimitedUntil: "2026-11-11T11:30:00.000Z" }),
-    ).toMatch(/^rate-limited until \d\d:\d\d$/);
-    expect(
-      runnerLabel({ ...base, state: "offline", lastSeenAt: "2026-11-11T09:00:00.000Z" }),
-    ).toMatch(/^offline since \d\d:\d\d/);
+    // Today's times (the label adds the date for another day).
+    const soon = new Date(Date.now() + 60_000).toISOString();
+    const earlier = new Date(Date.now() - 60_000).toISOString();
+    expect(runnerLabel({ ...base, state: "rate-limited", rateLimitedUntil: soon })).toMatch(
+      /^rate-limited until \d\d:\d\d$/,
+    );
+    expect(runnerLabel({ ...base, state: "offline", lastSeenAt: earlier })).toMatch(
+      /^offline since \d\d:\d\d/,
+    );
     expect(runnerLabel({ ...base, state: "busy", inUse: 2 })).toBe("busy 2/2");
   });
 
