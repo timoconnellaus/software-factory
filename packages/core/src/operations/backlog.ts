@@ -545,7 +545,7 @@ export const workItemRelease = defineOperation({
     if (refused) throw refused;
     takeOverParked(ctx, w, "is released");
     // The readiness pre-check (spec 23): an unclear request is parked, not released.
-    const parked = w.shaping_started_at ? null : parkIfNotReady(ctx, w, "queued");
+    const parked = w.shaping_started_at ? null : await parkIfNotReady(ctx, w, "queued");
     if (parked) return parkedOutput(parked);
     const hint = w.shaping_started_at ? null : readinessHint(w);
     return { ...(await releaseNow(ctx, w)), ...(hint ? { hint } : {}) };
@@ -622,7 +622,7 @@ export const workItemShape = defineOperation({
     const refused = releaseRefusal(ctx, w);
     if (refused) throw refused;
     takeOverParked(ctx, w, "goes to shaping");
-    const parked = parkIfNotReady(ctx, w, "shaping");
+    const parked = await parkIfNotReady(ctx, w, "shaping");
     if (parked) {
       const { blockedBy: _b, ...out } = parkedOutput(parked);
       return out;
@@ -790,7 +790,8 @@ export const workItemMove = defineOperation({
     if (input.to === "ready") {
       takeOverParked(ctx, w, "moves to Ready");
       // Marking it ready says it's clear enough to build (spec 23): the pre-check runs.
-      if (w.status === "backlog" && parkIfNotReady(ctx, w, "ready")) return { status: "backlog" };
+      if (w.status === "backlog" && (await parkIfNotReady(ctx, w, "ready")))
+        return { status: "backlog" };
     }
     ctx.write(
       ctx.db

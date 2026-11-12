@@ -74,8 +74,19 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   workflows; `compileProjectWorkflow` expresses a project's slot workflow as a stage list. Nothing at
   run time reads them yet (build plan PR (a)). An **org config** (`core_org_configs`, migration 0280)
   holds the org's workflows and agents as versions, edited through `workflow.*`, `agent.save` and
-  `orgConfig.*`; a loosening save is `self-modify` for an org admin, and the built-in workflows
-  accept only tightening saves. Projects keep running their own config until PR (d).
+  `orgConfig.*`; a loosening save is `self-modify` for an org admin (the classifier is an
+  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one.
+  Projects keep running their own config until PR (d). The **reconciler** (ADR 0511) is
+  `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**, off the Workflow's
+  path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
+  its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each
+  stage history through the reconciler and writes one verdict row per item (`core_reconcile_items`,
+  migration 0281; `reconcile.report`). It drives nothing. It compares stage order and skips only;
+  everything else (jobs, gates, send-back targets, retries, slot steps, ends other than Done) counts
+  as a divergence, and `reconcile.streak` says "comparison incomplete" and what is missing until it
+  is compared. Known differences are reported by name and count as divergences until settled: the
+  merge queue's moved head (`queue-head-moved`, settled with spec 53's babysitter). The
+  switch-over is its own PR once 20 ended items in a row agree.
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`

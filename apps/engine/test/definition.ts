@@ -30,20 +30,29 @@ function parsed(policyJson: unknown) {
 type Row = { stage: string; status: string; started_at: string };
 const ENGINE = ["triage", "spec", "build", "verify", "merge"];
 
-/** The stages the engine passed and skipped are the ones the definition runs and skips. */
+/**
+ * The stages the engine passed and skipped are the ones the definition runs and skips: the full
+ * sequence, or, for a run a test stops early, the sequence up to and including `until` (the stage
+ * the test expects it to have reached last), never just any prefix.
+ */
 export async function expectStagesAsDefined(
   workItemId: string,
   def: WorkflowDefinition,
   size: Size,
-  requested?: "skip" | "require",
+  options: { requested?: "skip" | "require"; until?: string } = {},
 ) {
   const rows = await stageRows(workItemId);
   const seen = new Map<string, boolean>();
   for (const r of rows) if (!seen.has(r.stage)) seen.set(r.stage, r.status !== "skipped");
   const ran = [...seen].filter(([stage]) => ENGINE.includes(stage));
-  const want = engineStages(def, size, requested).map((x) => [x.stage, x.runs]);
-  // A run still in progress has passed a prefix of the definition's stages.
-  expect(ran).toEqual(want.slice(0, ran.length));
+  const want = engineStages(def, size, options.requested).map((x) => [x.stage, x.runs]);
+  if (options.until === undefined) {
+    expect(ran).toEqual(want);
+    return;
+  }
+  const end = want.findIndex(([stage]) => stage === options.until);
+  if (end < 0) throw new Error(`the definition has no stage ${options.until}`);
+  expect(ran).toEqual(want.slice(0, end + 1));
 }
 
 /**

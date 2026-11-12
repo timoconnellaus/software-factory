@@ -271,7 +271,7 @@ export const workItemCreate = defineOperation({
     // request lands in the Backlog with a question to its requester instead.
     const parked =
       input.state === "ready" || input.state === "queued"
-        ? parkIfNotReady(
+        ? await parkIfNotReady(
             ctx,
             {
               id: created.id,
@@ -283,6 +283,7 @@ export const workItemCreate = defineOperation({
               body: input.body,
               parent_work_item_id: null,
               kind: "change",
+              source: input.source,
             },
             input.state,
           )
