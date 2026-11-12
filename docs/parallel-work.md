@@ -33,6 +33,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | W | 0160–0169 | 0390–0399 | The desktop app (`desktop-app`): spec 40. ADR 0130 promoted, the client door and desktop devices with presence proofs, `apps/desktop` on Electrobun, the website shrinks to auth | in progress |
 | X | 0170–0179 | 0400–0409 | Watch and steer runs from the dashboard (`hosts-watch-steer`): spec 31. Used: migration 0170; ADR 0400 | in progress |
 | Z | 0190–0199 | 0420–0429 | Linux hosts (`hosts-linux`): spec 34. The systemd user service, platform paths, the harness sandbox on Linux, Linux doctor checks, the install path. Used: ADR 0420, no migrations | in progress |
+| AB | 0210–0219 | 0440–0449 | Web terminal in the dashboard (`hosts-web-terminal`): spec 35. The TerminalRelay Durable Object per job, the `terminal` held call and host socket, `run.terminal.*`, the tmux control-mode bridge, the Live tab's web terminal. Used: migration 0210; ADR 0440 | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
