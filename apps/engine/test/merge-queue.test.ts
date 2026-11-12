@@ -127,122 +127,139 @@ describe.each([7, 11, WORKFLOW_VERSION])("the merge queue (v%i)", (version) => {
     expect(row?.workflow_version).toBe(version);
   });
 
-  it("lands approved merges one at a time, bringing each head up to date with what landed before it", async () => {
-    const w = await world();
-    const a = await toMergeGate(w, "First in line", "src/a.ts");
-    const b = await toMergeGate(w, "Second in line", "src/b.ts");
-    // Someone else's change lands on main: both branches are now behind it.
-    await github.push(w.repo, "main", undefined, ["README.md"]);
-    // CI on the head A gets once main is merged in stays pending: A holds the head.
-    await github.setCiDefault(w.repo, PENDING_CI);
+  // v4–v7 carry the packet to the updated head (ADR 0330). The babysitter's deliveries (v11+) verify
+  // an updated head again instead (spec 53 PR c): deliverer.test.ts covers them.
+  it.skipIf(version !== 7)(
+    "lands approved merges one at a time, bringing each head up to date with what landed before it",
+    async () => {
+      const w = await world();
+      const a = await toMergeGate(w, "First in line", "src/a.ts");
+      const b = await toMergeGate(w, "Second in line", "src/b.ts");
+      // Someone else's change lands on main: both branches are now behind it.
+      await github.push(w.repo, "main", undefined, ["README.md"]);
+      // CI on the head A gets once main is merged in stays pending: A holds the head.
+      await github.setCiDefault(w.repo, PENDING_CI);
 
-    await approve(w, a.id);
-    const aQueued = await waitFor("A brought up to date", () =>
-      entry(a.id, "AND status = 'queued' AND head_sha != approved_sha"),
-    );
-    const aHead = aQueued.head_sha;
-    // The queue's update is GitHub's merge of main into the approved head, nothing else.
-    const parents = await github.commitParents(w.repo, aHead);
-    expect(parents[0]).toBe(aQueued.approved_sha);
-    expect((await github.compareCommits(w.repo, "main", aHead)).behindBy).toBe(0);
-    // The review packet carries over to the new head (the reviewed diff is unchanged).
-    const carried = await first<{ sections: string; verdict: string }>(
-      "SELECT sections, verdict FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
-      a.id,
-      aHead,
-    );
-    expect(carried?.verdict).toBe("pass");
-    expect(JSON.parse(String(carried?.sections)).carriedFrom).toBe(aQueued.approved_sha);
-
-    await approve(w, b.id);
-    await waitFor("B queued", () => entry(b.id, "AND status = 'queued'"));
-    const pos = await ok<{ position: number; head: boolean; ahead: number[] }>(
-      "mergeQueue.position",
-      { workItemId: b.id },
-      w.human,
-    );
-    expect(pos).toMatchObject({ position: 2, head: false, ahead: [a.number] });
-    // Only the head is updated or merged.
-    await expect(call("mergeQueue.update", { workItemId: b.id }, FOREMAN)).rejects.toMatchObject({
-      code: "conflict",
-    });
-    const pullsWhileHeld = (await github.state(w.repo)).pulls;
-    expect(pullsWhileHeld.every((p) => p.state === "open")).toBe(true);
-    const list = await ok<{ entries: { number: number }[] }>(
-      "mergeQueue.list",
-      { projectId: w.projectId },
-      w.human,
-    );
-    expect(list.entries.map((e) => e.number)).toEqual([a.number, b.number]);
-
-    // CI goes green on A's head: A merges, then B is woken, updated against A's merge, and lands.
-    await github.setCiDefault(w.repo, null);
-    await github.setChecks(w.repo, aHead, GREEN_CI);
-    await deliver("check_suite", {
-      action: "completed",
-      repository: { name: w.repo.repo, owner: { login: w.repo.owner } },
-      check_suite: { head_sha: aHead, status: "completed", app: { slug: "github-actions" } },
-    });
-    await itemStatus(a.id, "done");
-    await itemStatus(b.id, "done");
-    expect((await entry(a.id))?.status).toBe("merged");
-    const bDone = await entry(b.id);
-    expect(bDone?.status).toBe("merged");
-    // B's update merged in a main that already had A.
-    const bParents = await github.commitParents(w.repo, String(bDone?.head_sha));
-    expect((await github.compareCommits(w.repo, String(bParents[1]), aHead)).aheadBy).toBe(0);
-    expect((await github.state(w.repo)).pulls.every((p) => p.state === "merged")).toBe(true);
-  });
-
-  it("takes a head that conflicts out of the queue and back to build, and the next one lands", async () => {
-    const w = await world();
-    const a = await toMergeGate(w, "Conflicts at the head", "src/a.ts");
-    const b = await toMergeGate(w, "Lands meanwhile", "src/b.ts");
-    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
-    await github.setMergeable(w.repo, a.pr, false);
-
-    await approve(w, a.id);
-    await waitFor("A left the queue", () => entry(a.id, "AND status = 'left'"));
-    await approve(w, b.id);
-    await itemStatus(b.id, "done");
-
-    // A goes back to build with what to do, without a spent retry (retryLimit 1, and it lands).
-    await runStage(w, a.id, "build", async (job) => {
-      expect(job.harness.prompt).toMatch(/can't merge into `main`/);
-      // The build merges main in and resolves the conflict, as the runner host has it do.
-      const row = await first<{ branch: string }>(
-        "SELECT branch FROM core_work_items WHERE id = ?",
-        a.id,
+      await approve(w, a.id);
+      const aQueued = await waitFor("A brought up to date", () =>
+        entry(a.id, "AND status = 'queued' AND head_sha != approved_sha"),
       );
-      await github.craftMerge(w.repo, String(row?.branch), "main", {
-        tree: { set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } } },
+      const aHead = aQueued.head_sha;
+      // The queue's update is GitHub's merge of main into the approved head, nothing else.
+      const parents = await github.commitParents(w.repo, aHead);
+      expect(parents[0]).toBe(aQueued.approved_sha);
+      expect((await github.compareCommits(w.repo, "main", aHead)).behindBy).toBe(0);
+      // The review packet carries over to the new head (the reviewed diff is unchanged).
+      const carried = await first<{ sections: string; verdict: string }>(
+        "SELECT sections, verdict FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
+        a.id,
+        aHead,
+      );
+      expect(carried?.verdict).toBe("pass");
+      expect(JSON.parse(String(carried?.sections)).carriedFrom).toBe(aQueued.approved_sha);
+
+      await approve(w, b.id);
+      await waitFor("B queued", () => entry(b.id, "AND status = 'queued'"));
+      const pos = await ok<{ position: number; head: boolean; ahead: number[] }>(
+        "mergeQueue.position",
+        { workItemId: b.id },
+        w.human,
+      );
+      expect(pos).toMatchObject({ position: 2, head: false, ahead: [a.number] });
+      // Only the head is updated or merged.
+      await expect(call("mergeQueue.update", { workItemId: b.id }, FOREMAN)).rejects.toMatchObject({
+        code: "conflict",
       });
-      await github.setMergeable(w.repo, a.pr, true);
-      return build(["src/a-merged.ts"]);
-    });
-    await runStage(w, a.id, "verify", () => verifyPass);
-    await gateOpen(a.id, "merge");
-    await approve(w, a.id);
-    await itemStatus(a.id, "done");
-  });
+      const pullsWhileHeld = (await github.state(w.repo)).pulls;
+      expect(pullsWhileHeld.every((p) => p.state === "open")).toBe(true);
+      const list = await ok<{ entries: { number: number }[] }>(
+        "mergeQueue.list",
+        { projectId: w.projectId },
+        w.human,
+      );
+      expect(list.entries.map((e) => e.number)).toEqual([a.number, b.number]);
 
-  it("sends a head whose CI goes red once main is merged in back to build, as a failed attempt", async () => {
-    const w = await world();
-    const a = await toMergeGate(w, "Breaks with main", "src/a.ts");
-    await github.push(w.repo, "main", undefined, ["src/api.ts"]);
-    await github.setCiDefault(w.repo, RED_CI);
-    await approve(w, a.id);
-    await runStage(w, a.id, "build", async (job) => {
-      expect(job.harness.prompt).toMatch(/broke CI/);
-      return build(["src/a-fixed.ts"]);
-    });
-    const left = await entry(a.id);
-    expect(left).toMatchObject({ status: "left" });
-    expect(left?.end_reason).toMatch(/CI is failure/);
-    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
-  });
+      // CI goes green on A's head: A merges, then B is woken, updated against A's merge, and lands.
+      await github.setCiDefault(w.repo, null);
+      await github.setChecks(w.repo, aHead, GREEN_CI);
+      await deliver("check_suite", {
+        action: "completed",
+        repository: { name: w.repo.repo, owner: { login: w.repo.owner } },
+        check_suite: { head_sha: aHead, status: "completed", app: { slug: "github-actions" } },
+      });
+      await itemStatus(a.id, "done");
+      await itemStatus(b.id, "done");
+      expect((await entry(a.id))?.status).toBe("merged");
+      const bDone = await entry(b.id);
+      expect(bDone?.status).toBe("merged");
+      // B's update merged in a main that already had A.
+      const bParents = await github.commitParents(w.repo, String(bDone?.head_sha));
+      expect((await github.compareCommits(w.repo, String(bParents[1]), aHead)).aheadBy).toBe(0);
+      expect((await github.state(w.repo)).pulls.every((p) => p.state === "merged")).toBe(true);
+    },
+  );
 
-  it("frees the head when the item at it is cancelled", async () => {
+  // v4–v7 carry the packet to the updated head (ADR 0330). The babysitter's deliveries (v11+) verify
+  // an updated head again instead (spec 53 PR c): deliverer.test.ts covers them.
+  it.skipIf(version !== 7)(
+    "takes a head that conflicts out of the queue and back to build, and the next one lands",
+    async () => {
+      const w = await world();
+      const a = await toMergeGate(w, "Conflicts at the head", "src/a.ts");
+      const b = await toMergeGate(w, "Lands meanwhile", "src/b.ts");
+      await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+      await github.setMergeable(w.repo, a.pr, false);
+
+      await approve(w, a.id);
+      await waitFor("A left the queue", () => entry(a.id, "AND status = 'left'"));
+      await approve(w, b.id);
+      await itemStatus(b.id, "done");
+
+      // A goes back to build with what to do, without a spent retry (retryLimit 1, and it lands).
+      await runStage(w, a.id, "build", async (job) => {
+        expect(job.harness.prompt).toMatch(/can't merge into `main`/);
+        // The build merges main in and resolves the conflict, as the runner host has it do.
+        const row = await first<{ branch: string }>(
+          "SELECT branch FROM core_work_items WHERE id = ?",
+          a.id,
+        );
+        await github.craftMerge(w.repo, String(row?.branch), "main", {
+          tree: { set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } } },
+        });
+        await github.setMergeable(w.repo, a.pr, true);
+        return build(["src/a-merged.ts"]);
+      });
+      await runStage(w, a.id, "verify", () => verifyPass);
+      await gateOpen(a.id, "merge");
+      await approve(w, a.id);
+      await itemStatus(a.id, "done");
+    },
+  );
+
+  // v4–v7 carry the packet to the updated head (ADR 0330). The babysitter's deliveries (v11+) verify
+  // an updated head again instead (spec 53 PR c): deliverer.test.ts covers them.
+  it.skipIf(version !== 7)(
+    "sends a head whose CI goes red once main is merged in back to build, as a failed attempt",
+    async () => {
+      const w = await world();
+      const a = await toMergeGate(w, "Breaks with main", "src/a.ts");
+      await github.push(w.repo, "main", undefined, ["src/api.ts"]);
+      await github.setCiDefault(w.repo, RED_CI);
+      await approve(w, a.id);
+      await runStage(w, a.id, "build", async (job) => {
+        expect(job.harness.prompt).toMatch(/broke CI/);
+        return build(["src/a-fixed.ts"]);
+      });
+      const left = await entry(a.id);
+      expect(left).toMatchObject({ status: "left" });
+      expect(left?.end_reason).toMatch(/CI is failure/);
+      await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+    },
+  );
+
+  // v4–v7 carry the packet to the updated head (ADR 0330). The babysitter's deliveries (v11+) verify
+  // an updated head again instead (spec 53 PR c): deliverer.test.ts covers them.
+  it.skipIf(version !== 7)("frees the head when the item at it is cancelled", async () => {
     const w = await world();
     const a = await toMergeGate(w, "Cancelled at the head", "src/a.ts");
     const b = await toMergeGate(w, "Waits behind it", "src/b.ts");

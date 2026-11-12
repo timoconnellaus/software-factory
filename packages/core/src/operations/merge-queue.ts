@@ -374,8 +374,32 @@ export const mergeQueueEnter = defineOperation({
     if (!existing) {
       // The change this approval is about (ADR 0582), so a merge of the default branch keeps it
       // only while the change is the same. Read by the engine from GitHub, never a runner.
-      const approvedDigest =
+      let approvedDigest =
         input.driver === "babysitter" ? await digestOf(ctx, input.headSha) : null;
+      // An approval carried over a clean merge of the default branch (`reverify`, ADR 0582) comes
+      // back only for the change it approved: the new head's digest must be the approved one, and
+      // the entry keeps that digest, never one computed from the new head alone.
+      const carried =
+        input.driver === "babysitter" && input.pendingActionId
+          ? await ctx.db
+              .selectFrom("core_merge_queue")
+              .select(["approved_digest", "updates", "updates_granted"])
+              .where("work_item_id", "=", w.id)
+              .where("pending_action_id", "=", input.pendingActionId)
+              .where("outcome", "=", "reverify")
+              .orderBy("enqueued_at", "desc")
+              .limit(1)
+              .executeTakeFirst()
+          : undefined;
+      if (carried) {
+        if (!carried.approved_digest || carried.approved_digest !== approvedDigest) {
+          throw new OperationError(
+            "conflict",
+            "the change is not the one approved: the carried approval doesn't hold for this head",
+          );
+        }
+        approvedDigest = carried.approved_digest;
+      }
       const id = newId("mergeQueueEntry");
       ctx.write(
         ctx.db.insertInto("core_merge_queue").values({
@@ -390,6 +414,11 @@ export const mergeQueueEnter = defineOperation({
           updated_at: ctx.now,
           driver: input.driver,
           approved_digest: approvedDigest,
+          // The bound on updates holds across the re-verification: main that keeps moving reaches
+          // it and a person is asked, rather than re-verifying for ever.
+          ...(carried
+            ? { updates: carried.updates, updates_granted: carried.updates_granted }
+            : {}),
         }),
       );
       if (input.driver === "babysitter") wakeDelivery(ctx, w);
@@ -493,6 +522,7 @@ export const mergeQueueUpdate = defineOperation({
       "refused",
       "moved",
       "held",
+      "reverify",
     ]),
     headSha: z.string(),
     reason: z.string().nullable(),
@@ -716,16 +746,20 @@ async function acceptUpdate(
       reason: `the approval was withdrawn when ${repository.default_branch} was merged in: ${why}`,
     };
   }
-  await carryReviewPacket(ctx, {
-    item: w,
-    project,
-    repo,
-    fromSha: at,
-    toSha: prHead,
-    extra: babysitter
-      ? { changeDigest: { approved: entry.approved_digest, now: digestNow, changed: false } }
-      : undefined,
-  });
+  // The change is the one approved, but the evidence is the old head's (second review of #105).
+  // Nothing is carried and `factory/verify` is not posted from the old packet: the new head is
+  // verified on its own (its checks run again there), and the approval carries over only once
+  // that passes (owner's answer to question 1, 2026-11-12). The approval stays approved meanwhile,
+  // bound to this change: `mergeQueue.enter` takes it back only for a head whose change digest is
+  // still the approved one.
+  if (babysitter) {
+    return {
+      state: "reverify" as const,
+      headSha: prHead,
+      reason: `${repository.default_branch} was merged in cleanly and the change is the one approved; ${prHead.slice(0, 7)} is verified again before it merges`,
+    };
+  }
+  await carryReviewPacket(ctx, { item: w, project, repo, fromSha: at, toSha: prHead });
   return { state: "updated" as const, headSha: prHead, reason: null };
 }
 
@@ -767,7 +801,7 @@ export const mergeQueueLeave = defineOperation({
     outcome: z.enum(["merged", "left"]),
     reason: z.string().max(2_000),
     /** The babysitter's delivery outcome (spec 53), sent to the item's Workflow. */
-    delivery: z.enum(["merged", "conflict", "failed", "withdrawn"]).optional(),
+    delivery: z.enum(["merged", "conflict", "failed", "withdrawn", "reverify"]).optional(),
   }),
   output: z.object({ left: z.boolean() }),
   async handler(input, ctx) {

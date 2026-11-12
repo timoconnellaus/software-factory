@@ -261,7 +261,7 @@ async function deliverHead(
   const id = head.work_item_id;
   const end = async (
     status: "merged" | "left",
-    delivery: "merged" | "conflict" | "failed" | "withdrawn",
+    delivery: "merged" | "conflict" | "failed" | "withdrawn" | "reverify",
     reason: string,
   ): Promise<null> => {
     const left = await call(
@@ -320,6 +320,11 @@ async function deliverHead(
     // longer holds, and the item goes back to its merge gate on the new head (ADR 0582).
     if (state === "withdrawn") {
       return { wait: await end("left", "withdrawn", String(u.output.reason ?? "")) };
+    }
+    // The approved change, on a new head: verified on its own before the approval carries over
+    // (second review of #105). The item's Workflow verifies it and re-enters with the approval.
+    if (state === "reverify") {
+      return { wait: await end("left", "reverify", String(u.output.reason ?? "")) };
     }
     if (state === "held") {
       // At the bound: hold it and ask a person, never rebuild approved work (spec 53 review).

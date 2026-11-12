@@ -54,7 +54,11 @@ export const deliveredEvent = (workItemId: string) => `delivered-${workItemId}`;
 
 export interface DeliveredEventPayload {
   /** `withdrawn`: the approval no longer holds for the head (ADR 0582); it goes back to the gate. */
-  outcome: "merged" | "conflict" | "failed" | "withdrawn";
+  /**
+   * `reverify`: the change is the one approved but the head is new; it is verified on its own and
+   * then re-enters with the same approval (second review of #105).
+   */
+  outcome: "merged" | "conflict" | "failed" | "withdrawn" | "reverify";
   reason: string;
   /** The entry's head when it ended: for `withdrawn`, the head to decide again. */
   headSha?: string;

@@ -19,6 +19,7 @@ import {
   ok,
   runStage,
   triage,
+  verifyFail,
   verifyPass,
   waitFor,
   world,
@@ -89,33 +90,18 @@ describe("the babysitter's deliverer (v11)", () => {
 
   it("runs one pass per repository at a time: two at once merge once", async () => {
     const w = await world();
-    const a = await toMergeGate(w, "Raced", "src/a.ts");
-    await github.push(w.repo, "main", undefined, ["README.md"]);
-    await github.setCiDefault(w.repo, CI(null));
-    await approve(w, a);
-    const updated = await waitFor("A brought up to date", () =>
-      first<{ head_sha: string; project_id: string }>(
-        "SELECT head_sha, project_id FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued' AND head_sha != approved_sha",
-        a,
-      ),
-    );
-    // CI turns green on the updated head, with no webhook: two passes start at once.
-    await github.setCiDefault(w.repo, null);
-    await github.setChecks(w.repo, updated.head_sha, CI("success"));
-    const item = await first<{ repository_id: string | null }>(
-      "SELECT repository_id FROM core_work_items WHERE id = ?",
-      a,
-    );
-    const repositoryId = String(item?.repository_id);
+    const u = await updatedAndWaiting(w, "Raced");
+    // CI turns green on the head, with no webhook: two passes start at once.
+    await github.setChecks(w.repo, u.head_sha, CI("success"));
     await Promise.all([
-      deliverRepository(env, updated.project_id, repositoryId),
-      deliverRepository(env, updated.project_id, repositoryId),
+      deliverRepository(env, u.project_id, u.repositoryId),
+      deliverRepository(env, u.project_id, u.repositoryId),
     ]);
-    await itemStatus(a, "done");
-    expect(await merges(a)).toHaveLength(1);
+    await itemStatus(u.a, "done");
+    expect(await merges(u.a)).toHaveLength(1);
     const state = await first<{ running_until: string | null }>(
       "SELECT running_until FROM core_delivery_state WHERE project_id = ?",
-      updated.project_id,
+      u.project_id,
     );
     expect(state?.running_until).toBeNull();
   });
@@ -126,15 +112,22 @@ describe("the babysitter's deliverer (v11)", () => {
     mobileTestSeams.beforeCommit = null;
   });
 
-  /** A at its merge gate, approved, brought up to date with a moved main, CI pending there. */
+  /**
+   * A at its merge gate, approved and queued, CI pending on its head, so the deliverer waits there.
+   * (A head brought up to date with a moved main is verified again before it merges, spec 53 PR c,
+   * so the pause is on the approved head.)
+   */
   async function updatedAndWaiting(w: World, title: string) {
     const a = await toMergeGate(w, title, "src/a.ts");
-    await github.push(w.repo, "main", undefined, ["README.md"]);
-    await github.setCiDefault(w.repo, CI(null));
+    const head = await first<{ head_sha: string }>(
+      "SELECT head_sha FROM core_work_items WHERE id = ?",
+      a,
+    );
+    await github.setChecks(w.repo, String(head?.head_sha), CI(null));
     await approve(w, a);
-    const updated = await waitFor("A brought up to date", () =>
+    const updated = await waitFor("A queued, waiting for CI", () =>
       first<{ head_sha: string; project_id: string; pending_action_id: string }>(
-        "SELECT head_sha, project_id, pending_action_id FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued' AND head_sha != approved_sha",
+        "SELECT head_sha, project_id, pending_action_id FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued'",
         a,
       ),
     );
@@ -142,7 +135,6 @@ describe("the babysitter's deliverer (v11)", () => {
       "SELECT repository_id, pr_number FROM core_work_items WHERE id = ?",
       a,
     );
-    await github.setCiDefault(w.repo, null);
     return {
       a,
       ...updated,
@@ -347,7 +339,7 @@ describe("the babysitter's deliverer (v11)", () => {
   });
 
   // Review of #103: a merge GitHub refuses as stale is re-snapshotted, not sent back to build.
-  it("re-snapshots a merge GitHub refused because main moved: updates again and lands", async () => {
+  it("re-snapshots a merge GitHub refused because main moved: updates, verifies the new head, lands", async () => {
     const w = await world();
     const u = await updatedAndWaiting(w, "Main moved under the merge");
     await github.setChecks(w.repo, u.head_sha, CI("success"));
@@ -357,16 +349,17 @@ describe("the babysitter's deliverer (v11)", () => {
       await github.refuseNextMerge(w.repo, u.pr, "Base branch was modified");
     };
     await deliverRepository(env, u.project_id, u.repositoryId);
-    const again = await waitFor("updated again", () =>
+    // Updated again; the approved change on a new head is verified there before it merges.
+    const again = await waitFor("updated and sent to verify", () =>
       first<{ head_sha: string; updates: number }>(
-        "SELECT head_sha, updates FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued' AND head_sha != ?",
+        "SELECT head_sha, updates FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
         u.a,
-        u.head_sha,
       ),
     );
-    expect(again.updates).toBe(2);
-    await github.setChecks(w.repo, again.head_sha, CI("success"));
-    await deliverRepository(env, u.project_id, u.repositoryId);
+    expect(again.updates).toBe(1);
+    expect(again.head_sha).not.toBe(u.head_sha);
+    await github.setCiDefault(w.repo, CI("success"));
+    await runStage(w, u.a, "verify", () => verifyPass);
     await itemStatus(u.a, "done");
     expect(await merges(u.a)).toHaveLength(1);
   });
@@ -374,6 +367,9 @@ describe("the babysitter's deliverer (v11)", () => {
   it("asks GitHub to update a head at most MAX_UPDATES times, then holds it", async () => {
     const w = await world();
     const u = await updatedAndWaiting(w, "Main keeps moving");
+    await env.DB.prepare("UPDATE core_merge_queue SET updates = 1 WHERE work_item_id = ?")
+      .bind(u.a)
+      .run();
     await github.push(w.repo, "main", undefined, ["CHANGELOG.md"]);
     const r = await ok<{ state: string; reason: string }>(
       "mergeQueue.update",
@@ -421,9 +417,14 @@ describe("the babysitter's deliverer (v11)", () => {
       { questionId: q.id, answer: "Update once more, and merge when CI passes" },
       w.human,
     );
+    // One more update; the approved change on the new head is verified there, then it lands.
+    await waitFor("sent to verify", () =>
+      first("SELECT id FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'", u.a),
+    );
+    await runStage(w, u.a, "verify", () => verifyPass);
     await itemStatus(u.a, "done");
     const entry = await first<{ updates: number; status: string }>(
-      "SELECT updates, status FROM core_merge_queue WHERE work_item_id = ?",
+      "SELECT updates, status FROM core_merge_queue WHERE work_item_id = ? ORDER BY enqueued_at DESC LIMIT 1",
       u.a,
     );
     expect(entry).toEqual({ updates: 4, status: "merged" });
@@ -513,23 +514,139 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     return ended;
   }
 
-  it("survives a clean merge that leaves the change as approved", async () => {
+  // Second review of #105: the approval survived, but factory/verify on the new head came from the
+  // old head's packet. Now the new head is verified on its own, then the approval carries over.
+  it("survives a clean merge only after the new head passes its own verification", async () => {
     const w = await world();
     const a = await toMergeGateWith(w, "Same change", files("src/a.ts"));
     await github.push(w.repo, "main", undefined, ["README.md"]);
     await approve(w, a);
+    const ended = await waitFor("reverify", () =>
+      first<{
+        head_sha: string;
+        approved_sha: string;
+        pending_action_id: string;
+        approved_digest: string | null;
+      }>(
+        "SELECT head_sha, approved_sha, pending_action_id, approved_digest FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
+        a,
+      ),
+    );
+    expect(ended.approved_digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(ended.head_sha).not.toBe(ended.approved_sha);
+    // Nothing from the old head's evidence on the new one: no packet, no passing factory/verify.
+    expect(
+      await first(
+        "SELECT id FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
+        a,
+        ended.head_sha,
+      ),
+    ).toBeNull();
+    const checks = await github.listCheckRuns(w.repo, ended.head_sha);
+    expect(checks.some((c) => c.name === "factory/verify" && c.conclusion === "success")).toBe(
+      false,
+    );
+    expect(await merges(a)).toHaveLength(0);
+    // The approval still holds, waiting for the new head's verification.
+    const approval = await first<{ status: string }>(
+      "SELECT status FROM core_pending_actions WHERE id = ?",
+      ended.pending_action_id,
+    );
+    expect(approval?.status).toBe("approved");
+    // The verify job runs again on the new head; once it passes the approval carries over: no
+    // second merge gate, and it lands.
+    await runStage(w, a, "verify", (job) => {
+      expect(job.harness.prompt).toContain(ended.head_sha);
+      return verifyPass;
+    });
     await itemStatus(a, "done");
-    const entry = await first<{ approved_digest: string | null; head_sha: string }>(
-      "SELECT approved_digest, head_sha FROM core_merge_queue WHERE work_item_id = ?",
+    expect(await merges(a)).toHaveLength(1);
+    const gates = await all(
+      "SELECT id FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge'",
       a,
     );
-    expect(entry?.approved_digest).toMatch(/^[0-9a-f]{64}$/);
-    const packet = await first<{ sections: string }>(
-      "SELECT sections FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
-      a,
-      String(entry?.head_sha),
+    expect(gates).toHaveLength(1);
+  });
+
+  // Spec 06's criteria for the babysitter, now that an updated head is verified again (spec 53 c).
+  it("lands two approved merges in order, each verified again on its updated head", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "First in line", files("src/a.ts"));
+    const b = await toMergeGateWith(w, "Second in line", files("src/b.ts"));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    // One at a time (the test's runner claims whichever job is next): A lands, then B is updated
+    // against A's merge, verified there, and lands.
+    for (const id of [a, b]) {
+      await approve(w, id);
+      await waitFor("sent to verify", () =>
+        first(
+          "SELECT id FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
+          id,
+        ),
+      );
+      await runStage(w, id, "verify", () => verifyPass);
+      await itemStatus(id, "done");
+    }
+    expect(await merges(a)).toHaveLength(1);
+    expect(await merges(b)).toHaveLength(1);
+    expect((await github.state(w.repo)).pulls.every((p) => p.state === "merged")).toBe(true);
+  });
+
+  it("an updated head that fails its own verification goes back to build, not merged", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Breaks with main", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["src/api.ts"]);
+    await approve(w, a);
+    const ended = await waitFor("sent to verify", () =>
+      first<{ pending_action_id: string }>(
+        "SELECT pending_action_id FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
+        a,
+      ),
     );
-    expect(JSON.parse(String(packet?.sections)).changeDigest).toMatchObject({ changed: false });
+    await runStage(w, a, "verify", () => verifyFail);
+    await runStage(w, a, "build", () => build(["src/a-fixed.ts"]));
+    expect(await merges(a)).toHaveLength(0);
+    await ok("workItem.cancel", { workItemId: a, reason: "end of test" }, w.human);
+    // The carried approval never merged anything and dies with the item.
+    const approval = await first<{ status: string }>(
+      "SELECT status FROM core_pending_actions WHERE id = ?",
+      ended.pending_action_id,
+    );
+    expect(approval?.status).toBe("rejected");
+  });
+
+  it("a carried approval re-enters only for the change it approved", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Carried, then changed", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await approve(w, a);
+    const ended = await waitFor("reverify", () =>
+      first<{ head_sha: string; pending_action_id: string; approved_digest: string }>(
+        "SELECT head_sha, pending_action_id, approved_digest FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
+        a,
+      ),
+    );
+    // The recorded digest no longer matches (as if the change had moved): enter refuses it.
+    await env.DB.prepare(
+      "UPDATE core_merge_queue SET approved_digest = 'not-the-change' WHERE work_item_id = ?",
+    )
+      .bind(a)
+      .run();
+    await expect(
+      call(
+        "mergeQueue.enter",
+        {
+          workItemId: a,
+          headSha: ended.head_sha,
+          pendingActionId: ended.pending_action_id,
+          driver: "babysitter",
+        },
+        FOREMAN,
+      ),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringMatching(/not the one approved/),
+    });
   });
 
   // Review of #105 (1): the same lines in a different file version hashed the same; a file both

@@ -495,7 +495,12 @@ class ItemFlow {
       // merging main made, without a build: nothing was carried to it, so it needs its own packet
       // and `factory/verify` before a person decides again.
       let withdrawn: string | null = null;
+      // v12: an approval that held over a clean merge of main (`reverify`, second review of #105):
+      // used again only if the new head passes its own verification in this round.
+      let carried: string | null = null;
       for (let b = 1; ; b++) {
+        const carriedNow = carried;
+        carried = null;
         let ran: RunResult | null = null;
         let headSha: string;
         const reverify = withdrawn;
@@ -683,6 +688,7 @@ class ItemFlow {
             headSha,
             pr.touchesFactoryConfig === true,
             version,
+            carriedNow,
           );
           if (landed.kind === "done") {
             await this.act("end: done", "workItem.finish", {
@@ -694,6 +700,11 @@ class ItemFlow {
           }
           if (landed.kind === "withdrawn") {
             withdrawn = landed.reason;
+            continue;
+          }
+          if (landed.kind === "reverify") {
+            withdrawn = landed.reason;
+            carried = landed.approvalId;
             continue;
           }
           if (landed.kind === "sent_back") {
@@ -1238,12 +1249,15 @@ class ItemFlow {
     headSha: string,
     touchesFactoryConfig: boolean,
     version = 4,
+    /** v12: an approval carried over a clean merge of main, the new head now verified. */
+    carried: string | null = null,
   ): Promise<
     | { kind: "done"; reason: string }
     | { kind: "sent_back"; note: string | null }
     | { kind: "conflict" }
     | { kind: "failed"; reason: string }
     | { kind: "withdrawn"; reason: string }
+    | { kind: "reverify"; reason: string; approvalId: string }
   > {
     const id = this.workItemId;
     if (meta.kind === "incident") {
@@ -1283,9 +1297,14 @@ class ItemFlow {
       headSha = auto.headSha; // refused (not check-only): the normal merge gate on the current head
     }
     const input = (at: string) => ({ workItemId: id, headSha: at, touchesFactoryConfig });
-    const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
-      apply: false,
-    });
+    // v12: the head a clean merge of main made passed its own verification, and the change is the
+    // approved one (mergeQueue.enter checks the digest again): the person's approval carries over.
+    const decided =
+      carried && has(version, "reverify-on-withdrawal")
+        ? { decision: "approved" as const, pendingActionId: carried }
+        : await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
+            apply: false,
+          });
     // v11: the approval only says this head may merge; the babysitter lands it (spec 53). v12: an
     // approval it withdraws (ADR 0582) sends the item back to verify the new head; v11 has no
     // such path, so a withdrawal ends its delivery as failed and it goes back, as any failure does.
@@ -1293,7 +1312,7 @@ class ItemFlow {
       if (decided.decision !== "approved") return this.notApproved(decided);
       if (!decided.pendingActionId) return { kind: "done", reason: "merged" };
       const delivered = await this.deliverV11(b, headSha, decided.pendingActionId);
-      if (delivered.kind !== "withdrawn") return delivered;
+      if (delivered.kind !== "withdrawn" && delivered.kind !== "reverify") return delivered;
       if (!has(version, "reverify-on-withdrawal")) {
         return { kind: "failed", reason: delivered.reason };
       }
@@ -1443,6 +1462,7 @@ class ItemFlow {
     | { kind: "conflict" }
     | { kind: "failed"; reason: string }
     | { kind: "withdrawn"; reason: string }
+    | { kind: "reverify"; reason: string; approvalId: string }
   > {
     const id = this.workItemId;
     const p = `merge #${b}: deliver`;
@@ -1470,7 +1490,8 @@ class ItemFlow {
           o.outcome === "merged" ||
           o.outcome === "conflict" ||
           o.outcome === "failed" ||
-          o.outcome === "withdrawn"
+          o.outcome === "withdrawn" ||
+          o.outcome === "reverify"
         ) {
           told = {
             outcome: o.outcome,
@@ -1484,6 +1505,9 @@ class ItemFlow {
       if (told.outcome === "merged") return { kind: "done", reason: "merged by the babysitter" };
       if (told.outcome === "conflict") return { kind: "conflict" };
       if (told.outcome === "withdrawn") return { kind: "withdrawn", reason: told.reason };
+      if (told.outcome === "reverify") {
+        return { kind: "reverify", reason: told.reason, approvalId };
+      }
       return { kind: "failed", reason: told.reason };
     }
   }
