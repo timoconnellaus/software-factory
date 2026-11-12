@@ -48,6 +48,9 @@ export const interviewPlanning: StageType<typeof settings> = {
     operation: "spec.accept",
     risk: "plan",
     delegable: ["adjudicator"],
+    // The spec gate is `plan` risk: an autonomy policy or override that allows an agent to plan
+    // lets it accept the spec, as `spec.accept` does today.
+    alwaysReview: false,
   }),
   needsPerson: true,
   reversibility: "internal",

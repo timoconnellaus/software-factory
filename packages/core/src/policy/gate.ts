@@ -196,3 +196,34 @@ export function decide({ actor, risk, policy, policyError, floor }: GateInput): 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+export interface OperationGateInput extends GateInput {
+  /** The operation's name and whether a person always decides it (`alwaysReview`, ADR 0371). */
+  op: { name: string; alwaysReview?: boolean };
+  /** The policy of the config version the item started under (ADR 0370 §5), when it has one. */
+  pinnedPolicy?: GatePolicy | null;
+}
+
+/**
+ * The gate an operation call meets (invoke's step 6): the current policy's decision, never looser
+ * than the pinned version's (tightening reaches running work, loosening never does), then
+ * `alwaysReview` turns an `allow` into `review`. `invoke()` calls it; a stage type's gate spec is
+ * judged by the same function (`stageGateDecision`), so the two can't drift.
+ */
+export function operationGate(input: OperationGateInput): GateResult {
+  const { op, pinnedPolicy, ...rest } = input;
+  const current = decide(rest);
+  const pinned = input.policy && pinnedPolicy ? decide({ ...rest, policy: pinnedPolicy }) : null;
+  let gate: GateResult =
+    pinned && strictest(pinned.decision, current.decision) !== current.decision
+      ? {
+          decision: pinned.decision,
+          reason: `${pinned.reason} (the version this item started under)`,
+        }
+      : current;
+  // A workflow's gate step is enforced in code, never loosened by policy (ADR 0371).
+  if (op.alwaysReview && gate.decision === "allow") {
+    gate = { decision: "review", reason: `${op.name} always asks a person` };
+  }
+  return gate;
+}
