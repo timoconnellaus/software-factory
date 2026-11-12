@@ -163,6 +163,7 @@ const INBOX: OpOutput<"inbox.list"> = {
       light: { inUse: 2, max: 6 },
       rateLimitedUntil: null,
       lastSeenAt: ago(0),
+      paused: null,
       update: null,
     },
   ],

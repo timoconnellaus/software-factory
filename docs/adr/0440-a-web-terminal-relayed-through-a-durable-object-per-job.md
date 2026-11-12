@@ -85,3 +85,19 @@ sf-app's route (shared in `terminal-attach.ts`).
   but it is one-use and expires in a minute.
 - Piece 7 (sandboxes) implements `openTerminal` in the sandbox's daemon and reuses the call, the
   relay and the page unchanged. Piece 8 (the chat UI) is a different view on the same Live tab.
+
+> Amended 2026-11-12 (spec [43](../specs/43-runners-under-load.md), incident #11): tmux 3.6a
+> (and 3.5a, per a Fedora crash report) can SIGSEGV in `control_discard()`. In 3.6a's `control.c` that
+> function is reached only from `control_check_age()`, when a control client without `pause-after` falls
+> more than `CONTROL_MAXIMUM_AGE` behind reading a pane's output. tmux then marks the client "too far
+> behind" and discards its queued output. A slow or stalled bridge (a host under load, a closed client
+> that still has output queued) is exposed to it. So the bridge now attaches with `-f pause-after=60`:
+> a lagging client gets the pane paused (`%pause`) instead, which the bridge continues
+> (`refresh-client -A '%N:continue'`) and redraws, and output arrives as `%extended-output`. The
+> bridge also sends `detach-client` before closing its input, so tmux ends the client on its own terms.
+> The 8 crash reports in a day came from short-lived servers that `terminal.test.ts` started inside
+> factory jobs (sockets `sf-term-test-<pid>`). Those tests now skip when `SOFTWARE_FACTORY_RUN=1`.
+
+> Note 2026-11-12 (spec 43): with `pause-after=60`, a viewer that falls a minute behind loses the
+> output since the pause and sees a redraw of the current screen instead. The job's logs
+> (`capture-pane`) are unaffected.

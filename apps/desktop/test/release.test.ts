@@ -10,6 +10,7 @@ import {
 } from "../scripts/publish-release.ts";
 // @ts-expect-error a plain .mjs build script, without types
 import { pinnedNode } from "../scripts/vendor-node.mjs";
+import { DOOR_PROTOCOL } from "../src/bun/protocol.ts";
 
 const TAR = "canary-macos-arm64-SoftwareFactory-canary.app.tar.zst";
 const manifest = (file = TAR, version = "0.1.7") =>
@@ -44,14 +45,20 @@ describe("uploadPlan", () => {
     "0.1.7",
   );
 
-  it("uploads versioned names first and the v2 manifest last", () => {
+  it("uploads versioned names first, the v2 manifest after them and the protocol file last", () => {
     expect(plan.map((u) => u.key)).toEqual([
       `desktop/${versionedArchive(TAR, "0.1.7")}`,
       `desktop/${versionedDownload("canary", "0.1.7")}`,
       "desktop/canary-macos-arm64-Software-Factory.zip",
       "desktop/canary-macos-arm64-update.json",
       "desktop/canary-macos-arm64-update-v2.json",
+      "desktop/canary-macos-arm64-protocol.json",
     ]);
+    expect(JSON.parse(written["canary-macos-arm64-protocol.json"] as string)).toEqual({
+      channel: "canary",
+      version: "0.1.7",
+      protocol: DOOR_PROTOCOL,
+    });
     expect(plan[0]?.cacheControl).toMatch(/immutable/);
     expect(plan.at(-1)?.cacheControl).toBe("no-cache");
   });
