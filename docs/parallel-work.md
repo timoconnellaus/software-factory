@@ -29,6 +29,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | R | 0120–0129 | 0350–0359 | Planning M1, the loop (`planning-loop`): spec 20. The planning session on a runner, the planning MCP server and hooks, the planning log, chat, presence, heavy and light pools, Workflow v5, the Planning tab (layout A). Used: migration 0120; ADR 0350 | merged (#33, #35, #36, #37) |
 | U | 0140–0149 | 0370–0379 | Factory config in the app (`manage-the-factory-sttings-in-the-ui`): spec 09 (M1 config versions + Settings, M2 workflows + agents, M3 usage + improver, M4 adjudicator). ADRs 0370–0374; migrations 0140 (M1), 0141 (M2), 0142 (M3), 0143 (M4) | building |
 | T | 0130–0139 | 0360–0369 | Runners update themselves (`runner-auto-update`): spec 08, `DEPLOYED_SHA`, heartbeat versions, the self-updater and its rollback wrapper, `sf-runner install` fixes (incident #9). Used: migration 0130; ADR 0360 | in review |
+| V | 0150–0159 | 0380–0389 | Run agents on hosts without Orca (`no-orca`): the plan, spec 30 (runner-local, tmux, hook status, delete runner-orca) and the later pieces' specs. Used: ADR 0380, no migrations | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.

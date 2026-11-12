@@ -1,7 +1,7 @@
 // Incident 2026-11-11-bootstrap: the app's Copy gave `runner id: …\nkey: …`, `pair --key-stdin`
 // took all of it as the key (401 bad signature), and `install` pinned the shell's Node 22.
 import { describe, expect, it } from "vitest";
-import { parsePairingInput, serviceNode } from "../src/pairing.ts";
+import { findOnPath, parsePairingInput, serviceNode } from "../src/pairing.ts";
 
 const KEY = "Zk3x9QpL2mN8vB4cR7tY1wE5uI0oA6sD";
 
@@ -52,5 +52,29 @@ describe("install: the service's Node", () => {
       node: `${bin}/node`,
       path: `${bin}:/Users/x/.nvm/versions/node/v22.11.0/bin:/usr/bin:/bin`,
     });
+  });
+
+  it("adds tmux's directory to the service's PATH when the shell's PATH lacks it", () => {
+    const bin = "/Users/x/.nvm/versions/node/v24.21.0/bin";
+    const tmux = findOnPath("tmux", "/usr/bin:/bin", (f) => f === "/opt/homebrew/bin/tmux");
+    expect(tmux).toBe("/opt/homebrew/bin/tmux");
+    expect(
+      serviceNode({
+        execPath: `${bin}/node`,
+        version: "v24.21.0",
+        path: "/usr/bin:/bin",
+        tools: [tmux as string],
+      }).path,
+    ).toBe(`${bin}:/usr/bin:/bin:/opt/homebrew/bin`);
+    // Already there: left where it is.
+    expect(
+      serviceNode({
+        execPath: `${bin}/node`,
+        version: "v24.21.0",
+        path: "/opt/homebrew/bin:/usr/bin",
+        tools: ["/opt/homebrew/bin/tmux"],
+      }).path,
+    ).toBe(`${bin}:/opt/homebrew/bin:/usr/bin`);
+    expect(findOnPath("tmux", "/nope", () => false)).toBeNull();
   });
 });

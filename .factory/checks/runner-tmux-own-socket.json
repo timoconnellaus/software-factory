@@ -1,0 +1,12 @@
+{
+  "name": "runner-tmux-own-socket",
+  "description": "ADR 0380: runner-local runs every job in tmux on the factory's own socket (`tmux -L software-factory -f /dev/null`), so the owner's own tmux server, sessions and config are never touched. Every tmux call goes through runner-local's tmux wrapper, which always passes the socket.",
+  "appliesTo": ["packages/runner-*/src/**/*.ts", "local/runner-host/src/**/*.ts"],
+  "exclude": ["packages/runner-local/src/tmux.ts", "packages/runner-local/src/testing.ts"],
+  "forbid": [
+    "exec\\(\\s*[\"']tmux[\"']",
+    "spawn(Sync)?\\(\\s*[\"']tmux[\"']",
+    "execFile(Sync)?\\(\\s*[\"']tmux[\"']"
+  ],
+  "message": "Call tmux only through tmuxCli (packages/runner-local/src/tmux.ts), which targets the factory's own socket without the owner's config. Never run tmux on the default socket. See ADR 0380."
+}

@@ -22,7 +22,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunnerVersion } from "@software-factory/runner-contract";
-import type { Exec } from "@software-factory/runner-orca";
+import type { Exec } from "@software-factory/runner-local";
 
 /** The exit code that asks launchd to start the runner on its new code (EX_TEMPFAIL). */
 export const UPDATE_EXIT_CODE = 75;

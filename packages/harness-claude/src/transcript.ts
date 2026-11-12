@@ -13,8 +13,9 @@ export function projectDirName(cwd: string): string {
 }
 
 /**
- * Where Claude's config may live on this host: `CLAUDE_CONFIG_DIR`, `~/.claude`, and Orca's
- * per-profile homes (Orca starts Claude with its own `CLAUDE_CONFIG_DIR` per account profile).
+ * Where Claude's config may live on this host: `CLAUDE_CONFIG_DIR`, `~/.claude`, and the
+ * per-profile homes the Orca desktop app kept (history: runs used to start there with Orca's own
+ * `CLAUDE_CONFIG_DIR` per account profile; plan piece 3 replaces these with the host's accounts).
  */
 export async function claudeConfigDirs(env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
   const dirs = new Set<string>();

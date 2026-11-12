@@ -22,7 +22,7 @@ const manifest = (
   capabilities: CapabilityManifest["capabilities"] = ["hooks"],
 ): CapabilityManifest => ({
   contractVersion: CONTRACT_VERSION,
-  runnerKind: "orca",
+  runnerKind: "local",
   harnesses: ["claude-code"],
   capabilities,
 });

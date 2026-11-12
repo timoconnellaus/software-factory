@@ -26,7 +26,7 @@ const RUNNER = "r_macmini01";
 
 const manifest: CapabilityManifest = {
   contractVersion: CONTRACT_VERSION,
-  runnerKind: "orca",
+  runnerKind: "local",
   harnesses: ["claude-code"],
   capabilities: ["browser", "ui-takeover", "hooks"],
 };

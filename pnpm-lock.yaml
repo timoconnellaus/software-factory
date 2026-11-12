@@ -189,9 +189,9 @@ importers:
       '@software-factory/runner-contract':
         specifier: workspace:*
         version: link:../../packages/runner-contract
-      '@software-factory/runner-orca':
+      '@software-factory/runner-local':
         specifier: workspace:*
-        version: link:../../packages/runner-orca
+        version: link:../../packages/runner-local
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -355,7 +355,7 @@ importers:
         specifier: 5.1.0
         version: 5.1.0(@types/node@24.19.2)(vite@8.3.7(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0))
 
-  packages/runner-orca:
+  packages/runner-local:
     dependencies:
       '@software-factory/harness-claude':
         specifier: workspace:*

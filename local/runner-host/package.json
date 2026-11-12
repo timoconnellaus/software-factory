@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The generic runner host daemon: connects outbound to the factory over the signed channel, claims jobs, pushes run branches with the job token, and drives a runner adapter (runner-orca). Runs on a person's machine.",
+  "description": "The generic runner host daemon: connects outbound to the factory over the signed channel, claims jobs, pushes run branches with the job token, and drives a runner adapter (runner-local). Runs on a person's machine.",
   "bin": {
     "sf-runner": "./bin/sf-runner"
   },
@@ -18,7 +18,7 @@
   "dependencies": {
     "@software-factory/harness-claude": "workspace:*",
     "@software-factory/runner-contract": "workspace:*",
-    "@software-factory/runner-orca": "workspace:*",
+    "@software-factory/runner-local": "workspace:*",
     "zod": "4.6.7"
   },
   "devDependencies": {

@@ -23,6 +23,7 @@ import {
   type SettingsOptions,
   TMP_DIRS,
 } from "./settings.ts";
+import { STATUS_FILE, STATUS_HOOK_SCRIPT, statusHookCommand, statusHookSource } from "./status.ts";
 
 export const DEFAULT_IDENTITY = {
   name: "Software Factory",
@@ -38,6 +39,8 @@ export interface ProjectedHarness {
   /** Run this with `/bin/sh` in the job's terminal. */
   scriptPath: string;
   runTmp: string;
+  /** Where the status hook appends its lines (`<runDir>/status.jsonl`), when it was asked for. */
+  statusFile?: string;
 }
 
 /** The temp directories a run may write: the system's (symlinks resolved) and `/tmp`. */
@@ -49,9 +52,15 @@ export async function systemTempDirs(): Promise<string[]> {
 
 export async function projectHarness(
   job: Pick<Job, "stage" | "jobId" | "harness"> & Partial<Pick<Job, "planning" | "workItem">>,
-  options: SettingsOptions & {
+  options: Omit<SettingsOptions, "statusHook"> & {
     identity?: { name: string; email: string };
     claudeBin?: string;
+    /**
+     * Project the factory's status hook (ADR 0380): its script into the run dir, and the hook on
+     * every status event, appending to `<runDir>/status.jsonl`. `node` is the absolute Node that
+     * runs it (default: this process's).
+     */
+    statusHook?: boolean | { node?: string };
     /**
      * A planning job's relay (ADR 0350): the planning MCP server and hooks are projected, and the
      * conversation started or resumed. `nodeBin` runs them (default: this process's Node).
@@ -61,6 +70,12 @@ export async function projectHarness(
 ): Promise<ProjectedHarness> {
   const runTmp = options.runTmp ?? join(await realpath(tmpdir()), "software-factory", job.jobId);
   await mkdir(options.runDir, { recursive: true, mode: 0o700 });
+  const statusFile = options.statusHook ? join(options.runDir, STATUS_FILE) : undefined;
+  const statusScript = join(options.runDir, STATUS_HOOK_SCRIPT);
+  const node =
+    typeof options.statusHook === "object" && options.statusHook.node
+      ? options.statusHook.node
+      : process.execPath;
   const planning =
     job.stage === "planning" && options.planning && job.planning && job.workItem
       ? await writePlanningFiles(
@@ -73,8 +88,10 @@ export async function projectHarness(
   if (job.stage === "planning" && !planning) {
     throw new Error(`planning job ${job.jobId} needs its planning session and relay`);
   }
+  const { statusHook: _statusHook, planning: _planning, ...settingsOptions } = options;
   const settings = runSettings(job, {
-    ...options,
+    ...settingsOptions,
+    ...(statusFile ? { statusHook: statusHookCommand(node, statusScript, statusFile) } : {}),
     ...(planning
       ? {
           hooks: mergeHooks(
@@ -117,6 +134,10 @@ export async function projectHarness(
     worktree: options.worktree,
   };
   await rm(paths.pidFile, { force: true });
+  if (statusFile) {
+    await rm(statusFile, { force: true });
+    await writeFile(statusScript, statusHookSource(), { mode: 0o600 });
+  }
   await writeFile(paths.record, `${JSON.stringify(launch, null, 2)}\n`, { mode: 0o600 });
   await writeFile(paths.script, launchScript(launch, launchUnsets(settings.env)), { mode: 0o700 });
   return {
@@ -127,6 +148,7 @@ export async function projectHarness(
     launch,
     scriptPath: paths.script,
     runTmp,
+    ...(statusFile ? { statusFile } : {}),
   };
 }
 
@@ -137,9 +159,10 @@ export async function removeRunDir(runDir: string, runTmp?: string): Promise<voi
 }
 
 /**
- * The environment for a harness the runner spawns itself (runner-local): the host's environment
- * with every credential variable dropped, then the settings' overrides on top. Orca launches
- * Claude in its own terminal, so for runner-orca the settings file carries the same overrides.
+ * The environment for a harness a runner spawns as a child process (a headless `claude -p`): the
+ * host's environment with every credential variable dropped, then the settings' overrides on top.
+ * A harness launched in a terminal gets the same overrides from the settings file and the launch
+ * script's unsets.
  */
 export function scrubbedProcessEnv(
   base: NodeJS.ProcessEnv,
