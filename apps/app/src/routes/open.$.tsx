@@ -1,4 +1,4 @@
-// The trampoline (ADR 0372, spec 30 M1): links from outside the app (the factory/verify check, PR
+// The trampoline (ADR 0382, spec 40 M1): links from outside the app (the factory/verify check, PR
 // comments, notifications, a phone) point at `/open/<path>`, which hands them to the desktop app as
 // `sf://<path>`. If the app isn't installed, the page says so and offers the website. No sign-in
 // needed: it only builds a link.

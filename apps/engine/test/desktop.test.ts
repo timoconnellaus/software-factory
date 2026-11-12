@@ -1,4 +1,4 @@
-// The desktop app's side of the client door (ADR 0371, spec 30 M1) end to end through sf-engine's
+// The desktop app's side of the client door (ADR 0381, spec 40 M1) end to end through sf-engine's
 // /client/v1: the PKCE sign-in, desktop tokens on the `desktop` surface, presence proofs that let a
 // device decide exactly one gate, and what stays browser-only whatever the proof.
 import { env } from "cloudflare:workers";
@@ -57,7 +57,7 @@ async function pkce() {
 }
 
 /** The whole sign-in: the app starts, the person approves on the website, the app exchanges. */
-async function signIn(w: World, device?: Device) {
+async function signIn(w: World, device?: Device, keyStorage = "secure-enclave") {
   const d = device ?? (await newDevice());
   const { verifier, challenge } = await pkce();
   const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
@@ -65,6 +65,7 @@ async function signIn(w: World, device?: Device) {
     await post("desktop/start", {
       deviceName: "Tim's MacBook Pro",
       publicKey: d.publicKey,
+      keyStorage,
       codeChallenge: challenge,
       state,
     }),
@@ -77,7 +78,7 @@ async function signIn(w: World, device?: Device) {
   );
   expect(looked).toMatchObject({
     deviceName: "Tim's MacBook Pro",
-    keyStorage: "secure-enclave",
+    keyStorage,
     status: "pending",
   });
   const approved = await ok<{ redirectUrl: string }>(
@@ -101,14 +102,19 @@ const callOp = (token: string, op: string, input: unknown, presence?: unknown) =
 
 /** Ask for a challenge for this op and input, and sign it with the device key. */
 async function prove(token: string, device: Device, op: string, input: unknown) {
-  const digest = await inputDigest(input);
-  const res = await callOp(token, "presence.challenge", { op, inputDigest: digest });
+  const res = await callOp(token, "presence.challenge", { op, input });
   expect(res.status).toBe(200);
-  const { result } = await json<{ result: { challengeId: string; nonce: string } }>(res);
+  const { result } = await json<{
+    result: { challengeId: string; nonce: string; inputDigest: string; summary: string };
+  }>(res);
+  expect(result.inputDigest).toBe(await inputDigest(input));
   return {
     challengeId: result.challengeId,
     nonce: result.nonce,
-    signature: await device.sign(presenceMessage(result.nonce, op, digest)),
+    summary: result.summary,
+    signature: await device.sign(
+      presenceMessage(result.nonce, op, result.inputDigest, result.summary),
+    ),
   };
 }
 
@@ -209,6 +215,8 @@ describe("the desktop app's client door (/client/v1)", () => {
     // With a proof the call gets past the browser-only check: the item isn't at a spec gate, so the
     // handler itself answers (conflict), not the gate (forbidden).
     const proof = await prove(token, device, "spec.approve", input);
+    // The prompt names the decision, from the engine's records.
+    expect(proof.summary).toMatch(/^Approve the spec for #\d+ "From the desktop"$/);
     const proven = await callOp(token, "spec.approve", input, proof);
     expect(proven.status).not.toBe(403);
     const audit = await first<{ origin: string }>(
@@ -249,10 +257,7 @@ describe("the desktop app's client door (/client/v1)", () => {
       "runner.register",
       "killSwitch.set",
     ]) {
-      const res = await callOp(token, "presence.challenge", {
-        op,
-        inputDigest: await inputDigest({}),
-      });
+      const res = await callOp(token, "presence.challenge", { op, input: {} });
       expect([op, res.status]).toEqual([op, 403]);
     }
     const off = await callOp(token, "killSwitch.set", {
@@ -263,7 +268,18 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect(off.status).toBe(403);
   });
 
-  it("a CLI token can't ask for a challenge (criterion 6)", async () => {
+  it("refuses proofs from a software key: an unsigned build can't decide (criterion 6)", async () => {
+    const w = await world();
+    const { token, device } = await signIn(w, undefined, "software");
+    const workItemId = await newItem(w, token);
+    const input = { workItemId };
+    const proof = await prove(token, device, "spec.approve", input);
+    const res = await callOp(token, "spec.approve", input, proof);
+    expect(res.status).toBe(403);
+    expect((await json<{ error: string }>(res)).error).toMatch(/Secure Enclave/);
+  });
+
+  it("a CLI token can't ask for a challenge (criterion 7)", async () => {
     const w = await world();
     const started = await json<{ deviceCode: string; userCode: string }>(
       await post("device/start", { name: "tim@m5", scope: "write" }, undefined, "/cli/v1"),
@@ -272,14 +288,11 @@ describe("the desktop app's client door (/client/v1)", () => {
     const { token } = await json<{ token: string }>(
       await post("device/poll", { deviceCode: started.deviceCode }, undefined, "/cli/v1"),
     );
-    const res = await callOp(token, "presence.challenge", {
-      op: "spec.approve",
-      inputDigest: await inputDigest({}),
-    });
+    const res = await callOp(token, "presence.challenge", { op: "spec.approve", input: {} });
     expect(res.status).toBe(403);
   });
 
-  it("revoking a device ends its token (criterion 7)", async () => {
+  it("revoking a device ends its token (criterion 8)", async () => {
     const w = await world();
     const { token, deviceId } = await signIn(w);
     const listed = await ok<{ devices: { id: string }[] }>("desktopDevice.list", {}, w.human);
