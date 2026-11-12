@@ -90,7 +90,8 @@ export function fitNews(
           }
         : e;
   const notes = (shown: PlanningNewsEvent[]) => ({
-    shortened: `Long texts were shortened to fit. Call planning_news with cursor ${from} to read them whole.`,
+    shortened:
+      "Long texts were shortened to fit (marked “(shortened)”). Call planning_news to read them whole: until you do, they stay unread and come again.",
     ...(shown.length < news.events.length
       ? {
           more: `${news.events.length - shown.length} more events didn't fit: they come at your next step, or call planning_news now.`,
@@ -116,9 +117,13 @@ export function fitNews(
     const first = news.events[0] as PlanningNewsEvent;
     shown.push(shorten(first, 600));
   }
+  // Acknowledge only what was shown whole (review of #67): a shortened event, and everything after
+  // it, stays unread until the agent reads it in full (planning_news) or a hook shows it whole.
+  const firstCut = shown.findIndex((e, i) => JSON.stringify(e) !== JSON.stringify(news.events[i]));
+  const whole_ = firstCut === -1 ? shown : shown.slice(0, firstCut);
   return {
     json: render(shown),
-    shown: shown.length === news.events.length ? news.cursor : (shown.at(-1)?.cursor ?? from),
+    shown: whole_.length === news.events.length ? news.cursor : (whole_.at(-1)?.cursor ?? from),
   };
 }
 

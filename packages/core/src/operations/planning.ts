@@ -17,6 +17,7 @@ import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import {
   batchDue,
+  type Delivered,
   enqueuePlanningJob,
   guardNoUnreadPersonNews,
   hasUnreadPersonNews,
@@ -568,8 +569,11 @@ export const planningNews = defineOperation({
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
     const acked = await acknowledge(ctx, session, input.ack);
-    const from = input.cursor ?? acked;
+    // A cursor only re-reads: never past what was delivered (review of #67).
+    const from = input.cursor === undefined ? acked : Math.min(input.cursor, acked);
     const news = await readNews(ctx, session.work_item_id, from);
+    hand(ctx, session, news.cursor, news.delivered);
+    // Without `hold` the caller is the agent itself, which sees the result: read now.
     if (!input.hold) deliver(ctx, session, news.cursor, news.delivered, acked);
     markWorking(ctx, session, input.activity);
     return { ...(await newsEnvelope(ctx, session)), cursor: news.cursor, events: news.events };
@@ -612,40 +616,76 @@ export const planningPeek = defineOperation({
 });
 
 /**
- * Marks read what a hook says the agent was shown (`ack`, spec 26): the cursor moves there and the
- * answers and messages up to it get their receipts. Returns the cursor news continues from.
+ * Marks read what a hook says the agent was shown (`ack`, spec 26). The ack is clamped to the
+ * highest cursor this session was actually handed, so nothing can mark unseen news read (review of
+ * #67). Receipts go to exactly the answer revisions handed out. Returns the cursor news continues from.
  */
 async function acknowledge(
   ctx: HandlerContext,
   session: PlanningSessionRow,
   ack: number | undefined,
 ): Promise<number> {
-  if (ack === undefined || ack <= session.delivered_cursor) return session.delivered_cursor;
-  const shown = await readNews(ctx, session.work_item_id, session.delivered_cursor, ack);
-  deliver(ctx, session, ack, shown.delivered);
-  return ack;
+  const upTo = Math.min(ack ?? 0, session.handed_cursor);
+  if (upTo <= session.delivered_cursor) return session.delivered_cursor;
+  const shown = await readNews(ctx, session.work_item_id, session.delivered_cursor, upTo);
+  const handed = parseJson<Record<string, number>>(session.handed_answers ?? "{}", {});
+  deliver(ctx, session, upTo, {
+    // Only the revision handed out: a later revision stays unread until it is shown.
+    answers: shown.delivered.answers.flatMap((a) =>
+      handed[a.questionId] !== undefined
+        ? [{ ...a, revision: handed[a.questionId] as number }]
+        : [],
+    ),
+    messageIds: shown.delivered.messageIds,
+  });
+  return upTo;
 }
 
 /**
- * Moves the session's cursor and marks exactly the answers and people's messages it carried as read
- * (spec 26: read receipts; anything past the page stays unread).
+ * Records what this call hands the harness: the cursor (the ceiling for a later ack) and each
+ * answer's revision (what its receipt will mean).
+ */
+function hand(
+  ctx: HandlerContext,
+  session: PlanningSessionRow,
+  cursor: number,
+  delivered: Delivered,
+) {
+  const handed = parseJson<Record<string, number>>(session.handed_answers ?? "{}", {});
+  for (const a of delivered.answers) handed[a.questionId] = a.revision;
+  if (cursor <= session.handed_cursor && !delivered.answers.length) return;
+  ctx.write(
+    ctx.db
+      .updateTable("core_planning_sessions")
+      .set({
+        handed_cursor: Math.max(cursor, session.handed_cursor),
+        handed_answers: JSON.stringify(handed),
+      })
+      .where("id", "=", session.id),
+  );
+}
+
+/**
+ * Moves the session's cursor and marks exactly the answers (at their revision) and people's
+ * messages it carried as read (spec 26: read receipts; anything past the page stays unread).
  */
 function deliver(
   ctx: HandlerContext,
   session: PlanningSessionRow,
   cursor: number,
-  delivered: { questionIds: string[]; messageIds: string[] },
+  delivered: Delivered,
   /** The cursor already moved to in this call (an `ack`). */
   floor = session.delivered_cursor,
 ) {
-  if (cursor <= floor) return;
-  ctx.write(
-    ctx.db
-      .updateTable("core_planning_sessions")
-      .set({ delivered_cursor: cursor })
-      .where("id", "=", session.id)
-      .where("delivered_cursor", "<", cursor),
-  );
+  if (cursor > floor) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_sessions")
+        .set({ delivered_cursor: cursor })
+        .where("id", "=", session.id)
+        .where("delivered_cursor", "<", cursor),
+    );
+  }
   if (delivered.messageIds.length) {
     ctx.write(
       ctx.db
@@ -655,12 +695,13 @@ function deliver(
         .where("delivered_at", "is", null),
     );
   }
-  if (delivered.questionIds.length) {
+  for (const a of delivered.answers) {
     ctx.write(
       ctx.db
         .updateTable("core_questions")
         .set({ answer_delivered_at: ctx.now })
-        .where("id", "in", delivered.questionIds)
+        .where("id", "=", a.questionId)
+        .where("answer_revision", "=", a.revision)
         .where("answer_delivered_at", "is", null),
     );
   }
@@ -679,12 +720,13 @@ export const planningWait = defineOperation({
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
     const acked = await acknowledge(ctx, session, input.ack);
-    const from = input.cursor ?? acked;
+    const from = input.cursor === undefined ? acked : Math.min(input.cursor, acked);
     const news = await readNews(ctx, session.work_item_id, from);
     const envelope = await newsEnvelope(ctx, session);
     const dueAt = batchDue(news.userEvents, envelope.openQuestions, input.idleMs);
     const due = dueAt !== null && dueAt <= Date.parse(ctx.now);
     if (due) {
+      hand(ctx, session, news.cursor, news.delivered);
       if (!input.hold) deliver(ctx, session, news.cursor, news.delivered, acked);
       markWorking(ctx, session);
       return { ...envelope, cursor: news.cursor, events: news.events, due, recheckAt: null };
@@ -833,7 +875,11 @@ export const chatSend = defineOperation({
     questionId: z.string().min(1).optional(),
     replyTo: z.string().min(1).optional(),
   }),
-  output: z.object({ messageId: z.string() }),
+  output: z.object({
+    messageId: z.string(),
+    /** Set when the message won't reach the planner (the spec was just approved). */
+    note: z.string().nullable(),
+  }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     await assertAbout(ctx, w.id, input.questionId, input.replyTo);
@@ -851,9 +897,16 @@ export const chatSend = defineOperation({
       }),
     );
     logPlanning(ctx, w.id, "chat.message", { messageId });
-    await takeBackFromGate(ctx, w, "a person wrote in the chat");
+    const gate = await takeBackFromGate(ctx, w, "a person wrote in the chat");
     await wakeSession(ctx, w);
-    return { messageId };
+    return {
+      messageId,
+      // The spec was approved a moment before this arrived: say so instead of losing it quietly.
+      note:
+        gate === "decided"
+          ? "The spec was approved a moment ago, so the planner won't read this. Tell the approver if it changes anything."
+          : null,
+    };
   },
 });
 

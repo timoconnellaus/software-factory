@@ -3,8 +3,19 @@
 import type { CapabilityManifest, Job, PlanningNews } from "@software-factory/runner-contract";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
-import { approvalEvent, FOREMAN } from "../src/index.ts";
-import { call, first, newItem, ok, RUNNER_ACTOR, refusal, rows, uid, world } from "./helpers.ts";
+import { approvalEvent, FOREMAN, invoke } from "../src/index.ts";
+import {
+  call,
+  deps,
+  first,
+  newItem,
+  ok,
+  RUNNER_ACTOR,
+  refusal,
+  rows,
+  uid,
+  world,
+} from "./helpers.ts";
 
 const manifest: CapabilityManifest = {
   contractVersion: CONTRACT_VERSION,
@@ -77,6 +88,39 @@ const outboxCount = async (kind: string, like: string, workItemId = "") =>
       )
     )[0]?.n ?? 0,
   );
+
+/**
+ * Runs an operation and holds it after its reads, before its batch commits, until released: the
+ * other side of a race runs in between (deterministic, review of #67).
+ */
+function held(op: string, input: unknown, actor: { type: string; id: string }) {
+  let release!: () => void;
+  let reached!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const reachedP = new Promise<void>((r) => {
+    reached = r;
+  });
+  const result = invoke(
+    {
+      ...deps,
+      beforeCommit: async (name) => {
+        if (name !== op) return;
+        reached();
+        await gate;
+      },
+    },
+    op,
+    input,
+    { actor: actor as never, origin: { surface: "test" } },
+  );
+  // A call refused before it reaches the commit releases the waiter too.
+  result.catch(() => reached());
+  return { result, reached: reachedP, release };
+}
+
+const refusalOf = (p: Promise<unknown>) => refusal(p);
 
 describe("the planning loop to kim's standard (spec 26)", () => {
   it("refuses the gate while a person's message is unread, then allows it once read (criterion 2)", async () => {
@@ -285,61 +329,126 @@ describe("the planning loop to kim's standard (spec 26)", () => {
     expect(again.updated_at).toBe(seen.updated_at);
   });
 
-  it("never opens the gate with a person's word unread when the two race (review of #67, item 1)", async () => {
-    for (let i = 0; i < 6; i++) {
+  it("never opens the gate with a person's word unread, whichever of the two commits first (review of #67, items 1 and A)", async () => {
+    // The planner reads, then a person's message commits before the planner's batch: refused.
+    {
+      const w = await world();
+      const { item, job, m5, agent } = await planning(w);
+      await agent("spec.revise", SPEC);
+      const ready = held(
+        "planning.ready",
+        { jobId: job.jobId, fencingToken: job.lease.fencingToken },
+        m5,
+      );
+      await ready.reached;
+      await ok("chat.send", { workItemId: item.workItemId, text: "Wait" }, w.human);
+      ready.release();
+      expect((await refusalOf(ready.result)).code).toBe("conflict");
+      expect(await session(item.workItemId)).toMatchObject({ at_gate: 0 });
+      await agent("planning.news");
+      expect(await agent("planning.ready")).toMatchObject({ round: 1 });
+    }
+    // The person reads "not at the gate", then the planner's ask commits first: the message is
+    // refused, and sent again it takes the spec back.
+    {
       const w = await world();
       const { item, agent } = await planning(w);
       await agent("spec.revise", SPEC);
-      const send = () =>
-        ok("chat.send", { workItemId: item.workItemId, text: `Race ${i}` }, w.human);
-      const [ready, chat] = await Promise.allSettled([agent("planning.ready"), send()]);
-      // The loser of the race is refused as a conflict, and the person sends again.
-      if (chat.status === "rejected") {
-        expect((chat.reason as { code?: string }).code).toBe("conflict");
-        await send();
-      }
-      if (ready.status === "rejected") {
-        expect((ready.reason as { code?: string }).code).toBe("conflict");
-      }
-      const state = await first<{ at_gate: number; delivered_cursor: number }>(
-        "SELECT at_gate, delivered_cursor FROM core_planning_sessions WHERE work_item_id = ?",
-        item.workItemId,
-      );
-      const unread = await rows<{ id: number }>(
-        "SELECT id FROM core_planning_events WHERE work_item_id = ? AND id > ? AND type = 'chat.message'",
-        item.workItemId,
-        state.delivered_cursor,
-      );
-      // At the gate only with nothing unread; otherwise the message is waiting for the planner.
-      expect(state.at_gate === 1 && unread.length > 0).toBe(false);
+      const chat = held("chat.send", { workItemId: item.workItemId, text: "Wait" }, w.human);
+      await chat.reached;
+      await agent("planning.ready");
+      chat.release();
+      expect((await refusalOf(chat.result)).code).toBe("conflict");
+      await ok("chat.send", { workItemId: item.workItemId, text: "Wait" }, w.human);
+      expect(await session(item.workItemId)).toMatchObject({ round: 2, at_gate: 0 });
     }
   });
 
-  it("lets an approval and a person's word at the gate race without losing either (review of #67, item 2)", async () => {
-    for (let i = 0; i < 6; i++) {
+  it("lets an approval and a person's word at the gate race without losing either, in both orders (review of #67, item 2)", async () => {
+    // The approver reads, then a person's message withdraws the gate: the approval is refused.
+    {
       const w = await world();
       const { item, agent } = await planning(w);
       const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
       await agent("planning.ready");
       const gate = await openGate(item.workItemId, specId);
-      const [approve, chat] = await Promise.allSettled([
-        ok("spec.approve", { workItemId: item.workItemId }, w.human),
-        ok("chat.send", { workItemId: item.workItemId, text: `Wait ${i}` }, w.human),
-      ]);
-      if (chat.status === "rejected") {
-        // The approval won: sending again leaves the decision as it is.
-        await ok("chat.send", { workItemId: item.workItemId, text: `Wait ${i}` }, w.human);
-      }
-      const decided = await pendingAction(gate);
-      const withdrawals = await outboxCount("workflow.event", `"withdrawn"`, approvalEvent(gate));
-      if (decided.decision === "approved") {
-        expect(approve.status).toBe("fulfilled");
-        expect(withdrawals).toBe(0);
-      } else {
-        expect(decided.decision).toBe("withdrawn");
-        expect(approve.status).toBe("rejected");
-        expect(withdrawals).toBe(1);
-      }
+      const approve = held("spec.approve", { workItemId: item.workItemId }, w.human);
+      await approve.reached;
+      await ok("chat.send", { workItemId: item.workItemId, text: "Wait" }, w.human);
+      approve.release();
+      expect((await refusalOf(approve.result)).code).toBe("conflict");
+      expect(await pendingAction(gate)).toEqual({ status: "rejected", decision: "withdrawn" });
     }
+    // The person reads "pending", then the approval commits first: the message is refused, and sent
+    // again it says the planner won't read it; nothing is withdrawn.
+    {
+      const w = await world();
+      const { item, agent } = await planning(w);
+      const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+      await agent("planning.ready");
+      const gate = await openGate(item.workItemId, specId);
+      const chat = held("chat.send", { workItemId: item.workItemId, text: "Wait" }, w.human);
+      await chat.reached;
+      await ok("spec.approve", { workItemId: item.workItemId }, w.human);
+      chat.release();
+      expect((await refusalOf(chat.result)).code).toBe("conflict");
+      const again = await ok<{ note: string | null }>(
+        "chat.send",
+        { workItemId: item.workItemId, text: "Wait" },
+        w.human,
+      );
+      expect(again.note).toContain("approved a moment ago");
+      expect((await pendingAction(gate)).decision).toBe("approved");
+      expect(await outboxCount("workflow.event", `"withdrawn"`, approvalEvent(gate))).toBe(0);
+    }
+  });
+
+  it("can't be made deaf or blind by a forged cursor: an ack is clamped to what was handed out (review of #67, A)", async () => {
+    const w = await world();
+    const { item, job, m5, agent } = await planning(w);
+    await agent("spec.revise", SPEC);
+    await ok("chat.send", { workItemId: item.workItemId, text: "Read me" }, w.human);
+    // Straight to the operation (as if the agent had the relay): a huge ack marks nothing read.
+    const forged = await refusal(
+      ok(
+        "planning.ready",
+        { ack: 999_999_999, jobId: job.jobId, fencingToken: job.lease.fencingToken },
+        m5,
+      ),
+    );
+    expect(forged.code).toBe("conflict");
+    // A huge cursor doesn't move the session past the news either.
+    const skipped = await agent<PlanningNews>("planning.news", { cursor: 999_999_999 });
+    expect(skipped.events).toEqual([
+      expect.objectContaining({ type: "chat.message", text: "Read me" }),
+    ]);
+    await ok("chat.send", { workItemId: item.workItemId, text: "And me" }, w.human);
+    const next = await agent<PlanningNews>("planning.news");
+    expect(next.events).toEqual([
+      expect.objectContaining({ type: "chat.message", text: "And me" }),
+    ]);
+  });
+
+  it("stamps a read receipt only on the answer revision that was handed out (review of #67, B)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { questionIds } = await agent<{ questionIds: string[] }>("question.ask", {
+      questions: [{ prompt: "Filename?" }],
+    });
+    const q = questionIds[0] as string;
+    await ok("question.answer", { questionId: q, answer: "deals.csv" }, w.human);
+    // A hook fetches v1 (hold) …
+    const shown = await agent<PlanningNews>("planning.news", { hold: true });
+    // … the person revises to v2 before the hook acknowledges v1.
+    await ok("question.answer", { questionId: q, answer: "export.csv" }, w.human);
+    await agent("planning.news", { hold: true, ack: shown.cursor });
+    type View = { questions: { id: string; answerDeliveredAt: string | null }[] };
+    const view = await ok<View>("planning.get", { workItemId: item.workItemId }, w.human);
+    expect(view.questions.find((x) => x.id === q)?.answerDeliveredAt).toBeNull();
+    // v2 is handed out and acknowledged: now it reads Read.
+    const again = await agent<PlanningNews>("planning.news", { hold: true });
+    await agent("planning.news", { hold: true, ack: again.cursor });
+    const read = await ok<View>("planning.get", { workItemId: item.workItemId }, w.human);
+    expect(read.questions.find((x) => x.id === q)?.answerDeliveredAt).not.toBeNull();
   });
 });

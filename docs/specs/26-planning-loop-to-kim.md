@@ -119,4 +119,17 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
   - A planning steer's chat message is marked read when the host takes the steer (`steer_id`), and
     it takes the spec back from the gate.
   - Away notices go once per burst (`notified_at`, 2 minutes).
+- After the second review (fixes on #67):
+  - The agent can't forge its read cursor. `ack`, `hold` and `cursor` are not in its MCP tool
+    schemas (`PLANNING_TOOL_INPUTS`), and the MCP server forwards only what the tool's schema
+    parsed. On the server, an `ack` is clamped to `handed_cursor` (the highest cursor this session
+    was handed), and a `cursor` only re-reads, never past what was delivered.
+  - Receipts are per answer revision. `handed_answers` records the revision each answer was handed
+    at, and an ack stamps a question only if that revision is still current. News answers carry
+    `revision`.
+  - The hook acknowledges only events shown whole: a shortened one stays unread until the agent
+    reads it with `planning_news`.
+  - A message that loses the race to an approval is told so (`chat.send`'s `note`).
+  - The race tests are deterministic. `InvokeDeps.beforeCommit`, a test seam, holds one call
+    between its reads and its commit while the other runs, in both orders.
 - Not in A: the interrupt, Stop, Pause and finish alone (PR B), and the UI (PR C).
