@@ -155,8 +155,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   builds; CI is where releases are signed. After the first canary release, check that
   `https://downloads.zerobsai.com/desktop/canary-macos-arm64-update-v2.json` and
   `…/canary-macos-arm64-Software-Factory.zip` load, and that an installed canary updates to the next.
-  **On hold (2026-11-12):** M4b (the Secure Enclave key, Touch ID approvals; the owner decided it's
-  overkill, so don't ask for an App ID or provisioning profile) and M5 (the website keeps everything
+  **M4b is back on (2026-11-12):** the owner kept gate approvals on the desktop with Touch ID
+  (`.userPresence`). Spec 40 M4b and ADR 0394 have the design and the owner's steps (an App ID
+  `com.software-factory.desktop.keys`, a Developer ID profile in `MACOS_KEYS_PROFILE`, not set yet: the
+  owner is redoing a profile whose bundle id was mistyped). The first build PR is the signing spike
+  (where `SF Keys.app` can sit and at which Electrobun hook it can be signed so it survives
+  `electrobun build`); every CI step that needs the profile skips cleanly without it. **On hold:** M5 (the website keeps everything
   until the desktop app has the Factory and Settings sections). Signed builds use a software key and
   the engine refuses software keys for gate decisions (`DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in
   production). Why it stays empty: tested on the M5, no keychain restriction protects the desktop
@@ -167,6 +171,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   App ID `com.software-factory.desktop.keys` and its Developer ID profile, verified
   (application-identifier `TEAMID.com.software-factory.desktop.keys`, keychain-access-groups
   `TEAMID.*`, expires 2044), ready for the M4b build steps that need it (spec 40 M4b, PR #89).
+  app's signature. So gate decisions are not available from a signed desktop build until M4b ships.
   **The version handshake is built** (`desktop-handshake`, PR #81, ADR 0393): the app sends
   `x-sf-client-protocol`; below sf-engine's `DESKTOP_MIN_PROTOCOL` the door answers 426
   `update_required` and the app checks for an update. Bump `DOOR_PROTOCOL` when the app needs
