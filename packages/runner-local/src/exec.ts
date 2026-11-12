@@ -7,6 +7,8 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   code: number;
+  /** The command was killed for running past its timeout (its exit code says nothing). */
+  timedOut?: boolean;
 }
 
 export type Exec = (
@@ -53,11 +55,13 @@ function execTail(
     child.on("error", (err) => {
       failed = err.message;
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
+      const killed = code === null && signal === "SIGKILL";
       resolve({
         stdout: out.stdout.slice(-keep),
         stderr: `${out.stderr.slice(-keep)}${failed && code === null ? failed : ""}`,
         code: code ?? 1,
+        ...(killed && !options.signal?.aborted ? { timedOut: true } : {}),
       });
     });
   });
@@ -66,32 +70,37 @@ function execTail(
 export const nodeExec: Exec = (command, args, options = {}) =>
   options.keepTail
     ? execTail(command, args, { ...options, keepTail: options.keepTail })
-    : new Promise((resolve) => {
-        execFile(
-          command,
-          args,
-          {
-            cwd: options.cwd,
-            timeout: options.timeoutMs ?? 120_000,
-            maxBuffer: 64 * 1024 * 1024,
-            ...(options.signal ? { signal: options.signal } : {}),
-            ...(options.env ? { env: options.env } : {}),
-          },
-          (error, stdout, stderr) => {
-            const code =
-              error && typeof (error as { code?: unknown }).code === "number"
-                ? (error as { code: number }).code
-                : error
-                  ? 1
-                  : 0;
-            resolve({
-              stdout: String(stdout),
-              stderr: String(stderr || (error?.message ?? "")),
-              code,
-            });
-          },
-        );
-      });
+    : execBuffered(command, args, options);
+
+const execBuffered: Exec = (command, args, options = {}) =>
+  new Promise((resolve) => {
+    execFile(
+      command,
+      args,
+      {
+        cwd: options.cwd,
+        timeout: options.timeoutMs ?? 120_000,
+        maxBuffer: 64 * 1024 * 1024,
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.env ? { env: options.env } : {}),
+      },
+      (error, stdout, stderr) => {
+        const code =
+          error && typeof (error as { code?: unknown }).code === "number"
+            ? (error as { code: number }).code
+            : error
+              ? 1
+              : 0;
+        const killed = !!error && (error as { killed?: boolean }).killed === true;
+        resolve({
+          stdout: String(stdout),
+          stderr: String(stderr || (error?.message ?? "")),
+          code,
+          ...(killed && !options.signal?.aborted ? { timedOut: true } : {}),
+        });
+      },
+    );
+  });
 
 /** Runs and throws on a non-zero exit. */
 export async function run(

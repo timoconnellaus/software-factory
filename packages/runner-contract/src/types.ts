@@ -141,6 +141,7 @@ export type HarnessPermissionMode = (typeof HARNESS_PERMISSION_MODES)[number];
 
 export type CapabilityManifest = z.infer<typeof capabilityManifestSchema>;
 export type Capacity = z.infer<typeof capacitySchema>;
+export type CapacityPaused = NonNullable<Capacity["paused"]>;
 export type Job = z.infer<typeof jobSchema>;
 export type RunnerEvent = z.infer<typeof runnerEventSchema>;
 export type Artifact = z.infer<typeof artifactSchema>;
@@ -282,6 +283,8 @@ export interface RunnerAdapter<
   /**
    * Frees everything prepareWorkspace/startSession made for this job (its worktree and branch).
    * Never the checkout or its registration, which outlive the job. Must be safe to call twice.
+   * Throws `ReleaseIncomplete` when it can't confirm the job's processes stopped (ADR 0550): the
+   * host then doesn't report the job released.
    */
   release(job: Job, workspace: W | undefined, session: S | undefined): Promise<void>;
   /**
@@ -439,4 +442,22 @@ export function runBranch(itemBranch: string, runNo: number): string {
 /** Whether a branch is one the factory owns (`factory/*`). Runners push nowhere else. */
 export function isFactoryBranch(branch: string): boolean {
   return /^factory\/[0-9]+-[a-z0-9-]+$/.test(branch);
+}
+
+/**
+ * A release that couldn't confirm the job's processes stopped (ADR 0550): the agent may still be
+ * running on the host. The host doesn't report the job released (its lease lapses instead), logs
+ * it, and `sf-runner doctor` shows the process.
+ */
+export class ReleaseIncomplete extends Error {
+  override name = "ReleaseIncomplete";
+  readonly releaseIncomplete = true;
+}
+
+/** Whether an error is a `ReleaseIncomplete` (across package copies too). */
+export function isReleaseIncomplete(err: unknown): boolean {
+  return (
+    err instanceof ReleaseIncomplete ||
+    (typeof err === "object" && err !== null && "releaseIncomplete" in err)
+  );
 }

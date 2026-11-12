@@ -71,6 +71,10 @@ jobs:
 
       - name: Workers to deploy
         run: node scripts/deploy/deploy.ts list
+      - name: Refuse a desktop floor no published build speaks
+        # DESKTOP_MIN_PROTOCOL above the newest published desktop build's protocol would show every
+        # app "Update required" with no update to take (ADR 0393). No floor: no network, passes.
+        run: node scripts/deploy/desktop-floor.ts
       - name: Provision D1, R2 and queues
         run: node scripts/deploy/provision.ts
       - name: Apply D1 migrations

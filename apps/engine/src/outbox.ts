@@ -121,6 +121,7 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
     case "planning.changed":
       // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
       await planningHub(env, message.payload.workItemId).notify();
+      await notifyPlanningViewers(env, message.payload.workItemId);
       return;
     case "run.steered":
       // The runner host's held steer call waits on the work item's hub (ADR 0400). A wake, not a
@@ -133,6 +134,27 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       await notifyClients(env, message.payload);
       return;
   }
+}
+
+/** Who has a Planning view open: a heartbeat within this long (core's PRESENCE_TTL_MS). */
+const PLANNING_VIEWER_MS = 60_000;
+
+/**
+ * Tells the desktop apps of everyone with this work item's Planning view open that it changed (spec
+ * 26), so the desktop re-reads instead of polling; sf-app hears it from the PlanningHub's stream.
+ */
+export async function notifyPlanningViewers(env: Env, workItemId: string): Promise<string[]> {
+  const since = new Date(Date.now() - PLANNING_VIEWER_MS).toISOString();
+  const { results } = await env.DB.prepare(
+    "SELECT user_id FROM core_planning_presence WHERE work_item_id = ? AND seen_at > ? AND left_at IS NULL",
+  )
+    .bind(workItemId, since)
+    .all<{ user_id: string }>();
+  const users = results.map((r) => r.user_id);
+  await Promise.all(
+    users.map((u) => clientHub(env, u).broadcast({ type: "planning.changed", workItemId })),
+  );
+  return users;
 }
 
 type NotifyPayload = Extract<OutboxMessage, { kind: "notify" }>["payload"];

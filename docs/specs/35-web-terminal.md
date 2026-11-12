@@ -85,7 +85,10 @@ sandbox later.
 - Scrollback beyond the visible screen in the web terminal (tmux keeps it; a person can scroll in a
   `tmux attach`).
 - Letting someone other than the runner's owner type, or handing typing over.
-- A web terminal in the desktop app (spec 40) or the CLI.
+- A web terminal in the desktop app (spec 40) or the CLI. *Amended 2026-11-12:* the desktop app's
+  came in spec 42 (ADR 0530): the client door's `terminal` socket for desktop tokens, the same attach,
+  and this spec's client and xterm.js view moved to `packages/client` and shared. The CLI's is still
+  out of scope.
 
 ## Acceptance criteria
 1. On a running build, the runner's owner opens Web terminal on the Live tab and sees the live
@@ -112,3 +115,8 @@ sandbox later.
 9. An older engine (no `terminal` call) doesn't break a new host: the host stops asking and the run
    goes on.
 10. `pnpm lint`, `pnpm typecheck` and `pnpm test` pass.
+
+> Note 2026-11-12 (spec [43](43-runners-under-load.md)): the bridge attaches with `-f pause-after=60`
+> and reads `%extended-output` and `%pause`, which avoids tmux 3.5a/3.6a's `control_discard` crash path
+> (ADR 0440's dated note). It detaches before closing. The real-tmux tests in `terminal.test.ts` skip
+> inside factory jobs (`SOFTWARE_FACTORY_RUN=1`; `SF_TMUX_CONTROL_TESTS=1` runs them anyway).

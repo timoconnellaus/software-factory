@@ -40,6 +40,18 @@ export const capabilityManifestSchema = z.object({
   capabilities: z.array(capabilitySchema),
 });
 
+export const capacityPausedSchema = z.object({
+  reason: z.enum(["load", "tmux", "draining"]),
+  pools: z
+    .array(z.enum(["heavy", "light"]))
+    .min(1)
+    .max(2),
+  /** The 1-minute load average and the CPU count it was judged against (`load`). */
+  load1: z.number().min(0).max(100_000).optional(),
+  cores: z.number().int().min(1).max(4_096).optional(),
+  detail: z.string().max(300).optional(),
+});
+
 export const capacitySchema = z.object({
   /**
    * Concurrent jobs this runner will take. With `light` reported, this is the heavy pool (build,
@@ -57,6 +69,14 @@ export const capacitySchema = z.object({
   light: z
     .object({ max: z.number().int().min(0).max(64), inUse: z.number().int().min(0) })
     .optional(),
+  /**
+   * Why the runner takes nothing new in some pools for now (ADR 0552), when it doesn't: `load`, the
+   * host's 1-minute load average is past its threshold for those pools (heavy stops first, then
+   * light), with the numbers; `tmux`, the factory's tmux server isn't answering (ADR 0550);
+   * `draining`, the owner drained it (a drain command, or `RunnerHost.drain()`). The
+   * scheduler gives a paused pool nothing; with both pools paused `accepting` is false too.
+   */
+  paused: capacityPausedSchema.optional(),
 });
 
 /** A host name a sandboxed command may reach: `example.com` or `*.example.com`, never `*`. */

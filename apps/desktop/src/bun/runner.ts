@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { RunnerState } from "../shared/rpc.ts";
 import { nextRestart } from "./backoff.ts";
+import { readLive, runnerChildEnv } from "./runner-jobs.ts";
 
 const RUNNER_DIR = resolve("../Resources/app/runner");
 const NODE = join(RUNNER_DIR, "node");
@@ -53,7 +54,7 @@ export class Runner {
   }
 
   private env(path: string) {
-    return { HOME: home, PATH: path, SF_RUNNER_DESKTOP: "1" };
+    return runnerChildEnv(path, home);
   }
 
   /** Start unless unpaired or a launchd service still owns the runner. */
@@ -116,6 +117,25 @@ export class Runner {
     const t = setTimeout(() => p.kill("SIGKILL"), graceMs);
     await p.exited;
     clearTimeout(t);
+  }
+
+  /**
+   * Ask the runner to stop claiming (SIGUSR2: RunnerHost.drain) and wait until it rewrites its
+   * live-jobs file, which it does once any claim in flight has landed. Running jobs carry on.
+   */
+  async drain(timeoutMs = 30_000): Promise<"confirmed" | "not-ours" | "timeout"> {
+    const p = this.proc;
+    if (!p) return "not-ours";
+    const before = readLive()?.updatedAt ?? null;
+    p.kill("SIGUSR2");
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      await Bun.sleep(200);
+      if (this.proc !== p) return "not-ours";
+      const now = readLive()?.updatedAt ?? null;
+      if (now && now !== before) return "confirmed";
+    }
+    return "timeout";
   }
 
   async restart(): Promise<void> {

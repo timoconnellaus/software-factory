@@ -60,5 +60,8 @@ jobs:
       # The deploy scripts and the repo guards (model ids, runner imports) aren't a workspace
       # package; their tests run on Node directly.
       - run: node --test "scripts/*/*.test.ts"
+      # The deploy refuses it too; failing here catches a floor raised too early before merge.
+      - name: Desktop floor vs the published builds (ADR 0393)
+        run: node scripts/deploy/desktop-floor.ts
       # Every Worker must bundle; a dry run catches what typecheck can't (bad bindings, imports).
       - run: pnpm build

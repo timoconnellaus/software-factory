@@ -1,0 +1,207 @@
+// Updates (spec 40 M4, ADR 0390): signed canary and stable builds on downloads.zerobsai.com.
+// Electrobun's Updater reads `<channel>-macos-arm64-update-v2.json` from the build's release
+// baseUrl, downloads and stages a new version in the background. This class decides whether that
+// version may be applied. It is offered only when all of these hold:
+// - the manifest's version is higher than the running one (no downgrades, even to a build whose
+//   hash merely differs, which is all Electrobun checks);
+// - Electrobun really staged it (its download swallows errors: its own state is read back, and a
+//   failed download is tried again later);
+// - the staged bundle is signed by this build's Team ID and passes Gatekeeper (update-verify.ts),
+//   checked again right before applying;
+// - the staged bundle's own version.json (inside that seal) says the manifest's version, newer than
+//   the running one, on this build's channel: the manifest alone can't vouch for an old build;
+// - the app sits where it can replace itself (not translocated, its folder writable). If it can't,
+//   the person is told to move it to Applications.
+// Applying restarts the app, so it waits for the person, and for the runner's jobs (index.ts).
+// Dev builds never update. Nothing here imports Electrobun, so the tests run on Node.
+import { accessSync, constants } from "node:fs";
+import { dirname } from "node:path";
+import { isNewer } from "../shared/version.ts";
+import type { Exec, StagedUpdate } from "./update-verify.ts";
+import { bundleInfo, stagedUpdate, teamIdOf, verifyBundle } from "./update-verify.ts";
+
+export interface UpdateState {
+  /** A verified update is staged: "Restart to update" can be offered. */
+  ready: boolean;
+  /** The version that is ready (or was refused). */
+  version: string | null;
+  /** Why the last check didn't end ready, for the menu and the logs. */
+  error: string | null;
+  /** The app can't update where it is: tell the person to move it to Applications. */
+  needsMove: boolean;
+}
+
+/** What this class uses of Electrobun's Updater (src/sdks/main/core/Updater.ts). */
+export interface UpdaterLike {
+  checkForUpdate(): Promise<{ version: string; updateAvailable: boolean; error: string }>;
+  downloadUpdate(): Promise<void>;
+  updateInfo(): { version: string; updateReady: boolean; error: string };
+  applyUpdate(): Promise<void>;
+  getLocalInfo(): Promise<{ version: string; channel: string }>;
+  appDataFolder(): Promise<string>;
+}
+
+export interface UpdatesDeps {
+  updater: UpdaterLike;
+  exec: Exec;
+  /** The running .app. */
+  appPath: string;
+  /** Throws when `path` isn't writable (fs.accessSync with W_OK). */
+  writable?: (path: string) => void;
+  staged?: (appDataFolder: string) => StagedUpdate | null;
+  /** The version and channel in a bundle's own Resources/version.json. */
+  bundle?: (app: string) => { version: string; channel: string } | null;
+  setInterval?: (fn: () => void, ms: number) => unknown;
+  setTimeout?: (fn: () => void, ms: number) => unknown;
+}
+
+export const EVERY_MS = 6 * 3_600_000;
+/** After a failed check or download. */
+export const RETRY_MS = 30 * 60_000;
+/** The door's update_required asks for a check at most this often (ADR 0393). */
+export const ON_DEMAND_GAP_MS = 10 * 60_000;
+
+const MOVE =
+  "Move Software Factory to your Applications folder (and open it from there) to get updates.";
+
+/** Why the app can't replace itself where it is, or null. */
+export function installProblem(appPath: string, writable: (p: string) => void): string | null {
+  // Gatekeeper runs a quarantined app opened from Downloads from a random read-only copy.
+  if (appPath.includes("/AppTranslocation/")) return MOVE;
+  try {
+    // Electrobun stages the new version beside the app and swaps it in.
+    writable(dirname(appPath));
+    writable(appPath);
+    return null;
+  } catch {
+    return `This Mac's account can't replace the app where it is. ${MOVE}`;
+  }
+}
+
+export class Updates {
+  state: UpdateState = { ready: false, version: null, error: null, needsMove: false };
+  private retry: unknown = null;
+  private lastOnDemand = Number.NEGATIVE_INFINITY;
+  private readonly d: Required<UpdatesDeps>;
+
+  constructor(
+    deps: UpdatesDeps,
+    private readonly onChange: (s: UpdateState) => void,
+  ) {
+    this.d = {
+      writable: (p) => accessSync(p, constants.W_OK),
+      staged: (f) => stagedUpdate(f),
+      bundle: (a) => bundleInfo(a),
+      setInterval: (fn, ms) => setInterval(fn, ms),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      ...deps,
+    };
+  }
+
+  async start(): Promise<void> {
+    if ((await this.d.updater.getLocalInfo()).channel === "dev") return;
+    await this.check();
+    this.d.setInterval(() => void this.check(), EVERY_MS);
+  }
+
+  /**
+   * The door said this build is too old (ADR 0393): check now, but at most once every
+   * ON_DEMAND_GAP_MS, however many requests are refused. Dev builds never update.
+   */
+  async checkNow(now = Date.now()): Promise<void> {
+    if (now - this.lastOnDemand < ON_DEMAND_GAP_MS) return;
+    this.lastOnDemand = now;
+    if ((await this.d.updater.getLocalInfo()).channel === "dev") return;
+    await this.check();
+  }
+
+  private set(patch: Partial<UpdateState>) {
+    this.state = { ...this.state, ...patch };
+    this.onChange(this.state);
+  }
+
+  private fail(error: string, version: string | null = this.state.version, retry = true) {
+    this.set({ ready: false, version, error });
+    if (retry && !this.retry) {
+      this.retry = this.d.setTimeout(() => {
+        this.retry = null;
+        void this.check();
+      }, RETRY_MS);
+    }
+  }
+
+  async check(): Promise<void> {
+    if (this.state.ready) return;
+    const { updater } = this.d;
+    try {
+      const problem = installProblem(this.d.appPath, this.d.writable);
+      if (problem) return this.set({ ready: false, error: problem, needsMove: true });
+      if (this.state.needsMove) this.set({ needsMove: false, error: null });
+
+      const info = await updater.checkForUpdate();
+      if (info.error) return this.fail(info.error);
+      if (!info.updateAvailable) return this.set({ ready: false, version: null, error: null });
+      const running = (await updater.getLocalInfo()).version;
+      if (!isNewer(info.version, running)) {
+        // Not retried: the bucket would have to publish a higher version first.
+        return this.fail(
+          `refused ${info.version}: not newer than this version (${running})`,
+          info.version,
+          false,
+        );
+      }
+
+      await updater.downloadUpdate();
+      const after = updater.updateInfo();
+      if (!after.updateReady) {
+        return this.fail(after.error || "the download didn't finish", info.version);
+      }
+      const why = await this.verifyStaged();
+      if (why) return this.fail(why, info.version, false);
+      this.set({ ready: true, version: info.version, error: null });
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /** Null when the staged update may be applied; else why not. */
+  private async verifyStaged(): Promise<string | null> {
+    const local = await this.d.updater.getLocalInfo();
+    const running = local.version;
+    const staged = this.d.staged(await this.d.updater.appDataFolder());
+    if (!staged) return "refused: no staged update this app can check";
+    if (!isNewer(staged.version, running))
+      return `refused ${staged.version}: not newer than this version (${running})`;
+    const team = await teamIdOf(this.d.appPath, this.d.exec);
+    if (!team) return "refused: this build isn't signed, so it can't check an update's signature";
+    const why = await verifyBundle(staged.path, team, this.d.exec);
+    if (why) return `refused ${staged.version}: ${why}`;
+    // Read only now, from inside the seal just verified: the manifest's version is the bucket's word.
+    const own = this.d.bundle(staged.path);
+    if (!own) return `refused ${staged.version}: the staged app has no readable version`;
+    if (own.version !== staged.version)
+      return `refused ${staged.version}: the staged app is version ${own.version}, not what the manifest says`;
+    if (!isNewer(own.version, running))
+      return `refused ${own.version}: not newer than this version (${running})`;
+    if (own.channel !== local.channel)
+      return `refused ${own.version}: it is a ${own.channel} build, this is ${local.channel}`;
+    return null;
+  }
+
+  /**
+   * Restarts into the staged version, checked once more first. Returns only when that didn't
+   * happen (nothing staged, a refused signature, or a quit handler said no): the caller then
+   * brings back whatever it stopped. The reason is in `state.error`.
+   */
+  async apply(): Promise<void> {
+    const why = await this.verifyStaged();
+    if (why) return this.fail(why, this.state.version, false);
+    await this.d.updater.applyUpdate();
+    // Still here: Electrobun didn't restart.
+    const after = this.d.updater.updateInfo();
+    this.set({
+      ready: after.updateReady,
+      error: after.error || "the update didn't start; try again from the menu",
+    });
+  }
+}
