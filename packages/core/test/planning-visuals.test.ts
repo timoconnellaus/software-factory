@@ -290,10 +290,17 @@ describe("planning visuals (spec 21)", () => {
       content: SETTINGS,
     });
     for (let i = 2; i <= 12; i++) {
-      await agent("artifact.update", { artifactId: m.artifactId, content: `${SETTINGS}<!-- ${i} -->` });
+      await agent("artifact.update", {
+        artifactId: m.artifactId,
+        content: `${SETTINGS}<!-- ${i} -->`,
+      });
     }
     const pruned = await refusal(
-      ok("artifact.get", { workItemId: item.workItemId, artifactId: m.artifactId, revision: 2 }, w.human),
+      ok(
+        "artifact.get",
+        { workItemId: item.workItemId, artifactId: m.artifactId, revision: 2 },
+        w.human,
+      ),
     );
     expect(pruned.message).toContain("last 10");
     expect(
