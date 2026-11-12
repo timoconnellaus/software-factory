@@ -95,12 +95,21 @@ later), and the same boundary to carry over to cloud sandboxes (plan piece 7).
    an environment variable (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or
    `ANTHROPIC_API_KEY`). A Mac keeps its Claude login in the Keychain, which a container can't
    read, so a token is the one form that works on every host.
-   - It comes from `runner.json` `container.env` (0600, next to the runner key), else
-     `sf-runner`'s own environment.
+   - It comes from the job's **Claude account** (ADR 0410), the host's active one when the
+     workspace was prepared:
+     - a **token account**: its token, read from its 0600 file;
+     - a **login account**: refused before anything is made. Container isolation needs a token
+       account, and `doctor` says so. A login's credentials are in the macOS Keychain, or in its
+       config dir next to every other conversation on the account. Mounting that dir would hand the
+       agent a refreshable login and the account's history;
+     - `default`: `runner.json` `container.env` (0600, next to the runner key), else `sf-runner`'s
+       own environment.
+
+     The account's config dir and token file are never mounted. Claude in the container uses its
+     own home's `.claude`, where the run's transcript is.
    - It travels by `--env-file`: a 0600 file outside every mount, deleted once Claude is up. It is
      never in an argv.
-   - The seam is `modelCredential(job)`. Plan piece 3 (accounts) plugs the host's active account
-     into it.
+   - The seam is `modelCredential(job, account)` (`credentialForAccount` by default).
    - Since the agent can read its own environment, tight egress matters. When the session ends,
      the host also scans everything it would push for the credential: the new objects, the
      uncommitted changes and the untracked files. If it finds it, it fails the job and pushes

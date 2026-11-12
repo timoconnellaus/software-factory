@@ -56,6 +56,7 @@ export const APP_OPERATIONS = [
   "runner.register",
   "runner.rotateKey",
   "runner.list",
+  "runner.account.use",
   "cli.deviceLookup",
   "cli.approveDevice",
   "cli.denyDevice",

@@ -316,13 +316,23 @@ It keeps its own code on the commit the engine was deployed from, updating itsel
 (ADR 0360).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
+**Claude account** (on a host)
+A Claude subscription or key a runner host runs Claude Code with (ADR 0410): a **login** (its own
+Claude config dir, used as `CLAUDE_CONFIG_DIR`) or a **token** (a `claude setup-token` OAuth token or
+an API key in a 0600 file), plus `default`, whatever `claude` uses with no account set. Added and
+removed only on the host (`sf-runner account`). One is **active**: a job takes it when its workspace
+is prepared and keeps it. The owner switches it by hand, on the host or from Setup
+(`runner.account.use`, which sends only the name). The factory sees names, never credentials.
+_Avoid_: profile (Orca's word), login (only one kind), key (only one kind)
+
 **Isolation**
 How a runner confines a job's harness, set per runner in `runner.json` (ADR 0430):
 - `sandbox`, the default: a git worktree with Claude Code's OS sandbox (ADR 0270);
 - `container`: a Docker container per job. It mounts only the **job repo** (a new repo per job, with
   only the start point's history and the default branch), a fresh home and temp dirs. Egress goes
   only through the job's **egress proxy** (the stage's allowed hosts and the model API). Every stage
-  runs `bypassPermissions`.
+  runs `bypassPermissions`. The container gets the job's Claude account as its token, so it needs a
+  token account (or `default` with a token in `runner.json`). A login account can't be used.
 _Avoid_: sandbox (for the container: the sandbox is Claude's own)
 
 **Capability**

@@ -15,6 +15,8 @@ import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promise
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  DEFAULT_HARNESS_ACCOUNT,
+  type HarnessAccount,
   type LaunchRecord,
   PID_FILE,
   projectHarness,
@@ -63,7 +65,7 @@ import {
 
 /**
  * The model credential that goes into the container (ADR 0430 §8, ADR 0023): environment
- * variables, the one secret inside. Plan piece 3 (accounts) supplies the host's active account.
+ * variables, the one secret inside. It comes from the job's Claude account (ADR 0410).
  */
 export interface ModelCredential {
   env: Record<string, string>;
@@ -85,6 +87,37 @@ export function credentialFrom(
   return null;
 }
 
+/** The job's Claude account can't go into a container (a login account). */
+export class ContainerAccountError extends Error {
+  override name = "ContainerAccountError";
+}
+
+/**
+ * The credential a container job gets from its Claude account (ADR 0410, 0430 §8):
+ * - a **token** account: its token, read from its 0600 file, in its own variable;
+ * - a **login** account: refused. Its login lives in the macOS Keychain or in its config dir next
+ *   to the account's other state, and mounting that dir would hand the agent a refreshable login
+ *   and every other conversation on the account. Use a token account (`claude setup-token`);
+ * - `default`: `fallback` (runner.json's `container.env`, else the host's environment).
+ */
+export async function credentialForAccount(
+  account: HarnessAccount,
+  fallback: () => ModelCredential | null = () => null,
+): Promise<ModelCredential | null> {
+  if (account.token) {
+    const value = (await readFile(account.token.file, "utf8")).trim();
+    if (!value)
+      throw new ContainerAccountError(`the token file of account "${account.name}" is empty`);
+    return { env: { [account.token.env]: value } };
+  }
+  if (account.configDir) {
+    throw new ContainerAccountError(
+      `Claude account "${account.name}" is a login, and container isolation needs a token account: add one with \`claude setup-token | sf-runner account add <name> --token-stdin\` and \`sf-runner account use <name>\``,
+    );
+  }
+  return fallback();
+}
+
 export interface ContainerOptions {
   /** The runtime (default: Docker over its CLI, `bin`). */
   runtime?: ContainerRuntime;
@@ -92,8 +125,14 @@ export interface ContainerOptions {
   bin?: string;
   /** Job dirs (`<containersDir>/sf-<jobId>/`) and the credential's env files. */
   containersDir: string;
-  /** The credential for a job (the seam for plan piece 3). */
-  modelCredential: (job: Job) => Promise<ModelCredential | null> | ModelCredential | null;
+  /**
+   * The credential for a job, from the Claude account it took when its workspace was prepared
+   * (default: `credentialForAccount` with no fallback).
+   */
+  modelCredential?: (
+    job: Job,
+    account: HarnessAccount,
+  ) => Promise<ModelCredential | null> | ModelCredential | null;
   /** More egress hosts for every job on this runner. */
   allowedHosts?: string[];
   /**
@@ -125,6 +164,11 @@ export interface ContainerRunnerConfig extends LocalRunnerConfig {
 
 export interface ContainerWorkspace extends LocalWorkspace {
   container: ContainerRecord;
+  /**
+   * The host's Claude account the job took (ADR 0410). `account` itself names it with the
+   * container's own config dir (`<home>/.claude`), where the run's transcript is.
+   */
+  hostAccount: HarnessAccount;
   /** `<containersDir>/sf-<jobId>`. */
   jobRoot: string;
 }
@@ -328,6 +372,12 @@ export function createContainerRunner(
       // Whatever a crashed run of this same job left goes first.
       await cleanUp(job, undefined);
       try {
+        // The host's active Claude account, now: the job keeps it (ADR 0410). A login account
+        // can't go into a container: say so before anything is made.
+        const hostAccount = (await config.account?.(job)) ?? DEFAULT_HARNESS_ACCOUNT;
+        if (hostAccount.configDir && !hostAccount.token) {
+          await credentialForAccount(hostAccount);
+        }
         // A clear failure when Docker isn't running, before anything else is made.
         await runtime.version();
         const image = await ensureImage(runtime, {
@@ -443,6 +493,8 @@ export function createContainerRunner(
           readCommand,
           launchChecks: () => containerChecks(runtime, record),
           container: record,
+          hostAccount,
+          account: { name: hostAccount.name, configDir: join(dirs.home, ".claude") },
           jobRoot: dirs.root,
         };
         return ws;
@@ -461,10 +513,13 @@ export function createContainerRunner(
       const { agent, proxy } = workspace.container;
       const names = containerNames(workspace.name);
       await stopContainers(workspace.name);
-      const credential = await options.modelCredential(job);
+      const credential = await (options.modelCredential ?? ((_job, a) => credentialForAccount(a)))(
+        job,
+        workspace.hostAccount,
+      );
       if (!credential || Object.keys(credential.env).length === 0) {
         throw new Error(
-          "container isolation needs a model credential on this host: set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY in runner.json `container.env`",
+          "container isolation needs a model credential on this host: make a token account active (`claude setup-token | sf-runner account add <name> --token-stdin`, then `sf-runner account use <name>`), or for the default account set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in runner.json `container.env`",
         );
       }
       for (const [k, v] of Object.entries(credential.env)) {

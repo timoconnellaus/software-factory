@@ -92,6 +92,7 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0391](0391-the-client-door-desktop-devices-and-presence.md) | One client door; desktop devices decide gates with a presence proof |
 | [0392](0392-the-website-shrinks-to-auth.md) | The website shrinks to auth, links go through a trampoline |
 | [0400](0400-watch-and-steer-runs-from-the-dashboard.md) | Watch and steer runs from the dashboard: `run.steer` (runner owner only, journalled), a held `steer` call on the channel, `message` events from the transcript, `run.live` polled |
+| [0410](0410-claude-accounts-live-on-the-host.md) | Claude accounts live on the host (a config dir or a token each); the owner switches the active one by name, on the host or from the dashboard; usage limits are surfaced, never rotated |
 | [0340](0340-a-cli-for-people-gates-stay-in-the-browser.md) | A CLI for people: device login, read/write tokens, `/cli/v1` on sf-engine; gate decisions are browser-only, enforced in `invoke()` |
 | [0350](0350-how-the-planning-loop-is-wired.md) | How the planning loop is wired: one planning call on the channel scoped by the job, a host relay for the harness, the log's id as the cursor, held waits, yields and pinned resumes, pools, the PlanningHub, Workflow v5 |
 | [0330](0330-the-factory-runs-its-own-merge-queue.md) | The factory runs its own merge queue per project: approved merges land one at a time, the head is updated by GitHub's update-branch and the approval carries over a clean update (Workflow v4) |

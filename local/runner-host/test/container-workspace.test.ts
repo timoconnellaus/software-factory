@@ -15,10 +15,14 @@ import {
   scriptedTmux,
 } from "@software-factory/runner-local/testing";
 import { afterEach, describe, expect, it } from "vitest";
+import { accountPaths, activeAccount, addTokenAccount, useAccount } from "../src/accounts.ts";
 import { configSchema, paths } from "../src/config.ts";
 import { FETCH_NAMESPACE } from "../src/git.ts";
 import { runJob } from "../src/job.ts";
-import { buildRunner } from "../src/runner.ts";
+import { buildRunner, hostModelCredential } from "../src/runner.ts";
+
+const BASE = { runnerId: "r_abc123", key: "k".repeat(32), isolation: "container" };
+
 import { controlPlane, fakeCloud, git, job, scratchRepo } from "./helpers.ts";
 
 const MODEL_TOKEN = "sk-ant-oat01-the-owners-model-token-0123456789";
@@ -47,8 +51,13 @@ async function world(tmux: ScriptedTmuxOptions) {
   await writeFile(join(owner, "WIP.txt"), "uncommitted\n");
   const scripted = scriptedTmux(tmux);
   const docker = scriptedDocker({ base: scripted.exec });
+  // The host's Claude accounts (ADR 0410): a token account, active. The container gets its token.
+  const accounts = accountPaths(paths({ HOME: join(repo.root, "home") }));
+  await addTokenAccount(accounts, "work", MODEL_TOKEN);
+  await useAccount(accounts, "work");
   const adapter = createContainerRunner({
     exec: docker.exec,
+    account: () => activeAccount(accounts),
     checkouts: [projects],
     resolveRepoPath: (j) => repo.host.clonePath(j),
     ownReposDir: join(repo.root, "repos"),
@@ -60,10 +69,10 @@ async function world(tmux: ScriptedTmuxOptions) {
       containersDir: join(repo.root, "containers"),
       user: "501:20",
       fetchNamespace: FETCH_NAMESPACE,
-      modelCredential: () => ({ env: { CLAUDE_CODE_OAUTH_TOKEN: MODEL_TOKEN } }),
+      modelCredential: hostModelCredential(configSchema.parse(BASE), {}),
     },
   });
-  return { ...repo, owner: realpathSync(owner), docker, adapter };
+  return { ...repo, owner: realpathSync(owner), docker, adapter, accounts };
 }
 
 const ownerState = (owner: string) => ({
@@ -112,9 +121,31 @@ describe("a container job and the host's push (ADR 0430 §9)", { timeout: 30_000
     ).toEqual(["factory/7-add-a-line", j.branch, "main"].sort());
     expect(ownerState(w.owner)).toEqual(before);
     expect(w.docker.containers.size).toBe(0);
+    // The active token account's token is what went into the agent's container.
+    expect(w.docker.envFileOf(`sf-${j.jobId}`)).toBe(`CLAUDE_CODE_OAUTH_TOKEN=${MODEL_TOKEN}\n`);
     const events = cloud.events.get(j.jobId) ?? [];
     expect(events.find((e) => e.type === "session.started")).toMatchObject({
       takeover: { hint: `tmux -L software-factory attach -t sf-${j.jobId}` },
+    });
+  });
+
+  it("takes the credential from the job's account: a token, never a login; default from runner.json", async () => {
+    const w = await world({ onPrompt: agentCommits() });
+    const active = await activeAccount(w.accounts);
+    expect(active).toMatchObject({ name: "work", token: { env: "CLAUDE_CODE_OAUTH_TOKEN" } });
+    const credential = hostModelCredential(configSchema.parse(BASE), {});
+    expect(await credential(undefined, active)).toEqual({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: MODEL_TOKEN },
+    });
+    await expect(credential(undefined, { name: "me", configDir: "/x/me" })).rejects.toThrow(
+      /login, and container isolation needs a token account/,
+    );
+    const fromConfig = hostModelCredential(
+      configSchema.parse({ ...BASE, container: { env: { ANTHROPIC_API_KEY: "sk-ant-api-k" } } }),
+      {},
+    );
+    expect(await fromConfig(undefined, { name: "default" })).toEqual({
+      env: { ANTHROPIC_API_KEY: "sk-ant-api-k" },
     });
   });
 

@@ -71,6 +71,11 @@ events and steering. A planning job goes to runner-local unchanged. For every ot
 - **startSession**:
   - Creates the job's `--internal` network and starts the egress proxy on it (alias `egress`) and
     on the bridge.
+  - Takes the credential from the job's Claude account (`credentialForAccount`, ADR 0410), which
+    was taken when the workspace was prepared. A token account gives its token; a login account is
+    refused while the workspace is prepared, before anything is made. The account's config dir is
+    never mounted: Claude uses the container home's `.claude`, and `workspace.account` points there
+    for the transcript.
   - Writes the credential's 0600 env file and seeds the home's `.claude.json` (onboarding done, the
     tree trusted).
   - Runs runner-local's start with `container.sh` as the launch script. The launch check reads the

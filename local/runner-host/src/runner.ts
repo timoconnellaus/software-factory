@@ -4,12 +4,13 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_IDENTITY } from "@software-factory/harness-claude";
+import { DEFAULT_IDENTITY, type HarnessAccount } from "@software-factory/harness-claude";
 import { httpControlPlane, type Job } from "@software-factory/runner-contract";
 import {
   type ContainerOptions,
   createContainerRunner,
   createLocalRunner,
+  credentialForAccount,
   credentialFrom,
   dockerRuntime,
   type Exec,
@@ -19,6 +20,14 @@ import {
   reapContainers,
   reapOrphans,
 } from "@software-factory/runner-local";
+import {
+  accountConfigDirs,
+  accountPaths,
+  accountsReport,
+  activeAccount,
+  noteUsage,
+  useAccount,
+} from "./accounts.ts";
 import { checkoutDirs } from "./checkouts.ts";
 import type { Paths, RunnerConfig } from "./config.ts";
 import { FETCH_NAMESPACE, hostGit } from "./git.ts";
@@ -42,14 +51,17 @@ export function dockerBin(config: Pick<RunnerConfig, "container">): string {
 }
 
 /**
- * The model credential for a container job (ADR 0430 §8): runner.json's `container.env`, else
- * sf-runner's own environment. Plan piece 3 replaces this with the host's active account.
+ * The model credential for a container job (ADR 0430 §8), from the Claude account the job took
+ * (ADR 0410): a token account's token; a login account is refused (container isolation needs a
+ * token account); the `default` account uses runner.json's `container.env`, else sf-runner's own
+ * environment.
  */
 export function hostModelCredential(
   config: Pick<RunnerConfig, "container">,
   env: NodeJS.ProcessEnv = process.env,
-): (job?: Job) => ModelCredential | null {
-  return () => credentialFrom(config.container?.env, env);
+): (job: Job | undefined, account: HarnessAccount) => Promise<ModelCredential | null> {
+  return (_job, account) =>
+    credentialForAccount(account, () => credentialFrom(config.container?.env, env));
 }
 
 /** Where a running host records its live jobs (read by `status` and `doctor`). */
@@ -90,6 +102,7 @@ export function buildRunner(
   } = {},
 ) {
   const exec = options.exec ?? nodeExec;
+  const log = options.log ?? ((m: string) => console.log(`[runner] ${m}`));
   const cp = httpControlPlane({
     baseUrl: config.baseUrl,
     runnerId: config.runnerId,
@@ -103,8 +116,18 @@ export function buildRunner(
     identity,
     ...(config.repoUrlMap ? { repoUrlMap: config.repoUrlMap } : {}),
   });
+  const accounts = accountPaths(dirs);
   const localConfig: LocalRunnerConfig = {
     exec,
+    // Claude accounts (ADR 0410): a job takes the active one when its workspace is prepared.
+    account: () => activeAccount(accounts),
+    accountConfigDirs: () => accountConfigDirs(accounts),
+    onAccountUsage: (name, limit) => {
+      if (limit) log(`account "${name}" hit a usage limit: ${limit}`);
+      void noteUsage(accounts, name, limit).catch((err) => {
+        log(`account limits: ${err instanceof Error ? err.message : err}`);
+      });
+    },
     maxConcurrent: config.maxConcurrent,
     // ADR 0260 (amended by ADR 0380): jobs run as worktrees of the checkout this machine already
     // has for the remote, under the configured `checkouts` dirs; the host's clone only when none.
@@ -121,7 +144,6 @@ export function buildRunner(
     ...(config.capabilities ? { capabilities: config.capabilities } : {}),
     ...options.local,
   };
-  const log = options.log ?? ((m: string) => console.log(`[runner] ${m}`));
   const containers = config.isolation === "container";
   // ADR 0430: a container per job when the owner opts in; else the worktree and Claude's sandbox.
   const adapter = containers
@@ -144,6 +166,10 @@ export function buildRunner(
       })
     : createLocalRunner(localConfig);
   const host = new RunnerHost({
+    accounts: {
+      report: () => accountsReport(accounts),
+      use: (name) => useAccount(accounts, name),
+    },
     adapter,
     cp,
     git,

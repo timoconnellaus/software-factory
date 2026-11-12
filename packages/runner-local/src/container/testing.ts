@@ -190,6 +190,8 @@ export function scriptedDocker(options: ScriptedDockerOptions) {
   const networks = new Map<string, { internal: boolean; labels: Record<string, string> }>();
   const containers = new Map<string, FakeContainer>();
   const calls: string[][] = [];
+  /** Each container's env file as it started, kept after the container is removed. */
+  const envFiles = new Map<string, string>();
   let builds = 0;
 
   const labelsOf = (labels: Record<string, string> | null | undefined) =>
@@ -204,6 +206,7 @@ export function scriptedDocker(options: ScriptedDockerOptions) {
     if (spec.envFile) {
       try {
         envFile = readFileSync(spec.envFile, "utf8");
+        envFiles.set(spec.name, envFile);
       } catch {
         envFile = undefined;
       }
@@ -347,6 +350,6 @@ export function scriptedDocker(options: ScriptedDockerOptions) {
       return builds;
     },
     /** The agent container's environment file contents when it started. */
-    envFileOf: (name: string) => containers.get(name)?.envFile,
+    envFileOf: (name: string) => envFiles.get(name),
   };
 }

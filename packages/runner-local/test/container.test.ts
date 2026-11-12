@@ -8,7 +8,12 @@ import { createServer as createHttpServer, request } from "node:http";
 import { type AddressInfo, connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROMPT_FILE, readLaunchRecord, STATUS_FILE } from "@software-factory/harness-claude";
+import {
+  type HarnessAccount,
+  PROMPT_FILE,
+  readLaunchRecord,
+  STATUS_FILE,
+} from "@software-factory/harness-claude";
 import { type AdapterEvent, type Job, RESULT_FILE } from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
 // The proxy is a plain script copied into the image; its rule must match the module's.
@@ -20,6 +25,7 @@ import {
   containerProblems,
   createContainerRunner,
   createJobRepo,
+  credentialForAccount,
   credentialFrom,
   dockerRunArgs,
   dockerRuntime,
@@ -632,5 +638,75 @@ describe("the credential", () => {
       env: { CLAUDE_CODE_OAUTH_TOKEN: "t" },
     });
     expect(credentialFrom({}, { HOME: "/x" })).toBeNull();
+  });
+});
+
+describe("the job's Claude account in a container (ADR 0410, 0430)", () => {
+  it("gives a token account's token, refuses a login account, falls back for default", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "sf-acct-")));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const file = join(root, "work.token");
+    await writeFile(file, `${TOKEN}\n`, { mode: 0o600 });
+    const token = {
+      name: "work",
+      configDir: join(root, "cfg"),
+      token: { file, env: "CLAUDE_CODE_OAUTH_TOKEN" as const },
+    };
+    expect(await credentialForAccount(token)).toEqual({ env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN } });
+    await expect(credentialForAccount({ name: "me", configDir: join(root, "me") })).rejects.toThrow(
+      /login, and container isolation needs a token account/,
+    );
+    const fallback = () => ({ env: { ANTHROPIC_API_KEY: "k" } });
+    expect(await credentialForAccount({ name: "default" }, fallback)).toEqual(fallback());
+    expect(await credentialForAccount({ name: "default" })).toBeNull();
+  });
+
+  it("puts the active token account's token in the container; refuses a login account up front", async () => {
+    const w = await world();
+    const file = join(w.root, "work.token");
+    const workToken = "sk-ant-oat01-the-work-account-token-0123456789";
+    await writeFile(file, `${workToken}\n`, { mode: 0o600 });
+    let account: HarnessAccount = {
+      name: "work",
+      configDir: join(w.root, "accounts", "work"),
+      token: { file, env: "CLAUDE_CODE_OAUTH_TOKEN" },
+    };
+    const runner = createContainerRunner({
+      exec: w.docker.exec,
+      checkouts: [join(w.root, "projects")],
+      resolveRepoPath: () => {
+        throw new Error("unexpected");
+      },
+      worktreesDir: join(w.root, "data", "worktrees"),
+      runsDir: w.runsDir,
+      startPoint: () => w.startSha,
+      pollMs: 2,
+      account: () => account,
+      container: { containersDir: w.containersDir, user: "501:20" },
+    });
+    const j = job();
+    const ws = await runner.prepareWorkspace(j, signal());
+    // The transcript is in the container's own home, not the account's config dir on the host.
+    expect(ws.account).toEqual({
+      name: "work",
+      configDir: join(w.containersDir, "sf-job_1", "home", ".claude"),
+    });
+    await runner.startSession(j, ws, signal());
+    expect(w.docker.envFileOf("sf-job_1")).toBe(`CLAUDE_CODE_OAUTH_TOKEN=${workToken}\n`);
+    // Neither the account's config dir nor its token file is mounted.
+    const record = JSON.parse(
+      await readFile(join(w.runsDir, "job_1", CONTAINER_RECORD), "utf8"),
+    ) as ContainerRecord;
+    const accounts = join(w.root, "accounts");
+    expect(
+      record.agent.mounts.some((m) => m.source.startsWith(accounts) || m.source === file),
+    ).toBe(false);
+    await runner.release(j, ws, undefined);
+
+    account = { name: "me", configDir: join(w.root, "accounts", "me") };
+    const runs = w.docker.calls.filter((c) => c[0] === "run").length;
+    await expect(runner.prepareWorkspace(j, signal())).rejects.toThrow(/needs a token account/);
+    expect(existsSync(join(w.containersDir, "sf-job_1"))).toBe(false);
+    expect(w.docker.calls.filter((c) => c[0] === "run")).toHaveLength(runs);
   });
 });

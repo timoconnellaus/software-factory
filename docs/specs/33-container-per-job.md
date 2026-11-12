@@ -7,8 +7,8 @@ Read first: the plan ([`.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.m
 and [0023](../adr/0023-runners-are-owned-by-users.md); spec [30](30-runner-local-without-orca.md);
 `packages/runner-local`, `packages/harness-claude`, `local/runner-host`.
 
-This is piece 4 of 8 in the plan. Piece 3 (Claude accounts on a host) is built alongside it and
-plugs into the credential seam below.
+This is piece 4 of 8 in the plan. The container's credential comes from piece 3's Claude
+accounts ([ADR 0410](../adr/0410-claude-accounts-live-on-the-host.md), spec 32).
 
 ## Goal
 On a runner set to container isolation, each job's Claude Code runs in its own Docker container,
@@ -69,7 +69,9 @@ stays outside and pushes with the job token, as now. `tmux attach` still takes t
 - **`packages/runner-contract`**: the capability `container-isolation`.
 - **`local/runner-host`**:
   - `buildRunner` wires `createContainerRunner` when `isolation` is `container`, with the
-    credential seam `modelCredential(job)` (from `container.env`, else `CLAUDE_CODE_OAUTH_TOKEN` /
+    credential from the job's Claude account (`hostModelCredential`): a token account's token; a
+    login account is refused (container isolation needs a token account); `default` reads
+    `container.env`, else `CLAUDE_CODE_OAUTH_TOKEN` /
     `ANTHROPIC_API_KEY` in its environment). The host's reaping also reaps containers.
   - `doctor` checks Docker (server reachable, version), the image (built with `--fix`), the
     credential, and orphaned containers, but only on a container runner. Running container jobs
