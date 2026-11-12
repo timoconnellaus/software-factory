@@ -228,3 +228,22 @@ the design beside them) are in [`docs/screenshots/desktop-factory/`](../screensh
   - **Workflows** lists the named workflows, marks the one the project runs (ADR 0492), and shows
     the chosen one's stages: the fixed skeleton (Spec, Build, Verify, Review, Merge) with the steps
     its three slots add (ADR 0371). Stage types and shaping stages (spec 52) are design only.
+
+## As built (slice 6, Settings: part)
+*Added 2026-11-12.* Settings' nested list is Setup, Repositories and Connections (the factory's),
+then This Mac and Devices (yours). Screenshots are with slice 5's in
+[`docs/screenshots/desktop-factory/`](../screenshots/desktop-factory/).
+- **Repositories** (`/settings/repositories`, `SettingsProjects`): each project's repositories
+  (spec 50, ADR 0490) from `project.list`, with the branch, whether the GitHub App reaches them and
+  whether the default branch is protected (Setup's check in `setup.status`, tracked per project for
+  its first repository). Adding a repository and protecting a branch stay in Setup, which the page
+  links to. The design's Checks and Runners columns need a per-repository checks and runners read.
+- **Connections** (`/settings/connections`, `SettingsConnections`): the GitHub App's installations
+  from `setup.status`, with **Manage on GitHub**. The design's issue, Sentry, Linear, Slack and
+  Telegram connectors have no operations yet, so they aren't listed.
+- **Devices** (`/settings/devices`, `SettingsDevices`): your desktop devices and CLI tokens that
+  still work (`desktopDevice.list`, `cliToken.list`), this Mac first and marked. Any other one can
+  be revoked (`desktopDevice.revoke`, `cliToken.revoke`) after a confirmation; this Mac signs out
+  from This Mac. Runners are under Factory. The design's notifications have no operation yet.
+- **Members** isn't listed: no operation returns an org's members (`org.list` gives only your own
+  role), so the page would show you alone.

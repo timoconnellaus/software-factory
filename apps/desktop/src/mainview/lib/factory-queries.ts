@@ -24,3 +24,25 @@ export const configQuery = (projectId: string) =>
     queryFn: () => read("config.get", { projectId }),
     staleTime: 30_000,
   });
+
+/** Every org's Setup status, for Settings' repositories (protection) and connections. */
+export const setupStatusesQuery = (orgIds: string[]) =>
+  queryOptions({
+    queryKey: ["setup", "all", orgIds],
+    queryFn: () => Promise.all(orgIds.map((orgId) => read("setup.status", { orgId }))),
+    staleTime: 30_000,
+  });
+
+/** Your desktop devices and CLI tokens (Settings: Devices). */
+export const devicesQuery = () =>
+  queryOptions({
+    queryKey: ["devices"],
+    queryFn: async () => {
+      const [desktop, cli] = await Promise.all([
+        read("desktopDevice.list", {}),
+        read("cliToken.list", {}),
+      ]);
+      return { devices: desktop.devices, tokens: cli.tokens };
+    },
+    staleTime: 30_000,
+  });

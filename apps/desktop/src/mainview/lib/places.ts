@@ -6,6 +6,7 @@ export type Section = "inbox" | "work" | "factory" | "settings";
 export function sectionOf(pathname: string): Section {
   if (pathname === "/" || pathname === "") return "inbox";
   if (pathname === "/setup" || pathname === "/settings") return "settings";
+  if (pathname.startsWith("/settings/")) return "settings";
   if (pathname === "/factory" || pathname.startsWith("/factory/")) return "factory";
   return "work";
 }
@@ -37,6 +38,12 @@ export function tabTitle(path: string, findItem: (id: string) => ItemRef | null)
       return "Setup";
     case "/settings":
       return "This Mac";
+    case "/settings/repositories":
+      return "Repositories";
+    case "/settings/connections":
+      return "Connections";
+    case "/settings/devices":
+      return "Devices";
     case "/factory":
       return "Overview";
     case "/factory/runners":
@@ -76,6 +83,24 @@ export const PLACE_COMMANDS: PlaceCommand[] = [
   },
   { id: "setup", label: "Setup", to: "/setup", keywords: "setup github project runner protect" },
   { id: "mac", label: "This Mac", to: "/settings", keywords: "this mac runner settings sign out" },
+  {
+    id: "repositories",
+    label: "Repositories",
+    to: "/settings/repositories",
+    keywords: "settings repositories repos github protection",
+  },
+  {
+    id: "connections",
+    label: "Connections",
+    to: "/settings/connections",
+    keywords: "settings connections github app",
+  },
+  {
+    id: "devices",
+    label: "Devices",
+    to: "/settings/devices",
+    keywords: "settings devices tokens cli revoke sign in",
+  },
   { id: "factory", label: "Factory: overview", to: "/factory", keywords: "factory overview queue" },
   {
     id: "runners",

@@ -18,6 +18,9 @@ import { Route as factoryWorkflows } from "./routes/factory.workflows.tsx";
 import { Route as inbox } from "./routes/index.tsx";
 import { Route as newWork } from "./routes/new.tsx";
 import { rootRoute } from "./routes/root.tsx";
+import { Route as settingsConnections } from "./routes/settings.connections.tsx";
+import { Route as settingsDevices } from "./routes/settings.devices.tsx";
+import { Route as settingsRepositories } from "./routes/settings.repositories.tsx";
 import { Route as settings } from "./routes/settings.tsx";
 import { Route as setup } from "./routes/setup.tsx";
 import { Route as workItem } from "./routes/work.$id.index.tsx";
@@ -36,7 +39,13 @@ export const routeTree = rootRoute.addChildren([
       factoryAgents,
       factoryWorkflows,
     ]),
-    settingsLayout.addChildren([setup, settings]),
+    settingsLayout.addChildren([
+      setup,
+      settings,
+      settingsRepositories,
+      settingsConnections,
+      settingsDevices,
+    ]),
   ]),
 ]);
 

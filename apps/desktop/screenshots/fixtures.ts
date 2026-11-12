@@ -866,6 +866,46 @@ export const ANSWERS: Answers = {
           ]
         : [],
   }),
+  "desktopDevice.list": () => ({
+    devices: [
+      {
+        id: "dev_m5",
+        name: "M5",
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 9),
+        lastSeenAt: ago(0),
+        revokedAt: null,
+      },
+      {
+        id: "dsk_mini",
+        name: "Mac mini",
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 20),
+        lastSeenAt: ago(60 * 24 * 2),
+        revokedAt: null,
+      },
+      {
+        id: "dsk_old",
+        name: "Old laptop",
+        keyStorage: "software",
+        createdAt: ago(60 * 24 * 60),
+        lastSeenAt: ago(60 * 24 * 40),
+        revokedAt: ago(60 * 24 * 30),
+      },
+    ],
+  }),
+  "cliToken.list": () => ({
+    tokens: [
+      {
+        id: "clt_1",
+        name: "M5 terminal",
+        scope: "write",
+        createdAt: ago(60 * 24 * 4),
+        expiresAt: new Date(now + 26 * 24 * 60 * 60_000).toISOString(),
+        revokedAt: null,
+      },
+    ],
+  }),
   "mergeQueue.list": (input) => ({
     entries:
       input.projectId === FACTORY
