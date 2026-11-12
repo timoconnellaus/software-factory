@@ -158,3 +158,17 @@ export class TerminalClient {
 }
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * Where a link in the pane's output may go: http(s) only, as written; anything else is dropped.
+ * OSC 8 hyperlinks reach the view through xterm's `linkHandler`, which the view routes here and then
+ * to the app's own opener (never xterm's default `confirm()` and `window.open`).
+ */
+export function linkTarget(text: string): string | null {
+  try {
+    const u = new URL(text);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}

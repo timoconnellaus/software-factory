@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { LiveRunView } from "#/components/live-run-view";
+import { WebTerminal } from "#/components/web-terminal";
 import type { LiveView } from "#/lib/ops";
 import {
   INITIAL_STATUS,
@@ -252,5 +253,21 @@ describe("the Live tab's Web terminal view", () => {
     expect(render(liveView({ allowed: true, mode: "type", reason: null }))).not.toContain(
       "live-web-terminal-tab",
     );
+  });
+});
+
+describe("the Web terminal view across runs", () => {
+  // The Live tab's poll can go from an ended run to a new active one under the same view: the view
+  // must drop the old socket and attach to the new run (it reconnects when `session` changes, and the
+  // key remounts it), not stay on "ended" with no Reconnect.
+  it("is keyed and named by the item and run, so a new run connects afresh", () => {
+    const RUN2 = `run_${"c".repeat(32)}`;
+    const first = WebTerminal({ workItemId: ITEM, runId: RUN });
+    const second = WebTerminal({ workItemId: ITEM, runId: RUN2 });
+    expect(first.key).toBe(`${ITEM}/${RUN}`);
+    expect(second.key).toBe(`${ITEM}/${RUN2}`);
+    const props = (e: typeof first) => e.props as { session: string };
+    expect(props(first).session).toBe(`${ITEM}/${RUN}`);
+    expect(props(second).session).not.toBe(props(first).session);
   });
 });

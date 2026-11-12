@@ -8,12 +8,23 @@ import { TerminalClient, type TerminalStatus } from "@software-factory/client/we
 import { describe, expect, it } from "vitest";
 import {
   type DoorSocket,
+  FELL_BEHIND,
+  OUTPUT_PENDING_MAX,
   TERMINAL_SOCKETS_MAX,
   Terminals,
   terminalSocketUrl,
 } from "../src/bun/terminal.ts";
-import { fallbackLine, RUNNER_WAIT_MS, terminalOf } from "../src/mainview/lib/terminal.ts";
-import { RpcTerminalSocket, type TerminalRpc } from "../src/mainview/lib/terminal-socket.ts";
+import {
+  closesDock,
+  fallbackLine,
+  RUNNER_WAIT_MS,
+  terminalOf,
+} from "../src/mainview/lib/terminal.ts";
+import {
+  RpcTerminalSocket,
+  type TerminalRpc,
+  VIEW_PENDING_MAX,
+} from "../src/mainview/lib/terminal-socket.ts";
 import type { TerminalEvent } from "../src/shared/rpc.ts";
 
 const ITEM = `wi_${"a".repeat(32)}`;
@@ -46,9 +57,28 @@ class FakeSocket implements DoorSocket {
   }
 }
 
+/** Scheduled work that runs when the test says (a frame, by hand). */
+function frames() {
+  let due: (() => void)[] = [];
+  return {
+    schedule: (f: () => void) => {
+      due.push(f);
+    },
+    get waiting() {
+      return due.length;
+    },
+    run() {
+      const now = due;
+      due = [];
+      for (const f of now) f();
+    },
+  };
+}
+
 function mainProcess(token: string | null = "sfd_secret") {
   const events: TerminalEvent[] = [];
   const sockets: FakeSocket[] = [];
+  const timer = frames();
   const terminals = new Terminals(
     "https://sf-engine.example",
     () => token,
@@ -58,13 +88,15 @@ function mainProcess(token: string | null = "sfd_secret") {
       sockets.push(s);
       return s;
     },
+    timer.schedule,
   );
-  return { terminals, events, sockets };
+  return { terminals, events, sockets, timer };
 }
 
 describe("the main process's terminal sockets", () => {
   it("opens the door's terminal socket with the token in Authorization, never in the URL", () => {
-    const { terminals, sockets, events } = mainProcess();
+    const main = mainProcess();
+    const { terminals, sockets, events } = main;
     expect(terminals.open({ id: "view-0001", workItemId: ITEM, runId: RUN })).toEqual({
       ok: true,
       error: null,
@@ -82,6 +114,7 @@ describe("the main process's terminal sockets", () => {
     s?.fire("open");
     s?.fire("message", { data: '{"t":"hello","mode":"type","viewers":1,"host":true}' });
     s?.fire("message", { data: new TextEncoder().encode("hi\x1b[0m").buffer });
+    main.timer.run();
     expect(events).toEqual([
       { id: "view-0001", kind: "open" },
       {
@@ -150,6 +183,106 @@ describe("the main process's terminal sockets", () => {
   });
 });
 
+describe("the main process's terminals across a view reload", () => {
+  it("closes every socket when the view (re)loads, so a reload never runs out of terminals", () => {
+    const { terminals, sockets } = mainProcess();
+    for (let reload = 0; reload < 5; reload++) {
+      for (let i = 0; i < TERMINAL_SOCKETS_MAX; i++) {
+        expect(terminals.open({ id: `view-${reload}-${i}00`, workItemId: ITEM, runId: RUN }).ok).toBe(
+          true,
+        );
+      }
+      // What index.ts does on dom-ready.
+      terminals.closeAll();
+      expect(terminals.count).toBe(0);
+    }
+    expect(sockets).toHaveLength(5 * TERMINAL_SOCKETS_MAX);
+    expect(sockets.every((s) => s.closedWith === 1000)).toBe(true);
+  });
+
+  it("is wired to the view's dom-ready, as well as sign-out and the window closing", () => {
+    const src = readFileSync(new URL("../src/bun/index.ts", import.meta.url), "utf8");
+    const domReady = src.slice(src.indexOf('on("dom-ready"'));
+    expect(domReady.slice(0, domReady.indexOf("});"))).toContain("terminals.closeAll()");
+    expect(src.match(/terminals\.closeAll\(\)/g)?.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("the pane's output on its way to the view", () => {
+  it("goes as one event per frame, after the status before it and before the close", () => {
+    const { terminals, sockets, events, timer } = mainProcess();
+    terminals.open({ id: "view-0001", workItemId: ITEM, runId: RUN });
+    const s = sockets[0];
+    s?.fire("open");
+    for (const part of ["a", "b", "c"]) s?.fire("message", { data: Buffer.from(part) });
+    expect(timer.waiting).toBe(1);
+    expect(events.filter((e) => e.kind === "bytes")).toHaveLength(0);
+    timer.run();
+    expect(events.at(-1)).toEqual({
+      id: "view-0001",
+      kind: "bytes",
+      base64: Buffer.from("abc").toString("base64"),
+    });
+    // A status message doesn't overtake output before it; nor does the close.
+    s?.fire("message", { data: Buffer.from("d") });
+    s?.fire("message", { data: '{"t":"viewers","viewers":2}' });
+    s?.fire("message", { data: Buffer.from("e") });
+    s?.fire("close", { code: 1000, reason: "the session ended" });
+    expect(events.slice(-4).map((e) => e.kind)).toEqual(["bytes", "text", "bytes", "close"]);
+    timer.run();
+    expect(events.at(-1)?.kind).toBe("close");
+  });
+
+  it("closes the socket, not memory, when more waits than the bound", () => {
+    const { terminals, sockets, events, timer } = mainProcess();
+    terminals.open({ id: "view-0001", workItemId: ITEM, runId: RUN });
+    const s = sockets[0];
+    s?.fire("open");
+    const chunk = Buffer.alloc(64 * 1024, 120);
+    for (let i = 0; i <= OUTPUT_PENDING_MAX / chunk.byteLength; i++) s?.fire("message", { data: chunk });
+    expect(terminals.count).toBe(0);
+    expect(s?.closedWith).toBe(4000);
+    expect(events.at(-1)).toEqual({ id: "view-0001", kind: "close", ...FELL_BEHIND });
+    // Nothing more goes to the view for it.
+    s?.fire("message", { data: chunk });
+    timer.run();
+    expect(events.at(-1)?.kind).toBe("close");
+  });
+
+  it("is drawn once per frame in the view, and a hidden view's backlog closes it with Reconnect", async () => {
+    const { main, rpc, frame } = wired();
+    const ws = new RpcTerminalSocket(rpc, ITEM, RUN, "view-0001", frame.schedule);
+    const term = screen();
+    const statuses: TerminalStatus[] = [];
+    new TerminalClient(ws, term, (s) => statuses.push(s));
+    await tick();
+    const door = main.sockets[0];
+    door?.fire("open");
+    door?.fire("message", { data: JSON.stringify({ t: "hello", mode: "watch", viewers: 1, host: true }) });
+    door?.fire("message", { data: Buffer.from("one ") });
+    main.timer.run();
+    door?.fire("message", { data: Buffer.from("two") });
+    main.timer.run();
+    expect(term.writes).toEqual([]);
+    frame.run();
+    expect(term.writes).toEqual(["one two"]);
+
+    // No frames (a hidden window): the backlog is bounded, then the socket closes.
+    const big = Buffer.alloc(512 * 1024, 120);
+    for (let i = 0; i <= VIEW_PENDING_MAX / big.byteLength; i++) {
+      door?.fire("message", { data: big });
+      main.timer.run();
+    }
+    await tick();
+    expect(ws.readyState).toBe(3);
+    expect(statuses.at(-1)).toMatchObject({ phase: "closed" });
+    expect(door?.closedWith).not.toBeNull();
+    expect(main.terminals.count).toBe(0);
+    frame.run();
+    expect(term.writes).toEqual(["one two"]);
+  });
+});
+
 /** The RPC between the view and a main process whose door sockets are fakes. */
 function wired() {
   const main = mainProcess();
@@ -167,7 +300,7 @@ function wired() {
       return () => listeners.delete(l);
     },
   };
-  return { main, rpc };
+  return { main, rpc, frame: frames() };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -186,8 +319,8 @@ function screen() {
 
 describe("the view's terminal socket over the RPC", () => {
   it("lets the shared client draw the relay's output and send the owner's keys", async () => {
-    const { main, rpc } = wired();
-    const ws = new RpcTerminalSocket(rpc, ITEM, RUN, "view-0001");
+    const { main, rpc, frame } = wired();
+    const ws = new RpcTerminalSocket(rpc, ITEM, RUN, "view-0001", frame.schedule);
     const term = screen();
     const statuses: TerminalStatus[] = [];
     const client = new TerminalClient(ws, term, (s) => statuses.push(s));
@@ -200,6 +333,8 @@ describe("the view's terminal socket over the RPC", () => {
       data: JSON.stringify({ t: "hello", mode: "type", viewers: 1, host: true }),
     });
     door.fire("message", { data: new TextEncoder().encode("\x1b[32mready\x1b[0m").buffer });
+    main.timer.run();
+    frame.run();
     door.fire("message", { data: JSON.stringify({ t: "size", size: { cols: 100, rows: 30 } }) });
     expect(term.writes).toEqual(["\x1b[32mready\x1b[0m"]);
     expect(term.sizes).toEqual([[100, 30]]);
@@ -308,5 +443,41 @@ describe("Open terminal's rules", () => {
         0,
       ),
     ).toMatch(/Couldn't reach/);
+  });
+});
+
+describe("closing the terminal from the keyboard", () => {
+  const key = (k: string, mods: Partial<Record<"metaKey" | "ctrlKey" | "altKey" | "shiftKey", boolean>> = {}) => ({
+    key: k,
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    ...mods,
+  });
+  const at = (inTypingTerminal: boolean, overlayOpen = false) => ({ inTypingTerminal, overlayOpen });
+
+  it("Esc closes it, except in a session you type into, where Esc is the session's", () => {
+    expect(closesDock(key("Escape"), at(false))).toBe(true);
+    expect(closesDock(key("Escape"), at(true))).toBe(false);
+  });
+
+  it("⌘Esc always closes it, so there is a keyboard-only way out of a typing session", () => {
+    expect(closesDock(key("Escape", { metaKey: true }), at(true))).toBe(true);
+    expect(closesDock(key("Escape", { metaKey: true }), at(false))).toBe(true);
+    // Other chords and keys aren't it; ⌘W stays the tab's.
+    expect(closesDock(key("w", { metaKey: true }), at(true))).toBe(false);
+    expect(closesDock(key("Escape", { metaKey: true, shiftKey: true }), at(true))).toBe(false);
+    // A dialog or popover gets its own Esc.
+    expect(closesDock(key("Escape", { metaKey: true }), at(true, true))).toBe(false);
+  });
+
+  it("shows the chord next to Close", () => {
+    const src = readFileSync(
+      new URL("../src/mainview/components/terminal-panel.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(src).toContain("CLOSE_CHORD_LABEL");
+    expect(src).toContain('data-testid="terminal-close-chord"');
   });
 });

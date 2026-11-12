@@ -45,3 +45,21 @@ export function terminalOf(runs: WorkItemDetail["runs"], stage?: string): Termin
     ? { id: live.id, stage: live.stage, runNo: live.runNo, takeover: live.takeover }
     : null;
 }
+
+/** The chord that always closes the terminal, even while the keyboard is in a session you type into. */
+export const CLOSE_CHORD_LABEL = "⌘Esc";
+
+/**
+ * Whether a key press closes the terminal dock. Esc closes it, except in a terminal you can type into:
+ * there Esc is the session's (Claude Code's interrupt) and xterm takes Tab, so ⌘Esc is the
+ * keyboard-only way out. ⌘W stays the tab's (shortcuts.ts). A dialog or popover open: theirs.
+ */
+export function closesDock(
+  e: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean },
+  at: { inTypingTerminal: boolean; overlayOpen: boolean },
+): boolean {
+  if (e.key !== "Escape" || at.overlayOpen) return false;
+  if (e.ctrlKey || e.altKey || e.shiftKey) return false;
+  if (e.metaKey) return true;
+  return !at.inTypingTerminal;
+}

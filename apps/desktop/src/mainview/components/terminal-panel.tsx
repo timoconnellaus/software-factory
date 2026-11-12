@@ -18,7 +18,14 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { bun, onTerminal } from "../bridge.ts";
 import { op } from "../lib/op.ts";
-import { fallbackLine, stageLabel, type TerminalRun } from "../lib/terminal.ts";
+import { openExternal } from "../lib/external.tsx";
+import {
+  CLOSE_CHORD_LABEL,
+  closesDock,
+  fallbackLine,
+  stageLabel,
+  type TerminalRun,
+} from "../lib/terminal.ts";
 import { RpcTerminalSocket, type TerminalRpc } from "../lib/terminal-socket.ts";
 
 export type { TerminalRun };
@@ -174,12 +181,15 @@ export function TerminalPanel({
           variant="ghost"
           size="sm"
           onClick={onClose}
-          aria-label="Close the terminal (the session keeps running)"
-          title="Close the terminal (the session keeps running)"
+          aria-label={`Close the terminal (the session keeps running): Esc, or ${CLOSE_CHORD_LABEL} while typing`}
+          title={`Close the terminal (the session keeps running): Esc, or ${CLOSE_CHORD_LABEL} while typing`}
           data-testid="terminal-close"
         >
           <XIcon className="size-3.5" />
-          Close <Kbd className="bg-transparent">Esc</Kbd>
+          Close{" "}
+          <Kbd className="bg-transparent" data-testid="terminal-close-chord">
+            {mode === "type" ? CLOSE_CHORD_LABEL : "Esc"}
+          </Kbd>
         </Button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col p-2">
@@ -187,9 +197,11 @@ export function TerminalPanel({
           <div className="p-2 text-ink-muted text-xs">Opening the terminal…</div>
         ) : allowed ? (
           <WebTerminal
+            session={`${workItemId}/${run.id}`}
             connect={() => new RpcTerminalSocket(rpc, workItemId, run.id)}
             theme="system"
             autoFocus
+            openLink={openExternal}
             className="min-h-0 flex-1"
             screenClassName="min-h-0 flex-1"
             onStatus={onStatus}
@@ -230,7 +242,8 @@ function pageBox(): { left: number; right: number; top: number; bottom: number }
 /**
  * The terminal in place: over the lower part of the item's page, resizable by its top edge, Expand
  * to fill the window. Esc closes it (the session keeps running), except while the keyboard is in a
- * terminal you can type into: there Esc belongs to the session (Claude Code's interrupt).
+ * terminal you can type into: there Esc belongs to the session (Claude Code's interrupt), and ⌘Esc
+ * closes it (closesDock).
  */
 export function TerminalDock({
   workItemId,
@@ -264,10 +277,12 @@ export function TerminalDock({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (document.querySelector("[role=dialog], [data-radix-popper-content-wrapper]")) return;
       const target = e.target as Element | null;
       const inTerminal = !!target?.closest(".xterm") && !!dock.current?.contains(target);
-      if (inTerminal && typing.current) return;
+      const overlayOpen = !!document.querySelector(
+        "[role=dialog], [data-radix-popper-content-wrapper]",
+      );
+      if (!closesDock(e, { inTypingTerminal: inTerminal && typing.current, overlayOpen })) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       closeRef.current();

@@ -157,7 +157,10 @@ function openWindow(path?: string) {
     trafficLightOffset: { x: 5, y: 6 },
   });
   // A link that launched the app arrives before the view listens: send it once the page is up.
+  // A (re)load also means no view holds the open terminals' handles any more (a reload, or WebKit
+  // restarting its content process): close them, or each keeps an attach and a relay viewer slot.
   win.webview.on("dom-ready", () => {
+    terminals.closeAll();
     if (pendingPath) toView("navigate", { path: pendingPath });
     pendingPath = null;
   });

@@ -10,6 +10,7 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   INITIAL_STATUS,
+  linkTarget,
   statusText,
   TerminalClient,
   type TerminalStatus,
@@ -50,6 +51,7 @@ function prefersDark(theme: TerminalTheme): boolean {
 }
 
 export function WebTerminal({
+  session,
   connect,
   theme = "dark",
   autoFocus = false,
@@ -57,8 +59,14 @@ export function WebTerminal({
   screenClassName = "h-[420px]",
   footer,
   onStatus,
+  openLink,
 }: {
-  /** Opens the socket to the job's relay; called again on Reconnect. */
+  /**
+   * Which session this is (the work item and run). A new one drops the old socket and connects
+   * afresh: the Live tab's poll can move from an ended run to a new one under the same view.
+   */
+  session: string;
+  /** Opens the socket to the job's relay; called again on Reconnect and when `session` changes. */
   connect: () => ViewerSocket;
   /** `system` follows the light or dark appearance (the desktop); sf-app's Live tab stays dark. */
   theme?: TerminalTheme;
@@ -70,13 +78,18 @@ export function WebTerminal({
   /** More of the status row, after the status (the desktop's fallback link). */
   footer?: ReactNode;
   onStatus?: (status: TerminalStatus) => void;
+  /**
+   * Opens an http(s) link from the pane's output (an OSC 8 hyperlink): the desktop's external
+   * opener, a new tab on the website. Without it, links do nothing.
+   */
+  openLink?: (url: string) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<TerminalStatus>(INITIAL_STATUS);
   const [attempt, setAttempt] = useState(0);
   const [dark, setDark] = useState(() => prefersDark(theme));
-  const latest = useRef({ connect, onStatus, autoFocus });
-  latest.current = { connect, onStatus, autoFocus };
+  const latest = useRef({ connect, onStatus, autoFocus, openLink });
+  latest.current = { connect, onStatus, autoFocus, openLink };
 
   useEffect(() => {
     if (theme !== "system" || typeof matchMedia !== "function") return;
@@ -91,7 +104,7 @@ export function WebTerminal({
     if (termRef.current) termRef.current.options.theme = dark ? DARK : LIGHT;
   }, [dark]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` reconnects; the rest is read through `latest`.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `session` and `attempt` (re)connect; `connect` and the callbacks are read through `latest`.
   useEffect(() => {
     const el = box.current;
     if (!el) return;
@@ -115,6 +128,16 @@ export function WebTerminal({
         fontSize: 12,
         scrollback: 1_000,
         theme: prefersDark(theme) ? DARK : LIGHT,
+        // OSC 8 links: http(s) only, through the app's opener (linkTarget), never xterm's default
+        // confirm() and window.open. Off: OSC 52 (clipboard; it needs xterm's clipboard addon, which
+        // isn't loaded) and the window title (onTitleChange isn't listened to).
+        linkHandler: {
+          allowNonHttpProtocols: false,
+          activate: (_event, text) => {
+            const url = linkTarget(text);
+            if (url) latest.current.openLink?.(url);
+          },
+        },
       });
       termRef.current = term;
       const fit = new FitAddon();
@@ -157,7 +180,7 @@ export function WebTerminal({
       disposed = true;
       cleanup();
     };
-  }, [attempt, theme]);
+  }, [session, attempt, theme]);
 
   const over = status.phase === "ended" || status.phase === "closed";
   return (
