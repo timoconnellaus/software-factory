@@ -563,10 +563,60 @@ const SETUP: OpOutput<"setup.status"> = {
       manageUrl: "https://github.com/settings/installations",
     },
   ],
-  projects: [{ ...(PROJECTS[0] as (typeof PROJECTS)[number]), protection: null }],
+  // The check's real result while the ruleset isn't imported (the protect step above).
+  projects: [
+    {
+      ...(PROJECTS[0] as (typeof PROJECTS)[number]),
+      protection: {
+        state: "red",
+        branch: "main",
+        problems: ["`factory/verify` is not a required check on main"],
+        warnings: [],
+        files: [],
+        rulesetsUrl: "https://github.com/example/software-factory/settings/rules",
+        viewerIsRepoAdmin: true,
+        adminMessage: "",
+      },
+    },
+  ],
   missingEvents: [],
   runners: { total: 1, online: 1 },
 };
+
+/**
+ * Rows of core_cli_tokens as the engine has them: each desktop app's token (kind "desktop", made by
+ * `desktop.authExchange`) beside a CLI token. `cliToken.list` answers only the CLI ones.
+ */
+export const TOKENS: (OpOutput<"cliToken.list">["tokens"][number] & { kind: "cli" | "desktop" })[] =
+  [
+    {
+      id: "clt_desktop_m5",
+      name: "M5",
+      kind: "desktop",
+      scope: "write",
+      createdAt: ago(60 * 24 * 9),
+      expiresAt: new Date(now + 21 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+    {
+      id: "clt_desktop_mini",
+      name: "Mac mini",
+      kind: "desktop",
+      scope: "write",
+      createdAt: ago(60 * 24 * 20),
+      expiresAt: new Date(now + 10 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+    {
+      id: "clt_1",
+      name: "M5 terminal",
+      kind: "cli",
+      scope: "write",
+      createdAt: ago(60 * 24 * 4),
+      expiresAt: new Date(now + 26 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+  ];
 
 type PlanningQ = OpOutput<"planning.get">["questions"][number];
 
@@ -865,6 +915,38 @@ export const ANSWERS: Answers = {
             },
           ]
         : [],
+  }),
+  "desktopDevice.list": () => ({
+    devices: [
+      {
+        id: "dev_m5",
+        name: "M5",
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 9),
+        lastSeenAt: ago(0),
+        revokedAt: null,
+      },
+      {
+        id: "dsk_mini",
+        name: "Mac mini",
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 20),
+        lastSeenAt: ago(60 * 24 * 2),
+        revokedAt: null,
+      },
+      {
+        id: "dsk_old",
+        name: "Old laptop",
+        keyStorage: "software",
+        createdAt: ago(60 * 24 * 60),
+        lastSeenAt: ago(60 * 24 * 40),
+        revokedAt: ago(60 * 24 * 30),
+      },
+    ],
+  }),
+  // The door lists only kind "cli" (a desktop's token is its device's), as the engine does.
+  "cliToken.list": () => ({
+    tokens: TOKENS.filter((t) => t.kind === "cli").map(({ kind: _, ...t }) => t),
   }),
   "mergeQueue.list": (input) => ({
     entries:

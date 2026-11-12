@@ -18,6 +18,8 @@ export interface RenderOptions {
   answers?: Partial<Record<OpName, Answer>>;
   /** Query keys (prefixes) left pending after the loaders ran: the page renders while they load. */
   pending?: unknown[][];
+  /** The desktop's own session, changed (e.g. no device id yet). */
+  session?: Partial<typeof SESSION>;
 }
 
 function answer(op: string, input: unknown, answers: RenderOptions["answers"]): CallResult {
@@ -44,7 +46,7 @@ export async function renderPage(path: string, options: RenderOptions = {}): Pro
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, retryOnMount: false } },
   });
-  queryClient.setQueryData(["session"], SESSION);
+  queryClient.setQueryData(["session"], { ...SESSION, ...options.session });
   queryClient.setQueryData(["update"], { required: false });
   const router = createRouter({
     routeTree,
@@ -60,7 +62,14 @@ export async function renderPage(path: string, options: RenderOptions = {}): Pro
   );
 }
 
-const SESSION = {
+const SESSION: {
+  signedIn: boolean;
+  login: string;
+  deviceId: string | null;
+  keyStorage: string;
+  signingIn: boolean;
+  error: string | null;
+} = {
   signedIn: true,
   login: "owner",
   deviceId: "dev_m5",
@@ -72,7 +81,7 @@ const SESSION = {
 /** The page's text, tags stripped and spaces collapsed. */
 export const textOf = (html: string) =>
   html
-    .replace(/<!-- -->/g, "")
+    .replace(/<!-- -->|<wbr\/?>/g, "")
     .replace(/<[^>]+>/g, " ")
     .replaceAll("&#x27;", "'")
     .replaceAll("&quot;", '"')

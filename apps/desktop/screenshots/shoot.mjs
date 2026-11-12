@@ -60,6 +60,17 @@ export const SCREENS = [
   { name: "factory-policy", path: "/factory/policy", design: "FactoryPolicy.html" },
   { name: "factory-agents", path: "/factory/agents", design: "FactoryAgents.html" },
   { name: "factory-workflows", path: "/factory/workflows", design: "FactoryWorkflow.html" },
+  {
+    name: "settings-repositories",
+    path: "/settings/repositories",
+    design: "SettingsProjects.html",
+  },
+  {
+    name: "settings-connections",
+    path: "/settings/connections",
+    design: "SettingsConnections.html",
+  },
+  { name: "settings-devices", path: "/settings/devices", design: "SettingsDevices.html" },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
   { name: "update-required-ready", path: "/", query: "?update=ready", design: "Main.html" },

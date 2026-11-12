@@ -322,7 +322,7 @@ export const cliDenyDevice = defineOperation({
 export const cliTokenList = defineOperation({
   name: "cliToken.list",
   description:
-    "Your CLI tokens (ADR 0340): id, name, scope, when made and when they expire or were revoked. Never the tokens themselves.",
+    "Your CLI tokens (ADR 0340): id, name, scope, when made and when they expire or were revoked. Never the tokens themselves. A desktop app's token isn't one: it belongs to its device (`desktopDevice.list`).",
   risk: "read",
   actors: ["human"],
   permission: "signed-in",
@@ -344,6 +344,9 @@ export const cliTokenList = defineOperation({
       .selectFrom("core_cli_tokens")
       .select(["id", "name", "scope", "created_at", "expires_at", "revoked_at"])
       .where("user_id", "=", ctx.actor.id)
+      // A desktop's token is its device's (ADR 0391): listed and revoked as the device, never here,
+      // so revoking a "CLI token" can't sign a Mac out.
+      .where("kind", "=", "cli")
       .orderBy("created_at", "desc")
       .limit(100)
       .execute();
@@ -363,7 +366,7 @@ export const cliTokenList = defineOperation({
 export const cliTokenRevoke = defineOperation({
   name: "cliToken.revoke",
   description:
-    "Revoke one of your CLI tokens (`sf logout`, or a token you no longer trust). It stops working at once. Only your own tokens.",
+    "Revoke one of your CLI tokens (`sf logout`, or a token you no longer trust). It stops working at once. Only your own tokens, and only CLI ones: a desktop app's token is revoked with its device (`desktopDevice.revoke`).",
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
@@ -372,11 +375,16 @@ export const cliTokenRevoke = defineOperation({
   async handler(input, ctx) {
     const row = await ctx.db
       .selectFrom("core_cli_tokens")
-      .select(["id", "user_id", "revoked_at"])
+      .select(["id", "user_id", "kind", "revoked_at"])
       .where("id", "=", input.tokenId)
       .executeTakeFirst();
     if (!row || row.user_id !== ctx.actor.id)
       throw new OperationError("not_found", "no such token");
+    if (row.kind !== "cli")
+      throw new OperationError(
+        "invalid_input",
+        "That token belongs to a desktop app. Revoke the device instead (desktopDevice.revoke).",
+      );
     if (row.revoked_at) return { revoked: false };
     ctx.write(
       ctx.db
