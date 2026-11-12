@@ -204,7 +204,9 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
       queued.head_sha,
     );
     expect(JSON.parse(String(carried?.sections)).checksRanOn).toBe(queued.approved_sha);
-    const run = await waitFor("factory/verify on the new head", () => verifyRun(w, queued.head_sha));
+    const run = await waitFor("factory/verify on the new head", () =>
+      verifyRun(w, queued.head_sha),
+    );
     expect(String(run.output?.summary)).toMatch(
       new RegExp(`tests: passed .* ran on ${queued.approved_sha.slice(0, 7)}, not on this commit`),
     );

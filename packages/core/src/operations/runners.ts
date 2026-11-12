@@ -1266,7 +1266,7 @@ export const runHandBack = defineOperation({
         checks.filter((c) => c.headSha !== head).map((c) => c.headSha),
       )) {
         const rel = await ctx.services.github.compareCommits(repo, earlier, head).catch(() => null);
-        if (!rel || rel.behindBy !== 0) {
+        if (rel?.behindBy !== 0) {
           return fail(
             `check results on ${earlier.slice(0, 7)}, which isn't an ancestor of ${head.slice(0, 7)}`,
           );
