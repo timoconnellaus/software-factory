@@ -20,7 +20,9 @@ import {
   cancelWorkItem,
   createWorkItem,
   projectId,
+  repositoryId,
   requireProject,
+  requireRepository,
   requireWorkItem,
   STAGES,
   setItemStatus,
@@ -87,6 +89,8 @@ export const workItemCreate = defineOperation({
   input: z
     .object({
       projectId,
+      /** The repository it uses (ADR 0490): needed only when the project has several. */
+      repositoryId: repositoryId.optional(),
       /** Defaults to the first line of the body. */
       title: z.string().trim().min(1).max(200).optional(),
       body: z.string().max(50_000).default(""),
@@ -111,9 +115,11 @@ export const workItemCreate = defineOperation({
     if (!ctx.scope.policy) {
       throw new OperationError(
         "unavailable",
-        `project ${project.name} has no valid .factory/policy.json on ${project.default_branch} (${ctx.scope.policyError}); agents can't work on it`,
+        `project ${project.name} has no valid config (${ctx.scope.policyError}); agents can't work on it`,
       );
     }
+    // Creating an item starts its pipeline, which builds code: it needs a repository (ADR 0490).
+    const repository = requireRepository(ctx);
     const requester = ctx.actor.type === "human" ? ctx.actor.id : input.requesterUserId;
     if (!requester) throw new OperationError("invalid_input", "intake must name the requester");
     const eventId = input.eventId ?? crypto.randomUUID();
@@ -184,6 +190,7 @@ export const workItemCreate = defineOperation({
 
     const created = createWorkItem(ctx, {
       project,
+      repositoryId: repository.id,
       title,
       body: input.body,
       source: input.source,
@@ -427,7 +434,7 @@ export const workItemGet = defineOperation({
           .orderBy("created_at", "desc")
           .limit(1),
         // Where the item stands in the merge queue (ADR 0330); empty outside the merge stage.
-        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : ""),
+        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : "", w.repository_id),
       ]),
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
