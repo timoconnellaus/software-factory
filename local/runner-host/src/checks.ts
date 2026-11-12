@@ -79,6 +79,9 @@ export async function runChecks(
       }
     }
     const notRun = result.notRun?.slice(0, 300);
+    // A runner limit it hit (memory, disk), as the host saw it from outside: a failure like any
+    // other, with the limit said after the check's own output (so the tail always keeps it).
+    const limit = notRun ? undefined : result.limit?.slice(0, 300);
     out.push({
       name: c.name,
       command: c.run,
@@ -87,13 +90,18 @@ export async function runChecks(
       durationMs: Date.now() - started,
       logTail: logTail(
         redactSecrets(
-          notRun ? `not run: ${notRun}\n${result.output}`.trim() : result.output,
+          notRun
+            ? `not run: ${notRun}\n${result.output}`.trim()
+            : limit
+              ? `${result.output.trimEnd()}\n${limit}`.trim()
+              : result.output,
           secrets,
         ),
       ),
       headSha,
       round,
       ...(notRun ? { notRun } : result.isolation ? { isolation: result.isolation } : {}),
+      ...(limit ? { limit } : {}),
     });
   }
   return out;
@@ -130,6 +138,8 @@ export interface CheckLoopOptions {
   maxTreeBytes?: number;
   /** A tree's size on disk (default `du -sk`; tests inject it). */
   treeBytes?: (dir: string) => Promise<number>;
+  /** How often a running check's dir is measured against `maxTreeBytes` (default 15 s). */
+  treeWatchMs?: number;
 }
 
 export interface CheckLoopResult {
@@ -213,7 +223,12 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
               ]
             : await runChecks(
                 [c],
-                options.exec ? options.exec(tree) : null,
+                options.exec
+                  ? boundWhileRunning(options.exec(tree), at, options.maxTreeBytes, {
+                      size: options.treeBytes ?? duBytes,
+                      everyMs: options.treeWatchMs ?? TREE_WATCH_MS,
+                    })
+                  : null,
                 head,
                 round,
                 signal,
@@ -229,7 +244,10 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
     results.push(...ran);
     const failed = ran.filter((c) => !checkPassed(c));
     const summary = `checks on ${head.slice(0, 7)}${round ? ` (fix round ${round})` : ""}: ${ran
-      .map((c) => `${c.name} ${checkPassed(c) ? "passed" : c.notRun ? "not run" : "failed"}`)
+      .map(
+        (c) =>
+          `${c.name} ${checkPassed(c) ? "passed" : c.notRun ? "not run" : c.limit ? `failed: ${c.limit}` : "failed"}`,
+      )
       .join(", ")}`;
     notes.push(summary);
     options.log?.(summary);
@@ -239,6 +257,13 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
     // sandbox that couldn't start) goes to a person, never to a fix round it can't win.
     if (failed.some((c) => c.notRun)) {
       notes.push("a check was not run on this runner: a person decides");
+      return end;
+    }
+    // A check that failed on a runner limit (seen from outside it: never from its output) failed,
+    // and the code under check may be why; but a fix round can't raise the limit, so a person
+    // decides: raise it in the runner's config, or have the code fixed.
+    if (failed.some((c) => c.limit)) {
+      notes.push("a check failed on a runner limit: a person decides, not a fix round");
       return end;
     }
     if (round >= checks.fixRounds) {
@@ -262,10 +287,75 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
 
 const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
 
-/** A tree's size on disk, from `du -sk` (symlinks not followed). */
+/** How often a running check's dir is measured against the disk bound. */
+export const TREE_WATCH_MS = 15_000;
+
+/**
+ * The disk bound while a check runs (fifth review follow-up): its dir (tree, home, temp, store) is
+ * measured every `everyMs` by the host, and a check whose dir grows past `bound` is stopped and
+ * reported failed on that limit, so a person decides, never a fix round. Without it a check could fill the
+ * runner's disk before the bound was measured on the copy to the next check. No bound: as is.
+ */
+export function boundWhileRunning(
+  exec: Exec,
+  dir: string,
+  bound: number | undefined,
+  watch: { size: (dir: string) => Promise<number>; everyMs: number },
+): Exec {
+  if (!bound) return exec;
+  return async (command, signal) => {
+    const stop = new AbortController();
+    const onAbort = () => stop.abort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    let over: number | null = null;
+    let measuring = false;
+    const timer = setInterval(() => {
+      if (measuring || over !== null) return;
+      measuring = true;
+      void watch
+        .size(dir)
+        .then((bytes) => {
+          if (bytes > bound && over === null) {
+            over = bytes;
+            stop.abort();
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          measuring = false;
+        });
+    }, watch.everyMs);
+    try {
+      const r = await exec(command, stop.signal);
+      if (over === null) return r;
+      return {
+        ...r,
+        exitCode: null,
+        timedOut: false,
+        limit: `the check hit the runner's disk limit (${gb(bound)} GB, runner.json checks.maxTreeGb; its files reached ${gb(over)} GB). The code under check may be the cause; raise the limit in the runner's config or fix the code`,
+      };
+    } finally {
+      clearInterval(timer);
+      signal.removeEventListener("abort", onAbort);
+    }
+  };
+}
+
+/**
+ * A tree's size on disk, from `du -sk` (symlinks not followed). A file that went away mid-walk, or
+ * one it can't read, makes `du` exit 1 with the total still printed: that total counts.
+ */
 export async function duBytes(dir: string): Promise<number> {
-  const { stdout } = await execFileP("du", ["-sk", dir], { maxBuffer: 1024 * 1024 });
-  return Number.parseInt(stdout, 10) * 1024;
+  const stdout = await execFileP("du", ["-sk", dir], { maxBuffer: 1024 * 1024 }).then(
+    (r) => r.stdout,
+    (err: { stdout?: string }) => {
+      if (!err.stdout) throw err;
+      return err.stdout;
+    },
+  );
+  const kb = Number.parseInt(stdout.trim().split("\n").at(-1) ?? "", 10);
+  if (!Number.isFinite(kb)) throw new Error(`du gave no size for ${dir}`);
+  return kb * 1024;
 }
 
 /**

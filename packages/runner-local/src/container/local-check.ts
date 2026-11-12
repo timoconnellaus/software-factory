@@ -28,7 +28,7 @@ import { execInCheckContainer } from "./check-exec.ts";
 import { proxyEnv } from "./egress.ts";
 import { ensureImage } from "./image.ts";
 import { type ContainerRuntime, type ContainerSpec, dockerRuntime } from "./runtime.ts";
-import { JOB_LABEL, PROXY_ALIAS, proxySpec, ROLE_LABEL } from "./spec.ts";
+import { factoryLabels, JOB_LABEL, PROXY_ALIAS, proxySpec } from "./spec.ts";
 
 /** A local check container's limits unless the runner's config says otherwise (fifth review). */
 export const CHECK_LIMITS = { cpus: 2, memory: "4g", tmpSize: "1g" } as const;
@@ -37,6 +37,8 @@ export interface LocalCheckOptions {
   /** The runtime (default: Docker over its CLI). */
   runtime?: ContainerRuntime;
   exec?: Exec;
+  /** This runner's id, on every container and network a check starts: it reaps only its own. */
+  runnerId?: string;
   /** `uid:gid` the check runs as (default: this process's, so its files are the host user's). */
   user?: string;
   /** More egress hosts (tests: a local registry). */
@@ -104,13 +106,14 @@ export function localCheckContainer(
     try {
       await runtime.createNetwork(network, {
         internal: true,
-        labels: { [JOB_LABEL]: job.jobId, [ROLE_LABEL]: "check" },
+        labels: factoryLabels(job.jobId, "check", options.runnerId),
       });
       await runtime.start(
         proxySpec({
           name: proxyName,
           image,
           jobId: job.jobId,
+          ...(options.runnerId ? { runnerId: options.runnerId } : {}),
           allow,
           ...(options.proxyAddHosts ? { addHosts: options.proxyAddHosts } : {}),
           ...(options.proxyPrivateOk ? { privateOk: options.proxyPrivateOk } : {}),
@@ -140,7 +143,7 @@ export function localCheckContainer(
         mounts: [],
         tmpfs: { "/tmp": `rw,exec,nosuid,size=${options.tmpSize ?? CHECK_LIMITS.tmpSize}` },
         network,
-        labels: { [JOB_LABEL]: job.jobId, [ROLE_LABEL]: "check" },
+        labels: factoryLabels(job.jobId, "check", options.runnerId),
         pidsLimit: options.pidsLimit ?? 4096,
         cpus: options.cpus ?? CHECK_LIMITS.cpus,
         memory: options.memory ?? CHECK_LIMITS.memory,

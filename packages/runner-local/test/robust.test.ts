@@ -271,6 +271,46 @@ describe("tmux answers", () => {
     expect(n).toBe(1);
   });
 
+  it("starts a session again when it reached a server that was exiting, and never after anything else", async () => {
+    // The last session went, and the server was exiting with it when the next start reached it.
+    let n = 0;
+    const t = tmuxCli({
+      exec: async () => (++n === 1 ? r(1, "server exited unexpectedly") : r(0)),
+      attempts: 4,
+      backoffMs: 1,
+    });
+    await t.newSession({ name: "a", cwd: "/", command: "true" });
+    expect(n).toBe(2);
+    // A timeout, or any other failure, may have started it: never retried.
+    for (const failure of [r(1, "", true), r(1, "duplicate session: a")]) {
+      let calls = 0;
+      const once = tmuxCli({
+        exec: async () => {
+          calls++;
+          return failure;
+        },
+        attempts: 4,
+        backoffMs: 1,
+      });
+      await expect(once.newSession({ name: "a", cwd: "/", command: "true" })).rejects.toThrow();
+      expect(calls).toBe(1);
+    }
+    // A server that keeps exiting: given up after `attempts`, as unavailable.
+    let tries = 0;
+    const dying = tmuxCli({
+      exec: async () => {
+        tries++;
+        return r(1, "server exited unexpectedly");
+      },
+      attempts: 3,
+      backoffMs: 1,
+    });
+    await expect(dying.newSession({ name: "a", cwd: "/", command: "true" })).rejects.toBeInstanceOf(
+      TmuxUnavailable,
+    );
+    expect(tries).toBe(3);
+  });
+
   it("every tmux call has a timeout", async () => {
     const seen: (number | undefined)[] = [];
     const t = tmuxCli({
