@@ -53,7 +53,7 @@ export function recordingEnv(env: Env, seen: Recorded[]): Env {
 function tableAliases(sql: string): Map<string, string> {
   const names = new Map<string, string>();
   const re =
-    /\b(?:from|join|update|into)\s+"?(core_\w+)"?(?:\s+(?:as\s+)?"?(?!(?:on|where|join|left|inner|cross|set|values|group|order|limit|using|natural)\b)(\w+)"?)?/gi;
+    /\b(?:from|join|update|into)\s+"?(core_\w+)"?(?:\s+(?:as\s+)?"?(?!(?:on|where|join|left|inner|cross|set|values|group|order|limit|using|natural|indexed)\b)(\w+)"?)?/gi;
   for (const m of sql.matchAll(re)) {
     const table = m[1] as string;
     names.set(table, table);
@@ -75,10 +75,6 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   {
     match: /SELECT w\.project_id, MIN\(w\.released_at\) AS oldest/,
     why: "sorts one row per project with queued work (core_work_items_status_idx)",
-  },
-  {
-    match: /from "core_jobs" where "status" = \? order by/,
-    why: "queued jobs only (core_jobs_status_idx): the queue, not the history",
   },
   {
     match: /from "core_pending_actions".*"core_pending_actions"\."status" = \?/,

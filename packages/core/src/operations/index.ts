@@ -1,4 +1,5 @@
 export * from "./adjudicator.ts";
+export * from "./artifacts.ts";
 export * from "./attach.ts";
 export * from "./attachments.ts";
 export * from "./backlog.ts";
@@ -20,8 +21,10 @@ export * from "./planning.ts";
 export * from "./projects.ts";
 export * from "./protection.ts";
 export * from "./questions.ts";
+export * from "./reconcile.ts";
 export * from "./runners.ts";
 export * from "./specs.ts";
 export * from "./terminal.ts";
 export * from "./verify.ts";
 export * from "./work-items.ts";
+export * from "./workflows.ts";

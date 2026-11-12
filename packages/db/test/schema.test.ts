@@ -33,6 +33,28 @@ describe("core schema", () => {
     expect(highest).toBe(SCHEMA_VERSION);
   });
 
+  it("allows one version number per plan: core_specs' own UNIQUE, from migration 0020 (review of #85)", async () => {
+    const { results } = await env.DB.prepare("PRAGMA index_list('core_specs')").all<{
+      name: string;
+      unique: number;
+    }>();
+    const unique = await Promise.all(
+      results
+        .filter((r) => r.unique === 1)
+        .map(async (r) =>
+          (
+            await env.DB.prepare(`PRAGMA index_info('${r.name}')`).all<{ name: string }>()
+          ).results.map((c) => c.name),
+        ),
+    );
+    expect(unique).toContainEqual(["work_item_id", "version"]);
+    // No migration rebuilt the table without it.
+    const rebuilt = env.TEST_MIGRATIONS.filter((m) =>
+      m.queries.some((q) => /CREATE TABLE core_specs\b|RENAME TO core_specs\b/i.test(q)),
+    ).map((m) => m.name);
+    expect(rebuilt).toEqual(["0020_work.sql"]);
+  });
+
   it("keeps the audit journal append-only", async () => {
     await env.DB.prepare(
       `INSERT INTO core_audit (id, at, operation, risk, actor_type, actor_id, origin, decision, outcome, input)

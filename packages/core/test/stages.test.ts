@@ -365,10 +365,10 @@ describe("each type classifies its own settings changes", () => {
       impact("checks", {}, { requiredEvidence: ["ci", "criteria", "reviewer", "tests-intact"] }),
     ).toEqual(["tightens"]);
   });
-  it("merging around the queue loosens; retries and instructions are neutral", () => {
+  it("merging around the queue loosens; retries are neutral; instructions loosen", () => {
     expect(impact("publish", {}, { via: "direct" })).toEqual(["loosens"]);
     expect(impact("build", {}, { retryLimit: 4 })).toEqual(["neutral"]);
-    expect(impact("agent-check", {}, { instructions: "Look at auth." })).toEqual(["neutral"]);
+    expect(impact("agent-check", {}, { instructions: "Look at auth." })).toEqual(["loosens"]);
   });
 });
 

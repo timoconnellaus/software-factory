@@ -1,11 +1,12 @@
 // The living spec (CONTEXT.md): drafted by the spec stage's run, gated by `spec.accept` (risk
 // `plan`, always reviewed for agents), committed to the work item's branch on approval.
 import { parseJson } from "@software-factory/db";
-import { specResultSchema } from "@software-factory/runner-contract";
+import { droppedEdits, specResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation } from "../operation.ts";
+import { guardCurrentSpec, openSession, standingEdits } from "../planning.ts";
 import { repoRef, requireRepository, requireWorkItem, workItemId } from "./shared.ts";
 
 export const specPropose = defineOperation({
@@ -19,6 +20,22 @@ export const specPropose = defineOperation({
   output: z.object({ specId: z.string(), version: z.number() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
+    // While a planning session holds the plan, only it writes the plan (spec.revise), and a
+    // person's standing edits stay word for word (review of #85, round 2).
+    if (await openSession(ctx, w.id)) {
+      throw new OperationError(
+        "conflict",
+        "a planning session is writing this plan: it revises it with spec.revise",
+      );
+    }
+    const dropped = droppedEdits(input.spec.specMd, await standingEdits(ctx, w.id));
+    if (dropped.length) {
+      throw new OperationError(
+        "conflict",
+        "this spec doesn't keep a person's edits to the plan word for word",
+        { editIds: dropped.map((e) => e.id) },
+      );
+    }
     const latest = await ctx.db
       .selectFrom("core_specs")
       .select((eb) => eb.fn.max("version").as("v"))
@@ -33,6 +50,7 @@ export const specPropose = defineOperation({
         .where("work_item_id", "=", w.id)
         .where("status", "=", "draft"),
     );
+    guardCurrentSpec(ctx, w, "the plan is still the version this spec was written on");
     ctx.write(
       ctx.db.insertInto("core_specs").values({
         id: specId,
@@ -46,12 +64,19 @@ export const specPropose = defineOperation({
         created_at: ctx.now,
       }),
     );
+    // Guarded: the plan is still the version this was written on.
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
         .set({ current_spec_id: specId, updated_at: ctx.now })
-        .where("id", "=", w.id),
+        .where("id", "=", w.id)
+        .where((eb) =>
+          w.current_spec_id === null
+            ? eb("current_spec_id", "is", null)
+            : eb("current_spec_id", "=", w.current_spec_id),
+        ),
     );
+    ctx.guardChanged("the plan is still the version this spec was written on");
     ctx.change({
       entity: "spec",
       id: specId,

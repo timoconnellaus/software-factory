@@ -843,6 +843,14 @@ function Details({ detail }: { detail: WorkItemDetail }) {
         )}
         <Row label="Started">{ago(item.createdAt)}</Row>
         {item.statusReason && <Row label="Now">{item.statusReason}</Row>}
+        {item.readinessHint && (
+          // The readiness pre-check's hint (spec 23): advice for the person, never a block.
+          <Row label="Readiness">
+            <span className="text-muted-foreground" data-testid="readiness-hint">
+              {item.readinessHint}
+            </span>
+          </Row>
+        )}
       </Rows>
     </Panel>
   );

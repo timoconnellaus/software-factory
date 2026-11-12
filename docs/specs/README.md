@@ -52,6 +52,7 @@ and the factory's own planning stage writes specs in this same format.
 | [39](39-runner-host-readopts-live-jobs.md) | The runner host re-adopts its live jobs after a restart, so an update needs no idle moment (spec only) | 30, 38 |
 | [40](40-desktop-app.md) | The desktop app (Electrobun): the client door, desktop devices with Touch ID presence proofs, `apps/desktop`, the website shrinks to auth | 07, 08 |
 | [43](43-runners-under-load.md) | Runners under load: no orphans (jobs stopped from the process table), tmux errors aren't "gone", back off claiming under load, run branches marked, a steer mid-turn isn't dropped; restoring attempts after a runner incident (specified, not built) | 30, 35 |
+| [44](44-durable-objects-never-held-awake.md) | Durable Objects are never held awake: the held steer, planning and terminal waits poll in the Worker (A), a hibernatable line per job pushes to `job-line` runners (B), Planning tabs on the ClientHub socket (C) (spec only) | 31, 35, 26, 38, 60 |
 | [60](60-mobile-app.md) | The phone app (Android first, Flutter): phone devices with attested Keystore keys and fingerprint proofs, pairing by QR or GitHub, push through FCM, policy approval on the phone, `apps/mobile`, a build plan in small PRs | 40, 09, 26, 50 |
 | [41](41-desktop-shell-and-look.md) | The desktop shell and look: slice 1 of the approved UI design (toolbar, org rail, sidebar, nested lists, status bar, tokens), the existing screens restyled; later slices listed | 40 |
 | [42](42-desktop-terminal.md) | Open terminal opens the session's terminal in the desktop app: the web terminal through the client door, the shared xterm.js view, in place in the page | 35, 40, 41 |
@@ -81,6 +82,7 @@ Mockups for every R1 screen are in [`.kim/mockups/`](../../.kim/mockups/); the d
 ## Planning
 Specs 20–25 make planning work the way kim does ([ADR 0300](../adr/0300-planning-is-a-live-session-on-a-runner.md), plan in [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)). Build them in order: 20 → 21 → 22, then 23; 24 and 25 can run alongside after 20 and 04.
 [Spec 26](26-planning-loop-to-kim.md) fixes what 20 built weaker than kim and adds the design's steering; it comes before 21 ([audit](../reviews/2026-11-12-planning-against-kim.md)).
+[Spec 27](27-planning-edits-and-comments.md) lets people edit the plan and comment on its parts; it also comes before 21.
 
 ## Workflows from stage types
 [Spec 52](52-workflows-from-stage-types.md) is a design for later: workflows built from built-in

@@ -90,7 +90,9 @@ describe("capture and release (ADR 0491)", () => {
     expect(intake.code).toBe("denied");
 
     const open = await world({ ...POLICY, release: { agents: true } });
-    const theirs = await create(open, "Agent may");
+    const theirs = await create(open, "Agent may", {
+      body: "Agents may release work. When the config allows it, an agent's release should queue the item.",
+    });
     const done = await ok<{ status: string }>(
       "workItem.release",
       { workItemId: theirs.workItemId },
@@ -98,6 +100,14 @@ describe("capture and release (ADR 0491)", () => {
     );
     expect(done.status).toBe("queued");
     expect(await statusOf(theirs.workItemId)).toBe("running");
+    // A thin request an agent releases is parked, not queued (spec 23): no person released it.
+    const thin = await create(open, "Agent thin");
+    const parked = await ok<{ status: string; needsInfo?: unknown }>(
+      "workItem.release",
+      { workItemId: thin.workItemId },
+      FOREMAN,
+    );
+    expect(parked).toMatchObject({ status: "backlog", needsInfo: expect.any(Object) });
   });
 
   it("treats letting agents release as a loosening, a person's change", () => {

@@ -20,6 +20,24 @@ export type Condition = z.infer<typeof conditionSchema>;
 /** Standing text appended to an agent's or a person's prompt. Never a code-owned prompt (F10). */
 export const instructionsSchema = z.string().max(4_000).default("");
 
+/**
+ * What a judging stage is told (an agent check's or a decision's instructions). Free text can't be
+ * shown to only add requirements: an appended "pass everything" overrides what came before. So any
+ * change loosens, a person decides it.
+ */
+export function instructionsImpact(path: string, before: string, after: string): ImpactChange[] {
+  if (before === after) return [];
+  return [
+    {
+      path,
+      class: "loosens",
+      summary: after
+        ? "Changes what the judge is told: it may now pass what it sent back."
+        : "Removes what the judge was told.",
+    },
+  ];
+}
+
 export function deciderImpact(path: string, before: Decider, after: Decider): ImpactChange[] {
   const change = deciderChange(before, after);
   if (change === "same") return [];
