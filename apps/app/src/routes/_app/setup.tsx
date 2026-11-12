@@ -3,6 +3,9 @@
 // Nothing here asks for an id the factory can fetch (incident 2026-11-11-bootstrap): GitHub's install
 // flow brings the installation back, the repo is picked from what the App can reach, the policy
 // syncs itself, and a runner logs in with a code.
+
+import { ago } from "@software-factory/client/format";
+import { LOGIN_COMMAND, pairCommand } from "@software-factory/client/runner-pairing";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import {
@@ -20,12 +23,10 @@ import { ChevronRightIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import { type RunnerAccounts, RunnerAccountsView } from "#/components/runner-accounts";
-import { ago } from "#/lib/format";
 import { op, submitKey } from "#/lib/op";
 import { OpError, type SetupStatus } from "#/lib/ops";
 import { reposQuery, runnersQuery, setupStatusQuery } from "#/lib/queries";
 import { rulesetDownloadPath } from "#/lib/ruleset";
-import { LOGIN_COMMAND, pairCommand } from "#/lib/runner-pairing";
 import { useSession } from "#/lib/session";
 
 interface SetupSearch {

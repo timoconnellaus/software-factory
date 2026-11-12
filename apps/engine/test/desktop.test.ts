@@ -377,6 +377,47 @@ describe("the desktop app's client door (/client/v1)", () => {
     ws.close();
   });
 
+  it("carries attachment bytes as { $bytes } both ways (spec 40 M3)", async () => {
+    const w = await world();
+    const { token } = await signIn(w);
+    const workItemId = await newItem(w, token);
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const b64 = btoa(String.fromCharCode(...png));
+    const added = await callOp(token, "workItem.attachment.add", {
+      workItemId,
+      filename: "shot.png",
+      contentType: "image/png",
+      bytes: { $bytes: b64 },
+    });
+    expect(added.status).toBe(200);
+    const { result } = await json<{ result: { attachment: { id: string; sizeBytes: number } } }>(
+      added,
+    );
+    expect(result.attachment.sizeBytes).toBe(png.length);
+    const got = await json<{ result: { bytes: { $bytes: string } } }>(
+      await callOp(token, "workItem.attachment.get", { attachmentId: result.attachment.id }),
+    );
+    expect(got.result.bytes).toEqual({ $bytes: b64 });
+    // In a batch too, and bytes that aren't base64 are refused.
+    const batch = await json<{ results: { ok: boolean; result?: { bytes: unknown } }[] }>(
+      await post(
+        "batch",
+        {
+          calls: [{ op: "workItem.attachment.get", input: { attachmentId: result.attachment.id } }],
+        },
+        token,
+      ),
+    );
+    expect(batch.results[0]?.result?.bytes).toEqual({ $bytes: b64 });
+    const bad = await callOp(token, "workItem.attachment.add", {
+      workItemId,
+      filename: "x.png",
+      contentType: "image/png",
+      bytes: { $bytes: "not base64!" },
+    });
+    expect(bad.status).toBe(400);
+  });
+
   it("caps waiting sign-ins and prunes old requests and challenges", async () => {
     const w = await world();
     const { token, device } = await signIn(w);

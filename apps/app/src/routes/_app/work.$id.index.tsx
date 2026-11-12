@@ -1,6 +1,16 @@
 // Work item detail (spec 13, mockups work-item and planning): stage steps, then Timeline, Planning,
 // Live (spec 31: the run as it goes, and steering), Runs and Review packet tabs, with acceptance
 // criteria and details beside them.
+
+import {
+  ago,
+  capitalise,
+  duration,
+  errorMessage,
+  STAGE_LABEL,
+} from "@software-factory/client/format";
+import { parsePacket } from "@software-factory/client/packet";
+import { agentTime, stageSteps, statusOf, yourTime } from "@software-factory/client/work-item";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import {
@@ -33,10 +43,8 @@ import { OptionSelect } from "#/components/option-select";
 import { Planning } from "#/components/planning";
 import { ReviewPacket } from "#/components/review-packet";
 import { Timeline } from "#/components/timeline";
-import { ago, capitalise, duration, errorMessage, STAGE_LABEL } from "#/lib/format";
 import { op } from "#/lib/op";
 import { OpError, type WorkItemDetail } from "#/lib/ops";
-import { parsePacket } from "#/lib/packet";
 import {
   attachmentsQuery,
   liveQuery,
@@ -47,7 +55,6 @@ import {
   workItemQuery,
 } from "#/lib/queries";
 import { useProjects, useSession } from "#/lib/session";
-import { agentTime, stageSteps, statusOf, yourTime } from "#/lib/work-item";
 
 const TABS = ["timeline", "planning", "live", "runs", "review"] as const;
 type Tab = (typeof TABS)[number];

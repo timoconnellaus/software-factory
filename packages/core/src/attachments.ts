@@ -1,39 +1,21 @@
 // Work item attachments (ADR 0310): the limits, the content-type allow-list and sniffing, filename
 // sanitising, the blob store the operations write through (R2 on sf-engine), and the headers every
 // served file carries. One place, so the operations, the upload endpoint and the serving route agree.
+import {
+  ATTACHMENT_CONTENT_TYPES,
+  ATTACHMENT_LIMITS,
+  type AttachmentContentType,
+  INLINE_CONTENT_TYPES,
+} from "./attachment-rules.ts";
 import { OperationError } from "./errors.ts";
 
-/** The limits, in one place (spec wi-1). */
-export const ATTACHMENT_LIMITS = {
-  /** Largest single file. */
-  maxFileBytes: 10 * 1024 * 1024,
-  /** Most attachments on one work item. */
-  maxPerItem: 20,
-  /** Most bytes across one work item's attachments. */
-  maxTotalBytesPerItem: 50 * 1024 * 1024,
-  /** Longest filename kept (characters, after sanitising). */
-  maxFilenameLength: 200,
-} as const;
-
-/** The content types v1 accepts. SVG and HTML never: they can carry script. */
-export const ATTACHMENT_CONTENT_TYPES = [
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-  "text/plain",
-  "application/pdf",
-  "application/json",
-] as const;
-export type AttachmentContentType = (typeof ATTACHMENT_CONTENT_TYPES)[number];
-
-/** Types served `inline` (rendered by the browser as an image); everything else is a download. */
-export const INLINE_CONTENT_TYPES: readonly AttachmentContentType[] = [
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-];
+export {
+  ATTACHMENT_CONTENT_TYPES,
+  ATTACHMENT_LIMITS,
+  type AttachmentContentType,
+  INLINE_CONTENT_TYPES,
+  pastedImageName,
+} from "./attachment-rules.ts";
 
 /** Which limit an upload broke, as the refusal's `details.limit`. */
 export type AttachmentLimit =
@@ -139,13 +121,6 @@ function isHiddenChar(code: number): boolean {
     code === 0x200e ||
     code === 0x200f
   );
-}
-
-/** `pasted-image-<timestamp>.png`: the name a pasted clipboard image gets. */
-export function pastedImageName(now: Date, contentType = "image/png"): string {
-  const ext = contentType.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
-  const stamp = now.toISOString().replace(/[:.]/g, "-").replace("T", "_").replace("Z", "");
-  return `pasted-image-${stamp}.${ext}`;
 }
 
 /** Where an attachment's bytes live: by org, work item and attachment id, never by filename. */

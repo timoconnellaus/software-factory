@@ -1,0 +1,89 @@
+// The root: signed out shows sign-in; signed in shows the `_app` layout. `sf://` links arrive from the
+// main process as paths and are routed here, with the hash history (views:// has no server).
+import { Button } from "@software-factory/ui/components/button";
+import { Card } from "@software-factory/ui/components/card";
+import { Toaster } from "@software-factory/ui/components/sonner";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { createRootRouteWithContext, Outlet, useRouter } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import type { Session } from "../../shared/rpc.ts";
+import { bun, onInbox, onNavigate } from "../bridge.ts";
+import { useDesktopSession } from "../lib/desktop-session.ts";
+
+export const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
+  component: Root,
+});
+
+/** An `sf://` link's path as a route in the app (ADR 0382's trampoline sends these). */
+export function routeForLink(path: string): string {
+  const [p = "/", search = ""] = path.split("?");
+  const clean = `/${p.replace(/^\/+|\/+$/g, "")}`;
+  const q = search ? `?${search}` : "";
+  if (clean === "/inbox" || clean === "/") return `/${q}`;
+  if (/^\/work\/[A-Za-z0-9_-]{1,80}(\/review)?$/.test(clean)) return clean;
+  if (clean === "/attach") return `/attach${q}`;
+  if (clean === "/setup" || clean === "/new" || clean === "/work" || clean === "/settings")
+    return clean;
+  return "/";
+}
+
+function Root() {
+  const router = useRouter();
+  const client = useQueryClient();
+  const session = useDesktopSession();
+  useEffect(
+    () =>
+      onNavigate((path) => {
+        void client.invalidateQueries();
+        router.history.push(routeForLink(path));
+      }),
+    [router, client],
+  );
+  // The main process's inbox count changes on a live push or a poll: refresh what shows gates.
+  useEffect(
+    () =>
+      onInbox(() => {
+        void client.invalidateQueries({ queryKey: ["inbox"] });
+      }),
+    [client],
+  );
+  // Signing in or out changes everything the cache holds.
+  const signedIn = session?.signedIn ?? false;
+  useEffect(() => {
+    void signedIn;
+    client.removeQueries({ predicate: (q) => q.queryKey[0] !== "session" });
+    void router.invalidate();
+  }, [signedIn, client, router]);
+  if (!session) return null;
+  return (
+    <>
+      {session.signedIn ? <Outlet /> : <SignIn session={session} />}
+      <Toaster position="bottom-right" closeButton />
+    </>
+  );
+}
+
+function SignIn({ session }: { session: Session }) {
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  return (
+    <main className="mx-auto grid min-h-screen max-w-md place-content-center gap-4 p-6">
+      <h1 className="font-semibold text-2xl tracking-tight">Software Factory</h1>
+      <p className="text-muted-foreground text-sm">
+        Sign in through your browser. You'll approve this Mac on the website, then come back here.
+      </p>
+      {session.error && <Card className="px-4 py-3 text-destructive text-sm">{session.error}</Card>}
+      <Button
+        disabled={busy}
+        data-testid="sign-in"
+        onClick={async () => {
+          setBusy(true);
+          client.setQueryData(["session"], await bun.signIn({}));
+          setBusy(false);
+        }}
+      >
+        {session.signingIn ? "Waiting for the browser…" : "Sign in"}
+      </Button>
+    </main>
+  );
+}

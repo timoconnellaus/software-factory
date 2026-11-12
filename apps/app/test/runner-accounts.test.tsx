@@ -1,13 +1,14 @@
 // The Claude account picker on Setup's runner rows (ADR 0410, spec 32): names only, a pending pick
 // says it's on its way, and a usage limit shows next to the account that hit it.
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+
 import {
   accountLabel,
   accountNote,
   type RunnerAccounts,
-  RunnerAccountsView,
-} from "#/components/runner-accounts";
+} from "@software-factory/client/runner-accounts";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import { RunnerAccountsView } from "#/components/runner-accounts";
 
 const base: RunnerAccounts = {
   names: ["default", "work"],
