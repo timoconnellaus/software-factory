@@ -69,6 +69,7 @@ const V6_STEPS = [
 ];
 // The steps v7 adds (spec 50 part C, ADR 0493): the wait for the release after the shaping stages.
 const V7_STEPS = [
+  '"release: meta"',
   '"release: check"',
   '"release: shaped"',
   "`release: wait #${k}`",

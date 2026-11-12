@@ -282,10 +282,33 @@ own spec; this part fits today's fixed engine to it.
   repository are refused once shaping started. Cancelling it terminates its Workflow, runs and
   gates. A spec rejected while shaping ends the item `rejected` (`workItem.finish` accepts
   `shaping`).
+- **A shaped plan is fixed.** Once shaping starts, `workItem.update` refuses everything but the
+  priority (delivery builds what was planned: cancel and capture again to change it). The item's
+  workflow is the one `workItem.shape` pinned: triage's pick is ignored while shaping, as at any
+  time (only items from before 0261, never pulled and never shaped, keep triage's pick).
+- **A stale plan is visible, not silent.** `workItem.shaped` records when shaping finished and the
+  default branch's head then (`shaped_at`, `shaped_base_sha`). Releasing a shaped item returns
+  `plan { shapedAt, baseSha, behindBy }` (the commits the default branch gained since), and
+  `workItem.get` returns `shaping { startedAt, shapedAt, baseSha }`. Release re-checks the config in
+  force: if the item's size now needs a plan it was shaped without, release is refused with the
+  reason. After the release the Workflow re-reads the item and its config as the pull pinned them
+  (`release: meta`), so delivery never runs on what was journaled at shaping time.
+- **Shaping can't crowd out delivery.** The config's `shapingLimit` (default 5) caps the items
+  shaping at once per project (lowering it tightens). The scheduler claims released work's jobs
+  before shaping items' jobs, on runners with or without a light pool. A kill switch refuses
+  `workItem.shape` and pauses shaping Workflows like any other (the item stays `shaping`).
+- **A dead Workflow fails the item, visibly.** If a shaped item's Workflow ended (errored,
+  terminated) while it waited, the release event finds nobody: the engine ends the item `failed`
+  with the reason, so it never holds a slot.
 - **Known limits** (the fixed engine): the shaping stages are exactly triage and interview planning;
   whether planning runs is still triage's size against `spec.requiredFrom`; only a person may shape;
-  shaping can't be undone except by cancelling. Per-workflow stages and phases are the stage-type
-  spec's.
+  shaping can't be undone except by cancelling. A shaped item waits with one wait step and one check
+  step per 12 hours, so on the Workers free plan's step limit an instance can wait about 250 days;
+  past that it errors and its release fails visibly (above). Per-workflow stages and phases are the
+  stage-type spec's.
+- **No screen calls `workItem.shape` yet**: today it is reached through the operations (MCP, the
+  CLI's `sf call`). Shaping in the desktop UI (shape, the plan's age at release) is the next UI
+  slice.
 
 ### Acceptance criteria (part C)
 11. `workItem.shape` starts the Workflow of a backlog or ready item without using a slot: another

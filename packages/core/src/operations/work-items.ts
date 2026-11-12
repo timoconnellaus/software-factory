@@ -347,6 +347,15 @@ export const workItemGet = defineOperation({
     workflows: z.array(z.object({ name: z.string(), description: z.string() })),
     /** ADR 0491: who released it, and its "waits for" links both ways. */
     releasedBy: z.string().nullable().optional(),
+    /** ADR 0493: shaping before release: when it started and finished, and the base it planned on. */
+    shaping: z
+      .object({
+        startedAt: z.string(),
+        shapedAt: z.string().nullable(),
+        baseSha: z.string().nullable(),
+      })
+      .nullable()
+      .optional(),
     waitsFor: z.array(linkView).optional(),
     waitedOnBy: z.array(linkView).optional(),
     stages: z.array(stageView),
@@ -537,6 +546,9 @@ export const workItemGet = defineOperation({
           description: x.description,
         })) ?? [],
       releasedBy: w.released_by,
+      shaping: w.shaping_started_at
+        ? { startedAt: w.shaping_started_at, shapedAt: w.shaped_at, baseSha: w.shaped_base_sha }
+        : null,
       waitsFor: waitsForRows.map(toLink),
       waitedOnBy: waitedOnRows.map(toLink),
       stages: stages.map((s) => ({
@@ -782,7 +794,9 @@ export const workItemTriage = defineOperation({
     // takes a workflow's gate steps away from work already under way.
     let workflow = w.kind === "attached" ? null : w.workflow;
     let workflowReason = w.kind === "attached" ? null : w.workflow_reason;
-    if (w.kind !== "attached" && !w.pulled_at) {
+    // Legacy: never pulled and never shaped (a shaping item's workflow is pinned by
+    // workItem.shape, and triage doesn't change it, ADR 0492/0493).
+    if (w.kind !== "attached" && !w.pulled_at && !w.shaping_started_at) {
       const shape = ctx.scope.pinnedPolicy ?? policy;
       const picked = input.result.workflow
         ? (shape.workflows.find(

@@ -48,3 +48,11 @@ fixed engine to it.
 - Known limits of the fixed engine: the shaping stages are exactly triage and interview planning,
   and whether planning runs is still decided by triage's size against `spec.requiredFrom`. Choosing
   stages and their phases per workflow is the stage-type design's.
+
+> Amended 2026-11-12 (review of #79): a shaped plan is fixed (only priority can change); the base
+> commit and time are recorded and shown at release with how far the default branch moved; release
+> refuses a plan the config in force no longer accepts; delivery re-reads the item and config
+> (`release: meta`); `shapingLimit` caps shaping per project and released work's jobs are claimed
+> first; a kill switch refuses shaping and pauses shaping Workflows; a release whose Workflow ended
+> fails the item visibly. Workflow v7 lands before spec 51's (which becomes v8); v7's step names are
+> frozen in `workflow-versions.test.ts`.

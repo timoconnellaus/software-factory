@@ -12,12 +12,13 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import type { ProjectPolicy } from "../policy/project-policy.ts";
+import { type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
 import {
   projectId,
+  repoRef,
   repositoryId,
   requireProject,
   requireWorkItem,
@@ -440,9 +441,54 @@ function requirePre(w: WorkItemRow, what: string) {
   }
 }
 
+/**
+ * A shaped item's plan at release (ADR 0493): how old it is and how far the default branch moved
+ * since it was written, so the person releasing it sees a stale plan. Refuses when the config in
+ * force now requires a plan (by the item's size) that shaping didn't make.
+ */
+async function shapedPlan(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+): Promise<{ shapedAt: string | null; baseSha: string | null; behindBy: number | null }> {
+  const policy = ctx.scope.policy;
+  if (policy && w.size && !w.spec_required && specRequired(policy, w.size).required) {
+    throw new OperationError(
+      "conflict",
+      `work item #${w.number} was shaped without a plan, but the config now requires one for ${w.size} work: cancel it and shape it again`,
+    );
+  }
+  let behindBy: number | null = null;
+  const repository = ctx.scope.repository;
+  if (w.shaped_base_sha && repository) {
+    try {
+      behindBy = (
+        await ctx.services.github.compareCommits(
+          await repoRef(ctx, repository),
+          w.shaped_base_sha,
+          repository.default_branch,
+        )
+      ).aheadBy;
+    } catch {
+      behindBy = null;
+    }
+  }
+  return { shapedAt: w.shaped_at, baseSha: w.shaped_base_sha, behindBy };
+}
+
 const startedOutput = z.object({
   /** `queued`: the factory pulls it right after this call commits, when there is room. */
   status: z.string(),
+  /**
+   * A shaped item's plan (ADR 0493): when it was shaped, the default branch's head then, and how
+   * many commits the branch has gained since (null when unknown).
+   */
+  plan: z
+    .object({
+      shapedAt: z.string().nullable(),
+      baseSha: z.string().nullable(),
+      behindBy: z.number().nullable(),
+    })
+    .optional(),
   /** What it waits for that isn't done; empty when nothing holds it. */
   blockedBy: z.array(
     z.object({ id: z.string(), number: z.number(), title: z.string(), status: z.string() }),
@@ -463,6 +509,7 @@ export const workItemRelease = defineOperation({
     const project = requireProject(ctx);
     const refused = releaseRefusal(ctx, w);
     if (refused) throw refused;
+    const plan = w.shaping_started_at ? await shapedPlan(ctx, w) : null;
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -489,6 +536,7 @@ export const workItemRelease = defineOperation({
     return {
       status: "queued",
       blockedBy: blocked.map(({ projectId: _p, ...b }) => b),
+      ...(plan ? { plan } : {}),
     };
   },
 });
@@ -512,6 +560,26 @@ export const workItemShape = defineOperation({
     const refused = releaseRefusal(ctx, w);
     if (refused) throw refused;
     const policy = ctx.scope.policy;
+    if (await activeKillSwitch(ctx.db, project.org_id, project.id)) {
+      throw new OperationError("killed", "a kill switch is on: nothing starts shaping");
+    }
+    const shapingNow = Number(
+      (
+        await ctx.db
+          .selectFrom("core_work_items")
+          .select(sql<number>`count(*)`.as("n"))
+          .where("project_id", "=", project.id)
+          .where("status", "=", "shaping")
+          .executeTakeFirst()
+      )?.n ?? 0,
+    );
+    const limit = policy?.shapingLimit ?? 5;
+    if (shapingNow >= limit) {
+      throw new OperationError(
+        "conflict",
+        `${shapingNow} items are already shaping on this project (its shaping limit is ${limit}): release or cancel one first`,
+      );
+    }
     const workflow = policy?.workflow ?? null;
     ctx.write(
       ctx.db
@@ -569,12 +637,28 @@ export const workItemShaped = defineOperation({
     const w = requireWorkItem(ctx);
     const event = releaseEvent(w.id);
     if (w.pulled_at) return { released: true, event };
+    // What the plan was written against: the default branch's head now. Best effort: a GitHub
+    // outage leaves it unknown, and release then can't say how far the branch moved.
+    let baseSha: string | null = null;
+    const repository = ctx.scope.repository;
+    if (repository) {
+      try {
+        baseSha = await ctx.services.github.getBranchSha(
+          await repoRef(ctx, repository),
+          repository.default_branch,
+        );
+      } catch {
+        baseSha = null;
+      }
+    }
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
         .set({
           status: "ready",
           status_reason: "shaped: release it to build",
+          shaped_at: ctx.now,
+          shaped_base_sha: baseSha,
           updated_at: ctx.now,
         })
         .where("id", "=", w.id)
@@ -673,6 +757,17 @@ export const workItemUpdate = defineOperation({
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     requirePre(w, "it can be edited");
+    // A shaped plan is fixed (ADR 0493): delivery builds what was planned. Only its place in the
+    // queue can change; anything else means cancelling it and shaping again.
+    if (
+      w.shaping_started_at &&
+      Object.keys(input).some((k) => k !== "workItemId" && k !== "priority")
+    ) {
+      throw new OperationError(
+        "conflict",
+        `work item #${w.number} has been shaped: its plan is fixed (only its priority can change); cancel it and capture it again to change it`,
+      );
+    }
     // Released work keeps its repository: release checked it, and the pull relies on it. Take it
     // back to ready (workItem.move) to change it.
     if (

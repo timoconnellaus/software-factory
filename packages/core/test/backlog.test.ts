@@ -534,4 +534,61 @@ describe("shaping before release (ADR 0493)", () => {
     await finish(item.workItemId, "rejected");
     expect(await statusOf(item.workItemId)).toBe("rejected");
   });
+
+  it("caps shaping per project, and refuses it under a kill switch", async () => {
+    const w = await world({ ...POLICY, shapingLimit: 1 });
+    const one = await create(w, "One");
+    const two = await create(w, "Two");
+    await ok("workItem.shape", { workItemId: one.workItemId }, w.human);
+    const capped = await refusal(call("workItem.shape", { workItemId: two.workItemId }, w.human));
+    expect(capped.message).toMatch(/shaping limit is 1/);
+    const k = await world();
+    const held = await create(k, "Held");
+    await ok("killSwitch.set", { scope: "project", id: k.projectId, on: true }, k.human);
+    const killed = await refusal(call("workItem.shape", { workItemId: held.workItemId }, k.human));
+    expect(killed.code).toBe("killed");
+  });
+
+  it("refuses releasing a plan the config in force no longer accepts", async () => {
+    const w = await world();
+    const item = await create(w, "Shaped small");
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    // Triage sized it small: no plan needed then.
+    await env.DB.prepare(
+      "UPDATE core_work_items SET size = 'small', spec_required = 0 WHERE id = ?",
+    )
+      .bind(item.workItemId)
+      .run();
+    await ok("workItem.shaped", { workItemId: item.workItemId }, FOREMAN);
+    // The config now wants a plan from small work up.
+    await ok(
+      "policy.sync",
+      {
+        projectId: w.projectId,
+        ref: "refs/heads/main",
+        sha: "f".repeat(40),
+        content: JSON.stringify({ ...POLICY, spec: { requiredFrom: "small" } }),
+      },
+      w.human,
+    );
+    const e = await refusal(call("workItem.release", { workItemId: item.workItemId }, w.human));
+    expect(e.code).toBe("conflict");
+    expect(e.message).toMatch(/now requires one for small work/);
+  });
+
+  it("tells a Workflow reaching the wait after its release was pulled to go on (an early event)", async () => {
+    const w = await world();
+    const item = await create(w, "Early");
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    // The pull ran before the Workflow reached `release: wait` (its event may have come first).
+    await env.DB.prepare("UPDATE core_work_items SET pulled_at = ? WHERE id = ?")
+      .bind(new Date().toISOString(), item.workItemId)
+      .run();
+    const shaped = await ok<{ released: boolean }>(
+      "workItem.shaped",
+      { workItemId: item.workItemId },
+      FOREMAN,
+    );
+    expect(shaped.released).toBe(true);
+  });
 });
