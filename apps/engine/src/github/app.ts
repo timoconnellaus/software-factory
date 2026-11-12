@@ -407,7 +407,12 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       const baseTree = (parent.json as { tree: { sha: string } }).tree.sha;
       const tree = await api(repo, "POST", "/git/trees", {
         base_tree: baseTree,
-        tree: files.map((f) => ({ path: f.path, mode: "100644", type: "blob", content: f.content })),
+        tree: files.map((f) => ({
+          path: f.path,
+          mode: "100644",
+          type: "blob",
+          content: f.content,
+        })),
       });
       if (tree.status !== 201) fail("create tree", tree);
       const made = await api(repo, "POST", "/git/commits", {
