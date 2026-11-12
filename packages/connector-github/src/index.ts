@@ -6,8 +6,8 @@
 //   pull_request opened/reopened/synchronize/ready_for_review → verify.refresh (a new head starts
 //                                                     without a passing `factory/verify`; a push
 //                                                     to an attached PR re-verifies, spec 05)
-//   pull_request closed                               → verify.refresh `closed` (an attached PR
-//                                                     closed without merging cancels its item)
+//   pull_request closed                               → verify.refresh `closed` (the PR's open
+//                                                     item ends: cancelled, or Done if merged)
 //   check_suite completed (not the factory's own)     → verify.refresh (CI settled on a SHA)
 //   check_run rerequested (`factory/verify`)          → verify.refresh
 //   push                                              → push.observe (branch confinement; policy
@@ -51,6 +51,7 @@ const pullRequest = z.object({
     number: z.number(),
     draft: z.boolean().optional(),
     merged: z.boolean().optional(),
+    merged_by: z.object({ login: z.string() }).nullable().optional(),
     head: z.object({ sha: z.string(), ref: z.string() }),
     base: z.object({ ref: z.string() }),
   }),
@@ -124,6 +125,8 @@ export function routeGitHubEvent(event: string, payload: unknown, appSlug: strin
       if (!p.success) return none(null, null, "unreadable pull_request payload");
       const { action, pull_request: pr, repository: r } = p.data;
       if (action === "closed") {
+        const merged = pr.merged === true;
+        const mergedBy = merged ? (pr.merged_by?.login ?? null) : null;
         return {
           repo: full(r),
           action,
@@ -136,7 +139,11 @@ export function routeGitHubEvent(event: string, payload: unknown, appSlug: strin
                 headSha: pr.head.sha,
                 prNumber: pr.number,
                 trigger: "closed",
-                merged: pr.merged === true,
+                merged,
+                // Who merged it: the factory's own App (its merge, finished by the Workflow) or
+                // someone outside the factory.
+                mergedBy,
+                mergedByApp: mergedBy === `${appSlug}[bot]`,
               },
             },
           ],
