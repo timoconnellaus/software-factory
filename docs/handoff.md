@@ -73,12 +73,46 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   (block X, migration 0170), is built on `timoconnellaus/hosts-watch-steer`: the Live tab (transcript
   and terminal from `run.live`, polled), `run.steer` for the runner's owner, the held `steer` call
   on the channel, `message` events from the transcript. Criteria 1 and 2 need a live run on the M5.
+  Piece 8, **a chat UI on a stream-json session** (block AC, [spec 37](specs/37-chat-ui-stream-json.md) /
+  [ADR 0450](adr/0450-a-stream-json-session-mode-with-a-chat-view.md), migration 0220, branch
+  `timoconnellaus/hosts-chat-ui`): `runner.json` `session: "stream-json"` runs Claude headless as a
+  two-way stream (runner-local `stream.ts`, the `chat` capability), the Live tab's Chat view, and
+  `run.takeover` (stop the stream, show `claude --resume <id>`). Criteria 1–4 need a live run on the M5.
+  Piece 3, [spec 32](specs/32-claude-accounts-on-a-host.md) / [ADR 0410](adr/0410-claude-accounts-live-on-the-host.md)
+  (block Y, migration 0180), is built on branch `timoconnellaus/hosts-accounts`: Claude accounts on
+  a host (`sf-runner account add|use|list|remove`), the active one in each job's launch, the
+  dashboard's picker on Setup (`runner.account.use`, delivered as `account.use` on the heartbeat),
+  usage limits surfaced per account. Its live checks (a real second login, a switch from Setup) are
+  in the PR.
   Piece 5, **Linux hosts** (block Z, [spec 34](specs/34-linux-hosts.md) /
   [ADR 0420](adr/0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md), branch
   `timoconnellaus/hosts-linux`): a systemd user service chosen by platform, Linux log path, the
   harness's per-platform deny lists, Linux doctor checks (bubblewrap, socat, linger), the install
   path in the runner-host README, and `local/runner-host/scripts/linux-check.sh` (the tests in a
   Debian container). Criteria 2–3, 6 and 8 need a live Linux host (README "Running on Linux").
+  Piece 4, **a container per job** (block AA, [spec 33](specs/33-container-per-job.md) /
+  [ADR 0430](adr/0430-a-container-per-job.md), branch `timoconnellaus/hosts-containers`):
+  `runner.json` `"isolation": "container"` runs each job's Claude in a Docker container
+  (`packages/runner-local/src/container/`, image `packages/runner-local/container/`). Each job gets a
+  self-contained job repo, an egress allowlist proxy, every stage `bypassPermissions`, and the launch
+  check inside the container. The host still pushes. Planning sessions stay on the host. Criteria 1
+  and 9 need a live run on the M5 with Docker Desktop (runner-host README, "A container per job").
+  Piece 7, **Sprites sandboxes** (block AF, [spec 36](specs/36-sprites-sandboxes.md) /
+  [ADR 0480](adr/0480-a-sprite-per-job-provisioned-by-the-owners-host.md), branch
+  `timoconnellaus/hosts-sprites`): `runner.json` `"isolation": "sprites"` runs each job in a fresh
+  sprite made by the owner's host with its own Sprites token (`sf-runner sprites login`, 0600 on the
+  host). `packages/runner-local/src/sprites/` holds the API client, the pane-to-sprite TTY bridge,
+  the run-file mirror and the result bundle. Egress is Sprites' network policy. The host still pushes.
+  Tested against a fake Sprites API. **The mode must not be turned on until spec 36's live-check
+  gate has passed** (policy shapes and default deny, bypasses with `sudo`, Fly's internal network,
+  `/.sprite/api.sock`, checkpoints, exec framing, create's size, the image); criteria 1, 8
+  (`tmux attach`) and 11 (`doctor`) are part of it (runner-host README, "A sprite per job").
+  Piece 6, **the web terminal** (block AB, [spec 35](specs/35-web-terminal.md) /
+  [ADR 0440](adr/0440-a-web-terminal-relayed-through-a-durable-object-per-job.md), migration 0210,
+  branch `timoconnellaus/hosts-web-terminal`): the Live tab's Web terminal view (xterm.js), the
+  `TerminalRelay` Durable Object per job, the held `terminal` call and the host's outbound socket,
+  `run.terminal.attach`/`detach`/`host`, the tmux control-mode bridge in runner-local. Criteria 1,
+  2 and 6 need a live run on the M5 (engine deployed first, then the runner updated).
 - **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
   versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals
@@ -89,7 +123,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.
-- **Desktop app** (`desktop-app`, block W, spec [40](specs/40-desktop-app.md), ADRs 0390–0392): a macOS app
+- **Desktop app** (`desktop-app`, block W, spec [40](specs/40-desktop-app.md), ADRs 0390–0393): a macOS app
   on Electrobun that is the daily UI and supervises the runner; the website shrinks to auth. The spike
   (`spikes/electrobun`, #44) showed a Keychain token can't prove a person, so gate decisions from the
   desktop need a Secure Enclave presence proof (ADR 0391, amends 0340). Five milestones: M1 the client
@@ -102,7 +136,46 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   fan-out (the assignee, or the org's owners and admins), and the app's live socket. **M3 is built** (`desktop-m3-screens`): the inbox, New work (with
   attachments over the door as `{ $bytes }`), the work item with Planning and its timeline, the
   review packet (Merge and Send back through Touch ID), Setup and attach, ported into
-  `apps/desktop`; the shared logic is in `packages/client`. Next: M4 (signing and updates).
+  `apps/desktop`; the shared logic is in `packages/client`.
+  **M4a is built** (`desktop-m4`, PR #80): signed, notarized canary releases from
+  `.github/workflows/desktop-release.yml` to `downloads.zerobsai.com/desktop` (R2 `sf-desktop-releases`),
+  and the in-app updater, which applies only a higher version signed by its own Team ID and
+  accepted by Gatekeeper, and never cancels a running job unless the person says so. **Stable is
+  off** until the owner does the steps in `docs/deploying.md` ("Before stable releases": `release`
+  environment on `main` only, a required reviewer with no admin bypass, a `v*` tag ruleset), then
+  sets `DESKTOP_STABLE_ENABLED`. **The canary upload needs a new bucket-scoped R2 token**
+  (`DESKTOP_R2_ACCESS_KEY_ID`/`DESKTOP_R2_SECRET_ACCESS_KEY` in the `release` environment; the owner
+  creates it, steps in `docs/deploying.md`). The workflow runs in the GitHub environment `release`,
+  whose other secrets are set: `MACOS_CERT_P12`/`MACOS_CERT_PASSWORD` (the Developer ID Application
+  identity only), `MACOS_SIGNING_IDENTITY`, `APPLE_TEAM_ID`, and the notarization key `ASC_KEY_P8`,
+  `ASC_KEY_ID`, `ASC_ISSUER_ID`. Electrobun signs and notarizes itself; signing from a build hook
+  breaks the seal (it rewrites `Resources/version.json` after every hook). The download zip is the
+  plain notarized app, not Electrobun's self-extracting wrapper (whose Setup window waited for a click
+  and failed when translocated). The Developer ID is in the M5's login keychain, for local signed
+  builds; CI is where releases are signed. After the first canary release, check that
+  `https://downloads.zerobsai.com/desktop/canary-macos-arm64-update-v2.json` and
+  `…/canary-macos-arm64-Software-Factory.zip` load, and that an installed canary updates to the next.
+  **On hold (2026-11-12):** M4b (the Secure Enclave key, Touch ID approvals; the owner decided it's
+  overkill, so don't ask for an App ID or provisioning profile) and M5 (the website keeps everything
+  until the desktop app has the Factory and Settings sections). Signed builds use a software key and
+  the engine refuses software keys for gate decisions (`DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in
+  production). Why it stays empty: tested on the M5, no keychain restriction protects the desktop
+  token or the software key from a local agent, because the app's `bun` runs any script under the
+  app's signature. So gate decisions are not available from a signed desktop build; the owner is
+  deciding between approving on the phone, the Touch ID helper, or container-only runners.
+  **The version handshake is built** (`desktop-handshake`, PR #81, ADR 0393): the app sends
+  `x-sf-client-protocol`; below sf-engine's `DESKTOP_MIN_PROTOCOL` the door answers 426
+  `update_required` and the app checks for an update. Bump `DOOR_PROTOCOL` when the app needs
+  something new from the door; raise the floor only when old builds must stop. Traps in `apps/desktop`:
+  stage files explicitly on branches without its `.gitignore` (a `git add -A` once committed 138k
+  lines of `.hutch/` and `build/`); Electrobun's request proxy is a function, so RPC names like `call`
+  hit `Function.prototype` (use `bunRequests`, `src/mainview/request.ts`).
+- **The desktop shell and look** (block AD, [spec 41](specs/41-desktop-shell-and-look.md),
+  [ADR 0460](adr/0460-the-desktop-shell-and-look.md), branch `timoconnellaus/desktop-shell`): slice 1
+  of the approved design (`docs/design/factory-ui/`). The window shell (toolbar, tabs, ⌘K, org rail,
+  sidebar, nested lists, status bar, focus mode), the look as `packages/ui` tokens (`desktop.css`),
+  and the existing screens restyled. Later slices wait on specs 50 and 51, chat and the hosts web
+  terminal (spec 41 lists them).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
@@ -205,6 +278,12 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
 - The deploy passes `DEPLOYED_SHA` (the deployed commit) to sf-engine. `runner.heartbeat` answers
   it as `desiredVersion` and records the runner's reported `version` (migration 0130:
   `core_runners.version`, `auto_update`, `update_state`, `update_target`, `update_reason`).
+- Amended by ADR 0520 (spec 38): `desiredVersion` is `RUNNER_SHA`, the last commit that changed
+  runner code (the deploy computes it); runners keep claiming while an update waits (light only
+  after 30 min, nothing after 60) and drain at once only for a `minRunnerCompat` above their
+  `RUNNER_COMPAT`. The engine enforces it too (migration 0290, `core_runners.compat`), places no
+  planning job on a `waiting` runner, and asks its idle planning sessions to yield once it claims
+  nothing. Spec 39 (re-adopt live jobs after a restart) is written, not built.
 - The runner host updates itself: idle → fast-forward to exactly that commit → `pnpm install
   --frozen-lockfile` → exit 75. launchd runs `local/runner-host/bin/sf-runner-service`, which rolls
   back after three unconfirmed starts. It reports `blocked` (with the reason) instead of guessing.

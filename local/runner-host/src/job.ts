@@ -6,8 +6,8 @@
 //
 // Any channel call refused with 409 `fenced` or `killed`, or a cancel command from the heartbeat,
 // stops the session at once; a fenced run hands nothing back and pushes nothing (ADR 0035).
-import { readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readFile, realpath, rm } from "node:fs/promises";
+import { join, relative } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   type AdapterEvent,
@@ -17,6 +17,7 @@ import {
   ChannelCallError,
   type ControlPlaneClient,
   canRun,
+  isReleaseIncomplete,
   type Job,
   type JobState,
   RESULT_FILE,
@@ -32,6 +33,7 @@ import {
 } from "@software-factory/runner-contract";
 import { assertPushable, type HostGit, revokeToken } from "./git.ts";
 import { type RunningRelay, startPlanningRelay } from "./planning-relay.ts";
+import { type Connect, terminalLoop } from "./terminal.ts";
 
 export interface JobReport {
   jobId: string;
@@ -42,6 +44,8 @@ export interface JobReport {
   handedBack: boolean;
   fenced: boolean;
   error?: string;
+  /** Release couldn't confirm the job's processes stopped (ADR 0550): not reported released. */
+  processesAlive?: boolean;
 }
 
 /** A stop that comes from the cloud: the run must end without handing back. */
@@ -152,6 +156,13 @@ export async function steerLoop(options: {
   job: Job;
   signal: AbortSignal;
   steer: (text: string) => Promise<void>;
+  /** Stop the current step, then submit the line (ADR 0470); absent when the adapter can't. */
+  interrupt?: (text: string) => Promise<void>;
+  /**
+   * Stops the stream session for a person (ADR 0450): a `takeover` row from `run.takeover`. The
+   * adapter's events then report the resume command and follow the resumed session.
+   */
+  takeover?: () => Promise<void>;
   push: (event: AdapterEvent) => Promise<void>;
   onStop: (error: ChannelCallError) => void;
   log: (message: string) => void;
@@ -164,7 +175,12 @@ export async function steerLoop(options: {
   const take = cp.steers.bind(cp);
   let failures = 0;
   while (!signal.aborted) {
-    let steers: { id: string; text: string }[];
+    let steers: {
+      id: string;
+      text: string;
+      interrupt?: boolean;
+      kind?: "message" | "takeover";
+    }[];
     try {
       ({ steers } = await take(
         job.jobId,
@@ -189,11 +205,33 @@ export async function steerLoop(options: {
     }
     for (const s of steers) {
       if (signal.aborted) return;
+      if (s.kind === "takeover") {
+        try {
+          if (!options.takeover) throw new Error("this session can't be taken over from here");
+          await options.takeover();
+          log(`${job.jobId}: stopped the session for a takeover (${s.id})`);
+        } catch (error) {
+          const why = error instanceof Error ? error.message : String(error);
+          await options
+            .push({
+              type: "log",
+              stream: "stderr",
+              text: `the session could not be handed over: ${why}`.slice(0, 2_000),
+            })
+            .catch(() => {});
+        }
+        continue;
+      }
       const text = steerText(s.text);
       if (!text) continue;
       try {
-        await options.steer(text);
-        log(`${job.jobId}: typed a message from the dashboard (${s.id})`);
+        if (s.interrupt && options.interrupt) {
+          await options.interrupt(text);
+          log(`${job.jobId}: interrupted the agent for a person (${s.id})`);
+        } else {
+          await options.steer(text);
+          log(`${job.jobId}: typed a message from the dashboard (${s.id})`);
+        }
       } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
         await options
@@ -218,10 +256,37 @@ export interface RunJobOptions<W extends WorkspaceHandle, S extends SessionHandl
   onEvent?: (e: RunnerEvent) => void;
   log?: (message: string) => void;
   fetch?: typeof fetch;
+  /** How the web terminal's socket is opened (default Node's WebSocket; tests use a fake). */
+  connectTerminal?: Connect;
   /** How often buffered log events are flushed. */
   flushMs?: number;
   /** Called once the cloud has the hand-back: the job no longer holds its lease. */
   onHandedBack?: () => void;
+}
+
+/**
+ * The stage result, only as a regular file directly in the worktree. A symlink (which the agent
+ * can leave there, in any isolation mode) would let it hand any file on the host back as the
+ * result: it is refused and removed.
+ */
+export async function readResultFile(
+  worktree: string,
+  path: string,
+  notes: string[],
+): Promise<string | null> {
+  const stat = await lstat(path).catch(() => null);
+  if (!stat) return null;
+  const root = await realpath(worktree).catch(() => worktree);
+  const dir = await realpath(join(path, "..")).catch(() => null);
+  if (!stat.isFile() || stat.isSymbolicLink() || !dir || relative(root, dir) !== "") {
+    notes.push(`${RESULT_FILE} was not a regular file in the worktree; ignored`);
+    return null;
+  }
+  if (stat.size > 8 << 20) {
+    notes.push(`${RESULT_FILE} is over 8 MiB; ignored`);
+    return null;
+  }
+  return readFile(path, "utf8").catch(() => null);
 }
 
 export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>(
@@ -284,6 +349,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let ahead = true;
   let session: S | undefined;
   let steering: Promise<void> = Promise.resolve();
+  let terminal: Promise<void> = Promise.resolve();
   const steerStop = new AbortController();
   let outcome: SessionOutcome = "failed";
   let summary: string | undefined;
@@ -292,6 +358,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let result: unknown;
   let stored: StoredArtifact[] = [];
   const notes: string[] = [];
+  const report: Pick<JobReport, "processesAlive"> = {};
 
   /**
    * The work item's attachments (ADR 0310), when the adapter declares `work-item-attachments`:
@@ -431,6 +498,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         type: "session.started",
         sessionRef: session.sessionRef,
         ...(session.takeover ? { takeover: session.takeover } : {}),
+        // How it runs (ADR 0450): the dashboard shows a stream session as a chat.
+        ...(session.mode ? { mode: session.mode } : {}),
       });
       // A person's messages from the dashboard, typed into the session while it runs (ADR 0400).
       const live = session;
@@ -440,9 +509,29 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         job,
         signal: AbortSignal.any([signal, steerStop.signal]),
         steer: (text) => (adapter.steer as NonNullable<typeof adapter.steer>)(live, text),
+        ...(adapter.interrupt
+          ? {
+              interrupt: (text: string) =>
+                (adapter.interrupt as NonNullable<typeof adapter.interrupt>)(live, text),
+            }
+          : {}),
+        ...(adapter.takeover
+          ? { takeover: () => (adapter.takeover as NonNullable<typeof adapter.takeover>)(live) }
+          : {}),
         push: (event) => stream.push(event),
         onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
         log,
+      });
+      // The dashboard's web terminal, relayed while someone watches (ADR 0440).
+      terminal = terminalLoop({
+        adapter,
+        cp,
+        job,
+        open: (o) => (adapter.openTerminal as NonNullable<typeof adapter.openTerminal>)(live, o),
+        signal: AbortSignal.any([signal, steerStop.signal]),
+        onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
+        log,
+        ...(options.connectTerminal ? { connect: options.connectTerminal } : {}),
       });
       try {
         for await (const event of adapter.events(job, session, signal)) {
@@ -455,6 +544,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       } finally {
         steerStop.abort();
         await steering.catch(() => {});
+        await terminal.catch(() => {});
       }
       if (signal.aborted && outcome !== "completed") outcome = abortedOutcome();
 
@@ -484,7 +574,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       // The stage result: read it, pass it through untouched, delete it. Never committed. A
       // planning session has none: its record is in the factory (ADR 0300).
       const resultPath = join(workspace.path, RESULT_FILE);
-      const raw = planning ? null : await readFile(resultPath, "utf8").catch(() => null);
+      const raw = planning ? null : await readResultFile(workspace.path, resultPath, notes);
       await rm(resultPath, { force: true });
       if (planning) {
         result = { planning: yielded ? "yielded" : "stopped" };
@@ -588,12 +678,34 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     clearTimeout(timer);
     clearInterval(flusher);
     await relay?.close().catch(() => {});
+    let processesAlive = false;
+    let releaseFailed = false;
     await adapter.release(job, workspace, session).catch((err) => {
+      releaseFailed = true;
       error = `${error ? `${error}; ` : ""}release: ${err instanceof Error ? err.message : err}`;
+      // The job's processes may still be running (ADR 0550): it is never reported released.
+      if (isReleaseIncomplete(err)) processesAlive = true;
     });
     for (const token of tokens) await revokeToken(token, options.fetch);
-    if (!stopped || !(stopped as StopJob).fenced) {
-      await stream.push({ type: "job.state", state: "released" }).catch(() => {});
+    if (processesAlive) {
+      log(`${job.jobId}: NOT released, its processes may still be running: ${error ?? ""}`);
+      await stream
+        .push({
+          type: "log",
+          stream: "stderr",
+          text: `runner: the job's processes may still be running; not releasing it (the lease lapses instead): ${error ?? ""}`.slice(
+            0,
+            2_000,
+          ),
+        })
+        .catch(() => {});
+      await stream.flush().catch(() => {});
+      report.processesAlive = true;
+    } else if (!stopped || !(stopped as StopJob).fenced) {
+      // A release that failed may have left something running (a sprite, ADR 0480): not "released".
+      if (!releaseFailed) {
+        await stream.push({ type: "job.state", state: "released" }).catch(() => {});
+      }
       await stream.flush().catch(() => {});
       await cp
         .release({
@@ -616,6 +728,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     artifacts: stored,
     handedBack,
     fenced: stoppedNow?.fenced ?? false,
+    ...report,
     ...(summary ? { summary } : {}),
     ...(headSha ? { headSha } : {}),
     ...(error ? { error } : {}),

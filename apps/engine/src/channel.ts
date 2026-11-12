@@ -25,10 +25,14 @@ import {
   runnerChannelKey,
   STEER_WAIT_MAX_MS,
   steersRequestSchema,
+  TERMINAL_PATHS,
+  TERMINAL_WAIT_MAX_MS,
+  terminalCallRequestSchema,
 } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
 import { planningHub } from "./planning-hub.ts";
 import { secrets } from "./secrets.ts";
+import { terminalRelay } from "./terminal-relay.ts";
 
 export const CHANNEL_PREFIX = "/runner/v1/";
 
@@ -71,11 +75,17 @@ export async function handleChannel(request: Request, env: Env): Promise<Respons
   return handleRunnerCall(
     request,
     { keyFor, store: d1IdempotencyStore(env.DB), unstoredPath: isUnstoredPath },
-    ({ runner, path, body }) => route(env, runner, path, body),
+    ({ runner, path, body }) => route(env, runner, path, body, new URL(request.url).origin),
   );
 }
 
-async function route(env: Env, runner: string, path: string, body: unknown): Promise<ChannelReply> {
+async function route(
+  env: Env,
+  runner: string,
+  path: string,
+  body: unknown,
+  origin: string,
+): Promise<ChannelReply> {
   const record = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
   let op: string;
   let input: unknown;
@@ -100,6 +110,7 @@ async function route(env: Env, runner: string, path: string, body: unknown): Pro
     }
     if (job.call === "planning") return planningReply(env, runner, job.jobId, record);
     if (job.call === "steer") return steerReply(env, runner, job.jobId, record);
+    if (job.call === "terminal") return terminalReply(env, runner, job.jobId, record, origin);
     op = {
       token: "run.issueToken",
       events: "run.reportEvents",
@@ -259,6 +270,42 @@ async function steerReply(
     const changed = await hub.waitForChange(seen, left);
     if (changed) seen = await hub.current();
   }
+}
+
+/**
+ * The runner host's held terminal call (spec 35, ADR 0440): `run.terminal.host` as the runner
+ * (fenced), then a wait on the job's TerminalRelay until a viewer is waiting and no host is
+ * connected. The answer is the relay's host socket URL with a one-use ticket the relay minted, or
+ * `connect: null` once the wait's time is up. Never stored.
+ */
+async function terminalReply(
+  env: Env,
+  runner: string,
+  jobId: string,
+  record: Record<string, unknown>,
+  origin: string,
+): Promise<ChannelReply> {
+  const parsed = terminalCallRequestSchema.safeParse(record);
+  if (!parsed.success) {
+    return {
+      status: 400,
+      body: { error: parsed.error.message, code: "invalid_input", details: parsed.error.issues },
+    };
+  }
+  const { fencingToken } = parsed.data;
+  const check = await invokeReply(
+    env,
+    "run.terminal.host",
+    { jobId, fencingToken },
+    { type: "runner", id: runner },
+  );
+  if (check.status && check.status !== 200) return check;
+  const ms = Math.min(parsed.data.waitMs ?? TERMINAL_WAIT_MAX_MS, TERMINAL_WAIT_MAX_MS);
+  const ticket = await terminalRelay(env, jobId).waitForViewer(ms);
+  if (!ticket) return { body: { connect: null } };
+  const url = new URL(TERMINAL_PATHS.host(jobId), origin.replace(/^http/, "ws"));
+  url.searchParams.set("ticket", ticket);
+  return { body: { connect: { url: url.toString() } } };
 }
 
 /**

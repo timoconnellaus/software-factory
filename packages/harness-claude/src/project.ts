@@ -1,16 +1,20 @@
 // Writes a run's harness files: the settings (into the run dir, passed with `--settings`, and the
 // same bytes into the worktree's `.claude/settings.local.json`), the git config and empty tool dirs
 // into the run's private directory, the run's temp dir, and the launch script and record (ADR 0270).
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Job, PlanningRelay } from "@software-factory/runner-contract";
+import { accountLaunchLines, CREDENTIALS_FILE, type HarnessAccount } from "./account.ts";
 import {
   claudeArgv,
   type LaunchRecord,
   launchPaths,
   launchScript,
   launchUnsets,
+  RESUME_SCRIPT,
+  resumeScript,
   sha256,
 } from "./launch.ts";
 import { mergeHooks, planningHooks, writePlanningFiles } from "./planning/project.ts";
@@ -69,9 +73,27 @@ export async function projectHarness(
      * conversation started or resumed. `nodeBin` runs them (default: this process's Node).
      */
     planning?: { relay: PlanningRelay; nodeBin?: string };
+    /**
+     * `stream`: launch a two-way stream-json session (ADR 0450) instead of the TUI. A non-planning
+     * run gets its own conversation id (`--session-id`), so it can be resumed in a terminal.
+     */
+    session?: "terminal" | "stream";
+    /**
+     * The Claude account the run uses (ADR 0410). Default: the host's own (`default`), with the
+     * environment as it is.
+     */
+    account?: HarnessAccount;
   },
 ): Promise<ProjectedHarness> {
-  const runTmp = options.runTmp ?? join(await realpath(tmpdir()), "software-factory", job.jobId);
+  // One per run dir, not per job id: two runners (or two tests) with the same job id must not share
+  // a temp dir, where one's release deleted the other's files (CI flake on stream.test.ts).
+  const runTmp =
+    options.runTmp ??
+    join(
+      await realpath(tmpdir()),
+      "software-factory",
+      `${job.jobId}-${createHash("sha256").update(options.runDir).digest("hex").slice(0, 8)}`,
+    );
   await mkdir(options.runDir, { recursive: true, mode: 0o700 });
   const statusFile = options.statusHook ? join(options.runDir, STATUS_FILE) : undefined;
   const statusScript = join(options.runDir, STATUS_HOOK_SCRIPT);
@@ -91,9 +113,33 @@ export async function projectHarness(
   if (job.stage === "planning" && !planning) {
     throw new Error(`planning job ${job.jobId} needs its planning session and relay`);
   }
-  const { statusHook: _statusHook, planning: _planning, ...settingsOptions } = options;
+  const {
+    statusHook: _statusHook,
+    planning: _planning,
+    session: _session,
+    account: _account,
+    ...settingsOptions
+  } = options;
+  const streamSessionId =
+    options.session === "stream" ? (planning?.launch.sessionRef ?? randomUUID()) : null;
+  // The account's credentials (its token file, a login's credentials file) are the owner's: a run
+  // never reads them, whatever else the runner protects (ADR 0410). The config dir itself stays
+  // readable, as `~/.claude` always was: Claude's sandboxed shell reads its snapshots from there.
+  const accountSecrets = [
+    ...(options.account?.token ? [options.account.token.file] : []),
+    ...(options.account?.configDir ? [join(options.account.configDir, CREDENTIALS_FILE)] : []),
+  ];
+  const denyReadFiles = [
+    ...(options.denyReadFiles ?? []),
+    ...accountSecrets,
+    ...(planning ? [planning.relayFile] : []),
+  ];
   const settings = runSettings(job, {
     ...settingsOptions,
+    ...(accountSecrets.length
+      ? { protectPaths: [...new Set([...(options.protectPaths ?? []), ...accountSecrets])] }
+      : {}),
+    ...(denyReadFiles.length ? { denyReadFiles } : {}),
     ...(statusFile ? { statusHook: statusHookCommand(node, statusScript, statusFile) } : {}),
     ...(planning
       ? {
@@ -101,7 +147,6 @@ export async function projectHarness(
             options.hooks,
             planningHooks(planning.relayFile, options.planning?.nodeBin ?? process.execPath),
           ),
-          denyReadFiles: [...(options.denyReadFiles ?? []), planning.relayFile],
         }
       : {}),
     runTmp,
@@ -125,16 +170,34 @@ export async function projectHarness(
     jobId: job.jobId,
     stage: job.stage,
     mode: settings.permissions.defaultMode,
+    ...(options.isolation ? { isolation: options.isolation } : {}),
     argv: claudeArgv(job, {
       settingsPath: paths.runSettings,
       ...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
       ...(options.profile ? { profile: options.profile } : {}),
       ...(planning ? { planning: planning.launch } : {}),
+      ...(streamSessionId ? { stream: { sessionId: streamSessionId } } : {}),
+      ...(options.isolation ? { isolation: options.isolation } : {}),
     }),
     settingsHash: sha256(text),
     settingsPaths: [paths.runSettings, paths.localSettings],
     pidFile: paths.pidFile,
     worktree: options.worktree,
+    unset: launchUnsets(settings.env),
+    ...(streamSessionId
+      ? {
+          stream: {
+            sessionId: streamSessionId,
+            resumeScript: join(options.runDir, RESUME_SCRIPT),
+          },
+        }
+      : {}),
+    ...(options.account
+      ? {
+          account: options.account.name,
+          ...(options.account.configDir ? { configDir: options.account.configDir } : {}),
+        }
+      : {}),
   };
   await rm(paths.pidFile, { force: true });
   if (statusFile) {
@@ -142,7 +205,19 @@ export async function projectHarness(
     await writeFile(statusScript, statusHookSource(), { mode: 0o600 });
   }
   await writeFile(paths.record, `${JSON.stringify(launch, null, 2)}\n`, { mode: 0o600 });
-  await writeFile(paths.script, launchScript(launch, launchUnsets(settings.env)), { mode: 0o700 });
+  const accountLines = accountLaunchLines(options.account);
+  await writeFile(paths.script, launchScript(launch, launch.unset ?? [], accountLines), {
+    mode: 0o700,
+  });
+  // A stream session's takeover (ADR 0450): the same environment and account, interactive, the
+  // conversation resumed. Run by the person, never by the runner.
+  if (launch.stream?.resumeScript) {
+    await writeFile(
+      launch.stream.resumeScript,
+      resumeScript(launch, launch.unset ?? [], accountLines),
+      { mode: 0o700 },
+    );
+  }
   return {
     settingsPath: paths.runSettings,
     localSettingsPath: paths.localSettings,

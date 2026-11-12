@@ -1,6 +1,7 @@
 export * from "./adjudicator.ts";
 export * from "./attach.ts";
 export * from "./attachments.ts";
+export * from "./backlog.ts";
 export * from "./cli.ts";
 export * from "./config.ts";
 export * from "./connector.ts";
@@ -19,5 +20,6 @@ export * from "./protection.ts";
 export * from "./questions.ts";
 export * from "./runners.ts";
 export * from "./specs.ts";
+export * from "./terminal.ts";
 export * from "./verify.ts";
 export * from "./work-items.ts";

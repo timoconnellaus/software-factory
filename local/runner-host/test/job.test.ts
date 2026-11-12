@@ -274,6 +274,63 @@ describe("runJob", () => {
     expect(cloud.steerCalls).toBeGreaterThan(0);
   });
 
+  it("interrupts the agent for a planning interrupt, and types an interrupt as a steer when the adapter can't (ADR 0470)", async () => {
+    for (const canInterrupt of [true, false]) {
+      const { repo, cloud, cp } = await world();
+      const j = job();
+      cloud.claims.set("c", j);
+      cloud.steers.set(j.jobId, [
+        { id: "st_1", text: "read your news", at: new Date().toISOString(), interrupt: true },
+      ]);
+      const adapter = fakeAdapter(
+        (x) => repo.host.clonePath(x),
+        async (wt, _j, signal) => {
+          for (
+            let i = 0;
+            i < 200 && adapter.steered.length + adapter.interrupted.length === 0 && !signal.aborted;
+            i++
+          ) {
+            await sleep(10);
+          }
+          return edit("x")(wt);
+        },
+        { steer: true, interrupt: canInterrupt },
+      );
+      await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
+      expect(adapter.interrupted).toEqual(canInterrupt ? ["read your news"] : []);
+      expect(adapter.steered).toEqual(canInterrupt ? [] : ["read your news"]);
+    }
+  });
+
+  it("logs a takeover an adapter can't do, never types it, and the run goes on (ADR 0450)", async () => {
+    const { repo, cloud, cp } = await world();
+    const j = job();
+    cloud.claims.set("c", j);
+    cloud.steers.set(j.jobId, [
+      { id: "st_t", text: "", at: new Date().toISOString(), kind: "takeover" },
+      { id: "st_2", text: "after it", at: new Date().toISOString() },
+    ]);
+    const adapter = fakeAdapter(
+      (x) => repo.host.clonePath(x),
+      async (wt, _j, signal) => {
+        for (let i = 0; i < 200 && adapter.steered.length === 0 && !signal.aborted; i++) {
+          await sleep(10);
+        }
+        return edit("x")(wt);
+      },
+      { steer: true },
+    );
+    const report = await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
+    expect(report.outcome).toBe("completed");
+    expect(adapter.steered).toEqual(["after it"]);
+    const events = cloud.events.get(j.jobId) ?? [];
+    expect(
+      events.some(
+        (e) => e.type === "log" && e.stream === "stderr" && /could not be handed over/.test(e.text),
+      ),
+    ).toBe(true);
+  });
+
   it("stops asking for steers when the engine doesn't know the call, and the run goes on", async () => {
     const { repo, cloud, cp } = await world();
     const j = job();

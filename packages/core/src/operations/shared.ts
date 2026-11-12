@@ -5,12 +5,13 @@ import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { idPattern, newId, slugify } from "../ids.ts";
-import type { HandlerContext, ProjectRow, WorkItemRow } from "../operation.ts";
+import type { HandlerContext, ProjectRow, RepositoryRow, WorkItemRow } from "../operation.ts";
 import { endPlanningSessions } from "../planning.ts";
 import type { RepoRef } from "../services.ts";
 
 export const workItemId = z.string().regex(idPattern("workItem"), "a work item id (wi_…)");
 export const projectId = z.string().regex(idPattern("project"), "a project id (prj_…)");
+export const repositoryId = z.string().regex(idPattern("repository"), "a repository id (repo_…)");
 export const pendingActionId = z
   .string()
   .regex(idPattern("pendingAction"), "a pending action id (pa_…)");
@@ -19,6 +20,22 @@ export const questionId = z.string().regex(idPattern("question"), "a question id
 export const fencingToken = z.number().int().nonnegative();
 export const sha = z.string().regex(/^[0-9a-f]{7,64}$/);
 export const STAGES = ["intake", "triage", "spec", "build", "verify", "merge", "done"] as const;
+
+/**
+ * Each stage's phase (ADR 0493): **shaping** stages run before release (they need a person, hold
+ * no build slot and don't count as active), **delivery** stages after it. These are the fixed
+ * engine's stages (the Software workflow): triage and interview planning (the spec stage and its
+ * gate) shape; everything from build on delivers. Workflow-defined stages will carry their own.
+ */
+export const STAGE_PHASE: Record<(typeof STAGES)[number], "shaping" | "delivery"> = {
+  intake: "shaping",
+  triage: "shaping",
+  spec: "shaping",
+  build: "delivery",
+  verify: "delivery",
+  merge: "delivery",
+  done: "delivery",
+};
 
 export function requireWorkItem(ctx: HandlerContext): WorkItemRow {
   const item = ctx.scope.workItem;
@@ -32,13 +49,58 @@ export function requireProject(ctx: HandlerContext): ProjectRow {
   return project;
 }
 
-/** The project's repo, as the GitHub App sees it. Refuses if no App installation covers it. */
-export async function repoRef(ctx: HandlerContext, project: ProjectRow): Promise<RepoRef> {
-  if (project.installation_record_id) {
+/**
+ * The repository the call is about (ADR 0490): the work item's, the one named by `repositoryId`, or
+ * the project's only one. Refuses with the reason when there is none, or several and none named.
+ */
+export function requireRepository(ctx: HandlerContext): RepositoryRow {
+  const repository = ctx.scope.repository;
+  if (repository) return repository;
+  const project = requireProject(ctx);
+  const n = ctx.scope.repositories.length;
+  if (ctx.scope.workItem && n > 0) {
+    throw new OperationError(
+      "not_found",
+      `work item #${ctx.scope.workItem.number} has no repository yet: choose one of project ${project.name}'s ${n} repositories`,
+    );
+  }
+  throw new OperationError(
+    "not_found",
+    n === 0
+      ? `project ${project.name} has no repository`
+      : `project ${project.name} has ${n} repositories: name one (repositoryId)`,
+  );
+}
+
+/**
+ * The repository a work item uses (ADR 0490): its own, else its project's only one (an item created
+ * by code from before 0260 may have none recorded). Null when neither applies.
+ */
+export async function itemRepository(
+  db: HandlerContext["db"],
+  item: Pick<WorkItemRow, "repository_id" | "project_id">,
+): Promise<RepositoryRow | null> {
+  const rows = await db
+    .selectFrom("core_repositories")
+    .selectAll()
+    .$if(!!item.repository_id, (q) => q.where("id", "=", item.repository_id ?? ""))
+    .$if(!item.repository_id, (q) => q.where("project_id", "=", item.project_id))
+    .limit(2)
+    .execute();
+  if (item.repository_id) return rows[0] ?? null;
+  return rows.length === 1 ? (rows[0] ?? null) : null;
+}
+
+/** A repository's `owner/name`. */
+export const repoSlug = (r: Pick<RepositoryRow, "owner" | "name">) => `${r.owner}/${r.name}`;
+
+/** The repository, as the GitHub App sees it. Refuses if no App installation covers it. */
+export async function repoRef(ctx: HandlerContext, repository: RepositoryRow): Promise<RepoRef> {
+  if (repository.installation_record_id) {
     const record = await ctx.db
       .selectFrom("core_github_installations")
       .select(["status", "account_login"])
-      .where("id", "=", project.installation_record_id)
+      .where("id", "=", repository.installation_record_id)
       .executeTakeFirst();
     if (record && record.status !== "active") {
       throw new OperationError(
@@ -47,24 +109,24 @@ export async function repoRef(ctx: HandlerContext, project: ProjectRow): Promise
       );
     }
   }
-  let installationId = project.github_installation_id;
+  let installationId = repository.github_installation_id;
   if (!installationId) {
     installationId =
       (
         await ctx.db
           .selectFrom("core_organization")
           .select("github_installation_id")
-          .where("id", "=", project.org_id)
+          .where("id", "=", repository.org_id)
           .executeTakeFirst()
       )?.github_installation_id ?? null;
   }
   if (!installationId) {
     throw new OperationError(
       "unavailable",
-      `no GitHub App installation for ${project.repo_owner}/${project.repo_name}`,
+      `no GitHub App installation for ${repoSlug(repository)}`,
     );
   }
-  return { installationId, owner: project.repo_owner, repo: project.repo_name };
+  return { installationId, owner: repository.owner, repo: repository.name };
 }
 
 export function itemBranch(number: number, slug: string): string {
@@ -73,6 +135,8 @@ export function itemBranch(number: number, slug: string): string {
 
 export interface NewWorkItem {
   project: ProjectRow;
+  /** The repository it uses (ADR 0490); null when none is chosen yet. */
+  repositoryId: string | null;
   title: string;
   body: string;
   source: string;
@@ -86,21 +150,31 @@ export interface NewWorkItem {
   pr?: { branch: string; number: number; url: string; headSha: string };
   /** Number to use; the caller read `next_number` and the batch guards it. */
   number: number;
-  /** A running trial it joins (ADR 0373): it then runs on the trial's candidate version. */
-  trial?: { id: string; candidateSha: string } | null;
+  /**
+   * Where it starts (ADR 0491): `backlog` or `ready` (nothing runs), or `queued` (released; the
+   * caller then pulls it, or starts it at once). Its config version and workflow are pinned when
+   * its pipeline starts, not here.
+   */
+  state: "backlog" | "ready" | "queued";
+  /** 0 urgent … 3 low (default 2). */
+  priority?: number;
+  /** Criteria written while shaping. */
+  acceptanceCriteria?: string[] | null;
 }
 
 /**
- * Queues the writes that create a work item and start its Workflow: the item, its lease row, the
- * intake stage, the project's number bump (guarded) and `workflow.create`.
+ * Queues the writes that create a work item: the item (in `state`), its lease row and the
+ * project's number bump (guarded). It doesn't start the pipeline: `startPipeline` / the pull do
+ * (ADR 0491).
  */
 export function createWorkItem(
   ctx: HandlerContext,
   item: NewWorkItem,
-): { id: string; branch: string } {
+): { id: string; branch: string; number: number; rank: number; created_at: string } {
   const id = newId("workItem");
   const slug = slugify(item.title);
   const branch = item.pr?.branch ?? itemBranch(item.number, slug);
+  const rank = Date.parse(ctx.now) / 1000;
   ctx.write(
     ctx.db
       .updateTable("core_projects")
@@ -114,6 +188,7 @@ export function createWorkItem(
       id,
       org_id: item.project.org_id,
       project_id: item.project.id,
+      repository_id: item.repositoryId,
       number: item.number,
       slug,
       title: item.title,
@@ -122,39 +197,38 @@ export function createWorkItem(
       requester_user_id: item.requesterUserId,
       source: item.source,
       stage: "intake",
-      status: "running",
+      status: item.state,
       branch,
       head_sha: item.pr?.headSha ?? null,
       pr_number: item.pr?.number ?? null,
       pr_url: item.pr?.url ?? null,
       workflow_id: id,
-      policy_sha: item.trial?.candidateSha ?? item.project.policy_sha,
-      trial_id: item.trial?.id ?? null,
+      policy_sha: null,
+      trial_id: null,
       parent_work_item_id: item.parentWorkItemId ?? null,
+      priority: item.priority ?? 2,
+      rank,
+      acceptance_criteria: item.acceptanceCriteria ? JSON.stringify(item.acceptanceCriteria) : null,
+      released_at: item.state === "queued" ? ctx.now : null,
+      released_by: item.state === "queued" ? ctx.actor.id : null,
       created_at: ctx.now,
       updated_at: ctx.now,
     }),
   );
   ctx.write(ctx.db.insertInto("core_leases").values({ work_item_id: id, fencing_token: 0 }));
-  ctx.write(
-    ctx.db.insertInto("core_stages").values({
-      id: newId("stage"),
-      work_item_id: id,
-      stage: "intake",
-      attempt: 1,
-      status: "done",
-      started_at: ctx.now,
-      ended_at: ctx.now,
-    }),
-  );
-  ctx.emit({ kind: "workflow.create", payload: { instanceId: id, params: { workItemId: id } } });
   ctx.change({
     entity: "work_item",
     id,
-    after: { title: item.title, source: item.source, requester: item.requesterUserId, branch },
+    after: {
+      title: item.title,
+      source: item.source,
+      requester: item.requesterUserId,
+      branch,
+      status: item.state,
+    },
   });
   ctx.subject({ workItemId: id, projectId: item.project.id, orgId: item.project.org_id });
-  return { id, branch };
+  return { id, branch, number: item.number, rank, created_at: ctx.now };
 }
 
 export function setItemStatus(
@@ -258,17 +332,25 @@ export const repoName = z.object({
   name: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
 });
 
-/** Scope resolver for connector calls: the project whose repo this is. */
+/** Scope resolver for connector calls: the repository with this name, and its project. */
+export async function repositoryForRepo(
+  db: HandlerContext["db"],
+  repo: { owner: string; name: string },
+): Promise<{ projectId: string; repositoryId: string }> {
+  const row = await db
+    .selectFrom("core_repositories")
+    .select(["id", "project_id"])
+    .where(sql<string>`lower(owner)`, "=", repo.owner.toLowerCase())
+    .where(sql<string>`lower(name)`, "=", repo.name.toLowerCase())
+    .executeTakeFirst();
+  if (!row) throw new OperationError("not_found", `no project for ${repo.owner}/${repo.name}`);
+  return { projectId: row.project_id, repositoryId: row.id };
+}
+
+/** Scope resolver for connector calls: the project whose repository this is. */
 export async function projectForRepo(
   db: HandlerContext["db"],
   repo: { owner: string; name: string },
 ): Promise<string> {
-  const row = await db
-    .selectFrom("core_projects")
-    .select("id")
-    .where(sql<string>`lower(repo_owner)`, "=", repo.owner.toLowerCase())
-    .where(sql<string>`lower(repo_name)`, "=", repo.name.toLowerCase())
-    .executeTakeFirst();
-  if (!row) throw new OperationError("not_found", `no project for ${repo.owner}/${repo.name}`);
-  return row.id;
+  return (await repositoryForRepo(db, repo)).projectId;
 }

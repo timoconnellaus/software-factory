@@ -18,6 +18,7 @@ import {
 const POLICY = {
   ...BALANCED,
   adjudicator: { step: "shadow" },
+  workflow: "Signed off",
   workflows: [
     {
       name: "Signed off",
@@ -31,10 +32,10 @@ describe("the adjudicator's minute", () => {
     const w = await world(POLICY);
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Add dark mode" },
+      { state: "queued", projectId: w.projectId, title: "Add dark mode" },
       w.human,
     );
-    await runStage(w, item.workItemId, "triage", () => triage("small", { workflow: "Signed off" }));
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
     await runStage(w, item.workItemId, "build", () => build());
     const gate = await gateOpen(item.workItemId, "approval");
 

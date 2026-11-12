@@ -18,6 +18,7 @@ import {
   httpControlPlane,
   type Job,
   memoryIdempotencyStore,
+  type OpenTerminalOptions,
   PATHS,
   type PlanningRelay,
   parseJobPath,
@@ -26,6 +27,8 @@ import {
   type RunnerEvent,
   runnerChannelKey,
   type StoredArtifact,
+  stagePool,
+  type TerminalSize,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
 import { nodeExec } from "@software-factory/runner-local";
@@ -62,11 +65,28 @@ export interface FakeCloud {
   planning: (call: { jobId: string; op: string; input: Record<string, unknown> }) => unknown;
   /** What the heartbeat answers as `desiredVersion` (ADR 0360); undefined leaves it out. */
   desiredVersion?: string | null;
+  /** What the heartbeat answers as `minRunnerCompat` (ADR 0520); undefined leaves it out. */
+  minRunnerCompat?: number;
+  /**
+   * Hand out a queued job only when the claim's capacity has room in its pool (ADR 0301), as the
+   * engine does. Off: the next queued job, whatever the capacity says.
+   */
+  pools?: boolean;
+  /** The capacity each claim reported. */
+  claimCapacities: ClaimRequest["capacity"][];
   /** Steers queued per job (ADR 0400); the steer call takes them. */
-  steers: Map<string, { id: string; text: string; at: string }[]>;
+  steers: Map<
+    string,
+    { id: string; text: string; at: string; interrupt?: boolean; kind?: "message" | "takeover" }[]
+  >;
   steerCalls: number;
   /** Answer the steer call 404, as an engine from before ADR 0400 does. */
   noSteerCall?: boolean;
+  /** Web terminal socket URLs to hand out, one per terminal call (ADR 0440). */
+  terminalUrls: Map<string, string[]>;
+  terminalCalls: number;
+  /** Answer the terminal call 404, as an engine from before ADR 0440 does. */
+  noTerminalCall?: boolean;
 }
 
 export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
@@ -79,6 +99,7 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
     handbacks: new Map(),
     released: new Map(),
     heartbeats: [],
+    claimCapacities: [],
     commands: [],
     tokens: 0,
     fenced: new Set(),
@@ -88,6 +109,8 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
     planning: () => ({}),
     steers: new Map(),
     steerCalls: 0,
+    terminalUrls: new Map(),
+    terminalCalls: 0,
     fetch: async (input, init) =>
       handleRunnerCall(
         new Request(input, init),
@@ -102,6 +125,9 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
                 ...(cloud.desiredVersion !== undefined
                   ? { desiredVersion: cloud.desiredVersion }
                   : {}),
+                ...(cloud.minRunnerCompat !== undefined
+                  ? { minRunnerCompat: cloud.minRunnerCompat }
+                  : {}),
                 leases: hb.activeJobs.map((j) => ({
                   jobId: j.jobId,
                   expiresAt: new Date(Date.now() + 600_000).toISOString(),
@@ -110,8 +136,18 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
             };
           }
           if (path === PATHS.claim) {
-            const { claimId } = body as ClaimRequest;
-            const job = cloud.claims.get(claimId) ?? cloud.queue.shift() ?? null;
+            const { claimId, capacity } = body as ClaimRequest;
+            cloud.claimCapacities.push(capacity);
+            const fits = (j: Job) =>
+              !cloud.pools ||
+              (stagePool(j.stage) === "light"
+                ? (capacity.light?.inUse ?? 0) < (capacity.light?.max ?? 0)
+                : capacity.inUse < capacity.max);
+            const next = cloud.claims.has(claimId) ? -1 : cloud.queue.findIndex(fits);
+            const job =
+              cloud.claims.get(claimId) ??
+              (next >= 0 ? cloud.queue.splice(next, 1)[0] : null) ??
+              null;
             if (job) cloud.claims.set(claimId, job);
             return { body: { job } };
           }
@@ -119,6 +155,10 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
           if (!parsed) return { status: 404, body: { error: "unknown path" } };
           if (parsed.call === "steer" && cloud.noSteerCall) {
             cloud.steerCalls++;
+            return { status: 404, body: { error: `unknown path ${path}`, code: "not_found" } };
+          }
+          if (parsed.call === "terminal" && cloud.noTerminalCall) {
+            cloud.terminalCalls++;
             return { status: 404, body: { error: `unknown path ${path}`, code: "not_found" } };
           }
           const { jobId, call } = parsed;
@@ -181,6 +221,16 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
                   cloud.steers.set(jobId, []);
                   return { body: { steers: queued } };
                 }
+                await new Promise((r) => setTimeout(r, 10));
+              }
+            }
+            case "terminal": {
+              cloud.terminalCalls++;
+              const { waitMs = 0 } = body as { waitMs?: number };
+              const until = Date.now() + Math.min(waitMs, 100);
+              for (;;) {
+                const url = cloud.terminalUrls.get(jobId)?.shift();
+                if (url || Date.now() >= until) return { body: { connect: url ? { url } : null } };
                 await new Promise((r) => setTimeout(r, 10));
               }
             }
@@ -250,6 +300,100 @@ export function job(overrides: Partial<Job> = {}): Job {
   };
 }
 
+/** A terminal bridge that records what the relay asked of it (ADR 0440). */
+export interface FakeTerminal {
+  opened: OpenTerminalOptions[];
+  writes: string[];
+  resizes: TerminalSize[];
+  redraws: number;
+  closes: number;
+  open(options: OpenTerminalOptions): Promise<{
+    write(data: string): Promise<void>;
+    resize(size: TerminalSize): Promise<void>;
+    redraw(): Promise<void>;
+    close(): Promise<void>;
+  }>;
+}
+
+export function fakeTerminal(): FakeTerminal {
+  const t: FakeTerminal = {
+    opened: [],
+    writes: [],
+    resizes: [],
+    redraws: 0,
+    closes: 0,
+    async open(options) {
+      t.opened.push(options);
+      options.onSize({ cols: 80, rows: 24 });
+      options.onOutput(new TextEncoder().encode("screen"));
+      return {
+        async write(data) {
+          t.writes.push(data);
+        },
+        async resize(size) {
+          t.resizes.push(size);
+          options.onSize(size);
+        },
+        async redraw() {
+          t.redraws++;
+          options.onOutput(new TextEncoder().encode("redrawn"));
+        },
+        async close() {
+          t.closes++;
+        },
+      };
+    },
+  };
+  return t;
+}
+
+/** A WebSocket the test drives: what the host sent, and messages from the "relay". */
+export class FakeSocket {
+  binaryType = "blob";
+  bufferedAmount = 0;
+  readyState = 0;
+  sent: (string | Uint8Array)[] = [];
+  closed: { code?: number; reason?: string } | null = null;
+  private listeners = new Map<string, ((event: { data: unknown }) => void)[]>();
+
+  constructor(readonly url: string) {}
+
+  addEventListener(type: string, listener: (event: { data: unknown }) => void) {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+
+  send(data: string | Uint8Array) {
+    if (this.closed) throw new Error("closed");
+    this.sent.push(typeof data === "string" ? data : data.slice());
+  }
+
+  close(code?: number, reason?: string) {
+    if (this.closed) return;
+    this.closed = { code, reason };
+    this.readyState = 3;
+    this.emit("close");
+  }
+
+  /** The relay sends a control message. */
+  relay(message: object) {
+    this.emit("message", JSON.stringify(message));
+  }
+
+  emit(type: string, data?: unknown) {
+    for (const l of this.listeners.get(type) ?? []) l({ data });
+  }
+
+  texts(): Record<string, unknown>[] {
+    return this.sent.filter((s) => typeof s === "string").map((s) => JSON.parse(s as string));
+  }
+
+  bytes(): string[] {
+    return this.sent
+      .filter((s): s is Uint8Array => typeof s !== "string")
+      .map((b) => new TextDecoder().decode(b));
+  }
+}
+
 export interface FakeWorkspace extends WorkspaceHandle {
   clone: string;
 }
@@ -266,34 +410,55 @@ export function fakeAdapter(
     signal: AbortSignal,
     relay?: PlanningRelay,
   ) => Promise<AdapterEvent[]>,
-  options: { steer?: boolean } = {},
+  options: { steer?: boolean; interrupt?: boolean; terminal?: boolean } = {},
 ): RunnerAdapter<FakeWorkspace> & {
   calls: string[];
   prompts: string[];
   relays: Map<string, PlanningRelay>;
   steered: string[];
+  interrupted: string[];
+  terminal: FakeTerminal;
 } {
   const calls: string[] = [];
   const prompts: string[] = [];
   const relays = new Map<string, PlanningRelay>();
   const steered: string[] = [];
+  const interrupted: string[] = [];
+  const terminal = fakeTerminal();
   return {
     calls,
     prompts,
     relays,
     steered,
+    interrupted,
+    terminal,
     async manifest() {
       return {
         contractVersion: CONTRACT_VERSION,
         runnerKind: "fake",
         harnesses: ["claude-code"],
-        capabilities: options.steer ? ["headless", "steer"] : ["headless"],
+        capabilities: [
+          "headless",
+          ...(options.steer ? (["steer"] as const) : []),
+          ...(options.interrupt ? (["interrupt"] as const) : []),
+          ...(options.terminal ? (["terminal"] as const) : []),
+        ],
       };
     },
+    ...(options.terminal
+      ? { openTerminal: (_s: unknown, o: OpenTerminalOptions) => terminal.open(o) }
+      : {}),
     ...(options.steer
       ? {
           async steer(_s: unknown, text: string) {
             steered.push(text);
+          },
+        }
+      : {}),
+    ...(options.interrupt
+      ? {
+          async interrupt(_s: unknown, text: string) {
+            interrupted.push(text);
           },
         }
       : {}),

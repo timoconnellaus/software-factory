@@ -101,7 +101,11 @@ describe("project.create from the repo picker", () => {
       approvers: [`gh-${w.userId}`],
     });
     // Work can start straight away.
-    await ok("workItem.create", { projectId: p.id, title: "x", body: "y" }, w.human);
+    await ok(
+      "workItem.create",
+      { state: "queued", projectId: p.id, title: "x", body: "y" },
+      w.human,
+    );
   });
 
   it("refuses a repo the installation can't reach, and saves nothing", async () => {
@@ -181,7 +185,7 @@ describe("project.update (admin fix, not in onboarding)", () => {
   it("sets the installation by detection, audited", async () => {
     const w = await world();
     await env.DB.prepare(
-      "UPDATE core_projects SET github_installation_id = NULL, installation_record_id = NULL WHERE id = ?",
+      "UPDATE core_repositories SET github_installation_id = NULL, installation_record_id = NULL WHERE project_id = ?",
     )
       .bind(w.projectId)
       .run();

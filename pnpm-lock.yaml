@@ -26,6 +26,9 @@ importers:
       '@software-factory/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@software-factory/runner-contract':
+        specifier: workspace:*
+        version: link:../../packages/runner-contract
       '@software-factory/timeline':
         specifier: workspace:*
         version: link:../../packages/timeline
@@ -299,6 +302,18 @@ importers:
       '@software-factory/core':
         specifier: workspace:*
         version: link:../core
+      '@software-factory/runner-contract':
+        specifier: workspace:*
+        version: link:../runner-contract
+      '@software-factory/ui':
+        specifier: workspace:*
+        version: link:../ui
+      '@xterm/addon-fit':
+        specifier: 0.11.0
+        version: 0.11.0
+      '@xterm/xterm':
+        specifier: 6.0.0
+        version: 6.0.0
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -312,9 +327,12 @@ importers:
       '@software-factory/config':
         specifier: workspace:*
         version: link:../config
-      '@software-factory/ui':
-        specifier: workspace:*
-        version: link:../ui
+      '@types/react':
+        specifier: 19.3.0
+        version: 19.3.0
+      react:
+        specifier: 19.3.1
+        version: 19.3.1
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -2419,6 +2437,12 @@ packages:
 
   '@vitest/spy@5.1.0':
     resolution: {integrity: sha512-2DPO5OMHWKrBngC+fCmTQqemNF0gidRhp3lxbBmRhW+M1XJrfgPpqNqWVevXtn2f2ufD5ZaR1B6B641aAlcX5A==}
+
+  '@xterm/addon-fit@0.11.0':
+    resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
+
+  '@xterm/xterm@6.0.0':
+    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
   ansis@4.5.0:
     resolution: {integrity: sha512-KwIVkfFfJSSzBmZhDGuTmkhWqTdyB5oNVzzznBJbBZ5bZtHiqSrcugRF0RKJKT4Ss3d7ZrcjnlFVDlQNmtWfWw==}
@@ -5230,6 +5254,10 @@ snapshots:
       vite: 8.3.7(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)
 
   '@vitest/spy@5.1.0': {}
+
+  '@xterm/addon-fit@0.11.0': {}
+
+  '@xterm/xterm@6.0.0': {}
 
   ansis@4.5.0: {}
 

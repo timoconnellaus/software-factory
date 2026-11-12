@@ -22,6 +22,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
+import { type RunnerAccounts, RunnerAccountsView } from "#/components/runner-accounts";
 import { op, submitKey } from "#/lib/op";
 import { OpError, type SetupStatus } from "#/lib/ops";
 import { reposQuery, runnersQuery, setupStatusQuery } from "#/lib/queries";
@@ -658,14 +659,16 @@ function ProjectDetails({ project }: { project: ProjectState }) {
           }
         />
         <span className="font-semibold">{project.name}</span>
-        <a
-          href={`https://github.com/${project.repo.owner}/${project.repo.name}`}
-          target="_blank"
-          rel="noreferrer"
-          className="font-mono text-muted-foreground text-xs underline"
-        >
-          {project.repo.owner}/{project.repo.name}@{project.repo.defaultBranch}
-        </a>
+        {project.repo && (
+          <a
+            href={`https://github.com/${project.repo.owner}/${project.repo.name}`}
+            target="_blank"
+            rel="noreferrer"
+            className="font-mono text-muted-foreground text-xs underline"
+          >
+            {project.repo.owner}/{project.repo.name}@{project.repo.defaultBranch}
+          </a>
+        )}
       </div>
       <Collapsible className="group/collapsible text-sm">
         <CollapsibleTrigger className="flex items-center gap-1 text-left cursor-pointer text-muted-foreground text-xs">
@@ -728,7 +731,7 @@ function ProjectDetails({ project }: { project: ProjectState }) {
             </div>
             {project.protection && project.protection.state !== "ok" && (
               <div className="text-muted-foreground text-xs">
-                {project.repo.defaultBranch} not yet protected:{" "}
+                {project.repo?.defaultBranch ?? "The default branch"} not yet protected:{" "}
                 {project.protection.problems.join("; ")}
               </div>
             )}
@@ -815,6 +818,7 @@ function Runners() {
             <span className="text-muted-foreground text-xs">
               seen {ago(r.lastSeenAt)} · {r.capacityMax} slots
             </span>
+            <RunnerAccountPicker runnerId={r.id} accounts={r.accounts} />
           </div>
         ))}
         {runners.data && list.length === 0 && (
@@ -827,6 +831,33 @@ function Runners() {
       <PairByKey />
     </Card>
   );
+}
+
+/**
+ * Which Claude account the runner's new jobs use (ADR 0410). Sends the name only; the runner's
+ * host switches on its next heartbeat. The runner's owner only (the operation checks).
+ */
+function RunnerAccountPicker({
+  runnerId,
+  accounts,
+}: {
+  runnerId: string;
+  accounts: RunnerAccounts | null;
+}) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  async function pick(name: string) {
+    setBusy(true);
+    try {
+      await op("runner.account.use", { runnerId, name }, { idempotencyKey: submitKey() });
+      await queryClient.invalidateQueries({ queryKey: ["runners"] });
+    } catch (error) {
+      toast.error(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <RunnerAccountsView accounts={accounts} busy={busy} onPick={(n) => void pick(n)} />;
 }
 
 /**

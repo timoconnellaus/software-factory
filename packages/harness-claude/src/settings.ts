@@ -71,9 +71,10 @@ export interface ClaudeSettings {
     additionalDirectories?: string[];
   };
   sandbox: {
-    enabled: true;
-    /** Refuse to start rather than run commands unsandboxed. */
-    failIfUnavailable: true;
+    /** On in every stage, except inside a container, where the container is the floor (ADR 0430). */
+    enabled: boolean;
+    /** Refuse to start rather than run commands unsandboxed (whenever the sandbox is on). */
+    failIfUnavailable: boolean;
     /** Never: `dangerouslyDisableSandbox` is ignored. The floor; no profile can change it. */
     allowUnsandboxedCommands: false;
     autoAllowBashIfSandboxed: boolean;
@@ -136,9 +137,18 @@ export interface SettingsOptions {
   attachmentsDir?: string;
   /** Files the agent's Read tool may not open (a planning session's relay file, ADR 0350). */
   denyReadFiles?: string[];
+  /**
+   * Where the run is confined (ADR 0430): `sandbox` (default) is Claude Code's OS sandbox on the
+   * host (ADR 0270); `container` is a container per job, which is the floor instead. Claude's own
+   * sandbox is off there, and every stage defaults to `bypassPermissions`.
+   */
+  isolation?: Isolation;
   /** The platform the run's on, for its credential stores and temp dirs (default: this one). */
   platform?: NodeJS.Platform;
 }
+
+/** How a run is confined: Claude Code's OS sandbox on the host, or a container per job (ADR 0430). */
+export type Isolation = "sandbox" | "container";
 
 /** Hook events whose output can grant a permission or answer a dialog: a runner may not add them. */
 export const DECISION_HOOK_EVENTS = ["PreToolUse", "PermissionRequest", "Elicitation"] as const;
@@ -146,6 +156,17 @@ export const DECISION_HOOK_EVENTS = ["PreToolUse", "PermissionRequest", "Elicita
 /** Read-only exploration every stage gets. `WebFetch` is added per allowed domain. */
 const READ_TOOLS = ["Read", "Glob", "Grep", "LS", "TodoWrite", "Task", "WebSearch"];
 
+/**
+ * Shell commands the read-only stages (triage, spec, planning) may run without a prompt. None of them
+ * may start another program: `find -exec`/`-execdir`/`-ok`, `xargs`, `sort --compress-program`,
+ * `git grep -O` (open in a pager), `rg --pre`/`--hostname-bin`, `env`, `nice`, `time`, `awk system()`, `sed e`, `tar
+ * --to-command` all can, so they are left out (the Glob and Grep tools cover finding and searching),
+ * and `test/allowlist.test.ts` keeps them out. This is a convenience list, not the
+ * boundary: verify and build run the project's toolchain (`node`, `pnpm`, …), which runs anything,
+ * so for them the OS sandbox (filesystem `denyRead`/`denyWrite`, network allowlist) is the only
+ * floor, and on a Mac that floor does not stop a process reaching securityd for a keychain item
+ * whose access list trusts a binary the run can execute (ADR 0270 amendment, 2026-11-12).
+ */
 const SHELL_READ = [
   "ls",
   "cat",
@@ -153,9 +174,6 @@ const SHELL_READ = [
   "tail",
   "wc",
   "grep",
-  "rg",
-  "find",
-  "sort",
   "uniq",
   "diff",
   "pwd",
@@ -167,7 +185,6 @@ const SHELL_READ = [
   "jq",
   "tr",
   "cut",
-  "xargs",
   "cd",
   "file",
   "stat",
@@ -184,7 +201,6 @@ const GIT_READ = [
   "git diff",
   "git rev-parse",
   "git ls-files",
-  "git grep",
   "git blame",
   "git merge-base",
   "git branch --show-current",
@@ -332,6 +348,9 @@ export function harnessEnv(runDir: string, runTmp = `${runDir}/tmp`): Record<str
     GIT_ASKPASS: "",
     SSH_ASKPASS: "",
     GIT_SSH_COMMAND: "false",
+    // No pager can be a program: git's `-p`/`--paginate` and anything honouring PAGER get `cat`.
+    GIT_PAGER: "cat",
+    PAGER: "cat",
     SSH_AUTH_SOCK: "",
     // Cloud CLIs
     AWS_ACCESS_KEY_ID: "",
@@ -389,9 +408,28 @@ export const DEFAULT_MODES: Record<JobStage, PermissionMode> = {
   verify: "dontAsk",
 };
 
-/** The permission mode a stage runs in: the project's choice, else the default. */
-export function stageMode(stage: JobStage, profile?: HarnessProfile): PermissionMode {
-  return profile?.permissionMode?.[stage] ?? DEFAULT_MODES[stage];
+/**
+ * The default mode per stage inside a container (ADR 0430): the container confines the whole
+ * process, so every stage runs with permissions off.
+ */
+export const CONTAINER_MODES: Record<JobStage, PermissionMode> = {
+  triage: "bypassPermissions",
+  spec: "bypassPermissions",
+  planning: "bypassPermissions",
+  build: "bypassPermissions",
+  verify: "bypassPermissions",
+};
+
+/** The permission mode a stage runs in: the project's choice, else the isolation's default. */
+export function stageMode(
+  stage: JobStage,
+  profile?: HarnessProfile,
+  isolation: Isolation = "sandbox",
+): PermissionMode {
+  return (
+    profile?.permissionMode?.[stage] ??
+    (isolation === "container" ? CONTAINER_MODES : DEFAULT_MODES)[stage]
+  );
 }
 
 /** The hosts sandboxed commands may reach: the defaults plus the project's additions. */
@@ -444,7 +482,11 @@ const abs = (path: string) => `//${path.replace(/^\/+/, "")}`;
 /** The settings for one run. Pure: `projectHarness` writes it. */
 export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): ClaudeSettings {
   const profile = options.profile;
-  const mode = stageMode(job.stage, profile);
+  const isolation = options.isolation ?? "sandbox";
+  const mode = stageMode(job.stage, profile, isolation);
+  // Inside a container the container is the floor: Claude's own sandbox can't run nested there
+  // (bubblewrap needs user namespaces Docker's seccomp profile blocks), ADR 0430.
+  const osSandbox = isolation === "sandbox";
   const domains = allowedDomains(profile);
   const runTmp = options.runTmp ?? `${options.runDir}/tmp`;
   for (const event of DECISION_HOOK_EVENTS) {
@@ -505,8 +547,8 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
       ...(options.attachmentsDir ? { additionalDirectories: [options.attachmentsDir] } : {}),
     },
     sandbox: {
-      enabled: true,
-      failIfUnavailable: true,
+      enabled: osSandbox,
+      failIfUnavailable: osSandbox,
       allowUnsandboxedCommands: false,
       // Only where the mode lets everything through anyway; elsewhere the stage allowlist decides.
       autoAllowBashIfSandboxed: mode === "bypassPermissions",

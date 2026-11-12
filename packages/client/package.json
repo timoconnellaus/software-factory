@@ -3,8 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "What both front ends (sf-app and the desktop app) need that isn't React: the operation types and OpError, the inbox grouping, the review packet, planning, questions, work item steps, runner labels, attachment checks and formatting. Pure, so a view, workerd and Node all run it.",
+  "description": "What both front ends (sf-app and the desktop app) need: the operation types and OpError, the inbox grouping, the review packet, planning, questions, work item steps, runner labels, attachment checks, formatting and the web terminal's client, all pure so a view, workerd and Node run them; and one React view both share, the web terminal (web-terminal-view.tsx, spec 42).",
   "exports": {
+    "./web-terminal-view": "./src/web-terminal-view.tsx",
     "./*": "./src/*.ts"
   },
   "scripts": {
@@ -13,14 +14,22 @@
   },
   "dependencies": {
     "@software-factory/core": "workspace:*",
+    "@software-factory/runner-contract": "workspace:*",
+    "@software-factory/ui": "workspace:*",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.5.1",
     "@cloudflare/workers-types": "5.20261104.1",
     "@software-factory/config": "workspace:*",
-    "@software-factory/ui": "workspace:*",
+    "@types/react": "19.3.0",
+    "react": "19.3.1",
     "typescript": "6.0.3",
     "vitest": "5.1.0"
+  },
+  "peerDependencies": {
+    "react": "^19"
   }
 }

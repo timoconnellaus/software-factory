@@ -5,12 +5,15 @@
 // Hibernatable WebSockets: an idle hub costs nothing.
 import { DurableObject } from "cloudflare:workers";
 
-export interface ClientEvent {
-  type: "notify";
-  event: string;
-  title: string;
-  workItemId: string | null;
-}
+export type ClientEvent =
+  | {
+      type: "notify";
+      event: string;
+      title: string;
+      workItemId: string | null;
+    }
+  /** A work item's planning changed, for the person who has its Planning view open (spec 26). */
+  | { type: "planning.changed"; workItemId: string };
 
 export class ClientHub extends DurableObject<Env> {
   /** The door has already authenticated the caller; this only accepts the socket. */

@@ -12,8 +12,11 @@ import {
   type Refusal,
   toRefusal,
 } from "@software-factory/core";
+import { parseTerminalPath } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
 import { planningHub } from "./planning-hub.ts";
+import { attachTerminal, type TerminalAttachResult } from "./terminal-attach.ts";
+import { terminalRelay } from "./terminal-relay.ts";
 
 /** `ms` is the time spent inside the engine, so the caller can tell it apart from the hop. */
 export type EngineInvokeResult<O = unknown> =
@@ -63,6 +66,29 @@ export class EngineApi extends WorkerEntrypoint<Env> {
       throw error;
     }
     return { ok: true, stream: await planningHub(this.env, workItemId).stream() };
+  }
+
+  /**
+   * Opens a run's web terminal for a person (spec 35, ADR 0440): `run.terminal.attach` as them
+   * (which decides `type` or `watch` and records the attach), then a one-use viewer ticket from the
+   * job's relay. The caller opens the socket at `path` through this binding's `fetch`.
+   */
+  async terminalAttach(
+    workItemId: string,
+    runId: string,
+    options: EngineInvokeOptions,
+  ): Promise<TerminalAttachResult> {
+    return attachTerminal(this.env, workItemId, runId, options);
+  }
+
+  /**
+   * Only through the service binding: a viewer's web terminal socket (`/terminal/v1/jobs/<id>/view`,
+   * with the ticket `terminalAttach` gave), handed to the job's relay. Nothing else.
+   */
+  override async fetch(request: Request): Promise<Response> {
+    const path = parseTerminalPath(new URL(request.url).pathname);
+    if (path?.role !== "view") return new Response("Not found", { status: 404 });
+    return terminalRelay(this.env, path.jobId).fetch(request);
   }
 
   /** Every operation with its description, risk, actors and permission (for help and MCP). */

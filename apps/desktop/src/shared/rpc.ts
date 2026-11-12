@@ -29,10 +29,39 @@ export interface Session {
 }
 
 /**
+ * Updates as the view sees them (spec 40 M4, ADR 0393). `required`: the door refused this build as
+ * too old (426 update_required), so nothing but updating works; the view shows its "Update
+ * required" screen. `ready`: a verified update is staged. `jobs`: how many jobs the runner is
+ * running (restarting cancels them, so the view asks first). `waitingForRunner`: "Restart to update"
+ * is waiting for the runner to stop claiming (it gives up at this time, epoch ms), or null.
+ * `downloadUrl`: the channel's download, for when nothing is staged.
+ */
+export interface UpdateStatus {
+  required: boolean;
+  ready: boolean;
+  version: string | null;
+  error: string | null;
+  needsMove: boolean;
+  jobs: number;
+  waitingForRunner: number | null;
+  downloadUrl: string;
+}
+
+/**
  * An operation's answer as the view sees it: the door's `{ result }` or `{ code, error }`. A call a
  * gate holds is `{ ok: false, code: "pending" }`. Bytes travel as `{ $bytes: base64 }` both ways.
  */
 export type CallResult = { ok: true; result: unknown } | { ok: false; code: string; error: string };
+
+/**
+ * What a run's web terminal socket did (spec 42, ADR 0530), relayed by the main process: the relay's
+ * JSON messages as `text`, the pane's output bytes as base64. The view chose the handle (`id`).
+ */
+export type TerminalEvent =
+  | { id: string; kind: "open" }
+  | { id: string; kind: "text"; data: string }
+  | { id: string; kind: "bytes"; base64: string }
+  | { id: string; kind: "close"; code: number; reason: string };
 
 export type AppRPC = {
   bun: {
@@ -58,10 +87,35 @@ export type AppRPC = {
       };
       loginItem: { params: { enable?: boolean }; response: { enabled: boolean } };
       openExternal: { params: { url: string }; response: { ok: boolean } };
+      /** Opens a run's web terminal through the client door under the view's handle (spec 42). */
+      terminalOpen: {
+        params: { id: string; workItemId: string; runId: string };
+        response: { ok: boolean; error: string | null };
+      };
+      /** One text frame to the relay (keys or a size, as the shared client writes them). */
+      terminalSend: { params: { id: string; data: string }; response: { ok: boolean } };
+      terminalClose: { params: { id: string }; response: { ok: boolean } };
+      /** A double-click on the toolbar's empty space: the system's title-bar action (spec 41). */
+      titleBarDoubleClick: {
+        params: Record<string, never>;
+        response: { action: "zoom" | "minimize" | "none" };
+      };
       /** Saves a file to ~/Downloads (base64 bytes) and shows it in Finder. */
       saveDownload: {
         params: { filename: string; base64: string };
         response: { ok: boolean; path: string | null };
+      };
+      updateStatus: { params: Record<string, never>; response: UpdateStatus };
+      /**
+       * restart: only while the runner is idle. restart-when-idle: once its jobs end.
+       * restart-anyway: cancels its jobs (the view named them). download: opens the download.
+       * retry: forget update_required and try the door again (the floor may have been lowered).
+       */
+      updateAction: {
+        params: {
+          action: "restart" | "restart-when-idle" | "restart-anyway" | "download" | "retry";
+        };
+        response: UpdateStatus;
       };
     };
     messages: Record<string, never>;
@@ -72,7 +126,10 @@ export type AppRPC = {
       sessionChanged: Session;
       runnerChanged: RunnerState;
       inboxChanged: { count: number };
+      planningChanged: { workItemId: string };
       navigate: { path: string };
+      updateChanged: UpdateStatus;
+      terminalEvent: TerminalEvent;
     };
   };
 };

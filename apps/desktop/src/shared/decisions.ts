@@ -12,6 +12,13 @@ export const DECISION_OPS: ReadonlySet<string> = new Set([
   "question.acceptDefaults",
 ]);
 
+/**
+ * Operations a desktop may also run through `decide` with a presence proof, but that don't need one
+ * for every input: `planning.answer` answers an ordinary planning question with `call`, and a
+ * security, privacy or irreversible one with Touch ID (spec 26, ADR 0042 as amended).
+ */
+export const DECIDE_OPS: ReadonlySet<string> = new Set([...DECISION_OPS, "planning.answer"]);
+
 /** What `call` answers for a gate decision: it must go through `decide`. */
 export const refuseDecisionCall = (op: string) => ({
   ok: false as const,

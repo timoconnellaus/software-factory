@@ -42,12 +42,15 @@
     "bindings": [
       { "name": "PLANNING_HUB", "class_name": "PlanningHub" },
       // One ClientHub per person (spec 40 M2b): their desktop apps' live connections.
-      { "name": "CLIENT_HUB", "class_name": "ClientHub" }
+      { "name": "CLIENT_HUB", "class_name": "ClientHub" },
+      // One TerminalRelay per job (spec 35, ADR 0440): its web terminal's host and viewer sockets.
+      { "name": "TERMINAL_RELAY", "class_name": "TerminalRelay" }
     ]
   },
   "migrations": [
     { "tag": "v1-planning-hub", "new_sqlite_classes": ["PlanningHub"] },
-    { "tag": "v2-client-hub", "new_sqlite_classes": ["ClientHub"] }
+    { "tag": "v2-client-hub", "new_sqlite_classes": ["ClientHub"] },
+    { "tag": "v3-terminal-relay", "new_sqlite_classes": ["TerminalRelay"] }
   ],
   "workflows": [
     {
@@ -69,11 +72,20 @@
     // tighten; anything malformed denies every call. Empty = no floor.
     "FACTORY_FLOOR": "",
     // The default-branch commit this engine was deployed from (ADR 0360): the deploy sets it with
-    // `--var DEPLOYED_SHA:<sha>`, and runners update themselves to it. Empty: a dev engine (no updates).
+    // `--var DEPLOYED_SHA:<sha>`. Empty: a dev engine (no updates).
     "DEPLOYED_SHA": "",
+    // The last commit at or before DEPLOYED_SHA that changed runner code (ADR 0520): the deploy
+    // computes it with git and sets `--var RUNNER_SHA:<sha>`, and runners are asked to run it, so a
+    // deploy that changed no runner code moves no runner. Empty: runners get DEPLOYED_SHA.
+    "RUNNER_SHA": "",
     // Accept presence proofs from desktop devices with a software key (ADR 0391): "1" only on a local
     // dev engine. Anything else refuses them, so a gate decision needs a Secure Enclave key.
     "DESKTOP_ALLOW_SOFTWARE_KEYS": "",
+    // The oldest desktop door protocol the client door serves (ADR 0393). Older builds get 426
+    // `update_required` and update themselves. Empty or 0 = serve every build. Raise it only when
+    // older builds must stop; the app's own number is DOOR_PROTOCOL in apps/desktop. CI and the
+    // deploy refuse a floor above what the newest published build speaks (scripts/deploy/desktop-floor.ts).
+    "DESKTOP_MIN_PROTOCOL": "",
     // "1" swaps the GitHub App for an in-D1 fake (tests and local dev only).
     "GITHUB_FAKE": ""
   }

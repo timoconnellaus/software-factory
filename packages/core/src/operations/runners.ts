@@ -4,12 +4,14 @@
 
 import { json, parseJson } from "@software-factory/db";
 import {
+  accountNameSchema,
   type artifactSchema,
   CAPABILITIES,
   type Capability,
   type CapabilityManifest,
   canRun,
   capabilityManifestSchema,
+  capacityPausedSchema,
   capacitySchema,
   JOB_STAGES,
   type Job,
@@ -17,12 +19,16 @@ import {
   type ModelRole,
   PLANNING_YIELD_AFTER_MS,
   type Pool,
+  RUNNER_COMPAT,
+  type RunnerAccounts,
   runBranch,
+  runnerAccountsSchema,
   runnerEventSchema,
   runnerVersionSchema,
   stagePool,
   storedArtifactSchema,
 } from "@software-factory/runner-contract";
+import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId, newRunnerId } from "../ids.ts";
@@ -37,9 +43,19 @@ import { planningRunEnded, USER_EVENTS } from "../planning.ts";
 import { policyImpact } from "../policy/impact.ts";
 import type { ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
+import { desiredRunnerVersion } from "../services.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
-import { fencingToken, jobId, repoRef, requireWorkItem, sha, workItemId } from "./shared.ts";
+import {
+  fencingToken,
+  itemRepository,
+  jobId,
+  repoRef,
+  requireRepository,
+  requireWorkItem,
+  sha,
+  workItemId,
+} from "./shared.ts";
 import { RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./work-items.ts";
 
 /** How long a lease lasts without a heartbeat (open question in ADR 0021; ADR 0052 picks this). */
@@ -70,13 +86,37 @@ const runnerView = z.object({
   update: z
     .object({ state: z.string(), target: z.string().nullable(), reason: z.string().nullable() })
     .nullable(),
+  /**
+   * Its Claude accounts (ADR 0410): names, the active one, the one its owner asked for (until the
+   * runner reports it active) and recent usage limits. Null: it hasn't reported any (an older
+   * runner).
+   */
+  accounts: z
+    .object({
+      names: z.array(z.string()),
+      active: z.string(),
+      requested: z.string().nullable(),
+      limits: z.array(z.object({ name: z.string(), at: z.string(), message: z.string() })),
+    })
+    .nullable(),
 });
 
-/** The commit runners should run (ADR 0360), or null on an engine that doesn't know it. */
-const desiredVersion = (ctx: HandlerContext): string | null => {
-  const sha = ctx.services.deployedSha?.trim() ?? "";
-  return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
-};
+/** A runner row's accounts, for `runnerView`. */
+function accountsView(r: {
+  accounts: string | null;
+  account_requested: string | null;
+}): z.infer<typeof runnerView>["accounts"] {
+  const reported = parseJson<RunnerAccounts | null>(r.accounts, null);
+  if (!reported) return null;
+  return {
+    names: reported.names,
+    active: reported.active,
+    requested: r.account_requested,
+    limits: reported.limits ?? [],
+  };
+}
+
+const desiredVersion = (ctx: HandlerContext): string | null => desiredRunnerVersion(ctx.services);
 
 async function loadRunner(ctx: HandlerContext, id: string) {
   const runner = await ctx.db
@@ -189,6 +229,7 @@ export const runnerList = defineOperation({
         update: r.update_state
           ? { state: r.update_state, target: r.update_target, reason: r.update_reason }
           : null,
+        accounts: accountsView(r),
       })),
     };
   },
@@ -202,8 +243,18 @@ function reportRunnerState(
     capacity: z.infer<typeof capacitySchema>;
     rateLimitedUntil?: string | null | undefined;
     version?: z.infer<typeof runnerVersionSchema> | undefined;
+    accounts?: RunnerAccounts | undefined;
+    /** Only the heartbeat carries it; a claim leaves the stored value alone. */
+    compat?: number | null;
   },
-) {
+): { pendingAccount: string | null } {
+  // The owner's pick is done once the runner reports it active, and moot once the runner reports
+  // accounts without it (removed on the host).
+  const requested = runner.account_requested;
+  const settled =
+    requested !== null &&
+    report.accounts !== undefined &&
+    (report.accounts.active === requested || !report.accounts.names.includes(requested));
   ctx.write(
     ctx.db
       .updateTable("core_runners")
@@ -214,6 +265,7 @@ function reportRunnerState(
         light_max: report.capacity.light?.max ?? null,
         light_in_use: report.capacity.light?.inUse ?? 0,
         accepting: report.capacity.accepting ? 1 : 0,
+        paused: report.capacity.paused ? json(report.capacity.paused) : null,
         ...(report.rateLimitedUntil !== undefined
           ? { rate_limited_until: report.rateLimitedUntil }
           : {}),
@@ -227,10 +279,58 @@ function reportRunnerState(
               update_reason: report.version.update.reason,
             }
           : {}),
+        ...(report.accounts ? { accounts: json(report.accounts) } : {}),
+        ...(report.compat !== undefined ? { compat: report.compat } : {}),
+        ...(settled ? { account_requested: null, account_requested_at: null } : {}),
       })
       .where("id", "=", runner.id),
   );
+  return { pendingAccount: requested !== null && !settled ? requested : null };
 }
+
+export const runnerAccountUse = defineOperation({
+  name: "runner.account.use",
+  description:
+    "Pick which of a runner's Claude accounts new jobs use (ADR 0410). Takes the account's name only: accounts and their credentials live on the runner's host. Running jobs keep theirs. The runner's owner only.",
+  risk: "write",
+  actors: ["human"],
+  permission: "signed-in",
+  input: z.object({ runnerId: z.string().min(1), name: accountNameSchema }),
+  output: z.object({ runnerId: z.string(), requested: z.string(), active: z.string() }),
+  async handler(input, ctx) {
+    const runner = await loadRunner(ctx, input.runnerId);
+    if (runner.owner_user_id !== ctx.actor.id)
+      throw new OperationError("forbidden", "not your runner");
+    const reported = parseJson<RunnerAccounts | null>(runner.accounts, null);
+    if (!reported) {
+      throw new OperationError(
+        "conflict",
+        "this runner hasn't reported its Claude accounts: update it (sf-runner) first",
+      );
+    }
+    if (!reported.names.includes(input.name)) {
+      throw new OperationError(
+        "invalid_input",
+        `no account "${input.name}" on this runner; add it on the host with sf-runner account add`,
+      );
+    }
+    // Picking the active one clears a pending pick.
+    const requested = input.name === reported.active ? null : input.name;
+    ctx.write(
+      ctx.db
+        .updateTable("core_runners")
+        .set({ account_requested: requested, account_requested_at: requested ? ctx.now : null })
+        .where("id", "=", runner.id),
+    );
+    ctx.change({
+      entity: "runner",
+      id: runner.id,
+      before: { account: reported.active, requested: runner.account_requested },
+      after: { account: input.name },
+    });
+    return { runnerId: runner.id, requested: input.name, active: reported.active };
+  },
+});
 
 export const runnerHeartbeat = defineOperation({
   name: "runner.heartbeat",
@@ -246,19 +346,42 @@ export const runnerHeartbeat = defineOperation({
     rateLimitedUntil: z.iso.datetime({ offset: true }).nullable().optional(),
     /** The runner's own code and its self-update (ADR 0360); older runners omit it. */
     version: runnerVersionSchema.optional(),
+    /** Its Claude accounts, names only (ADR 0410); older runners omit it. */
+    accounts: runnerAccountsSchema.optional(),
+    /** Its code's RUNNER_COMPAT (ADR 0520); older runners omit it, which counts as 1. */
+    compat: z.number().int().min(0).optional(),
   }),
   output: z.object({
     commands: z.array(
-      z.object({ kind: z.literal("cancel"), jobId: z.string(), reason: z.string() }),
+      z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("cancel"), jobId: z.string(), reason: z.string() }),
+        z.object({ kind: z.literal("account.use"), name: z.string() }),
+      ]),
     ),
     leases: z.array(z.object({ jobId: z.string(), expiresAt: z.string() })),
-    /** The commit the runner should run (ADR 0360); null when the engine doesn't know. */
+    /** The commit the runner should run (ADR 0360, 0520); null when the engine doesn't know. */
     desiredVersion: z.string().nullable(),
+    /** The engine's RUNNER_COMPAT: a runner below it claims nothing until it updates (ADR 0520). */
+    minRunnerCompat: z.number().int(),
   }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
-    reportRunnerState(ctx, runner, input);
-    const commands: { kind: "cancel"; jobId: string; reason: string }[] = [];
+    const { pendingAccount } = reportRunnerState(ctx, runner, {
+      ...input,
+      compat: input.compat ?? null,
+    });
+    // The runner claims nothing until an update it is waiting for (ADR 0520): free its light pool
+    // by asking an idle planning session (nobody there, nothing undelivered) to yield, as a full
+    // pool would. Its resume is pinned to this runner and placed once it has updated.
+    if (input.version?.update.state === "waiting" && input.version.update.claims === "none") {
+      await requestYield(ctx, runner.id);
+    }
+    const commands: (
+      | { kind: "cancel"; jobId: string; reason: string }
+      | { kind: "account.use"; name: string }
+    )[] = [];
+    // Sent on every heartbeat until the host reports the switch (ADR 0410).
+    if (pendingAccount) commands.push({ kind: "account.use", name: pendingAccount });
     const leases: { jobId: string; expiresAt: string }[] = [];
     const expiresAt = new Date(Date.parse(ctx.now) + LEASE_TTL_MS).toISOString();
     for (const held of input.activeJobs) {
@@ -307,7 +430,12 @@ export const runnerHeartbeat = defineOperation({
       );
       leases.push({ jobId: held.jobId, expiresAt });
     }
-    return { commands, leases, desiredVersion: desiredVersion(ctx) };
+    return {
+      commands,
+      leases,
+      desiredVersion: desiredVersion(ctx),
+      minRunnerCompat: RUNNER_COMPAT,
+    };
   },
 });
 
@@ -379,10 +507,24 @@ export async function placementRefusal(
     harness: string;
     pinnedRunnerId?: string | null;
   },
-  item: Pick<WorkItemRow, "id" | "org_id" | "project_id" | "requester_user_id">,
+  item: Pick<WorkItemRow, "id" | "org_id" | "project_id" | "requester_user_id"> & {
+    repository_id?: string | null;
+  },
   project: Pick<ProjectRow, "id" | "factory_id" | "policy_sha">,
 ): Promise<{ reason: string; wip?: true; waitReason?: string } | null> {
   if (!manifest) return { reason: "runner has not reported a manifest" };
+  // Checked before anything is claimed (ADR 0490): an item with no repository waits, with the
+  // reason, and never blocks the jobs behind it.
+  if (
+    "repository_id" in item &&
+    !(await itemRepository(ctx.db, {
+      repository_id: item.repository_id ?? null,
+      project_id: item.project_id,
+    }))
+  ) {
+    const reason = "the work item has no repository: choose one of its project's";
+    return { reason, waitReason: reason };
+  }
   // A planning resume goes back to its session's runner (ADR 0300), and only a runner with a light
   // pool takes planning at all (ADR 0301).
   if (job.pinnedRunnerId && job.pinnedRunnerId !== runner.id) {
@@ -390,6 +532,11 @@ export async function placementRefusal(
   }
   if (job.stage === "planning" && runner.light_max === null) {
     return { reason: "runner reports no light pool" };
+  }
+  // A runner waiting to update starts no planning session (ADR 0520): one moves at human speed and
+  // would hold the update off. A pinned resume waits for it too, then goes back to it.
+  if (job.stage === "planning" && runner.update_state === "waiting") {
+    return { reason: "runner is waiting to update" };
   }
   const fit = canRun(manifest, {
     harness: { id: job.harness } as Job["harness"],
@@ -486,15 +633,31 @@ async function freePools(
   if (!runner.accepting) return null;
   if (runner.rate_limited_until && Date.parse(runner.rate_limited_until) > nowMs) return null;
   const active = await activeRunsByPool(ctx, runner.id);
+  // A pool the runner paused (ADR 0552: its load, or its tmux) gets nothing new.
+  const paused = (reported ? reported.paused : runnerPaused(runner))?.pools ?? [];
   if (runner.light_max === null) {
-    const any = Math.max(active.heavy + active.light, reported?.inUse ?? 0) < runner.capacity_max;
+    const any =
+      paused.length === 0 &&
+      Math.max(active.heavy + active.light, reported?.inUse ?? 0) < runner.capacity_max;
     return { heavy: any, light: any, split: false };
   }
   return {
-    heavy: Math.max(active.heavy, reported?.inUse ?? 0) < runner.capacity_max,
-    light: Math.max(active.light, reported?.light?.inUse ?? 0) < runner.light_max,
+    heavy:
+      !paused.includes("heavy") &&
+      Math.max(active.heavy, reported?.inUse ?? 0) < runner.capacity_max,
+    light:
+      !paused.includes("light") &&
+      Math.max(active.light, reported?.light?.inUse ?? 0) < runner.light_max,
     split: true,
   };
+}
+
+/** The pause a runner last reported (ADR 0552), or null. */
+function runnerPaused(
+  runner: Pick<RunnerRow, "paused">,
+): z.infer<typeof capacityPausedSchema> | null {
+  const parsed = capacityPausedSchema.safeParse(parseJson<unknown>(runner.paused, null));
+  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -588,6 +751,11 @@ async function buildJob(
   leaseExpiresAt: string,
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
+  // The item's repository (ADR 0490); placementRefusal already checked there is one.
+  const repository = await itemRepository(ctx.db, item);
+  if (!repository) {
+    throw new OperationError("conflict", `work item #${item.number} has no repository`);
+  }
   // The harness stays at least as narrow as the version the item started under (ADR 0370 §5).
   const pinned =
     item.policy_sha && item.policy_sha !== project.policy_sha
@@ -610,11 +778,11 @@ async function buildJob(
     stage: job.stage as Job["stage"],
     workItem: { id: item.id, number: item.number, title: item.title },
     repo: {
-      url: `https://github.com/${project.repo_owner}/${project.repo_name}.git`,
-      owner: project.repo_owner,
-      name: project.repo_name,
+      url: `https://github.com/${repository.owner}/${repository.name}.git`,
+      owner: repository.owner,
+      name: repository.name,
       baseRef: item.branch,
-      defaultBranch: project.default_branch,
+      defaultBranch: repository.default_branch,
     },
     branch: run.branch,
     harness: {
@@ -687,15 +855,24 @@ export const jobClaim = defineOperation({
       return { job: await buildJob(ctx, prior, run, item, project, lease?.expires_at ?? ctx.now) };
     }
 
+    // Code older than the engine's compatibility level gets nothing (ADR 0520), whatever the runner
+    // decides itself: one from before RUNNER_COMPAT, or one that can't update, may still claim.
+    if ((runner.compat ?? 1) < RUNNER_COMPAT) return { job: null };
+
     const room = await freePools(ctx, current, input.capacity);
     if (!room || (!room.heavy && !room.light && !room.split)) return { job: null };
     // A light job this runner could take but for a full light pool: ask an idle session to yield.
     let lightBlocked = false;
 
+    // Released work first: a shaping item's triage and planning jobs (ADR 0493) wait behind the
+    // jobs of work people already committed to, then oldest first.
     const queued = await ctx.db
       .selectFrom("core_jobs")
       .selectAll()
       .where("status", "=", "queued")
+      .orderBy(
+        sql`(SELECT w.status = 'shaping' FROM core_work_items w WHERE w.id = core_jobs.work_item_id)`,
+      )
       .orderBy("created_at")
       .limit(50)
       .execute();
@@ -711,7 +888,8 @@ export const jobClaim = defineOperation({
         .where("id", "=", job.project_id)
         .executeTakeFirst();
       if (!item || !project) continue;
-      if (!["running", "waiting"].includes(item.status)) continue;
+      // `shaping`: shaping stages before release runs its triage and planning jobs too (ADR 0493).
+      if (!["running", "waiting", "shaping"].includes(item.status)) continue;
       if (!room[job.pool] && (job.pool !== "light" || !room.split || lightBlocked)) continue;
       const refusal = await placementRefusal(
         ctx,
@@ -893,9 +1071,8 @@ export const runIssueToken = defineOperation({
   async handler(input, ctx) {
     const run = await loadRun(ctx, input.jobId);
     if (!isActive(run.status)) throw new OperationError("conflict", `run is ${run.status}`);
-    const project = ctx.scope.project;
-    if (!project) throw new OperationError("not_found", "no project");
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const minted = await ctx.services.github.mintRepoToken(repo);
     return {
       token: minted.token,
@@ -934,6 +1111,14 @@ export const runReportEvents = defineOperation({
         ? (last.state as "preparing" | "running" | "collecting")
         : null;
     const started = input.events.find((e) => e.type === "session.started");
+    // A stream session handed to a person (ADR 0450): its resume command is the run's takeover.
+    const handed = input.events.findLast((e) => e.type === "takeover");
+    const takeover =
+      handed?.type === "takeover"
+        ? { label: "Resume in a terminal", hint: handed.hint }
+        : started?.type === "session.started" && started.takeover
+          ? started.takeover
+          : null;
     if (isActive(run.status)) {
       ctx.write(
         ctx.db
@@ -941,9 +1126,7 @@ export const runReportEvents = defineOperation({
           .set({
             last_event_at: ctx.now,
             ...(mapped ? { status: mapped } : {}),
-            ...(started?.type === "session.started" && started.takeover
-              ? { takeover: json(started.takeover) }
-              : {}),
+            ...(takeover ? { takeover: json(takeover) } : {}),
           })
           .where("id", "=", run.id),
       );
@@ -1097,10 +1280,8 @@ export const runHandBack = defineOperation({
     }
     if (input.outcome === "completed" && run.stage === "build") {
       if (!input.headSha) return fail("a build hand-back needs the pushed head SHA");
-      const project = ctx.scope.project;
-      if (!project) throw new OperationError("not_found", "no project");
       const pushed = await ctx.services.github.getBranchSha(
-        await repoRef(ctx, project),
+        await repoRef(ctx, requireRepository(ctx)),
         run.branch,
       );
       if (pushed !== input.headSha) {

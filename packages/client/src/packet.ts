@@ -182,3 +182,31 @@ export function checkCounts(p: ParsedPacket): {
   const c = packetCounts(p);
   return { passed: c.checksPassed, failed: c.checksFailed, total: c.checksTotal, source: "runner" };
 }
+
+const testsIntactSection = z.object({
+  headSha: z.string(),
+  intact: z.boolean(),
+  findings: z
+    .array(
+      z.object({
+        kind: z.string(),
+        path: z.string(),
+        line: z.number().nullable(),
+        text: z.string().nullable(),
+        message: z.string(),
+      }),
+    )
+    .default([]),
+  /** How many findings there were in all; the list stops at 100. */
+  total: z.number().optional(),
+});
+export type TestsIntactSection = z.infer<typeof testsIntactSection>;
+
+/**
+ * The tests-intact guard's result for the packet's SHA (ADR 0500), or null for a packet from before
+ * the guard (which reads as "not checked", never as intact).
+ */
+export function packetTestsIntact(p: ParsedPacket): TestsIntactSection | null {
+  const r = testsIntactSection.safeParse(p.sections.testsIntact);
+  return r.success ? r.data : null;
+}

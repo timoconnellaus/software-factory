@@ -136,6 +136,24 @@ export const projectPolicySchema = z
       .default({ gateHours: 72, questionHours: 48 }),
     /** How many items may wait at human gates before new builds stop (ADR 0040). */
     wipLimit: z.number().int().positive().max(100).default(5),
+    /**
+     * How many items may be in the pipeline at once (running, waiting or paused). Queued items are
+     * pulled while the project is under it (ADR 0491).
+     */
+    activeLimit: z.number().int().positive().max(100).default(10),
+    /**
+     * How many items may be shaping at once (ADR 0493): shaping uses runners too, so a burst of it
+     * can't crowd out released work.
+     */
+    shapingLimit: z.number().int().positive().max(100).default(5),
+    /**
+     * Who may release work from ready to queued (ADR 0491). A person always may; agents, intakes and
+     * chat only with `agents: true`. Turning it on is a loosening, so only a person can.
+     */
+    release: z
+      .object({ agents: z.boolean().default(false) })
+      .strict()
+      .default({ agents: false }),
     /** Automatic retries of a failed build or verify before the item fails (ADR 0005). */
     retryLimit: z.number().int().min(0).max(5).default(2),
     /** GitHub logins (or user ids) who decide gates. Empty: the org's owners and admins. */
@@ -180,8 +198,13 @@ export const projectPolicySchema = z
     reviewPacket: z.object({ sections: z.array(z.string().min(1)).min(1) }).optional(),
     /** Agents steps hand to (ADR 0372). */
     agents: z.array(agentSchema).max(30).default([]),
-    /** Named workflows; triage picks one per work item. None means the skeleton alone (ADR 0371). */
+    /** Named workflows (ADR 0371). The project runs the one named by `workflow` (ADR 0492). */
     workflows: z.array(workflowSchema).max(20).default([]),
+    /**
+     * The project's workflow, by name (ADR 0492): every item follows it. Null: the skeleton alone.
+     * There is no per-item override.
+     */
+    workflow: z.string().min(1).max(100).nullable().default(null),
     /**
      * Self-improvement (ADR 0373): the factory trials practice changes on the next `trialSize`
      * items, at most `weeklyCap` a week. Turning it on is a policy change for a person.
@@ -210,6 +233,14 @@ export const projectPolicySchema = z
   .superRefine((policy, ctx) => {
     const error = workflowsError(policy.agents, policy.workflows);
     if (error) ctx.addIssue({ code: "custom", path: ["workflows"], message: error });
+    const named = policy.workflow?.toLowerCase();
+    if (named && !policy.workflows.some((w) => w.name.toLowerCase() === named)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["workflow"],
+        message: `no workflow called "${policy.workflow}"`,
+      });
+    }
   });
 
 /** Cross-references between agents and workflows that the schema alone can't check. */

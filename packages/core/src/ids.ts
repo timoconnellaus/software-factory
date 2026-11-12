@@ -3,6 +3,7 @@
 export const ID_PREFIXES = {
   workItem: "wi",
   project: "prj",
+  repository: "repo",
   factory: "fac",
   pendingAction: "pa",
   question: "q",
@@ -28,6 +29,7 @@ export const ID_PREFIXES = {
   trial: "trl",
   adjudication: "adj",
   runSteer: "st",
+  terminalAttach: "ta",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

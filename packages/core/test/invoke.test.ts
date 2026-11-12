@@ -124,7 +124,9 @@ describe("invoke()", () => {
   it("denies everything under a malformed floor", async () => {
     const w = await world();
     const error = await refusal(
-      call("workItem.create", { projectId: w.projectId, title: "x" }, w.human, { floor: "{bad" }),
+      call("workItem.create", { state: "queued", projectId: w.projectId, title: "x" }, w.human, {
+        floor: "{bad",
+      }),
     );
     expect(error.code).toBe("denied");
   });
@@ -154,13 +156,13 @@ describe("invoke()", () => {
     const key = uid("idem-");
     const first_ = await call(
       "workItem.create",
-      { projectId: w.projectId, title: "Once" },
+      { state: "queued", projectId: w.projectId, title: "Once" },
       w.human,
       { idempotencyKey: key },
     );
     const again = await call(
       "workItem.create",
-      { projectId: w.projectId, title: "Once" },
+      { state: "queued", projectId: w.projectId, title: "Once" },
       w.human,
       { idempotencyKey: key },
     );
@@ -176,13 +178,23 @@ describe("invoke()", () => {
   it("refuses the wrong actor type and a non-member human, and audits both", async () => {
     const w = await world();
     expect(
-      (await refusal(call("workItem.create", { projectId: w.projectId, title: "x" }, FOREMAN)))
-        .code,
+      (
+        await refusal(
+          call("workItem.create", { state: "queued", projectId: w.projectId, title: "x" }, FOREMAN),
+        )
+      ).code,
     ).toBe("forbidden");
     const stranger = { type: "human" as const, id: uid("usr_") };
     expect(
-      (await refusal(call("workItem.create", { projectId: w.projectId, title: "x" }, stranger)))
-        .code,
+      (
+        await refusal(
+          call(
+            "workItem.create",
+            { state: "queued", projectId: w.projectId, title: "x" },
+            stranger,
+          ),
+        )
+      ).code,
     ).toBe("forbidden");
     const audit = await rows<{ outcome: string }>(
       "SELECT outcome FROM core_audit WHERE project_id = ? AND outcome = 'forbidden'",

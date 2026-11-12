@@ -1,7 +1,8 @@
 // Wire shapes of the runner channel, as zod schemas: the engine validates every call with them and
-// the runner host builds its requests from the inferred types. Change them only with a contract
-// version bump (CONTRACT_VERSION in ./types.ts), except for optional, additive fields an older
-// runner never receives (ADR 0350: the light pool, the planning stage and the planning call).
+// the runner host builds its requests from the inferred types. Runners keep claiming on older code
+// while an update is pending (ADR 0520), so a change here follows the compatibility rule on
+// RUNNER_COMPAT in ./types.ts: optional, additive fields and growing enums only, new kinds of job
+// gated on a capability, and anything else bumps RUNNER_COMPAT in the same PR.
 import { z } from "zod";
 import { PLANNING_OPS } from "./planning.ts";
 import {
@@ -11,12 +12,19 @@ import {
   HARNESSES,
   JOB_STAGES,
   MODEL_ROLES,
+  SESSION_MODES,
 } from "./types.ts";
 
 const iso = z.iso.datetime({ offset: true });
 
 /** Most characters of one `message` event's text; the runner clips longer ones. */
 export const MESSAGE_MAX = 8_000;
+/** Most characters of one `tool.result` event's output (ADR 0450). */
+export const TOOL_OUTPUT_MAX = 4_000;
+/** Most characters of a `turn` event's error (ADR 0450). */
+export const TURN_ERROR_MAX = 2_000;
+/** Most characters of a `takeover` event's hint (ADR 0450). */
+export const TAKEOVER_HINT_MAX = 4_000;
 const sha = z.string().regex(/^[0-9a-f]{7,64}$/);
 const fencingToken = z.number().int().nonnegative();
 const id = z.string().min(1).max(100);
@@ -29,6 +37,18 @@ export const capabilityManifestSchema = z.object({
   runnerKind: z.string().min(1).max(40),
   harnesses: z.array(z.enum(HARNESSES)).min(1),
   capabilities: z.array(capabilitySchema),
+});
+
+export const capacityPausedSchema = z.object({
+  reason: z.enum(["load", "tmux", "draining"]),
+  pools: z
+    .array(z.enum(["heavy", "light"]))
+    .min(1)
+    .max(2),
+  /** The 1-minute load average and the CPU count it was judged against (`load`). */
+  load1: z.number().min(0).max(100_000).optional(),
+  cores: z.number().int().min(1).max(4_096).optional(),
+  detail: z.string().max(300).optional(),
 });
 
 export const capacitySchema = z.object({
@@ -48,6 +68,14 @@ export const capacitySchema = z.object({
   light: z
     .object({ max: z.number().int().min(0).max(64), inUse: z.number().int().min(0) })
     .optional(),
+  /**
+   * Why the runner takes nothing new in some pools for now (ADR 0552), when it doesn't: `load`, the
+   * host's 1-minute load average is past its threshold for those pools (heavy stops first, then
+   * light), with the numbers; `tmux`, the factory's tmux server isn't answering (ADR 0550);
+   * `draining`, the owner drained it (a drain command, or `RunnerHost.drain()`). The
+   * scheduler gives a paused pool nothing; with both pools paused `accepting` is false too.
+   */
+  paused: capacityPausedSchema.optional(),
 });
 
 /** A host name a sandboxed command may reach: `example.com` or `*.example.com`, never `*`. */
@@ -149,6 +177,8 @@ export const runnerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("session.started"),
     sessionRef: z.string(),
     takeover: takeoverSchema.optional(),
+    /** How the session runs (ADR 0450). Optional, additive: absent is a terminal. */
+    mode: z.enum(SESSION_MODES).optional(),
   }),
   z.object({
     ...eventBase,
@@ -179,6 +209,43 @@ export const runnerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("tool"),
     name: z.string(),
     input: z.string().max(8_000).optional(),
+    /** Pairs the call with its `tool.result` (ADR 0450). Optional, additive. */
+    id: z.string().max(100).optional(),
+  }),
+  /**
+   * A stream session's tool result, its call's `id` as `toolId` (ADR 0450). Additive: only a
+   * runner with `chat`, at the engine's deployed commit, sends it.
+   */
+  z.object({
+    ...eventBase,
+    type: z.literal("tool.result"),
+    toolId: z.string().max(100),
+    output: z.string().max(TOOL_OUTPUT_MAX),
+    isError: z.boolean().optional(),
+  }),
+  /** One turn of a stream session ended (ADR 0450): counts only, never cost. Additive. */
+  z.object({
+    ...eventBase,
+    type: z.literal("turn"),
+    outcome: z.enum(["success", "error"]),
+    durationMs: z.number().int().nonnegative().optional(),
+    turns: z.number().int().nonnegative().optional(),
+    usage: z
+      .object({
+        inputTokens: z.number().int().nonnegative(),
+        outputTokens: z.number().int().nonnegative(),
+        cacheReadTokens: z.number().int().nonnegative(),
+        cacheWriteTokens: z.number().int().nonnegative(),
+      })
+      .optional(),
+    error: z.string().max(TURN_ERROR_MAX).optional(),
+  }),
+  /** A stream session stopped so a person can resume it in a terminal (ADR 0450). Additive. */
+  z.object({
+    ...eventBase,
+    type: z.literal("takeover"),
+    sessionId: z.string().max(100),
+    hint: z.string().max(TAKEOVER_HINT_MAX),
   }),
   z.object({
     ...eventBase,
@@ -288,7 +355,9 @@ export const runnerVersionSchema = z.object({
   autoUpdate: z.boolean(),
   update: z.object({
     /**
-     * `current`: at the desired version. `waiting`: behind it, draining until its jobs finish.
+     * `current`: at the desired version or ahead of it. `waiting`: behind it, updating at the first
+     * idle heartbeat (still claiming; light jobs only once the update has waited too long, nothing
+     * once it has waited much longer or the engine needs a newer runner, ADR 0520).
      * `blocked`: behind it and can't update (local changes, auto-update off, not on main…), with
      * the reason. `updating`: applying it now. `rolled_back`: the last update didn't start
      * cleanly and was reverted, with the reason.
@@ -296,9 +365,38 @@ export const runnerVersionSchema = z.object({
     state: z.enum(RUNNER_UPDATE_STATES),
     target: commitSha.nullable(),
     reason: z.string().max(500).nullable(),
+    /**
+     * What it claims while `waiting` (ADR 0520): `all` as usual, `light` jobs only (the update has
+     * waited past its first cap), or `none` (past the second cap, or the engine needs a newer
+     * runner). On `none` the engine asks its idle planning sessions to yield. Optional: older
+     * runners omit it.
+     */
+    claims: z.enum(["all", "light", "none"]).optional(),
   }),
 });
 export type RunnerVersion = z.infer<typeof runnerVersionSchema>;
+
+/**
+ * A Claude account's name on a host (ADR 0410). `default` is whatever `claude` uses with no account
+ * set. Names only: an account's credential never leaves its host.
+ */
+export const ACCOUNT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const DEFAULT_ACCOUNT = "default";
+export const accountNameSchema = z.string().regex(ACCOUNT_NAME, "lower-case letters, digits and -");
+
+/** The host's Claude accounts, as it reports them on the heartbeat (ADR 0410). */
+export const runnerAccountsSchema = z.object({
+  /** Every account on the host, `default` included. */
+  names: z.array(accountNameSchema).min(1).max(32),
+  /** The one new jobs use. */
+  active: accountNameSchema,
+  /** Accounts whose last run hit a usage limit: when, and what Claude said. */
+  limits: z
+    .array(z.object({ name: accountNameSchema, at: iso, message: z.string().max(500) }))
+    .max(32)
+    .default([]),
+});
+export type RunnerAccounts = z.infer<typeof runnerAccountsSchema>;
 
 export const heartbeatRequestSchema = z.object({
   manifest: capabilityManifestSchema,
@@ -309,12 +407,21 @@ export const heartbeatRequestSchema = z.object({
   rateLimitedUntil: iso.nullable().optional(),
   /** The runner's own code version and where its self-update stands (ADR 0360). Optional: older hosts omit it. */
   version: runnerVersionSchema.optional(),
+  /** The host's Claude accounts, names only (ADR 0410). Optional: older hosts omit it. */
+  accounts: runnerAccountsSchema.optional(),
+  /**
+   * The runner code's RUNNER_COMPAT (ADR 0520), sent with or without self-update. Optional: older
+   * hosts omit it, which counts as 1. The engine sends no job to a runner below its own.
+   */
+  compat: z.number().int().min(0).optional(),
 });
 
 export const runnerCommandSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("cancel"), jobId: id, reason: z.string() }),
   z.object({ kind: z.literal("steer"), jobId: id, text: z.string() }),
   z.object({ kind: z.literal("drain") }),
+  /** The owner picked this account for new jobs (ADR 0410). Older hosts ignore it. */
+  z.object({ kind: z.literal("account.use"), name: accountNameSchema }),
 ]);
 
 export const heartbeatResponseSchema = z.object({
@@ -322,11 +429,17 @@ export const heartbeatResponseSchema = z.object({
   /** New lease expiry per renewed job. */
   leases: z.array(z.object({ jobId: id, expiresAt: iso })),
   /**
-   * The runner code the factory runs (ADR 0360): the commit of the default branch the engine was
-   * deployed from. A runner behind it updates itself when idle. Null or missing: unknown (a dev
-   * engine), so no update.
+   * The runner code the factory runs (ADR 0360, amended by 0520): the last commit on the default
+   * branch, at or before the deployed one, that changed runner code. A runner behind it updates
+   * itself when idle; one at it or ahead of it is current. Null or missing: unknown (a dev engine),
+   * so no update.
    */
   desiredVersion: commitSha.nullable().optional(),
+  /**
+   * The engine's RUNNER_COMPAT (ADR 0520): a runner whose own is lower claims nothing until it has
+   * updated. Optional: an older engine omits it, and then nothing forces a drain.
+   */
+  minRunnerCompat: z.number().int().min(0).optional(),
 });
 
 export const claimRequestSchema = z.object({
@@ -391,9 +504,37 @@ export const steersRequestSchema = z.object({
   waitMs: z.number().int().min(0).max(60_000).optional(),
 });
 export const steersResponseSchema = z.object({
-  steers: z.array(z.object({ id: z.string(), text: z.string(), at: iso })),
+  steers: z.array(
+    z.object({
+      id: z.string(),
+      text: z.string(),
+      at: iso,
+      /** Stop the current step first (`adapter.interrupt`, ADR 0470); else type it as is. */
+      interrupt: z.boolean().optional(),
+      /**
+       * `takeover`: stop the stream session for a person (ADR 0450), not a message to type.
+       * Optional, additive: absent is a message.
+       */
+      kind: z.enum(["message", "takeover"]).optional(),
+    }),
+  ),
 });
 export type SteersRequest = z.infer<typeof steersRequestSchema>;
+
+/**
+ * The held terminal call (ADR 0440): answers with the job relay's socket URL, carrying a one-use
+ * ticket, when someone is waiting to watch and no host is connected; else `connect: null` after
+ * about `waitMs` (at most TERMINAL_WAIT_MAX_MS).
+ */
+export const terminalCallRequestSchema = z.object({
+  fencingToken,
+  waitMs: z.number().int().min(0).max(60_000).optional(),
+});
+export const terminalCallResponseSchema = z.object({
+  connect: z.object({ url: z.string() }).nullable(),
+});
+export type TerminalCallRequest = z.infer<typeof terminalCallRequestSchema>;
+export type TerminalCallResponse = z.infer<typeof terminalCallResponseSchema>;
 export type SteersResponse = z.infer<typeof steersResponseSchema>;
 
 /** Every non-2xx answer from the channel carries this body. */

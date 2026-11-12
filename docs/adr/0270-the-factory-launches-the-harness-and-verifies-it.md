@@ -132,3 +132,28 @@ With that, `runner-orca` can go back to `agent launch`. The post-launch check st
 > the status hook. It runs on `PreToolUse` among other events, but it only records the event and
 > always answers `{}`, so it decides nothing. Runner-supplied hooks still may not use decision events.
 > The deny list adds `tmux`.
+
+> Amended 2026-11-12 (allowlist audit): the read-only stages' allowlist (triage, spec, planning, in
+> `dontAsk`) no longer has any command that can start another program. `find` (`-exec`, `-execdir`,
+> `-ok`), `xargs`, `sort` (`--compress-program`) and `git grep` (`-O`) are gone; the Glob and Grep
+> tools cover them. `test/allowlist.test.ts` fails if an exec-capable command (env, nice, time, awk,
+> sed, tar, an interpreter, a package manager, …) is added back. A project can still add rules
+> through `.factory/policy.json` `harness.allow`, which is read from the default branch and changed
+> only through the self-modify gate. **The allowlist is not the boundary.** Verify and build run the
+> project's toolchain (`node`, `pnpm`, …), which runs anything, so for them the floor is the OS
+> sandbox: filesystem `denyRead`/`denyWrite` (including `~/Library/Keychains`) and the network
+> allowlist. On macOS that floor stops reading the keychain files, but it does not stop a process
+> asking securityd for an item. A login-keychain item whose access list trusts a binary the run can
+> execute (for example the desktop app's `bun`) can be read from inside the sandbox. Secrets like
+> that need an access list limited to the signed app (or the data-protection keychain with an
+> access group), or the runner on that Mac needs `isolation: "container"` (ADR 0430) or Sprites.
+>
+> Same day, after review: `rg` left too (`--pre <cmd>`, `--hostname-bin <cmd>`). Git reads get
+> `GIT_PAGER=cat` and `PAGER=cat`, so a forced pager is never a program. `-c`/`--exec-path` sit
+> before the subcommand, so a `git <subcommand>` rule can't match them. Diff and textconv drivers
+> come only from config: the run's own global config defines none, the system config is off, and
+> the checkout's config is the owner's (denied for writing). Composition was checked against Claude
+> Code 2.1.322 by `local/runner-host/e2e/probe-permissions.ts`, a triage run in `dontAsk`. It refuses
+> `$()`, backticks, `| sh`, `;`/`&&`/`||` chains into `sh`/`python3`/`env`/`node`, `<()`,
+> redirection, an env-var prefix and `find -exec`. Claude Code checks each part of a chain, and
+> allows a few read-only commands of its own (`id`) without a rule.

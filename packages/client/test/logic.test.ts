@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { duration } from "../src/format.ts";
 import { groupByProject } from "../src/inbox.ts";
 import type { Inbox, WorkItemDetail } from "../src/ops.ts";
-import { keptOnRunner, packetSections, parsePacket } from "../src/packet.ts";
+import { keptOnRunner, packetSections, packetTestsIntact, parsePacket } from "../src/packet.ts";
 import { answerChoices, bulkAcceptable } from "../src/questions.ts";
 import { runnerLabel, updateLabel } from "../src/runners.ts";
 import { agentTime, stageSteps, yourTime } from "../src/work-item.ts";
@@ -97,6 +97,37 @@ describe("review packet sections (spec 14, criterion 1)", () => {
     });
     expect(p.criteria).toHaveLength(1);
     expect(p.reviewer?.sameModelAsImplementer).toBe(true);
+    // A packet from before the tests-intact guard reads as not checked, never as intact.
+    expect(packetTestsIntact(p)).toBeNull();
+  });
+  it("reads the tests-intact findings (ADR 0500)", () => {
+    const p = parsePacket({
+      id: "rp_2",
+      headSha: "a".repeat(40),
+      verdict: "pass",
+      summary: "",
+      criteria: [],
+      checks: [],
+      reviewer: null,
+      riskFlags: [],
+      sections: {
+        testsIntact: {
+          headSha: "a".repeat(40),
+          intact: false,
+          findings: [
+            {
+              kind: "test-skipped",
+              path: "src/a.test.ts",
+              line: 3,
+              text: 'it.skip("x")',
+              message: "a test is skipped",
+            },
+          ],
+        },
+      },
+      createdAt: NOW,
+    });
+    expect(packetTestsIntact(p)).toMatchObject({ intact: false, findings: [{ line: 3 }] });
   });
 });
 
@@ -211,6 +242,7 @@ describe("the inbox", () => {
       light: null,
       rateLimitedUntil: null,
       lastSeenAt: null,
+      paused: null,
       update: null,
     };
     const soon = new Date(pinned.getTime() + 60_000).toISOString();
@@ -234,6 +266,7 @@ describe("the inbox", () => {
       light: null,
       rateLimitedUntil: null,
       lastSeenAt: null,
+      paused: null,
     };
     expect(updateLabel({ ...base, update: null })).toBe("");
     expect(updateLabel({ ...base, update: { state: "behind", reason: null } })).toBe(

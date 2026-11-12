@@ -10,10 +10,15 @@ import { appendFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/pr
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  accountConfigDir,
   attachmentsPrompt,
+  carryConversation,
   checkOutputLog,
+  DEFAULT_HARNESS_ACCOUNT,
   findTranscript,
   HARNESS_CONFIG_MISMATCH,
+  type HarnessAccount,
+  isUsageLimitText,
   type LaunchRecord,
   PID_FILE,
   PRIVATE_WORKTREE_FILES,
@@ -22,6 +27,7 @@ import {
   parseStatusLines,
   projectHarness,
   type ReadCommand,
+  RUN_SETTINGS_FILE,
   readLaunchRecord,
   readStatusFrom,
   readTranscript,
@@ -30,6 +36,7 @@ import {
   STATUS_FILE,
   type StatusLine,
   shellQuote,
+  usageLimitOf,
   verifyLaunch,
   writeAttachments,
 } from "@software-factory/harness-claude";
@@ -49,14 +56,44 @@ import {
   steerText,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
+import {
+  branchExists,
+  checkedOutBranches,
+  deleteRunBranch,
+  markRunBranch,
+  moveAsideRunBranch,
+  runBranchDisposable,
+} from "./branches.ts";
 import { exists, findCheckout, isUnder } from "./checkouts.ts";
 import { type Exec, nodeExec, run } from "./exec.ts";
+import {
+  HarnessStillRunning,
+  harnessMayBeAlive,
+  hostProcs,
+  type Procs,
+  type StopOptions,
+  stopHarness,
+} from "./procs.ts";
+import {
+  interruptStream,
+  killStream,
+  type LocalSessionMode,
+  type StreamOptions,
+  type StreamState,
+  startStreamSession,
+  steerStream,
+  streamAlive,
+  streamEvents,
+  takeOverStream,
+} from "./stream.ts";
+import { openTmuxTerminal } from "./terminal.ts";
 import {
   attachCommand,
   type PaneState,
   SESSION_PREFIX,
   sessionName,
   type TmuxOptions,
+  TmuxUnavailable,
   tmuxCli,
 } from "./tmux.ts";
 
@@ -75,6 +112,25 @@ export interface LocalWorkspace extends WorkspaceHandle {
   statusFile: string;
   /** Where this run's attachments go: outside the worktree and the protected run dirs. */
   attachmentsDir: string;
+  /** The Claude account the run uses (ADR 0410), taken when the workspace was prepared. */
+  account: HarnessAccount;
+  /**
+   * How the live harness's command line is read, when `ps` on the host can't see it (a container
+   * job reads it with `docker exec`, ADR 0430). Default: the adapter's `readCommand`.
+   */
+  readCommand?: ReadCommand;
+  /** More checks before the prompt (a container job's own configuration, ADR 0430). */
+  launchChecks?: () => Promise<string[]>;
+  /**
+   * This workspace created `branch` in the checkout (ADR 0551): release deletes exactly that
+   * branch, whatever its name, when no worktree has it checked out.
+   */
+  createdBranch?: boolean;
+  /**
+   * Writes a file the session reads (the prompt) where the session runs, when that isn't this
+   * machine (a sprite, ADR 0480). The host's copy is written as well.
+   */
+  writeRunFile?: (path: string, content: string) => Promise<void>;
 }
 
 export interface LocalSession extends SessionHandle {
@@ -88,6 +144,22 @@ export interface LocalSession extends SessionHandle {
   startedAt: number;
   /** When the prompt pointer was sent: only a turn submitted after it can end the job. */
   promptSentAt: number;
+  /** A stream-json session's process (ADR 0450); absent in tmux. */
+  stream?: StreamState;
+  /** The run's Claude account (ADR 0410) and its config dir, where its transcript goes. */
+  account: string;
+  configDir: string;
+  /**
+   * The run's settings path (`<runDir>/claude-settings.json`), on its Claude's command line for as
+   * long as it runs: how the runner finds, stops and checks its processes on the host (ADR 0550).
+   * Absent when they aren't the host's to see (a container job, ADR 0430).
+   */
+  settingsPath?: string;
+  /**
+   * When the last steer was typed (its Enter), in tmux mode: a Stop before the turn that answers
+   * it doesn't end the job (spec 43).
+   */
+  steeredAt?: number;
 }
 
 export interface LocalRunnerConfig {
@@ -138,9 +210,45 @@ export interface LocalRunnerConfig {
   screenLogMs?: number;
   /** Capabilities to declare. Defaults to everything this adapter gives. */
   capabilities?: Capability[];
+  /**
+   * How sessions run (ADR 0450): `tmux` (the TUI in tmux, the default) or `stream-json` (Claude
+   * headless as a two-way stream, shown as a chat; declares `chat`).
+   */
+  session?: LocalSessionMode;
+  /**
+   * How long to wait for a steer's turn after a result (stream) or a Stop (tmux) before the job
+   * ends anyway (Claude may fold it into the turn that ended). Default 15 s.
+   */
+  turnGraceMs?: number;
+  /** Stream mode: the session's environment (default: the host's, credentials dropped). */
+  streamEnv?: Record<string, string>;
   exec?: Exec;
   /** The tmux executable and socket (tests use their own socket). */
   tmux?: Omit<TmuxOptions, "exec">;
+  /** How the host's processes are read and signalled (default `ps` and `kill`; ADR 0550). */
+  procs?: Procs;
+  /** How long a job's processes get after TERM, and after KILL, when it is stopped. */
+  stop?: StopOptions;
+  /**
+   * After the tmux session is gone, how long the job waits for its Claude to exit before it ends
+   * anyway (release then stops it). Default 30 s.
+   */
+  goneGraceMs?: number;
+  /**
+   * The Claude account a job uses (ADR 0410): the host's active one, asked once when the job's
+   * workspace is prepared, so a switch never touches a running job. Default: the host's own.
+   */
+  account?: (job: Job) => Promise<HarnessAccount> | HarnessAccount;
+  /**
+   * The config dirs of every account on the host, where a planning session resumed on another
+   * account than it started on finds its conversation.
+   */
+  accountConfigDirs?: () => Promise<string[]> | string[];
+  /**
+   * A run ended: with the usage-limit message Claude gave, or null when it ended without one
+   * (ADR 0410: the host surfaces it per account; nothing switches on its own).
+   */
+  onAccountUsage?: (account: string, usageLimit: string | null) => void;
 }
 
 export const DEFAULT_CAPABILITIES: Capability[] = [
@@ -149,6 +257,8 @@ export const DEFAULT_CAPABILITIES: Capability[] = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "interrupt",
+  "terminal",
 ];
 
 /** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
@@ -194,6 +304,8 @@ export async function checkRunningHarness(
 
 /** How many characters of a steer go in one `send-keys -l`. */
 const STEER_CHUNK = 200;
+/** Claude Code's Rewind menu (a double Escape), as its screen shows it. */
+const REWIND_MENU = /Rewind\s*\n.*Restore the code and\/or conversation/;
 
 /** Claude's first-run folder trust dialog (a plain terminal doesn't pre-trust the worktree). */
 const TRUST_DIALOG = /trust this folder/i;
@@ -221,12 +333,55 @@ export function createLocalRunner(
 ): RunnerAdapter<LocalWorkspace, LocalSession> {
   const exec = config.exec ?? nodeExec;
   const tmux = tmuxCli({ ...config.tmux, exec });
+  /** Types one sanitised line into a session and submits it (a steer, or an interrupt's line). */
+  const typeLine = async (name: string, text: string, session?: LocalSession) => {
+    const line = steerText(text);
+    if (!line) return;
+    for (let i = 0; i < line.length; i += STEER_CHUNK) {
+      try {
+        await tmux.sendText(name, line.slice(i, i + STEER_CHUNK));
+      } catch (err) {
+        // Pieces typed already would sit in the input box and run with the next message: clear
+        // the line (Ctrl-U, best effort; spec 43), then report the steer failed.
+        if (i > 0) await tmux.sendKeys(name, "C-u").catch(() => {});
+        throw err;
+      }
+      if (i + STEER_CHUNK < line.length) await sleep(30);
+    }
+    await sleep(200);
+    // A steer is owed a turn from here (spec 43): a Stop before it doesn't end the job.
+    if (session) session.steeredAt = Date.now();
+    await tmux.sendKeys(name, "Enter");
+  };
   const pollMs = config.pollMs ?? 1000;
   const waitingInputTimeoutMs = config.waitingInputTimeoutMs ?? 15 * 60_000;
   const startTimeoutMs = config.startTimeoutMs ?? 90_000;
   const submitTimeoutMs = config.submitTimeoutMs ?? 30_000;
   const screenLogMs = config.screenLogMs ?? 10_000;
-  const capabilities = config.capabilities ?? DEFAULT_CAPABILITIES;
+  const streamMode = config.session === "stream-json";
+  // `chat` follows the session mode, whatever else is configured.
+  const capabilities = [
+    // A stream session has no terminal to share (ADR 0440): its takeover is by resume.
+    ...(config.capabilities ?? DEFAULT_CAPABILITIES).filter(
+      (c) => c !== "chat" && !(streamMode && c === "terminal"),
+    ),
+    ...(streamMode ? (["chat"] as Capability[]) : []),
+  ];
+  /** Live stream sessions, for capacity (tmux counts its own sessions). */
+  const streams = new Map<string, LocalSession>();
+  /** Jobs with a tmux session this adapter started: capacity's count when tmux can't answer. */
+  const started = new Set<string>();
+  const procs = config.procs ?? hostProcs(exec);
+  const goneGraceMs = config.goneGraceMs ?? 30_000;
+  const turnGraceMs = config.turnGraceMs ?? 15_000;
+  const streamOptions = (): StreamOptions => ({
+    ...(config.readCommand ? { readCommand: config.readCommand } : {}),
+    startTimeoutMs,
+    pollMs,
+    waitingInputTimeoutMs,
+    ...(config.turnGraceMs !== undefined ? { turnGraceMs: config.turnGraceMs } : {}),
+    ...(config.streamEnv ? { env: config.streamEnv } : {}),
+  });
   const search = {
     dirs: config.checkouts ?? [],
     exclude: [config.worktreesDir, ...(config.ownReposDir ? [config.ownReposDir] : [])],
@@ -266,6 +421,74 @@ export function createLocalRunner(
     await exec("git", ["worktree", "prune"], { cwd: checkout });
   }
 
+  /** The run's settings path, when its processes are the host's to see (not a container's). */
+  const settingsPathOf = (workspace?: LocalWorkspace, session?: LocalSession) =>
+    session?.settingsPath ??
+    (workspace && !workspace.readCommand ? join(workspace.runDir, RUN_SETTINGS_FILE) : undefined);
+
+  /**
+   * Jobs whose processes survived their release (ADR 0550): tried again on every capacity read and
+   * counted as in use until they're gone.
+   */
+  const survivors = new Map<string, string>();
+  /**
+   * Sessions this adapter gave up on: a kill-session that tmux didn't answer, or a new-session that
+   * failed and may still have started late. Killed again, and their harness stopped again, in the
+   * background until tmux confirms them gone (and for a while after, for a late start). One whose
+   * harness is confirmed gone doesn't count as in use.
+   */
+  const abandoned = new Map<
+    string,
+    { settingsPath?: string; since: number; harnessGone: boolean; sessionGone: boolean }
+  >();
+  const abandon = (name: string, settingsPath?: string) =>
+    abandoned.set(name, {
+      ...(settingsPath ? { settingsPath } : {}),
+      since: Date.now(),
+      harnessGone: false,
+      sessionGone: false,
+    });
+  /** A quick tmux for the background and capacity: one try, a short timeout. */
+  const quickTmux = tmuxCli({ ...config.tmux, exec, attempts: 1, timeoutMs: 8_000 });
+  const ABANDONED_KEEP_MS = 120_000;
+  const quickStop = { termGraceMs: 1_000, killGraceMs: 1_000 };
+  let maintaining: Promise<void> | null = null;
+  const maintain = async () => {
+    for (const [jobId, settingsPath] of survivors) {
+      await stopHarness(procs, settingsPath, quickStop).then(
+        () => survivors.delete(jobId),
+        () => {},
+      );
+    }
+    for (const [name, entry] of abandoned) {
+      entry.sessionGone = await quickTmux.kill(name).then(
+        () => true,
+        () => false,
+      );
+      entry.harnessGone = entry.settingsPath
+        ? await stopHarness(procs, entry.settingsPath, quickStop).then(
+            () => true,
+            () => false,
+          )
+        : entry.sessionGone;
+      if (entry.sessionGone && entry.harnessGone && Date.now() - entry.since > ABANDONED_KEEP_MS) {
+        abandoned.delete(name);
+      }
+    }
+  };
+  /** Starts the background clean-up if it isn't running; never waits for it. */
+  const kickMaintenance = () => {
+    if (maintaining || (survivors.size === 0 && abandoned.size === 0)) return;
+    maintaining = maintain().finally(() => {
+      maintaining = null;
+    });
+  };
+  /**
+   * capacity() answers within this, whatever tmux does: the host asks twice a turn, and a drain
+   * waits for the turn, so a turn stays well under a minute (the lease is 10 minutes).
+   */
+  const CAPACITY_DEADLINE_MS = 12_000;
+
   async function release(
     job: Job,
     workspace: LocalWorkspace | undefined,
@@ -281,24 +504,53 @@ export function createLocalRunner(
     };
     const name = workspace?.name ?? session?.name ?? sessionName(job.jobId);
     // Already gone is fine everywhere: release must be safe to call twice.
-    await attempt("kill session", () => tmux.kill(name));
+    const live = session ?? streams.get(job.jobId);
+    if (live?.stream) killStream(live.stream);
+    streams.delete(job.jobId);
+    started.delete(job.jobId);
+    // A tmux that doesn't answer is no reason to leave Claude running (incident #11 (2026-11-12)):
+    // the job's processes are stopped from the process table either way, and a session left on
+    // the server is killed again in the background (and doesn't count once its harness is gone).
+    const settingsPath = settingsPathOf(workspace, live);
+    const killed = await tmux.kill(name).then(
+      () => null,
+      (err: unknown) => (err instanceof Error ? err.message : String(err)),
+    );
+    if (killed) abandon(name, settingsPath);
+    let survived: HarnessStillRunning | null = null;
+    if (settingsPath) {
+      try {
+        await stopHarness(procs, settingsPath, {
+          ...config.stop,
+          ...(workspace ? { worktree: workspace.path } : {}),
+        });
+        survivors.delete(job.jobId);
+      } catch (err) {
+        survived =
+          err instanceof HarnessStillRunning
+            ? err
+            : new HarnessStillRunning(settingsPath, [], String(err));
+        survivors.set(job.jobId, settingsPath);
+      }
+    } else if (killed) {
+      errors.push(`kill session: ${killed}`);
+    }
     if (workspace) {
       await attempt("remove worktree", () => removeWorktree(workspace.checkout, workspace.path));
       // The local branch always goes: the pushed run branch (or the diff artifact) is the record.
-      // Only ever a factory run branch: the checkout may be the owner's own.
+      // Only the branch this workspace created (ADR 0551), or a factory run branch from before the
+      // marker, and only when no worktree has it checked out: the checkout may be the owner's own.
       await attempt("delete branch", async () => {
-        if (!isRunBranch(workspace.branch)) return;
-        const has = await exec(
-          "git",
-          ["rev-parse", "--verify", "--quiet", `refs/heads/${workspace.branch}`],
-          { cwd: workspace.checkout },
-        );
-        if (has.code === 0) {
-          await run(exec, "git", ["branch", "-D", workspace.branch], { cwd: workspace.checkout });
-        }
+        if (!workspace.createdBranch && !isRunBranch(workspace.branch)) return;
+        await deleteRunBranch(workspace.checkout, workspace.branch, exec);
       });
       await attempt("remove run dir", () => removeRunDir(workspace.runDir, workspace.runTmp));
       await attempt("remove attachments", () => removeRunDir(workspace.attachmentsDir));
+    }
+    if (survived) {
+      const e = survived as HarnessStillRunning;
+      if (errors.length) e.message += `; ${errors.join("; ")}`;
+      throw e;
     }
     if (errors.length > 0) throw new Error(errors.join("; "));
   }
@@ -321,8 +573,40 @@ export function createLocalRunner(
     },
 
     async capacity(): Promise<Capacity> {
-      const inUse = (await tmux.jobSessions().catch(() => [])).length;
-      return { max: config.maxConcurrent ?? 2, inUse, accepting: true };
+      kickMaintenance();
+      const max = config.maxConcurrent ?? 2;
+      const alive = [...streams.values()].filter(streamAlive).length + survivors.size;
+      try {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const sessions = await Promise.race([
+          quickTmux.jobSessions(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new TmuxUnavailable("tmux list-sessions took too long")),
+              CAPACITY_DEADLINE_MS,
+            );
+          }),
+        ]).finally(() => clearTimeout(timer));
+        // A dead pane (kept by remain-on-exit) holds nothing; nor does a session this adapter
+        // abandoned whose harness is confirmed gone. Both are cleaned up in the background.
+        const holding = sessions.filter(
+          (s) => !s.dead && !(abandoned.get(s.name)?.harnessGone ?? false),
+        );
+        return { max, inUse: holding.length + alive, accepting: true };
+      } catch (err) {
+        // tmux can't say how many sessions it holds: never read that as none (incident
+        // 2026-11-12 #1). Count the ones this adapter started, and take nothing new for now.
+        return {
+          max,
+          inUse: started.size + alive,
+          accepting: false,
+          paused: {
+            reason: "tmux",
+            pools: ["heavy", "light"],
+            detail: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+          },
+        };
+      }
     },
 
     async resolveCheckout(job): Promise<string | null> {
@@ -345,13 +629,31 @@ export function createLocalRunner(
         config.attachmentsDir ?? join(dirname(config.runsDir), "attachments"),
         job.jobId,
       );
+      // A crashed run of this same job may have left its Claude running (ADR 0550): stop it first.
+      await stopHarness(procs, join(runDir, RUN_SETTINGS_FILE), {
+        ...config.stop,
+        ...((await exists(path)) ? { worktree: path } : {}),
+      });
       // A worktree left by a crashed run of this same job goes first.
       if (await exists(path)) await removeWorktree(checkout, path);
-      // So does a local copy of the run branch: it is this run's alone (ADR 0035). Only a factory
-      // run branch that no worktree has checked out, never one of the owner's branches.
-      const listed = await exec("git", ["worktree", "list", "--porcelain"], { cwd: checkout });
-      if (isRunBranch(job.branch) && !listed.stdout.includes(`branch refs/heads/${job.branch}\n`)) {
-        await exec("git", ["branch", "-D", job.branch], { cwd: checkout });
+      // So does a local copy of the run branch: `job.branch` is this run's alone (ADR 0035, one
+      // branch per run), whatever its name (an attached PR's runs are `<pr-branch>-run-<k>`), so a
+      // copy no worktree has checked out is stale (ADR 0551). It is deleted only when that loses
+      // nothing (the factory's marker, or the pushed run branch, has its tip); otherwise it is moved
+      // aside, so the owner's commits are kept and the run still gets its name. Checked out
+      // anywhere: refuse.
+      const holder = (await checkedOutBranches(checkout, exec)).get(job.branch);
+      if (holder) {
+        throw new Error(
+          `the run branch ${job.branch} is checked out at ${holder}; not taking it over`,
+        );
+      }
+      if (await branchExists(checkout, job.branch, exec)) {
+        if (await runBranchDisposable(checkout, job.branch, exec)) {
+          await deleteRunBranch(checkout, job.branch, exec);
+        } else {
+          await moveAsideRunBranch(checkout, job.branch, exec);
+        }
       }
       const start = config.startPoint ? await config.startPoint(job, checkout) : job.repo.baseRef;
       // Hooks off (the owner's post-checkout hooks are theirs), no upstream written to the
@@ -385,8 +687,12 @@ export function createLocalRunner(
         launchScript: "",
         statusFile: join(runDir, STATUS_FILE),
         attachmentsDir,
+        account: DEFAULT_HARNESS_ACCOUNT,
+        createdBranch: true,
       };
       try {
+        // The marker that says the factory made this branch, for the sweep after a crash.
+        await markRunBranch(checkout, job.branch, exec);
         const baseSha = (await run(exec, "git", ["rev-parse", "HEAD"], { cwd: path })).trim();
         await excludePrivateFiles(path);
         // Which job this worktree is, for reaping: a planning worktree's name is its session's.
@@ -408,7 +714,21 @@ export function createLocalRunner(
         )
           .trim()
           .split("\n");
+        // The host's active account, now: the job keeps it to the end (ADR 0410).
+        const account = (await config.account?.(job)) ?? DEFAULT_HARNESS_ACCOUNT;
+        partial.account = account;
+        // A planning session resumed after the owner switched accounts: its conversation is in
+        // the old account's config dir, and `claude --resume` looks in the new one.
+        if (planning && job.planning?.resume && config.accountConfigDirs) {
+          await carryConversation({
+            cwd: path,
+            sessionId: job.planning.sessionRef,
+            to: accountConfigDir(account),
+            from: await config.accountConfigDirs(),
+          });
+        }
         const projected = await projectHarness(job, {
+          account,
           worktree: path,
           runDir,
           // The checkout may be the owner's own: the harness reads only its worktree, never the
@@ -416,6 +736,7 @@ export function createLocalRunner(
           protectPaths: [...new Set([...(config.protectPaths ?? []), checkout])],
           ...(commonDir && gitDir ? { git: { commonDir, gitDir } } : {}),
           ...(capabilities.includes("work-item-attachments") ? { attachmentsDir } : {}),
+          ...(streamMode ? { session: "stream" as const } : {}),
           // The factory's status hook: agent status from Claude Code's hooks (ADR 0380).
           statusHook: config.node ? { node: config.node } : true,
           ...(config.identity ? { identity: config.identity } : {}),
@@ -452,15 +773,50 @@ export function createLocalRunner(
     },
 
     async startSession(job, workspace, signal): Promise<LocalSession> {
+      if (streamMode) {
+        // ADR 0450: a two-way stream-json session instead of the TUI, same launch and check.
+        const session = await startStreamSession(
+          job,
+          workspace,
+          signal,
+          streamOptions(),
+          (problems) => new HarnessConfigMismatch(problems),
+        );
+        const settingsPath = settingsPathOf(workspace);
+        if (settingsPath) session.settingsPath = settingsPath;
+        streams.set(job.jobId, session);
+        return session;
+      }
       const name = workspace.name;
+      const settingsPath = settingsPathOf(workspace);
+      /** Kills the session and stops whatever it started, whether or not tmux answers. */
+      const stopAll = async () => {
+        const killed = await tmux.kill(name).then(
+          () => "",
+          (err: unknown) => `; tmux kill-session: ${err instanceof Error ? err.message : err}`,
+        );
+        if (settingsPath) await stopHarness(procs, settingsPath, config.stop);
+        else if (killed) throw new Error(killed.slice(2));
+        started.delete(job.jobId);
+      };
       // A session left by a crashed run of this same job would block the name.
-      await tmux.kill(name);
-      // The harness's own command (ADR 0270), on the factory's own tmux server.
-      await tmux.newSession({
-        name,
-        cwd: workspace.path,
-        command: `exec /bin/sh ${shellQuote(workspace.launchScript)}`,
-      });
+      await stopAll();
+      abandoned.delete(name);
+      // The harness's own command (ADR 0270), on the factory's own tmux server. A new-session
+      // that timed out may still have started: stop it before failing.
+      started.add(job.jobId);
+      try {
+        await tmux.newSession({
+          name,
+          cwd: workspace.path,
+          command: `exec /bin/sh ${shellQuote(workspace.launchScript)}`,
+        });
+      } catch (err) {
+        // It may have started anyway (a timed-out new-session): keep at it in the background.
+        abandon(name, settingsPath);
+        await stopAll().catch(() => {});
+        throw err;
+      }
       const session: LocalSession = {
         jobId: job.jobId,
         sessionRef: name,
@@ -472,21 +828,38 @@ export function createLocalRunner(
         startedAt: Date.now(),
         promptSentAt: Number.POSITIVE_INFINITY,
         takeover: { label: "Attach in a terminal", hint: attachCommand(name, tmux.socket) },
+        account: workspace.account.name,
+        configDir: accountConfigDir(workspace.account),
+        ...(settingsPath ? { settingsPath } : {}),
       };
       const fail = async (error: Error): Promise<never> => {
-        await tmux.kill(name).catch(() => {});
+        await stopAll().catch((err) => {
+          error.message += `; ${err instanceof Error ? err.message : err}`;
+        });
         throw error;
       };
       const pause = (ms: number) => sleep(ms, undefined, { signal }).catch(() => {});
 
       // Wait for Claude to come up: answer its first-run folder trust dialog for the job's own
-      // worktree (once), then wait for the launch script's pid and the hook's SessionStart.
+      // worktree (once), then wait for the launch script's pid and the hook's SessionStart. A tmux
+      // that doesn't answer for a while is no news (incident #11 (2026-11-12)): the deadline decides.
       const deadline = Date.now() + startTimeoutMs;
       let trusted = false;
       for (;;) {
         if (signal.aborted) await fail(new Error(String(signal.reason ?? "cancelled")));
-        const screen = (await tmux.capture(name)) ?? "";
-        const pane = await tmux.paneState(name);
+        let screen = "";
+        let pane: PaneState | null;
+        try {
+          screen = (await tmux.capture(name)) ?? "";
+          pane = await tmux.paneState(name);
+        } catch (err) {
+          if (!(err instanceof TmuxUnavailable)) throw err;
+          if (Date.now() > deadline) {
+            await fail(new Error(`Claude did not start: ${err.message}`));
+          }
+          await pause(Math.min(pollMs, 500));
+          continue;
+        }
         if (!pane || pane.dead) {
           await fail(new Error(`Claude exited before it started:\n${screen.slice(-2_000)}`));
         }
@@ -513,12 +886,22 @@ export function createLocalRunner(
 
       // Before the job does anything: the live process and its settings must be exactly what the
       // harness set. Otherwise kill it and fail the job (incident 2026-11-11 #6).
-      const problems = await verifyLaunch(workspace.launch, config.readCommand);
+      const problems = [
+        ...(await verifyLaunch(workspace.launch, workspace.readCommand ?? config.readCommand)),
+        ...((await workspace.launchChecks?.()) ?? []),
+      ];
       if (problems.length > 0) await fail(new HarnessConfigMismatch(problems));
 
       // The prompt goes in a file; the terminal gets one short line pointing at it. A long paste
       // into the Claude terminal arrives truncated (incident 2026-11-11 #8).
       await writeFile(join(workspace.path, PROMPT_FILE), job.harness.prompt, { mode: 0o600 });
+      if (workspace.writeRunFile) {
+        await workspace
+          .writeRunFile(join(workspace.path, PROMPT_FILE), job.harness.prompt)
+          .catch((err) =>
+            fail(new Error(`writing the prompt: ${err instanceof Error ? err.message : err}`)),
+          );
+      }
       session.startedAt = Date.now();
       session.promptSentAt = session.startedAt;
       try {
@@ -539,7 +922,7 @@ export function createLocalRunner(
           break;
         }
         if (Date.now() > submitBy) {
-          const screen = (await tmux.capture(name)) ?? "";
+          const screen = (await tmux.capture(name).catch(() => null)) ?? "";
           await fail(
             new Error(
               `the prompt was not submitted within ${Math.round(submitTimeoutMs / 1000)} s:\n${screen.slice(-2_000)}`,
@@ -556,6 +939,10 @@ export function createLocalRunner(
     },
 
     async *events(job, session, signal): AsyncIterable<AdapterEvent> {
+      if (session.stream) {
+        yield* streamEvents(job, session, signal, streamOptions());
+        return;
+      }
       // A planning session (ADR 0300) idles in its Stop hook between turns: Stop and waiting are
       // normal there. It ends when the host stops it (a yield, the gate decided) or Claude exits.
       const planning = job.stage === "planning";
@@ -565,6 +952,22 @@ export function createLocalRunner(
       let lastScreenAt = 0;
       let status: AgentStatus | undefined;
       let submitted = false;
+      /** The latest submitted turn's time (the prompt's, or a steer's). */
+      let lastSubmitAt = 0;
+      /** Since when a Stop came while a steer's turn was still owed. */
+      let steerOwedSince: number | null = null;
+      /** That Stop's own time. */
+      let owedStopAt = 0;
+      /**
+       * The steered turn is under way: any sign of work after the Stop (a hook line, a transcript
+       * message, new terminal lines) counts, not only its UserPromptSubmit, which a hook under load
+       * can deliver late or not at all. The job then ends at that turn's Stop.
+       */
+      const steerTaken = () => {
+        if (steerOwedSince === null) return;
+        lastSubmitAt = Math.max(lastSubmitAt, session.steeredAt ?? 0);
+        steerOwedSince = null;
+      };
       let waitingSince: number | null = null;
       let transcript: string | null = null;
       // The transcript is tailed for what the agent says (ADR 0400). A resumed planning
@@ -585,6 +988,7 @@ export function createLocalRunner(
         transcriptOffset = read.offset;
         for (const m of read.messages) {
           if (m.at !== null && m.at < since) continue;
+          if (m.at !== null && m.at > owedStopAt) steerTaken();
           said.push({
             at: m.at,
             event: { type: "message", role: m.role, text: clip(m.text, MESSAGE_MAX - 1) },
@@ -609,16 +1013,31 @@ export function createLocalRunner(
       const summaryFromTranscript = async (): Promise<string | undefined> => {
         const path =
           transcript ??
-          (await findTranscript(session.worktreePath, { since: session.startedAt - 60_000 }).catch(
-            () => null,
-          ));
+          (await findTranscript(session.worktreePath, {
+            since: session.startedAt - 60_000,
+            configDirs: [session.configDir],
+          }).catch(() => null));
         if (!path) return undefined;
         const summary = await readTranscript(path).catch(() => null);
         return summary?.lastAssistantText ?? undefined;
       };
+      // Usage limits are surfaced against the run's account, never acted on (ADR 0410).
+      let usageLimit: string | null = null;
+      const reportUsage = (outcome: string) => {
+        if (outcome === "completed" || usageLimit) {
+          config.onAccountUsage?.(session.account, usageLimit);
+        }
+      };
+      const limitEvent = (message: string): AdapterEvent => ({
+        type: "agent.status",
+        status: "error",
+        message: clip(`usage limit on Claude account "${session.account}": ${message}`, 1_000),
+      });
       const exited = async (): Promise<AdapterEvent> => {
         const hasResult = await exists(resultPath);
         const summary = await summaryFromTranscript();
+        if (!usageLimit && !hasResult && isUsageLimitText(summary)) usageLimit = summary ?? null;
+        reportUsage(hasResult ? "completed" : "failed");
         return {
           type: "session.ended",
           outcome: hasResult ? "completed" : "failed",
@@ -638,15 +1057,16 @@ export function createLocalRunner(
         if (!pane) return [];
         const out: AdapterEvent[] = [];
         if (pane.historySize > emittedHistory) {
-          const text = await tmux.capture(session.name, {
-            start: -(pane.historySize - emittedHistory),
-            end: -1,
-          });
+          const text = await tmux
+            .capture(session.name, { start: -(pane.historySize - emittedHistory), end: -1 })
+            // Not read this time (tmux didn't answer): the same lines are asked for next poll.
+            .catch(() => undefined);
+          if (text === undefined) return out;
           if (text?.trim()) out.push({ type: "log", stream: "terminal", text: clip(text, 60_000) });
         }
         emittedHistory = pane.historySize;
         if (Date.now() - lastScreenAt >= screenLogMs) {
-          const screen = await tmux.capture(session.name);
+          const screen = await tmux.capture(session.name).catch(() => null);
           if (screen?.trim() && screen !== lastScreen) {
             out.push({ type: "log", stream: "terminal", text: clip(screen, 60_000), screen: true });
             lastScreen = screen;
@@ -664,9 +1084,56 @@ export function createLocalRunner(
         ];
       };
 
+      /** The job's end at a Stop: done, unless the turn only said the usage limit was hit. */
+      async function* endAtStop(): AsyncGenerator<AdapterEvent> {
+        yield* setStatus("done");
+        yield* await finalLogs();
+        const summary = await summaryFromTranscript();
+        // Claude's last word was the usage-limit notice: the turn didn't do the work.
+        if (isUsageLimitText(summary) && !(await exists(resultPath))) {
+          usageLimit = summary ?? "usage limit reached";
+          yield limitEvent(usageLimit);
+          reportUsage("failed");
+          yield {
+            type: "session.ended",
+            outcome: "failed",
+            summary: `usage limit on Claude account "${session.account}": ${usageLimit}`,
+          };
+          return;
+        }
+        reportUsage("completed");
+        yield { type: "session.ended", outcome: "completed", ...(summary ? { summary } : {}) };
+      }
+
+      // tmux not answering is not the session ending (incident #11 (2026-11-12)): the job keeps
+      // running, says so once, and goes on reading the hook file, which doesn't need tmux.
+      let degraded: string | null = null;
+      /** Since when the session has been gone while its Claude may still run. */
+      let goneSince: number | null = null;
       while (!signal.aborted) {
-        const pane = await tmux.paneState(session.name).catch(() => null);
-        yield* await logs(pane);
+        let pane: PaneState | null | undefined;
+        try {
+          pane = await tmux.paneState(session.name);
+          if (degraded) {
+            degraded = null;
+            yield { type: "log", stream: "stderr", text: "runner: tmux answers again" };
+          }
+        } catch (err) {
+          if (!(err instanceof TmuxUnavailable)) throw err;
+          pane = undefined;
+          if (!degraded) {
+            degraded = err.message;
+            yield {
+              type: "log",
+              stream: "stderr",
+              text: clip(
+                `runner: tmux isn't answering (${err.message}); the session is treated as still running`,
+                2_000,
+              ),
+            };
+          }
+        }
+        yield* await logs(pane ?? null);
 
         // Status from the hook file, in order, with what the agent said before each line first.
         const read = await readStatusFrom(session.statusFile, offset);
@@ -675,9 +1142,15 @@ export function createLocalRunner(
         await readSaid();
         for (const line of read.lines) {
           yield* saidUpTo(line.time);
+          // Work after an owed Stop (later in the file than it): the steered turn is under way.
+          if (line.event === "PreToolUse" || line.event === "PostToolUse") steerTaken();
           switch (line.event) {
             case "UserPromptSubmit":
-              if (line.time >= session.promptSentAt) submitted = true;
+              if (line.time >= session.promptSentAt) {
+                submitted = true;
+                lastSubmitAt = Math.max(lastSubmitAt, line.time);
+                steerOwedSince = null;
+              }
               yield* setStatus("working");
               break;
             case "PreToolUse":
@@ -697,9 +1170,27 @@ export function createLocalRunner(
                 waitingSince ??= line.time;
               }
               break;
-            case "StopFailure":
-              yield* setStatus("error", line.message);
-              break;
+            case "StopFailure": {
+              const limit = usageLimitOf(line);
+              if (!limit) {
+                yield* setStatus("error", line.message);
+                break;
+              }
+              usageLimit = limit;
+              status = "error";
+              yield limitEvent(limit);
+              // A planning session waits for the owner (it may switch and steer); a job has
+              // nothing left to do on this account: it fails now instead of idling to a timeout.
+              if (planning) break;
+              yield* await finalLogs();
+              reportUsage("failed");
+              yield {
+                type: "session.ended",
+                outcome: "failed",
+                summary: `usage limit on Claude account "${session.account}": ${limit}`,
+              };
+              return;
+            }
             case "Stop":
               // A Stop from before the prompt was submitted (nothing asked yet) is not the end.
               if (!submitted) break;
@@ -707,16 +1198,18 @@ export function createLocalRunner(
                 yield* setStatus("idle");
                 break;
               }
-              yield* setStatus("done");
-              yield* await finalLogs();
-              {
-                const summary = await summaryFromTranscript();
-                yield {
-                  type: "session.ended",
-                  outcome: "completed",
-                  ...(summary ? { summary } : {}),
-                };
+              // A steer typed after the last submitted turn is queued by Claude and runs after
+              // this Stop (spec 43): the job ends at the Stop of the turn that answers it, or
+              // after a grace period if Claude folded it into this one.
+              if ((session.steeredAt ?? 0) > lastSubmitAt) {
+                yield* setStatus("idle");
+                if (steerOwedSince === null) {
+                  steerOwedSince = Date.now();
+                  owedStopAt = line.time;
+                }
+                break;
               }
+              yield* endAtStop();
               return;
             case "SessionEnd":
               yield* await finalLogs();
@@ -727,10 +1220,44 @@ export function createLocalRunner(
         // Said after the last hook line: nothing later has been reported yet.
         yield* saidUpTo();
 
-        if (!pane || pane.dead) {
+        // The steered turn never came: Claude took the steer into the turn that stopped.
+        if (steerOwedSince !== null && Date.now() - steerOwedSince > turnGraceMs) {
+          yield* endAtStop();
+          return;
+        }
+
+        // Ended only once its Claude is confirmed gone from the process table (unknown is alive).
+        const mayBeAlive = () =>
+          session.settingsPath
+            ? harnessMayBeAlive(procs, session.settingsPath)
+            : Promise.resolve(pane === undefined);
+        if (pane === undefined) {
+          // tmux can't say; the process table can.
+          if (session.settingsPath && !(await mayBeAlive())) {
+            yield* await finalLogs();
+            yield await exited();
+            return;
+          }
+        } else if (!pane || pane.dead) {
+          if (await mayBeAlive()) {
+            goneSince ??= Date.now();
+            if (Date.now() - goneSince < goneGraceMs) {
+              await sleep(pollMs, undefined, { signal }).catch(() => {});
+              continue;
+            }
+            yield* await finalLogs();
+            yield {
+              type: "session.ended",
+              outcome: "failed",
+              summary: `the tmux session ${pane ? "exited" : "went away"} but the agent's process was still running ${Math.round(goneGraceMs / 1000)} s later; the runner stops it`,
+            };
+            return;
+          }
           yield* await finalLogs();
           yield await exited();
           return;
+        } else {
+          goneSince = null;
         }
         if (
           !planning &&
@@ -760,9 +1287,10 @@ export function createLocalRunner(
         if (screen) artifacts.push({ kind: "log", name: "terminal-screen", text: screen });
         const transcript =
           (await transcriptFromStatus(session.statusFile)) ??
-          (await findTranscript(workspace.path, { since: session.startedAt - 60_000 }).catch(
-            () => null,
-          ));
+          (await findTranscript(workspace.path, {
+            since: session.startedAt - 60_000,
+            configDirs: [session.configDir],
+          }).catch(() => null));
         if (transcript) {
           const summary = await readTranscript(transcript).catch(() => null);
           const checks = summary ? checkOutputLog(summary) : null;
@@ -798,14 +1326,55 @@ export function createLocalRunner(
      * Code queues a message typed while it works and reads it at its next step.
      */
     async steer(session, text) {
-      const line = steerText(text);
-      if (!line) return;
-      for (let i = 0; i < line.length; i += STEER_CHUNK) {
-        await tmux.sendText(session.name, line.slice(i, i + STEER_CHUNK));
-        if (i + STEER_CHUNK < line.length) await sleep(30);
+      if (session.stream) return steerStream(session, text);
+      await typeLine(session.name, text, session);
+    },
+    // Spec 26, ADR 0470: stop the current step, then submit the factory's fixed line as a steer.
+    // A tmux session gets Claude Code's Escape; a stream session its interrupt control line.
+    async interrupt(session, text) {
+      if (session.stream) return interruptStream(session, text);
+      await tmux.sendKeys(session.name, "Escape");
+      await sleep(500);
+      // A second Escape within a second opens Claude Code's Rewind menu, which would swallow the
+      // line (and Enter there could rewind the conversation). Close it before typing.
+      // Only the bottom of the screen, where the menu renders: text the agent printed higher up
+      // can't trigger this (review of #71, D).
+      const bottom = ((await tmux.capture(session.name)) ?? "").trimEnd().split("\n").slice(-14);
+      if (
+        REWIND_MENU.test(bottom.join("\n")) &&
+        /Enter to continue · Esc to cancel/.test(bottom.join("\n"))
+      ) {
+        await tmux.sendKeys(session.name, "Escape");
+        await sleep(300);
       }
-      await sleep(200);
-      await tmux.sendKeys(session.name, "Enter");
+      await typeLine(session.name, text, session);
+    },
+
+    /**
+     * Hands a stream session to a person (ADR 0450): stops it cleanly; `events()` then reports the
+     * `claude --resume` command and follows the resumed session. A tmux session is taken over by
+     * attaching, so there is nothing to stop.
+     */
+    async takeover(session) {
+      if (!session.stream) throw new Error("attach to the tmux session to take it over");
+      await takeOverStream(session);
+    },
+
+    /**
+     * The web terminal (ADR 0440): a tmux control-mode client on the job's session, started while
+     * someone watches from the dashboard and closed when they leave. A stream session (ADR 0450)
+     * has no terminal: it is taken over by resume instead.
+     */
+    openTerminal(session, options) {
+      if (session.stream) {
+        return Promise.reject(new Error("a stream-json session has no terminal: take it over"));
+      }
+      return openTmuxTerminal({
+        ...options,
+        session: session.name,
+        socket: tmux.socket,
+        ...(config.tmux?.bin ? { bin: config.tmux.bin } : {}),
+      });
     },
   };
 }
