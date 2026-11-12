@@ -58,7 +58,7 @@ interface RepoState {
   byGitHub?: Record<string, true>;
   /** A commit's tree as a test set it (a crafted merge), instead of the one its history gives. */
   trees?: Record<string, Record<string, { mode: string; sha: string }>>;
-  /** Trees GitHub truncates (`treeEntries`). */
+  /** Commits whose compare GitHub can't give in full (`changedPaths`: too many files). */
   truncatedTrees?: Record<string, true>;
   tokens: number;
 }
@@ -133,7 +133,7 @@ export interface FakeGitHub extends GitHubService {
       tree?: { set?: Record<string, { mode: string; sha: string }>; remove?: string[] };
     },
   ): Promise<string>;
-  /** GitHub truncates this commit's tree listing (a very large tree). */
+  /** GitHub can't list this commit's changes in full (a compare past its 300 files). */
   truncateTree(repo: RepoRef, at: string): Promise<void>;
   /** Points a branch at an existing commit, as a force-push does. */
   forcePush(repo: RepoRef, branch: string, sha: string): Promise<void>;
@@ -544,14 +544,24 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         verified: github,
       };
     },
-    async treeEntries(r, at) {
+    async changedPaths(r, base, head) {
       const state = await load(r);
-      const sha = state.refs[at] ?? at;
-      return { truncated: state.truncatedTrees?.[sha] === true, entries: treeAt(state, sha) };
+      const h = state.refs[head] ?? head;
+      const m = mergeBaseOf(state, state.refs[base] ?? base, h);
+      if (!m) return { mergeBase: null, paths: [], complete: false };
+      const a = treeAt(state, m);
+      const b = treeAt(state, h);
+      const paths = [...new Set([...Object.keys(a), ...Object.keys(b)])]
+        .filter((p) => a[p]?.mode !== b[p]?.mode || a[p]?.sha !== b[p]?.sha)
+        .sort();
+      // `truncateTree`: GitHub's answer for this commit is too big to rely on.
+      const complete = !state.truncatedTrees?.[m] && !state.truncatedTrees?.[h];
+      return { mergeBase: m, paths, complete };
     },
-    async mergeBase(r, base, head) {
+    async pathEntries(r, at, paths) {
       const state = await load(r);
-      return mergeBaseOf(state, state.refs[base] ?? base, state.refs[head] ?? head);
+      const tree = treeAt(state, state.refs[at] ?? at);
+      return Object.fromEntries(paths.flatMap((p) => (tree[p] ? [[p, tree[p]]] : [])));
     },
     async craftMerge(r, branch, mergedIn, opts = {}) {
       const state = await load(r);

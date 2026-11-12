@@ -60,6 +60,9 @@ const toRepo = (r: GitHubRepoJson): InstallationRepo => ({
   defaultBranch: r.default_branch,
 });
 
+/** GitHub lists at most this many files in one compare (spec 53: a fuller change fails closed). */
+const COMPARE_FILES_CAP = 300;
+
 export function githubApp(config: GitHubAppConfig): GitHubService & {
   appJwt(): Promise<string>;
   installationToken(
@@ -175,6 +178,27 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       json = text;
     }
     return { status: response.status, json };
+  }
+  /** A GraphQL query as the repository's control-plane token (read-only uses). */
+  async function graphql(
+    repo: RepoRef,
+    query: string,
+    variables: Record<string, string>,
+  ): Promise<unknown> {
+    const response = await withCachedToken(
+      controlKey(repo, CONTROL_PLANE_PERMISSIONS),
+      () => controlToken(repo, CONTROL_PLANE_PERMISSIONS),
+      (token) =>
+        doFetch(`${API}/graphql`, {
+          method: "POST",
+          headers: headers(`token ${token}`),
+          body: JSON.stringify({ query, variables }),
+        }),
+    );
+    if (response.status !== 200) {
+      throw new Error(`GitHub GraphQL: HTTP ${response.status} ${await response.text()}`);
+    }
+    return response.json();
   }
   const fail = (what: string, r: { status: number; json: unknown }): never => {
     throw new Error(`GitHub ${what}: HTTP ${r.status} ${JSON.stringify(r.json)}`);
@@ -479,29 +503,70 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         verified: c.verification?.verified === true,
       };
     },
-    async treeEntries(repo, sha) {
-      const r = await api(repo, "GET", `/git/trees/${encodeURIComponent(sha)}?recursive=1`);
-      if (r.status !== 200) fail(`tree ${sha}`, r);
-      const body = r.json as {
-        truncated?: boolean;
-        tree?: { path: string; mode: string; type: string; sha: string }[];
-      };
-      const entries: Record<string, { mode: string; sha: string }> = {};
-      // Files, symlinks and submodules; directories are implied by the paths.
-      for (const e of body.tree ?? []) {
-        if (e.type !== "tree") entries[e.path] = { mode: e.mode, sha: e.sha };
-      }
-      return { truncated: body.truncated === true, entries };
-    },
-    async mergeBase(repo, base, head) {
+    async changedPaths(repo, base, head) {
       const r = await api(
         repo,
         "GET",
         `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`,
       );
-      if (r.status === 404) return null;
+      if (r.status === 404) return { mergeBase: null, paths: [], complete: false };
       if (r.status !== 200) fail(`compare ${base}...${head}`, r);
-      return (r.json as { merge_base_commit?: { sha?: string } }).merge_base_commit?.sha ?? null;
+      const body = r.json as {
+        merge_base_commit?: { sha?: string };
+        files?: { filename: string; previous_filename?: string }[];
+      };
+      const files = body.files ?? [];
+      const paths = new Set<string>();
+      for (const f of files) {
+        paths.add(f.filename);
+        if (f.previous_filename) paths.add(f.previous_filename);
+      }
+      return {
+        mergeBase: body.merge_base_commit?.sha ?? null,
+        paths: [...paths].sort(),
+        // GitHub lists at most 300 files in a compare: at the cap some may be missing.
+        complete: files.length < COMPARE_FILES_CAP,
+      };
+    },
+    async pathEntries(repo, sha, paths) {
+      // One GraphQL query per batch of directories: each directory's entries (name, mode, blob),
+      // never the whole tree. GraphQL gives the mode as a number: 33188 is 100644 in octal.
+      const dirs = [...new Set(paths.map((p) => p.slice(0, Math.max(0, p.lastIndexOf("/")))))];
+      const out: Record<string, { mode: string; sha: string }> = {};
+      for (let i = 0; i < dirs.length; i += 50) {
+        const batch = dirs.slice(i, i + 50);
+        const fields = batch
+          .map(
+            (_, k) =>
+              `d${k}: object(expression: $e${k}) { ... on Tree { entries { name mode oid } } }`,
+          )
+          .join(" ");
+        const vars = batch.map((_, k) => `$e${k}: String!`).join(", ");
+        const variables: Record<string, string> = { owner: repo.owner, name: repo.repo };
+        batch.forEach((d, k) => {
+          variables[`e${k}`] = `${sha}:${d}`;
+        });
+        const r = await graphql(
+          repo,
+          `query($owner: String!, $name: String!, ${vars}) { repository(owner: $owner, name: $name) { ${fields} } }`,
+          variables,
+        );
+        const data = (r as { data?: { repository?: Record<string, unknown> } }).data?.repository;
+        if (!data) fail(`tree entries ${sha}`, { status: 200, json: r });
+        batch.forEach((d, k) => {
+          const tree = (
+            data as Record<
+              string,
+              { entries?: { name: string; mode: number; oid: string }[] } | null
+            >
+          )[`d${k}`];
+          for (const e of tree?.entries ?? []) {
+            const path = d ? `${d}/${e.name}` : e.name;
+            if (paths.includes(path)) out[path] = { mode: e.mode.toString(8), sha: e.oid };
+          }
+        });
+      }
+      return out;
     },
     async updatePullRequestBranch(repo, { number, expectedHeadSha }) {
       const r = await api(repo, "PUT", `/pulls/${number}/update-branch`, {

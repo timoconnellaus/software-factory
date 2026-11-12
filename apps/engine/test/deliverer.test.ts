@@ -4,7 +4,7 @@
 // what is the deliverer's own: who lands it, the outcome read back, and one pass at a time.
 
 import { env } from "cloudflare:workers";
-import { BABYSITTER, FOREMAN } from "@software-factory/core";
+import { BABYSITTER, FOREMAN, operations } from "@software-factory/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { deliverRepository, deliverTestSeams } from "../src/deliver/deliverer.ts";
 import { mobileTestSeams } from "../src/mobile.ts";
@@ -686,6 +686,22 @@ describe("the approval across a merge of main (ADR 0582)", () => {
   });
 
   // Review of #105 (2): only the merge the factory asked GitHub for counts.
+  // Second review of #105: a change too big to read path by path doesn't carry an approval.
+  it("is withdrawn when the change is past the paths the digest reads", async () => {
+    const w = await world();
+    const many = Array.from({ length: operations.MAX_CHANGED_PATHS + 1 }, (_, i) => `src/f${i}.ts`);
+    const a = await toMergeGateWith(w, "A big change", files(...many));
+    const entry = () =>
+      first<{ approved_digest: string | null }>(
+        "SELECT approved_digest FROM core_merge_queue WHERE work_item_id = ?",
+        a,
+      );
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await approve(w, a);
+    await expectWithdrawn(w, a);
+    expect((await entry())?.approved_digest).toBeNull();
+  });
+
   it("withdraws a merge commit a person made, even with the right parents", async () => {
     const w = await world();
     const a = await toMergeGateWith(w, "Crafted merge", files("src/a.ts"));

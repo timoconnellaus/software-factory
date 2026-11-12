@@ -674,14 +674,21 @@ async function acceptUpdate(
   let thirdThings: string[] | null = null;
   let digestNow: string | null = null;
   if (babysitter && requestedByFactory && madeByGitHub && merged) {
-    const trees = await Promise.all([
-      github.treeEntries(repo, at),
-      github.treeEntries(repo, merged),
-      github.treeEntries(repo, prHead),
-    ]).catch(() => null);
-    thirdThings = trees?.every((t) => !t.truncated)
-      ? onlyEitherSide(trees[0].entries, trees[1].entries, trees[2].entries)
-      : null;
+    // Only the paths the merge changed on the approved head are read, never whole trees (second
+    // review of #105): a path the merge left alone is the approved head's by definition.
+    try {
+      const changed = await github.changedPaths(repo, at, prHead);
+      if (changed.complete && changed.paths.length <= MAX_CHANGED_PATHS) {
+        const [a, m, h] = await Promise.all([
+          github.pathEntries(repo, at, changed.paths),
+          github.pathEntries(repo, merged, changed.paths),
+          github.pathEntries(repo, prHead, changed.paths),
+        ]);
+        thirdThings = onlyEitherSide(a, m, h);
+      }
+    } catch {
+      thirdThings = null; // unreadable: fails closed
+    }
     digestNow = await digestOf(ctx, prHead, repository, repo);
   }
   const survives =
@@ -764,8 +771,14 @@ async function acceptUpdate(
 }
 
 /**
- * The change digest of `headSha` (its tree against its merge base with the default branch), or
- * null when it can't be read in full (an error, a truncated tree): never a partial digest.
+ * The most changed paths a change digest reads (spec 53): past it the approval doesn't carry over.
+ * Below GitHub's 300-file compare cap, and a bounded number of GraphQL directory reads.
+ */
+export const MAX_CHANGED_PATHS = 250;
+
+/**
+ * The change digest of `headSha` (its changed paths against its merge base with the default
+ * branch), or null when it can't be read in full (an error, too many paths): never a partial digest.
  */
 async function digestOf(
   ctx: HandlerContext,
@@ -776,14 +789,18 @@ async function digestOf(
   try {
     const ref = repo ?? (await repoRef(ctx, repository));
     const github = ctx.services.github;
-    const base = await github.mergeBase(ref, repository.default_branch, headSha);
-    if (!base) return null;
+    // The change is the paths GitHub's compare lists against the merge base: only those are read
+    // (second review of #105). Past MAX_CHANGED_PATHS, or a compare GitHub can't give in full, there
+    // is no digest, and no digest never matches.
+    const changed = await github.changedPaths(ref, repository.default_branch, headSha);
+    if (!changed.mergeBase || !changed.complete || changed.paths.length > MAX_CHANGED_PATHS) {
+      return null;
+    }
     const [b, h] = await Promise.all([
-      github.treeEntries(ref, base),
-      github.treeEntries(ref, headSha),
+      github.pathEntries(ref, changed.mergeBase, changed.paths),
+      github.pathEntries(ref, headSha, changed.paths),
     ]);
-    if (b.truncated || h.truncated) return null;
-    return await changeDigest(b.entries, h.entries);
+    return await changeDigest(b, h);
   } catch {
     return null;
   }

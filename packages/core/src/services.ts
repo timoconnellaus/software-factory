@@ -258,12 +258,21 @@ export interface GitHubService {
    */
   commitInfo(repo: RepoRef, sha: string): Promise<CommitInfo | null>;
   /**
-   * Every file in the commit's tree, by path, with its mode and blob SHA (`git/trees?recursive=1`).
-   * `truncated`: GitHub left entries out (a very large tree), so the caller can't rely on it.
+   * The paths that differ between `base`'s merge base with `head` and `head` (GitHub's compare,
+   * renames' old paths included), and that merge base. `complete` is false when GitHub may have left
+   * paths out (it lists at most 300 files): a caller then can't rely on it (spec 53, fail closed).
    */
-  treeEntries(repo: RepoRef, sha: string): Promise<{ truncated: boolean; entries: Tree }>;
-  /** The merge base of `base` and `head` as GitHub's compare gives it, or null. */
-  mergeBase(repo: RepoRef, base: string, head: string): Promise<string | null>;
+  changedPaths(
+    repo: RepoRef,
+    base: string,
+    head: string,
+  ): Promise<{ mergeBase: string | null; paths: string[]; complete: boolean }>;
+  /**
+   * The entries (mode and blob SHA) of just these paths in the commit's tree; a path that isn't
+   * there is left out. Reads only the paths' directories, never the whole tree (second review of
+   * #105: large repositories).
+   */
+  pathEntries(repo: RepoRef, sha: string, paths: readonly string[]): Promise<Tree>;
   /**
    * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
    * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`
