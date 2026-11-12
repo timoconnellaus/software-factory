@@ -1218,6 +1218,18 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
       status: live ? "draft" : "approved",
       createdAt: ago(1),
       createdBy: "agent",
+      // Spec 23 part C: the critic's notes on the plan going to the gate.
+      critique: live
+        ? {
+            status: "done",
+            notes: [
+              "The plan doesn't say what happens to an issue whose label is removed after it became an item.",
+              '"Within a minute" has no test: add one that measures the webhook to item time.',
+            ],
+            summary: "Two gaps; otherwise consistent with webhooks.ts.",
+            at: ago(1),
+          }
+        : null,
     },
     previousSpec: null,
     messages: live

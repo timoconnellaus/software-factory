@@ -159,6 +159,15 @@ export function policyImpact(
       );
     }
   }
+  // Spec 23: a shorter critic timeout lets the spec gate open before the critic's notes are in.
+  const critic = (p: typeof before) => p.timeouts.criticMinutes ?? 20;
+  if (critic(before) !== critic(after)) {
+    add(
+      "timeouts.criticMinutes",
+      critic(after) < critic(before) ? "loosens" : "neutral",
+      `Spec critic timeout ${critic(before)}m → ${critic(after)}m${critic(after) < critic(before) ? ": the gate may open before the critic's notes" : ""}.`,
+    );
+  }
   if (before.wipLimit !== after.wipLimit) {
     // Fewer items waiting at gates holds builds sooner; more is throughput, not permission.
     add(
