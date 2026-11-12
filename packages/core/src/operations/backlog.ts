@@ -31,6 +31,8 @@ export const PRE_PIPELINE = ["backlog", "shaping", "ready", "queued"] as const;
 export const INTAKE_STATES = ["backlog", "ready", "queued"] as const;
 export type IntakeState = (typeof INTAKE_STATES)[number];
 /** Items in the pipeline: they count against `activeLimit`. */
+/** The states a person can still order (workItem.reorder). */
+const ORDERABLE = ["backlog", "ready", "queued"] as const;
 export const ACTIVE_STATUSES = ["running", "waiting", "paused"] as const;
 
 /** Priority names, in pull order: stored as their index (0 urgent … 3 low). */
@@ -750,6 +752,7 @@ export const workItemReorder = defineOperation({
       .select(["id", "rank"])
       .where("project_id", "=", w.project_id)
       .where("priority", "=", anchor.priority)
+      .where("status", "in", [...ORDERABLE])
       .where("id", "!=", w.id)
       .where("rank", input.before ? "<" : ">", anchor.rank)
       .orderBy("rank", input.before ? "desc" : "asc")
@@ -759,10 +762,13 @@ export const workItemReorder = defineOperation({
     // Halving the gap runs out of precision after a few dozen moves between the same two items:
     // then renumber the project's ranks 1, 2, 3… in their current order, and place between those.
     if (neighbourRank !== undefined && Math.abs(anchorRank - neighbourRank) < 1e-6) {
+      // Only what can still be ordered (backlog, ready, queued), never done or running work.
+      // Queued work is included so it keeps its place against the renumbered ranks.
       const all = await ctx.db
         .selectFrom("core_work_items")
         .select(["id", "rank"])
         .where("project_id", "=", w.project_id)
+        .where("status", "in", [...ORDERABLE])
         .where("id", "!=", w.id)
         .orderBy("rank")
         .orderBy("created_at")

@@ -5,9 +5,13 @@
 -- Additive only: the repo columns stay on core_projects for now (unread by the code from this
 -- release on, still written as a mirror by project.create), because the code deployed before this
 -- release reads them until the Worker deploy lands, and a failed deploy must leave production
--- working. A later migration, once this code is live, backfills a repository for any project
--- created in that gap and drops the columns (it rebuilds core_projects: see 0261's note on
--- copying aside the rows of tables that cascade from it).
+-- working. A later migration, once this code is live, drops them. It must:
+-- - backfill a repository only for a project that has none (one created by the old code in the
+--   gap), from these columns; never update an existing repository from them: they are a mirror
+--   written once by project.create and go stale (repository.update doesn't touch them);
+-- - rebuild core_projects, copying aside the rows of tables that cascade from it (see 0261);
+-- - rekey core_verify_checks from (project_id, head_sha) to (repository_id, head_sha), which can't
+--   change here because the old code upserts on the old key during the deploy.
 CREATE TABLE core_repositories (
   id TEXT PRIMARY KEY NOT NULL,
   org_id TEXT NOT NULL REFERENCES core_organization (id) ON DELETE CASCADE,
