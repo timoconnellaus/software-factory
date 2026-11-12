@@ -37,6 +37,17 @@ export const STAGE_PHASE: Record<(typeof STAGES)[number], "shaping" | "delivery"
   done: "delivery",
 };
 
+/** Each stage's name as people read it (the built-in workflow's; ADR 0493's stages). */
+export const STAGE_LABEL: Record<(typeof STAGES)[number], string> = {
+  intake: "Intake",
+  triage: "Triage",
+  spec: "Spec",
+  build: "Build",
+  verify: "Verify",
+  merge: "Merge",
+  done: "Done",
+};
+
 export function requireWorkItem(ctx: HandlerContext): WorkItemRow {
   const item = ctx.scope.workItem;
   if (!item) throw new OperationError("not_found", "no such work item");
@@ -297,7 +308,8 @@ export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: stri
       }))
       .where("work_item_id", "=", w.id),
   );
-  ctx.write(
+  ctx.writePendingStatus(
+    "close",
     ctx.db
       .updateTable("core_pending_actions")
       .set({
@@ -312,7 +324,8 @@ export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: stri
   );
   // An approval not yet used dies with the item (spec 53 review): nothing may carry it out after
   // the cancel, whoever holds it (the item's Workflow, or the babysitter's deliverer).
-  ctx.write(
+  ctx.writePendingStatus(
+    "close",
     ctx.db
       .updateTable("core_pending_actions")
       .set({

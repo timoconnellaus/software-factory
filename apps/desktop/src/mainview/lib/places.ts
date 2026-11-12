@@ -17,8 +17,15 @@ export interface ItemRef {
   status: string;
 }
 
-/** A tab's title. A work item is "#12 Its title" once the app has it loaded, else "Work item". */
-export function tabTitle(path: string, findItem: (id: string) => ItemRef | null): string {
+/**
+ * A tab's title. A work item is "#12 Its title" once the app has it loaded, else "Work item"; a
+ * project's page is the project's name once loaded, else "Project".
+ */
+export function tabTitle(
+  path: string,
+  findItem: (id: string) => ItemRef | null,
+  findProject: (id: string) => string | null = () => null,
+): string {
   const pathname = path.split("?")[0] ?? "/";
   const item = /^\/work\/([^/]+)(\/review)?$/.exec(pathname);
   if (item?.[1]) {
@@ -28,8 +35,15 @@ export function tabTitle(path: string, findItem: (id: string) => ItemRef | null)
   switch (pathname) {
     case "/":
       return "Inbox";
-    case "/work":
-      return "Work";
+    case "/work": {
+      const q = new URLSearchParams(path.split("?")[1] ?? "");
+      const view = q.get("view");
+      const project = q.get("project");
+      // A project's board is the project's, as its header says.
+      if (project && view === "active") return findProject(project) ?? "Project";
+      if (view && view in WORK_VIEW_TITLE) return WORK_VIEW_TITLE[view] as string;
+      return project ? (findProject(project) ?? "Project") : "In the factory";
+    }
     case "/new":
       return "New item";
     case "/attach":
@@ -61,6 +75,15 @@ export function tabTitle(path: string, findItem: (id: string) => ItemRef | null)
   }
 }
 
+/** The Work section's views as tab titles (lib/work-board.ts's VIEW_LABEL). */
+const WORK_VIEW_TITLE: Record<string, string> = {
+  backlog: "Backlog",
+  planning: "Planning",
+  ready: "Ready",
+  active: "In the factory",
+  done: "Done",
+};
+
 export interface PlaceCommand {
   id: string;
   label: string;
@@ -73,6 +96,20 @@ export interface PlaceCommand {
 export const PLACE_COMMANDS: PlaceCommand[] = [
   { id: "inbox", label: "Inbox", to: "/", keywords: "inbox gates waiting decisions" },
   { id: "new", label: "New item", to: "/new", keywords: "new work item create send" },
+  {
+    id: "backlog",
+    label: "Work: backlog",
+    to: "/work",
+    search: { view: "backlog" },
+    keywords: "work backlog captured later ideas",
+  },
+  {
+    id: "ready",
+    label: "Work: ready",
+    to: "/work",
+    search: { view: "ready" },
+    keywords: "work ready release shaped",
+  },
   { id: "work", label: "Work: in the factory", to: "/work", keywords: "work running active" },
   {
     id: "done",
