@@ -122,7 +122,7 @@ rather than shown empty:
 | 5 | The Factory section: Overview, Workflows, Agents, Autopilots, Checks and incidents, Runners, Policy | Spec 09's config, and runner and incident reads exposed to the desktop |
 | 6 | Settings: members, connections, devices and notifications; the All orgs page; the budget and "update ready" in the status bar; sign-in restyled | Usage capture, spec 40 M4 (updates) |
 | 7 | A live run in the work item (`ItemRunLive`): the transcript and steering from spec 31 | `run.live` and `run.steer` on the client door |
-| 8 | Open terminal opens the session's web terminal in the app, not just the tmux command | The hosts build's web terminal (piece 6) |
+| 8 | Open terminal opens the session's web terminal in the app, not just the tmux command | The web terminal (spec 35, #66) reaching the client door: today it runs through sf-app's own server socket (`run.terminal.attach`), which the desktop can't open |
 | 9 | Planning as designed in `ItemPlan`, `PlanFocus`, `PlanFocusMockup`: edit a plan line directly, chat after the current step or as an interrupt, let the planner finish alone, mockups with pinned comments and option cards, stop and pause, Mockups, System and Canvas tabs | The planning build |
 
 ## As built (slice 1)

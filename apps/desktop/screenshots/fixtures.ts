@@ -645,6 +645,7 @@ export const ANSWERS: Answers = {
         desiredVersion: "5da8988",
         autoUpdate: true,
         update: null,
+        accounts: null,
       },
     ],
   }),
