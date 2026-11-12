@@ -62,6 +62,11 @@ export interface FakeCloud {
   planning: (call: { jobId: string; op: string; input: Record<string, unknown> }) => unknown;
   /** What the heartbeat answers as `desiredVersion` (ADR 0360); undefined leaves it out. */
   desiredVersion?: string | null;
+  /** Steers queued per job (ADR 0400); the steer call takes them. */
+  steers: Map<string, { id: string; text: string; at: string }[]>;
+  steerCalls: number;
+  /** Answer the steer call 404, as an engine from before ADR 0400 does. */
+  noSteerCall?: boolean;
 }
 
 export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
@@ -81,6 +86,8 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
     attachmentCalls: 0,
     planningCalls: [],
     planning: () => ({}),
+    steers: new Map(),
+    steerCalls: 0,
     fetch: async (input, init) =>
       handleRunnerCall(
         new Request(input, init),
@@ -110,6 +117,10 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
           }
           const parsed = parseJobPath(path);
           if (!parsed) return { status: 404, body: { error: "unknown path" } };
+          if (parsed.call === "steer" && cloud.noSteerCall) {
+            cloud.steerCalls++;
+            return { status: 404, body: { error: `unknown path ${path}`, code: "not_found" } };
+          }
           const { jobId, call } = parsed;
           if (cloud.fenced.has(jobId)) {
             return { status: 409, body: { error: "stale fencing token", code: "fenced" } };
@@ -158,6 +169,20 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
               return found
                 ? { body: { attachment: found.meta, base64: found.base64 } }
                 : { status: 404, body: { error: "no attachment", code: "not_found" } };
+            }
+            case "steer": {
+              // Held briefly while nothing is queued (the real engine holds ~25 s).
+              cloud.steerCalls++;
+              const { waitMs = 0 } = body as { waitMs?: number };
+              const until = Date.now() + Math.min(waitMs, 100);
+              for (;;) {
+                const queued = cloud.steers.get(jobId) ?? [];
+                if (queued.length > 0 || Date.now() >= until) {
+                  cloud.steers.set(jobId, []);
+                  return { body: { steers: queued } };
+                }
+                await new Promise((r) => setTimeout(r, 10));
+              }
             }
             case "planning": {
               const { op, input } = body as { op: string; input: Record<string, unknown> };
@@ -241,26 +266,37 @@ export function fakeAdapter(
     signal: AbortSignal,
     relay?: PlanningRelay,
   ) => Promise<AdapterEvent[]>,
+  options: { steer?: boolean } = {},
 ): RunnerAdapter<FakeWorkspace> & {
   calls: string[];
   prompts: string[];
   relays: Map<string, PlanningRelay>;
+  steered: string[];
 } {
   const calls: string[] = [];
   const prompts: string[] = [];
   const relays = new Map<string, PlanningRelay>();
+  const steered: string[] = [];
   return {
     calls,
     prompts,
     relays,
+    steered,
     async manifest() {
       return {
         contractVersion: CONTRACT_VERSION,
         runnerKind: "fake",
         harnesses: ["claude-code"],
-        capabilities: ["headless"],
+        capabilities: options.steer ? ["headless", "steer"] : ["headless"],
       };
     },
+    ...(options.steer
+      ? {
+          async steer(_s: unknown, text: string) {
+            steered.push(text);
+          },
+        }
+      : {}),
     async capacity() {
       return { max: 2, inUse: 0, accepting: true };
     },

@@ -1,7 +1,8 @@
 // The runner host daemon (ADR 0014, 0016, 0100). Outbound only: every ~20 s it heartbeats (manifest,
 // capacity, the jobs it holds with their fencing tokens, which renews their leases), applies the
-// commands that come back (cancel, drain, steer, account.use), and claims jobs while it has room. Each job runs
-// concurrently through `runJob`. Nothing here knows which runner adapter it drives.
+// commands that come back (cancel, drain, account.use: ADR 0410), and claims jobs while it has
+// room. Each job runs concurrently through `runJob`, which also takes the dashboard's steers for its
+// session on a held channel call (ADR 0400). Nothing here knows which runner adapter it drives.
 import {
   ChannelCallError,
   type ControlPlaneClient,

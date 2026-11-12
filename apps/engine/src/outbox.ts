@@ -110,6 +110,11 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
       await planningHub(env, message.payload.workItemId).notify();
       return;
+    case "run.steered":
+      // The runner host's held steer call waits on the work item's hub (ADR 0400). A wake, not a
+      // change: open Planning tabs don't re-read.
+      await planningHub(env, message.payload.workItemId).wake();
+      return;
     case "notify":
       // To the person's open desktop apps (spec 40 M2b). Web push arrives with spec 15; the inbox
       // itself always reads gates and questions from D1.

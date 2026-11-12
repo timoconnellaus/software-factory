@@ -4,7 +4,8 @@
 // the factory's own socket (`tmux -L software-factory`), so a person can `tmux attach` to take the
 // run over. The live process is checked against the launch record before the prompt is sent.
 // Agent status comes from the factory's status hook (`<runDir>/status.jsonl`), not the screen;
-// terminal output streams from `capture-pane`. Git (the diff, the push) is the runner host's job.
+// terminal output streams from `capture-pane`, and what the agent says from its transcript (ADR
+// 0400). Git (the diff, the push) is the runner host's job.
 import { appendFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -29,6 +30,7 @@ import {
   readLaunchRecord,
   readStatusFrom,
   readTranscript,
+  readTranscriptFrom,
   removeRunDir,
   STATUS_FILE,
   type StatusLine,
@@ -46,9 +48,11 @@ import {
   type Capacity,
   CONTRACT_VERSION,
   type Job,
+  MESSAGE_MAX,
   RESULT_FILE,
   type RunnerAdapter,
   type SessionHandle,
+  steerText,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
 import { exists, findCheckout, isUnder } from "./checkouts.ts";
@@ -170,6 +174,7 @@ export const DEFAULT_CAPABILITIES: Capability[] = [
   "ui-takeover",
   "own-hardware",
   "work-item-attachments",
+  "steer",
 ];
 
 /** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
@@ -212,6 +217,9 @@ export async function checkRunningHarness(
   if (!record) return null;
   return { record, problems: await verifyLaunch(record, readCommand) };
 }
+
+/** How many characters of a steer go in one `send-keys -l`. */
+const STEER_CHUNK = 200;
 
 /** Claude's first-run folder trust dialog (a plain terminal doesn't pre-trust the worktree). */
 const TRUST_DIALOG = /trust this folder/i;
@@ -602,6 +610,38 @@ export function createLocalRunner(
       let submitted = false;
       let waitingSince: number | null = null;
       let transcript: string | null = null;
+      // The transcript is tailed for what the agent says (ADR 0400). A resumed planning
+      // conversation's file holds earlier turns: only messages from this session are sent.
+      let tailing: string | null = null;
+      let transcriptOffset = 0;
+      const since = session.startedAt - 5_000;
+      /** What the agent said, not yet yielded, oldest first. */
+      const said: { at: number | null; event: AdapterEvent }[] = [];
+      const readSaid = async () => {
+        if (!transcript) return;
+        if (tailing !== transcript) {
+          tailing = transcript;
+          transcriptOffset = 0;
+        }
+        const read = await readTranscriptFrom(transcript, transcriptOffset).catch(() => null);
+        if (!read) return;
+        transcriptOffset = read.offset;
+        for (const m of read.messages) {
+          if (m.at !== null && m.at < since) continue;
+          said.push({
+            at: m.at,
+            event: { type: "message", role: m.role, text: clip(m.text, MESSAGE_MAX - 1) },
+          });
+        }
+      };
+      /** The messages said before `time` (all of them without one). */
+      const saidUpTo = (time = Number.POSITIVE_INFINITY): AdapterEvent[] => {
+        const out: AdapterEvent[] = [];
+        while (said[0] && (said[0].at === null || said[0].at < time)) {
+          out.push((said.shift() as { event: AdapterEvent }).event);
+        }
+        return out;
+      };
       const resultPath = join(session.worktreePath, RESULT_FILE);
       const setStatus = (next: AgentStatus, message?: string): AdapterEvent[] => {
         if (next !== "waiting_input") waitingSince = null;
@@ -666,7 +706,7 @@ export function createLocalRunner(
         if (Date.now() - lastScreenAt >= screenLogMs) {
           const screen = await tmux.capture(session.name);
           if (screen?.trim() && screen !== lastScreen) {
-            out.push({ type: "log", stream: "terminal", text: clip(screen, 60_000) });
+            out.push({ type: "log", stream: "terminal", text: clip(screen, 60_000), screen: true });
             lastScreen = screen;
           }
           lastScreenAt = Date.now();
@@ -674,17 +714,25 @@ export function createLocalRunner(
         return out;
       };
       /** The output since the last poll, before the session's end is reported. */
-      const finalLogs = async () => logs(await tmux.paneState(session.name).catch(() => null));
+      const finalLogs = async () => {
+        await readSaid();
+        return [
+          ...saidUpTo(),
+          ...(await logs(await tmux.paneState(session.name).catch(() => null))),
+        ];
+      };
 
       while (!signal.aborted) {
         const pane = await tmux.paneState(session.name).catch(() => null);
         yield* await logs(pane);
 
-        // Status from the hook file, in order.
+        // Status from the hook file, in order, with what the agent said before each line first.
         const read = await readStatusFrom(session.statusFile, offset);
         offset = read.offset;
+        for (const line of read.lines) if (line.transcript) transcript = line.transcript;
+        await readSaid();
         for (const line of read.lines) {
-          if (line.transcript) transcript = line.transcript;
+          yield* saidUpTo(line.time);
           switch (line.event) {
             case "UserPromptSubmit":
               if (line.time >= session.promptSentAt) submitted = true;
@@ -765,6 +813,8 @@ export function createLocalRunner(
               return;
           }
         }
+        // Said after the last hook line: nothing later has been reported yet.
+        yield* saidUpTo();
 
         if (!pane || pane.dead) {
           yield* await finalLogs();
@@ -832,8 +882,18 @@ export function createLocalRunner(
 
     release,
 
+    /**
+     * A person's message (ADR 0400): one sanitised line, typed in short pieces so the TUI doesn't
+     * take it as a paste (a long paste arrives truncated, incident 2026-11-11 #8), then Enter. Claude
+     * Code queues a message typed while it works and reads it at its next step.
+     */
     async steer(session, text) {
-      await tmux.sendText(session.name, text);
+      const line = steerText(text);
+      if (!line) return;
+      for (let i = 0; i < line.length; i += STEER_CHUNK) {
+        await tmux.sendText(session.name, line.slice(i, i + STEER_CHUNK));
+        if (i + STEER_CHUNK < line.length) await sleep(30);
+      }
       await sleep(200);
       await tmux.sendKeys(session.name, "Enter");
     },

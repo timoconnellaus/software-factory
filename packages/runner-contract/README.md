@@ -28,7 +28,13 @@ a worktree and a branch; `release` never unregisters or deletes a checkout.
    fencingToken, id)` fetches one (base64). Neither answer is stored by the cloud. The adapter's
    `attachFiles` puts them outside the git tree and returns the prompt section (labelled
    `untrustedData` blocks). Adapters without the capability skip this.
-5. Run the adapter; send `events` and `artifact`s with the fencing token.
+5. Run the adapter; send `events` and `artifact`s with the fencing token. Events include
+   `message` (what the agent said, from its transcript) and `log` with `screen: true` for the
+   visible screen (ADR 0400). With the `steer` capability and `adapter.steer`, keep
+   `steers(jobId, { fencingToken, waitMs })` open while the session runs: the cloud holds it until
+   the runner's owner sends a message from the dashboard (or ~25 s), and the host types each one
+   with `adapter.steer(session, steerText(text))`. Not stored by the cloud; at most once. A 404 (an
+   older engine) means stop asking.
 6. Read the stage result from `RESULT_FILE` (`.factory-result.json`, never committed), push the run
    branch, then `handback { branch, headSha, result }` and `release`.
 7. Any `409` with code `fenced` or `killed`: stop the session, release the workspace, drop the job.

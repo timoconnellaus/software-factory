@@ -574,6 +574,17 @@ export interface CoreRunEventsTable {
   payload: JsonText;
 }
 
+/** A person's message into a live run (spec 31, ADR 0400). */
+export interface CoreRunSteersTable {
+  id: string;
+  run_id: string;
+  work_item_id: string;
+  author_user_id: string;
+  text: string;
+  created_at: Iso;
+  delivered_at: Iso | null;
+}
+
 export interface CoreArtifactsTable {
   id: string;
   run_id: string;
@@ -896,6 +907,7 @@ export interface CoreDatabase {
   core_jobs: CoreJobsTable;
   core_runs: CoreRunsTable;
   core_run_events: CoreRunEventsTable;
+  core_run_steers: CoreRunSteersTable;
   core_artifacts: CoreArtifactsTable;
   core_leases: CoreLeasesTable;
   core_channel_requests: CoreChannelRequestsTable;

@@ -37,6 +37,8 @@ export const CONTRACT_VERSION = "1" as const;
  * - `work-item-attachments`: fetches the work item's attachments over the channel into the run's
  *   workspace, outside the git tree, and tells the agent where they are (ADR 0310). A runner
  *   without it still runs every job; its agent just sees no attachments.
+ * - `steer`: a person can send a message into the live session from the dashboard (ADR 0400). The
+ *   host keeps the channel's `steer` call open while the session runs and calls `adapter.steer`.
  */
 export const CAPABILITIES = [
   "browser",
@@ -46,6 +48,7 @@ export const CAPABILITIES = [
   "headless",
   "own-hardware",
   "work-item-attachments",
+  "steer",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -154,7 +157,10 @@ export type SessionOutcome = "completed" | "failed" | "timed_out" | "cancelled";
 export type AdapterEvent =
   | { type: "session.started"; sessionRef: string; takeover?: SessionHandle["takeover"] }
   | { type: "agent.status"; status: AgentStatus; message?: string }
-  | { type: "log"; stream: "terminal" | "stdout" | "stderr"; text: string }
+  /** `screen`: the visible screen, as opposed to lines that scrolled off (ADR 0400). */
+  | { type: "log"; stream: "terminal" | "stdout" | "stderr"; text: string; screen?: boolean }
+  /** What the agent said (assistant) or was told (user), as the transcript has it (ADR 0400). */
+  | { type: "message"; role: "assistant" | "user"; text: string }
   | { type: "tool"; name: string; input?: string }
   | { type: "session.ended"; outcome: SessionOutcome; summary?: string };
 
@@ -198,7 +204,10 @@ export interface RunnerAdapter<
    * untrusted data). Called after prepareWorkspace and before startSession.
    */
   attachFiles?(job: Job, workspace: W, files: AttachmentFile[]): Promise<string>;
-  /** Optional: send a person's message into the live session. */
+  /**
+   * Optional: send a person's message into the live session (ADR 0400). `text` is already
+   * sanitised and one line (`steerText`). Declare the `steer` capability to get steers.
+   */
   steer?(session: S, text: string): Promise<void>;
 }
 

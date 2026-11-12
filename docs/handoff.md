@@ -69,6 +69,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   `brew install tmux` if missing, `git pull`, `sf-runner doctor --fix` (sets `checkouts` once from
   Orca's repos), then `sf-runner install` with no jobs running. Job worktrees the old runner left in
   Orca (`sf-job:` comments) are removed in Orca by hand. Pieces 2–8 get their own specs.
+  Piece 2, [spec 31](specs/31-watch-and-steer-runs.md) / [ADR 0400](adr/0400-watch-and-steer-runs-from-the-dashboard.md)
+  (block X, migration 0170), is built on `timoconnellaus/hosts-watch-steer`: the Live tab (transcript
+  and terminal from `run.live`, polled), `run.steer` for the runner's owner, the held `steer` call
+  on the channel, `message` events from the transcript. Criteria 1 and 2 need a live run on the M5.
   Piece 3, [spec 32](specs/32-claude-accounts-on-a-host.md) / [ADR 0410](adr/0410-claude-accounts-live-on-the-host.md)
   (block Y, migration 0180), is built on branch `timoconnellaus/hosts-accounts`: Claude accounts on
   a host (`sf-runner account add|use|list|remove`), the active one in each job's launch, the

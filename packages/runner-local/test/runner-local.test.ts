@@ -134,12 +134,12 @@ const ownerState = (owner: string) => ({
 });
 
 describe("runner-local adapter", { timeout: 30_000 }, () => {
-  it("declares hooks, takeover, own hardware and attachments; no browser, no auto-register", async () => {
+  it("declares hooks, takeover, own hardware, attachments and steer; no browser, no auto-register", async () => {
     const { runner } = await world();
     const m = await runner.manifest();
     expect(m.runnerKind).toBe("local");
     expect([...m.capabilities].sort()).toEqual(
-      ["hooks", "own-hardware", "ui-takeover", "work-item-attachments"].sort(),
+      ["hooks", "own-hardware", "steer", "ui-takeover", "work-item-attachments"].sort(),
     );
   });
 
@@ -544,6 +544,75 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     expect(note).toContain(`path: ${path}`);
     await w.runner.release(job(), ws, undefined);
     await expect(readFile(path, "utf8")).rejects.toThrow();
+  });
+
+  it("emits what the agent says from its transcript, in order with the hook's events (ADR 0400)", async () => {
+    const w = await world({
+      onPrompt: async (s, append) => {
+        const transcript = join(s.runDir, "transcript.jsonl");
+        const said = (text: string, at: number) =>
+          `${JSON.stringify({
+            type: "assistant",
+            timestamp: new Date(at).toISOString(),
+            message: { content: [{ type: "text", text }] },
+          })}\n`;
+        const tick = () => new Promise((r) => setTimeout(r, 5));
+        await tick();
+        const t0 = Date.now();
+        // An earlier turn of a resumed conversation: not this session's, never sent.
+        await writeFile(transcript, said("From last week.", t0 - 3_600_000));
+        await writeFile(transcript, said("I'll read the spec first.", t0), { flag: "a" });
+        await tick();
+        append({ event: "PreToolUse", tool: "Read", input: '{"file_path":"SPEC.md"}', transcript });
+        await new Promise((r) => setTimeout(r, 5));
+        await writeFile(transcript, said("x".repeat(9_000), Date.now()), { flag: "a" });
+        await writeFile(transcript, said("Done: added the line.", Date.now() + 1), { flag: "a" });
+        await new Promise((r) => setTimeout(r, 5));
+        append({ event: "Stop", transcript });
+      },
+    });
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    const session = await w.runner.startSession(job(), ws, signal);
+    const events = (await drain(w.runner.events(job(), session, signal))).filter(
+      (e) => e.type !== "log",
+    );
+    expect(events.map((e) => e.type)).toEqual([
+      "agent.status",
+      "message",
+      "tool",
+      "message",
+      "message",
+      "agent.status",
+      "session.ended",
+    ]);
+    const said = events
+      .filter((e) => e.type === "message")
+      .map((e) => (e.type === "message" ? e.text : ""));
+    expect(said[0]).toBe("I'll read the spec first.");
+    expect(said[1]?.length).toBeLessThanOrEqual(8_000);
+    expect(said[2]).toBe("Done: added the line.");
+    expect(events.at(-1)).toMatchObject({
+      type: "session.ended",
+      summary: "Done: added the line.",
+    });
+    await w.runner.release(job(), ws, session);
+  });
+
+  it("types a long or multi-line steer as one sanitised line, in pieces, then Enter", async () => {
+    const w = await world();
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    const session = await w.runner.startSession(job(), ws, signal);
+    const long = `first line\nsecond\u001b[2J ${"y".repeat(450)}`;
+    await w.runner.steer?.(session, long);
+    const typed = w.tmux.calls.filter((c) => c.includes("-l")).slice(1);
+    expect(typed.length).toBeGreaterThan(1);
+    expect(typed.every((c) => (c.at(-1) ?? "").length <= 200)).toBe(true);
+    const submitted = w.tmux.sessions.get("sf-job_1")?.submitted.at(-1) ?? "";
+    expect(submitted.startsWith("first line second[2J y")).toBe(true);
+    expect(submitted.includes("\n") || submitted.includes(String.fromCharCode(27))).toBe(false);
+    await w.runner.release(job(), ws, session);
   });
 
   it("steers by typing the text and pressing Enter", async () => {

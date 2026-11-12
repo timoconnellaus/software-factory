@@ -2,10 +2,11 @@
 // `read()` (batched per tick). Route loaders `ensureQueryData` everything their page renders, so a
 // navigation fetches in one request and pages render from the cache; a cached page shows at once
 // and refreshes in the background once its `staleTime` has passed.
-import { queryOptions, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { getSession } from "#/server/fns";
+import { mergeLive } from "./live.ts";
 import { read } from "./op.ts";
-import type { Project } from "./ops.ts";
+import type { LiveView, Project } from "./ops.ts";
 
 /**
  * The signed-in user and their orgs. Fetched once per page load (on the server for the first
@@ -54,6 +55,27 @@ export const planningQuery = (workItemId: string) =>
     queryFn: () => read("planning.get", { workItemId }),
     staleTime: 60_000,
   });
+
+/**
+ * A work item's latest run, live (spec 31): the first read takes the newest events, each poll after
+ * it only the events after the last seq, folded in by `mergeLive`. Polls every 2 s while the run is
+ * active. When a newer run has started, it reads that run from the top.
+ */
+export const liveQuery = (queryClient: QueryClient, workItemId: string) => {
+  const queryKey = ["workItem", workItemId, "live"] as const;
+  return queryOptions({
+    queryKey,
+    queryFn: async (): Promise<LiveView> => {
+      const prev = queryClient.getQueryData<LiveView>(queryKey);
+      if (!prev?.run) return read("run.live", { workItemId });
+      const next = await read("run.live", { workItemId, afterSeq: prev.lastSeq });
+      if (next.run && next.run.id !== prev.run.id) return read("run.live", { workItemId });
+      return mergeLive(prev, next);
+    },
+    staleTime: 1_000,
+    refetchInterval: (q) => (q.state.data?.run?.active ? 2_000 : false),
+  });
+};
 
 /** A work item's attachments (ADR 0310): metadata only; the files come from /api/attachments/<id>. */
 export const attachmentsQuery = (workItemId: string) =>
