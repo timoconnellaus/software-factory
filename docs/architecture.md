@@ -67,7 +67,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   `policyImpact` classifies each change. A loosening save is `self-modify` and is applied when an
   approver approves it. Workflows (ADR 0371) fill the skeleton's three slots, and Workflow v6 runs
   their steps (`workflow.gate`, `workflow.record`). Agents (ADR 0372) carry a role and tier that
-  the runner's claim resolves to a model.
+  the runner's claim resolves to a model. Spec 52 is replacing slots with **stage types**:
+  `@software-factory/core/stages` holds the registry (`STAGE_TYPES`), the `WorkflowDefinition`
+  schema, `validateWorkflow` (the S- and F-rules) and the built-in Software, Incident and Attached PR
+  workflows; `compileProjectWorkflow` expresses a project's slot workflow as a stage list. Nothing at
+  run time reads them yet (build plan PR (a)).
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`
@@ -77,8 +81,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 - **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
   0231). The packet's **tests-intact** guard reads GitHub's diff for weakened tests, suppressions
-  and gate-file edits; its findings go to a person and block the check-only auto-merge, never the
-  verdict (ADR 0500). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
+  and gate-file edits; its findings go to a person and block an auto-approved merge, never the
+  verdict (ADR 0500, 0515). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
@@ -87,7 +91,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   (no model) orders, updates and merges approved PRs and holds them while `main` is red, and starts a
   `babysit` job on a runner only for judgement (a conflict, a failed check, a red `main`). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
-  auto-merge where policy opts in (ADR 0230).
+  auto-merge where policy opts in (ADR 0230, as built today). Accepted, not built: ADR 0230 is
+  superseded by **dark factory mode** (ADR 0515, spec 52 PR (e)): an `autoApprove` setting on the
+  workflow's merge gate, off by default and turned on only by a person, under which the merge gate
+  is *approved* with no person when every condition holds in code (never for paths in the built-in
+  self-modify list); landing the approved merge stays with the merge queue.
 - **Attached PRs** (ADR 0290, spec 05): a PR opened outside the factory fails `factory/verify` with
   a link to sf-app's `/attach`. `workItem.attachPr` gives it a work item of kind `attached`, whose
   Workflow takes its own path (`runAttached`, chosen by kind): triage, spec and build skipped, the
