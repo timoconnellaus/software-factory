@@ -6,6 +6,7 @@ export * from "./gate-decision.ts";
 export * from "./impact.ts";
 export * from "./org-config.ts";
 export * from "./project-workflow.ts";
+export * from "./reconcile.ts";
 export * from "./registry.ts";
 export * from "./settings.ts";
 export * from "./validate.ts";

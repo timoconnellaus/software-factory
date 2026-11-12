@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import { SIZE_RANK, SIZES, type StageType } from "../contract.ts";
+import { gateOf, gateStep, jobStep } from "../reconcile.ts";
 import { deciderImpact, deciderSchema } from "../settings.ts";
 
 const settings = z
@@ -59,6 +60,28 @@ export const interviewPlanning: StageType<typeof settings> = {
     { id: "session", kind: "agent", role: "triage" },
     { id: "spec-gate", kind: "decision" },
   ],
+  // Skipped below the size threshold unless the foreman asked for a spec; `large` always runs it.
+  // An unsized item (no triage before it) runs it: fail-safe.
+  skip: (s, item) => {
+    if (!item.size) return null;
+    if (item.size === "large" || SIZE_RANK[item.size] >= SIZE_RANK[s.requiredFrom]) return null;
+    if (item.specRequested === "require") return null;
+    return `sized ${item.size}, below the spec threshold (${s.requiredFrom})`;
+  },
+  // The planning session, then the spec gate; changes requested runs the session again.
+  next: (ctx) => {
+    const at = ctx.entry.stageId;
+    const work = jobStep(ctx, "session", ctx.item.retryLimit);
+    if (work) return work;
+    return (
+      gateStep(ctx, "spec-gate", gateOf(ctx.gate), "session", () => ({
+        kind: "job",
+        stageId: at,
+        stepId: "session",
+        attempt: ctx.steps.filter((x) => x.stepId === "session").length + 1,
+      })) ?? { kind: "complete", stageId: at }
+    );
+  },
   impact: (before, after, stageId) => {
     const out: ImpactChange[] = [];
     const was = SIZE_RANK[before.requiredFrom];

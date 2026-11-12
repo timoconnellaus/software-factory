@@ -613,6 +613,8 @@ export interface CoreJobsTable {
   finished_at: Iso | null;
   /** 0120 (ADR 0301). */
   pool: Generated<"heavy" | "light">;
+  /** Queued for an item still shaping (ADR 0493): the claim takes it after released work (0363). */
+  shaping: Generated<number>;
   pinned_runner_id: string | null;
   planning_session_id: string | null;
   /** 0141 (ADR 0372): standard | light; null is standard. */
@@ -656,6 +658,8 @@ export interface CoreRunEventsTable {
   at: Iso;
   type: string;
   payload: JsonText;
+  /** Set on a row that holds a batch of log lines, `seq` to `last_seq` (migration 0361). */
+  last_seq: number | null;
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */

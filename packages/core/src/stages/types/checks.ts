@@ -3,6 +3,7 @@ import type { ImpactChange } from "../../policy/impact.ts";
 import { same } from "../../policy/impact.ts";
 import { DEFAULT_REQUIRED_CHECKS } from "../../verify/protection.ts";
 import type { EvidenceKind, StageType } from "../contract.ts";
+import { jobStep, latest } from "../reconcile.ts";
 
 const EVIDENCE = ["ci", "check", "criteria", "reviewer", "drift", "tests-intact"] as const;
 
@@ -74,6 +75,26 @@ export const checks: StageType<typeof settings> = {
     { id: "ci", kind: "check" },
     ...(s.reviewer ? [{ id: "reviewer", kind: "agent" as const, role: "review" as const }] : []),
   ],
+  // The verify run, then CI on the head. A failure goes back to what made the head, until the
+  // retry limit; a missing or pending CI waits (the tick re-reads it, which heals a lost event).
+  next: (ctx) => {
+    const at = ctx.entry.stageId;
+    const work = jobStep(ctx, "verify", ctx.item.retryLimit);
+    if (work) return work;
+    const failures = latest(ctx.steps, "verify")?.step.output?.failures ?? [];
+    const ci = ctx.observations.ci ?? "missing";
+    if (failures.length === 0 && ci === "pass") return { kind: "complete", stageId: at };
+    if (failures.length === 0 && (ci === "pending" || ci === "missing"))
+      return { kind: "wait", stageId: at, why: "ci" };
+    // The send-back is a failed attempt: the reconciler fails the item once the item's failures
+    // pass its retry limit (counted across the item, as today).
+    return {
+      kind: "sendBack",
+      stageId: at,
+      to: "",
+      note: failures.length ? `failing: ${failures.join(", ")}` : "CI failed on the head",
+    };
+  },
   impact: (before, after, stageId) => {
     const out: ImpactChange[] = [];
     for (const key of ["reviewer", "drift"] as const) {

@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import type { StageType } from "../contract.ts";
+import { gateOf, gateStep } from "../reconcile.ts";
 import {
+  conditionHolds,
   conditionImpact,
   conditionSchema,
   deciderImpact,
@@ -54,6 +56,18 @@ export const decision: StageType<typeof settings> = {
   needsPerson: true,
   reversibility: "internal",
   steps: () => [{ id: "decide", kind: "decision" }],
+  // A conditional gate is skipped by its typed condition (F7).
+  skip: (s, item) => {
+    const c = conditionHolds(s.when, item.size, item.domains);
+    return c.holds ? null : c.why;
+  },
+  next: (ctx) =>
+    gateStep(ctx, "decision", gateOf(ctx.gate), null, (note) => ({
+      kind: "sendBack",
+      stageId: ctx.entry.stageId,
+      to: "",
+      note,
+    })) ?? { kind: "complete", stageId: ctx.entry.stageId },
   impact: (before, after, stageId) => {
     const out: ImpactChange[] = [
       ...deciderImpact(`${stageId}.decider`, before.decider, after.decider),
