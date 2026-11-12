@@ -95,7 +95,7 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   },
   {
     match: /from "core_work_items" where .*"status" in .* order by \+updated_at/,
-    why: "workItem.list with a status filter sorts only the rows in those statuses (core_work_items_status_idx)",
+    why: "workItem.list with a status filter reads and sorts only that project's rows in those statuses (core_work_items_status_idx). Only the CLI's `sf list` filters by status, on demand, asking for the live statuses (bounded by the active limit); a status that grows (done) would sort them all, and nothing polls with a status",
   },
 ];
 

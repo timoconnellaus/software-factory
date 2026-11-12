@@ -14,8 +14,9 @@ CREATE INDEX core_adjudications_open_idx ON core_adjudications (created_at) WHER
 -- workItem.list by org, newest first (polled): the LIMIT stops the read, no sort of the whole org.
 CREATE INDEX core_work_items_org_updated_idx ON core_work_items (org_id, updated_at);
 
--- workItem.list by project with no status, newest first. With a status filter (workItem.list,
--- improve.ts recentOutcomes) core_work_items_project_idx (project_id, status, updated_at) serves it.
+-- workItem.list by project with no status, newest first. (With a status filter, workItem.list
+-- orders by +updated_at and reads core_work_items_status_idx; recentOutcomes walks this index
+-- newest first and stops at its LIMIT, since most finished items are in the statuses it asks for.)
 CREATE INDEX core_work_items_project_updated_idx ON core_work_items (project_id, updated_at);
 
 -- inbox.list's planning sessions (polled): only announced sessions, newest first.
@@ -34,15 +35,15 @@ CREATE INDEX core_presence_challenges_expires_idx ON core_presence_challenges (e
 -- Indexes nothing reads (every package and app grepped), each a row written on every write:
 -- no query filters work items by requester; PR lookups use (repository_id, pr_number)
 -- (core_work_items_repository_idx); the audit is read by idempotency key and by work item only.
--- (core_work_items_project_idx stays: the status-filtered lists read it.)
+-- (core_work_items_project_idx stays: a single-status filter by project may read it.)
 DROP INDEX IF EXISTS core_work_items_requester_idx;
 DROP INDEX IF EXISTS core_work_items_pr_idx;
 DROP INDEX IF EXISTS core_audit_project_idx;
 DROP INDEX IF EXISTS core_audit_operation_idx;
 
--- The heartbeat leaves the channel's idempotency store (rule 9), so a replay within the 5-minute
--- signing window is refused instead: the runner's last accepted heartbeat's signed time, written by
--- the heartbeat's own UPDATE of the runner row (no extra row written).
+-- The heartbeat leaves the channel's idempotency store (rule 9). A heartbeat signed no later than
+-- this (a replay within the 5-minute window, a beat out of order) changes no runner state and only
+-- renews its leases. Written by the heartbeat's own UPDATE of the runner row (no extra row).
 ALTER TABLE core_runners ADD COLUMN last_signed_at INTEGER;
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 360) WHERE key = 'schema_version';

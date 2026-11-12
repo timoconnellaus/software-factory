@@ -117,16 +117,35 @@ describe("the signed runner channel", () => {
     });
   });
 
-  it("refuses a replayed or older heartbeat, which changes nothing (it isn't stored)", async () => {
+  it("a heartbeat no newer than the last changes no runner state but still renews its leases", async () => {
     const w = await world();
-    const beat = (capacityMax: number) =>
-      JSON.stringify({
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Beat" },
+      w.human,
+    );
+    const c = await client(w.runner.runnerId);
+    let job = null;
+    for (let i = 0; i < 100 && !job; i++) {
+      job = (
+        await c.claim({
+          claimId: uid("claim-"),
+          manifest: MANIFEST,
+          capacity: { max: 4, inUse: 0, accepting: true },
+        })
+      ).job;
+      if (!job) await new Promise((r) => setTimeout(r, 50));
+    }
+    if (!job) throw new Error("no job");
+    const held = [{ jobId: job.jobId, fencingToken: job.lease.fencingToken }];
+    let n = 0;
+    const send = async (capacityMax: number, at: Date) => {
+      const body = JSON.stringify({
         manifest: MANIFEST,
-        capacity: { max: capacityMax, inUse: 0, accepting: true },
-        activeJobs: [],
+        capacity: { max: capacityMax, inUse: 1, accepting: true },
+        activeJobs: held,
       });
-    const send = async (body: string, at: Date, key: string) =>
-      worker.fetch(
+      return worker.fetch(
         new Request(`${base}${PATHS.heartbeat}`, {
           method: "POST",
           headers: await signRunnerRequest({
@@ -135,48 +154,82 @@ describe("the signed runner channel", () => {
             method: "POST",
             path: PATHS.heartbeat,
             body,
-            idempotencyKey: key,
+            idempotencyKey: `beat:order-${String(++n).padStart(4, "0")}`,
             now: at,
           }),
           body,
         }),
         env,
       );
-    const t0 = new Date(Date.now() - 60_000);
-    const captured = beat(1);
-    expect((await send(captured, t0, "beat:replay-0001")).status).toBe(200);
-    expect((await send(beat(3), new Date(t0.getTime() + 20_000), "beat:replay-0002")).status).toBe(
-      200,
-    );
-    // The captured first heartbeat, replayed inside the signing window: refused, capacity kept.
-    const replay = await send(captured, t0, "beat:replay-0001");
-    expect(replay.status).toBe(409);
-    expect(await replay.json()).toMatchObject({ code: "conflict" });
-    const row = await first<{ capacity_max: number }>(
-      "SELECT capacity_max FROM core_runners WHERE id = ?",
-      w.runner.runnerId,
-    );
-    expect(row?.capacity_max).toBe(3);
+    };
+    const capacity = async () =>
+      (
+        await first<{ capacity_max: number }>(
+          "SELECT capacity_max FROM core_runners WHERE id = ?",
+          w.runner.runnerId,
+        )
+      )?.capacity_max;
+    const OLD = "2000-01-01T00:00:00.000Z";
+    const ageLease = () =>
+      env.DB.prepare("UPDATE core_leases SET expires_at = ? WHERE work_item_id = ?")
+        .bind(OLD, item.workItemId)
+        .run();
+    const leaseRenewed = async () =>
+      (
+        await first<{ expires_at: string }>(
+          "SELECT expires_at FROM core_leases WHERE work_item_id = ?",
+          item.workItemId,
+        )
+      )?.expires_at !== OLD;
+    const now = Date.now();
+
+    // Out of order (or a captured beat replayed): the older one reports nothing, renews the lease.
+    expect((await send(3, new Date(now - 40_000))).status).toBe(200);
+    expect((await send(2, new Date(now - 30_000))).status).toBe(200);
+    await ageLease();
+    expect((await send(1, new Date(now - 40_000))).status).toBe(200);
+    expect(await capacity()).toBe(2);
+    expect(await leaseRenewed()).toBe(true);
+
+    // `sf-runner doctor`'s beat in the same second as the service's: the same.
+    await ageLease();
+    expect((await send(1, new Date(now - 30_000))).status).toBe(200);
+    expect(await capacity()).toBe(2);
+    expect(await leaseRenewed()).toBe(true);
+
+    // A clock that ran ahead and was put back: its beats keep the lease until real time catches up.
+    expect((await send(5, new Date(now + 120_000))).status).toBe(200);
+    await ageLease();
+    expect((await send(2, new Date(now))).status).toBe(200);
+    expect(await capacity()).toBe(5);
+    expect(await leaseRenewed()).toBe(true);
+    expect((await send(4, new Date(now + 121_000))).status).toBe(200);
+    expect(await capacity()).toBe(4);
   });
 
-  it("answers a replayed request id from the store without running the handler again", async () => {
+  it("a retried claim gets the same job, never a second, without the idempotency store", async () => {
     const w = await world();
-    // A job to claim, so the claim changes state and is audited (an empty one isn't, ADR 0590).
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
       { state: "queued", projectId: w.projectId, title: "Replay" },
       w.human,
     );
-    await waitFor("a queued job", () =>
-      first(
-        "SELECT id FROM core_jobs WHERE work_item_id = ? AND status = 'queued'",
-        item.workItemId,
-      ),
+    await ok(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Next" },
+      w.human,
     );
+    await waitFor("two queued jobs", async () => {
+      const rows = await all(
+        "SELECT 1 FROM core_jobs WHERE project_id = ? AND status = 'queued'",
+        w.projectId,
+      );
+      return rows.length >= 2;
+    });
     const body = JSON.stringify({
       claimId: "claim-replay-1",
       manifest: MANIFEST,
-      capacity: { max: 1, inUse: 0, accepting: true },
+      capacity: { max: 4, inUse: 0, accepting: true },
     });
     const signed = async () =>
       new Request(`${base}${PATHS.claim}`, {
@@ -191,15 +244,81 @@ describe("the signed runner channel", () => {
         }),
         body,
       });
-    const first_ = await worker.fetch(await signed(), env);
-    const again = await worker.fetch(await signed(), env);
-    expect(await again.text()).toBe(await first_.text());
-    expect(again.headers.get("x-sf-replayed")).toBe("1");
-    const audits = await all(
-      "SELECT id FROM core_audit WHERE operation = 'job.claim' AND actor_id = ?",
+    // Two at once (a retry racing the first) and one after: one job, the same one each time.
+    const answers = await Promise.all([
+      worker.fetch(await signed(), env),
+      worker.fetch(await signed(), env),
+    ]);
+    const later = await worker.fetch(await signed(), env);
+    const jobs = new Set<string>();
+    for (const res of [...answers, later]) {
+      if (res.status === 409) continue; // the loser of the race: "the state changed"
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-sf-replayed")).toBeNull();
+      const out = (await res.json()) as { job: { jobId: string; workItem: { id: string } } | null };
+      if (out.job) jobs.add(out.job.jobId);
+    }
+    expect(jobs.size).toBe(1);
+    const claimed = await all<{ id: string }>(
+      "SELECT id FROM core_jobs WHERE runner_id = ? AND claim_id = 'claim-replay-1'",
       w.runner.runnerId,
     );
-    expect(audits).toHaveLength(1);
+    expect(claimed.map((j) => j.id)).toEqual([...jobs]);
+    expect(
+      await all("SELECT 1 FROM core_runs WHERE work_item_id = ?", item.workItemId),
+    ).toHaveLength(1);
+    // Audited once as a claim: not its retries (a race's loser is recorded as a conflict); and
+    // nothing stored for it.
+    expect(
+      await all(
+        "SELECT id FROM core_audit WHERE operation = 'job.claim' AND actor_id = ? AND outcome = 'ok'",
+        w.runner.runnerId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      await all(
+        "SELECT 1 FROM core_channel_requests WHERE runner_id = ? AND idempotency_key LIKE 'claim:%'",
+        w.runner.runnerId,
+      ),
+    ).toEqual([]);
+
+    // A stored call (hand-back events) is still answered from the store on a replay.
+    const [jobId] = [...jobs];
+    const lease = await first<{ fencing_token: number }>(
+      "SELECT fencing_token FROM core_leases WHERE work_item_id = ?",
+      item.workItemId,
+    );
+    const eventsBody = JSON.stringify({
+      fencingToken: lease?.fencing_token,
+      events: [
+        {
+          type: "log",
+          stream: "terminal",
+          text: "hi",
+          jobId,
+          seq: 1,
+          at: new Date().toISOString(),
+        },
+      ],
+    });
+    const path = PATHS.events(jobId as string);
+    const signedEvents = async () =>
+      new Request(`${base}${path}`, {
+        method: "POST",
+        headers: await signRunnerRequest({
+          key: w.runner.key,
+          runner: w.runner.runnerId,
+          method: "POST",
+          path,
+          body: eventsBody,
+          idempotencyKey: `events:${jobId}:replay-1`,
+        }),
+        body: eventsBody,
+      });
+    const firstEvents = await worker.fetch(await signedEvents(), env);
+    const againEvents = await worker.fetch(await signedEvents(), env);
+    expect(await againEvents.text()).toBe(await firstEvents.text());
+    expect(againEvents.headers.get("x-sf-replayed")).toBe("1");
   });
 
   it("maps a fenced write to 409 with code `fenced`, and never stores the job token", async () => {
