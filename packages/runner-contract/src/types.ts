@@ -67,6 +67,8 @@ export const RUNNER_COMPAT = 1;
  *   without it still runs every job; its agent just sees no attachments.
  * - `steer`: a person can send a message into the live session from the dashboard (ADR 0400). The
  *   host keeps the channel's `steer` call open while the session runs and calls `adapter.steer`.
+ * - `interrupt`: with `steer`, the adapter can stop the agent's current step and submit a line
+ *   (`adapter.interrupt`: Escape, then the line), for a person's interrupt in planning (ADR 0470).
  * - `chat`: sessions run as a structured two-way stream (Claude Code's stream-json, ADR 0450): the
  *   events carry tool results and turn ends, the dashboard shows the run as a chat, and the owner
  *   can take a session over in a terminal by resuming it (`run.takeover`, `adapter.takeover`).
@@ -88,6 +90,7 @@ export const CAPABILITIES = [
   "steer",
   "chat",
   "container-isolation",
+  "interrupt",
   "terminal",
   "cloud-sandbox",
 ] as const;
@@ -286,6 +289,12 @@ export interface RunnerAdapter<
    * sanitised and one line (`steerText`). Declare the `steer` capability to get steers.
    */
   steer?(session: S, text: string): Promise<void>;
+  /**
+   * Optional, with the `interrupt` capability (ADR 0470): stop the agent's current step (Claude
+   * Code's Escape), then submit `text` as `steer` does. The text is the factory's own fixed line,
+   * never a person's words.
+   */
+  interrupt?(session: S, text: string): Promise<void>;
   /**
    * Optional, with the `chat` capability (ADR 0450): stop the live stream session cleanly so a
    * person can resume it in a terminal. `events()` then yields a `takeover` event with the command

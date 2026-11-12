@@ -38,6 +38,8 @@ Three PRs.
 steer loop):
 - `chat.send { interrupt: true }`, `planning.stop`, `planning.pause`, `planning.resume`,
   `planning.finishAlone { on }`, as ADR 0470 describes.
+- Answering planning questions from the desktop without a presence proof (`planning.answer`,
+  `planning.acceptDefaults`): the owner's decision of 2026-11-12, ADR 0042 and 0391 as amended.
 
 **C. The Planning tab** (inside the planning components of `apps/desktop` and `apps/app` only):
 - Skip, read receipts, the question number on chat threads.
@@ -47,7 +49,7 @@ steer loop):
 - The plan is a plain document in its pane (only the Canvas tab is a canvas).
 
 ## Out of scope
-Answering without Touch ID on desktop (an owner decision, pending). People editing the plan and
+Dropping Touch ID from the spec and merge gates (being confirmed with the owner separately). People editing the plan and
 comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22, 24).
 
 ## Acceptance criteria
@@ -75,7 +77,9 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
 12. With finish alone on, every bulk-acceptable question, asked before or after, is accepted with its
     default and logged as accepted by the person who turned it on. Security, privacy, irreversible
     and no-default questions still wait for a person. Approval is still a person's.
-13. The Planning tab shows all of the above (before and after screenshots in each UI PR), and the
+13. From the desktop, `planning.answer` and `planning.acceptDefaults` need no presence proof. From a CLI
+    token they are refused. Questions outside a planning session and every gate keep their proof.
+14. The Planning tab shows all of the above (before and after screenshots in each UI PR), and the
     desktop's view updates within 2 s of a change without polling.
 
 ## As built
@@ -133,3 +137,56 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
   - The race tests are deterministic. `InvokeDeps.beforeCommit`, a test seam, holds one call
     between its reads and its commit while the other runs, in both orders.
 - Not in A: the interrupt, Stop, Pause and finish alone (PR B), and the UI (PR C).
+
+**PR B, steering.** Migration 0241 (`core_run_steers.interrupt`, `core_planning_sessions.paused_at`,
+`paused_by`).
+- The `interrupt` capability and `adapter.interrupt` in runner-contract. runner-local declares it:
+  it presses Escape, waits 500 ms, then types the line as a steer does. The host's steer loop calls
+  `interrupt` for a steer marked `interrupt` and falls back to `steer` when the adapter can't.
+- `interruptPlanning` (core) queues a steer with one of `PLANNING_INTERRUPT_LINES`, only while the
+  session is `working` and its runner declares `steer` and `interrupt`. `chat.send { interrupt }`
+  returns `interrupted` and a `note` when it couldn't.
+- `planning.stop`, `planning.pause` (no wake on news while paused; interrupts a working planner),
+  and `planning.resume` (logs `planning.resumed`, a user event that settles at once and reaches the
+  agent as news; resumes a yielded session). `planning.get` gains `paused`, `pausedBy` and
+  `canInterrupt`.
+- `planning.answer` and `planning.acceptDefaults` are `desktopDecidable` (a new operation flag:
+  `invoke()` skips the browser-only refusal on the desktop surface). Planning questions only.
+- `planning.finishAlone { on }` (in `questions.ts`): `browserOnly` and `desktopDecidable`, human only.
+  Turning it on accepts the open bulk-acceptable planning questions with `acceptDefaults(…, { alone })`.
+  `question.ask` from the planner inserts a bulk-acceptable question already answered while it is on.
+  Both record `accepted_alone` and set `answered_by` to the person who turned it on.
+  `planning.note` (changes requested) turns it off. The planner hears `finish.alone` in its news.
+  `planning.get` gains `session.finishAlone` and `acceptedAlone` on each question. Migration 0241
+  adds `finish_alone_by`, `finish_alone_at` and `core_questions.accepted_alone`.
+- After review (fixes on #71):
+  - A paused session isn't resumed by news (`wakeSession` checks `paused_at`; `planning.resume`
+    resumes it).
+  - `chat.send { interrupt }`, `planning.stop`, `planning.pause` and `planning.resume` are
+    `browserOnly` and `desktopDecidable`: a person in the app or on the desktop, never a CLI or MCP
+    token.
+  - Interrupts merge: one queued per run. They are spaced out: none within 10 s
+    (`INTERRUPT_GAP_MS`) of the last delivered.
+  - Tested in a real Claude Code session: one Escape mid-turn stops the step, and the typed line
+    becomes the next prompt. Two Escapes within about a second open the Rewind menu, which swallows
+    the line (Enter there could rewind). So runner-local's `interrupt` looks at the screen after its
+    Escape and closes the menu before typing. A stream session gets its interrupt control line
+    (`interruptStream`).
+  - `planning.answer` keeps the presence proof on the desktop for security, privacy and
+    irreversible questions (also `presenceDecidable`; `ctx.presence` tells the handler a proof
+    came). Ordinary answers and bulk accept stay proof-free.
+- After the second review (fixes on #71):
+  - Decision domains are a closed list, normalised on the way in (`decisionDomainSchema`:
+    "Security" → `security`, "security & privacy" → `security`). One shared predicate,
+    `isSensitiveQuestion` in runner-contract, used by core and the clients, decides what a person
+    must answer themselves.
+  - Finish alone covers only questions its setter may answer (the assignee, or an approver). Only an
+    approver, or the person the open questions are assigned to, may turn it on. An ask that answers
+    in the setter's name is guarded on finish alone still being on.
+  - `planning.answer` takes `questionRevision`, and an answer to a question the planner changed
+    meanwhile is refused. `question.update` reopens an answer when the question becomes sensitive,
+    or its kind or options change.
+  - The 10 s interrupt spacing is guarded in the batch.
+  - The Rewind-menu check reads only the bottom of the screen and needs the menu's footer line.
+  - `desktopDecidable`'s comment lists the operations it covers and why.
+

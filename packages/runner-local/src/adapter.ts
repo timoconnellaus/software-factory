@@ -58,6 +58,7 @@ import {
 import { exists, findCheckout, isUnder } from "./checkouts.ts";
 import { type Exec, nodeExec, run } from "./exec.ts";
 import {
+  interruptStream,
   killStream,
   type LocalSessionMode,
   type StreamOptions,
@@ -210,6 +211,7 @@ export const DEFAULT_CAPABILITIES: Capability[] = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "interrupt",
   "terminal",
 ];
 
@@ -256,6 +258,8 @@ export async function checkRunningHarness(
 
 /** How many characters of a steer go in one `send-keys -l`. */
 const STEER_CHUNK = 200;
+/** Claude Code's Rewind menu (a double Escape), as its screen shows it. */
+const REWIND_MENU = /Rewind\s*\n.*Restore the code and\/or conversation/;
 
 /** Claude's first-run folder trust dialog (a plain terminal doesn't pre-trust the worktree). */
 const TRUST_DIALOG = /trust this folder/i;
@@ -283,6 +287,17 @@ export function createLocalRunner(
 ): RunnerAdapter<LocalWorkspace, LocalSession> {
   const exec = config.exec ?? nodeExec;
   const tmux = tmuxCli({ ...config.tmux, exec });
+  /** Types one sanitised line into a session and submits it (a steer, or an interrupt's line). */
+  const typeLine = async (name: string, text: string) => {
+    const line = steerText(text);
+    if (!line) return;
+    for (let i = 0; i < line.length; i += STEER_CHUNK) {
+      await tmux.sendText(name, line.slice(i, i + STEER_CHUNK));
+      if (i + STEER_CHUNK < line.length) await sleep(30);
+    }
+    await sleep(200);
+    await tmux.sendKeys(name, "Enter");
+  };
   const pollMs = config.pollMs ?? 1000;
   const waitingInputTimeoutMs = config.waitingInputTimeoutMs ?? 15 * 60_000;
   const startTimeoutMs = config.startTimeoutMs ?? 90_000;
@@ -975,14 +990,27 @@ export function createLocalRunner(
      */
     async steer(session, text) {
       if (session.stream) return steerStream(session, text);
-      const line = steerText(text);
-      if (!line) return;
-      for (let i = 0; i < line.length; i += STEER_CHUNK) {
-        await tmux.sendText(session.name, line.slice(i, i + STEER_CHUNK));
-        if (i + STEER_CHUNK < line.length) await sleep(30);
+      await typeLine(session.name, text);
+    },
+    // Spec 26, ADR 0470: stop the current step, then submit the factory's fixed line as a steer.
+    // A tmux session gets Claude Code's Escape; a stream session its interrupt control line.
+    async interrupt(session, text) {
+      if (session.stream) return interruptStream(session, text);
+      await tmux.sendKeys(session.name, "Escape");
+      await sleep(500);
+      // A second Escape within a second opens Claude Code's Rewind menu, which would swallow the
+      // line (and Enter there could rewind the conversation). Close it before typing.
+      // Only the bottom of the screen, where the menu renders: text the agent printed higher up
+      // can't trigger this (review of #71, D).
+      const bottom = ((await tmux.capture(session.name)) ?? "").trimEnd().split("\n").slice(-14);
+      if (
+        REWIND_MENU.test(bottom.join("\n")) &&
+        /Enter to continue · Esc to cancel/.test(bottom.join("\n"))
+      ) {
+        await tmux.sendKeys(session.name, "Escape");
+        await sleep(300);
       }
-      await sleep(200);
-      await tmux.sendKeys(session.name, "Enter");
+      await typeLine(session.name, text);
     },
 
     /**

@@ -249,6 +249,7 @@ export async function runOperation<O = unknown>(
     origin.surface !== "test" &&
     op.browserOnly &&
     (op.browserOnly === true || op.browserOnly(input)) &&
+    !(origin.surface === "desktop" && op.desktopDecidable) &&
     !(await presenceAllows(op, origin, rawInput))
   ) {
     return refuse(
@@ -423,11 +424,16 @@ export async function runOperation<O = unknown>(
   const messages: OutboxMessage[] = [];
   const changes: Change[] = [];
   let subject: Partial<Scope> = { ...scope };
+  const presence =
+    origin.surface === "desktop" && op.desktopDecidable
+      ? await presenceAllows(op, origin, rawInput)
+      : false;
   const ctx: HandlerContext = {
     db,
     d1,
     actor,
     origin,
+    presence,
     now,
     services: deps.services,
     scope,

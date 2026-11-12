@@ -75,7 +75,10 @@ export interface FakeCloud {
   /** The capacity each claim reported. */
   claimCapacities: ClaimRequest["capacity"][];
   /** Steers queued per job (ADR 0400); the steer call takes them. */
-  steers: Map<string, { id: string; text: string; at: string; kind?: "message" | "takeover" }[]>;
+  steers: Map<
+    string,
+    { id: string; text: string; at: string; interrupt?: boolean; kind?: "message" | "takeover" }[]
+  >;
   steerCalls: number;
   /** Answer the steer call 404, as an engine from before ADR 0400 does. */
   noSteerCall?: boolean;
@@ -407,24 +410,27 @@ export function fakeAdapter(
     signal: AbortSignal,
     relay?: PlanningRelay,
   ) => Promise<AdapterEvent[]>,
-  options: { steer?: boolean; terminal?: boolean } = {},
+  options: { steer?: boolean; interrupt?: boolean; terminal?: boolean } = {},
 ): RunnerAdapter<FakeWorkspace> & {
   calls: string[];
   prompts: string[];
   relays: Map<string, PlanningRelay>;
   steered: string[];
+  interrupted: string[];
   terminal: FakeTerminal;
 } {
   const calls: string[] = [];
   const prompts: string[] = [];
   const relays = new Map<string, PlanningRelay>();
   const steered: string[] = [];
+  const interrupted: string[] = [];
   const terminal = fakeTerminal();
   return {
     calls,
     prompts,
     relays,
     steered,
+    interrupted,
     terminal,
     async manifest() {
       return {
@@ -434,6 +440,7 @@ export function fakeAdapter(
         capabilities: [
           "headless",
           ...(options.steer ? (["steer"] as const) : []),
+          ...(options.interrupt ? (["interrupt"] as const) : []),
           ...(options.terminal ? (["terminal"] as const) : []),
         ],
       };
@@ -445,6 +452,13 @@ export function fakeAdapter(
       ? {
           async steer(_s: unknown, text: string) {
             steered.push(text);
+          },
+        }
+      : {}),
+    ...(options.interrupt
+      ? {
+          async interrupt(_s: unknown, text: string) {
+            interrupted.push(text);
           },
         }
       : {}),

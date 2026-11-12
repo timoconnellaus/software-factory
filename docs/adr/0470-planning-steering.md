@@ -40,6 +40,10 @@ current step or as an interrupt, Stop, Pause, and "Let the planner finish alone"
   agent to read its planning news. No person's text is typed into the terminal: the message reaches
   the agent through the UserPromptSubmit hook's news, as untrusted data like any chat. That is why a
   member may interrupt while `run.steer`, which types its text as-is, stays with the runner's owner.
+- **Interrupts come from a person and are spaced out.** Interrupt, Stop, Pause and Resume are
+  refused from a CLI or MCP token. One interrupt is queued per run at a time, and none goes within
+  10 s of the last, because a second Escape within a second opens Claude Code's Rewind menu. The
+  adapter also closes that menu if it finds it after its Escape.
 - **Stop and Pause.** *Stop* is an interrupt with no message: the agent ends its turn and waits.
   *Pause* (`planning.pause`) interrupts and marks the session paused. A paused session's Stop hook
   isn't woken by news, and the session yields its slot when the light pool needs it, as an idle one
@@ -48,8 +52,11 @@ current step or as an interrupt, Stop, Pause, and "Let the planner finish alone"
   this session. It accepts every bulk-acceptable default now and each one the agent asks later, and
   tells the agent to call `planning_ready` when it can. Security and privacy questions, irreversible
   ones and questions without a default still wait for a person, as with bulk accept (ADR 0042).
-  Nothing is accepted on a timeout, and approving the spec stays a person's decision. A person
-  turns it off by answering a question themselves or with `planning.finishAlone { on: false }`.
+  Nothing is accepted on a timeout, and approving the spec stays a person's decision. Only a
+  person turns it on or off (never an agent, the chat or the CLI). It is per session and off by
+  default, every answer it gives is recorded as accepted under the instruction of the person who
+  set it, and changes requested at the gate turn it off. The owner approved this form on
+  2026-11-12 (ADR 0042, amended).
 - **A steer on a planning run is in the record.** `run.steer` on a planning run also stores the
   text as a chat message by its author, marked delivered, so the Planning tab and a session rebuilt
   on another runner see it.

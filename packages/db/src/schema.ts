@@ -358,6 +358,8 @@ export interface CoreQuestionsTable {
   status: Generated<"open" | "answered" | "withdrawn">;
   answer: string | null;
   accepted_default: Generated<Bool>;
+  /** ADR 0470: accepted under a person's "finish alone" instruction (answered_by is that person). */
+  accepted_alone: Generated<Bool>;
   answered_by: string | null;
   answered_at: Iso | null;
   planning_round: number;
@@ -634,6 +636,8 @@ export interface CoreRunSteersTable {
   text: string;
   created_at: Iso;
   delivered_at: Iso | null;
+  /** ADR 0470: stop the agent's current step before submitting the text. */
+  interrupt: Generated<Bool>;
   /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
   kind: Generated<"message" | "takeover">;
 }
@@ -825,6 +829,12 @@ export interface CorePlanningSessionsTable {
   activity: string | null;
   focused_question_id: string | null;
   announced_at: Iso | null;
+  /** ADR 0470: a person paused the planner; news doesn't wake it until resumed. */
+  paused_at: Iso | null;
+  paused_by: string | null;
+  /** ADR 0470: who told the planner to finish alone, and when; null while it's off. */
+  finish_alone_by: string | null;
+  finish_alone_at: Iso | null;
   /** Spec 26: the highest cursor handed to the harness; a hook's ack is clamped to it. */
   handed_cursor: Generated<number>;
   /** Spec 26: JSON `{ questionId: answer revision }` handed out, for read receipts. */

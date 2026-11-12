@@ -492,6 +492,7 @@ export const runTakeSteers = defineOperation({
         id: z.string(),
         text: z.string(),
         at: z.string(),
+        interrupt: z.boolean().optional(),
         kind: z.enum(["message", "takeover"]),
       }),
     ),
@@ -509,6 +510,7 @@ export const runTakeSteers = defineOperation({
     if (!ACTIVE.includes(run.status)) throw new OperationError("conflict", `run is ${run.status}`);
     const queued = await ctx.db
       .selectFrom("core_run_steers")
+      .select(["id", "text", "created_at", "interrupt"])
       .select(["id", "text", "created_at", "kind"])
       .where("run_id", "=", run.id)
       .where("delivered_at", "is", null)
@@ -546,6 +548,8 @@ export const runTakeSteers = defineOperation({
         id: s.id,
         text: s.text,
         at: s.created_at,
+        // ADR 0470: a planning interrupt stops the current step before its fixed line.
+        ...(s.interrupt ? { interrupt: true } : {}),
         kind: s.kind === "takeover" ? ("takeover" as const) : ("message" as const),
       })),
     };

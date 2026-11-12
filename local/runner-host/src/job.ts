@@ -153,6 +153,8 @@ export async function steerLoop(options: {
   job: Job;
   signal: AbortSignal;
   steer: (text: string) => Promise<void>;
+  /** Stop the current step, then submit the line (ADR 0470); absent when the adapter can't. */
+  interrupt?: (text: string) => Promise<void>;
   /**
    * Stops the stream session for a person (ADR 0450): a `takeover` row from `run.takeover`. The
    * adapter's events then report the resume command and follow the resumed session.
@@ -170,7 +172,12 @@ export async function steerLoop(options: {
   const take = cp.steers.bind(cp);
   let failures = 0;
   while (!signal.aborted) {
-    let steers: { id: string; text: string; kind?: "message" | "takeover" }[];
+    let steers: {
+      id: string;
+      text: string;
+      interrupt?: boolean;
+      kind?: "message" | "takeover";
+    }[];
     try {
       ({ steers } = await take(
         job.jobId,
@@ -215,8 +222,13 @@ export async function steerLoop(options: {
       const text = steerText(s.text);
       if (!text) continue;
       try {
-        await options.steer(text);
-        log(`${job.jobId}: typed a message from the dashboard (${s.id})`);
+        if (s.interrupt && options.interrupt) {
+          await options.interrupt(text);
+          log(`${job.jobId}: interrupted the agent for a person (${s.id})`);
+        } else {
+          await options.steer(text);
+          log(`${job.jobId}: typed a message from the dashboard (${s.id})`);
+        }
       } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
         await options
@@ -493,6 +505,12 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         job,
         signal: AbortSignal.any([signal, steerStop.signal]),
         steer: (text) => (adapter.steer as NonNullable<typeof adapter.steer>)(live, text),
+        ...(adapter.interrupt
+          ? {
+              interrupt: (text: string) =>
+                (adapter.interrupt as NonNullable<typeof adapter.interrupt>)(live, text),
+            }
+          : {}),
         ...(adapter.takeover
           ? { takeover: () => (adapter.takeover as NonNullable<typeof adapter.takeover>)(live) }
           : {}),

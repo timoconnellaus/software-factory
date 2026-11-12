@@ -60,6 +60,56 @@ export const PLANNING_WAIT_MAX_MS = 50_000;
 /** An idle session may yield only after this long idle with nobody present (ADR 0300, 0301). */
 export const PLANNING_YIELD_AFTER_MS = 5 * 60_000;
 
+/** Decision domains (ADR 0029): a closed list, so a check on one can't be dodged by its spelling. */
+export const DECISION_DOMAINS = [
+  "product",
+  "ux",
+  "architecture",
+  "data",
+  "security",
+  "privacy",
+  "operations",
+  "legal",
+] as const;
+export type DecisionDomain = (typeof DECISION_DOMAINS)[number];
+const DOMAIN_ALIASES: Record<string, DecisionDomain> = {
+  "security-privacy": "security",
+  "security & privacy": "security",
+  "security and privacy": "security",
+  infra: "operations",
+  infrastructure: "operations",
+  ops: "operations",
+  design: "ux",
+  "data & permissions": "data",
+  compliance: "legal",
+  engineering: "architecture",
+  technical: "architecture",
+};
+/** A domain as written, lower-cased and mapped to the closed list (unknown ones stay as written). */
+export function normalizeDomain(raw: string): string {
+  const d = raw.trim().toLowerCase();
+  return DOMAIN_ALIASES[d] ?? d;
+}
+/** A decision domain, normalised on the way in: "Security", "security & privacy" → "security". */
+export const decisionDomainSchema = z.preprocess(
+  (v) => (typeof v === "string" ? normalizeDomain(v) : v),
+  z.enum(DECISION_DOMAINS),
+);
+
+/**
+ * Whether a question is one a person must answer themselves (ADR 0042): security and privacy
+ * questions and irreversible ones are never bulk-accepted, never finished alone, never recorded from
+ * an edit, and keep Touch ID on the desktop. The one check the server and every client share; it
+ * normalises the domain, so old rows and odd spellings can't slip past.
+ */
+export function isSensitiveQuestion(q: {
+  domain: string | null | undefined;
+  irreversible: boolean | number | null | undefined;
+}): boolean {
+  const d = normalizeDomain(q.domain ?? "");
+  return d === "security" || d === "privacy" || !!q.irreversible;
+}
+
 const defaultValue = z.union([
   z.string().trim().min(1).max(10_000),
   z.number().finite().transform(String),
@@ -85,7 +135,7 @@ export const planningQuestionSchema = z.object({
   /** Why the default, in Markdown. */
   recommendation: z.string().max(20_000).optional(),
   /** Decision domain (ADR 0029): product, architecture, security, privacy, operations, … */
-  domain: z.string().trim().min(1).max(40).default("product"),
+  domain: decisionDomainSchema.default("product"),
   /** Whether the spec can't go to the gate without it. */
   blocking: z.boolean().default(true),
   /** Hard to undo (a migration, a public API): never bulk-accepted. */
@@ -287,6 +337,26 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     kind: z.enum(["chat", "gate"]),
   }),
   z.object({
+    /**
+     * A person told you to finish alone, or took it back (ADR 0470). While on, the factory accepts
+     * the default of every question it may bulk-accept, now and as you ask them (they arrive as
+     * answers); security, privacy, irreversible and no-default ones still wait for a person. Finish
+     * the spec on your recommendations and call planning_ready when nothing blocking is open.
+     */
+    type: z.literal("finish.alone"),
+    cursor: z.number(),
+    at: z.string(),
+    on: z.boolean(),
+    by: z.string(),
+  }),
+  z.object({
+    type: z.literal("planning.resumed"),
+    cursor: z.number(),
+    at: z.string(),
+    /** Who resumed planning after pausing it. */
+    by: z.string(),
+  }),
+  z.object({
     type: z.literal("presence.changed"),
     cursor: z.number(),
     at: z.string(),
@@ -316,6 +386,18 @@ export const planningWaitSchema = planningNewsSchema.extend({
   recheckAt: z.string().nullable(),
 });
 export type PlanningWait = z.infer<typeof planningWaitSchema>;
+
+/**
+ * The fixed lines an interrupt submits to the planning agent (ADR 0470). A person's words never go
+ * into the terminal: the agent reads them as news through the UserPromptSubmit hook.
+ */
+export const PLANNING_INTERRUPT_LINES = {
+  message:
+    "Software factory: a person interrupted you. Your planning news follows: read it and act on it before going back to what you were doing.",
+  stop: "Software factory: a person stopped your current step. Don't carry on with it: end your turn, and the Stop hook waits for them.",
+  pause:
+    "Software factory: a person paused planning. End your turn now; you'll be woken when they resume it.",
+} as const;
 
 /** `planning.peek`: is there anything after the cursor? A read, so it costs no write. */
 export const planningPeekSchema = z.object({
