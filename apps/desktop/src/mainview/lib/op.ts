@@ -62,7 +62,10 @@ export type ReadOpName =
   | "desktopDevice.list"
   | "workItem.board"
   | "config.get"
-  | "project.workflow";
+  | "project.workflow"
+  | "mergeQueue.list"
+  | "repository.list"
+  | "cliToken.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,
