@@ -9,9 +9,17 @@
   "main": "./src/server.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Workers Logs (AGENTS.md, Cloudflare cost, rule 12): most requests are an open tab's polls (each
+  // query every 10-30 s, a live run every 2 s: several hundred thousand a month per tab left open).
+  // One in four is logged (all of that request's lines); request and error counts in Workers metrics
+  // are not sampled.
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 0.25
   },
+  // CPU per invocation (rule 12): the default is 30 s. A page render and its server functions take
+  // tens of ms (the work runs in sf-engine); 5 s stops a runaway render from billing 30 s each time.
+  "limits": { "cpu_ms": 5000 },
   "upload_source_maps": true,
   // Run next to D1 (ADR 0241). D1's primary is in SJC (WNAM); every page makes several D1 queries
   // and engine RPCs, so a Worker at the visitor's edge pays a trans-Pacific round trip for each

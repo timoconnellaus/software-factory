@@ -16,6 +16,13 @@ export type ClientEvent =
   | { type: "planning.changed"; workItemId: string };
 
 export class ClientHub extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // The app's 30-second "ping" is answered by the runtime: it never wakes a hibernated hub, and
+    // auto-responses are not billed (AGENTS.md, Cloudflare cost).
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+  }
+
   /** The door has already authenticated the caller; this only accepts the socket. */
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
@@ -44,7 +51,7 @@ export class ClientHub extends DurableObject<Env> {
   }
 
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    // The app only pings; answer so it knows the line is alive.
+    // The auto-response answers "ping" without calling this; kept for a ping with other framing.
     if (message === "ping") ws.send("pong");
   }
 

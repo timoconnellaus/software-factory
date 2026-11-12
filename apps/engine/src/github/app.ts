@@ -72,8 +72,23 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
   let key: Promise<CryptoKey> | null = null;
   const cache = new Map<string, { token: string; expiresAt: string }>();
 
+  // The App JWT lives 9 minutes; reused while it has more than one left, so a client kept for the
+  // isolate's life signs one every 8 minutes instead of one per GitHub call.
+  let jwt: { value: string; exp: number } | null = null;
+
   async function appJwt(): Promise<string> {
-    key ??= importPrivateKey(config.privateKey);
+    const nowS = Math.floor(now().getTime() / 1000);
+    if (jwt && jwt.exp - nowS > 60) return jwt.value;
+    jwt = { value: await signAppJwt(), exp: nowS - 60 + 540 };
+    return jwt.value;
+  }
+
+  async function signAppJwt(): Promise<string> {
+    // A failed import isn't kept: the client lives as long as the isolate.
+    key ??= importPrivateKey(config.privateKey).catch((error: unknown) => {
+      key = null;
+      throw error;
+    });
     const iat = Math.floor(now().getTime() / 1000) - 60;
     const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
     const payload = b64url(JSON.stringify({ iat, exp: iat + 540, iss: config.appId }));

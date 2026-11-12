@@ -14,6 +14,7 @@ import {
   invoke,
   loadPolicy,
   r2AttachmentBlobs,
+  SWEEP_CURSOR_KEY,
   sanitiseFilename,
   sniffMismatch,
   sweepStrayAttachmentBlobs,
@@ -316,8 +317,8 @@ describe("work item attachments", () => {
     await env.ATTACHMENTS.put(stray, PNG);
     const store = r2AttachmentBlobs(env.ATTACHMENTS);
     // Inside the grace period nothing goes.
-    expect(await sweepStrayAttachmentBlobs(env.DB, store)).not.toContain(stray);
-    const removed = await sweepStrayAttachmentBlobs(
+    expect((await sweepStrayAttachmentBlobs(env.DB, store)).removed).not.toContain(stray);
+    const { removed } = await sweepStrayAttachmentBlobs(
       env.DB,
       store,
       new Date(Date.now() + 2 * 3_600_000),
@@ -326,6 +327,48 @@ describe("work item attachments", () => {
     expect(await blobKeys(`${w.orgId}/`)).toEqual([
       `${w.orgId}/${item.workItemId}/${attachment.id}`,
     ]);
+  });
+
+  it("sweeps a page at a time, saving the list cursor between calls, one D1 query a page", async () => {
+    const keys = ["a", "b", "c", "d", "e"].map((k) => `sweep-${k}`);
+    const queries: string[] = [];
+    const db = new Proxy(env.DB, {
+      get(target, prop) {
+        if (prop === "prepare") {
+          return (sql: string) => {
+            queries.push(sql);
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const deleted: string[] = [];
+    // A bucket of five stray blobs listed two at a time.
+    const store = {
+      put: async () => {},
+      get: async () => null,
+      delete: async (key: string) => {
+        deleted.push(key);
+      },
+      list: async ({ cursor }: { cursor?: string }) => {
+        const from = cursor ? Number(cursor) : 0;
+        const next = from + 2 < keys.length ? String(from + 2) : null;
+        return {
+          keys: keys.slice(from, from + 2).map((key) => ({ key, uploaded: new Date(0) })),
+          cursor: next,
+        };
+      },
+    };
+    await env.DB.prepare("DELETE FROM core_meta WHERE key = ?").bind(SWEEP_CURSOR_KEY).run();
+    const first = await sweepStrayAttachmentBlobs(db, store, new Date(), 1000, 2);
+    expect(first).toEqual({ removed: ["sweep-a", "sweep-b", "sweep-c", "sweep-d"], cursor: "4" });
+    // Read the cursor, one check per page, save the cursor.
+    expect(queries).toHaveLength(4);
+    const second = await sweepStrayAttachmentBlobs(db, store, new Date(), 1000, 2);
+    expect(second).toEqual({ removed: ["sweep-e"], cursor: null });
+    expect(deleted).toEqual(keys);
   });
 
   it("serves with a server-chosen type, nosniff, a sandboxing CSP, and inline only for images", () => {

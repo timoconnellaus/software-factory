@@ -11,9 +11,19 @@
   // Next to D1 (ADR 0241), for the fetch handlers: the runner channel and the GitHub webhook. RPC
   // from sf-app runs where sf-app runs.
   "placement": { "region": "aws:us-west-1" },
+  // Workers Logs (AGENTS.md, Cloudflare cost, rule 12): this Worker's invocations are mostly machine
+  // chatter (each runner's heartbeat and claim every 20 s, held steer, terminal and planning waits
+  // re-armed every 25-50 s per job, the minute cron, sf-app's RPC polls), about 250k a month per idle
+  // runner and as much again per running job. One in ten is logged (all of that request's lines);
+  // request and error counts in Workers metrics are not sampled. Raise it while chasing an incident.
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 0.1
   },
+  // CPU per invocation (rule 12): the default is 30 s. Nothing here needs more than a few hundred ms
+  // (the heaviest is a Workflow step building a review packet, or an attachment's base64); a cap of
+  // 10 s stops a runaway loop from billing 30 s of CPU each time.
+  "limits": { "cpu_ms": 10000 },
   // Runner hosts reach the channel here (outbound HTTPS from the runner, ADR 0016). Nothing else on
   // this host is public: the operations API is RPC over a service binding (ADR 0051).
   // The GitHub App's webhook (V1 step 4) is a Workers route on sf-app's hostname: routes run in front

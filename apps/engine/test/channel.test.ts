@@ -49,6 +49,10 @@ describe("the signed runner channel", () => {
       w.runner.runnerId,
     );
     expect(seen?.capacity_max).toBe(2);
+    // Naturally idempotent, so never stored in the channel's idempotency store.
+    expect(
+      await all("SELECT 1 FROM core_channel_requests WHERE runner_id = ?", w.runner.runnerId),
+    ).toEqual([]);
   });
 
   it("refuses a bad signature, a stale timestamp, an unknown runner and a revoked key", async () => {
