@@ -624,6 +624,8 @@ export interface CoreRunsTable {
   last_event_at: Iso | null;
   ended_at: Iso | null;
   released_at: Iso | null;
+  /** When the run's events and steers were archived to R2 and deleted from D1 (migration 0361). */
+  events_archived_at: Iso | null;
 }
 
 export interface CoreRunEventsTable {
