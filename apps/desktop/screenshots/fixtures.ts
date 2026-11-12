@@ -481,6 +481,7 @@ function question(n: number, prompt: string, extra: Partial<PlanningQ>): Plannin
     note: null,
     acceptedDefault: false,
     acceptedAlone: false,
+    answeredViaEdit: null,
     skipped: false,
     answerDeliveredAt: ago(29),
     answeredBy: ME,
@@ -526,7 +527,7 @@ A labelled GitHub issue from a trusted author becomes a work item in the backlog
 - The GitHub App webhook takes \`issues\` events for connected repositories [repo]
 - Only issues with the \`factory\` label come in [Q1]
 - Authors must be org members or collaborators; anything else is ignored and logged [Q2]
-- New items land in the inbox of the project that owns the repository [Q3]
+- New items land in the Backlog of the project that owns the repository [Q3]
 - The issue gets one comment with a link to the item, and is closed when the item merges [Q4]
 
 ## Out of scope
@@ -573,11 +574,13 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             "Anyone",
           ]),
           question(3, "Where do they land?", {
-            options: ["The org inbox", "The project's inbox"],
+            options: ["The org inbox", "The project's inbox", "Backlog"],
             defaultValues: ["The org inbox"],
             defaultAnswer: "The org inbox",
             recommendation: "The org inbox",
-            answer: "The project's inbox",
+            answer: "Backlog",
+            // Spec 27: recorded by the planner from the person's edit of the plan.
+            answeredViaEdit: "pe_1",
           }),
           kept(4, "What goes back to the issue?", "A link, then closed on merge", [
             "A link, then closed on merge",
@@ -631,6 +634,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             replyTo: null,
             kind: "chat",
             deliveredAt: ago(20),
+            anchor: null,
             createdAt: ago(20),
           },
           {
@@ -643,7 +647,45 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             replyTo: null,
             kind: "chat",
             deliveredAt: ago(12),
+            anchor: null,
             createdAt: ago(12),
+          },
+          {
+            id: "m3",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Does a bot account count as a collaborator here?",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(3),
+            // Spec 27: a comment on a line of the plan.
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 6,
+              lineEnd: 6,
+              quote:
+                "- Authors must be org members or collaborators; anything else is ignored and logged [Q2]",
+            },
+            createdAt: ago(3),
+          },
+        ]
+      : [],
+    // Spec 27: the person's edit of the Q3 line, which the planner kept.
+    edits: live
+      ? [
+          {
+            id: "pe_1",
+            specId: "spec_wi_12",
+            lineStart: 7,
+            lineEnd: 7,
+            before:
+              "- New items land in the inbox of the project that owns the repository [Q3]",
+            after: "- New items land in the Backlog of the project that owns the repository [Q3]",
+            authorId: ME,
+            authorName: "You",
+            createdAt: ago(4),
           },
         ]
       : [],
