@@ -1,6 +1,6 @@
 {
   "name": "tests-are-hermetic",
-  "description": "Incident inc_5a1729a24403429d87e22d72d6bc502c (work item #8). Every test in the repo runs inside the job's sandbox during build and verify, on whatever date and in whatever time zone the runner has. #8's test (apps/app/test/lib.test.ts) built two timestamps from the real clock and expected them on the same day, so it failed near midnight. The build's fix for it was committed, but the run still failed: the full suite failed inside the sandbox because two packages/harness-claude tests reached outside it, one reading the process table with `ps` (refused with EPERM) and one running a real `git push` to github.com (stopped by the network proxy, not by the credentials error it expects). So a test must not spawn `ps` or reach a real remote, and a test that reads the real clock and asserts on a local time or date must pin the clock. Two files are excluded, each with a reason. packages/harness-claude/test/harness.test.ts holds the two sandbox-blocked tests ('writes the same settings to the run dir and the worktree...' calls psCommand and a one-argument verifyLaunch; 'gives git no way to push...' pushes to https://github.com). apps/app/test/lib.test.ts is #8's own unfixed test. Changing either file is outside an add-only incident fix (ADR 0230), so a person (or #8's next run) fixes them and removes each exclude.",
+  "description": "Incident inc_5a1729a24403429d87e22d72d6bc502c (work item #8). Every test in the repo runs inside the job's sandbox during build and verify, on whatever date and in whatever time zone the runner has. #8's test (apps/app/test/lib.test.ts) built two timestamps from the real clock and expected them on the same day, so it failed near midnight. The build's fix for it was committed, but the run still failed: the full suite failed inside the sandbox because two packages/harness-claude tests reached outside it, one reading the process table with `ps` (refused with EPERM) and one running a real `git push` to github.com (stopped by the network proxy, not by the credentials error it expects). So a test must not spawn `ps` or reach a real remote, and a test that reads the real clock and asserts on a local time or date must pin the clock. Two files are excluded, each with a reason. packages/harness-claude/test/harness.test.ts holds the two sandbox-blocked tests ('writes the same settings to the run dir and the worktree...' calls psCommand and a one-argument verifyLaunch; 'gives git no way to push...' pushes to https://github.com). (apps/app/test/lib.test.ts, #8's own test, is not excluded: main has since pinned its clock and it passes.) packages/runner-local/test/tmux.integration.test.ts (added on main after this incident) drives the real tmux and reads the live process table through psCommand, and fails inside the job sandbox ('Claude exited before it started', 'reaps a session left by a killed host'); it should take an injected ReadCommand or skip in the sandbox the way harness.test.ts does. Changing either file is outside an add-only incident fix (ADR 0230), so a person fixes them and removes each exclude.",
   "appliesTo": [
     "apps/*/test/**/*.ts",
     "packages/*/test/**/*.ts",
@@ -9,7 +9,10 @@
     "evals/test/**/*.ts",
     "scripts/**/*.test.ts"
   ],
-  "exclude": ["packages/harness-claude/test/harness.test.ts", "apps/app/test/lib.test.ts"],
+  "exclude": [
+    "packages/harness-claude/test/harness.test.ts",
+    "packages/runner-local/test/tmux.integration.test.ts"
+  ],
   "forbid": [
     "\\b(?:execFile|execFileSync|spawn|spawnSync|exec|execSync|execa)\\(\\s*[\"'`]ps[\"'`\\s]",
     "\\bpsCommand\\b",

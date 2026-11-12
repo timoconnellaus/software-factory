@@ -38,9 +38,11 @@ Every test runs in the job sandbox, on whatever date and in whatever time zone t
 
 The check excludes two files for now, each with a reason in the check's description:
 `packages/harness-claude/test/harness.test.ts` (the `ps` and `git push` tests that caused this) and
-`apps/app/test/lib.test.ts` (#8's own test, still unfixed on `main`). Fixing them changes existing
-tests, which an add-only incident fix (ADR 0230) can't do. A person, or #8's next run, rewrites them
-and removes each exclude.
+`packages/runner-local/test/tmux.integration.test.ts` (added on `main` after the incident; it reads
+the live process table through `psCommand` and fails in the sandbox). #8's own test,
+`apps/app/test/lib.test.ts`, now pins its clock on `main` and passes the check. Fixing the two
+excluded files changes existing tests, which an add-only incident fix (ADR 0230) can't do. A person
+rewrites them and removes each exclude.
 
 ## A person decides about placement
 
