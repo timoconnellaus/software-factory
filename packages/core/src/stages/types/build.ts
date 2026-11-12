@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import type { StageType } from "../contract.ts";
+import { jobStep } from "../reconcile.ts";
 
 const settings = z
   .object({
@@ -35,6 +36,8 @@ export const build: StageType<typeof settings> = {
   reversibility: "internal",
   steps: () => [{ id: "build", kind: "agent", role: "implement" }],
   // Both are bounded in the schema; ADR 0373 counts the retry limit as practice.
+  next: (ctx) =>
+    jobStep(ctx, "build", ctx.item.retryLimit) ?? { kind: "complete", stageId: ctx.entry.stageId },
   impact: (before, after, stageId) => {
     const out: ImpactChange[] = [];
     if (before.retryLimit !== after.retryLimit)

@@ -1,11 +1,14 @@
 import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import type { StageType } from "../contract.ts";
+import { gateOf, gateStep } from "../reconcile.ts";
 import {
+  conditionHolds,
   conditionImpact,
   conditionSchema,
   deciderImpact,
   deciderSchema,
+  instructionsImpact,
   instructionsSchema,
 } from "../settings.ts";
 
@@ -53,17 +56,27 @@ export const decision: StageType<typeof settings> = {
   needsPerson: true,
   reversibility: "internal",
   steps: () => [{ id: "decide", kind: "decision" }],
+  // A conditional gate is skipped by its typed condition (F7).
+  skip: (s, item) => {
+    const c = conditionHolds(s.when, item.size, item.domains);
+    return c.holds ? null : c.why;
+  },
+  next: (ctx) =>
+    gateStep(ctx, "decision", gateOf(ctx.gate), null, (note) => ({
+      kind: "sendBack",
+      stageId: ctx.entry.stageId,
+      to: "",
+      note,
+    })) ?? { kind: "complete", stageId: ctx.entry.stageId },
   impact: (before, after, stageId) => {
     const out: ImpactChange[] = [
       ...deciderImpact(`${stageId}.decider`, before.decider, after.decider),
       ...conditionImpact(`${stageId}.when`, before.when, after.when),
     ];
-    if (before.instructions !== after.instructions)
-      out.push({
-        path: `${stageId}.instructions`,
-        class: "neutral",
-        summary: "Instructions changed.",
-      });
+    // What the decider is told is part of what it judges by (a person's prompt, or an adjudicator's).
+    out.push(
+      ...instructionsImpact(`${stageId}.instructions`, before.instructions, after.instructions),
+    );
     return out;
   },
 };

@@ -13,6 +13,7 @@ import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-con
 import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
 import worker from "../src/index.ts";
+import { pruneExpired } from "../src/retention.ts";
 import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
 import { growingScans, type Recorded, recordingEnv } from "./query-plans.ts";
 
@@ -143,6 +144,10 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       );
     },
   },
+  {
+    name: "the hourly prunes (retention)",
+    run: (e) => pruneExpired(e.DB, new Date()),
+  },
 ];
 
 describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
@@ -191,6 +196,26 @@ describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
       .bind(...list.params)
       .all<{ detail: string }>();
     expect(results.map((r) => r.detail).join("\n")).toMatch(/USING INDEX \w+ \(status=\?/);
+  });
+
+  it("job.claim reads the queue in claim order from its index: no sort of the queued jobs", async () => {
+    const seen: Recorded[] = [];
+    await (await channel(recordingEnv(env, seen), w.runner.runnerId)).claim({
+      claimId: uid("claim-"),
+      manifest: MANIFEST,
+      capacity: { max: 2, inUse: 0, accepting: true },
+    });
+    const claim = seen.find((r) => /WITH q AS/.test(r.sql));
+    if (!claim) throw new Error("the claim query didn't run");
+    const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${claim.sql}`)
+      .bind(...claim.params)
+      .all<{ id: number; parent: number; detail: string }>();
+    // The CTE q: core_jobs through core_jobs_queue_idx, and no temp B-tree under it.
+    const q = results.find((r) => /^(MATERIALIZE|CO-ROUTINE) q$/.test(r.detail));
+    if (!q) throw new Error(`no q in the plan:\n${results.map((r) => r.detail).join("\n")}`);
+    const under = results.filter((r) => r.parent === q.id).map((r) => r.detail);
+    expect(under.join("\n")).toMatch(/core_jobs_queue_idx/);
+    expect(under.join("\n")).not.toMatch(/TEMP B-TREE/);
   });
 
   for (const path of HOT_PATHS) {

@@ -111,6 +111,8 @@ export const runnerDevicePoll = defineOperation({
   description:
     "The CLI asks whether its device login was approved. `pending` until a person approves; then, once, `approved` with the runner id and its channel key (the code is spent: a second poll gets `expired`). `denied` or `expired` end the login. Called unsigned by the runner channel.",
   risk: "write",
+  // Every few seconds during a login: audited once it settles (ADR 0590).
+  audit: { changesOnly: true, changed: (out) => out.status !== "pending" },
   actors: ["runner"],
   permission: "signed-in",
   input: z.object({ deviceCode: z.string().min(20).max(200) }),

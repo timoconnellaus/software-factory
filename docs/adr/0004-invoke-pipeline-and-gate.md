@@ -26,3 +26,8 @@ Borrowed from Relationship OS ADR 0018.
 > holder carry a **fencing token**, and `invoke()` refuses a stale one
 > ([ADR 0035](0035-lease-fencing-and-one-branch-per-run.md)). Policy here means the project's
 > **autonomy policy** plus the floor; "preset" is no longer used for it.
+
+> Amended 2026-11-12 ([ADR 0590](0590-the-audit-journal-records-changes-not-machine-chatter.md)):
+> the batch carries the audit row unless the operation is changes-only and the call changed
+> nothing; such a call with nothing to write commits no batch at all. "Complete by construction"
+> now means every call that changed state, and every refusal or failure, is journaled.

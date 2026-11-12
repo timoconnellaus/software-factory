@@ -77,10 +77,6 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
     why: "sorts one row per project with queued work (core_work_items_status_idx)",
   },
   {
-    match: /from "core_jobs" where "status" = \? order by/,
-    why: "queued jobs only (core_jobs_status_idx): the queue, not the history",
-  },
-  {
     match: /from "core_pending_actions".*"core_pending_actions"\."status" = \?/,
     why: "pending gates only (core_pending_actions_status_idx)",
   },

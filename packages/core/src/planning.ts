@@ -69,6 +69,8 @@ export function logPlanning(
   type: string,
   payload: Record<string, unknown> = {},
 ) {
+  // A planning event is a change a person may read later: a changes-only call is audited.
+  ctx.changed();
   ctx.write(
     ctx.db.insertInto("core_planning_events").values({
       work_item_id: workItemId,
@@ -120,6 +122,8 @@ export function enqueuePlanningJob(
       session_timeout_ms: PLANNING_SESSION_TIMEOUT_MS,
       created_at: ctx.now,
       pool: "light",
+      // Shaping work is claimed after released work (ADR 0493, migration 0363).
+      shaping: w.status === "shaping" ? 1 : 0,
       pinned_runner_id: options.pinnedRunnerId ?? null,
       planning_session_id: session.id,
     }),

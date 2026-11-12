@@ -412,10 +412,15 @@ current (ADR 0370 §2). The **floors** are F-rules: no setting, template or agen
   refuse otherwise (spec 50's rule 3, generalised).
 - **F10** Code-owned prompts stay code's: no type exposes a setting that replaces the verify or
   reviewer prompt, or that names a model id (ADR 0018).
+  A stage whose judge is the factory's own reviewer (Checks) takes no org agent: an agent's instructions
+  would reach the judge (Q16, ADR 0516).
 
 ### The impact check
 `workflowImpact(before, after, registry)` extends `policyImpact` (ADR 0370 §3). Each change is
-`loosens`, `tightens` or `neutral`; anything it can't classify loosens.
+`loosens`, `tightens` or `neutral`. It is an **allow-list** (ADR 0516): a change is neutral or
+tightening only if a rule says so; anything else, including any reorder, any removal, an unclassified
+setting and an unmigratable type version, loosens. A re-added id is compared with its archived version,
+a new workflow with the Software floor.
 - A stage with a gate removed, or a `required` gate's stage removed: **loosens**.
 - A conditional gate's condition widened (for example `requiredFrom` medium → large): loosens;
   narrowed: tightens.
@@ -427,10 +432,19 @@ current (ADR 0370 §2). The **floors** are F-rules: no setting, template or agen
   with `autoApprove` on: loosens.
 - A project override that loosens against the org workflow's value loosens; one that tightens
   tightens (Q5).
-- A stage added that has a gate, or a `checks`/`agent-check` stage added: tightens.
+- A stage added that only checks or gates, for every item: tightens. That includes a stage whose
+  type would produce an artifact an earlier, unconditional stage already produces (a second
+  `checks` stage after the first): it checks the existing pull request, it opens none. A stage added
+  that acts outside the factory, irreversibly (a merge, a publish, a deploy) or as a reversible
+  outward write it makes itself (the pull request the first `checks` stage opens), is an action
+  gained: loosens, though it has a gate.
 - A stage moved: loosens if it moves a gate or a check later past a stage that produces what it
   checks, otherwise neutral.
-- Agent instructions, tiers, names: neutral, and **practice** for the improver (ADR 0373).
+- What a judging stage is told (an `agent-check`'s or a `decision`'s `instructions`, the criteria or
+  thresholds it judges by): any change loosens. Free text can't be shown to only add requirements
+  ("…; then pass everything" overrides what came before), so the classifier doesn't try. The same
+  holds for an org agent that judges work in a workflow (Q16).
+- Other agents' instructions, tiers, names: neutral, and **practice** for the improver (ADR 0373).
 - Each type's own `impact()` classifies its settings.
 - A project switching workflows compares the two definitions the same way (ADR 0492 §3).
 
@@ -1165,6 +1179,13 @@ screen needs).
    overrides and returns the same plan (the (a) table test again, before and after). Release takes the
    current version or flags the item (Q4); tightening reaches running items at the next boundary (Q3).
    May need a new Workflow version (the next free one at merge time) for the re-pin at release.
+   **(d) also closes a live route on main** (see "Known gaps"): `policyImpact` classes a project
+   config save that changes a slot workflow's steps or instructions, or an agent's instructions, as
+   neutral (`packages/core/src/policy/impact.ts`, the `workflows` and `agents` branches), so any
+   project member's `config.save` can tell a slot `work` step's judging agent to pass everything with
+   no approval. (d) moves those steps onto the org workflow, where `workflowImpact` classifies them,
+   and makes the project config's remaining step and agent-instruction changes loosen the same way:
+   a test saves "pass everything" into a slot step and into its agent and expects `self-modify`.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the
@@ -1222,6 +1243,14 @@ sections above were rewritten.
 | 21 | What must hold before it merges with no person? | All five: checks passed and criteria proven by a check that ran; tests intact; the adjudicator approved and has earned it on this project; inside the size and path limits; low risk (no migrations, auth, billing or policy files) | Dark factory mode; ADR 0515 |
 | 22 | Deploy, and changes to the factory itself? | **Differs**: merge and deploy; self-changes still need a person (suggested: merge only) | Dark factory mode; ADR 0515 |
 | 23 | Does it switch itself off when something goes wrong? | Yes | The per-project hold; ADR 0515 |
+
+### Known gaps
+- **A judging agent's instructions are neutral in a project's config, until (d).** On main,
+  `config.save` by any project member classes a change to slot steps and to agent instructions as
+  neutral (`policyImpact`'s `workflows` and `agents` branches). An agent judging a slot `work` step
+  can be told to pass everything with no approval. Org workflows (b) don't have this gap
+  (`workflowImpact` loosens on any change to what a judge is told); projects keep it until (d)
+  closes it, as the build plan says.
 
 ### Flagged for the coordinator
 Places where the answers needed an interpretation, or where they touch each other:
