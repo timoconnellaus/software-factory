@@ -15,7 +15,6 @@ CREATE TABLE core_delivery_state (
   next_check_at TEXT,
   updated_at TEXT NOT NULL
 );
-CREATE INDEX core_delivery_state_due_idx ON core_delivery_state (next_check_at);
 
 -- Who lands a queue entry: its own Workflow (v4–v7, and an incident's auto-merge), or the
 -- babysitter's deliverer (v11). How it ended, as sent to the Workflow (`merged`, `conflict`,
@@ -26,5 +25,13 @@ ALTER TABLE core_merge_queue ADD COLUMN driver TEXT NOT NULL DEFAULT 'workflow'
 ALTER TABLE core_merge_queue ADD COLUMN outcome TEXT
   CHECK (outcome IS NULL OR outcome IN ('merged', 'conflict', 'failed', 'withdrawn'));
 ALTER TABLE core_merge_queue ADD COLUMN update_asked_at TEXT;
+
+-- The minute cron's sweep (`deliverDue`) reads only open babysitter entries: a partial index, so it
+-- never scans the entries kept after they end.
+CREATE INDEX core_merge_queue_babysitter_idx ON core_merge_queue (project_id)
+  WHERE status = 'queued' AND driver = 'babysitter';
+-- A Workflow reading back how its delivery ended (`mergeQueue.position` when not queued): the item's
+-- latest entry.
+CREATE INDEX core_merge_queue_item_idx ON core_merge_queue (work_item_id, enqueued_at);
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 350) WHERE key = 'schema_version';
