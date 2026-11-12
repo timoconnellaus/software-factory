@@ -165,6 +165,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   the engine refuses software keys for gate decisions (`DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in
   production). Why it stays empty: tested on the M5, no keychain restriction protects the desktop
   token or the software key from a local agent, because the app's `bun` runs any script under the
+  app's signature. So gate decisions are not available from a signed desktop build; the owner is
+  deciding between approving on the phone, the Touch ID helper, or container-only runners.
+  **`MACOS_KEYS_PROFILE` is set (2026-11-13)** in the `release` environment: the owner created the
+  App ID `com.software-factory.desktop.keys` and its Developer ID profile, verified
+  (application-identifier `TEAMID.com.software-factory.desktop.keys`, keychain-access-groups
+  `TEAMID.*`, expires 2044), ready for the M4b build steps that need it (spec 40 M4b, PR #89).
   app's signature. So gate decisions are not available from a signed desktop build until M4b ships.
   **The version handshake is built** (`desktop-handshake`, PR #81, ADR 0393): the app sends
   `x-sf-client-protocol`; below sf-engine's `DESKTOP_MIN_PROTOCOL` the door answers 426

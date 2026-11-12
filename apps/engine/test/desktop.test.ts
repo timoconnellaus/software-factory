@@ -280,6 +280,20 @@ describe("the desktop app's client door (/client/v1)", () => {
       (await first<{ status: string }>("SELECT status FROM core_pending_actions WHERE id = ?", id))
         ?.status;
     const first_ = await mergeGate(opened);
+    // A desktop build older than door protocol 2 doesn't name the commit: refused, told to update,
+    // and nothing is decided (ADR 0393).
+    const noSha = { workItemId, openedFullDiff: true };
+    const old = await callOp(
+      token,
+      "review.merge",
+      noSha,
+      await prove(token, device, "review.merge", noSha),
+    );
+    expect(old.status).toBe(400);
+    expect((await json<{ error: string }>(old)).error).toMatch(
+      /can't approve a merge.*Update the app/,
+    );
+    expect(await status(first_)).toBe("pending");
     // The person opens the gate on `opened`: the prompt names that commit and the repository.
     const input = { workItemId, openedFullDiff: true, headSha: opened };
     const proof = await prove(token, device, "review.merge", input);
@@ -539,8 +553,8 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect((await at("1", undefined, "call", null)).status).toBe(401);
     // A floor above the newest protocol this engine knows would lock every build out, sign-in
     // included: it is ignored, not enforced.
-    expect(DESKTOP_PROTOCOL_LATEST).toBe(1);
-    expect((await at("2", "1")).status).toBe(200);
+    expect(DESKTOP_PROTOCOL_LATEST).toBe(2);
+    expect((await at("3", "2")).status).toBe(200);
     expect((await at("99", undefined, "desktop/start", null)).status).not.toBe(426);
   });
 

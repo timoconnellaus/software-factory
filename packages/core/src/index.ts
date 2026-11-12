@@ -35,10 +35,12 @@ export {
 } from "./operations/desktop.ts";
 export { DEVICE_LOGIN_ACTOR, normalizeUserCode } from "./operations/devices.ts";
 export {
+  MERGE_NEEDS_COMMIT,
   PHONE_REFUSES_CANCEL,
   PHONE_REFUSES_PENDING,
   phoneMayDecidePending,
 } from "./operations/gates.ts";
+export { BRANCH_MOVED_AFTER_APPROVAL } from "./operations/github.ts";
 export * as operations from "./operations/index.ts";
 export {
   formatPairCode,

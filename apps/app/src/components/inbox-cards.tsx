@@ -12,6 +12,7 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { mergeBlocked } from "#/lib/merge-card";
 import type { Inbox } from "#/lib/ops";
 import { workItemQuery } from "#/lib/queries";
 import { NoteDialog, useDecide } from "./decisions.tsx";
@@ -224,7 +225,7 @@ function MergeGateCard({
           size="sm"
           variant="outline"
           disabled={!canMerge || !packet || pending !== null}
-          title={canMerge ? undefined : "Only an approver on this project can merge"}
+          title={mergeBlocked({ loaded: d !== undefined, canMerge, packet: packet !== null })}
           onClick={() =>
             // For the commit the card shows (the packet's head): a push in between is refused.
             packet &&

@@ -289,7 +289,11 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     expect(
       (
         await refusal(
-          ok("review.merge", { workItemId: created.workItemId, openedFullDiff: true }, w.human),
+          ok(
+            "review.merge",
+            { workItemId: created.workItemId, openedFullDiff: true, headSha: pr.headSha },
+            w.human,
+          ),
         )
       ).code,
     ).toBe("conflict");
@@ -300,6 +304,49 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     // A late delivery for an older head doesn't move the item back.
     await refresh(w, { headSha: pr.headSha, prNumber: pr.number, trigger: "pull_request" });
     expect((await item(created.workItemId)).head_sha).toBe(newHead);
+  });
+
+  it("closes an approved merge when GitHub refuses it because the branch moved after the engine's check", async () => {
+    const w = await world();
+    const pr = await github.openOutsidePull(w.repo, { branch: "tim/race", title: "Race" });
+    const created = await attach(w, pr.number);
+    await env.DB.prepare("UPDATE core_work_items SET stage = 'verify' WHERE id = ?")
+      .bind(created.workItemId)
+      .run();
+    const input = {
+      workItemId: created.workItemId,
+      headSha: pr.headSha,
+      touchesFactoryConfig: false,
+    };
+    const gated = await call("pr.merge", input, FOREMAN);
+    const pendingId = gated.status === "pending" ? gated.pendingActionId : "";
+    await ok(
+      "review.merge",
+      { workItemId: created.workItemId, openedFullDiff: true, headSha: pr.headSha },
+      w.human,
+    );
+    // A push lands on GitHub before its webhook reaches the engine: the engine's head check passes,
+    // GitHub refuses the merge.
+    await github.push(w.repo, "tim/race");
+    const refused = await refusal(call("pr.merge", input, FOREMAN, { approvalId: pendingId }));
+    expect([refused.code, refused.message]).toEqual([
+      "conflict",
+      "the branch moved after you approved: review the new commit",
+    ]);
+    // The approval is closed with why, not left `approved` for a commit that won't merge.
+    expect(
+      await first(
+        "SELECT status, decision, note FROM core_pending_actions WHERE id = ?",
+        pendingId,
+      ),
+    ).toEqual({
+      status: "rejected",
+      decision: "withdrawn",
+      note: "the branch moved after you approved: review the new commit",
+    });
+    expect((await github.state(w.repo)).pulls.find((p) => p.number === pr.number)?.state).toBe(
+      "open",
+    );
   });
 
   it("puts a waiting attached item back to running on a push", async () => {

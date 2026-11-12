@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import type { WorkItemDetail } from "@software-factory/client/ops";
 import { TerminalClient, type TerminalStatus } from "@software-factory/client/web-terminal";
 import { describe, expect, it } from "vitest";
+import { DOOR_PROTOCOL } from "../src/bun/protocol.ts";
 import {
   type DoorSocket,
   FELL_BEHIND,
@@ -135,7 +136,7 @@ describe("the main process's terminal sockets", () => {
     expect(s?.headers).toEqual({
       authorization: "Bearer sfd_secret",
       "x-sf-client": "desktop",
-      "x-sf-client-protocol": "1",
+      "x-sf-client-protocol": String(DOOR_PROTOCOL),
     });
     expect(s?.binaryType).toBe("arraybuffer");
     expect(terminalSocketUrl("http://localhost:8787/", ITEM, RUN)).toBe(
@@ -232,7 +233,7 @@ describe("a terminal the door refuses as too old (ADR 0393)", () => {
         headers: {
           authorization: "Bearer sfd_secret",
           "x-sf-client": "desktop",
-          "x-sf-client-protocol": "1",
+          "x-sf-client-protocol": String(DOOR_PROTOCOL),
         },
       },
     ]);

@@ -63,3 +63,11 @@ so a socket that never opened asks the same URL over HTTPS once; a 426 `update_r
 same handler as the door client and stops reconnecting. Spec 42's terminal socket does the same
 (2026-11-12, after #77): it sends the protocol headers on its upgrade, and one that never opened asks
 the door why; `update_required` closes it with "Update required" and shows the app's screen.
+
+## Amendment (2026-11-13): protocol 2, a merge approval names its commit
+Door protocol 2 (`DOOR_PROTOCOL` and `DESKTOP_PROTOCOL_LATEST`) is a build that sends `headSha` with
+`review.merge`. The engine now refuses `review.merge` without `headSha` on every surface (on the
+desktop with "update the app"), so a protocol 1 build can still do everything but approve a merge.
+The floor stays where the owner set it; raise `DESKTOP_MIN_PROTOCOL` to 2 once a protocol 2 build is
+published on every channel (the deploy check above refuses it before then), and older builds then
+see *Update required* instead of a refused merge.
