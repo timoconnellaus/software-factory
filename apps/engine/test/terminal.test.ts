@@ -2,6 +2,7 @@
 // call on the signed channel, the TerminalRelay Durable Object with real WebSocket pairs, the
 // viewer's attach through EngineApi, read-only enforcement in the relay, caps and the journal.
 import { env } from "cloudflare:workers";
+import type { Actor } from "@software-factory/core";
 import {
   type ChannelCallError,
   httpControlPlane,
@@ -114,7 +115,7 @@ async function member(orgId: string) {
 }
 
 /** A person opens the run's web terminal as sf-app does: attach, then the viewer socket. */
-async function view(workItemId: string, runId: string, actor: { type: "human"; id: string }) {
+async function view(workItemId: string, runId: string, actor: Actor) {
   const attached = await api().terminalAttach(workItemId, runId, {
     actor,
     origin: { surface: "app" },

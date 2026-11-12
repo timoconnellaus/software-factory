@@ -45,6 +45,14 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
 
 A `409 fenced|killed`, or a cancel command, stops the session at once: no push and no hand-back.
 
+While a session runs, the host also keeps the channel's held `steer` call open (messages from the
+dashboard, ADR 0400) and, for an adapter with `terminal`, the held `terminal` call (ADR 0440,
+`src/terminal.ts`). When someone opens the run's **Web terminal** on the Live tab, the call answers
+with a one-use socket URL for the job's relay in sf-engine; the host connects outbound, starts the
+adapter's bridge, and relays until the relay says nobody is watching, the session ends, or the job
+stops. No port opens on the machine, and only the runner's owner's keys reach the session (the
+relay enforces it).
+
 ### Pools and planning sessions (spec 20, ADR 0301, 0350)
 Capacity has two pools: heavy (build, verify; `maxConcurrent`) and light (triage, spec, planning;
 `maxLight`, default 6). The heartbeat and claim report both, and the host claims while either has

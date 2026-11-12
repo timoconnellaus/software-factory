@@ -79,6 +79,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   harness's per-platform deny lists, Linux doctor checks (bubblewrap, socat, linger), the install
   path in the runner-host README, and `local/runner-host/scripts/linux-check.sh` (the tests in a
   Debian container). Criteria 2–3, 6 and 8 need a live Linux host (README "Running on Linux").
+  Piece 6, **the web terminal** (block AB, [spec 35](specs/35-web-terminal.md) /
+  [ADR 0440](adr/0440-a-web-terminal-relayed-through-a-durable-object-per-job.md), migration 0210,
+  branch `timoconnellaus/hosts-web-terminal`): the Live tab's Web terminal view (xterm.js), the
+  `TerminalRelay` Durable Object per job, the held `terminal` call and the host's outbound socket,
+  `run.terminal.attach`/`detach`/`host`, the tmux control-mode bridge in runner-local. Criteria 1,
+  2 and 6 need a live run on the M5 (engine deployed first, then the runner updated).
 - **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
   versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals
