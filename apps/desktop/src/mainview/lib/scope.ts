@@ -24,12 +24,17 @@ export function scopeInbox(inbox: Inbox, orgOf: OrgOf, orgId: string | null): In
     planning: inbox.planning.filter((p) => inOrg(p.projectId)),
     wipHolds: inbox.wipHolds.filter((h) => inOrg(h.projectId)),
     protection: inbox.protection.filter((p) => inOrg(p.projectId)),
+    releaseFlags: (inbox.releaseFlags ?? []).filter((f) => inOrg(f.projectId)),
   };
 }
 
-/** What waits on you: open gates and questions (the sidebar's count and the status bar's). */
-export const waitingCount = (inbox: Pick<Inbox, "gates" | "questions">) =>
-  inbox.gates.length + inbox.questions.length;
+/**
+ * What waits on you: open gates, questions and items flagged for your choice at release (spec 52,
+ * Q4): the sidebar's count and the status bar's.
+ */
+export const waitingCount = (
+  inbox: Pick<Inbox, "gates" | "questions"> & Partial<Pick<Inbox, "releaseFlags">>,
+) => inbox.gates.length + inbox.questions.length + (inbox.releaseFlags?.length ?? 0);
 
 /** The orgs with something waiting on you (the rail's amber dots). */
 export function orgsWaiting(inbox: Inbox, orgOf: OrgOf): Set<string> {
@@ -40,6 +45,10 @@ export function orgsWaiting(inbox: Inbox, orgOf: OrgOf): Set<string> {
   }
   for (const q of inbox.questions) {
     const o = orgOf(q.projectId);
+    if (o) out.add(o);
+  }
+  for (const f of inbox.releaseFlags ?? []) {
+    const o = orgOf(f.projectId);
     if (o) out.add(o);
   }
   return out;

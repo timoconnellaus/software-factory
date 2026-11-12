@@ -37,6 +37,8 @@ export interface CheckModeOptions {
   sandbox: ((job: Job, dirs: CheckDirs) => Exec) | null;
   /** The container check exec (default: runner-local's, over `runtime`). */
   container?: ((job: Job, dirs: { root: string; dir: string }) => Exec) | null;
+  /** This runner's id, on its check containers: it reaps only its own. */
+  runnerId?: string;
   /** The check container's limits (runner.json `checks`; default runner-local's `CHECK_LIMITS`). */
   limits?: { cpus: number; memory: string; tmpSize: string };
 }
@@ -93,10 +95,11 @@ export function localChecks(
   const container =
     options.container ??
     (runtime
-      ? (localCheckContainer({ runtime, ...(options.limits ?? {}) }) as (
-          job: Job,
-          dirs: { root: string; dir: string },
-        ) => Exec)
+      ? (localCheckContainer({
+          runtime,
+          ...(options.runnerId ? { runnerId: options.runnerId } : {}),
+          ...(options.limits ?? {}),
+        }) as (job: Job, dirs: { root: string; dir: string }) => Exec)
       : null);
   let answered = 0;
   const problem = async (): Promise<string | null> => {

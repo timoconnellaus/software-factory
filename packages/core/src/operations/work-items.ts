@@ -22,6 +22,8 @@ import {
   priority,
   priorityIndex,
   priorityOf,
+  RELEASE_CHOICES,
+  releaseFlagOf,
   releaseRefusal,
   requestPull,
   requestPullsAfterEnd,
@@ -1203,6 +1205,22 @@ export const inboxList = defineOperation({
       }),
     ),
     wipHolds: z.array(z.object({ projectId: z.string(), waitingBuilds: z.number() })),
+    /**
+     * Items flagged at release for this person (spec 52, Q4): their workflow's shaping stages
+     * changed since they were shaped. The choices are workItem.releaseChoice's.
+     */
+    releaseFlags: z.array(
+      z.object({
+        workItemId: z.string(),
+        projectId: z.string(),
+        number: z.number(),
+        title: z.string(),
+        reason: z.string(),
+        shapedUnder: z.number(),
+        current: z.number(),
+        choices: z.array(z.enum(RELEASE_CHOICES)),
+      }),
+    ),
     /** "Protection on `main` changed" (ADR 0280): projects whose protection went red after ok. */
     protection: z.array(
       z.object({
@@ -1226,7 +1244,7 @@ export const inboxList = defineOperation({
       .select("organization_id")
       .where("user_id", "=", me)
       .$if(!!input.orgId, (q) => q.where("organization_id", "=", input.orgId ?? ""));
-    const [pending, questionRows, running, runnerRows, holds, drift, planningRows] =
+    const [pending, questionRows, running, runnerRows, holds, drift, planningRows, flagged] =
       await readBatch(ctx.d1, [
         ctx.db
           .selectFrom("core_pending_actions")
@@ -1329,6 +1347,13 @@ export const inboxList = defineOperation({
           .where("core_planning_sessions.status", "not in", ["ended", "moved"])
           .orderBy("core_planning_sessions.announced_at", "desc")
           .limit(50),
+        // Spec 52, Q4: by core_work_items_release_flag_idx (migration 0285), this person's only.
+        ctx.db
+          .selectFrom("core_work_items")
+          .select(["id", "project_id", "number", "title", "release_flag"])
+          .where("release_flag_user_id", "=", me)
+          .where("org_id", "in", myOrgs)
+          .limit(50),
       ]);
     const gates = pending
       .filter((g) => g.assignee_user_id === me)
@@ -1403,6 +1428,23 @@ export const inboxList = defineOperation({
         announcedAt: p.announced_at ?? "",
       })),
       wipHolds: holds.map((h) => ({ projectId: h.project_id, waitingBuilds: Number(h.n) })),
+      releaseFlags: flagged.flatMap((f) => {
+        const flag = releaseFlagOf(f.release_flag);
+        return flag
+          ? [
+              {
+                workItemId: f.id,
+                projectId: f.project_id,
+                number: f.number,
+                title: f.title,
+                reason: flag.reason,
+                shapedUnder: flag.shapedUnder,
+                current: flag.current,
+                choices: [...RELEASE_CHOICES],
+              },
+            ]
+          : [];
+      }),
       protection: drift.map((d) => {
         const problems = parseJson<string[]>(d.problems, []);
         return {

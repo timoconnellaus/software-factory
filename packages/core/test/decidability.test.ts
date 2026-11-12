@@ -108,6 +108,10 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "desktop": "refused",
           "mobile": "proof",
         },
+        "orgConfig.adoptProjectWorkflows": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
         "orgConfig.rollback": {
           "desktop": "refused",
           "mobile": "refused",
@@ -182,6 +186,10 @@ describe("device decidability (ADR 0541 decision 5)", () => {
         },
         "spec.requestChanges": {
           "desktop": "proof",
+          "mobile": "one tap",
+        },
+        "workItem.releaseChoice": {
+          "desktop": "one tap",
           "mobile": "one tap",
         },
         "workflow.archive": {

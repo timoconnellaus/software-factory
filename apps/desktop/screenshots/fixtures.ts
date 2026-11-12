@@ -105,6 +105,14 @@ function pre(
   });
 }
 
+/** #16 was shaped, and its workflow's shaping stages changed before release (spec 52, Q4). */
+const RELEASE_FLAG_16 = {
+  reason:
+    "#16 was shaped under org config v3; its workflow's shaping stages changed in v5. Shape it again under the current workflow, or accept the shaping already done and deliver it under the current workflow.",
+  shapedUnder: 3,
+  current: 5,
+};
+
 export const ITEMS: Summary[] = [
   item(13, "Guard the tests in verify", "merge", "waiting", {
     statusReason: "Packet ready",
@@ -387,6 +395,16 @@ const INBOX: OpOutput<"inbox.list"> = {
   ],
   planning: [],
   wipHolds: [],
+  releaseFlags: [
+    {
+      workItemId: "wi_16",
+      projectId: FACTORY,
+      number: 16,
+      title: "Record usage for every run",
+      ...RELEASE_FLAG_16,
+      choices: ["reshape", "accept"],
+    },
+  ],
   protection: [
     {
       projectId: FACTORY,
@@ -463,6 +481,7 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         createdAt: i.createdAt,
         updatedAt: i.updatedAt,
         waitsFor,
+        ...(i.id === "wi_16" ? { releaseFlag: RELEASE_FLAG_16 } : {}),
         blockedBy: waitsFor.filter((w) => w.status !== "done"),
       };
     });

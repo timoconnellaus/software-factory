@@ -13,6 +13,24 @@ import type { ContainerInspect, ContainerSpec, Mount } from "./runtime.ts";
 /** The label every factory container and network carries: the job id. */
 export const JOB_LABEL = "software-factory.job";
 export const ROLE_LABEL = "software-factory.role";
+/**
+ * The runner that started it: two runners can share one Docker daemon (a container runner beside a
+ * sandbox runner), and each reaps only its own (./reap.ts).
+ */
+export const RUNNER_LABEL = "software-factory.runner";
+
+/** A factory container's or network's labels: its job, its role and, when known, its runner. */
+export function factoryLabels(
+  jobId: string,
+  role: "agent" | "egress" | "check",
+  runnerId?: string,
+): Record<string, string> {
+  return {
+    [JOB_LABEL]: jobId,
+    [ROLE_LABEL]: role,
+    ...(runnerId ? { [RUNNER_LABEL]: runnerId } : {}),
+  };
+}
 export const CONTAINER_RECORD = "container.json";
 export const CONTAINER_SCRIPT = "container.sh";
 /** Docker's detach keys, moved off `ctrl-p ctrl-q` so a person attached through tmux can type them. */
@@ -99,6 +117,7 @@ export interface AgentSpecInput {
   mounts: Mount[];
   network: string;
   jobId: string;
+  runnerId?: string;
   envFile: string;
   pidsLimit?: number;
   cpus?: number;
@@ -130,7 +149,7 @@ export function agentSpec(input: AgentSpecInput): ContainerSpec {
     mounts: input.mounts,
     tmpfs: { "/tmp": "rw,exec,nosuid,size=4g" },
     network: input.network,
-    labels: { [JOB_LABEL]: input.jobId, [ROLE_LABEL]: "agent" },
+    labels: factoryLabels(input.jobId, "agent", input.runnerId),
     pidsLimit: input.pidsLimit ?? 4096,
     ...(input.cpus ? { cpus: input.cpus } : {}),
     ...(input.memory ? { memory: input.memory } : {}),
@@ -143,6 +162,7 @@ export function proxySpec(input: {
   name: string;
   image: string;
   jobId: string;
+  runnerId?: string;
   allow: string[];
   addHosts?: string[];
   /** Tests: exact `host:port` entries the proxy's private-address filter lets through. */
@@ -167,7 +187,7 @@ export function proxySpec(input: {
     tmpfs: {},
     // The default bridge has a route out; the job network is connected after start (alias `egress`).
     network: "bridge",
-    labels: { [JOB_LABEL]: input.jobId, [ROLE_LABEL]: "egress" },
+    labels: factoryLabels(input.jobId, "egress", input.runnerId),
     pidsLimit: 256,
     memory: "256m",
     ...(input.addHosts?.length ? { addHosts: input.addHosts } : {}),
