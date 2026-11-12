@@ -12,6 +12,7 @@ import {
   canRun,
   capabilityManifestSchema,
   capacitySchema,
+  executedCheckSchema,
   JOB_STAGES,
   type Job,
   MODEL_ROLES,
@@ -38,7 +39,7 @@ import {
 } from "../operation.ts";
 import { planningRunEnded, USER_EVENTS } from "../planning.ts";
 import { policyImpact } from "../policy/impact.ts";
-import type { ProjectPolicy } from "../policy/project-policy.ts";
+import { declaredChecks, type ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
@@ -726,8 +727,27 @@ async function buildJob(
     ...(job.stage === "planning" && planning ? { planning } : {}),
     requires: parseJson<Capability[]>(job.requires, []),
     limits: { sessionTimeoutMs: job.session_timeout_ms },
+    ...jobChecks(policy, item, job.stage),
     lease: { fencingToken: run.fencing_token, expiresAt: leaseExpiresAt },
   };
+}
+
+/**
+ * The checks the host runs for this job (ADR 0451), from the project's config version, never the
+ * run's branch: after every build, and before an attached PR's review (it has no build). A factory
+ * item's verify uses the build's results for the same head.
+ */
+function jobChecks(
+  policy: ProjectPolicy | null,
+  item: Pick<WorkItemRow, "kind" | "workflow">,
+  stage: string,
+): { checks?: Job["checks"] } {
+  if (!policy) return {};
+  if (stage !== "build" && !(stage === "verify" && item.kind === "attached")) return {};
+  const commands = declaredChecks(policy, item.workflow);
+  return commands.length
+    ? { checks: { commands, fixRounds: stage === "build" ? policy.retryLimit : 0 } }
+    : {};
 }
 
 export const jobClaim = defineOperation({
@@ -1159,7 +1179,7 @@ export function finishRun(
 export const runHandBack = defineOperation({
   name: "run.handBack",
   description:
-    "A run hands back: its outcome, summary, artifacts, the branch it pushed and its head, and the stage's structured result. The branch must be the run's own branch, and for a build the pushed head is checked on GitHub; otherwise the run fails. The Workflow continues with the result.",
+    "A run hands back: its outcome, summary, artifacts, the branch it pushed and its head, the stage's structured result, and the project's checks as the runner host ran them (stored against the SHA each ran on, ADR 0451). The branch must be the run's own branch, and for a build the pushed head is checked on GitHub; otherwise the run fails. The Workflow continues with the result.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -1173,6 +1193,8 @@ export const runHandBack = defineOperation({
     branch: z.string(),
     headSha: sha.optional(),
     result: z.unknown().optional(),
+    /** The job's checks as the host ran them (ADR 0451); each is stored against its own SHA. */
+    checks: z.array(executedCheckSchema).max(60).default([]),
   }),
   output: z.object({ accepted: z.boolean(), reason: z.string().nullable() }),
   async handler(input, ctx) {
@@ -1206,6 +1228,41 @@ export const runHandBack = defineOperation({
     }
     const result = input.result === undefined ? null : JSON.stringify(input.result);
     if (result && result.length > MAX_RESULT) return fail("result too large");
+    // The factory's own check results (ADR 0451), whatever the outcome: a failure is evidence too.
+    // A later round on the same SHA replaces a check's row.
+    for (const c of input.checks) {
+      const row = {
+        run_id: run.id,
+        command: c.command,
+        exit_code: c.exitCode,
+        timed_out: c.timedOut ? 1 : 0,
+        duration_ms: c.durationMs,
+        log_tail: c.logTail,
+        round: c.round,
+        created_at: ctx.now,
+      };
+      ctx.write(
+        ctx.db
+          .insertInto("core_check_results")
+          .values({ work_item_id: w.id, head_sha: c.headSha, name: c.name, ...row })
+          .onConflict((oc) => oc.columns(["work_item_id", "head_sha", "name"]).doUpdateSet(row)),
+      );
+    }
+    if (input.checks.length) {
+      ctx.change({
+        entity: "check_results",
+        id: run.id,
+        after: {
+          checks: input.checks.map((c) => ({
+            name: c.name,
+            headSha: c.headSha,
+            exitCode: c.exitCode,
+            timedOut: c.timedOut,
+            round: c.round,
+          })),
+        },
+      });
+    }
     const ok = input.outcome === "completed";
     finishRun(ctx, run, w.workflow_id, ok ? "handed_back" : "failed", input.outcome, {
       summary: input.summary ?? null,

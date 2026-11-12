@@ -149,15 +149,19 @@ export async function all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
 type Push = Parameters<typeof github.push>[3];
 
 /** Plays the runner host for one job: claim the next job of `stage`, then hand back. */
+/** What a test's runner does for a stage. `checks`: the host's check results, on the pushed head. */
+interface StageOut {
+  result?: unknown;
+  outcome?: "completed" | "failed";
+  push?: Push;
+  checks?: { name: string; exitCode: number; command?: string; headSha?: string }[];
+}
+
 export async function runStage(
   w: World,
   workItemId: string,
   stage: Job["stage"],
-  result: (
-    job: Job,
-  ) =>
-    | Promise<{ result?: unknown; outcome?: "completed" | "failed"; push?: Push }>
-    | { result?: unknown; outcome?: "completed" | "failed"; push?: Push },
+  result: (job: Job) => Promise<StageOut> | StageOut,
 ): Promise<Job> {
   await waitFor(`a queued ${stage} job`, () =>
     first(
@@ -190,6 +194,20 @@ export async function runStage(
       branch: job.branch,
       ...(headSha ? { headSha } : {}),
       ...(out.result !== undefined ? { result: out.result } : {}),
+      ...(out.checks
+        ? {
+            checks: out.checks.map((c) => ({
+              name: c.name,
+              command: c.command ?? `pnpm ${c.name}`,
+              exitCode: c.exitCode,
+              timedOut: false,
+              durationMs: 1200,
+              logTail: c.exitCode === 0 ? "ok" : `${c.name}: 1 failing`,
+              headSha: c.headSha ?? headSha ?? String(job.context.headSha ?? ""),
+              round: 0,
+            })),
+          }
+        : {}),
     },
     w.runnerActor,
   );
@@ -230,10 +248,21 @@ export const verifyPass = {
     riskFlags: [],
   },
 };
+/**
+ * The reviewer finds a criterion unmet. Its own report of a failing check no longer fails the
+ * verdict (ADR 0451): only the factory's checks and CI do.
+ */
 export const verifyFail = {
   result: {
     ...verifyPass.result,
     checks: [{ name: "tests", status: "fail", detail: "1 failing" }],
+    criteria: [
+      {
+        criterion: "The page has a dark mode toggle",
+        met: false,
+        evidence: "the toggle doesn't switch the theme",
+      },
+    ],
   },
 };
 

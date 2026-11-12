@@ -3,6 +3,7 @@
 // version bump (CONTRACT_VERSION in ./types.ts), except for optional, additive fields an older
 // runner never receives (ADR 0350: the light pool, the planning stage and the planning call).
 import { z } from "zod";
+import { executedCheckSchema, jobChecksSchema } from "./checks.ts";
 import { PLANNING_OPS } from "./planning.ts";
 import {
   CAPABILITIES,
@@ -135,6 +136,12 @@ export const jobSchema = z.object({
   /** Visual evidence to capture after the session, when the runner has `browser`. */
   evidence: z.object({ screenshotUrls: z.array(z.string()).optional() }).optional(),
   limits: z.object({ sessionTimeoutMs: z.number().int().positive() }),
+  /**
+   * The project's checks (ADR 0451): the host runs them itself in the worktree, on the commit it
+   * hands back, and reports each on the hand-back. Optional: a runner that predates it ignores it,
+   * and the verdict then fails for want of results.
+   */
+  checks: jobChecksSchema.optional(),
   /** Every job-scoped call carries `fencingToken`; a stale one is refused (ADR 0035). */
   lease: z.object({ fencingToken, expiresAt: iso }),
 });
@@ -265,6 +272,8 @@ export const handbackSchema = z.object({
   headSha: sha.optional(),
   /** The stage's structured result (./stage-results.ts), parsed by the cloud per stage. */
   result: z.unknown().optional(),
+  /** The job's checks as the host ran them (ADR 0451), on `headSha` (or the verify job's head). */
+  checks: z.array(executedCheckSchema).max(60).optional(),
 });
 
 // ---- requests and responses ----

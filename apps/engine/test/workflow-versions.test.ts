@@ -71,8 +71,8 @@ const V6_STEPS = [
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 6 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(6);
+  it("starts new instances on version 7 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(7);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -85,7 +85,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(6);
+    expect(row.workflow_version).toBe(7);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {

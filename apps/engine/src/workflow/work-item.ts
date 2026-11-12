@@ -88,7 +88,17 @@ export type WorkItemOutcome =
  *   under `slot:<slot>:<round>:<index>:<id>`: a work step as a read-only job (advisory: pass, send
  *   back to build, or ask), a gate step through `workflow.gate` (always a person).
  */
-export const WORKFLOW_VERSION = 6;
+/**
+ * - v7 (spec 51, ADR 0451): the runner host runs the project's checks after the build session and
+ *   sends failures back into the same session. After `build #b: advance`, `build #b: checks` reads
+ *   the results on the pushed head; any declared check still failing there asks a person
+ *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. The reviewer
+ *   is told the checks' names to link criteria to.
+ */
+export const WORKFLOW_VERSION = 7;
+/** v7: the answers when the factory's checks still fail after the session's fixes. */
+export const CHECKS_BUILD_AGAIN = "Build again with the failure";
+export const CHECKS_STOP = "Stop this work item";
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
 export const CI_WAIT = "10 minutes";
 export const CI_ROUNDS = 12;
@@ -304,6 +314,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(5);
       case 6:
         return flow.runV1(6);
+      case 7:
+        return flow.runV1(7);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -516,6 +528,33 @@ class ItemFlow {
         }
         const headSha = String(advanced.sha);
 
+        // v7: the factory's own checks on the pushed head (ADR 0451). The host already sent any
+        // failure back into the same session up to the retry limit; one still failing goes to a
+        // person, never a cold retry.
+        let checkNames: string[] = [];
+        if (version >= 7) {
+          const checked = await this.act(`build #${b}: checks`, "checks.forHead", {
+            workItemId: id,
+            headSha,
+          });
+          checkNames = (checked.declared as string[]) ?? [];
+          if (checked.passed !== true) {
+            const failing = (checked.failing as string[]) ?? [];
+            await this.askChecksFailing(meta, b, headSha, failing);
+            note = [
+              "The factory's checks failed on your last head, and a person sent it back to build:",
+              ...failing.map((x) => `- ${x}`),
+            ].join("\n");
+            await this.act(`build #${b}: checks failed`, "workItem.enterStage", {
+              workItemId: id,
+              stage: "build",
+              closeAs: "failed",
+              reason: `checks failed on ${headSha.slice(0, 7)}`,
+            });
+            continue;
+          }
+        }
+
         if (plan) {
           const before = await this.runSlot(meta, plan, "beforeVerify", b, {
             criteria,
@@ -545,7 +584,7 @@ class ItemFlow {
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha }),
+          verifyPrompt(meta, { criteria, headSha, checks: version >= 7 ? checkNames : null }),
           {
             criteria,
             headSha,
@@ -774,7 +813,7 @@ class ItemFlow {
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha }),
+          verifyPrompt(meta, { criteria, headSha, checks: [] }),
           { criteria, headSha },
         );
         if (verify.outcome === "cancelled") {
@@ -1372,6 +1411,45 @@ class ItemFlow {
       } catch (error) {
         if (!isWaitTimeout(error)) throw error;
       }
+    }
+  }
+
+  /**
+   * v7: the factory's checks still fail on the build's head after the session's own fixes (ADR
+   * 0451). A person decides: build again (with the failure as the note) or stop the item.
+   */
+  async askChecksFailing(meta: Meta, b: number, headSha: string, failing: string[]) {
+    const name = `build #${b}: checks failing`;
+    const asked = await this.act(`${name}: ask`, "question.ask", {
+      workItemId: this.workItemId,
+      questions: [
+        {
+          domain: "engineering",
+          prompt: `The project's checks still fail on ${headSha.slice(0, 7)}, the head of work item #${meta.number}'s build, after the build session tried to fix them. Build again, or stop the item?`,
+          context: [
+            "The runner host ran the checks itself and sent each failure back into the same build session, up to the project's retry limit. What still fails:",
+            ...failing.map((x) => `- ${x}`),
+            "The full log tails are in the run's check results.",
+          ].join("\n"),
+          options: [CHECKS_BUILD_AGAIN, CHECKS_STOP],
+          defaultAnswer: CHECKS_STOP,
+          recommendation: CHECKS_BUILD_AGAIN,
+          recommendationReason:
+            "A new build session starts from the branch as it is, with the failure as its note.",
+          blocking: true,
+        },
+      ],
+    });
+    await this.waitForAnswers(meta, name);
+    const questionId = (asked.questionIds as string[])[0];
+    const answer = await this.step.do(`${name}: answer`, async () => {
+      const row = await this.env.DB.prepare("SELECT answer FROM core_questions WHERE id = ?")
+        .bind(questionId)
+        .first<{ answer: string | null }>();
+      return row?.answer ?? CHECKS_STOP;
+    });
+    if (answer === CHECKS_STOP) {
+      throw new Ended("failed", `stopped: the checks fail on ${headSha.slice(0, 7)}`);
     }
   }
 

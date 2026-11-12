@@ -12,10 +12,17 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
+import { declaredChecks } from "../policy/project-policy.ts";
 import type { ChangedFile, RepoRef } from "../services.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
-import { assemblePacket, storedTestFindings, verifyCheckOutput } from "../verify/packet.ts";
+import {
+  assemblePacket,
+  storedProof,
+  storedTestFindings,
+  verifyCheckOutput,
+} from "../verify/packet.ts";
+import { checkLines, executedChecks } from "../verify/proof.ts";
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
 import { requireQueueHead } from "./merge-queue.ts";
@@ -128,7 +135,7 @@ const reviewerSchema = z.object({
 export const reviewPacketRecord = defineOperation({
   name: "reviewPacket.record",
   description:
-    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041), and post `factory/verify` for that SHA from the App (ADR 0037). The runner's report (criteria with evidence, its checks, the reviewer's verdict, risk flags) is evidence; the verdict passes only when CI on GitHub is green for the SHA AND the packet is complete (every criterion met with evidence, the reviewer approves, no runner check failing). Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0450): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
+    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041), and post `factory/verify` for that SHA from the App (ADR 0037). The reviewer's report (criteria with evidence and the checks each links to, the reviewer's verdict, risk flags) is opinion; the agent's own report of checks is never used (ADR 0451). The verdict passes only when CI on GitHub is green for the SHA, every check the project declares passed on that SHA as the runner host ran it, and the packet is complete (every criterion met with evidence, the reviewer approves). Each criterion is marked Proven only when a check it links to passed on the SHA. Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0450): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -140,7 +147,15 @@ export const reviewPacketRecord = defineOperation({
     verdict: z.enum(["pass", "fail"]).optional(),
     summary: z.string().max(20_000).default(""),
     criteria: z
-      .array(z.object({ criterion: z.string(), met: z.boolean(), evidence: z.string() }))
+      .array(
+        z.object({
+          criterion: z.string(),
+          met: z.boolean(),
+          evidence: z.string(),
+          /** Check names the reviewer links it to (ADR 0451); only a passed one proves it. */
+          checks: z.array(z.string().max(100)).max(10).default([]),
+        }),
+      )
       .max(50)
       .default([]),
     checks: z.array(checkResultSchema).max(100).default([]),
@@ -169,6 +184,14 @@ export const reviewPacketRecord = defineOperation({
     } catch {
       files = null; // the packet is then incomplete, so it fails
     }
+    // The factory's own checks on this SHA (ADR 0451), against what the item's config declares.
+    const ran = await ctx.db
+      .selectFrom("core_check_results")
+      .selectAll()
+      .where("work_item_id", "=", w.id)
+      .where("head_sha", "=", input.headSha)
+      .execute();
+    const declared = declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name);
     const sameModel =
       (input.reviewer?.sameModelAsImplementer ?? false) ||
       reviewerMatchesImplementer(ctx.scope.policy?.modelRoles ?? {});
@@ -185,6 +208,16 @@ export const reviewPacketRecord = defineOperation({
       files,
       sameModelAsImplementer: sameModel,
       runnerVerdict: input.verdict,
+      declaredChecks: declared,
+      checksRun: ran.map((r) => ({
+        name: r.name,
+        command: r.command,
+        exitCode: r.exit_code,
+        timedOut: r.timed_out === 1,
+        durationMs: r.duration_ms,
+        logTail: r.log_tail,
+        round: r.round,
+      })),
     });
     const id = newId("reviewPacket");
     ctx.write(
@@ -235,6 +268,11 @@ export const reviewPacketRecord = defineOperation({
         ci,
         workItem: w,
         testFindings: testFindingLines(packet.testsIntact.findings),
+        checkLines: checkLines(packet.executed),
+        proven: {
+          proven: packet.proof.filter((p) => p.proven).length,
+          total: packet.proof.length,
+        },
       }),
     });
     return {
@@ -278,6 +316,63 @@ export const ciRead = defineOperation({
     const repo = await repoRef(ctx, requireProject(ctx));
     const ci = await readCi(ctx, repo, input.headSha);
     return { ...ci, ...(await readMergeability(ctx, repo, w.pr_number, input.headSha)) };
+  },
+});
+
+export const checksForHead = defineOperation({
+  name: "checks.forHead",
+  description:
+    "The project's declared checks for a work item and how they ran on one commit, as the runner host reported them (ADR 0451): each check's command, exit code, duration and log tail. `passed` is true only when every declared check passed on that SHA; a new head has no results until checks run on it. The Workflow reads this after a build; the review packet uses the same results.",
+  risk: "read",
+  actors: ["agent", "human"],
+  permission: "member",
+  input: z.object({ workItemId, headSha: sha }),
+  output: z.object({
+    declared: z.array(z.string()),
+    results: z.array(
+      z.object({
+        name: z.string(),
+        command: z.string(),
+        exitCode: z.number().nullable(),
+        timedOut: z.boolean(),
+        durationMs: z.number(),
+        logTail: z.string(),
+        round: z.number(),
+        passed: z.boolean(),
+      }),
+    ),
+    /** Why the checks don't pass on the SHA, one line each. */
+    failing: z.array(z.string()),
+    passed: z.boolean(),
+  }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const ran = await ctx.db
+      .selectFrom("core_check_results")
+      .selectAll()
+      .where("work_item_id", "=", w.id)
+      .where("head_sha", "=", input.headSha)
+      .execute();
+    const declared = declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name);
+    const executed = executedChecks(
+      input.headSha,
+      declared,
+      ran.map((r) => ({
+        name: r.name,
+        command: r.command,
+        exitCode: r.exit_code,
+        timedOut: r.timed_out === 1,
+        durationMs: r.duration_ms,
+        logTail: r.log_tail,
+        round: r.round,
+      })),
+    );
+    return {
+      declared,
+      results: [...executed.results.filter((r) => r !== null), ...executed.extra],
+      failing: executed.reasons,
+      passed: executed.reasons.length === 0,
+    };
   },
 });
 
@@ -472,6 +567,7 @@ export const verifyRefresh = defineOperation({
         ci,
         workItem: item,
         testFindings: storedTestFindings(sections),
+        ...storedProof(sections),
       });
     } else if (input.trigger === "ci" && existing) {
       // CI moved, but verify hasn't run on this SHA yet: the check already says so.
@@ -659,6 +755,7 @@ export async function carryReviewPacket(
       ci,
       workItem: args.item,
       testFindings: storedTestFindings(sections),
+      ...storedProof(sections),
     }),
   });
   return { packetId: id };

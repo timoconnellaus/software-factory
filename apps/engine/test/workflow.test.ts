@@ -189,7 +189,7 @@ describe("the work-item Workflow", () => {
     await runStage(w, item.workItemId, "build", () => build());
     await runStage(w, item.workItemId, "verify", () => verifyFail);
     await runStage(w, item.workItemId, "build", (job) => {
-      expect(job.harness.prompt).toMatch(/failing: tests/);
+      expect(job.harness.prompt).toMatch(/unmet: The page has a dark mode toggle/);
       return build();
     });
     await runStage(w, item.workItemId, "verify", () => verifyPass);

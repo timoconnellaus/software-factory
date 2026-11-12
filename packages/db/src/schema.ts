@@ -575,6 +575,21 @@ export interface CoreRunEventsTable {
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */
+/** The factory's own check results, per work item and commit (migration 0220, ADR 0451). */
+export interface CoreCheckResultsTable {
+  work_item_id: string;
+  head_sha: string;
+  name: string;
+  run_id: string;
+  command: string;
+  exit_code: number | null;
+  timed_out: Generated<number>;
+  duration_ms: number;
+  log_tail: string;
+  round: Generated<number>;
+  created_at: string;
+}
+
 export interface CoreRunSteersTable {
   id: string;
   run_id: string;
@@ -908,6 +923,7 @@ export interface CoreDatabase {
   core_runs: CoreRunsTable;
   core_run_events: CoreRunEventsTable;
   core_run_steers: CoreRunSteersTable;
+  core_check_results: CoreCheckResultsTable;
   core_artifacts: CoreArtifactsTable;
   core_leases: CoreLeasesTable;
   core_channel_requests: CoreChannelRequestsTable;

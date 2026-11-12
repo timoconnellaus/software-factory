@@ -5,13 +5,22 @@
 import type { CheckResult } from "@software-factory/runner-contract";
 import type { ChangedFile } from "../services.ts";
 import type { CiSummary } from "./ci.ts";
+import {
+  type CheckRun,
+  type CriterionProof,
+  checkLines,
+  type ExecutedChecks,
+  executedChecks,
+  proveCriteria,
+} from "./proof.ts";
 import { type RiskFlag, riskFlags } from "./risk.ts";
 import { type TestsIntact, testFindingLines, testsIntact } from "./tests-intact.ts";
 
 export interface PacketEvidence {
   summary: string;
-  criteria: { criterion: string; met: boolean; evidence: string }[];
-  /** What the runner ran in its worktree (tests, lint, typecheck): evidence only. */
+  /** The reviewer's judgement per criterion, and the checks it links each to (ADR 0451). */
+  criteria: { criterion: string; met: boolean; evidence: string; checks?: string[] | undefined }[];
+  /** What the reviewer agent says it ran: its opinion, never the verdict (ADR 0451). */
   checks: CheckResult[];
   reviewer: {
     role: "review";
@@ -33,6 +42,10 @@ export interface PacketInput {
   sameModelAsImplementer: boolean;
   /** What the runner said (kept in the packet; never decides). */
   runnerVerdict?: "pass" | "fail" | undefined;
+  /** The checks the project declares for this item (ADR 0451), by name. */
+  declaredChecks?: readonly string[] | undefined;
+  /** What the runner host ran on this SHA (core_check_results). */
+  checksRun?: readonly CheckRun[] | undefined;
 }
 
 export interface AssembledPacket {
@@ -54,6 +67,10 @@ export interface AssembledPacket {
    * agent: a person looks at the findings at the merge gate, and they block the auto-merge.
    */
   testsIntact: TestsIntact;
+  /** The declared checks as the host ran them on the SHA (ADR 0451). */
+  executed: ExecutedChecks;
+  /** Each criterion, Proven only by a linked check that passed on the SHA. */
+  proof: CriterionProof[];
   sections: Record<string, unknown>;
 }
 
@@ -71,9 +88,9 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   if (input.files === null) missing.push("the diff couldn't be read from GitHub");
 
   for (const c of evidence.criteria) if (!c.met) reasons.push(`unmet: ${c.criterion}`);
-  for (const c of evidence.checks) {
-    if (c.status === "fail") reasons.push(`runner check failing: ${c.name}`);
-  }
+  // The factory's own checks on this SHA decide; the agent's report of checks never does.
+  const executed = executedChecks(input.headSha, input.declaredChecks ?? [], input.checksRun ?? []);
+  reasons.push(...executed.reasons);
   if (evidence.reviewer?.verdict === "request_changes") {
     reasons.push("the reviewer requested changes");
   }
@@ -96,6 +113,12 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
     warnings.push("the runner reported green, but CI on GitHub isn't: CI decides (spec 04)");
   }
 
+  if (executed.declared.length === 0) {
+    warnings.push(
+      "the project declares no checks, so the factory ran none itself: only CI backs this verdict (ADR 0451)",
+    );
+  }
+  const proof = proveCriteria(evidence.criteria, executed, ci);
   const risk = input.files ? riskFlags(input.files) : [];
   const intact: TestsIntact = input.files
     ? testsIntact(input.headSha, input.files)
@@ -125,8 +148,13 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
     risk,
     riskFlags: [...risk.map((r) => r.message), ...evidence.riskFlags],
     testsIntact: intact,
+    executed,
+    proof,
     sections: {
       testsIntact: intact,
+      executed,
+      proof,
+      proven: { proven: proof.filter((p) => p.proven).length, total: proof.length },
       verdict: { verdict, reasons: verdict === "pass" ? [] : allReasons, warnings },
       ci: { state: ci.state, checks: ci.checks },
       changed: input.files
@@ -150,6 +178,10 @@ export function verifyCheckOutput(args: {
   workItem: { number: number; title: string };
   /** The tests-intact findings for this SHA (ADR 0450): shown first, for a person. */
   testFindings?: string[];
+  /** The factory's own checks on this SHA, one line each (ADR 0451). */
+  checkLines?: string[];
+  /** How many criteria an executed check proves. */
+  proven?: { proven: number; total: number } | null;
 }): {
   status: "in_progress" | "completed";
   conclusion?: "success" | "failure";
@@ -172,6 +204,13 @@ export function verifyCheckOutput(args: {
     ...list("What fails", args.evidencePass ? [] : args.evidenceReasons),
     ...list("Warnings", args.warnings),
     ...list("Risk flags", args.riskFlags),
+    ...list("Checks run by the factory", args.checkLines ?? []),
+    ...(args.proven
+      ? [
+          `Criteria proven by an executed check or CI: ${args.proven.proven}/${args.proven.total}`,
+          "",
+        ]
+      : []),
     ciLine,
   ].join("\n");
   if (!args.evidencePass) {
@@ -212,4 +251,23 @@ const short = (sha: string) => sha.slice(0, 7);
 export function storedTestFindings(sections: Record<string, unknown>): string[] {
   const t = sections.testsIntact as Partial<TestsIntact> | undefined;
   return Array.isArray(t?.findings) ? testFindingLines(t.findings) : [];
+}
+
+/** The check lines and proven count stored in a packet's sections (for `verifyCheckOutput`). */
+export function storedProof(sections: Record<string, unknown>): {
+  checkLines: string[];
+  proven: { proven: number; total: number } | null;
+} {
+  const e = sections.executed as Partial<ExecutedChecks> | undefined;
+  const p = sections.proven as { proven?: unknown; total?: unknown } | undefined;
+  return {
+    checkLines:
+      Array.isArray(e?.declared) && Array.isArray(e?.results)
+        ? checkLines({ declared: e.declared, results: e.results })
+        : [],
+    proven:
+      typeof p?.proven === "number" && typeof p.total === "number"
+        ? { proven: p.proven, total: p.total }
+        : null,
+  };
 }
