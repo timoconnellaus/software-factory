@@ -16,6 +16,7 @@ import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
 import { pullQueuedWork } from "./pull.ts";
+import { pruneReconcileShadow, shadowPass } from "./reconcile-shadow.ts";
 import { archiveRunEvents, archiveStatus, pruneExpired, sampleArchive } from "./retention.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
@@ -54,6 +55,18 @@ export default {
     await runAdjudicator(env);
     // Once an hour: the improver (ADR 0373) decides running trials and starts the next one.
     if (now.getUTCMinutes() === 23) await runImprover(env, now);
+    // Every five minutes: the shadow reconciler reads the items that ended since its cursor (spec 52
+    // PR (c)), off the Workflow's path; a failure here only delays the next pass.
+    if (now.getUTCMinutes() % 5 === 0) {
+      try {
+        await shadowPass(env, now);
+      } catch (error) {
+        console.error("shadow pass failed", error);
+      }
+    }
+    // Once an hour: the shadow reconciler's old verdicts (spec 52 PR (c)), a bounded batch, on a
+    // minute of its own so it doesn't add to retention's tick.
+    if (now.getUTCMinutes() === 47) await pruneReconcileShadow(env, now);
     // Retention (AGENTS.md "Cloudflare cost", rule 3): every minute, a budgeted slice of the
     // oldest ended runs' events goes to R2; once an hour, expired rows go in bounded batches.
     await archiveRunEvents(env, now);

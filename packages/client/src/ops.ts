@@ -98,6 +98,9 @@ export interface OpMap {
   "orgConfig.get": Def<typeof operations.orgConfigGet>;
   "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
   "stageType.list": Def<typeof operations.stageTypeList>;
+  // The reconciler in shadow (spec 52 PR (c)).
+  "reconcile.report": Def<typeof operations.reconcileReport>;
+  "reconcile.streak": Def<typeof operations.reconcileStreak>;
   // The work model (spec 50): the backlog, ready and release.
   "workItem.board": Def<typeof operations.workItemBoard>;
   "workItem.update": Def<typeof operations.workItemUpdate>;

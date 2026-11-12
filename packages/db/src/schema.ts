@@ -94,6 +94,19 @@ export interface CoreOrgConfigsTable {
   impact: "loosens" | "tightens" | "neutral" | null;
 }
 
+/** Spec 52 PR (c): an ended item's shadow verdict (migration 0281), one row per item. */
+export interface CoreReconcileItemsTable {
+  work_item_id: string;
+  org_id: string;
+  ended: "done" | "failed" | "rejected" | "cancelled";
+  transitions: number;
+  /** Disagreeing transitions plus every aspect not yet compared. */
+  divergences: number;
+  /** The `ShadowVerdict` as JSON. */
+  report: JsonText;
+  finished_at: Iso;
+}
+
 export interface CoreMemberTable {
   id: string;
   organization_id: string;
@@ -1077,6 +1090,7 @@ export interface CoreDatabase {
   core_repositories: CoreRepositoriesTable;
   core_project_policies: CoreProjectPoliciesTable;
   core_org_configs: CoreOrgConfigsTable;
+  core_reconcile_items: CoreReconcileItemsTable;
   core_config_trials: CoreConfigTrialsTable;
   core_adjudications: CoreAdjudicationsTable;
   core_project_protection: CoreProjectProtectionTable;
