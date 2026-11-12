@@ -1,6 +1,7 @@
 // Spec 51 PR B (ADR 0501): checks the factory runs itself, and criteria proven only by them.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import ownPolicy from "../../../.factory/policy.json";
 import {
   assemblePacket,
   checkLines,
@@ -483,5 +484,13 @@ describe("checks.forHead before v8 (ADR 0501)", () => {
       FOREMAN,
     );
     expect(out).toMatchObject({ declared: [], passed: true });
+  });
+});
+
+describe("this repository's own checks", () => {
+  it("declares its test check within the check container's 4 GB: two test workers at a time", () => {
+    const policy = parsed(ownPolicy);
+    expect(declaredChecks(policy, null).map((c) => c.name)).toEqual(["install", "lint", "test"]);
+    expect(policy.checks.find((c) => c.name === "test")?.run).toMatch(/--concurrency=2\b/);
   });
 });

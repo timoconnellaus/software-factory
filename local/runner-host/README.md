@@ -68,7 +68,11 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    below, which can't stop a process a check leaves from outliving it, and the merge gate says the
    checks ran in the weaker sandbox. `sf-runner doctor` says which. A check container gets 2 CPUs and
    4 GB of memory (`/tmp` a 1 GB tmpfs within it), and a tree past 10 GB isn't carried to the next
-   check; runner.json `checks` sets `cpus`, `memoryGb`, `tmpGb` and `maxTreeGb`. At most
+   check (measured every 15 s while a check runs: one that grows past it is stopped); runner.json
+   `checks` sets `cpus`, `memoryGb`, `tmpGb` and `maxTreeGb`. A check stopped by one of these
+   limits (killed for memory, out of processes, a full `/tmp`, past the disk bound) is reported
+   "failed: the check ran out of memory (limit 4 GB)" and the like, and goes to a person, never to
+   a fix round the agent can't win (see "Sizing a check" below). At most
    `checks.maxConcurrent` (default 1) checks run at once, each counted as a heavy job, and a check
    waits while the load backoff has stopped heavy work. Check containers, proxies and networks a
    runner that died mid-check left are reaped at start-up and on the periodic sweep. Under the OS sandbox a check reads none of the
@@ -151,6 +155,32 @@ A **planning** job is a long-lived Claude session that plans one work item with 
   below. On `default` the launch leaves the environment as it is; on a named account it unsets
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CONFIG_DIR`, then
   sets that account's.
+
+## Sizing a check
+
+A project's checks (`checks` in `.factory/policy.json`) run within the runner's check limits: by
+default 2 CPUs, 4 GB of memory with `/tmp` a 1 GB tmpfs inside it, 4,096 processes, and 10 GB of
+disk for the check's own dir. A check that hits one fails on it, with the limit named, and a person
+decides: no fix round is spent, because nothing the agent changes in the code under check would win
+it. Size each check to fit, with room to spare:
+
+- **Memory is the usual one.** A test runner that starts a worker per CPU sees the machine's CPUs,
+  not the container's 2, and each worker can take hundreds of MB to a GB or more (workerd, a
+  TypeScript program, a browser). Cap the workers: for a Turborepo, `turbo run test
+  --concurrency=2`; for Vitest, `--maxWorkers=2`; for Jest, `--maxWorkers=2`. Count about 1.5 GB per
+  worker for a workerd or TypeScript-heavy suite, and keep the total under the limit with the
+  tmpfs's 1 GB inside it.
+- **`/tmp` is memory too.** A test that writes big fixtures to `/tmp` spends the check's memory;
+  write them under the tree instead.
+- **Processes.** 4,096 is plenty unless a test forks without bound; a `fork: Resource temporarily
+  unavailable` is that limit.
+- **Disk.** Install once, first, as a check of its own (each later check gets a copy of its tree);
+  a build that writes gigabytes of artefacts should clean up after itself.
+- **Time.** `timeoutMinutes` (at most 60) is per check; a timeout is a failure the agent sees.
+
+If a check needs more, the runner's owner raises the limit in runner.json `checks` (`cpus`,
+`memoryGb`, `tmpGb`, `maxTreeGb`); a project can't. This repository declares
+`pnpm turbo run test --concurrency=2` for that reason.
 
 ## Claude accounts (spec 32, ADR 0410)
 A host can run Claude with several accounts and you pick which one new jobs use. With none added,

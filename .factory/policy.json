@@ -6,6 +6,11 @@
   "timeouts": { "gateHours": 72, "questionHours": 48 },
   "wipLimit": 5,
   "retryLimit": 2,
+  "checks": [
+    { "name": "install", "run": "pnpm install --frozen-lockfile", "timeoutMinutes": 15 },
+    { "name": "lint", "run": "pnpm lint", "timeoutMinutes": 10 },
+    { "name": "test", "run": "pnpm turbo run test --concurrency=2", "timeoutMinutes": 60 }
+  ],
   "approvers": ["timoconnellaus"],
   "backupOwner": "timoconnellaus",
   "reviewPacket": { "sections": ["verdict", "changed", "criteria", "reviewer", "risk", "diff"] }
