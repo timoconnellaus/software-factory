@@ -24,6 +24,7 @@ export function FocusBar({ workItemId }: { workItemId: string }) {
     >
       <Button
         variant="outline"
+        size="md"
         className="electrobun-webkit-app-region-no-drag"
         onClick={() => updateViewState((s) => setFocus(s, null))}
         data-testid="exit-focus"

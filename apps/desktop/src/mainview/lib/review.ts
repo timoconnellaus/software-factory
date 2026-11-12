@@ -1,5 +1,6 @@
 // How the merge gate words a review packet (spec 41, design InboxMerge/ItemReview): the headline,
-// the chips under it and each criterion as proven or not. Pure, from the stored packet only.
+// the chips under it and each criterion met or not, as main's verify run reports it (spec 51 PR B
+// brings criteria proven by checks the factory runs). Pure, from the stored packet only.
 import { checkCounts, type ParsedPacket, packetCounts } from "@software-factory/client/packet";
 import type { Status } from "@software-factory/ui/components/status-dot";
 
@@ -12,7 +13,7 @@ export function verdictHeadline(p: ParsedPacket): { text: string; status: Status
   if (p.verdict === "fail") return { text: "Failed verify", status: "failed" };
   if (missing === 0) return { text: "Passed", status: "done" };
   return {
-    text: `Passed, with ${count(missing)} ${missing === 1 ? "criterion" : "criteria"} not proven`,
+    text: `Passed, with ${count(missing)} ${missing === 1 ? "criterion" : "criteria"} not met`,
     status: "waiting",
   };
 }
@@ -28,8 +29,8 @@ export function verdictChips(p: ParsedPacket): { label: string; status: Status }
     {
       label:
         c.total === c.met
-          ? `Criteria ${c.met} proven`
-          : `Criteria ${c.met} proven, ${c.total - c.met} not`,
+          ? `Criteria ${c.met} met`
+          : `Criteria ${c.met} met, ${c.total - c.met} not`,
       status: c.total === c.met ? "done" : "waiting",
     },
   ];

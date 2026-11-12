@@ -72,24 +72,27 @@
   border-radius: 10px;
   box-shadow: var(--shadow-panel);
 }
-[data-slot="button"] {
+/* A Button is matched by data-button, not data-slot: a Radix trigger with `asChild` (popover,
+   dialog, menu) renames data-slot on the button it wraps, which then lost the look (spec 41: Open
+   terminal stood taller and filled beside Pin and Cancel). */
+[data-button] {
   font-size: 13px;
   border-radius: 7px;
 }
-[data-slot="button"][data-size="default"],
-[data-slot="button"][data-size="sm"] {
+[data-button][data-size="default"],
+[data-button][data-size="sm"] {
   height: 28px;
   padding-inline: 10px;
 }
-[data-slot="button"][data-size="lg"] {
+[data-button][data-size="lg"] {
   height: 32px;
 }
-[data-slot="button"][data-variant="outline"] {
+[data-button][data-variant="outline"] {
   border: 0;
   background: var(--panel);
   box-shadow: var(--shadow-panel);
 }
-[data-slot="button"][data-variant="outline"]:hover {
+[data-button][data-variant="outline"]:hover {
   background: var(--selected);
 }
 [data-slot="input"],

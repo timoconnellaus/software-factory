@@ -10,6 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Chip } from "../components/shell-list.tsx";
 import { useOrgScope, useScopedInbox } from "../components/shell-sidebar.tsx";
+import { openItem } from "../lib/places.ts";
 import { workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import {
@@ -170,8 +171,7 @@ function BoardCard({ item, needsYou }: { item: WorkItemSummary; needsYou: Set<st
   const state = cardState(item, needsYou);
   return (
     <Link
-      to="/work/$id"
-      params={{ id: item.id }}
+      {...openItem(item.id)}
       className={cn(
         "flex flex-col gap-1.5 rounded-lg bg-panel px-2.5 py-2 shadow-panel hover:brightness-[0.99]",
         state.needsYou && "shadow-needs-you",
@@ -223,11 +223,7 @@ function List({
                     #{i.number}
                   </td>
                   <td className="py-2.5 pr-3">
-                    <Link
-                      to="/work/$id"
-                      params={{ id: i.id }}
-                      className="font-medium hover:underline"
-                    >
+                    <Link {...openItem(i.id)} className="font-medium hover:underline">
                       {i.title}
                     </Link>
                     {i.kind === "incident" && (

@@ -17,6 +17,7 @@ import { type ItemRef, tabTitle } from "../lib/places.ts";
 import { workListsQuery } from "../lib/queries.ts";
 import { useSession } from "../lib/session.ts";
 import { shortcutLabel } from "../lib/shortcuts.ts";
+import { DRAG, NO_DRAG } from "../lib/title-bar.ts";
 import {
   activateTab,
   closeTab,
@@ -28,8 +29,7 @@ import {
 } from "../lib/view-state.ts";
 
 /** The drag region's classes (Electrobun's preload turns them into window drags). */
-export const DRAG = "electrobun-webkit-app-region-drag";
-export const NO_DRAG = "electrobun-webkit-app-region-no-drag";
+export { DRAG, NO_DRAG };
 
 /** Looks a work item up in what the app has loaded: the shell's lists, then the item's own read. */
 export function useItemLookup(): (id: string) => ItemRef | null {

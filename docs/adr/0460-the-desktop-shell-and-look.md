@@ -61,3 +61,14 @@ backend (specs 50 and 51).
 - The desktop and sf-app look different. sf-app is shrinking to auth (ADR 0392), so that is
   accepted.
 - The Bun side changes by two window options and nothing else.
+
+## Amended 2026-11-12
+- The Bun side now changes by more than two window options: a title-bar double-click request
+  (`titleBarDoubleClick`, which reads the system's `AppleActionOnDoubleClick`), and in dev builds
+  only, `SF_VIEW_URL` to load a local view, so the real window can be checked against the fixture
+  door. Canary and stable builds always load the bundled view. All in new files
+  (`bun/title-bar.ts`, `bun/view-url.ts`) with a one-line hook each in `bun/index.ts`.
+- The traffic-light offset is `{ x: 5, y: 6 }`, measured in the real window.
+- The fixtures follow what `main`'s operations return, including the shapes the client types leave
+  open (the review packet's criteria, checks and sections, as `reviewPacket.record` and
+  `assemblePacket` write them).

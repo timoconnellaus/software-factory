@@ -88,3 +88,12 @@ export function matchItems<T extends { number: number; title: string }>(
     })
     .slice(0, limit);
 }
+
+/**
+ * Where a work item opens from a card or a list row: its page today. Spec 41's item side panel (a
+ * later slice, design WorkActivePanel) opens a running item in a panel over the board instead, so
+ * every card and row opens through this, and that slice changes it here.
+ */
+export function openItem(id: string) {
+  return { to: "/work/$id", params: { id } } as const;
+}
