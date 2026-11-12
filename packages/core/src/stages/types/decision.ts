@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import type { StageType } from "../contract.ts";
-import { gateStep } from "../reconcile.ts";
+import { gateOf, gateStep } from "../reconcile.ts";
 import {
   conditionHolds,
   conditionImpact,
@@ -61,7 +61,7 @@ export const decision: StageType<typeof settings> = {
     return c.holds ? null : c.why;
   },
   next: (ctx) =>
-    gateStep(ctx, "decision", { kind: "step", operation: "workflow.gate" }, null, (note) => ({
+    gateStep(ctx, "decision", gateOf(ctx.gate), null, (note) => ({
       kind: "sendBack",
       stageId: ctx.entry.stageId,
       to: "",

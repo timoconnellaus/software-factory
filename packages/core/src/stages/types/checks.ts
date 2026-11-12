@@ -85,8 +85,8 @@ export const checks: StageType<typeof settings> = {
     if (failures.length === 0 && ci === "pass") return { kind: "complete", stageId: at };
     if (failures.length === 0 && (ci === "pending" || ci === "missing"))
       return { kind: "wait", stageId: at, why: "ci" };
-    if (ctx.entry.round > ctx.item.retryLimit)
-      return { kind: "fail", stageId: at, reason: `checks failed in ${ctx.entry.round} rounds` };
+    // The send-back is a failed attempt: the reconciler fails the item once the item's failures
+    // pass its retry limit (counted across the item, as today).
     return {
       kind: "sendBack",
       stageId: at,

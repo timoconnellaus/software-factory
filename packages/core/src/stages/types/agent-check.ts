@@ -1,10 +1,14 @@
 import { MODEL_ROLES } from "@software-factory/runner-contract";
 import { z } from "zod";
 import type { StageType } from "../contract.ts";
-import { gateStep, jobStep, latest } from "../reconcile.ts";
+import { gateOf, gateStep, jobStep, latest } from "../reconcile.ts";
 import { instructionsSchema } from "../settings.ts";
+import { decision } from "./decision.ts";
 
 const settings = z.object({ instructions: instructionsSchema }).strict();
+
+/** "Ask" opens a person's decision step: the decision type's gate, read from it, not restated. */
+const ASK_GATE = gateOf(decision.gate(decision.settings.parse({})));
 
 /**
  * An advisory agent step (today's slot `work` step, ADR 0371): it reads and reports pass, send back
@@ -52,7 +56,7 @@ export const agentCheck: StageType<typeof settings> = {
       };
     if (verdict === "ask")
       return (
-        gateStep(ctx, "ask", { kind: "step", operation: "workflow.gate" }, "check", (note) => ({
+        gateStep(ctx, "ask", ASK_GATE, "check", (note) => ({
           kind: "sendBack",
           stageId: at,
           to: "",

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import { SIZE_RANK, SIZES, type StageType } from "../contract.ts";
-import { gateStep, jobStep } from "../reconcile.ts";
+import { gateOf, gateStep, jobStep } from "../reconcile.ts";
 import { deciderImpact, deciderSchema } from "../settings.ts";
 
 const settings = z
@@ -73,7 +73,7 @@ export const interviewPlanning: StageType<typeof settings> = {
     const work = jobStep(ctx, "session", ctx.item.retryLimit);
     if (work) return work;
     return (
-      gateStep(ctx, "spec-gate", { kind: "spec", operation: "spec.accept" }, "session", () => ({
+      gateStep(ctx, "spec-gate", gateOf(ctx.gate), "session", () => ({
         kind: "job",
         stageId: at,
         stepId: "session",
