@@ -37,14 +37,18 @@ itself to `~/.hutch` and adds a PATH line to your shell profile the first time.
 ## Releases (M4)
 Signed, notarized builds come from `.github/workflows/desktop-release.yml`: canary on every merge to
 `main` that touches the app, stable on a `v*` tag. Install once from
-`https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip`; after that the app
-updates itself (menu bar: *Restart to update*). Electrobun signs and notarizes itself (`mac.codesign`/`notarize`
+`https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip` (unzip, move to
+`/Applications`, open; there's no installer step); after that the app updates itself (menu bar: *Restart to update*). Electrobun signs and notarizes itself (`mac.codesign`/`notarize`
 in `electrobun.config.ts`). It has to: it writes the build hash into `Resources/version.json` after
 every hook that could sign, and a file changed after signing makes macOS call the app "damaged". The
 build switches on with `ELECTROBUN_DEVELOPER_ID` (plus `ELECTROBUN_TEAMID`, `ELECTROBUN_APPLEAPIKEY`,
 `ELECTROBUN_APPLEAPIISSUER`, `ELECTROBUN_APPLEAPIKEYPATH` to notarize), so local builds stay
 unsigned. On a Mac with the Developer ID in its keychain:
 `ELECTROBUN_DEVELOPER_ID="Developer ID Application: …" ELECTROBUN_TEAMID=… pnpm bundle:canary`.
+The download zip is the plain app from the update archive (`scripts/hook-post-package.ts`), not
+Electrobun's self-extracting wrapper: the wrapper's Setup window waits for a click, fails when run
+translocated from Downloads, and rewrites its own bundle. Nothing writes inside the bundle at run
+time; the app's state lives in `~/Library/Application Support/com.software-factory.desktop`.
 
 ## Signing the key helper (M4b)
 Only `sf-keys` gets the `keychain-access-groups` entitlement (the Developer ID team's group), so only

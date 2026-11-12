@@ -169,7 +169,12 @@ environment (only `main` and `v*` tags may use it):
   `mac.codesign`/`notarize` sign (hardened runtime, JIT entitlements) and notarize with the App
   Store Connect key. Signing from a build hook doesn't work: Electrobun writes the build hash into
   `Resources/version.json` after every hook, which broke the seal ("damaged" on first launch, found
-  on the M5). A `postPackage` hook zips the signed wrapper as the first-install download.
+  on the M5). A `postPackage` hook zips the first-install download: the plain signed, notarized
+  and stapled app from the update archive, not Electrobun's self-extracting wrapper. The wrapper
+  showed a "Software Factory Setup" window that waited for a click, failed ("Installation failed")
+  when macOS ran it translocated from Downloads, and rewrote its own bundle on first launch. Tested
+  on the M5 (2026-11-12): the plain app passes `codesign --verify --deep --strict` and `spctl` before
+  launch, after the first launch and after a relaunch, and its `launcher` and `bun` run.
 - **Node:** the runner's Node is downloaded from nodejs.org at a pinned version and checked against
   `SHASUMS256.txt`.
 - **Upload:** artifacts go to R2 bucket `sf-desktop-releases` under `desktop/`, served at
@@ -184,6 +189,8 @@ environment (only `main` and `v*` tags may use it):
     has to become its own small bundle (`SF Keys.app` inside the app) with an embedded **Developer ID
     provisioning profile** for its own App ID. That profile is made in the Apple Developer portal.
     Until then signed builds sign in with a software key and decide gates on the website.
+    **On hold (2026-11-12):** the owner decided Touch ID approvals are overkill; whether desktop gate
+    decisions need any presence proof is being settled separately.
 
 ## M5: the website shrinks to auth
 `apps/app` keeps sign-in, Connect GitHub, the device approval pages, device management and
