@@ -13,9 +13,14 @@
 // - the app sits where it can replace itself (not translocated, its folder writable). If it can't,
 //   the person is told to move it to Applications.
 // Applying restarts the app, so it waits for the person, and for the runner's jobs (index.ts).
-// Dev builds never update. Nothing here imports Electrobun, so the tests run on Node.
+// Dev builds and unsigned builds never update: they say so ("off"), they don't fail.
+// A person can ask for a check (Check for Updates…, Settings > This Mac): `checkByPerson` is not
+// held back by ON_DEMAND_GAP_MS, only by a check already running (every trigger shares one check
+// in flight), and it never downloads again what is already staged or skips a check above.
+// Nothing here imports Electrobun, so the tests run on Node.
 import { accessSync, constants } from "node:fs";
 import { dirname } from "node:path";
+import type { CheckPhase } from "../shared/rpc.ts";
 import { isNewer } from "../shared/version.ts";
 import type { Exec, StagedUpdate } from "./update-verify.ts";
 import { bundleInfo, stagedUpdate, teamIdOf, verifyBundle } from "./update-verify.ts";
@@ -29,11 +34,26 @@ export interface UpdateState {
   error: string | null;
   /** The app can't update where it is: tell the person to move it to Applications. */
   needsMove: boolean;
+  /** Where the latest check is, or what it found: what a person who asked is shown. */
+  phase: CheckPhase;
+  /** When a check last finished (epoch ms), or null. */
+  checkedAt: number | null;
+  /** The running build's version and channel, once read. */
+  installed: string | null;
+  channel: string | null;
+  /** `error` in plain words for a person (failed, off, or the app must move); null otherwise. */
+  reason: string | null;
 }
 
 /** What this class uses of Electrobun's Updater (src/sdks/main/core/Updater.ts). */
 export interface UpdaterLike {
-  checkForUpdate(): Promise<{ version: string; updateAvailable: boolean; error: string }>;
+  checkForUpdate(): Promise<{
+    version: string;
+    updateAvailable: boolean;
+    /** This version is already prepared: nothing to download. */
+    updateReady?: boolean;
+    error: string;
+  }>;
   downloadUpdate(): Promise<void>;
   updateInfo(): { version: string; updateReady: boolean; error: string };
   applyUpdate(): Promise<void>;
@@ -46,6 +66,8 @@ export interface UpdatesDeps {
   exec: Exec;
   /** The running .app. */
   appPath: string;
+  /** The clock, for when a check finished. */
+  now?: () => number;
   /** Throws when `path` isn't writable (fs.accessSync with W_OK). */
   writable?: (path: string) => void;
   staged?: (appDataFolder: string) => StagedUpdate | null;
@@ -60,6 +82,10 @@ export const EVERY_MS = 6 * 3_600_000;
 export const RETRY_MS = 30 * 60_000;
 /** The door's update_required asks for a check at most this often (ADR 0393). */
 export const ON_DEMAND_GAP_MS = 10 * 60_000;
+
+export const OFF_DEV = "Updates are off in this build (a development build).";
+export const OFF_UNSIGNED =
+  "Updates are off in this build: it isn't signed, so it can't check an update's signature.";
 
 const MOVE =
   "Move Software Factory to your Applications folder (and open it from there) to get updates.";
@@ -79,8 +105,22 @@ export function installProblem(appPath: string, writable: (p: string) => void): 
 }
 
 export class Updates {
-  state: UpdateState = { ready: false, version: null, error: null, needsMove: false };
+  state: UpdateState = {
+    ready: false,
+    version: null,
+    error: null,
+    needsMove: false,
+    phase: "idle",
+    checkedAt: null,
+    installed: null,
+    channel: null,
+    reason: null,
+  };
   private retry: unknown = null;
+  /** The check running now, shared by every trigger. */
+  private inFlight: Promise<void> | null = null;
+  /** Why this build takes no updates (dev, unsigned), or null; read once. */
+  private offWhy: Promise<string | null> | null = null;
   private lastOnDemand = Number.NEGATIVE_INFINITY;
   private readonly d: Required<UpdatesDeps>;
 
@@ -94,12 +134,39 @@ export class Updates {
       bundle: (a) => bundleInfo(a),
       setInterval: (fn, ms) => setInterval(fn, ms),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
+      now: () => Date.now(),
       ...deps,
     };
   }
 
+  /**
+   * Null when this build can update; else why not, in plain words. A dev build never updates, and an
+   * unsigned one can't check an update's signature (verifyStaged would refuse every update anyway).
+   * Read once: the running build doesn't change.
+   */
+  private offReason(): Promise<string | null> {
+    this.offWhy ??= (async () => {
+      const local = await this.d.updater.getLocalInfo();
+      this.set({ installed: local.version, channel: local.channel });
+      if (local.channel === "dev") return OFF_DEV;
+      if (!(await teamIdOf(this.d.appPath, this.d.exec))) return OFF_UNSIGNED;
+      return null;
+    })().catch(() => {
+      this.offWhy = null; // not known yet: ask again next time
+      return null;
+    });
+    return this.offWhy;
+  }
+
+  /** Off builds say so instead of checking. True when this build may check. */
+  private async mayCheck(): Promise<boolean> {
+    const off = await this.offReason();
+    if (off) this.set({ phase: "off", reason: off, error: null });
+    return !off;
+  }
+
   async start(): Promise<void> {
-    if ((await this.d.updater.getLocalInfo()).channel === "dev") return;
+    if (!(await this.mayCheck())) return;
     await this.check();
     this.d.setInterval(() => void this.check(), EVERY_MS);
   }
@@ -111,7 +178,19 @@ export class Updates {
   async checkNow(now = Date.now()): Promise<void> {
     if (now - this.lastOnDemand < ON_DEMAND_GAP_MS) return;
     this.lastOnDemand = now;
-    if ((await this.d.updater.getLocalInfo()).channel === "dev") return;
+    if (!(await this.mayCheck())) return;
+    await this.check();
+  }
+
+  /**
+   * A person asked (Check for Updates…, Settings): check now, with no gap, joining a check already
+   * running rather than starting a second. An update already staged is reported as ready, not
+   * downloaded again. Every check below still applies.
+   */
+  async checkByPerson(): Promise<void> {
+    if (this.inFlight) return this.inFlight;
+    if (!(await this.mayCheck())) return;
+    if (this.state.ready) return this.set({ phase: "ready", reason: null });
     await this.check();
   }
 
@@ -121,7 +200,14 @@ export class Updates {
   }
 
   private fail(error: string, version: string | null = this.state.version, retry = true) {
-    this.set({ ready: false, version, error });
+    this.set({
+      ready: false,
+      version,
+      error,
+      phase: "failed",
+      reason: plainReason(error, this.state.installed),
+      checkedAt: this.d.now(),
+    });
     if (retry && !this.retry) {
       this.retry = this.d.setTimeout(() => {
         this.retry = null;
@@ -130,17 +216,45 @@ export class Updates {
     }
   }
 
-  async check(): Promise<void> {
+  /** One check at a time: a trigger that lands while one runs joins it. */
+  check(): Promise<void> {
+    this.inFlight ??= this.run().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  private async run(): Promise<void> {
     if (this.state.ready) return;
     const { updater } = this.d;
+    this.set({ phase: "checking" });
     try {
       const problem = installProblem(this.d.appPath, this.d.writable);
-      if (problem) return this.set({ ready: false, error: problem, needsMove: true });
+      if (problem)
+        return this.set({
+          ready: false,
+          error: problem,
+          needsMove: true,
+          phase: "failed",
+          reason: problem,
+          checkedAt: this.d.now(),
+        });
       if (this.state.needsMove) this.set({ needsMove: false, error: null });
 
       const info = await updater.checkForUpdate();
       if (info.error) return this.fail(info.error);
-      if (!info.updateAvailable) return this.set({ ready: false, version: null, error: null });
+      if (!info.updateAvailable) {
+        const running = (await updater.getLocalInfo()).version;
+        return this.set({
+          ready: false,
+          version: null,
+          error: null,
+          phase: "up-to-date",
+          reason: null,
+          installed: running,
+          checkedAt: this.d.now(),
+        });
+      }
       const running = (await updater.getLocalInfo()).version;
       if (!isNewer(info.version, running)) {
         // Not retried: the bucket would have to publish a higher version first.
@@ -151,14 +265,23 @@ export class Updates {
         );
       }
 
-      await updater.downloadUpdate();
+      // Electrobun skips the download when this version is already prepared (updateReady).
+      this.set({ phase: "downloading", version: info.version });
+      if (!info.updateReady) await updater.downloadUpdate();
       const after = updater.updateInfo();
       if (!after.updateReady) {
         return this.fail(after.error || "the download didn't finish", info.version);
       }
       const why = await this.verifyStaged();
       if (why) return this.fail(why, info.version, false);
-      this.set({ ready: true, version: info.version, error: null });
+      this.set({
+        ready: true,
+        version: info.version,
+        error: null,
+        phase: "ready",
+        reason: null,
+        checkedAt: this.d.now(),
+      });
     } catch (error) {
       this.fail(error instanceof Error ? error.message : String(error));
     }
@@ -199,9 +322,42 @@ export class Updates {
     await this.d.updater.applyUpdate();
     // Still here: Electrobun didn't restart.
     const after = this.d.updater.updateInfo();
+    const error = after.error || "the update didn't start; try again from the menu";
     this.set({
       ready: after.updateReady,
-      error: after.error || "the update didn't start; try again from the menu",
+      error,
+      phase: after.updateReady ? "ready" : "failed",
+      reason: after.updateReady ? null : plainReason(error, this.state.installed),
     });
   }
+}
+
+const NETWORK =
+  /fetch failed|unable to connect|ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ETIMEDOUT|network|timed out|timeout|offline|internet/i;
+
+/** An updater error in plain words for a person (the raw one goes to the log). */
+export function plainReason(error: string, running: string | null = null): string {
+  const refused = /^refused(?: (\S+?))?: (.*)$/s.exec(error);
+  if (refused) {
+    const [, version, why = ""] = refused;
+    const which = version ? `Version ${version}` : "The update";
+    if (/not newer/.test(why))
+      return `${which} was refused: it isn't newer than this version${running ? ` (${running})` : ""}.`;
+    if (/isn't signed/.test(why)) return OFF_UNSIGNED;
+    if (/signature/.test(why)) return `${which} was refused: its signature didn't check out.`;
+    if (/Gatekeeper/.test(why)) return `${which} was refused: macOS Gatekeeper rejected it.`;
+    if (/manifest says|no readable version/.test(why))
+      return `${which} was refused: it isn't the version the update server said it was.`;
+    if (/ build, this is /.test(why))
+      return `${which} was refused: it is for another channel (${why.replace(/^it is an? /, "")}).`;
+    return `${which} was refused: ${why}`;
+  }
+  if (NETWORK.test(error))
+    return "Couldn't reach the update server. Check that this Mac is online, then try again.";
+  if (/Failed to check for updates|update\.json|manifest/i.test(error)) {
+    const http = /HTTP \d{3}/.exec(error)?.[0];
+    return `Couldn't read the update server's list of versions${http ? ` (${http})` : ""}.`;
+  }
+  if (/download/i.test(error)) return "The update couldn't be downloaded. Try again in a while.";
+  return error;
 }

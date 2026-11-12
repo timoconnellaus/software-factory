@@ -64,7 +64,64 @@ function updateStatus(): UpdateStatus {
     jobs: which === "jobs" ? 2 : 0,
     waitingForRunner: which === "waiting" ? Date.now() + 25_000 : null,
     downloadUrl: "https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip",
+    // The Update required screens keep their own state; Settings' check row reads `?check=`.
+    ...(which
+      ? { phase: "idle", checkedAt: null, installed: "0.1.41", channel: "canary", reason: null }
+      : checkState()),
   };
+}
+
+/**
+ * Check for updates in Settings > This Mac (spec 40 M4): `?check=<state>` shows the row in that
+ * state (idle, checking, up-to-date, downloading, ready, jobs, failed, offline, refused, off);
+ * anything else is up to date, checked 12 minutes ago.
+ */
+function checkState(): Pick<
+  UpdateStatus,
+  "phase" | "checkedAt" | "installed" | "channel" | "reason" | "ready" | "version" | "jobs"
+> {
+  const which = new URLSearchParams(location.search).get("check") ?? "up-to-date";
+  const at = Date.now() - 12 * 60_000;
+  const base = { installed: "0.1.41", channel: "canary", checkedAt: at, reason: null };
+  const offline =
+    "Couldn't reach the update server. Check that this Mac is online, then try again.";
+  switch (which) {
+    case "idle":
+      return { ...base, phase: "idle", checkedAt: null, ready: false, version: null, jobs: 0 };
+    case "checking":
+      return { ...base, phase: "checking", ready: false, version: null, jobs: 0 };
+    case "downloading":
+      return { ...base, phase: "downloading", ready: false, version: "0.1.42", jobs: 0 };
+    case "ready":
+      return { ...base, phase: "ready", ready: true, version: "0.1.42", jobs: 0 };
+    case "jobs":
+      return { ...base, phase: "ready", ready: true, version: "0.1.42", jobs: 2 };
+    case "offline":
+      return { ...base, phase: "failed", ready: false, version: null, jobs: 0, reason: offline };
+    case "refused":
+      return {
+        ...base,
+        phase: "failed",
+        ready: false,
+        version: "0.1.42",
+        jobs: 0,
+        reason: "Version 0.1.42 was refused: its signature didn't check out.",
+      };
+    case "off":
+      return {
+        ...base,
+        channel: "dev",
+        installed: "0.0.1",
+        phase: "off",
+        checkedAt: null,
+        ready: false,
+        version: null,
+        jobs: 0,
+        reason: "Updates are off in this build (a development build).",
+      };
+    default:
+      return { ...base, phase: "up-to-date", ready: false, version: null, jobs: 0 };
+  }
 }
 
 function answer(op: string, input: unknown): CallResult {
