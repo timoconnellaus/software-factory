@@ -84,7 +84,9 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
   time** and adds its row; rows of other open PRs do not exist until they merge. This spec's PRs
   say v11 today (`#73`, planning and spec 52's build had claimed v8 to v10); whichever merges first
   renumbers to the next free number then. Each of (b) and (c) that changes the Workflow's steps adds
-  its own row rather than folding into v11's after v11 has merged.
+  its own row rather than folding into v11's after v11 has merged. (2026-11-13: main has v9,
+  triage readiness, and v10, the spec critic, so v11 is v10 plus `babysitter-delivery` and v12 is
+  v11 plus `reverify-on-withdrawal`; each new row keeps every feature of the one before.)
 - **The deliverer** does what `landV4` did, per repository instead of per item: pick the head, bring
   it up to date, wait for CI on the new head, merge it with `pr.merge` at the head SHA it recorded
   and the approval id, and send `delivered-<item>`.

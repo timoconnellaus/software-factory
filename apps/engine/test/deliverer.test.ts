@@ -14,6 +14,7 @@ import {
   build,
   call,
   first,
+  gateHead,
   gateOpen,
   github,
   itemStatus,
@@ -51,8 +52,12 @@ async function toMergeGate(w: World, title: string, file: string) {
   return item.workItemId;
 }
 
-const approve = (w: World, workItemId: string) =>
-  ok("review.merge", { workItemId, openedFullDiff: true }, w.human);
+const approve = async (w: World, workItemId: string) =>
+  ok(
+    "review.merge",
+    { workItemId, openedFullDiff: true, headSha: await gateHead(workItemId) },
+    w.human,
+  );
 
 const merges = (workItemId: string) =>
   all<{ actor_type: string; actor_id: string; outcome: string }>(
@@ -362,6 +367,98 @@ describe("the babysitter's deliverer (v11)", () => {
     await github.setCiDefault(w.repo, CI("success"));
     await runStage(w, u.a, "verify", () => verifyPass);
     await itemStatus(u.a, "done");
+    expect(await merges(u.a)).toHaveLength(1);
+  });
+
+  // Main's pr.merge closes an approval when GitHub says the head moved; on a v11 item the
+  // babysitter owns that: pr.merge leaves the approval and says why in details, not only in text.
+  it("a head that moves under the babysitter's merge: pr.merge leaves the approval to it, it withdraws it and the item re-verifies", async () => {
+    const w = await world();
+    const u = await updatedAndWaiting(w, "Head moved under the merge");
+    await github.setChecks(w.repo, u.head_sha, CI("success"));
+    const branch = String(
+      (await first<{ branch: string }>("SELECT branch FROM core_work_items WHERE id = ?", u.a))
+        ?.branch,
+    );
+    deliverTestSeams.beforeLand = async () => {
+      deliverTestSeams.beforeLand = null;
+      await github.push(w.repo, branch, undefined, ["src/late.ts"]);
+    };
+    await deliverRepository(env, u.project_id, u.repositoryId);
+    const refused = await first<{ reason: string }>(
+      "SELECT reason FROM core_audit WHERE operation = 'pr.merge' AND work_item_id = ? AND actor_id = 'babysitter' AND outcome = 'failed'",
+      u.a,
+    );
+    expect(refused?.reason).toMatch(/merge refused: head moved/);
+    expect(refused?.reason).not.toMatch(/review the new commit/);
+    // pr.merge didn't close it behind the babysitter's back; the babysitter re-snapshotted and,
+    // finding a push it didn't make, withdrew it itself (ADR 0582): its note, not pr.merge's.
+    const ended = await first<{ outcome: string; end_reason: string | null }>(
+      "SELECT outcome, end_reason FROM core_merge_queue WHERE work_item_id = ? ORDER BY enqueued_at DESC LIMIT 1",
+      u.a,
+    );
+    expect(ended?.outcome).toBe("withdrawn");
+    expect(ended?.end_reason ?? "").not.toMatch(/pr\.merge failed after approval/);
+    const approval = await first<{ decision: string; note: string | null }>(
+      "SELECT decision, note FROM core_pending_actions WHERE id = ?",
+      u.pending_action_id,
+    );
+    expect(approval?.decision).toBe("withdrawn");
+    expect(approval?.note ?? "").toMatch(/^withdrawn: /);
+    expect(approval?.note ?? "").not.toMatch(/review the new commit/);
+    // v12: back to verify on the new head, not to build; then the merge gate.
+    await runStage(w, u.a, "verify", () => verifyPass);
+    await gateOpen(u.a, "merge");
+    expect(
+      await all(
+        "SELECT id FROM core_stages WHERE work_item_id = ? AND stage = 'build' AND status = 'active'",
+        u.a,
+      ),
+    ).toEqual([]);
+    expect(await merges(u.a)).toEqual([]);
+  });
+
+  // Review of #134: GitHub's `closed` webhook can land while the babysitter is merging, before
+  // pr.merge's batch commits. Its merging mark makes it the factory's own merge, never "outside".
+  it("a merged webhook while the babysitter is merging is the factory's own: the item ends merged by it", async () => {
+    const w = await world();
+    const u = await updatedAndWaiting(w, "Webhook beats the batch");
+    await github.setChecks(w.repo, u.head_sha, CI("success"));
+    const outcomes: string[] = [];
+    deliverTestSeams.beforeLand = async (id) => {
+      deliverTestSeams.beforeLand = null;
+      // The approval alone would say so too: hide it, so the mark is what decides.
+      await env.DB.prepare("UPDATE core_pending_actions SET status = 'pending' WHERE id = ?")
+        .bind(u.pending_action_id)
+        .run();
+      const r = await ok<{ outcome: string }>(
+        "verify.refresh",
+        {
+          repo: { owner: w.repo.owner, name: w.repo.repo },
+          headSha: u.head_sha,
+          prNumber: u.pr,
+          trigger: "closed",
+          merged: true,
+        },
+        { type: "intake", id: "github" },
+      );
+      outcomes.push(r.outcome);
+      await env.DB.prepare("UPDATE core_pending_actions SET status = 'approved' WHERE id = ?")
+        .bind(u.pending_action_id)
+        .run();
+      expect(
+        (await first<{ status: string }>("SELECT status FROM core_work_items WHERE id = ?", id))
+          ?.status,
+      ).not.toBe("done");
+    };
+    await deliverRepository(env, u.project_id, u.repositoryId);
+    expect(outcomes).toEqual(["ignored"]);
+    await itemStatus(u.a, "done");
+    const row = await first<{ status_reason: string | null }>(
+      "SELECT status_reason FROM core_work_items WHERE id = ?",
+      u.a,
+    );
+    expect(row?.status_reason ?? "").not.toMatch(/outside the factory/);
     expect(await merges(u.a)).toHaveLength(1);
   });
 

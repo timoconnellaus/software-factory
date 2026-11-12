@@ -465,6 +465,8 @@ export interface CoreSpecsTable {
   coverage: Generated<JsonText>;
   clarifications: Generated<JsonText>;
   summary: string | null;
+  /** 0372 (spec 23): the spec critic's notes, JSON; null until the critic ran. */
+  critique: string | null;
 }
 
 export type PendingActionKind = "spec" | "merge" | "approval";

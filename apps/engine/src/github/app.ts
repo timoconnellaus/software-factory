@@ -587,10 +587,10 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       const r = await api(repo, "PUT", `/pulls/${number}/merge`, { sha, merge_method: method });
       if (r.status === 200) return { merged: true, sha: (r.json as { sha: string }).sha };
       if ([405, 409, 422].includes(r.status)) {
-        return {
-          merged: false,
-          reason: (r.json as { message?: string })?.message ?? `HTTP ${r.status}`,
-        };
+        const reason = (r.json as { message?: string })?.message ?? `HTTP ${r.status}`;
+        // 409: the `sha` we sent is no longer the head ("Head branch was modified").
+        const headMoved = r.status === 409 || /head branch was modified/i.test(reason);
+        return { merged: false, reason, ...(headMoved ? { headMoved } : {}) };
       }
       return fail(`merge #${number}`, r);
     },

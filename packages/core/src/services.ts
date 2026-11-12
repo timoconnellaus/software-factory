@@ -282,11 +282,16 @@ export interface GitHubService {
     repo: RepoRef,
     input: { number: number; expectedHeadSha: string },
   ): Promise<{ status: "requested" } | { status: "conflict" | "refused"; reason: string }>;
-  /** Merges the PR if its head is still `sha`. */
+  /**
+   * Merges the PR if its head is still `sha`. `headMoved`: refused because the head is no longer
+   * `sha` (GitHub's 409 "Head branch was modified").
+   */
   mergePullRequest(
     repo: RepoRef,
     input: { number: number; sha: string; method: "merge" | "squash" },
-  ): Promise<{ merged: true; sha: string } | { merged: false; reason: string }>;
+  ): Promise<
+    { merged: true; sha: string } | { merged: false; reason: string; headMoved?: boolean }
+  >;
 }
 
 export interface FactoryServices {

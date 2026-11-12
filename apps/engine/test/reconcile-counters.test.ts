@@ -15,6 +15,7 @@ import {
   BALANCED,
   build,
   first,
+  gateHead,
   gateOpen,
   itemStatus,
   ok,
@@ -185,7 +186,11 @@ async function today(policyJson: object, outcomes: Outcomes, agentStep: boolean)
     }
     await gateOpen(id, "merge");
     if ((merge.shift() ?? "approve") === "approve") {
-      await ok("review.merge", { workItemId: id, openedFullDiff: true }, w.human);
+      await ok(
+        "review.merge",
+        { workItemId: id, openedFullDiff: true, headSha: await gateHead(id) },
+        w.human,
+      );
       await itemStatus(id, "done");
       break;
     }

@@ -12,6 +12,7 @@ import {
   build,
   call,
   first,
+  gateHead,
   gateOpen,
   github,
   itemStatus,
@@ -161,7 +162,11 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     // A person merges only by deciding to merge without them, never by the plain merge.
     const plain = await call(
       "review.merge",
-      { workItemId: item.workItemId, openedFullDiff: true },
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+        headSha: await gateHead(item.workItemId),
+      },
       w.human,
     ).catch((e: unknown) => e);
     expect(String((plain as { message?: string }).message ?? JSON.stringify(plain))).toMatch(
@@ -169,7 +174,12 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     );
     await ok(
       "review.merge",
-      { workItemId: item.workItemId, openedFullDiff: true, mergeWithoutChecks: true },
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+        mergeWithoutChecks: true,
+        headSha: await gateHead(item.workItemId),
+      },
       w.human,
     );
     const decided = await first<{ sections: string }>(
@@ -237,7 +247,12 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     for (const mergeWithoutChecks of [false, true]) {
       const refused = await call(
         "review.merge",
-        { workItemId: item.workItemId, openedFullDiff: true, mergeWithoutChecks },
+        {
+          workItemId: item.workItemId,
+          openedFullDiff: true,
+          mergeWithoutChecks,
+          headSha: await gateHead(item.workItemId),
+        },
         w.human,
       ).catch((e: unknown) => e);
       expect(String((refused as { message?: string }).message ?? JSON.stringify(refused))).toMatch(
@@ -292,8 +307,8 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
       "SELECT workflow_version FROM core_work_items WHERE id = ?",
       item.workItemId,
     );
-    // v8 or any later version: it has the host's checks (a row of the features table).
-    expect(has(Number(row?.workflow_version), "host-checks")).toBe(true);
+    // The current version has host checks (v8 and every later row of the table).
+    expect(has(row?.workflow_version, "host-checks")).toBe(true);
   });
 
   it("places a build that carries checks only on a runner that declares `checks`", async () => {
@@ -478,7 +493,15 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     await runStage(w, item.workItemId, "verify", () => linkedPass);
     await gateOpen(item.workItemId, "merge");
     await github.push(w.repo, "main", undefined, ["README.md"]);
-    await ok("review.merge", { workItemId: item.workItemId, openedFullDiff: true }, w.human);
+    await ok(
+      "review.merge",
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+        headSha: await gateHead(item.workItemId),
+      },
+      w.human,
+    );
     const ended = await waitFor("sent to verify", () =>
       first<{ head_sha: string }>(
         "SELECT head_sha FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",

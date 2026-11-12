@@ -17,6 +17,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import {
   ATTACHED_SKIP_REASON,
   approvalEvent,
+  BRANCH_MOVED_AFTER_APPROVAL,
   ciEvent,
   DEFAULT_BUILDER,
   type DeliveredEventPayload,
@@ -38,6 +39,7 @@ import {
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
 import {
+  critiqueResultSchema,
   type JobStage,
   type ModelRole,
   specResultSchema,
@@ -49,6 +51,7 @@ import { invokeDeps } from "../deps.ts";
 import {
   attachedTriagePrompt,
   buildPrompt,
+  criticPrompt,
   type ItemBrief,
   specPrompt,
   stepPrompt,
@@ -60,9 +63,14 @@ export interface WorkItemParams {
   workItemId: string;
 }
 
+/** A triage result as the Workflow reads it. */
+type TriageResult = ReturnType<typeof triageResultSchema.parse>;
+
 export type WorkItemOutcome =
   | { status: "done"; workItemId: string }
-  | { status: "failed" | "rejected"; workItemId: string; reason: string };
+  | { status: "failed" | "rejected"; workItemId: string; reason: string }
+  /** v8 (spec 23): triage parked it for its requester; the next release starts a new Workflow. */
+  | { status: "parked"; workItemId: string; reason: string };
 
 /**
  * The version new instances start on. Bump it for any step-name change (ADR 0053).
@@ -110,13 +118,23 @@ export type WorkItemOutcome =
  *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. A check the
  *   runner could not run is not a failure: the item goes on to verify and the merge gate, which say
  *   so and leave the criteria it would prove Not proven. The reviewer is told the checks' names.
+ * - v9 (spec 23 part B, ADR 0304; provisional: the next number above main's at merge): triage
+ *   scores readiness ("triage-readiness"). `not_actionable` parks the item (`triage: park`) and the
+ *   instance ends; answering re-releases it on a new generation. `needs_answers` on an item without
+ *   a spec asks triage's questions and re-triages on the answers (`triage #k: ask`, `#k: answers`,
+ *   `triage #k`, `#k: record`, at most two rounds); with a spec, the planning session opens with them
+ *   (`planning: triage questions`).
+ * - v10 (spec 23 part C; provisional): the spec critic ("spec-critic"). Before each planning gate,
+ *   `planning #k: critic` (`: spec`, `: yield`, `: enqueue`, `: wait`, `: result` or `: expire`,
+ *   `: record`)
+ *   runs a review-role job on the plan and records its notes; the gate follows either way.
  */
 /*
- * v11 (spec 53, ADR 0580; v9–v10 are other builds' numbers): approving the merge gate no longer
+ * v11 (spec 53, ADR 0580): approving the merge gate no longer
  * makes the item land itself. It enters its repository's queue for the babysitter
  * (`merge #b: deliver: enqueue`) and waits for `delivered-<item>` (`merge #b: deliver: wait #i`,
  * re-reading its entry after each timeout, `merge #b: deliver: read #i`); the engine's deliverer
- * updates, CIs and merges it. v11 has every feature of v8 (the host's checks). An incident's check-only auto-merge still lands itself, as v7.
+ * updates, CIs and merges it. v11 has every feature of v10 (triage readiness and the spec critic). An incident's check-only auto-merge still lands itself, as v7.
  */
 /** Whether the table has a row for `version`: an instance on any other version errors. */
 export const isKnownVersion = (version: number): boolean =>
@@ -206,6 +224,8 @@ interface Meta extends ItemBrief {
   retryLimit: number;
   gateTimeoutMs: number;
   questionTimeoutMs: number;
+  /** v10 (spec 23): how long the spec gate waits for the critic. */
+  criticTimeoutMs: number;
 }
 
 type SlotName = (typeof SLOTS)[number];
@@ -364,20 +384,76 @@ class ItemFlow {
       // Triage: the foreman sizes the item on a runner; code decides the spec gate from policy.
       // v6: it also picks one of the project's workflows (ADR 0371).
       const options = has(version, "workflow-plan") ? await this.workflowOptions() : [];
+      const scores = has(version, "triage-readiness");
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
         "triage",
         "triage",
-        triagePrompt(meta, options),
+        triagePrompt(meta, options, scores ? { answers: [] } : undefined),
         {},
         (r) => triageResultSchema.safeParse(r),
       );
-      const triage = triageRun.parsed;
-      const recorded = await this.act("triage: record", "workItem.triage", {
+      let triage = triageRun.parsed;
+      let recorded = await this.act("triage: record", "workItem.triage", {
         workItemId: id,
         result: triage,
       });
+      // v8 (spec 23): triage's readiness. Not actionable parks the item for its requester, and this
+      // instance ends; needs answers on an item without a spec is a quick round of triage's
+      // questions, then triage again on the answers (at most two rounds, then it goes on).
+      if (scores) {
+        for (let k = 2; ; k++) {
+          if (triage.readiness === "not_actionable" && triage.questions.length) {
+            const reason = triage.readinessReason ?? triage.reason;
+            await this.act(
+              k === 2 ? "triage: park" : `triage #${k - 1}: park`,
+              "workItem.parkForInfo",
+              {
+                workItemId: id,
+                reason,
+                questions: triage.questions,
+              },
+            );
+            return { status: "parked", workItemId: id, reason };
+          }
+          const round =
+            triage.readiness === "needs_answers" &&
+            triage.questions.length > 0 &&
+            recorded.specRequired !== true &&
+            k <= 3;
+          if (!round) break;
+          const asked = await this.act(`triage #${k}: ask`, "question.ask", {
+            workItemId: id,
+            questions: triage.questions,
+          });
+          await this.waitForAnswers(meta, `triage #${k}`);
+          const ids = (asked.questionIds as string[]) ?? [];
+          const answers = await this.step.do(`triage #${k}: answers`, async () => {
+            if (!ids.length) return [];
+            const { results } = await this.env.DB.prepare(
+              `SELECT prompt, answer FROM core_questions WHERE id IN (${ids.map(() => "?").join(", ")}) AND status = 'answered'`,
+            )
+              .bind(...ids)
+              .all<{ prompt: string; answer: string }>();
+            return results;
+          });
+          const again = await this.runWithRetries(
+            meta,
+            `triage #${k}`,
+            "triage",
+            "triage",
+            triagePrompt(meta, options, { answers }),
+            {},
+            (r) => triageResultSchema.safeParse(r),
+          );
+          triage = again.parsed;
+          recorded = await this.act(`triage #${k}: record`, "workItem.triage", {
+            workItemId: id,
+            result: triage,
+          });
+        }
+      }
       let criteria = triage.acceptanceCriteria;
       let specPath: string | null = null;
 
@@ -386,7 +462,14 @@ class ItemFlow {
         let note: string | null = null;
         let answers: { prompt: string; answer: string }[] = [];
         // v5: the planning session (spec 20) instead of v1–v4's spec rounds below.
-        if (has(version, "planning-spec")) criteria = await this.planningStage(meta);
+        if (has(version, "planning-spec")) {
+          // v8: a medium or large item triage found needs answers opens planning with its questions.
+          const seed =
+            scores && triage.readiness === "needs_answers" && triage.questions.length
+              ? triage.questions
+              : null;
+          criteria = await this.planningStage(meta, seed, has(version, "spec-critic"));
+        }
         for (let k = 1; !has(version, "planning-spec"); k++) {
           const mayAsk = k <= QUESTION_ROUNDS;
           const specRun = await this.runWithRetries(
@@ -980,7 +1063,9 @@ class ItemFlow {
             ? `Sent back at review: ${decided.note ?? ""}`.trim()
             : decided.decision === "withdrawn"
               ? (decided.note ?? "the pull request's head moved")
-              : `the merge was refused (${decided.note ?? "no reason"}): push a fix to the PR`;
+              : decided.note === BRANCH_MOVED_AFTER_APPROVAL
+                ? decided.note
+                : `the merge was refused (${decided.note ?? "no reason"}): push a fix to the PR`;
         await this.waitForHead(b, headSha, reason);
         close = { as: "sent_back", reason };
       }
@@ -1097,7 +1182,7 @@ class ItemFlow {
       if (!row.default_branch) throw new Error(`work item ${this.workItemId} has no repository`);
       let policy: {
         retryLimit?: number;
-        timeouts?: { gateHours?: number; questionHours?: number };
+        timeouts?: { gateHours?: number; questionHours?: number; criticMinutes?: number };
       } = {};
       try {
         policy = row.raw ? JSON.parse(row.raw) : {};
@@ -1116,6 +1201,7 @@ class ItemFlow {
         retryLimit: policy.retryLimit ?? 2,
         gateTimeoutMs: (policy.timeouts?.gateHours ?? 72) * 3_600_000,
         questionTimeoutMs: (policy.timeouts?.questionHours ?? 48) * 3_600_000,
+        criticTimeoutMs: (policy.timeouts?.criticMinutes ?? 20) * 60_000,
       };
     });
   }
@@ -1687,9 +1773,20 @@ class ItemFlow {
    * opens the spec gate. Changes requested go into the same session as the approver's message; a
    * decision ends the session. Returns the approved spec's acceptance criteria.
    */
-  async planningStage(meta: Meta): Promise<string[]> {
+  async planningStage(
+    meta: Meta,
+    seed: TriageResult["questions"] | null = null,
+    /** v10: the spec critic's notes before each gate. */
+    critic = false,
+  ): Promise<string[]> {
     const id = this.workItemId;
     await this.act("planning: start", "planning.start", { workItemId: id });
+    if (seed) {
+      await this.act("planning: triage questions", "planning.seedQuestions", {
+        workItemId: id,
+        questions: seed,
+      });
+    }
     for (let k = 1; ; k++) {
       const awaited = await this.act(`planning #${k}: await`, "planning.awaitReady", {
         workItemId: id,
@@ -1710,6 +1807,8 @@ class ItemFlow {
           });
         }
       }
+      // v10 (spec 23): the critic's notes first; the gate opens when it's done or timed out.
+      if (critic && specId) await this.critic(meta, k, specId);
       const decided = await this.gate(meta, `planning #${k}: gate`, "spec.accept", {
         workItemId: id,
         specId,
@@ -1753,6 +1852,88 @@ class ItemFlow {
         `spec ${decided.decision}${decided.note ? `: ${decided.note}` : ""}`,
       );
     }
+  }
+
+  /**
+   * The spec critic (v10, spec 23 part C): a review-role run in the light pool reads the plan going
+   * to the gate and the repository, and its notes are recorded (`spec.critique`), shown at the gate
+   * and given to the planner. It decides nothing: the gate follows whatever it says. If it isn't
+   * done within the policy's critic timeout, its run is expired and the gate opens without notes.
+   */
+  async critic(meta: Meta, k: number, specId: string): Promise<void> {
+    const name = `planning #${k}: critic`;
+    const spec = await this.step.do(`${name}: spec`, async () => {
+      const row = await this.env.DB.prepare(
+        "SELECT body_md, acceptance_criteria, critique FROM core_specs WHERE id = ?",
+      )
+        .bind(specId)
+        .first<{ body_md: string; acceptance_criteria: string; critique: string | null }>();
+      let criteria: string[] = [];
+      try {
+        criteria = JSON.parse(row?.acceptance_criteria ?? "[]") as string[];
+      } catch {
+        criteria = [];
+      }
+      return {
+        bodyMd: row?.body_md ?? "",
+        acceptanceCriteria: criteria,
+        // Asking for the gate again on the same version doesn't run the critic again (cost).
+        critiqued: row?.critique != null,
+      };
+    });
+    if (spec.critiqued) return;
+    // The planner, waiting at the gate, holds the item's lease: it yields so the critic can run.
+    await this.act(`${name}: yield`, "planning.requestYield", { workItemId: this.workItemId });
+    const { jobId } = (await this.act(`${name}: enqueue`, "job.enqueue", {
+      workItemId: this.workItemId,
+      stage: "spec",
+      role: "review",
+      prompt: criticPrompt(meta, spec),
+      context: { specId },
+      sessionTimeoutMs: meta.criticTimeoutMs,
+      tier: "light",
+    })) as { jobId: string };
+    let status: "done" | "timed_out" | "failed" = "done";
+    let notes: string[] = [];
+    let summary: string | null = null;
+    try {
+      const event = await this.step.waitForEvent<RunEventPayload>(`${name}: wait`, {
+        type: runEvent(jobId),
+        timeout: meta.criticTimeoutMs,
+      });
+      const result = await this.step.do(`${name}: result`, async () => {
+        const run = await this.env.DB.prepare("SELECT result FROM core_runs WHERE id = ?")
+          .bind(event.payload.runId)
+          .first<{ result: string | null }>();
+        return run?.result ?? null;
+      });
+      // Over the limits (more than 20 notes, a note over 1,000 characters) is clamped, not lost.
+      const parsed =
+        event.payload.outcome === "completed" && result
+          ? critiqueResultSchema.safeParse(clampCritique(JSON.parse(result)))
+          : null;
+      if (parsed?.success) {
+        notes = parsed.data.notes;
+        summary = parsed.data.summary ?? null;
+      } else {
+        status = "failed";
+      }
+    } catch (error) {
+      if (!isWaitTimeout(error)) throw error;
+      status = "timed_out";
+      await this.act(`${name}: expire`, "run.expire", {
+        jobId,
+        reason: "the spec critic ran past its time",
+        cancelQueued: true,
+      });
+    }
+    await this.act(`${name}: record`, "spec.critique", {
+      workItemId: this.workItemId,
+      specId,
+      status,
+      notes,
+      summary,
+    });
   }
 
   /** Waits until the open blocking questions are answered, escalating on each timeout. */
@@ -2085,4 +2266,20 @@ class ItemFlow {
       }
     }
   }
+}
+
+/** A critic's raw result, clamped to what `spec.critique` takes (review of #126). */
+export function clampCritique(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const r = raw as { notes?: unknown; summary?: unknown };
+  return {
+    notes: Array.isArray(r.notes)
+      ? r.notes
+          .map((n) => String(n).trim())
+          .filter(Boolean)
+          .slice(0, 20)
+          .map((n) => (n.length > 1_000 ? `${n.slice(0, 999)}…` : n))
+      : [],
+    ...(typeof r.summary === "string" ? { summary: r.summary.slice(0, 2_000) } : {}),
+  };
 }
