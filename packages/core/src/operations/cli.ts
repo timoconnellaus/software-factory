@@ -140,6 +140,8 @@ export const cliDevicePoll = defineOperation({
   description:
     "`sf login` asks whether its code was approved. `pending` until a person approves; then, once, `approved` with a new CLI token (scope as the person granted, 30 days) and its id; the code is then spent. `denied` or `expired` end the login. Called unsigned by sf-engine's /cli/v1.",
   risk: "write",
+  // Every few seconds during a login: audited once it settles (ADR 0590).
+  audit: { changesOnly: true, changed: (out) => out.status !== "pending" },
   actors: ["runner"],
   permission: "signed-in",
   input: z.object({ deviceCode: z.string().min(20).max(200) }),
