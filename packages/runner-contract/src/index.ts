@@ -3,6 +3,7 @@
 // names no runner.
 export * from "./channel.ts";
 export * from "./checks.ts";
+export * from "./plan-blocks.ts";
 export * from "./planning.ts";
 export * from "./protocol.ts";
 export * from "./stage-results.ts";

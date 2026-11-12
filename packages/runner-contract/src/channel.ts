@@ -21,8 +21,10 @@
 // repeated key with the stored response instead of acting twice. Unstored calls are reads, held
 // waits or the job token, which a replay can't change anything with, and the heartbeat: one whose
 // signed timestamp is no newer than the runner's last accepted heartbeat (core_runners.
-// last_signed_at) changes none of the runner's state and only renews its leases, fenced. So a
-// replay, or a host retry after a lost response, changes nothing but a lease the runner holds.
+// last_signed_at) changes none of the runner's state and only renews its leases, fenced; and the
+// claim: a retried claimId gets the job it already got, and any other claim signed before the
+// runner's last accepted call gets an empty answer and writes nothing. So a replay, or a host retry
+// after a lost response, changes nothing but a lease the runner holds.
 //
 // Web Crypto only, so it runs in Workers and in Node.
 

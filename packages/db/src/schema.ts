@@ -76,6 +76,35 @@ export interface CoreOrganizationTable {
   kind: Generated<OrgKind>;
   github_installation_id: string | null;
   created_at: Iso;
+  /** The org's current config version (spec 52, migration 0280); null before its first save. */
+  config_version: number | null;
+}
+
+/** An org's config versions: its workflows and agents (spec 52, migration 0280). */
+export interface CoreOrgConfigsTable {
+  org_id: string;
+  version: number;
+  raw: string;
+  source: string;
+  created_by: string | null;
+  note: string | null;
+  parent_version: number | null;
+  created_at: Iso;
+  /** How this version changed the one before it, recorded when it was written. */
+  impact: "loosens" | "tightens" | "neutral" | null;
+}
+
+/** Spec 52 PR (c): an ended item's shadow verdict (migration 0281), one row per item. */
+export interface CoreReconcileItemsTable {
+  work_item_id: string;
+  org_id: string;
+  ended: "done" | "failed" | "rejected" | "cancelled";
+  transitions: number;
+  /** Disagreeing transitions plus every aspect not yet compared. */
+  divergences: number;
+  /** The `ShadowVerdict` as JSON. */
+  report: JsonText;
+  finished_at: Iso;
 }
 
 export interface CoreMemberTable {
@@ -294,6 +323,7 @@ export interface CoreWorkItemsTable {
   acceptance_criteria: JsonText | null;
   released_at: Iso | null;
   released_by: string | null;
+  footprint: Generated<string>;
   /** 0261: when the pipeline started (the pull). */
   pulled_at: Iso | null;
   /** 0262 (ADR 0493): when its Workflow started to run the shaping stages, before release. */
@@ -386,6 +416,8 @@ export interface CoreQuestionsTable {
   skipped: Generated<Bool>;
   /** Spec 26: when this answer revision reached the planning agent. */
   answer_delivered_at: Iso | null;
+  /** Spec 27: the person's plan edit this answer was recorded from. */
+  answered_via_edit: string | null;
   planning_session_id: string | null;
   updated_at: Iso | null;
 }
@@ -591,6 +623,8 @@ export interface CoreJobsTable {
   finished_at: Iso | null;
   /** 0120 (ADR 0301). */
   pool: Generated<"heavy" | "light">;
+  /** Queued for an item still shaping (ADR 0493): the claim takes it after released work (0363). */
+  shaping: Generated<number>;
   pinned_runner_id: string | null;
   planning_session_id: string | null;
   /** 0141 (ADR 0372): standard | light; null is standard. */
@@ -634,6 +668,8 @@ export interface CoreRunEventsTable {
   at: Iso;
   type: string;
   payload: JsonText;
+  /** Set on a row that holds a batch of log lines, `seq` to `last_seq` (migration 0361). */
+  last_seq: number | null;
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */
@@ -900,6 +936,26 @@ export interface CorePlanningMessagesTable {
   created_at: Iso;
   /** Spec 26: the steer this message was typed as; delivered when the host takes it. */
   steer_id: string | null;
+  /** Spec 27: a comment's anchor on plan lines, as JSON `{ specId, lineStart, lineEnd, quote }`. */
+  anchor: string | null;
+}
+
+/** A person's edit to the plan's source lines (spec 27, ADR 0471). */
+export interface CoreSpecEditsTable {
+  id: string;
+  work_item_id: string;
+  spec_id: string;
+  base_spec_id: string;
+  line_start: number;
+  line_end: number;
+  before: string;
+  after: string;
+  author_id: string;
+  created_at: Iso;
+  replaced_by: string | null;
+  released_at: Iso | null;
+  released_by: string | null;
+  footprint: Generated<string>;
 }
 
 export interface CorePlanningPresenceTable {
@@ -1046,6 +1102,8 @@ export interface CoreDatabase {
   core_projects: CoreProjectsTable;
   core_repositories: CoreRepositoriesTable;
   core_project_policies: CoreProjectPoliciesTable;
+  core_org_configs: CoreOrgConfigsTable;
+  core_reconcile_items: CoreReconcileItemsTable;
   core_config_trials: CoreConfigTrialsTable;
   core_adjudications: CoreAdjudicationsTable;
   core_project_protection: CoreProjectProtectionTable;
@@ -1085,6 +1143,7 @@ export interface CoreDatabase {
   core_planning_events: CorePlanningEventsTable;
   core_planning_messages: CorePlanningMessagesTable;
   core_planning_presence: CorePlanningPresenceTable;
+  core_spec_edits: CoreSpecEditsTable;
   core_cli_device_codes: CoreCliDeviceCodesTable;
   core_cli_tokens: CoreCliTokensTable;
   core_desktop_auth_requests: CoreDesktopAuthRequestsTable;

@@ -1,6 +1,8 @@
 import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { SHADOW_NOT_COMPARED, type ShadowVerdict } from "@software-factory/core/stages";
 import { describe, expect, it } from "vitest";
+import { SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import {
   definitionFor,
   expectPhasesAsDefined,
@@ -32,6 +34,33 @@ async function create(w: Awaited<ReturnType<typeof world>>, title = "Add dark mo
     { state: "queued", projectId: w.projectId, title },
     w.human,
   );
+}
+
+/**
+ * The shadow reconciler's verdict on an ended item (spec 52 PR (c)), once the cron's shadow pass has
+ * read it: the transitions it compared, and what it couldn't (each a divergence).
+ */
+async function shadowVerdictOf(workItemId: string) {
+  // The Workflow wrote nothing for the shadow: no verdict until the pass runs.
+  expect(
+    await first("SELECT work_item_id FROM core_reconcile_items WHERE work_item_id = ?", workItemId),
+  ).toBeNull();
+  // Past the pass's lag, so the item's last write is old enough to read.
+  const later = new Date(Date.now() + SHADOW_LAG_MS + 60_000);
+  while ((await shadowPass(env, later)) > 0);
+  const row = await first<{ report: string; divergences: number }>(
+    "SELECT report, divergences FROM core_reconcile_items WHERE work_item_id = ?",
+    workItemId,
+  );
+  if (!row) throw new Error("no shadow verdict");
+  const verdict = JSON.parse(row.report) as ShadowVerdict;
+  expect(verdict.uncompared).toEqual([...SHADOW_NOT_COMPARED]);
+  expect(row.divergences).toBe(
+    verdict.transitions.filter((t) => !t.agrees).length +
+      SHADOW_NOT_COMPARED.length +
+      verdict.known.length,
+  );
+  return verdict.transitions.map((t) => (t.agrees ? t.observed : `${t.observed} ≠ ${t.predicted}`));
 }
 
 describe("the work-item Workflow", () => {
@@ -73,6 +102,16 @@ describe("the work-item Workflow", () => {
       "done:done",
     ]);
     expect(stages.find((s) => s.stage === "spec")?.reason).toMatch(/below the spec threshold/);
+    // The reconciler in shadow predicted every stage transition. What it doesn't compare yet still
+    // counts against the item (shadowVerdictOf checks), so it doesn't count toward a streak.
+    expect(await shadowVerdictOf(item.workItemId)).toEqual([
+      "enter triage",
+      "skip spec",
+      "enter build",
+      "enter verify",
+      "enter merge",
+      "end done",
+    ]);
     // The compiled Software definition passes and skips the same stages (spec 52 PR (a)).
     const { def } = definitionFor(BALANCED, "change");
     await expectStagesAsDefined(item.workItemId, def, "small");
@@ -231,6 +270,10 @@ describe("the work-item Workflow", () => {
       "SELECT stage, status FROM core_stages WHERE work_item_id = ? AND stage IN ('build', 'verify', 'merge') ORDER BY started_at, rowid",
       item.workItemId,
     );
+    // The shadow doesn't guess a send-back's target from its own output: the stage after each
+    // send-back is not compared, and says so.
+    const shadow = await shadowVerdictOf(item.workItemId);
+    expect(shadow.filter((t) => t.includes("not compared: a send-back's target"))).toHaveLength(2);
     // Both send-backs went where the compiled definition sends them (spec 52 PR (a)).
     const { def } = definitionFor({ ...BALANCED, retryLimit: 2 }, "change");
     await expectStagesAsDefined(item.workItemId, def, "small");

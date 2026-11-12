@@ -412,10 +412,15 @@ current (ADR 0370 §2). The **floors** are F-rules: no setting, template or agen
   refuse otherwise (spec 50's rule 3, generalised).
 - **F10** Code-owned prompts stay code's: no type exposes a setting that replaces the verify or
   reviewer prompt, or that names a model id (ADR 0018).
+  A stage whose judge is the factory's own reviewer (Checks) takes no org agent: an agent's instructions
+  would reach the judge (Q16, ADR 0516).
 
 ### The impact check
 `workflowImpact(before, after, registry)` extends `policyImpact` (ADR 0370 §3). Each change is
-`loosens`, `tightens` or `neutral`; anything it can't classify loosens.
+`loosens`, `tightens` or `neutral`. It is an **allow-list** (ADR 0516): a change is neutral or
+tightening only if a rule says so; anything else, including any reorder, any removal, an unclassified
+setting and an unmigratable type version, loosens. A re-added id is compared with its archived version,
+a new workflow with the Software floor.
 - A stage with a gate removed, or a `required` gate's stage removed: **loosens**.
 - A conditional gate's condition widened (for example `requiredFrom` medium → large): loosens;
   narrowed: tightens.
@@ -427,10 +432,19 @@ current (ADR 0370 §2). The **floors** are F-rules: no setting, template or agen
   with `autoApprove` on: loosens.
 - A project override that loosens against the org workflow's value loosens; one that tightens
   tightens (Q5).
-- A stage added that has a gate, or a `checks`/`agent-check` stage added: tightens.
+- A stage added that only checks or gates, for every item: tightens. That includes a stage whose
+  type would produce an artifact an earlier, unconditional stage already produces (a second
+  `checks` stage after the first): it checks the existing pull request, it opens none. A stage added
+  that acts outside the factory, irreversibly (a merge, a publish, a deploy) or as a reversible
+  outward write it makes itself (the pull request the first `checks` stage opens), is an action
+  gained: loosens, though it has a gate.
 - A stage moved: loosens if it moves a gate or a check later past a stage that produces what it
   checks, otherwise neutral.
-- Agent instructions, tiers, names: neutral, and **practice** for the improver (ADR 0373).
+- What a judging stage is told (an `agent-check`'s or a `decision`'s `instructions`, the criteria or
+  thresholds it judges by): any change loosens. Free text can't be shown to only add requirements
+  ("…; then pass everything" overrides what came before), so the classifier doesn't try. The same
+  holds for an org agent that judges work in a workflow (Q16).
+- Other agents' instructions, tiers, names: neutral, and **practice** for the improver (ADR 0373).
 - Each type's own `impact()` classifies its settings.
 - A project switching workflows compares the two definitions the same way (ADR 0492 §3).
 
@@ -545,6 +559,17 @@ but bounded and is measured before anything depends on it: the reconciler runs i
 today's Workflow, recording what it would do, and takes no item until it **agrees on 20 items in a
 row**: 20 consecutive finished items whose every transition it predicted, with any divergence
 resetting the count (build plan PR (c)). The switch-over is its own PR, approved by a person.
+
+**Known differences in shadow, to settle before the streak can count.** Each is reported under its
+own name in the item's report (`known`), not as a generic divergence, and counts as a divergence
+until it is settled:
+- `queue-head-moved`: when the head moves in the merge queue, today's Workflow merges the default
+  branch into the branch, waits for CI on the new head and lands with the same approval (ADR 0330),
+  while the reconciler's `publish` stage sends the item back to Checks and reopens the merge gate.
+  The babysitter (spec 53, PRs #103 to #105) changes exactly this: its deliverer lands approved
+  merges, and an approval survives a clean merge of main only while the change is the same. Settle
+  the reconciler's rule with spec 53 as built, then drop the name. The shadow pass sees it as a
+  review packet the queue carried to a new head (`carriedFrom`).
 
 ## The review packet: artifact, evidence, decision
 Today's packet (ADR 0020, 0037, 0041) is a verdict, what changed, criteria with evidence, the
@@ -1152,8 +1177,14 @@ screen needs).
    `workflowTemplate.list`. **Built-in workflows** Attached PR and Incident are listed read-only and
    accept only tightening saves (a loosening one is refused). Projects still run their own config
    and the engine is unchanged: org workflows are visible and editable but not yet used.
-4. **(c) The reconciler in shadow** (migration **0281**: `core_item_stages`, `core_item_steps`,
-   `core_reconcile_shadow`, `core_work_items.reconcile_rev`, `next_check_at`). `reconcile()`, the
+4. **(c) The reconciler in shadow** (migration **0281**: `core_reconcile_items`; as built, `core_item_stages`, `core_item_steps`, `reconcile_rev` and
+   `next_check_at` move to the switch-over, since nothing writes them while the Workflow drives).
+   As built in two PRs: (c1) `reconcile()` and `next()`, pure; (c2) the shadow pass, off the
+   Workflow's path (a cron pass over the items that ended, one verdict row per item), which compares
+   stage order and skips. Jobs and attempts, gates and who decided them, send-back targets and
+   rounds, retry counts, slot steps and ends other than Done are not compared yet: each counts as a
+   divergence on every item, and `reconcile.streak` reports "comparison incomplete: <what is
+   missing>", never a number, until they are. `reconcile()`, the
    snapshot loader and `next()` for Software's types. It runs on the outbox and the cron beside the
    Workflow, drives nothing, and records what it would do next to what the Workflow did; a report
    per item and the **agreement streak** (consecutive finished items with no divergence). The
@@ -1165,6 +1196,13 @@ screen needs).
    overrides and returns the same plan (the (a) table test again, before and after). Release takes the
    current version or flags the item (Q4); tightening reaches running items at the next boundary (Q3).
    May need a new Workflow version (the next free one at merge time) for the re-pin at release.
+   **(d) also closes a live route on main** (see "Known gaps"): `policyImpact` classes a project
+   config save that changes a slot workflow's steps or instructions, or an agent's instructions, as
+   neutral (`packages/core/src/policy/impact.ts`, the `workflows` and `agents` branches), so any
+   project member's `config.save` can tell a slot `work` step's judging agent to pass everything with
+   no approval. (d) moves those steps onto the org workflow, where `workflowImpact` classifies them,
+   and makes the project config's remaining step and agent-instruction changes loosen the same way:
+   a test saves "pass everything" into a slot step and into its agent and expects `self-modify`.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the
@@ -1222,6 +1260,14 @@ sections above were rewritten.
 | 21 | What must hold before it merges with no person? | All five: checks passed and criteria proven by a check that ran; tests intact; the adjudicator approved and has earned it on this project; inside the size and path limits; low risk (no migrations, auth, billing or policy files) | Dark factory mode; ADR 0515 |
 | 22 | Deploy, and changes to the factory itself? | **Differs**: merge and deploy; self-changes still need a person (suggested: merge only) | Dark factory mode; ADR 0515 |
 | 23 | Does it switch itself off when something goes wrong? | Yes | The per-project hold; ADR 0515 |
+
+### Known gaps
+- **A judging agent's instructions are neutral in a project's config, until (d).** On main,
+  `config.save` by any project member classes a change to slot steps and to agent instructions as
+  neutral (`policyImpact`'s `workflows` and `agents` branches). An agent judging a slot `work` step
+  can be told to pass everything with no approval. Org workflows (b) don't have this gap
+  (`workflowImpact` loosens on any change to what a judge is told); projects keep it until (d)
+  closes it, as the build plan says.
 
 ### Flagged for the coordinator
 Places where the answers needed an interpretation, or where they touch each other:

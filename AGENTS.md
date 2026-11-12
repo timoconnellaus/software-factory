@@ -73,6 +73,9 @@ Each rule is checkable in review; the query-plan guard
 10. Expensive clients (the GitHub App, imported keys) are built once per isolate, not per call.
 11. Each wrangler config sets `observability.head_sampling_rate` and `limits.cpu_ms`, with the
     reason for the value beside it.
+12. Machine-frequency operations (heartbeat, presence, held waits, an empty claim, log batches)
+    write no audit row unless state changed (`audit: { changesOnly }`, ADR 0590). A runner's audit
+    `input` is its digest, not the body.
 
 ## Tooling
 
