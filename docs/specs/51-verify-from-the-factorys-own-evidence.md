@@ -1,7 +1,7 @@
-# Spec 26: Verify decides from evidence the factory produced itself
+# Spec 51: Verify decides from evidence the factory produced itself
 
-Read first: ADRs [0440](../adr/0440-the-factory-guards-the-tests.md),
-[0441](../adr/0441-the-factory-runs-the-checks-and-only-executed-evidence-proves-a-criterion.md),
+Read first: ADRs [0450](../adr/0450-the-factory-guards-the-tests.md),
+[0451](../adr/0451-the-factory-runs-the-checks-and-only-executed-evidence-proves-a-criterion.md),
 [0020](../adr/0020-verification-and-review-packet.md),
 [0037](../adr/0037-factory-verify-pinned-and-sha-bound.md),
 [0230](../adr/0230-check-only-incident-fixes-auto-merge.md),
@@ -60,7 +60,7 @@ commands it ran on the head SHA, and CI. The reviewer's opinion stays, labelled 
   turn to end, and runs the checks again: at most `retryLimit` rounds. Then it pushes and hands
   back with the results as they stand.
 - **Reported through the runner channel**, on the hand-back (`checks`), and stored by
-  `run.handBack` in `core_check_results` against the work item and head SHA (migration 0210).
+  `run.handBack` in `core_check_results` against the work item and head SHA (migration 0220).
   A new head has no results until checks run on it.
 - **The Workflow (v7)** reads the build's results for the pushed head: all passed → verify; any
   failed after the session's fixes → a question to a person (try another build, or stop), never a

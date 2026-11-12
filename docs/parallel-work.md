@@ -33,7 +33,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | W | 0160–0169 | 0390–0399 | The desktop app (`desktop-app`): spec 40. ADR 0130 promoted, the client door and desktop devices with presence proofs, `apps/desktop` on Electrobun, the website shrinks to auth | in progress |
 | X | 0170–0179 | 0400–0409 | Watch and steer runs from the dashboard (`hosts-watch-steer`): spec 31. Used: migration 0170; ADR 0400 | in progress |
 | Z | 0190–0199 | 0420–0429 | Linux hosts (`hosts-linux`): spec 34. The systemd user service, platform paths, the harness sandbox on Linux, Linux doctor checks, the install path. Used: ADR 0420, no migrations | in progress |
-| AB | 0210–0219 | 0440–0449 | Verify from the factory's own evidence (`verify-evidence`): spec 26. PR A, the tests-intact guard (ADR 0440, no migrations); PR B, checks run by the runner host, proven criteria (ADR 0441, migration 0210). (AA is claimed in an open PR.) | in progress |
+| AC | 0220–0229 | 0450–0459 | Verify from the factory's own evidence (`verify-evidence`): spec 51. PR A, the tests-intact guard (ADR 0450, no migrations); PR B, checks run by the runner host, proven criteria (ADR 0451, migration 0220). | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
