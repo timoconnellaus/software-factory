@@ -32,6 +32,13 @@ export const SCREENS = [
   { name: "plan-focus", path: "/work/wi_12?tab=plan", design: "PlanFocus.html", keys: ["f"] },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
+  // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
+  {
+    name: "item-review-criteria",
+    path: "/work/wi_13?tab=review",
+    design: "ItemReview.html",
+    scrollTo: '[data-testid="factory-checks"]',
+  },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
   { name: "new-item", path: "/new", design: "WorkNew.html" },
   { name: "setup", path: "/setup", design: "Setup.html" },
@@ -85,7 +92,7 @@ async function connect(port) {
   throw new Error("Chrome didn't start");
 }
 
-async function shoot(cdp, url, file, theme, keys = []) {
+async function shoot(cdp, url, file, theme, keys = [], scrollTo = null) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
@@ -99,6 +106,13 @@ async function shoot(cdp, url, file, theme, keys = []) {
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...ev });
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...ev });
     await sleep(500);
+  }
+  if (scrollTo) {
+    // A screen below the fold: bring the element to the top of its scrolling pane.
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector(${JSON.stringify(scrollTo)})?.scrollIntoView({ block: "start" })`,
+    });
+    await sleep(300);
   }
   const shot = await cdp.send("Page.captureScreenshot", {
     format: "png",
@@ -141,7 +155,14 @@ try {
       await cdp.send("Page.navigate", { url: base });
       await sleep(300);
       await cdp.send("Runtime.evaluate", { expression: "localStorage.clear()" });
-      await shoot(cdp, `${base}#${s.path}`, resolve(out, `${s.name}-${theme}.png`), theme, s.keys);
+      await shoot(
+        cdp,
+        `${base}#${s.path}`,
+        resolve(out, `${s.name}-${theme}.png`),
+        theme,
+        s.keys,
+        s.scrollTo,
+      );
     }
   }
   if (withDesign) {

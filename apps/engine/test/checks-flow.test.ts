@@ -42,7 +42,7 @@ const CHECKS = {
 async function create(w: Awaited<ReturnType<typeof world>>, title = "Add dark mode") {
   return ok<{ workItemId: string; branch: string }>(
     "workItem.create",
-    { projectId: w.projectId, title },
+    { state: "queued", projectId: w.projectId, title },
     w.human,
   );
 }
@@ -140,8 +140,8 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
 
   // PR #79 adds v7's release wait (`version >= 7 && waitForRelease()`) and keeps v7; this PR is v8.
   // Whichever lands first, a v8 item that was released without shaping (created queued, so already
-  // pulled) must go straight from triage to build: waitForRelease is a no-op for it. `state` is
-  // ignored until #79 lands, so this holds on both sides of that merge.
+  // pulled, ADR 0491) must go straight from triage to build: waitForRelease is a no-op for it. This
+  // holds on both sides of #79's merge.
   it("runs a v8 item released without shaping straight from triage to build (no release wait)", async () => {
     const w = await world(CHECKS);
     const item = await ok<{ workItemId: string }>(
