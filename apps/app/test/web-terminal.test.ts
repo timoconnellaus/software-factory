@@ -162,7 +162,9 @@ describe("the web terminal client", () => {
     ws.emit("message", { data: new TextEncoder().encode("hi").buffer });
     expect(sizes).toEqual([[100, 30]]);
     expect(writes.map((w) => new TextDecoder().decode(w as Uint8Array))).toEqual(["hi"]);
-    expect(statusText(statuses.at(-1) ?? INITIAL_STATUS)).toBe("You can type: typing takes the session over · 2 watching");
+    expect(statusText(statuses.at(-1) ?? INITIAL_STATUS)).toBe(
+      "You can type: typing takes the session over · 2 watching",
+    );
 
     ws.emit("message", { data: JSON.stringify({ t: "ended", reason: "the session ended" }) });
     ws.emit("close", { code: 1000, reason: "the session ended" });

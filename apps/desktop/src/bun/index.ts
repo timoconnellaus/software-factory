@@ -14,6 +14,7 @@ import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { operationHandlers } from "./operations.ts";
 import { Runner } from "./runner.ts";
 import { saveTo } from "./save.ts";
+import { Terminals } from "./terminal.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
 /** The inbox count's fallback refresh; the live socket brings changes the moment they happen. */
@@ -70,11 +71,18 @@ const ops = operationHandlers({
   },
   signedOut: () => {
     auth.forget();
+    terminals.closeAll();
     toView("sessionChanged", auth.session());
     refreshTray();
   },
 });
 const guarded = ops.guarded;
+// Runs' web terminals (spec 42): the door's socket here, its frames to the view over the RPC.
+const terminals = new Terminals(
+  ENGINE_URL,
+  () => auth.currentToken(),
+  (e) => toView("terminalEvent", e),
+);
 
 const rpc = BrowserView.defineRPC<AppRPC>({
   maxRequestTime: 120_000,
@@ -91,6 +99,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       },
       signOut: async () => {
         live.stop();
+        terminals.closeAll();
         await auth.signOut();
         setBadge(0);
         return auth.session();
@@ -99,6 +108,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       call: ops.call,
       batch: ops.batch,
       decide: ops.decide,
+      terminalOpen: (p) => terminals.open(p),
+      terminalSend: (p) => terminals.send(p),
+      terminalClose: (p) => terminals.close(p),
       runnerState: () => runner.state,
       runnerAction: async ({ action }) => {
         if (action === "takeover") await runner.takeOverFromLaunchd();
@@ -147,6 +159,7 @@ function openWindow(path?: string) {
   });
   win.on("close", () => {
     win = null;
+    terminals.closeAll();
   });
 }
 

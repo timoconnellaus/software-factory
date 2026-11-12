@@ -389,7 +389,10 @@ describe("the web terminal relay", () => {
     const owner = await token(w.userId, "desktop");
 
     // The owner's desktop: `type`, recorded as the desktop surface with the device.
-    const waiting = c.terminal?.(job.jobId, { fencingToken: job.lease.fencingToken, waitMs: 20_000 });
+    const waiting = c.terminal?.(job.jobId, {
+      fencingToken: job.lease.fencingToken,
+      waitMs: 20_000,
+    });
     await new Promise((r) => setTimeout(r, 200));
     const res = await door(item.workItemId, runId, owner.raw);
     expect(res.status).toBe(101);
