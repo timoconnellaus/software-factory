@@ -79,6 +79,27 @@ export const SCREENS = [
   },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
+  // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
+  {
+    name: "item-review-criteria",
+    path: "/work/wi_13?tab=review",
+    design: "ItemReview.html",
+    scrollTo: "factory-checks",
+  },
+  // The runner could not run the checks (ADR 0501, third review): shown plainly, not passed.
+  {
+    name: "item-review-not-run",
+    path: "/work/wi_13?tab=review&fixture=notrun",
+    design: "ItemReview.html",
+    scrollTo: "factory-checks",
+  },
+  // Fourth review: the decision when checks were not run (merge only without them, recorded).
+  {
+    name: "item-review-not-run-decision",
+    path: "/work/wi_13?tab=review&fixture=notrun",
+    design: "ItemReview.html",
+    scrollTo: "decision",
+  },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
   { name: "new-item", path: "/new", design: "WorkNew.html" },
   { name: "setup", path: "/setup", design: "Setup.html" },
@@ -98,6 +119,9 @@ export const SCREENS = [
     design: "WorkBacklog.html",
   },
   { name: "ready", path: "/work?view=ready", design: "WorkReady.html" },
+  // Spec 52, Q4: a shaped item whose workflow's shaping changed waits on a person's choice. No
+  // design of its own: it follows the Inbox's approval page.
+  { name: "inbox-release-flag", path: "/?item=wi_16", design: "InboxQuestion.html" },
   { name: "planning-empty", path: "/work?view=planning", design: "WorkReady.html" },
   { name: "item-backlog", path: "/work/wi_21", design: "ItemBacklog.html" },
   { name: "item-ready-blocked", path: "/work/wi_site_2", design: "ItemBacklog.html" },
@@ -185,6 +209,8 @@ async function shoot(cdp, url, file, theme, keys = [], clicks = [], scrollTo = n
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
+  // A fixture variant is read once per page load: load it afresh for each theme.
+  if (url.includes("fixture=")) await cdp.send("Page.navigate", { url: "about:blank" });
   await cdp.send("Page.navigate", { url });
   await sleep(1600);
   for (const k of keys) {

@@ -24,6 +24,8 @@ interface RepoState {
   touched?: Record<string, Touch[]>;
   /** Check runs per commit SHA. A SHA with none reads as green CI (`ci`), unless `ciDefault` says otherwise. */
   checks?: Record<string, CheckRunInfo[]>;
+  /** What each check run the App posted says, by check run id (tests read `factory/verify`'s). */
+  checkOutputs?: Record<string, { title: string; summary: string }>;
   /** What a SHA with no check runs of its own reports (default: one green `ci`). */
   ciDefault?: Omit<CheckRunInfo, "id">[];
   /** Files by ref or SHA, for `readFile`. */
@@ -553,6 +555,10 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       if (i >= 0) runs[i] = run;
       else runs.push(run);
       state.checks = { ...(state.checks ?? {}), [check.headSha]: runs };
+      state.checkOutputs = {
+        ...(state.checkOutputs ?? {}),
+        [id]: { title: check.title, summary: check.summary },
+      };
       await save(r, state);
       return { id };
     },

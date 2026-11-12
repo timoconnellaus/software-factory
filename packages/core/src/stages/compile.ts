@@ -31,7 +31,7 @@ export function slotStageId(stepId: string): string {
 }
 
 /** The slot step's own id back from its stage id (the reverse of `slotStageId`). */
-function slotStepId(stageId: string): string {
+export function slotStepId(stageId: string): string {
   const bare = stageId.slice("step-".length);
   return stageId.startsWith("step-") && RESERVED.has(bare) ? bare : stageId;
 }

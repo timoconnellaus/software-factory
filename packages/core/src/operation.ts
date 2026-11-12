@@ -92,13 +92,20 @@ export interface Scope {
    * project's only one. Null when none applies (no repository, or several and none named).
    */
   repository: RepositoryRow | null;
-  /** The project's policy at `policySha`; null when missing or malformed (fails closed). */
+  /**
+   * The project's policy at `policySha`, as the factory runs it: on an org workflow (spec 52 PR
+   * (d)), with the workflow and its overrides resolved into it (`effectivePolicy`). Null when
+   * missing, malformed or unresolvable (fails closed).
+   */
   policy: ProjectPolicy | null;
+  /** The project's config document as saved, before the org workflow is resolved into it. */
+  rawPolicy: ProjectPolicy | null;
   policySha: string | null;
   policyError: string | null;
   /**
    * The config version the work item was created under, when it differs from the current one
-   * (ADR 0370 §5): the gate uses the stricter of the two. Null otherwise, or when it isn't valid.
+   * (ADR 0370 §5): the gate uses the stricter of the two. On an org workflow it is resolved under
+   * the org config version the item pinned. Null otherwise, or when it isn't valid.
    */
   pinnedPolicy: ProjectPolicy | null;
 }
@@ -197,6 +204,23 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
     input: z.output<I>,
     at: { scope: Scope; floor: FloorParse; db: Db },
   ) => RiskClass | Promise<RiskClass>;
+  /**
+   * A `review` answer that only an org owner or admin may decide, not the project's approvers (a
+   * project config save that loosens its org workflow, spec 52 Q6). The pending action is assigned
+   * to the org's admins and marked so `approval.decide` asks for one.
+   */
+  decidedByOrgAdmin?: (
+    input: z.output<I>,
+    at: { scope: Scope; floor: FloorParse; db: Db },
+  ) => Promise<boolean>;
+  /**
+   * The handler reads nothing an org workflow decides (stages, agents, spec size, retries, checks,
+   * review sections), and nor does the gate for it: a polled read. The scope then doesn't resolve
+   * the project's org workflow: `policy` is the project's config as saved (spec 52 PR (d), cost).
+   */
+  skipsOrgWorkflow?: true;
+  /** A permission that depends on the resolved scope (who may decide a pending action). */
+  permissionOf?: (input: z.output<I>, at: { scope: Scope; db: Db }) => Promise<Permission>;
   input: I;
   output: O;
   /** Actor types that may call it at all (checked before the gate). */
@@ -245,7 +269,9 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    *   (`ctx.presence`);
    * - `planning.finishAlone`: the standing form of that bulk accept, within the same limits;
    * - `planning.stop`, `planning.pause`, `planning.resume` and `chat.send` with `interrupt`: steering
-   *   the planner, which changes nothing it has decided.
+   *   the planner, which changes nothing it has decided;
+   * - `workItem.releaseChoice`: a person's choice for an item flagged at release (spec 52, Q4),
+   *   which holds work back or releases it under the gates that apply anyway.
    */
   desktopDecidable?: true;
   /**
@@ -257,6 +283,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    * when rejecting. A function decides per input. `deviceDecidable()` combines the two.
    */
   mobileDecidable?: true | ((input: z.output<I>) => boolean);
+  /**
+   * Inputs the phone may not decide at all, proof or no proof: they stay on the desktop app or the
+   * website. `review.merge` with `mergeWithoutChecks` (ADR 0501, fifth review: merging without
+   * checks the runner couldn't run is not a phone decision until the owner decides otherwise).
+   * Takes the raw input, as the presence challenge sees it.
+   */
+  mobileRefuses?: (input: Record<string, unknown>) => boolean;
   /**
    * The operation decides a pending action (approves, rejects or sends one back), through
    * `decidePending` (gates.ts), which checks who may decide what: the phone may not decide a config

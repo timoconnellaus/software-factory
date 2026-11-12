@@ -26,7 +26,13 @@ import type {
   PendingActionRow,
   Scope,
 } from "./operation.ts";
-import { type Decision, operationGate, parseFloor, type RiskClass } from "./policy/gate.ts";
+import {
+  type Decision,
+  type FloorParse,
+  operationGate,
+  parseFloor,
+  type RiskClass,
+} from "./policy/gate.ts";
 import { getOperation } from "./registry.ts";
 import {
   activeKillSwitch,
@@ -116,15 +122,33 @@ export function canonicalJson(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
 }
 
-/** Whether a device surface's presence proof may decide `op` at all (ADR 0391, 0541). */
-export function presenceSurfaceAllowed(op: AnyOperation, surface: DeviceSurface): boolean {
+/**
+ * Whether a device surface's presence proof may decide `op` at all (ADR 0391, 0541), and for this
+ * input when one is given: an input the phone refuses (`mobileRefuses`) takes no proof there.
+ */
+export function presenceSurfaceAllowed(
+  op: AnyOperation,
+  surface: DeviceSurface,
+  input?: unknown,
+): boolean {
+  if (surface === "mobile" && phoneRefuses(op, input)) return false;
   const surfaces = op.presenceSurfaces ?? (op.presenceDecidable ? ["desktop", "mobile"] : []);
   return surfaces.includes(surface);
 }
 
+/** Whether the phone may not decide this input of `op` at all (`mobileRefuses`). */
+export function phoneRefuses(op: AnyOperation, input: unknown): boolean {
+  return (
+    !!op.mobileRefuses &&
+    input !== null &&
+    typeof input === "object" &&
+    op.mobileRefuses(input as Record<string, unknown>)
+  );
+}
+
 async function presenceAllows(op: AnyOperation, origin: Origin, rawInput: unknown) {
   if (!isDeviceSurface(origin.surface) || !origin.presence) return false;
-  if (!presenceSurfaceAllowed(op, origin.surface)) return false;
+  if (!presenceSurfaceAllowed(op, origin.surface, rawInput)) return false;
   if (origin.presence.op !== op.name) return false;
   return origin.presence.inputDigest === (await inputDigest(rawInput));
 }
@@ -139,6 +163,7 @@ export function deviceDecidable(
   surface: DeviceSurface,
   input: Record<string, unknown>,
 ): boolean {
+  if (surface === "mobile" && phoneRefuses(op, input)) return false;
   if (op.desktopDecidable) return true;
   if (surface !== "mobile" || !op.mobileDecidable) return false;
   return op.mobileDecidable === true || op.mobileDecidable(input);
@@ -205,6 +230,7 @@ export async function runOperation<O = unknown>(
     repositories: [],
     repository: null,
     policy: null,
+    rawPolicy: null,
     policySha: null,
     policyError: null,
     pinnedPolicy: null,
@@ -238,7 +264,11 @@ export async function runOperation<O = unknown>(
     const { role, ...resolved } = await resolveScope(
       db,
       op.scope ? await op.scope(input, db) : defaultScopeRef(input),
-      { d1, userId: actor.type === "human" ? actor.id : null },
+      {
+        d1,
+        userId: actor.type === "human" ? actor.id : null,
+        skipOrgWorkflow: op.skipsOrgWorkflow === true,
+      },
     );
     scope = resolved;
     knownRole = role;
@@ -421,7 +451,10 @@ export async function runOperation<O = unknown>(
 
   // 8. Permission (humans).
   try {
-    await checkPermission(db, actor, op.permission, scope, knownRole);
+    const permission = op.permissionOf
+      ? await op.permissionOf(input, { scope, db })
+      : op.permission;
+    await checkPermission(db, actor, permission, scope, knownRole);
   } catch (error) {
     if (error instanceof OperationError && op.concealAs) {
       // Audited as the forbidden call it is; answered as if there were nothing there.
@@ -457,6 +490,7 @@ export async function runOperation<O = unknown>(
       now,
       reason: gate.reason,
       audit,
+      floor,
     }) as Promise<InvokeResult<O>>;
   }
 
@@ -730,6 +764,7 @@ async function openPendingAction(
     now: string;
     reason: string;
     audit: (fields: AuditFields, subject?: Partial<Scope>) => D1PreparedStatement;
+    floor: FloorParse;
   },
 ): Promise<InvokeResult> {
   const { op, risk, scope, actor, origin, now, reason, audit } = args;
@@ -739,7 +774,13 @@ async function openPendingAction(
   const outboxId = newId("outbox");
   const kind = op.gateKind ?? "approval";
   // The requester decides when they are an approver; otherwise the first approver.
-  const approvers = scope.orgId ? await approverIds(db, scope.orgId, scope.policy) : [];
+  const orgAdmin = op.decidedByOrgAdmin
+    ? await op.decidedByOrgAdmin(args.input, { scope, floor: args.floor, db })
+    : false;
+  // An org admin decides a loosening of the project's org workflow: the org's owners and admins.
+  const approvers = scope.orgId
+    ? await approverIds(db, scope.orgId, orgAdmin ? null : scope.policy)
+    : [];
   const requester = scope.workItem?.requester_user_id;
   // A gate step may name who decides (ADR 0371); they must be one of the project's approvers.
   const named = op.assignee?.(args.input) ?? null;
@@ -775,8 +816,8 @@ async function openPendingAction(
     d1
       .prepare(
         `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, workflow_id, kind, operation, risk,
-           actor_type, actor_id, input, reason, assignee_user_id, timeout_at, policy_sha, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           actor_type, actor_id, input, reason, assignee_user_id, timeout_at, policy_sha, created_at, decider)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         pendingActionId,
@@ -795,6 +836,7 @@ async function openPendingAction(
         timeoutAt,
         scope.policySha,
         now,
+        orgAdmin ? "org-admin" : null,
       ),
     ...(scope.workItemId
       ? [
