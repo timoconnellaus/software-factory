@@ -104,7 +104,7 @@ export interface LocalWorkspace extends WorkspaceHandle {
   launchChecks?: () => Promise<string[]>;
   /**
    * Writes a file the session reads (the prompt) where the session runs, when that isn't this
-   * machine (a sprite, ADR 0460). The host's copy is written as well.
+   * machine (a sprite, ADR 0480). The host's copy is written as well.
    */
   writeRunFile?: (path: string, content: string) => Promise<void>;
 }

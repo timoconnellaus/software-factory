@@ -41,7 +41,7 @@ export interface ScriptedTmuxOptions {
   base?: Exec;
   pid?: number;
   /**
-   * Runs the pane's script instead of standing in for Claude (a sprite job's bridge, ADR 0460):
+   * Runs the pane's script instead of standing in for Claude (a sprite job's bridge, ADR 0480):
    * typed text and keys go to what it returns, and the pane is dead once it sets `session.dead`.
    */
   spawn?: (session: FakeSession, script: string) => { write(data: string): void };

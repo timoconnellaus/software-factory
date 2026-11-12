@@ -130,7 +130,7 @@ For tests, `@software-factory/runner-local/testing` also has a scripted `docker`
 `claude` in a real container under tmux. It probes the home, the egress, the writes and a commit
 that the host then pushes. It is skipped without Docker or tmux.
 
-## A sprite per job (`src/sprites/`, ADR 0460, spec 36)
+## A sprite per job (`src/sprites/`, ADR 0480, spec 36)
 `createSpritesRunner(config)` runs each job (but planning) in a fresh sprite on Sprites, made with the
 owner's token (`sprites.tokenFile`), and keeps runner-local's tmux session on the host. Its pane
 runs `sprite.sh`, the bridge (`tty-bridge.ts`) to the sprite's TTY exec, so the start check, the

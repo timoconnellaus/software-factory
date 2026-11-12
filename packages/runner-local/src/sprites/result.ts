@@ -1,4 +1,4 @@
-// What a sprite's session leaves, brought back into the host's job repo (ADR 0460). The agent's
+// What a sprite's session leaves, brought back into the host's job repo (ADR 0480). The agent's
 // sprite holds a copy of the job repo; the host's own copy is the one it pushes from, and the agent
 // never touches it. When the session ends the host runs the fixed `RESULT` script in the sprite: it
 // snapshots the whole working tree as a commit on top of the agent's HEAD and prints a bundle of

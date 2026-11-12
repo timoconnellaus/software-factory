@@ -1,4 +1,4 @@
-# ADR 0460: A sprite per job, provisioned by the owner's runner host
+# ADR 0480: A sprite per job, provisioned by the owner's runner host
 
 Status: accepted, 2026-11-12. Plan:
 [`.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`](../../.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md)

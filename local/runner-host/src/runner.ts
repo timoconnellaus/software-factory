@@ -93,7 +93,7 @@ export const containerDirs = (
   runtime: dockerRuntime({ exec, bin: dockerBin(config) }),
 });
 
-/** A sprites runner's dirs and API, for reaping and `doctor` (ADR 0460). */
+/** A sprites runner's dirs and API, for reaping and `doctor` (ADR 0480). */
 export async function spriteDirs(
   config: Pick<RunnerConfig, "sprites" | "runnerId">,
   dirs: Paths,
@@ -181,7 +181,7 @@ export function buildRunner(
     session: sessionMode,
     ...options.local,
   };
-  // ADR 0430: a container per job when the owner opts in; ADR 0460: a sprite per job; else the
+  // ADR 0430: a container per job when the owner opts in; ADR 0480: a sprite per job; else the
   // worktree and Claude's sandbox.
   const adapter = sprites
     ? createSpritesRunner({

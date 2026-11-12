@@ -1,4 +1,4 @@
-// The sprite's run files, mirrored onto the host (ADR 0460). runner-local reads a run's progress
+// The sprite's run files, mirrored onto the host (ADR 0480). runner-local reads a run's progress
 // from files: the launch script's pid file, the status hook's `status.jsonl`, Claude's transcript
 // (ADR 0380, 0400). In a sprite they are written there, so the host pulls what was appended since its
 // last read into the same absolute paths on the host, and runner-local's start check, events and

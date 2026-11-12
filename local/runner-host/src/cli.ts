@@ -22,7 +22,7 @@
 //                                  Claude accounts on this host (ADR 0410): new jobs use the
 //                                  active one; credentials never leave this machine
 //   sf-runner sprites login [--no-check] | status | logout
-//                                  the owner's Sprites token (ADR 0460), on stdin, kept 0600
+//                                  the owner's Sprites token (ADR 0480), on stdin, kept 0600
 //                                  here: with "isolation": "sprites" each job runs in a sprite
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
@@ -538,7 +538,7 @@ async function doctor(args: string[]) {
     });
   }
   if (configured?.isolation === "sprites") {
-    // ADR 0460: a sprite per job, made with the owner's Sprites token.
+    // ADR 0480: a sprite per job, made with the owner's Sprites token.
     let apiUp = false;
     await check("Sprites token and API", async () => {
       const token = await readSpritesToken(dirs.spritesTokenFile);
@@ -583,7 +583,7 @@ async function doctor(args: string[]) {
     for (const jobId of jobs) {
       const runDir = join(dirs.runsDir, jobId);
       // A container job's Claude is checked inside its container (ADR 0430), a sprite job's in its
-      // sprite (ADR 0460).
+      // sprite (ADR 0480).
       const sprite = await readSpriteRecord(runDir);
       let checked: Awaited<ReturnType<typeof checkRunningHarness>>;
       if (sprite) {

@@ -1,4 +1,4 @@
-// The job's tmux pane on the host, bridged to Claude in its sprite (ADR 0460). The pane runs
+// The job's tmux pane on the host, bridged to Claude in its sprite (ADR 0480). The pane runs
 // `sprite.sh`, which `exec`s this script with Node: it opens the sandbox's exec WebSocket with a TTY
 // and pipes the pane's terminal through it, raw, both ways. So everything runner-local does with the
 // pane works on a sprite unchanged: the trust dialog and the prompt pointer typed with `send-keys`,

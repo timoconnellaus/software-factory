@@ -1,4 +1,4 @@
-// `sf-runner sprites …` (ADR 0460, spec 36): the owner's Sprites token on this host. The host makes
+// `sf-runner sprites …` (ADR 0480, spec 36): the owner's Sprites token on this host. The host makes
 // a sprite per job with it; the factory never sees it, and no sprite ever holds it.
 //
 //   sf-runner sprites login [--no-check]   the token on stdin (from https://sprites.dev/account,

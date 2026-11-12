@@ -1,4 +1,4 @@
-// After a host crash, and for `sf-runner doctor`: sprite jobs the host no longer runs (ADR 0460).
+// After a host crash, and for `sf-runner doctor`: sprite jobs the host no longer runs (ADR 0480).
 // A sprite's name starts with this runner's prefix (`sf-<runner>-`), so only its own are touched,
 // never the owner's other sprites or another host's; its host dir is `<spritesDir>/sf-<jobId>`.
 // A sprite is reaped when no live job has its name. Host dirs go with plain file operations.

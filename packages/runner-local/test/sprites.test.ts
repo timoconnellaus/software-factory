@@ -1,4 +1,4 @@
-// A sprite per job (ADR 0460) against a fake Sprites API on localhost (src/sprites/fake.ts): its
+// A sprite per job (ADR 0480) against a fake Sprites API on localhost (src/sprites/fake.ts): its
 // HTTP endpoints and exec WebSocket, with the runner's fixed scripts run for real in a directory per
 // sprite, and real git. The job's tmux pane is scripted, but it runs the real bridge in-process, so
 // typed keys go over the TTY WebSocket to a stand-in Claude in the sprite.
@@ -190,7 +190,7 @@ const builds = (agent: FakeAgent) => {
   agent.append({ event: "Stop" });
 };
 
-describe("the Sprites API client (ADR 0460)", () => {
+describe("the Sprites API client (ADR 0480)", () => {
   it("creates, lists by prefix, sets egress, execs with stdin and destroys, with bearer auth", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "sf-spr-api-")));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

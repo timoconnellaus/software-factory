@@ -1,4 +1,4 @@
-// A sprite job (ADR 0460) on the real tmux (skipped when tmux isn't installed), against the fake
+// A sprite job (ADR 0480) on the real tmux (skipped when tmux isn't installed), against the fake
 // Sprites API: the job's pane runs the real bridge as its own Node process (`sprite.sh`), the
 // stand-in Claude in the sprite answers over the TTY WebSocket, and the web terminal's tmux
 // control-mode bridge (ADR 0440) sees and types into the same pane. The live run against Sprites

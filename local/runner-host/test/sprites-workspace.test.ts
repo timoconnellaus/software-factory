@@ -1,4 +1,4 @@
-// A sprite per job (ADR 0460) with the runner host's real git: runJob drives the sprites adapter
+// A sprite per job (ADR 0480) with the runner host's real git: runJob drives the sprites adapter
 // against the fake Sprites API (its scripts run for real in a directory per sprite) end to end.
 // The host merges the default branch into the job repo, the agent commits in the "sprite", the
 // result comes back as a bundle and the host pushes the run branch with the job token. Neither the
@@ -117,7 +117,7 @@ const agentCommits =
     agent.append({ event: "Stop" });
   };
 
-describe("a sprite job and the host's push (ADR 0460)", { timeout: 30_000 }, () => {
+describe("a sprite job and the host's push (ADR 0480)", { timeout: 30_000 }, () => {
   it("merges main, takes the agent's work back and pushes only the run branch with the job token", async () => {
     let tree = "";
     const w = await world(

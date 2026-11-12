@@ -186,7 +186,7 @@ Switching a runner: install Docker, then follow these steps with no jobs running
 2. Run `sf-runner doctor --fix`. It checks Docker and the credential, and builds the image.
 3. Run `sf-runner install`, which puts `docker` on the service's PATH and restarts the service.
 
-### A sprite per job (`"isolation": "sprites"`, ADR 0460, spec 36)
+### A sprite per job (`"isolation": "sprites"`, ADR 0480, spec 36)
 Opt in per runner. Each job (but planning) runs in a fresh sprite on **your** Sprites account
 (Fly.io, [sprites.dev](https://sprites.dev)), made by this host. Jobs no longer use the Mac's CPU:
 the host only bridges the terminal and pulls the run's files, so `maxConcurrent` can go up.
@@ -444,12 +444,12 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 | `capabilities` | `hooks`, `ui-takeover`, `own-hardware`, `work-item-attachments` (+ `container-isolation` with containers) | No `browser`: screenshot evidence is skipped |
 | `identity` | `Software Factory <software-factory@users.noreply.github.com>` | Commit author |
 | `autoUpdate` | `true` | Update the runner's checkout to the deployed commit when idle (ADR 0360); `false` reports `blocked` instead |
-| `isolation` | `sandbox` | `container`: a Docker container per job, every stage `bypassPermissions` (ADR 0430, above); `sprites`: a fresh sprite per job on your Sprites account (ADR 0460, above) |
+| `isolation` | `sandbox` | `container`: a Docker container per job, every stage `bypassPermissions` (ADR 0430, above); `sprites`: a fresh sprite per job on your Sprites account (ADR 0480, above) |
 | `container.env` | — | The model credential for containers on the `default` account: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`. Else the same variable in sf-runner's environment. A token account's token wins; a login account can't be used in a container |
 | `container.docker` | found on PATH, Homebrew, `~/.local/bin`, Docker.app | The `docker` CLI |
 | `container.allowedHosts` | — | More egress hosts for every job on this runner (`host`, `*.host`, `host:port`) |
 | `container.cpus`, `container.memory`, `container.pids` | —, —, 4096 | Limits per job container (`memory` in Docker's syntax, `8g`) |
-| `sprites.apiUrl` | `https://api.sprites.dev` | The Sprites API, with `"isolation": "sprites"` (ADR 0460). The token is not here: `sf-runner sprites login` |
+| `sprites.apiUrl` | `https://api.sprites.dev` | The Sprites API, with `"isolation": "sprites"` (ADR 0480). The token is not here: `sf-runner sprites login` |
 | `sprites.allowedHosts` | — | More egress hosts for every job's sprite (`host`, `*.host`; a port is dropped) |
 | `repoUrlMap` | — | Test only: clone and push a local bare repo in place of GitHub |
 
@@ -479,7 +479,7 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
 | `src/runner.ts` | Wires config → channel client + git + runner-local, its container runner with `isolation: container`, or its sprites runner with `isolation: sprites` (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
-| `src/sprites-cli.ts` | `sf-runner sprites login/status/logout`: the owner's Sprites token (ADR 0460) |
+| `src/sprites-cli.ts` | `sf-runner sprites login/status/logout`: the owner's Sprites token (ADR 0480) |
 | `src/accounts.ts`, `src/account-cli.ts` | Claude accounts on the host (ADR 0410): the registry, token files, config dirs, usage limits, `sf-runner account` |
 | `src/config.ts`, `src/cli.ts` | `sf-runner pair/run/status/doctor/install/uninstall/account` |
 | `src/service.ts`, `src/launchd.ts`, `src/systemd.ts` | The service by platform: launchd on macOS, a systemd user unit on Linux (ADR 0420) |

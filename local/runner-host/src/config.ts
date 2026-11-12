@@ -44,7 +44,7 @@ export const configSchema = z.object({
   /**
    * Where jobs run (ADR 0430): `sandbox` (default) is a worktree with Claude Code's OS sandbox on
    * this machine (ADR 0270); `container` is a Docker container per job, every stage with
-   * permissions off; `sprites` is a cloud sandbox per job on Sprites, made by this host (ADR 0460).
+   * permissions off; `sprites` is a cloud sandbox per job on Sprites, made by this host (ADR 0480).
    */
   isolation: z.enum(["sandbox", "container", "sprites"]).default("sandbox"),
   /** Container isolation's settings (ADR 0430). */
@@ -77,7 +77,7 @@ export const configSchema = z.object({
     .strict()
     .optional(),
   /**
-   * Sprites isolation's settings (ADR 0460): a fresh sprite per job, made by this host with the
+   * Sprites isolation's settings (ADR 0480): a fresh sprite per job, made by this host with the
    * owner's Sprites token. The token is not here: `sf-runner sprites login` keeps it in its own
    * 0600 file next to this one. The model credential is the active Claude account's token.
    */
@@ -114,7 +114,7 @@ export interface Paths {
    * credential env files (ADR 0430). Under the data dir: Docker Desktop shares the home dir.
    */
   containersDir: string;
-  /** The owner's Sprites token (ADR 0460): 0600, under the config dir every run denies. */
+  /** The owner's Sprites token (ADR 0480): 0600, under the config dir every run denies. */
   spritesTokenFile: string;
   /** Sprites jobs' host-side dirs (`<spritesDir>/sf-<jobId>/`: the job repo and mirrored files). */
   spritesDir: string;

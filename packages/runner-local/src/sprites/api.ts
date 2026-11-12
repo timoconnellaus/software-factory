@@ -1,4 +1,4 @@
-// A cloud sandbox per job (ADR 0460): the small interface the sprites runner needs from a sandbox
+// A cloud sandbox per job (ADR 0480): the small interface the sprites runner needs from a sandbox
 // provider, and Sprites (Fly.io, https://sprites.dev) over its HTTP and WebSocket API. Another
 // provider would be a second implementation of `SandboxApi`; nothing else in the module names
 // Sprites' endpoints.

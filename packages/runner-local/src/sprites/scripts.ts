@@ -1,4 +1,4 @@
-// What the runner runs inside a job's sprite (ADR 0460). Each is a fixed `/bin/sh` script, run as
+// What the runner runs inside a job's sprite (ADR 0480). Each is a fixed `/bin/sh` script, run as
 // `sh -c <script> sf <args…>`, that takes every path it touches as an argument and marks itself on
 // its second line (`# sf-sprite:<name>`). Nothing the agent wrote is ever a script the host runs:
 // what comes back (the result bundle, mirrored files) is data, read by the host's own code.

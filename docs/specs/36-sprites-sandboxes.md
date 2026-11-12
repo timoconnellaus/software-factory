@@ -3,7 +3,7 @@
 Read first:
 - the plan, [`.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`](../../.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md)
   (piece 7, "Joining");
-- ADRs [0460](../adr/0460-a-sprite-per-job-provisioned-by-the-owners-host.md),
+- ADRs [0480](../adr/0480-a-sprite-per-job-provisioned-by-the-owners-host.md),
   [0430](../adr/0430-a-container-per-job.md), [0380](../adr/0380-runner-local-tmux-and-hook-status.md),
   [0400](../adr/0400-watch-and-steer-runs-from-the-dashboard.md),
   [0440](../adr/0440-a-web-terminal-relayed-through-a-durable-object-per-job.md),
@@ -89,8 +89,8 @@ longer the host's CPU.
 
 ## Out of scope
 - A provisioner in the cloud (a Sprites connector in `sf-engine`), and a daemon inside the sprite
-  (ADR 0460 §1).
-- A warm per-project pool restored from checkpoints (ADR 0460 §2).
+  (ADR 0480 §1).
+- A warm per-project pool restored from checkpoints (ADR 0480 §2).
 - Planning sessions in a sprite. Stream-json sessions on sprites.
 - Sprites billing or usage in the dashboard. Other sandbox providers beyond the `SandboxApi`
   interface.

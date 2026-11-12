@@ -1,4 +1,4 @@
-// Test support: a fake Sprites API (ADR 0460) on localhost, answering the endpoints `spritesApi`
+// Test support: a fake Sprites API (ADR 0480) on localhost, answering the endpoints `spritesApi`
 // uses with the same shapes and framing: bearer auth, create/get/list/destroy, the network policy,
 // and exec over a WebSocket, without a TTY (stream-prefixed binary frames, stdin until EOF, an exit
 // frame) and with one (raw bytes, `session_info`, `resize`, `exit`, reattach by session id).

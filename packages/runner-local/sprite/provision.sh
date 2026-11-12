@@ -1,6 +1,6 @@
 #!/bin/sh
 # sf-sprite:provision
-# The software factory's agent toolchain in a fresh sprite (ADR 0460): what the agent image's
+# The software factory's agent toolchain in a fresh sprite (ADR 0480): what the agent image's
 # Dockerfile (`../container/Dockerfile`, ADR 0430) gives a container, on Sprites' own Linux image,
 # which can't be replaced. Claude Code is pinned to the Dockerfile's version and installed in its own
 # prefix, never the sprite's preinstalled one. Run by the runner once per job, before the job's

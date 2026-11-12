@@ -1,4 +1,4 @@
-// A cloud sandbox per job on Sprites (ADR 0460, spec 36). The owner's runner host provisions it:
+// A cloud sandbox per job on Sprites (ADR 0480, spec 36). The owner's runner host provisions it:
 // for each claimed job it creates a fresh sprite with the owner's Sprites token, installs the agent
 // toolchain, puts on the egress allowlist, copies the job's own repo and run files in, and runs the
 // harness's unchanged launch script there with the job's Claude account token. runner-local's tmux
@@ -201,7 +201,7 @@ export function egressProblems(want: EgressRule[], have: EgressRule[] | null): s
 export function spriteScript(jobId: string, node: string, config: string): string {
   return [
     "#!/bin/sh",
-    `# Written by the software factory runner for job ${jobId}: Claude Code in a sprite (ADR 0460).`,
+    `# Written by the software factory runner for job ${jobId}: Claude Code in a sprite (ADR 0480).`,
     "# This pane is bridged to the sprite's terminal; the harness's own launch script runs there.",
     `exec ${[node, "--experimental-transform-types", "--no-warnings", BRIDGE_SCRIPT, config].map(shellQuote).join(" ")}`,
     "",
@@ -222,7 +222,7 @@ export function spriteEntry(input: {
   const task = `sf-${input.jobId.replace(/[^A-Za-z0-9-]/g, "-")}`;
   return [
     "#!/bin/sh",
-    `# Written by the software factory runner for job ${input.jobId}: the sprite's side (ADR 0460).`,
+    `# Written by the software factory runner for job ${input.jobId}: the sprite's side (ADR 0480).`,
     `set -a; . ${shellQuote(input.credentialFile)}; set +a`,
     `rm -f ${shellQuote(input.credentialFile)}`,
     ...Object.entries(input.env).map(([k, v]) => `export ${k}=${shellQuote(v)}`),
@@ -463,7 +463,7 @@ export function createSpritesRunner(
     return files;
   }
 
-  /** After the session: the result into the host's job repo, then the checks (ADR 0460). */
+  /** After the session: the result into the host's job repo, then the checks (ADR 0480). */
   async function afterSession(job: Job, ws: SpriteWorkspace): Promise<string[]> {
     const provider = await api();
     const record = ws.sprite;
@@ -505,7 +505,7 @@ export function createSpritesRunner(
     async manifest(): Promise<CapabilityManifest> {
       const base = await local.manifest();
       // Not the owner's hardware: a project that requires `own-hardware` (client repos) won't
-      // route here. The sandbox is at least a container's boundary (ADR 0460).
+      // route here. The sandbox is at least a container's boundary (ADR 0480).
       return {
         ...base,
         capabilities: [
@@ -793,7 +793,7 @@ export function createSpritesRunner(
       yield {
         type: "session.ended",
         outcome: "failed",
-        summary: [ended.summary, `Not pushing: ${problems.join("; ")}. The run failed (ADR 0460).`]
+        summary: [ended.summary, `Not pushing: ${problems.join("; ")}. The run failed (ADR 0480).`]
           .filter(Boolean)
           .join("\n\n"),
       };
