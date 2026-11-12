@@ -5,6 +5,7 @@ import { env } from "cloudflare:workers";
 import { canonicalJson, inputDigest, presenceMessage, rawSignature } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import { pruneChannelStore } from "../src/channel.ts";
+import { DESKTOP_PROTOCOL_LATEST } from "../src/cli.ts";
 import worker from "../src/index.ts";
 import { notifyClients } from "../src/outbox.ts";
 import { first, ok, type World, world } from "./helpers.ts";
@@ -421,11 +422,17 @@ describe("the desktop app's client door (/client/v1)", () => {
   it("answers update_required to a desktop build below DESKTOP_MIN_PROTOCOL (spec 40 M4, ADR 0393)", async () => {
     const w = await world();
     const { token } = await signIn(w);
-    const at = (min: string, protocol?: string, path = "call", auth: string | null = token) =>
+    const at = (
+      min: string,
+      protocol?: string,
+      path = "call",
+      auth: string | null = token,
+      method = "POST",
+    ) =>
       worker.fetch(
         new Request(`https://sf-engine.example/client/v1/${path}`, {
-          method: "POST",
-          body: JSON.stringify({ op: "inbox.list", input: {} }),
+          method,
+          ...(method === "POST" ? { body: JSON.stringify({ op: "inbox.list", input: {} }) } : {}),
           headers: {
             "content-type": "application/json",
             ...(auth ? { authorization: `Bearer ${auth}` } : {}),
@@ -437,16 +444,29 @@ describe("the desktop app's client door (/client/v1)", () => {
     // No floor (the default): every build is served, with or without the header.
     expect((await at("")).status).toBe(200);
     expect((await at("", "1")).status).toBe(200);
-    // A floor of 2: protocol 1, no header (a build before the handshake) and junk are too old.
-    for (const p of ["1", undefined, "two"]) {
-      const res = await at("2", p);
+    // A floor of 1: no header (a build before the handshake) and junk are too old.
+    for (const p of [undefined, "0", "two"]) {
+      const res = await at("1", p);
       expect(res.status).toBe(426);
-      expect(await json(res)).toMatchObject({ code: "update_required", minProtocol: 2 });
+      expect(await json(res)).toMatchObject({ code: "update_required", minProtocol: 1 });
     }
-    expect((await at("2", "2")).status).toBe(200);
-    expect((await at("2", "3")).status).toBe(200);
+    expect((await at("1", "1")).status).toBe(200);
+    expect((await at("1", "2")).status).toBe(200);
+    // One gate for every route: batch, ops, the live socket (refused before any upgrade), and a
+    // path no route knows yet still answers update_required, not 404, to an old desktop token.
+    expect((await at("1", undefined, "batch")).status).toBe(426);
+    expect((await at("1", undefined, "ops", token, "GET")).status).toBe(426);
+    expect((await at("1", undefined, "live", token, "GET")).status).toBe(426);
+    expect((await at("1", undefined, "terminal/wi_x/run_y", token, "GET")).status).toBe(426);
     // Sign-in is refused too, before it mints anything.
-    expect((await at("2", "1", "desktop/start", null)).status).toBe(426);
+    expect((await at("1", undefined, "desktop/start", null)).status).toBe(426);
+    // No token is no desktop: the route answers 401 as before.
+    expect((await at("1", undefined, "call", null)).status).toBe(401);
+    // A floor above the newest protocol this engine knows would lock every build out, sign-in
+    // included: it is ignored, not enforced.
+    expect(DESKTOP_PROTOCOL_LATEST).toBe(1);
+    expect((await at("2", "1")).status).toBe(200);
+    expect((await at("99", undefined, "desktop/start", null)).status).not.toBe(426);
   });
 
   it("caps waiting sign-ins and prunes old requests and challenges", async () => {

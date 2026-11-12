@@ -4,7 +4,7 @@
 import { hostname } from "node:os";
 import { join } from "node:path";
 import Electrobun, { BrowserView, BrowserWindow, Tray, Updater, Utils } from "electrobun/main";
-import type { AppRPC, RunnerState } from "../shared/rpc.ts";
+import type { AppRPC, RunnerState, UpdateStatus } from "../shared/rpc.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
 import { Door } from "./door.ts";
@@ -49,13 +49,7 @@ async function deviceName(): Promise<string> {
 
 let auth: Auth;
 // A door that says this build is too old (ADR 0393) sends the updater to look now.
-const door = () =>
-  new Door(
-    ENGINE_URL,
-    () => auth.currentToken(),
-    fetch,
-    () => void updates.checkNow(),
-  );
+const door = () => new Door(ENGINE_URL, () => auth.currentToken(), fetch, doorSaysUpdate);
 auth = new Auth(door, await deviceName());
 await auth.init();
 
@@ -120,6 +114,17 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         enabled: enable === undefined ? loginItemEnabled() : setLoginItem(enable),
       }),
       openExternal: ({ url }) => ({ ok: /^https:\/\//.test(url) && Utils.openExternal(url) }),
+      updateStatus: () => updateStatus(),
+      updateAction: async ({ action }) => {
+        if (action === "restart" && liveJobs().length === 0) await restartToUpdate();
+        if (action === "restart-when-idle") restartWhenIdle = true;
+        // The view named the jobs this cancels.
+        if (action === "restart-anyway") await restartToUpdate();
+        if (action === "download") Utils.openExternal(downloadUrl);
+        if (action === "retry") updateRequired = false;
+        pushUpdate();
+        return updateStatus();
+      },
       saveDownload: ({ filename, base64 }) => {
         try {
           const path = saveTo(Utils.paths.downloads, filename, Buffer.from(base64, "base64"));
@@ -189,9 +194,43 @@ const updates = new Updates(
     }
     told = say ?? told;
     if (u.error) console.log(`updates: ${u.error}`);
-    refreshTray();
+    pushUpdate();
   },
 );
+/**
+ * The door answered update_required (ADR 0393): show the view's "Update required" screen and look
+ * for an update now (updates.ts throttles how often). The updater talks only to the download
+ * bucket, never the door, so a wrong floor on the engine can't stop the app from updating.
+ */
+let updateRequired = false;
+function doorSaysUpdate() {
+  if (!updateRequired) {
+    updateRequired = true;
+    pushUpdate();
+  }
+  void updates.checkNow();
+}
+let downloadUrl = "https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip";
+void Updater.localInfo.channel().then((c) => {
+  if (c === "stable" || c === "canary")
+    downloadUrl = `https://downloads.zerobsai.com/desktop/${c}-macos-arm64-Software-Factory.zip`;
+});
+function updateStatus(): UpdateStatus {
+  const u = updates.state;
+  return {
+    required: updateRequired,
+    ready: u.ready,
+    version: u.version,
+    error: u.error,
+    needsMove: u.needsMove,
+    jobs: liveJobs().length,
+    downloadUrl,
+  };
+}
+function pushUpdate() {
+  toView("updateChanged", updateStatus());
+  refreshTray();
+}
 /** The person chose "Restart to update when the runner is idle". */
 let restartWhenIdle = false;
 
@@ -258,11 +297,11 @@ async function restartToUpdate() {
   });
   refreshTray();
 }
-// The job count in the menu, and the deferred restart once the runner is idle.
+// The job count in the menu and the view, and the deferred restart once the runner is idle.
 setInterval(() => {
   if (!updates.state.ready) return;
   if (restartWhenIdle && liveJobs().length === 0) void restartToUpdate();
-  else refreshTray();
+  else pushUpdate();
 }, 15_000);
 
 function refreshTray() {

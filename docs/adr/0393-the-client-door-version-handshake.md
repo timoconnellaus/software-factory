@@ -21,9 +21,19 @@ channels don't order against each other, and a local build is `0.0.1`.
 2. **The engine keeps a floor.** `DESKTOP_MIN_PROTOCOL` (an sf-engine var in `wrangler.jsonc`,
    empty = 0 = serve every build) is the oldest protocol the door still serves. A desktop sign-in or a
    desktop token's request below it gets **426** `{ code: "update_required", minProtocol }`, before
-   anything runs. CLI tokens are not checked: the CLI ships with the repo.
+   anything runs. CLI tokens are not checked: the CLI ships with the repo. The check is in **one
+   place**, `versionGate` at the top of `handleCli` (`apps/engine/src/cli.ts`), before any route:
+   every route and socket a desktop token reaches gets it, including ones added later (the terminal
+   socket, spec 42). A WebSocket client must send the protocol headers on its upgrade request.
+   A floor above `DESKTOP_PROTOCOL_LATEST` (the newest protocol the engine knows, bumped with
+   `DOOR_PROTOCOL`) is a mistake that would refuse every build, sign-in included, so it is ignored
+   and logged, not enforced.
 3. **The app updates.** The door client throws `UpdateRequiredError`, which asks the updater to check
-   now; the view gets `code: "update_required"` instead of a generic failure.
+   now (at most once every 10 minutes, however many requests are refused), and the view shows an
+   **Update required** screen in place of everything else, signed in or not: *Restart to update*
+   when a verified update is staged (waiting for, or naming, the runner's jobs), otherwise the
+   download link and *Try again*. The updater talks only to the download bucket, never the door,
+   so a wrong floor can't stop an app from updating.
 4. **Raising the floor is a deploy change made in a PR**, like the other engine vars, and is done only
    when older builds must stop. Keeping the door backward-compatible stays the default.
 
@@ -33,3 +43,9 @@ channels don't order against each other, and a local build is `0.0.1`.
 - Dev builds never update themselves, so a dev build below the floor stays refused until it's
   rebuilt; a local dev engine leaves the floor empty.
 - The floor isn't a factory policy: it doesn't change what anyone may do, only which builds may ask.
+- **Recovery from a wrong floor.** If `DESKTOP_MIN_PROTOCOL` is set above what shipped builds speak
+  (but not above `DESKTOP_PROTOCOL_LATEST`, which is ignored), every such build, sign-in included,
+  sees *Update required*. Fix it on the engine, not the app: set the var back to `""` in
+  `apps/engine/wrangler.jsonc` and deploy (a PR, as usual), or, faster, roll sf-engine back to the
+  previous version (`wrangler rollback` from `apps/engine`, or the dashboard's Deployments tab).
+  The apps then recover with *Try again*; nothing on the Macs needs changing.

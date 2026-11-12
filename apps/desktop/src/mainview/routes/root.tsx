@@ -8,7 +8,8 @@ import { createRootRouteWithContext, Outlet, useRouter } from "@tanstack/react-r
 import { useEffect, useState } from "react";
 import type { Session } from "../../shared/rpc.ts";
 import { bun, onInbox, onNavigate } from "../bridge.ts";
-import { useDesktopSession } from "../lib/desktop-session.ts";
+import { UpdateRequired } from "../components/update-required.tsx";
+import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
 
 export const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Root,
@@ -31,6 +32,7 @@ function Root() {
   const router = useRouter();
   const client = useQueryClient();
   const session = useDesktopSession();
+  const update = useUpdateStatus();
   useEffect(
     () =>
       onNavigate((path) => {
@@ -55,6 +57,17 @@ function Root() {
     void router.invalidate();
   }, [signedIn, client, router]);
   if (!session) return null;
+  // The door refused this build (ADR 0393): only updating helps, signed in or not.
+  if (update?.required)
+    return (
+      <UpdateRequired
+        status={update}
+        act={async (action) => {
+          client.setQueryData(["update"], await bun.updateAction({ action }));
+          if (action === "retry") void client.invalidateQueries();
+        }}
+      />
+    );
   return (
     <>
       {session.signedIn ? <Outlet /> : <SignIn session={session} />}

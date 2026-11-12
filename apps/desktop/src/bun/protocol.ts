@@ -5,7 +5,7 @@
 // Bump DOOR_PROTOCOL in the change that makes this app depend on something new in the door; raise
 // DESKTOP_MIN_PROTOCOL on the engine only when older builds must stop (they then update).
 
-/** The door protocol this build speaks. */
+/** The door protocol this build speaks. Bump DESKTOP_PROTOCOL_LATEST in apps/engine/src/cli.ts with it. */
 export const DOOR_PROTOCOL = 1;
 
 /** The headers every door request carries (fetch and the live socket). */

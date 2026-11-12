@@ -221,8 +221,14 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
 - **The version handshake** ([ADR 0393](../adr/0393-the-client-door-version-handshake.md)): the app
   sends `x-sf-client-protocol` (`DOOR_PROTOCOL`, `src/bun/protocol.ts`) on every door request and
   the live socket. Below sf-engine's `DESKTOP_MIN_PROTOCOL` (empty: serve every build) a desktop
-  sign-in or token gets 426 `update_required`; the app then checks for an update at once and the
-  view gets that code. Tested in `apps/engine/test/desktop.test.ts` and `apps/desktop/test`.
+  sign-in or token gets 426 `update_required`. The check is one gate at the top of the door's
+  handler, so every route and socket gets it (spec 42's terminal socket too; its WebSocket client
+  must send the protocol headers). A floor above the newest protocol the engine knows is ignored,
+  not enforced. The app checks for an update (at most every 10 minutes) and the view shows an
+  **Update required** screen instead of everything else: *Restart to update* when a verified update
+  is staged (waiting for the runner's jobs, or naming what restarting now cancels), otherwise the
+  download link and *Try again*. Recovery from a wrong floor is on the engine (ADR 0393). Tested in
+  `apps/engine/test/desktop.test.ts` and `apps/desktop/test` (`update-required.test.ts`).
 - **Not yet:**
   - **M4b, the Secure Enclave key.** Tested on the M5 with the real Developer ID: a command-line
     `sf-keys` signed with `keychain-access-groups` is killed by macOS (restricted entitlement, no
