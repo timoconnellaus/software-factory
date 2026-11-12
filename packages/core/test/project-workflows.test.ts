@@ -705,3 +705,127 @@ describe("people read an org workflow's name", () => {
     expect(got.workflow).toMatchObject({ name: SHIP.id, label: "Ship it" });
   });
 });
+
+describe("an override's approval is only ever an org admin's, of that override (fifth review)", () => {
+  const pending = async (w: W) =>
+    first<{ id: string; decider: string | null }>(
+      "SELECT id, decider FROM core_pending_actions WHERE project_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+      w.projectId,
+    );
+  const checks = async (w: W) =>
+    (await resolveScope(createDb(env.DB), { projectId: w.projectId })).policy?.protection
+      .requiredChecks;
+  const approvalRows = (w: W) =>
+    rows<{
+      org_version: number;
+      stage_id: string;
+      setting: string;
+      value: string;
+      approved_by: string;
+    }>(
+      "SELECT org_version, stage_id, setting, value, approved_by FROM core_override_approvals WHERE project_id = ?",
+      w.projectId,
+    );
+  // A project's override ["ci","x"] is tighter than the org's ["ci"]; the org then moves to
+  // ["ci","b"], so the override is looser; until approved the stricter value applies.
+  async function stranded() {
+    const w = await world();
+    await orgWorkflow(w);
+    const approver = await member(w, "member");
+    const x = { verify: { requiredChecks: ["ci", "x"] } };
+    // The project names its own approver (a loosening an admin approves).
+    if (
+      (await saveConfig(w, { ...POLICY, approvers: [approver.login], workflow: SHIP.id }))
+        .status === "pending"
+    )
+      await ok(
+        "approval.decide",
+        { pendingActionId: (await pending(w)).id, decision: "approved" },
+        w.human,
+      );
+    expect(
+      status(
+        await saveConfig(w, {
+          ...POLICY,
+          approvers: [approver.login],
+          workflow: SHIP.id,
+          workflowOverrides: x,
+        }),
+      ),
+    ).toBe("ok");
+    await ok(
+      "workflow.save",
+      { orgId: w.orgId, baseVersion: 2, workflow: withVerify({ requiredChecks: ["ci", "b"] }) },
+      w.human,
+    );
+    expect(await checks(w)).toEqual(["ci", "x", "b"]);
+    return { w, approver, x };
+  }
+
+  it("an unrelated save, approved by the project's approver, approves no override", async () => {
+    const { w, approver, x } = await stranded();
+    const second = await member(w, "member");
+    // An unrelated loosening: a second approver.
+    const saved = await saveConfig(w, {
+      ...POLICY,
+      approvers: [approver.login, second.login],
+      workflow: SHIP.id,
+      workflowOverrides: x,
+    });
+    expect(saved.status).toBe("pending");
+    const pa = await pending(w);
+    await ok(
+      "approval.decide",
+      { pendingActionId: pa.id, decision: "approved" },
+      pa.decider === "org-admin" ? w.human : approver.actor,
+    );
+    expect(await approvalRows(w)).toEqual([]);
+    expect(await checks(w)).toEqual(["ci", "x", "b"]);
+  });
+
+  it("the org's admins are told an override needs their approval or its removal", async () => {
+    const { w } = await stranded();
+    const told = await first<{ payload: string }>(
+      "SELECT payload FROM core_outbox WHERE kind = 'notify' AND instr(payload, 'workflow.overrideNeedsApproval') > 0 AND instr(payload, ?) > 0",
+      w.userId,
+    );
+    expect(told.payload).toMatch(/needs an org admin's approval or removal/);
+    expect(told.payload).toMatch(/verify requiredChecks/);
+  });
+
+  it("an org admin approving the override itself writes exactly one row", async () => {
+    const { w, approver, x } = await stranded();
+    // Keeping it approves nothing; changing it to that value is the save the org admin decides.
+    // (Dropping it is a loosening too: x stops being required.) Here: tightened, then back.
+    expect(
+      status(
+        await saveConfig(w, {
+          ...POLICY,
+          approvers: [approver.login],
+          workflow: SHIP.id,
+          workflowOverrides: { verify: { requiredChecks: ["ci", "x", "b"] } },
+        }),
+      ),
+    ).toBe("ok");
+    const back = await saveConfig(w, {
+      ...POLICY,
+      approvers: [approver.login],
+      workflow: SHIP.id,
+      workflowOverrides: x,
+    });
+    expect(back.status).toBe("pending");
+    const pa = await pending(w);
+    expect(pa.decider).toBe("org-admin");
+    await ok("approval.decide", { pendingActionId: pa.id, decision: "approved" }, w.human);
+    expect(await approvalRows(w)).toEqual([
+      {
+        org_version: 3,
+        stage_id: "verify",
+        setting: "requiredChecks",
+        value: '["ci","x"]',
+        approved_by: w.userId,
+      },
+    ]);
+    expect(await checks(w)).toEqual(["ci", "x"]);
+  });
+});
