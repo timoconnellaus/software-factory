@@ -75,7 +75,8 @@ export async function handleChannel(request: Request, env: Env): Promise<Respons
   return handleRunnerCall(
     request,
     { keyFor, store: d1IdempotencyStore(env.DB), unstoredPath: isUnstoredPath },
-    ({ runner, path, body }) => route(env, runner, path, body, new URL(request.url).origin),
+    ({ runner, path, body, signedAt }) =>
+      route(env, runner, path, body, new URL(request.url).origin, signedAt),
   );
 }
 
@@ -85,6 +86,7 @@ async function route(
   path: string,
   body: unknown,
   origin: string,
+  signedAt?: number,
 ): Promise<ChannelReply> {
   const record = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
   let op: string;
@@ -119,7 +121,14 @@ async function route(
       release: "run.release",
     }[job.call];
   }
-  return invokeReply(env, op, input, { type: "runner", id: runner });
+  // The heartbeat is unstored: its signed time lets the cloud refuse a replayed one (ADR 0016).
+  return invokeReply(
+    env,
+    op,
+    input,
+    { type: "runner", id: runner },
+    path === PATHS.heartbeat ? signedAt : undefined,
+  );
 }
 
 /**
@@ -332,11 +341,12 @@ async function invokeReply(
   op: string,
   input: unknown,
   actor: Actor,
+  signedAt?: number,
 ): Promise<ChannelReply> {
   try {
     const result = await invoke(invokeDeps(env), op, input, {
       actor,
-      origin: { surface: "runner-channel" },
+      origin: { surface: "runner-channel", ...(signedAt !== undefined ? { signedAt } : {}) },
     });
     if (result.status === "pending") {
       return { status: 202, body: { pending: true, pendingActionId: result.pendingActionId } };
@@ -420,9 +430,6 @@ export async function pruneChannelStore(db: D1Database, now = new Date()): Promi
     db.prepare("DELETE FROM core_presence_challenges WHERE expires_at < ?").bind(dayAgo),
     // The phone's attestation nonces, spent pair offers and typed-code tries (ADR 0541), likewise.
     db.prepare("DELETE FROM core_mobile_nonces WHERE expires_at < ?").bind(dayAgo),
-    db
-      .prepare("DELETE FROM core_mobile_nonce_asks WHERE bucket < ?")
-      .bind(Math.floor(Date.parse(dayAgo) / 300_000)),
     db.prepare("DELETE FROM core_pair_offers WHERE expires_at < ?").bind(dayAgo),
     db.prepare("DELETE FROM core_pair_code_tries WHERE at < ?").bind(dayAgo),
   ]);

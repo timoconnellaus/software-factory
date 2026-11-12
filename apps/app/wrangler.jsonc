@@ -9,16 +9,18 @@
   "main": "./src/server.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
-  // Workers Logs (AGENTS.md, Cloudflare cost, rule 12): most requests are an open tab's polls (each
-  // query every 10-30 s, a live run every 2 s: several hundred thousand a month per tab left open).
-  // One in four is logged (all of that request's lines); request and error counts in Workers metrics
-  // are not sampled.
+  // Workers Logs (AGENTS.md, Cloudflare cost, rule 11): 20M events a month are included, then
+  // $0.60/M (Observability pricing from 1 Dec 2026). An open dashboard tab polls up to about 22 times a
+  // minute (each query every 10-30 s), ~950k events a month per tab left open, so every request is
+  // logged (1.0): this Worker's failures are a person's, and one-off. Lower it if more than about
+  // 15 tabs stay open all month, or when the new pricing says so.
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 0.25
+    "head_sampling_rate": 1
   },
-  // CPU per invocation (rule 12): the default is 30 s. A page render and its server functions take
-  // tens of ms (the work runs in sf-engine); 5 s stops a runaway render from billing 30 s each time.
+  // CPU per invocation (rule 11), default 30 s: every request, page render and server function.
+  // CPU time excludes waiting on sf-engine or D1. A render and its server functions take tens of ms
+  // (the operations run in sf-engine); 5 s stops a runaway render billing 30 s each time.
   "limits": { "cpu_ms": 5000 },
   "upload_source_maps": true,
   // Run next to D1 (ADR 0241). D1's primary is in SJC (WNAM); every page makes several D1 queries

@@ -63,6 +63,12 @@ export interface Origin {
    * caller.
    */
   presence?: { op: string; inputDigest: string; challengeId: string };
+  /**
+   * The runner channel's verified signing time (unix seconds) of a heartbeat, which is not kept in
+   * the channel's idempotency store: a heartbeat not newer than the runner's last is a replay and is
+   * refused. Set by the channel, never the caller.
+   */
+  signedAt?: number;
 }
 
 export const FOREMAN: Actor = { type: "agent", id: "foreman" };

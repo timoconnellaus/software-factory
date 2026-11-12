@@ -8,6 +8,7 @@
     "devkit": "electrobun prepare",
     "typecheck": "electrobun prepare && tsc --noEmit",
     "test": "vitest run",
+    "behave": "node screenshots/behave.mjs",
     "build": "electrobun prepare && vite build",
     "bundle": "sh scripts/bundle.sh dev",
     "bundle:canary": "sh scripts/bundle.sh canary",

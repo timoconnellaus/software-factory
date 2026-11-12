@@ -291,3 +291,36 @@ the same PR (each has a test that failed before):
 - **Certificates are DER, strictly.** A length or tag number not in its shortest form is refused,
   and so is a critical extension the checker doesn't read (anything but basicConstraints, keyUsage
   and the key description).
+
+## Amendment, 2026-11-12: after the third review of PR 1a
+Small follow-ups, on their own PR (migration 0311):
+- **The nonce's courtesy limit is a Workers rate limiting binding.** The D1 counter
+  (`core_mobile_nonce_asks`) wrote a row per caller and five minutes, so an attacker with many
+  addresses could make the factory write about 19M rows a day. sf-engine's door now asks the
+  `MOBILE_NONCE_LIMIT` binding (ten a minute per caller key, the same keyed hash of the address)
+  before the call, so an over-limit caller is refused (503, `unavailable`) before anything touches
+  D1. The binding counts per Cloudflare location and isn't exact; a courtesy limit doesn't need it
+  to be. The table and its prune are gone, and `mobile.nonce`, which now writes nothing, is a read
+  (so it isn't audited either). What still bounds abuse is unchanged: a nonce is stateless until
+  `mobile.authStart` spends it, and the typed-code caps are counted in SQL.
+- **Deciding a pending action is declared in the registry.** An operation that decides one sets
+  `decidesPending`, and `decidePending` (the only place the phone's limit is checked) refuses to
+  write from one that doesn't. Every other write of a pending action's `status` goes through
+  `ctx.writePendingStatus` as a `close` (a take-back, a moved head, a cancelled item) or an
+  `apply` (an approved one carried out); `ctx.write` refuses an UPDATE of `core_pending_actions`
+  that sets `status`. The engine's test enumerates the registry's deciding operations and runs each
+  from the phone; core's tests show the two refusals. This replaces the source grep.
+- **The phone can't cancel an item while a config change or a self-modify action waits on it.**
+  `workItem.cancel` rejects the item's open pending actions, which from the phone would decide what
+  the phone may not. It is refused on the `mobile` surface with "cancel it on the desktop app or
+  the website" (`decideElsewhere`), guarded in the batch against one opening meanwhile. A spec
+  gate withdrawn because a person wrote on the phone (a take-back) is allowed: it decides nothing,
+  and the planner asks again.
+- **`RUNNER_CHANNEL_SECRET` serves two purposes**, kept apart by derivation label: runner channel
+  keys (`sf-runner-channel:<runnerId>:v<keyVersion>`, ADR 0100) and the phone's HMACs
+  (`sf-mobile:nonce:` for the stateless nonces, `sf-mobile:caller:` for the caller hash). Rotating
+  it re-keys every runner (ADR 0100: each needs its new key), invalidates nonces not yet spent (at
+  most five minutes' worth: a phone mid sign-in asks again), and changes every caller hash, so the
+  per-caller typed-code cap and the nonce limit start afresh for everyone (at most an hour's
+  counts are lost). Phone tokens, device keys and presence proofs don't depend on it. A split into
+  two secrets would let one rotate without the other; not worth a second secret to provision yet.

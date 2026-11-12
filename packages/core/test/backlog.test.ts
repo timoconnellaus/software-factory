@@ -592,3 +592,52 @@ describe("shaping before release (ADR 0493)", () => {
     expect(shaped.released).toBe(true);
   });
 });
+
+describe("project.workflow", () => {
+  type Read = {
+    workflow: { name: string; label: string; builtIn: boolean } | null;
+    unavailable: string | null;
+    stages: { stage: string; label: string; phase: string }[];
+  };
+  const read = (w: World) => ok<Read>("project.workflow", { projectId: w.projectId }, w.human);
+
+  it("is the built-in workflow, with its stages in order and their phases, when the config defines none", async () => {
+    const r = await read(await world());
+    expect(r.workflow).toMatchObject({
+      name: "software",
+      label: "Software (built in)",
+      builtIn: true,
+    });
+    expect(r.unavailable).toBeNull();
+    expect(r.stages.map((s) => s.stage)).toEqual([
+      "intake",
+      "triage",
+      "spec",
+      "build",
+      "verify",
+      "merge",
+      "done",
+    ]);
+    expect(r.stages.filter((s) => s.phase === "shaping").map((s) => s.label)).toEqual([
+      "Intake",
+      "Triage",
+      "Spec",
+    ]);
+  });
+
+  const agents = [{ name: "Builder", role: "implement" }];
+  const feature = { name: "feature", description: "A feature" };
+
+  it("is the workflow the config names", async () => {
+    const r = await read(
+      await world({ ...POLICY, agents, workflows: [feature], workflow: "feature" }),
+    );
+    expect(r.workflow).toMatchObject({ name: "feature", label: "Feature", builtIn: false });
+  });
+
+  it("is none, with the reason, when the config defines workflows and names none (fails closed)", async () => {
+    const r = await read(await world({ ...POLICY, agents, workflows: [feature] }));
+    expect(r.workflow).toBeNull();
+    expect(r.unavailable).toMatch(/names none/);
+  });
+});

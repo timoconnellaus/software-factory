@@ -14,12 +14,16 @@ import { deliverOutbox } from "./outbox.ts";
 import { secrets } from "./secrets.ts";
 
 /**
- * The GitHub App client, built once per isolate (AGENTS.md, Cloudflare cost, rule 11): its imported
+ * The GitHub App client, built once per isolate (AGENTS.md, Cloudflare cost, rule 10): its imported
  * key, App JWT and control-plane tokens are cached in memory, so building it per call minted a token
  * with an RSA signature on every operation. Job tokens are never cached (ADR 0033).
  */
 let app: { config: string; client: ReturnType<typeof githubApp> } | null = null;
-function appFor(appId: string, appSlug: string, privateKey: string): ReturnType<typeof githubApp> {
+export function appFor(
+  appId: string,
+  appSlug: string,
+  privateKey: string,
+): ReturnType<typeof githubApp> {
   const config = `${appId}\n${appSlug}\n${privateKey}`;
   if (app?.config !== config) app = { config, client: githubApp({ appId, appSlug, privateKey }) };
   return app.client;

@@ -14,6 +14,7 @@ export const SMALL_TABLES = new Set([
   "core_github_installations",
   "core_runners",
   "core_kill_switches",
+  "core_project_protection",
 ]);
 
 export interface Recorded {
@@ -61,6 +62,43 @@ function tableAliases(sql: string): Map<string, string> {
   return names;
 }
 
+/**
+ * Statements allowed a temp B-tree for their ORDER BY, each with why the rows it sorts are few. A
+ * sort is fine when an index has already narrowed the rows to a bounded set; it is the failure when
+ * the set grows with the table (every item of an org, sorted to take the newest 50).
+ */
+export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
+  {
+    match: /FROM core_outbox WHERE next_at <= \?/,
+    why: "due outbox rows only (core_outbox_next_idx); a delivered row is deleted",
+  },
+  {
+    match: /SELECT w\.project_id, MIN\(w\.released_at\) AS oldest/,
+    why: "sorts one row per project with queued work (core_work_items_status_idx)",
+  },
+  {
+    match: /from "core_jobs" where "status" = \? order by/,
+    why: "queued jobs only (core_jobs_status_idx): the queue, not the history",
+  },
+  {
+    match: /from "core_pending_actions".*"core_pending_actions"\."status" = \?/,
+    why: "pending gates only (core_pending_actions_status_idx)",
+  },
+  {
+    match: /from "core_questions".*"core_questions"\."assignee_user_id" = \?/,
+    why: "the caller's open questions only (core_questions_assignee_idx)",
+  },
+  {
+    match:
+      /from "core_work_items" where "org_id" in .* and "status" in \(\?, \?, \?\) order by "updated_at"/,
+    why: "active items only (core_work_items_org_idx on org and status), capped by the active limit",
+  },
+  {
+    match: /from "core_work_items" where .*"status" in .* order by \+updated_at/,
+    why: "workItem.list with a status filter sorts only the rows in those statuses (core_work_items_status_idx)",
+  },
+];
+
 export interface Scan {
   sql: string;
   table: string;
@@ -68,8 +106,9 @@ export interface Scan {
 }
 
 /**
- * EXPLAINs every recorded statement and returns each SCAN of a growing table. A SCAN of a partial
- * index (`… WHERE verdict IS NULL`) is allowed: it reads only the rows the index keeps.
+ * EXPLAINs every recorded statement and returns each SCAN of a growing table, and each temp B-tree
+ * for an ORDER BY in a statement that reads one (unless SORT_ALLOWED says why it is bounded). A SCAN
+ * of a partial index (`… WHERE verdict IS NULL`) is allowed: it reads only the rows the index keeps.
  */
 export async function growingScans(db: D1Database, seen: Recorded[]): Promise<Scan[]> {
   const partial = new Set(
@@ -89,6 +128,15 @@ export async function growingScans(db: D1Database, seen: Recorded[]): Promise<Sc
       .bind(...params)
       .all<{ detail: string }>();
     const aliases = tableAliases(sql);
+    const growing = [...new Set(aliases.values())].filter((t) => !SMALL_TABLES.has(t));
+    const sorted = results.some((r) => /^USE TEMP B-TREE FOR (?:[A-Z]+ )?ORDER BY/.test(r.detail));
+    if (sorted && growing.length > 0 && !SORT_ALLOWED.some((a) => a.match.test(sql))) {
+      scans.push({
+        sql: sql.replace(/\s+/g, " ").trim(),
+        table: growing.join(", "),
+        detail: "USE TEMP B-TREE FOR ORDER BY",
+      });
+    }
     for (const { detail } of results) {
       const m = /^SCAN (\w+)(?: USING (?:COVERING )?INDEX (\w+))?/.exec(detail);
       if (!m || (m[2] && partial.has(m[2]))) continue;

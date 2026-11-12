@@ -1,21 +1,27 @@
-// The Work section (spec 41, design WorkActive): its nested list (In the factory, Done, Stopped, then
-// each project) beside the page. Backlog, Ready and saved views come with spec 50 (slice 2).
+// The Work section (spec 41, design WorkActive; spec 50, WorkBacklog): its nested list (Backlog,
+// Planning, Ready, In the factory, Done, Stopped, then each project) beside the page. Counts are
+// `workItem.board`'s, per project and state across each org.
 import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { FolderIcon, PlusIcon } from "lucide-react";
 import { ListGroup, ListItem, NestedList } from "../components/shell-list.tsx";
 import { useOrgScope } from "../components/shell-sidebar.tsx";
-import { workListsQuery } from "../lib/queries.ts";
+import { boardsQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
-import { countsByView, VIEW_LABEL, type WorkView } from "../lib/work-board.ts";
+import { openCount, VIEW_LABEL, viewCounts, type WorkView, workPlace } from "../lib/work-board.ts";
 import { appRoute, useFocused } from "./_app.tsx";
 
 export const workLayout = createRoute({
   getParentRoute: () => appRoute,
   id: "_work",
   // The list's counts come from the shell's work lists; this keeps them loaded with the page.
-  loader: ({ context: { queryClient, session } }) =>
-    queryClient.ensureQueryData(workListsQuery(session.orgs.map((o) => o.id))).catch(() => null),
+  loader: ({ context: { queryClient, session } }) => {
+    const orgIds = session.orgs.map((o) => o.id);
+    return Promise.all([
+      queryClient.ensureQueryData(workListsQuery(orgIds)),
+      queryClient.ensureQueryData(boardsQuery(orgIds)),
+    ]).catch(() => null);
+  },
   component: WorkSection,
 });
 
@@ -29,32 +35,35 @@ function WorkSection() {
   );
 }
 
-/** Where the Work list is: the view and project from `/work`'s search, or the open item's project. */
-function useWorkPlace(): { view: WorkView | null; projectId: string | null } {
+function useWorkPlace() {
   const loc = useRouterState({ select: (s) => s.location });
   const session = useSession();
-  const items = useQuery(workListsQuery(session.orgs.map((o) => o.id)));
-  const itemId = /^\/work\/([^/]+)/.exec(loc.pathname)?.[1];
-  if (loc.pathname === "/work") {
-    const s = loc.search as { view?: WorkView; project?: string };
-    return { view: s.project ? null : (s.view ?? "active"), projectId: s.project ?? null };
-  }
-  if (itemId) {
-    return { view: null, projectId: items.data?.find((i) => i.id === itemId)?.projectId ?? null };
-  }
-  return { view: null, projectId: null };
+  const orgIds = session.orgs.map((o) => o.id);
+  const items = useQuery(workListsQuery(orgIds));
+  const board = useQuery(boardsQuery(orgIds));
+  return workPlace(
+    loc.pathname,
+    loc.search as { view?: WorkView; project?: string },
+    (id) =>
+      board.data?.items.find((i) => i.id === id)?.projectId ??
+      items.data?.find((i) => i.id === id)?.projectId ??
+      null,
+  );
 }
 
 function WorkNav() {
   const session = useSession();
   const orgId = useOrgScope();
   const projects = useProjects();
-  const items = useQuery(workListsQuery(session.orgs.map((o) => o.id)));
+  const board = useQuery(boardsQuery(session.orgs.map((o) => o.id)));
   const place = useWorkPlace();
-  const counts = countsByView(items.data ?? [], orgId);
+  const counts = viewCounts(board.data?.counts ?? [], { orgId });
   const scopedProjects = (projects.data ?? []).filter((p) => orgId === null || p.orgId === orgId);
-  const perProject = (id: string) => (items.data ?? []).filter((i) => i.projectId === id).length;
-  const views: WorkView[] = counts.stopped > 0 ? ["active", "done", "stopped"] : ["active", "done"];
+  const perProject = (id: string) => (board.data ? openCount(board.data.counts, id) : null);
+  // Planning and Stopped show only when something is in them.
+  const views = (
+    ["backlog", "planning", "ready", "active", "done", "stopped"] as WorkView[]
+  ).filter((v) => (v !== "planning" && v !== "stopped") || counts[v] > 0);
   return (
     <NestedList
       title="Work"
@@ -76,7 +85,7 @@ function WorkNav() {
           to="/work"
           search={{ view: v }}
           active={place.view === v}
-          count={counts[v]}
+          count={board.data ? counts[v] : null}
           data-testid={`work-view-${v}`}
         >
           {VIEW_LABEL[v]}
