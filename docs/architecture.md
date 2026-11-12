@@ -73,7 +73,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   run time reads them yet (build plan PR (a)). An **org config** (`core_org_configs`, migration 0280)
   holds the org's workflows and agents as versions, edited through `workflow.*`, `agent.save` and
   `orgConfig.*`; a loosening save is `self-modify` for an org admin, and the built-in workflows
-  accept only tightening saves. Projects keep running their own config until PR (d).
+  accept only tightening saves. A project may name an org workflow by id (`workflow: "wf_…"`) with
+  `workflowOverrides` of the few settings each type lists as `overridable` (spec 52 PR (d)); until
+  the switch-over, today's Workflow runs it through `effectivePolicy` (the scope's `policy`; config
+  operations read `rawPolicy`), under the org config version the item pinned
+  (`core_work_items.org_config_version`, migration 0282).
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`

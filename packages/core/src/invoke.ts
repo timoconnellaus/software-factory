@@ -195,6 +195,7 @@ export async function runOperation<O = unknown>(
     repositories: [],
     repository: null,
     policy: null,
+    rawPolicy: null,
     policySha: null,
     policyError: null,
     pinnedPolicy: null,

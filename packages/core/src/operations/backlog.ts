@@ -143,6 +143,12 @@ export function startPipeline(
         status_reason: null,
         pulled_at: ctx.now,
         policy_sha: pin.trial?.candidateSha ?? project.policy_sha,
+        // Release takes the org's current config version too (spec 52, Q4).
+        org_config_version: (eb) =>
+          eb
+            .selectFrom("core_organization")
+            .select("config_version")
+            .where("id", "=", project.org_id),
         trial_id: pin.trial?.id ?? null,
         workflow,
         workflow_reason: workflow ? "the project's workflow" : null,
@@ -592,6 +598,11 @@ export const workItemShape = defineOperation({
           shaping_started_at: ctx.now,
           // The version shaping runs under; the pull pins delivery's again at release.
           policy_sha: project.policy_sha,
+          org_config_version: (eb) =>
+            eb
+              .selectFrom("core_organization")
+              .select("config_version")
+              .where("id", "=", project.org_id),
           workflow,
           workflow_reason: workflow ? "the project's workflow" : null,
           updated_at: ctx.now,

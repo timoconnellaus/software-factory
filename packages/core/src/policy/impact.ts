@@ -44,6 +44,7 @@ const KNOWN = new Set([
   "shapingLimit",
   "release",
   "workflow",
+  "workflowOverrides",
   "retryLimit",
   "approvers",
   "backupOwner",

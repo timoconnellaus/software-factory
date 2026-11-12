@@ -296,6 +296,12 @@ export interface CoreWorkItemsTable {
   workflow_id: string;
   workflow_version: number | null;
   policy_sha: string | null;
+  /**
+   * 0282 (spec 52 PR (d)): the org config version the item runs its org workflow under, pinned with
+   * `policy_sha` when shaping starts and again at the pull. Null: the org's current one (an item
+   * from before, or an org with no config).
+   */
+  org_config_version: number | null;
   parent_work_item_id: string | null;
   created_at: Iso;
   updated_at: Iso;

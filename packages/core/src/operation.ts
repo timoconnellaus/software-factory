@@ -87,13 +87,20 @@ export interface Scope {
    * project's only one. Null when none applies (no repository, or several and none named).
    */
   repository: RepositoryRow | null;
-  /** The project's policy at `policySha`; null when missing or malformed (fails closed). */
+  /**
+   * The project's policy at `policySha`, as the factory runs it: on an org workflow (spec 52 PR
+   * (d)), with the workflow and its overrides resolved into it (`effectivePolicy`). Null when
+   * missing, malformed or unresolvable (fails closed).
+   */
   policy: ProjectPolicy | null;
+  /** The project's config document as saved, before the org workflow is resolved into it. */
+  rawPolicy: ProjectPolicy | null;
   policySha: string | null;
   policyError: string | null;
   /**
    * The config version the work item was created under, when it differs from the current one
-   * (ADR 0370 §5): the gate uses the stricter of the two. Null otherwise, or when it isn't valid.
+   * (ADR 0370 §5): the gate uses the stricter of the two. On an org workflow it is resolved under
+   * the org config version the item pinned. Null otherwise, or when it isn't valid.
    */
   pinnedPolicy: ProjectPolicy | null;
 }

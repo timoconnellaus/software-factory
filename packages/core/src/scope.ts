@@ -4,7 +4,13 @@ import type { Db, KillScope } from "@software-factory/db";
 import type { Actor } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import type { ProjectRow, RepositoryRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
-import { type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
+import {
+  isOrgWorkflowId,
+  type ProjectPolicy,
+  parseProjectPolicy,
+} from "./policy/project-policy.ts";
+import { EMPTY_ORG_CONFIG, parseOrgConfig } from "./stages/org-config.ts";
+import { effectivePolicy } from "./stages/project-workflow.ts";
 
 const EMPTY: Scope = {
   orgId: null,
@@ -15,6 +21,7 @@ const EMPTY: Scope = {
   repositories: [],
   repository: null,
   policy: null,
+  rawPolicy: null,
   policySha: null,
   policyError: null,
   pinnedPolicy: null,
@@ -104,7 +111,12 @@ export async function resolveScope(
   }
 
   if (batch) {
-    return resolveBatched(batch.d1, { workItemId, projectId, orgId, repositoryId }, batch.userId);
+    return resolveBatched(
+      db,
+      batch.d1,
+      { workItemId, projectId, orgId, repositoryId },
+      batch.userId,
+    );
   }
 
   let workItem: WorkItemRow | null = null;
@@ -141,11 +153,12 @@ export async function resolveScope(
     .orderBy("id")
     .execute();
   const repository = pickRepository(repositories, workItem, repositoryId);
-  const { policy, policyError } = await loadPolicy(db, project);
-  const pinnedPolicy =
+  const raw = await loadPolicy(db, project);
+  const pinnedRaw =
     workItem?.policy_sha && workItem.policy_sha !== project.policy_sha
       ? (await loadPolicy(db, { id: project.id, policy_sha: workItem.policy_sha })).policy
       : null;
+  const resolved = await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem);
   return {
     orgId,
     projectId,
@@ -154,10 +167,8 @@ export async function resolveScope(
     project,
     repositories,
     repository,
-    policy,
+    ...resolved,
     policySha: project.policy_sha,
-    policyError,
-    pinnedPolicy,
   };
 }
 
@@ -183,6 +194,7 @@ type PolicyRow = { raw: string; valid: number; error: string | null };
 
 /** `resolveScope`'s lookups as one D1 batch: the same answers and the same refusals. */
 async function resolveBatched(
+  db: Db,
   d1: D1Database,
   ids: {
     workItemId: string | null;
@@ -289,11 +301,18 @@ async function resolveBatched(
       ? []
       : ((results[at.repositories]?.results ?? []) as unknown as RepositoryRow[]);
   const repository = pickRepository(repositories, workItem, ids.repositoryId);
-  const { policy, policyError } = interpretPolicy(project, first<PolicyRow>(at.policy));
+  const raw = interpretPolicy(project, first<PolicyRow>(at.policy));
   const pinnedRow = first<PolicyRow>(at.pinned);
-  const pinnedPolicy = pinnedRow
+  const pinnedRaw = pinnedRow
     ? interpretPolicy({ policy_sha: workItem?.policy_sha ?? null }, pinnedRow).policy
     : null;
+  const { policy, rawPolicy, policyError, pinnedPolicy } = await withOrgWorkflow(
+    db,
+    project.org_id,
+    raw,
+    pinnedRaw,
+    workItem,
+  );
   return {
     orgId,
     projectId,
@@ -303,11 +322,77 @@ async function resolveBatched(
     repositories,
     repository,
     policy,
+    rawPolicy,
     policySha: project.policy_sha,
     policyError,
     pinnedPolicy,
     role,
   };
+}
+
+/**
+ * The project's policy as the factory runs it, and the item's pinned one (spec 52 PR (d)): a project
+ * on an org workflow has it resolved in (`effectivePolicy`), under the org's current config version,
+ * or for the item the version it pinned. Unresolvable fails closed, with the reason. A project not
+ * on an org workflow reads nothing more.
+ */
+export async function withOrgWorkflow(
+  db: Db,
+  orgId: string,
+  raw: { policy: ProjectPolicy | null; policyError: string | null },
+  pinnedRaw: ProjectPolicy | null,
+  workItem: Pick<WorkItemRow, "org_config_version"> | null,
+): Promise<{
+  policy: ProjectPolicy | null;
+  rawPolicy: ProjectPolicy | null;
+  policyError: string | null;
+  pinnedPolicy: ProjectPolicy | null;
+}> {
+  const current = await resolveOrgWorkflow(db, orgId, raw.policy, null);
+  const pinnedVersion = workItem?.org_config_version ?? null;
+  const pinnedBase = pinnedRaw ?? (pinnedVersion !== null ? raw.policy : null);
+  const pinned =
+    pinnedBase && (pinnedRaw || isOrgWorkflowId(pinnedBase.workflow))
+      ? await resolveOrgWorkflow(db, orgId, pinnedBase, pinnedVersion)
+      : null;
+  return {
+    policy: current.policy,
+    rawPolicy: raw.policy,
+    policyError: raw.policyError ?? current.error,
+    pinnedPolicy: pinned?.policy ?? null,
+  };
+}
+
+/** `policy` with its org workflow resolved under `version` (null: the org's current one). */
+export async function resolveOrgWorkflow(
+  db: Db,
+  orgId: string,
+  policy: ProjectPolicy | null,
+  version: number | null,
+): Promise<{ policy: ProjectPolicy | null; error: string | null }> {
+  if (!policy || !isOrgWorkflowId(policy.workflow)) return { policy, error: null };
+  // One point read: the org config by primary key (org_id, version), the current version by the
+  // org's primary key. Only for a project on an org workflow.
+  const row = await db
+    .selectFrom("core_org_configs")
+    .select(["raw", "version"])
+    .where("org_id", "=", orgId)
+    .where(
+      "version",
+      "=",
+      version ??
+        ((eb) =>
+          eb.selectFrom("core_organization").select("config_version").where("id", "=", orgId)),
+    )
+    .executeTakeFirst();
+  const org = row
+    ? parseOrgConfig(JSON.parse(row.raw))
+    : { ok: true as const, config: EMPTY_ORG_CONFIG };
+  if (!org.ok) return { policy: null, error: `the org config v${row?.version} doesn't validate` };
+  const effective = effectivePolicy(policy, org.config);
+  return effective.ok
+    ? { policy: effective.value, error: null }
+    : { policy: null, error: `the project's workflow: ${effective.error}` };
 }
 
 /** The project's policy at its recorded default-branch SHA, or why there is none. */

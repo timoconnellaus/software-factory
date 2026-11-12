@@ -8,10 +8,17 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext, type ProjectRow } from "../operation.ts";
 import type { FloorParse } from "../policy/gate.ts";
-import { type ImpactClass, policyImpact } from "../policy/impact.ts";
-import { POLICY_PATH, type ProjectPolicy, parseProjectPolicy } from "../policy/project-policy.ts";
+import { type ImpactClass, type PolicyImpact, policyImpact } from "../policy/impact.ts";
+import {
+  isOrgWorkflowId,
+  POLICY_PATH,
+  type ProjectPolicy,
+  parseProjectPolicy,
+} from "../policy/project-policy.ts";
+import { configImpact, resolveProjectWorkflow } from "../stages/project-workflow.ts";
 import { requireAdjudicatorEarned } from "./adjudicator.ts";
 import { projectId, requireProject } from "./shared.ts";
+import { currentOrgConfig } from "./workflows.ts";
 
 /** The config operations whose loosening saves wait for an approver. */
 export const CONFIG_WRITES = ["config.save", "config.rollback"] as const;
@@ -112,19 +119,59 @@ const impactView = z.object({
  * self-modify. A draft the handler will refuse anyway (invalid, or edited from a stale version)
  * is `write`, so it's refused at once instead of waiting at the gate.
  */
-function saveRisk(
+async function saveRisk(
   draft: unknown,
   baseVersion: number,
-  at: { scope: { policy: ProjectPolicy | null; project: ProjectRow | null }; floor: FloorParse },
+  at: {
+    db: Db;
+    scope: { rawPolicy: ProjectPolicy | null; project: ProjectRow | null };
+    floor: FloorParse;
+  },
 ) {
   const parsed = parseProjectPolicy(JSON.stringify(draft));
   if (!parsed.ok) return "write" as const;
   if (!at.scope.project || (versionOf(at.scope.project.policy_sha) ?? 0) !== baseVersion) {
     return "write" as const;
   }
-  return policyImpact(at.scope.policy, parsed.policy, at.floor).class === "loosens"
-    ? ("self-modify" as const)
-    : ("write" as const);
+  const orgId = at.scope.project.org_id;
+  if (isOrgWorkflowId(parsed.policy.workflow)) {
+    // A workflow the org doesn't have, or overrides that don't apply: the handler refuses it.
+    const resolved = resolveProjectWorkflow(
+      parsed.policy,
+      (await currentOrgConfig(at.db, orgId)).config,
+    );
+    if (resolved && !resolved.ok) return "write" as const;
+  }
+  const impact = await impactOf(at.db, orgId, at.scope.rawPolicy, parsed.policy, at.floor);
+  return impact.class === "loosens" ? ("self-modify" as const) : ("write" as const);
+}
+
+/**
+ * How `after` changes the saved config: `policyImpact`, with a change of org workflow or of its
+ * overrides classified against the org's current workflow (spec 52 PR (d)). Compares the documents
+ * as saved, never the resolved ones.
+ */
+async function impactOf(
+  db: Db,
+  orgId: string,
+  before: ProjectPolicy | null,
+  after: ProjectPolicy,
+  floor: FloorParse,
+): Promise<PolicyImpact> {
+  const impact = policyImpact(before, after, floor);
+  if (!before || !(isOrgWorkflowId(before.workflow) || isOrgWorkflowId(after.workflow)))
+    return impact;
+  return configImpact(impact, before, after, (await currentOrgConfig(db, orgId)).config);
+}
+
+/** A project on an org workflow must name one it can run, with overrides that apply. */
+async function requireOrgWorkflow(db: Db, orgId: string, policy: ProjectPolicy) {
+  if (!isOrgWorkflowId(policy.workflow)) return;
+  const resolved = resolveProjectWorkflow(policy, (await currentOrgConfig(db, orgId)).config);
+  if (resolved && !resolved.ok)
+    throw new OperationError("invalid_input", `the config isn't valid: ${resolved.error}`, {
+      error: resolved.error,
+    });
 }
 
 /** A stored version's document, or null when there's no such valid version. */
@@ -334,10 +381,20 @@ export const configPreview = defineOperation({
   async handler(input, ctx) {
     const project = requireProject(ctx);
     const parsed = parseProjectPolicy(JSON.stringify(input.policy));
+    let error = parsed.ok ? null : parsed.error;
+    if (parsed.ok && isOrgWorkflowId(parsed.policy.workflow)) {
+      const resolved = resolveProjectWorkflow(
+        parsed.policy,
+        (await currentOrgConfig(ctx.db, project.org_id)).config,
+      );
+      if (resolved && !resolved.ok) error = resolved.error;
+    }
     return {
-      valid: parsed.ok,
-      error: parsed.ok ? null : parsed.error,
-      impact: parsed.ok ? policyImpact(ctx.scope.policy, parsed.policy, ctx.floor) : null,
+      valid: error === null,
+      error,
+      impact: parsed.ok
+        ? await impactOf(ctx.db, project.org_id, ctx.scope.rawPolicy, parsed.policy, ctx.floor)
+        : null,
       currentVersion: versionOf(project.policy_sha) ?? 0,
     };
   },
@@ -364,8 +421,9 @@ export const configSave = defineOperation({
     const project = requireProject(ctx);
     const policy = validate(input.policy);
     requireBase(project, input.baseVersion);
+    await requireOrgWorkflow(ctx.db, project.org_id, policy);
     await requireAdjudicatorEarned(ctx, policy);
-    const impact = policyImpact(ctx.scope.policy, policy, ctx.floor);
+    const impact = await impactOf(ctx.db, project.org_id, ctx.scope.rawPolicy, policy, ctx.floor);
     const written = await writeVersion(ctx, project, {
       raw: formatPolicy(input.policy),
       valid: true,
@@ -403,7 +461,14 @@ export const configRollback = defineOperation({
     const target = await storedVersion(ctx.db, project.id, input.toVersion);
     if (!target) throw new OperationError("not_found", `no valid version ${input.toVersion}`);
     requireBase(project, input.baseVersion);
-    const impact = policyImpact(ctx.scope.policy, target.policy, ctx.floor);
+    await requireOrgWorkflow(ctx.db, project.org_id, target.policy);
+    const impact = await impactOf(
+      ctx.db,
+      project.org_id,
+      ctx.scope.rawPolicy,
+      target.policy,
+      ctx.floor,
+    );
     const written = await writeVersion(ctx, project, {
       raw: target.raw,
       valid: true,
