@@ -41,6 +41,7 @@ const KNOWN = new Set([
   "timeouts",
   "wipLimit",
   "activeLimit",
+  "shapingLimit",
   "release",
   "workflow",
   "retryLimit",
@@ -164,6 +165,13 @@ export function policyImpact(
       "activeLimit",
       after.activeLimit < before.activeLimit ? "tightens" : "neutral",
       `Active limit ${before.activeLimit} → ${after.activeLimit}.`,
+    );
+  }
+  if (before.shapingLimit !== after.shapingLimit) {
+    add(
+      "shapingLimit",
+      after.shapingLimit < before.shapingLimit ? "tightens" : "neutral",
+      `Shaping limit ${before.shapingLimit} → ${after.shapingLimit}.`,
     );
   }
   if (before.release.agents !== after.release.agents) {
