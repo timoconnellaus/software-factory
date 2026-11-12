@@ -9,6 +9,7 @@ import {
   ok,
   refusal,
   rows,
+  secondRepository,
   services,
   uid,
   world,
@@ -83,6 +84,27 @@ describe("projects and repositories (ADR 0490)", () => {
     expect(imported.message).toMatch(/has no repository/);
   });
 
+  it("adds a repository to a project with none, and refuses a second (ADR 0490 §8)", async () => {
+    const { w, recordId, repoId, name } = await withSpareRepo();
+    const p = await ok<Project>("project.create", { orgId: w.orgId, name: "Docs" }, w.human);
+    const added = await ok<Repo>(
+      "repository.add",
+      { projectId: p.id, installationRecordId: recordId, repoId },
+      w.human,
+    );
+    expect(added).toMatchObject({ projectId: p.id, name });
+    // The world's project already has its repository: a second is refused, with the reason.
+    const second = await refusal(
+      call(
+        "repository.add",
+        { projectId: w.projectId, installationRecordId: recordId, repoId },
+        w.human,
+      ),
+    );
+    expect(second.code).toBe("conflict");
+    expect(second.message).toMatch(/per repository/);
+  });
+
   it("refuses a project with no repository and no name, and half a repository", async () => {
     const w = await world();
     expect((await refusal(call("project.create", { orgId: w.orgId }, w.human))).code).toBe(
@@ -96,11 +118,7 @@ describe("projects and repositories (ADR 0490)", () => {
 
   it("adds a second repository; a call that needs one must then name it", async () => {
     const { w, recordId, repoId, name } = await withSpareRepo("trunk");
-    const added = await ok<Repo>(
-      "repository.add",
-      { projectId: w.projectId, installationRecordId: recordId, repoId },
-      w.human,
-    );
+    const added = await secondRepository(w, { recordId, repoId, name, defaultBranch: "trunk" });
     expect(added).toMatchObject({ projectId: w.projectId, name, defaultBranch: "trunk" });
     const listed = await ok<{ repositories: Repo[] }>(
       "repository.list",
@@ -150,12 +168,8 @@ describe("projects and repositories (ADR 0490)", () => {
   });
 
   it("fixes one repository's connection with repository.update; project.update needs a name with two", async () => {
-    const { w, recordId, repoId } = await withSpareRepo();
-    const added = await ok<Repo>(
-      "repository.add",
-      { projectId: w.projectId, installationRecordId: recordId, repoId },
-      w.human,
-    );
+    const { w, recordId, repoId, name } = await withSpareRepo();
+    const added = await secondRepository(w, { recordId, repoId, name });
     const fixed = await ok<Repo & { installationWarning: string | null }>(
       "repository.update",
       { repositoryId: added.id, defaultBranch: "develop" },

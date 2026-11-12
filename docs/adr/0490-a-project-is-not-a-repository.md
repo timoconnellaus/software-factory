@@ -40,6 +40,13 @@ CLI command and the desktop app.
    (written as a mirror, never read) until a later migration drops them once this code is live, so
    the code deployed before it keeps working through the deploy and a failed deploy breaks nothing.
 
+8. **One repository per project, for now.** The default-branch protection verdict, the check that
+   holds builds while it is red and the daily re-check are still per project. A second repository's
+   default branch would be unguarded with Setup green, so `repository.add` refuses a project that
+   already has one until protection is tracked per repository. Everything else already keys by
+   repository (webhook lookups, verify, jobs, tokens, the merge queue), so lifting the limit is a
+   protection change only.
+
 ## Consequences
 - Every reader of repo fields goes through the repository row. Webhook lookups key work items and
   verify checks by repository, so two repositories with the same PR number or head never touch

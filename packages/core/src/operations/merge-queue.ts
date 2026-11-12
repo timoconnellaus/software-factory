@@ -43,6 +43,7 @@ interface QueueRow {
   enqueued_at: string;
   number: number;
   title: string;
+  repository_id: string | null;
 }
 
 /**
@@ -68,10 +69,15 @@ export function queuedEntriesQuery(
         "q.enqueued_at",
         "w.number",
         "w.title",
+        "w.repository_id",
       ])
       .where("q.project_id", "=", project)
       // One queue per repository (ADR 0490): an item lands on its own repository's default branch.
-      .$if(repositoryId !== undefined, (q) => q.where("w.repository_id", "=", repositoryId ?? ""))
+      // An item with no repository recorded (code from before 0260) shares its project's queue: a
+      // project has one repository until per-repository protection lands.
+      .$if(typeof repositoryId === "string", (q) =>
+        q.where("w.repository_id", "=", repositoryId ?? ""),
+      )
       .where("q.status", "=", "queued")
       .where("w.status", "in", [...OPEN_ITEM])
       .orderBy("q.enqueued_at", "asc")
@@ -280,6 +286,8 @@ export const mergeQueueList = defineOperation({
         title: z.string(),
         headSha: z.string(),
         enqueuedAt: z.string(),
+        /** The repository it lands in: the queue is per repository (ADR 0490). */
+        repositoryId: z.string().nullable(),
       }),
     ),
   }),
@@ -292,6 +300,7 @@ export const mergeQueueList = defineOperation({
         title: e.title,
         headSha: e.head_sha,
         enqueuedAt: e.enqueued_at,
+        repositoryId: e.repository_id,
       })),
     };
   },

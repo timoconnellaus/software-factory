@@ -77,8 +77,9 @@ Nothing changes for a user.
     the project **and** its first repository (today's Setup). Without them it creates a project with
     no repository (refused today: both become optional, but given together or not at all).
   - `repository.add { projectId, installationRecordId, repoId }` (admin): adds a repository to a
-    project, with the same checks as `project.create` (the installation is the org's and active,
-    GitHub reaches the repo, it isn't already a repository anywhere).
+    project **with none**, with the same checks as `project.create` (the installation is the org's
+    and active, GitHub reaches the repo, it isn't already a repository anywhere). A second
+    repository is refused until protection is tracked per repository (below).
   - `repository.list { orgId, projectId? }` (member, read): repositories with their connection.
   - `repository.update { repositoryId, githubInstallationId?, detectInstallation?, defaultBranch? }`
     (admin): today's `project.update` fix, per repository. `project.update` keeps its input and
@@ -105,10 +106,14 @@ Nothing changes for a user.
 - **The merge queue is per repository**: entries stay in `core_merge_queue` (keyed by project), and
   the head, positions and the next wake are computed among the items of the same repository, since
   each lands on its own repository's default branch.
-- **Protection stays per project for now**: `core_project_protection` holds the verdict of the
-  project's **first** repository. A check of any other repository is computed and shown but not
-  recorded, so it can't overwrite the first one's. Per-repository protection (and Setup showing
-  every repository) is a follow-up before the UI offers a second repository.
+- **Protection stays per project for now**, so **a project has at most one repository**
+  (ADR 0490 §8): `core_project_protection`, the build hold on red and the daily re-check are per
+  project, and a second repository's default branch would be unguarded with Setup green.
+  `repository.add` refuses a second one with that reason. Everything else already keys by
+  repository, so per-repository protection (and Setup showing every repository) is the one change
+  that lifts the limit. The same follow-up rekeys `core_verify_checks` from `(project_id,
+  head_sha)` to `(repository_id, head_sha)`: it can't change now, because code deployed before
+  0260 upserts on the old key during the deploy.
 
 ## Part B: backlog, ready, queued (PR B)
 - **Migration 0261** (`0261_backlog.sql`):
@@ -248,8 +253,9 @@ it gets its own spec and ADR).
 2. Every existing flow behaves as before for a one-repository project: Setup, New work, attach,
    verify, the merge queue, protection, the runner's job repo, the webhook lookups (the existing
    suites pass with only setup-helper changes).
-3. A project can be created with no repository; a second repository can be added; an operation
-   that needs a repository on a project with two and no `repositoryId` is refused with the reason.
+3. A project can be created with no repository and given one; a second repository is refused
+   with the reason; the code paths that must key by repository (webhooks, verify, jobs, tokens, the
+   merge queue) are tested with two repositories inserted directly.
 4. `workItem.create` without `state` leaves the item in `backlog` with no Workflow instance and no
    stage beyond intake; `state: "queued"` starts it at once when the project has room.
 5. Release refuses an item that isn't in backlog or ready, an item without a repository when its
