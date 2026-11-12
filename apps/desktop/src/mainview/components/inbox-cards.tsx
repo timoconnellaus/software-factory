@@ -422,7 +422,9 @@ export function ReleaseFlagDetail({
     setBusy(choice);
     setError(null);
     try {
-      await op("workItem.releaseChoice", { workItemId: flag.workItemId, choice });
+      const r = await op("workItem.releaseChoice", { workItemId: flag.workItemId, choice });
+      // The org's workflow changed again since the flag: the card shows the new difference.
+      if (r.refused) setError(r.refused);
       await refresh(flag.workItemId);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

@@ -16,6 +16,7 @@ import {
   type ProjectPolicy,
   parseProjectPolicy,
 } from "../policy/project-policy.ts";
+import { overrideApprovals } from "../scope.ts";
 import {
   configImpact,
   normaliseOverrides,
@@ -149,7 +150,13 @@ async function saveRisk(
     );
     if (resolved && !resolved.ok) return "write" as const;
   }
-  const impact = await impactOf(at.db, orgId, at.scope.rawPolicy, parsed.policy, at.floor);
+  const impact = await impactOf(
+    at.db,
+    at.scope.project,
+    at.scope.rawPolicy,
+    parsed.policy,
+    at.floor,
+  );
   return impact.class === "loosens" ? ("self-modify" as const) : ("write" as const);
 }
 
@@ -170,7 +177,7 @@ export async function orgAdminDecidesSave(
   if (!parsed.ok || !at.scope.project) return false;
   const before = at.scope.rawPolicy;
   if (!onOrgWorkflow(parsed.policy) && !onOrgWorkflow(before)) return false;
-  const impact = await impactOf(at.db, at.scope.project.org_id, before, parsed.policy, at.floor);
+  const impact = await impactOf(at.db, at.scope.project, before, parsed.policy, at.floor);
   return impact.changes.some(
     (c) => c.class === "loosens" && (c.path === "workflow" || c.path.startsWith("workflow.")),
   );
@@ -205,14 +212,17 @@ function requireName(before: ProjectPolicy | null, after: ProjectPolicy) {
  */
 async function impactOf(
   db: Db,
-  orgId: string,
+  project: { id: string; org_id: string },
   before: ProjectPolicy | null,
   after: ProjectPolicy,
   floor: FloorParse,
 ): Promise<PolicyImpact> {
   const impact = policyImpact(before, after, floor);
   if (!before || !(onOrgWorkflow(before) || onOrgWorkflow(after))) return impact;
-  return configImpact(impact, before, after, (await currentOrgConfig(db, orgId)).config);
+  const { version, config } = await currentOrgConfig(db, project.org_id);
+  // What `before` runs now: its looser overrides only where approved for this org version.
+  const approvals = onOrgWorkflow(before) ? await overrideApprovals(db, project.id, version) : {};
+  return configImpact(impact, before, after, config, approvals);
 }
 
 /** A project on an org workflow must name one it can run, with overrides that apply. */
@@ -229,27 +239,63 @@ async function requireOrgWorkflow(db: Db, orgId: string, policy: ProjectPolicy) 
 
 /**
  * The document a version stores (spec 52, fourth review): on an org workflow, only the overrides
- * that differ from the org's value, and the factory's own record of which looser ones were approved
- * (`normaliseOverrides`); a draft's own `workflowOverrideApprovals` is never kept. `approve`: the
- * save is an approved loosening, so its looser overrides are approved against the org's current
- * version. A config not on an org workflow is stored as written.
+ * that differ from the org's value (`normaliseOverrides`), with the looser ones listed (each applies
+ * once an org admin approves it for this org version). A document's own `workflowOverrideApprovals`
+ * is never kept: approvals are the factory's record (`core_override_approvals`). A config not on an
+ * org workflow is stored as written, less that field.
  */
 async function storedDocument(
   db: Db,
   orgId: string,
   doc: Record<string, unknown>,
   policy: ProjectPolicy,
-  previous: ProjectPolicy | null,
-  approve: boolean,
-): Promise<Record<string, unknown>> {
+): Promise<{
+  doc: Record<string, unknown>;
+  looser: { stageId: string; key: string; value: unknown }[];
+  orgVersion: number;
+}> {
   const { workflowOverrideApprovals: _drop, ...rest } = doc;
-  if (!onOrgWorkflow(policy)) return rest;
+  if (!onOrgWorkflow(policy)) return { doc: rest, looser: [], orgVersion: 0 };
   const { version, config } = await currentOrgConfig(db, orgId);
-  const n = normaliseOverrides(policy, config, version, previous, approve);
-  const out: Record<string, unknown> = { ...rest, workflowOverrides: n.workflowOverrides };
-  if (Object.keys(n.workflowOverrideApprovals).length)
-    out.workflowOverrideApprovals = n.workflowOverrideApprovals;
-  return out;
+  const n = normaliseOverrides(policy, config);
+  return {
+    doc: { ...rest, workflowOverrides: n.workflowOverrides },
+    looser: n.looser,
+    orgVersion: version,
+  };
+}
+
+/**
+ * Records an org admin's approval of a project's looser overrides for one org version: the only
+ * writer of `core_override_approvals` besides the factory's carry to an unchanged next version.
+ */
+function approveOverrides(
+  ctx: HandlerContext,
+  project: { id: string; org_id: string },
+  stored: { looser: { stageId: string; key: string; value: unknown }[]; orgVersion: number },
+) {
+  for (const l of stored.looser)
+    ctx.write(
+      ctx.db
+        .insertInto("core_override_approvals")
+        .values({
+          project_id: project.id,
+          org_id: project.org_id,
+          org_version: stored.orgVersion,
+          stage_id: l.stageId,
+          setting: l.key,
+          value: JSON.stringify(l.value),
+          approved_by: ctx.actor.id,
+          approved_at: ctx.now,
+        })
+        .onConflict((oc) =>
+          oc.columns(["project_id", "org_version", "stage_id", "setting"]).doUpdateSet({
+            value: JSON.stringify(l.value),
+            approved_by: ctx.actor.id,
+            approved_at: ctx.now,
+          }),
+        ),
+    );
 }
 
 /** Refuses when the org's config has a version newer than `since` (an ISO time). */
@@ -495,7 +541,7 @@ export const configPreview = defineOperation({
       valid: error === null,
       error,
       impact: parsed.ok
-        ? await impactOf(ctx.db, project.org_id, ctx.scope.rawPolicy, parsed.policy, ctx.floor)
+        ? await impactOf(ctx.db, project, ctx.scope.rawPolicy, parsed.policy, ctx.floor)
         : null,
       currentVersion: versionOf(project.policy_sha) ?? 0,
     };
@@ -527,17 +573,10 @@ export const configSave = defineOperation({
     requireName(ctx.scope.rawPolicy, policy);
     await requireOrgWorkflow(ctx.db, project.org_id, policy);
     await requireAdjudicatorEarned(ctx, policy);
-    const impact = await impactOf(ctx.db, project.org_id, ctx.scope.rawPolicy, policy, ctx.floor);
-    const doc = await storedDocument(
-      ctx.db,
-      project.org_id,
-      input.policy,
-      policy,
-      ctx.scope.rawPolicy,
-      false,
-    );
+    const impact = await impactOf(ctx.db, project, ctx.scope.rawPolicy, policy, ctx.floor);
+    const stored = await storedDocument(ctx.db, project.org_id, input.policy, policy);
     const written = await writeVersion(ctx, project, {
-      raw: formatPolicy(doc),
+      raw: formatPolicy(stored.doc),
       valid: true,
       error: null,
       source: input.source,
@@ -580,25 +619,17 @@ export const configRollback = defineOperation({
     if (!target) throw new OperationError("not_found", `no valid version ${input.toVersion}`);
     requireBase(project, input.baseVersion);
     await requireOrgWorkflow(ctx.db, project.org_id, target.policy);
-    const impact = await impactOf(
-      ctx.db,
-      project.org_id,
-      ctx.scope.rawPolicy,
-      target.policy,
-      ctx.floor,
-    );
-    const restored = onOrgWorkflow(target.policy)
-      ? formatPolicy(
-          await storedDocument(
-            ctx.db,
-            project.org_id,
-            JSON.parse(target.raw) as Record<string, unknown>,
-            target.policy,
-            ctx.scope.rawPolicy,
-            false,
-          ),
+    const impact = await impactOf(ctx.db, project, ctx.scope.rawPolicy, target.policy, ctx.floor);
+    const restored = formatPolicy(
+      (
+        await storedDocument(
+          ctx.db,
+          project.org_id,
+          JSON.parse(target.raw) as Record<string, unknown>,
+          target.policy,
         )
-      : target.raw;
+      ).doc,
+    );
     const written = await writeVersion(ctx, project, {
       raw: restored,
       valid: true,
@@ -670,16 +701,15 @@ export async function applyApprovedConfig(
     // org has saved since, what was approved may not be what would apply, so it's asked again.
     await requireOrgUnchangedSince(ctx.db, project.org_id, pa.created_at);
     await requireOrgWorkflow(ctx.db, project.org_id, policy);
-    raw = formatPolicy(
-      await storedDocument(
-        ctx.db,
-        project.org_id,
-        JSON.parse(raw) as Record<string, unknown>,
-        policy,
-        ctx.scope.rawPolicy,
-        true,
-      ),
+    const stored = await storedDocument(
+      ctx.db,
+      project.org_id,
+      JSON.parse(raw) as Record<string, unknown>,
+      policy,
     );
+    raw = formatPolicy(stored.doc);
+    // Approved: its looser overrides apply for this org version, and only this one.
+    approveOverrides(ctx, project, stored);
   }
   const written = await writeVersion(ctx, project, {
     raw,

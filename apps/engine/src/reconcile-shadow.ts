@@ -9,7 +9,8 @@
 //   core_work_items_ended_idx (updated_at, id) WHERE status is an end (migration 0281), LIMIT 25:
 //   at most 25 rows; then one batch with, per item, its row by primary key with its pinned policy by
 //   primary key and, for an item on an org workflow, the org config version it pinned by primary key
-//   (spec 52 PR (d); up to three rows), its stage rows by core_stages_item_idx (LIMIT 500, a handful in
+//   and its project's override approvals for that version by core_override_approvals' primary-key
+//   prefix (spec 52 PR (d); a few rows), its stage rows by core_stages_item_idx (LIMIT 500, a handful in
 //   practice), and whether the merge queue carried a review packet to a new head, by
 //   core_review_packets_item_idx (the item's packets, one per verify round, LIMIT 1 hit).
 //   With nothing new: one row and one empty index probe.
@@ -43,6 +44,8 @@ interface ItemRow {
   raw: string | null;
   /** The org config the item pinned (spec 52 PR (d)): only read for an item that pinned one. */
   org_raw: string | null;
+  /** The org admins' approvals of its looser overrides for that version, as a JSON array. */
+  approvals: string | null;
 }
 
 /** Where the last pass stopped: `<updated_at> <id>` of the last ended item it read. */
@@ -84,7 +87,10 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
     ids.flatMap((id) => [
       env.DB.prepare(
         `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, p.raw,
-           c.raw AS org_raw
+           c.raw AS org_raw,
+           (SELECT json_group_array(json_object('stage', a.stage_id, 'setting', a.setting, 'value', a.value))
+            FROM core_override_approvals a
+            WHERE a.project_id = w.project_id AND a.org_version = w.org_config_version) AS approvals
          FROM core_work_items w
          LEFT JOIN core_project_policies p ON p.project_id = w.project_id
            AND p.sha = COALESCE(w.policy_sha, (SELECT policy_sha FROM core_projects WHERE id = w.project_id))
@@ -136,7 +142,7 @@ function verdictOf(row: ItemRow, stages: StageRow[], observed: ShadowObserved) {
   if (stages.every((s) => s.stage === "intake")) return null;
   const parsed = parseProjectPolicy(row.raw);
   if (!parsed.ok) return null;
-  const policy = resolved(parsed.policy, row.org_raw);
+  const policy = resolved(parsed.policy, row.org_raw, row.approvals);
   if (!policy) return null; // an org workflow that can't be resolved: not comparable
   let definition: ReturnType<typeof compileItemWorkflow>;
   try {
@@ -178,7 +184,11 @@ function verdictOf(row: ItemRow, stages: StageRow[], observed: ShadowObserved) {
  * project's overrides, resolved as today's engine ran it (`effectivePolicy`); otherwise the project's
  * own. Null when it can't be resolved (no pinned org version, or one that doesn't apply).
  */
-function resolved(policy: ProjectPolicy, orgRaw: string | null): ProjectPolicy | null {
+function resolved(
+  policy: ProjectPolicy,
+  orgRaw: string | null,
+  approvalsRaw: string | null,
+): ProjectPolicy | null {
   if (!onOrgWorkflow(policy)) return policy;
   if (!orgRaw) return null;
   let org: ReturnType<typeof parseOrgConfig>;
@@ -188,7 +198,18 @@ function resolved(policy: ProjectPolicy, orgRaw: string | null): ProjectPolicy |
     return null;
   }
   if (!org.ok) return null;
-  const effective = effectivePolicy(policy, org.config);
+  const approvals: Record<string, Record<string, unknown>> = {};
+  try {
+    for (const a of JSON.parse(approvalsRaw ?? "[]") as {
+      stage: string;
+      setting: string;
+      value: string;
+    }[])
+      approvals[a.stage] = { ...approvals[a.stage], [a.setting]: JSON.parse(a.value) };
+  } catch {
+    // Unreadable approvals approve nothing: the stricter values apply.
+  }
+  const effective = effectivePolicy(policy, org.config, approvals);
   return effective.ok ? effective.value : null;
 }
 
