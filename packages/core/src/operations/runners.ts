@@ -296,8 +296,9 @@ function reportRunnerState(
         ),
       ),
   );
-  // Two heartbeats racing: the batch aborts unless this one is still the newest.
-  if (report.signedAt !== undefined) ctx.guardChanged("newest heartbeat");
+  // No batch guard (it would cost an insert and a delete per beat): a captured heartbeat was
+  // accepted when captured, so the check before this refuses its replay; this condition only keeps
+  // the newer of two racing heartbeats' runner state.
   return { pendingAccount: requested !== null && !settled ? requested : null };
 }
 
