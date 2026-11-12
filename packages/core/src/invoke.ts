@@ -274,13 +274,17 @@ export async function runOperation<O = unknown>(
           floor,
         })
       : null;
-  const gate =
+  let gate =
     pinned && strictest(pinned.decision, current.decision) !== current.decision
       ? {
           decision: pinned.decision,
           reason: `${pinned.reason} (the version this item started under)`,
         }
       : current;
+  // A workflow's gate step is enforced in code, never loosened by policy (ADR 0371).
+  if (op.alwaysReview && gate.decision === "allow") {
+    gate = { decision: "review", reason: `${op.name} always asks a person` };
+  }
 
   // An approved re-run must match its pending action. `deny` still refuses it.
   let approval: PendingActionRow | undefined;
@@ -532,7 +536,18 @@ async function openPendingAction(
   // The requester decides when they are an approver; otherwise the first approver.
   const approvers = scope.orgId ? await approverIds(db, scope.orgId, scope.policy) : [];
   const requester = scope.workItem?.requester_user_id;
-  const assignee = requester && approvers.includes(requester) ? requester : (approvers[0] ?? null);
+  // A gate step may name who decides (ADR 0371); they must be one of the project's approvers.
+  const named = op.assignee?.(args.input) ?? null;
+  const namedId =
+    named && scope.orgId
+      ? ((await approverIds(db, scope.orgId, { approvers: [named] }))[0] ?? null)
+      : null;
+  const assignee =
+    namedId && approvers.includes(namedId)
+      ? namedId
+      : requester && approvers.includes(requester)
+        ? requester
+        : (approvers[0] ?? null);
   const hours = scope.policy?.timeouts.gateHours ?? 72;
   const timeoutAt = new Date(Date.parse(now) + hours * 3_600_000).toISOString();
   const title =

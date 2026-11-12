@@ -40,3 +40,8 @@ rules forbid. It would also cost a lot in Workflow determinism and versioning.
 - v1 to v5 instances drain unchanged. v6 adds the slot loop, and its step names are frozen in
   `workflow-versions.test.ts`.
 - Parallel steps and branches beyond conditions are out of scope.
+
+> Amended 2026-11-12 (spec 09 M2, as built): work steps run as `verify`-stage jobs (read-only).
+> Gate steps go through `workflow.gate`, which carries `alwaysReview` so `invoke()` asks a person
+> even when overrides would allow it. `core` names only the build agent: triage picks the
+> workflow, so it can't take an agent from one.

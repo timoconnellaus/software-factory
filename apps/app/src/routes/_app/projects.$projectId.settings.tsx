@@ -5,15 +5,30 @@ import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Input } from "@software-factory/ui/components/input";
-import { Label } from "@software-factory/ui/components/label";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import {
+  changedPaths as changedOf,
+  type Doc,
+  Field,
+  ImpactBadge,
+  ListEditor,
+  NumberInput,
+  num,
+  obj,
+  Page,
+  PendingChanges,
+  SaveBar,
+  Section,
+  Segmented,
+  strs,
+  useConfigDraft,
+} from "#/components/config-editor";
 import { ago } from "#/lib/format";
-import { op, read, submitKey } from "#/lib/op";
+import { op, submitKey } from "#/lib/op";
 import { OpError } from "#/lib/ops";
 import { configQuery } from "#/lib/queries";
 import { useProjects } from "#/lib/session";
@@ -24,7 +39,6 @@ export const Route = createFileRoute("/_app/projects/$projectId/settings")({
   component: SettingsPage,
 });
 
-type Doc = Record<string, unknown>;
 type Overrides = Record<string, Record<string, string>>;
 
 const AUTONOMY = [
@@ -68,86 +82,17 @@ const SECTIONS = [
 ] as const;
 const ALL_SECTIONS = SECTIONS.map((s) => s[0]);
 
-const num = (v: unknown, d: number) => (typeof v === "number" ? v : d);
-const obj = (v: unknown): Doc =>
-  v && typeof v === "object" && !Array.isArray(v) ? (v as Doc) : {};
-const strs = (v: unknown): string[] =>
-  Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
-
 function SettingsPage() {
   const { projectId } = Route.useParams();
   const projects = useProjects();
   const project = projects.data?.find((p) => p.id === projectId);
-  const config = useQuery(configQuery(projectId));
-  const queryClient = useQueryClient();
-  const current = config.data?.current ?? null;
-  const [draft, setDraft] = useState<Doc | null>(null);
-  const [note, setNote] = useState("");
-  const [source, setSource] = useState<"app" | "import">("app");
-  const [busy, setBusy] = useState(false);
+  const editor = useConfigDraft(projectId);
+  const { config, current, currentVersion, setDraft, doc, set, busy, setBusy, refresh } = editor;
   const [json, setJson] = useState<string | null>(null);
 
-  // Start (or restart) from the current version when it changes underneath us.
-  const currentVersion = current?.version ?? 0;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the version moves.
-  useEffect(() => {
-    setDraft(current?.policy ? structuredClone(current.policy) : null);
-    setNote("");
-    setSource("app");
-  }, [currentVersion]);
-
-  const doc = draft ?? current?.policy ?? null;
-  const dirty =
-    !!draft && !!current?.policy && JSON.stringify(draft) !== JSON.stringify(current.policy);
-  const preview = useQuery({
-    queryKey: ["config", projectId, "preview", draft],
-    queryFn: () => read("config.preview", { projectId, policy: draft ?? {} }),
-    enabled: dirty,
-    placeholderData: keepPreviousData,
-  });
-
-  const set = (patch: (d: Doc) => void) =>
-    setDraft((prev) => {
-      const next = structuredClone(prev ?? current?.policy ?? {});
-      patch(next);
-      return next;
-    });
-
-  async function refresh() {
-    await queryClient.invalidateQueries({ queryKey: ["config", projectId] });
-    await queryClient.invalidateQueries({ queryKey: ["projects"] });
-  }
-
-  async function save() {
-    if (!draft) return;
-    setBusy(true);
-    try {
-      const r = await op(
-        "config.save",
-        { projectId, baseVersion: currentVersion, policy: draft, note: note || undefined, source },
-        { idempotencyKey: submitKey() },
-      );
-      toast.success(`Saved as v${r.version}.`);
-      await refresh();
-    } catch (error) {
-      if (error instanceof OpError && error.code === "pending") {
-        toast.success(
-          "This loosens the config, so it waits for an approver. It's in their inbox.",
-          {
-            duration: 10_000,
-          },
-        );
-        setDraft(null);
-        await refresh();
-      } else {
-        toast.error(error instanceof Error ? error.message : String(error), { duration: 15_000 });
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function rollback(toVersion: number) {
+    if (!window.confirm(`Make v${toVersion} current again? This saves it as a new version.`))
+      return;
     setBusy(true);
     try {
       const r = await op(
@@ -187,9 +132,13 @@ function SettingsPage() {
       const inner = parsed[".factory/policy.json"];
       const policy = typeof inner === "string" ? (JSON.parse(inner) as Doc) : parsed;
       setDraft(policy);
-      setSource("import");
-      setNote(`Imported from ${file.name}`);
-      toast.message("Imported into the form. Check the changes below, then save.");
+      editor.setSource("import");
+      editor.setNote(`Imported from ${file.name}`);
+      toast.message(
+        JSON.stringify(policy) === JSON.stringify(current?.policy)
+          ? "That's the same as the current version: nothing to save."
+          : "Imported into the form. Check the changes below, then save.",
+      );
     } catch {
       toast.error("That file isn't a factory config export or a policy.json.");
     }
@@ -218,9 +167,7 @@ function SettingsPage() {
   const sections = Array.isArray(obj(doc.reviewPacket).sections)
     ? strs(obj(doc.reviewPacket).sections)
     : ALL_SECTIONS.slice();
-  const changedPaths = new Set(
-    (preview.data?.impact?.changes ?? []).map((c) => c.path.split(".")[0]),
-  );
+  const changedPaths = changedOf(editor);
 
   return (
     <Page
@@ -228,11 +175,23 @@ function SettingsPage() {
       subtitle={
         <>
           {project?.name ?? "Project"} · config <span className="font-mono">v{currentVersion}</span>
-          {current?.createdBy ? ` · saved ${ago(current.createdAt)} by ${current.createdBy}` : ""}
+          {current?.createdBy ? (
+            // The relative time can tick between the server render and the client's.
+            <span suppressHydrationWarning>
+              {` · saved ${ago(current.createdAt)} by ${current.createdBy}`}
+            </span>
+          ) : (
+            ""
+          )}
         </>
       }
       actions={
         <>
+          <Button size="sm" variant="outline" asChild>
+            <Link to="/projects/$projectId/workflows" params={{ projectId }}>
+              Workflows and agents
+            </Link>
+          </Button>
           <Button size="sm" variant="outline" onClick={() => setJson(JSON.stringify(doc, null, 2))}>
             Edit as JSON
           </Button>
@@ -257,6 +216,7 @@ function SettingsPage() {
         </>
       }
     >
+      <PendingChanges editor={editor} />
       <Card className="px-5 py-3 text-muted-foreground text-sm">
         Saving makes a new version. New work uses it straight away; running work keeps the stricter
         of its own version and the new one. A change that loosens the config waits for an approver.
@@ -495,50 +455,7 @@ function SettingsPage() {
         </Field>
       </Section>
 
-      {dirty && (
-        <Card className="sticky bottom-3 gap-3 px-5 py-4 shadow-lg" data-testid="save-bar">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-sm">Unsaved changes</span>
-            {preview.data?.impact?.class === "loosens" && (
-              <Badge variant="outline" className="border-amber-500">
-                loosens: needs an approver
-              </Badge>
-            )}
-            {preview.data && !preview.data.valid && (
-              <Badge variant="destructive">not valid: {preview.data.error}</Badge>
-            )}
-            <span className="grow" />
-            <Button size="sm" variant="ghost" onClick={() => setDraft(null)} disabled={busy}>
-              Discard
-            </Button>
-            <Button
-              size="sm"
-              onClick={save}
-              disabled={busy || !preview.data?.valid}
-              data-testid="config-save"
-            >
-              {busy
-                ? "Saving…"
-                : preview.data?.impact?.class === "loosens"
-                  ? "Send for approval"
-                  : `Save v${currentVersion + 1}`}
-            </Button>
-          </div>
-          <ul className="grid gap-1 text-sm" data-testid="impact">
-            {(preview.data?.impact?.changes ?? []).map((c) => (
-              <li key={`${c.path}-${c.summary}`} className="flex items-start gap-2">
-                <ImpactBadge value={c.class} />
-                <span>{c.summary}</span>
-              </li>
-            ))}
-          </ul>
-          <Input
-            placeholder="Why (optional, shows in History)"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-          />
-        </Card>
-      )}
+      <SaveBar editor={editor} />
 
       <Section
         title="History"
@@ -551,7 +468,7 @@ function SettingsPage() {
               {h.impact && h.impact !== "neutral" && <ImpactBadge value={h.impact} />}
               <span className="text-muted-foreground">{h.source}</span>
               <span className="min-w-0 truncate">{h.note ?? ""}</span>
-              <span className="text-muted-foreground text-xs">
+              <span className="text-muted-foreground text-xs" suppressHydrationWarning>
                 {h.createdBy ? `${h.createdBy} · ` : ""}
                 {ago(h.createdAt)}
               </span>
@@ -572,183 +489,6 @@ function SettingsPage() {
         </ul>
       </Section>
     </Page>
-  );
-}
-
-function Page({
-  title,
-  subtitle,
-  actions,
-  children,
-}: {
-  title: string;
-  subtitle?: ReactNode;
-  actions?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <main className="mx-auto grid w-full grid-cols-[minmax(0,1fr)] max-w-[920px] gap-4 p-4 md:p-6">
-      <div className="flex flex-wrap items-start gap-2">
-        <div className="grow">
-          <h1 className="font-semibold text-2xl tracking-tight">{title}</h1>
-          {subtitle && <div className="text-muted-foreground text-sm">{subtitle}</div>}
-        </div>
-        {actions}
-        <Button size="sm" variant="ghost" asChild>
-          <Link to="/setup">Setup</Link>
-        </Button>
-      </div>
-      {children}
-    </main>
-  );
-}
-
-function Section({
-  title,
-  description,
-  changed,
-  children,
-}: {
-  title: string;
-  description?: string;
-  changed?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <Card className={cn("gap-2 px-5 py-4", changed && "border-amber-500/70")}>
-      <div>
-        <h2 className="font-semibold">{title}</h2>
-        {description && <p className="text-muted-foreground text-sm">{description}</p>}
-      </div>
-      {children}
-    </Card>
-  );
-}
-
-function Field({ label, help, children }: { label: string; help: string; children: ReactNode }) {
-  return (
-    <div className="grid items-start gap-2 border-b py-3 last:border-b-0 md:grid-cols-[1fr_auto]">
-      <div>
-        <Label>{label}</Label>
-        <p className="text-muted-foreground text-xs">{help}</p>
-      </div>
-      <div className="flex flex-wrap items-center gap-2 md:justify-end">{children}</div>
-    </div>
-  );
-}
-
-function NumberInput({
-  value,
-  min,
-  max,
-  suffix,
-  onChange,
-  testId,
-}: {
-  value: number;
-  min: number;
-  max: number;
-  suffix?: string;
-  onChange: (v: number) => void;
-  testId?: string;
-}) {
-  return (
-    <>
-      <Input
-        type="number"
-        className="w-24"
-        value={value}
-        min={min}
-        max={max}
-        data-testid={testId}
-        onChange={(e) => {
-          const v = Number(e.target.value);
-          if (Number.isFinite(v)) onChange(v);
-        }}
-      />
-      {suffix && <span className="text-muted-foreground text-sm">{suffix}</span>}
-    </>
-  );
-}
-
-function Segmented({
-  options,
-  value,
-  onChange,
-}: {
-  options: string[];
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="inline-flex overflow-hidden rounded-md border">
-      {options.map((o) => (
-        <button
-          key={o}
-          type="button"
-          onClick={() => onChange(o)}
-          className={cn(
-            "border-r px-3 py-1.5 text-sm capitalize last:border-r-0",
-            value === o && "bg-primary text-primary-foreground",
-          )}
-        >
-          {o}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ListEditor({
-  items,
-  placeholder,
-  onChange,
-  testId,
-}: {
-  items: string[];
-  placeholder: string;
-  onChange: (next: string[]) => void;
-  testId?: string;
-}) {
-  const [value, setValue] = useState("");
-  return (
-    <div className="flex flex-wrap items-center gap-1.5" data-testid={testId}>
-      {items.map((item) => (
-        <span
-          key={item}
-          className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs"
-        >
-          {item}
-          <button
-            type="button"
-            aria-label={`Remove ${item}`}
-            className="text-muted-foreground"
-            onClick={() => onChange(items.filter((i) => i !== item))}
-          >
-            ✕
-          </button>
-        </span>
-      ))}
-      <form
-        className="inline-flex gap-1"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const v = value.trim();
-          if (v && !items.includes(v)) onChange([...items, v]);
-          setValue("");
-        }}
-      >
-        <Input
-          className="h-7 w-36 text-xs"
-          placeholder={placeholder}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        />
-        <Button size="sm" variant="ghost" type="submit" className="h-7">
-          Add
-        </Button>
-      </form>
-    </div>
   );
 }
 
@@ -908,19 +648,5 @@ function PacketEditor({
         );
       })}
     </ul>
-  );
-}
-
-function ImpactBadge({ value }: { value: string }) {
-  return (
-    <Badge
-      variant="outline"
-      className={cn(
-        value === "loosens" && "border-amber-500 text-amber-700 dark:text-amber-400",
-        value === "tightens" && "border-emerald-500 text-emerald-700 dark:text-emerald-400",
-      )}
-    >
-      {value}
-    </Badge>
   );
 }

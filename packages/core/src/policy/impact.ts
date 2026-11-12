@@ -4,7 +4,7 @@
 import { HARNESS_PERMISSION_MODES, JOB_STAGES } from "@software-factory/runner-contract";
 import { ACTOR_TYPES } from "../actors.ts";
 import { decide, type FloorParse, RISK_CLASSES } from "./gate.ts";
-import type { ProjectPolicy } from "./project-policy.ts";
+import { type ProjectPolicy, SLOTS } from "./project-policy.ts";
 
 export type ImpactClass = "loosens" | "tightens" | "neutral";
 
@@ -48,6 +48,8 @@ const KNOWN = new Set([
   "harness",
   "protection",
   "reviewPacket",
+  "agents",
+  "workflows",
 ]);
 
 /**
@@ -71,6 +73,7 @@ export function policyImpact(
 
   // The gate: every non-human actor × risk class, old against new, with the real floor.
   if (before.autonomyPolicy !== after.autonomyPolicy || !same(before.overrides, after.overrides)) {
+    const headline = changes.length;
     if (before.autonomyPolicy !== after.autonomyPolicy) {
       add(
         "autonomyPolicy",
@@ -87,6 +90,16 @@ export function policyImpact(
         const cls = RANK[now] < RANK[was] ? "loosens" : "tightens";
         add(`gate.${actor}.${risk}`, cls, `${actor} ${risk}: ${was} → ${now}.`);
       }
+    }
+    // The autonomy line takes the class of what it does to the gate.
+    const caused = changes.slice(headline + 1);
+    const head = changes[headline];
+    if (head?.path === "autonomyPolicy") {
+      head.class = caused.some((c) => c.class === "loosens")
+        ? "loosens"
+        : caused.some((c) => c.class === "tightens")
+          ? "tightens"
+          : "neutral";
     }
   }
 
@@ -133,7 +146,12 @@ export function policyImpact(
     }
   }
   if (before.wipLimit !== after.wipLimit) {
-    add("wipLimit", "neutral", `WIP limit ${before.wipLimit} → ${after.wipLimit}.`);
+    // Fewer items waiting at gates holds builds sooner; more is throughput, not permission.
+    add(
+      "wipLimit",
+      after.wipLimit < before.wipLimit ? "tightens" : "neutral",
+      `WIP limit ${before.wipLimit} → ${after.wipLimit}.`,
+    );
   }
   if (before.retryLimit !== after.retryLimit) {
     add("retryLimit", "neutral", `Retry limit ${before.retryLimit} → ${after.retryLimit}.`);
@@ -205,6 +223,9 @@ export function policyImpact(
   // The harness: a wider mode, more allow rules or more hosts widen what an agent may do.
   harnessChanges(before.harness, after.harness, add);
 
+  // Workflows and agents (ADR 0371, 0372): gate steps are policy, the rest is practice.
+  workflowChanges(before, after, add);
+
   // Anything else that changed is something this file can't judge: fail closed.
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
     if (KNOWN.has(key)) continue;
@@ -259,6 +280,65 @@ function harnessChanges(
     add("harness.allowedDomains", "loosens", `Agents may also reach ${list(addedHosts)}.`);
   if (removedHosts.length)
     add("harness.allowedDomains", "tightens", `Agents may no longer reach ${list(removedHosts)}.`);
+}
+
+function gateSteps(policy: ProjectPolicy): Map<string, string> {
+  const gates = new Map<string, string>();
+  for (const w of policy.workflows) {
+    for (const slot of SLOTS) {
+      for (const step of w.slots[slot]) {
+        if (step.kind === "gate") {
+          gates.set(
+            `${w.name.toLowerCase()}/${step.id}`,
+            `${w.name} → ${step.name} (${step.approver ?? "approvers"}${step.when ? ", conditional" : ""})`,
+          );
+        }
+      }
+    }
+  }
+  return gates;
+}
+
+function workflowChanges(
+  before: ProjectPolicy,
+  after: ProjectPolicy,
+  add: (path: string, cls: ImpactClass, summary: string) => void,
+) {
+  if (!same(before.workflows, after.workflows)) {
+    const was = gateSteps(before);
+    const now = gateSteps(after);
+    for (const [key, text] of was) {
+      if (!now.has(key)) add("workflows", "loosens", `Removes the gate step ${text}.`);
+      else if (now.get(key) !== text)
+        add("workflows", "loosens", `Changes who decides, or when: ${text} → ${now.get(key)}.`);
+    }
+    for (const [key, text] of now) {
+      if (!was.has(key)) add("workflows", "tightens", `Adds the gate step ${text}.`);
+    }
+    const names = (p: ProjectPolicy) =>
+      p.workflows
+        .map((w) => w.name)
+        .sort()
+        .join(", ");
+    if (names(before) !== names(after)) {
+      add(
+        "workflows",
+        "neutral",
+        `Workflows: ${names(before) || "none"} → ${names(after) || "none"}.`,
+      );
+    } else {
+      add("workflows", "neutral", "Workflow steps or instructions changed.");
+    }
+  }
+  if (!same(before.agents, after.agents)) {
+    for (const a of after.agents) {
+      const b = before.agents.find((x) => x.name.toLowerCase() === a.name.toLowerCase());
+      const dropped = (b?.requires ?? []).filter((c) => !a.requires.includes(c));
+      if (dropped.length)
+        add(`agents.${a.name}`, "loosens", `${a.name} no longer requires ${list(dropped)}.`);
+    }
+    add("agents", "neutral", "Agents changed (role, tier or instructions).");
+  }
 }
 
 function norm(section: string): string {

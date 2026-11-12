@@ -143,6 +143,30 @@ This spec is built in four milestones, each its own PR.
   workflow picker) and an Agents page. Both save through `config.save`. The work item detail shows
   the item's workflow and lets a person change it before build.
 
+### As built (M2)
+- **Work steps run as `verify`-stage jobs** (read-only, the verify harness profile), with
+  `context.step` naming the workflow, slot and step. They don't use a new `step` job stage:
+  `core_jobs.stage` has a CHECK constraint, and rebuilding that table is the migration that broke
+  production in #42.
+- **Migration 0141** adds `core_work_items.workflow` and `workflow_reason`, and `core_jobs.tier`.
+  M3 moves to 0142 and M4 to 0143.
+- **Agents** have `name`, `role`, `tier`, `instructions` and `requires`.
+  - Their abstract permissions (narrowing the project harness) are deferred: work steps are
+    read-only anyway, and the build agent keeps the project's build harness.
+  - Work steps may not use an `implement` agent.
+  - `core` takes only `build`: triage picks the workflow, so it can't have a workflow agent.
+- **`workflow.gate`** is the gate step's operation.
+  - `alwaysReview` on the operation makes `invoke()` send it to a person whatever the policy says.
+  - `assignee` names the decider, who must be one of the project's approvers.
+  - `workflow.record` journals each step's verdict, and each skip, for the timeline.
+- **Triage** is told the project's workflows (`workflow: options`).
+  - The item's workflow is fixed in `workflow: plan`, just before the build. A person may change it
+    with `workItem.setWorkflow` until then.
+  - An `afterSpec` send-back becomes the build's first note.
+- **App:** `/projects/$projectId/workflows` holds the skeleton with its slots, the step editor, the
+  workflow picker and the agents. The work item page shows the workflow, which can be changed
+  until the build starts.
+
 ### Acceptance criteria
 1. A project without `workflows` runs exactly as v5. v1–v5 replays are unchanged, and v5's step
    names are frozen in `workflow-versions.test.ts`.
@@ -154,8 +178,8 @@ This spec is built in four milestones, each its own PR.
    and a document that tries is refused by the strict schema.
 5. Triage's workflow choice is journaled. `workItem.setWorkflow` changes it before build and is
    refused after.
-6. An agent asking for `bypassPermissions` on a verify step, or for an allow rule beyond the
-   project harness, is refused at save.
+6. *(Deferred with agent permissions.)* An agent can't widen the harness: it has no permission
+   fields, and work steps run with the verify profile.
 7. A step condition `sizeAtLeast: medium` skips the step for small items, and records the skip.
 
 ## M3: Run usage and the improver
@@ -166,7 +190,7 @@ This spec is built in four milestones, each its own PR.
     messages.
   - The handback carries `usage: { model, harness, inputTokens, outputTokens, cacheReadTokens }[]`
     plus wall-clock times.
-  - Migration 0141 adds `core_run_usage`.
+  - Migration 0142 adds `core_run_usage`.
   - Runs record the runner and the config version.
 - **Gate reasons:** send-back, edit and reject prompt for a short reason (optional), stored on the
   decision.
@@ -183,7 +207,7 @@ This spec is built in four milestones, each its own PR.
   - If `policyImpact` says it is practice, it starts a **trial**: the draft applies to the next N
     items of one workflow only.
   - Otherwise it becomes an inbox proposal for a person.
-  - Migration 0141 adds `core_config_trials`.
+  - Migration 0142 adds `core_config_trials`.
   - Trial items run under the candidate version; others run under the current one.
 - **Trial resolution:** after N items, or after 14 days with fewer, it compares outcomes against the
   previous version's items of the same workflow and model class.

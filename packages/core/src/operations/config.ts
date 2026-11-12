@@ -12,6 +12,9 @@ import { type ImpactClass, policyImpact } from "../policy/impact.ts";
 import { POLICY_PATH, type ProjectPolicy, parseProjectPolicy } from "../policy/project-policy.ts";
 import { projectId, requireProject } from "./shared.ts";
 
+/** The config operations whose loosening saves wait for an approver. */
+export const CONFIG_WRITES = ["config.save", "config.rollback"] as const;
+
 export const CONFIG_SOURCES = ["app", "import", "migrated", "improver", "rollback"] as const;
 export type ConfigSource = (typeof CONFIG_SOURCES)[number];
 
@@ -184,6 +187,17 @@ export const configGet = defineOperation({
     current: versionView.nullable(),
     error: z.string().nullable(),
     history: z.array(versionView),
+    /** Saves and rollbacks waiting for an approver (they loosen the config). */
+    pending: z.array(
+      z.object({
+        pendingActionId: z.string(),
+        operation: z.string(),
+        note: z.string().nullable(),
+        by: z.string().nullable(),
+        createdAt: z.string(),
+        baseVersion: z.number().nullable(),
+      }),
+    ),
   }),
   async handler(_input, ctx) {
     const project = requireProject(ctx);
@@ -237,11 +251,39 @@ export const configGet = defineOperation({
     const current =
       history.find((h) => h.sha === project.policy_sha) ??
       (project.policy_sha ? await legacyCurrent(ctx, project) : null);
+    const waiting = await ctx.db
+      .selectFrom("core_pending_actions as pa")
+      .leftJoin("core_user as u", "u.id", "pa.actor_id")
+      .select(["pa.id", "pa.operation", "pa.input", "pa.created_at", "u.github_login", "u.name"])
+      .where("pa.project_id", "=", project.id)
+      .where("pa.status", "=", "pending")
+      .where("pa.operation", "in", [...CONFIG_WRITES])
+      .orderBy("pa.created_at", "desc")
+      .execute();
+    const pending = waiting.map((p) => {
+      let input: { note?: string; baseVersion?: number; toVersion?: number } = {};
+      try {
+        input = JSON.parse(p.input);
+      } catch {
+        input = {};
+      }
+      return {
+        pendingActionId: p.id,
+        operation: p.operation,
+        note:
+          input.note ??
+          (p.operation === "config.rollback" ? `Roll back to v${input.toVersion}` : null),
+        by: p.github_login ?? p.name ?? null,
+        createdAt: p.created_at,
+        baseVersion: input.baseVersion ?? null,
+      };
+    });
     return {
       projectId: project.id,
       current,
       error: ctx.scope.policyError,
       history,
+      pending,
     };
   },
 });
@@ -396,9 +438,6 @@ export const configExport = defineOperation({
     return { version: versionOf(project.policy_sha), files: { [POLICY_PATH]: row.raw } };
   },
 });
-
-/** The config operations whose loosening saves wait for an approver. */
-export const CONFIG_WRITES = ["config.save", "config.rollback"] as const;
 
 /**
  * Applies an approved config proposal (a loosening `config.save` or `config.rollback` that waited

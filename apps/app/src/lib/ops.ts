@@ -16,6 +16,7 @@ export interface OpMap {
   "workItem.list": Def<typeof operations.workItemList>;
   "workItem.timeline": Def<typeof operations.workItemTimeline>;
   "workItem.cancel": Def<typeof operations.workItemCancel>;
+  "workItem.setWorkflow": Def<typeof operations.workItemSetWorkflow>;
   "workItem.attachPr": Def<typeof operations.workItemAttachPr>;
   "workItem.previewAttach": Def<typeof operations.workItemPreviewAttach>;
   "github.openPullRequests": Def<typeof operations.githubOpenPullRequests>;
@@ -70,6 +71,7 @@ export const APP_OPERATIONS = [
   "workItem.list",
   "workItem.timeline",
   "workItem.cancel",
+  "workItem.setWorkflow",
   "workItem.attachPr",
   "workItem.previewAttach",
   "github.openPullRequests",
