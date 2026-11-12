@@ -48,3 +48,15 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 - The foreman (ADR 0005) picks routes within the pinned stage list instead of within a fixed skeleton.
 - Spec 50's `STAGES` and `JOB_STAGES` stop being the list of stages; a stage type maps to a job kind.
 - The open questions in spec 52 are the owner's to answer before the build.
+
+> Amended 2026-11-12 (the owner's answers to spec 52's questions; the spec records each):
+> - **Triage is a shaping stage** (Q1), the one shaping stage type that needs no person (`needsPerson: false`, allowed in shaping by its type's `shapingWithoutPerson`). Software's triage and planning are both shaping, as ADR 0493 already runs them.
+> - **Tightening reaches running items** (Q3): a new version that only tightens moves running items onto it at their next stage boundary; gates added before an item's current stage don't apply to it retroactively.
+> - **Release takes the current version** when the item's shaping stages are unchanged in it, otherwise the item is flagged for a person at release (Q4).
+> - **Per-project settings live in the org workflow**, with a short list of allowed per-project overrides (Q5): the spec threshold, the retry limit, the review packet's sections, required checks. `autoApprove` (ADR 0515) is per workflow, **not** an override; its switch-off is a per-project hold. A loosening override is `self-modify`.
+> - **Org admins edit an org workflow and approve its loosenings** (Q6, differs from the suggestion that owners approve).
+> - **The all-projects board** shows columns by phase: Backlog, Shaping, Ready, Queued, Delivery, Done (Q7). **Small stages** (`agent-check`, `decision`) show inside the stage they belong to, not as lanes (Q8).
+> - **An item is Done when it publishes**; measuring is a follow-up item (Q9).
+> - **Attached PRs and incidents** run built-in workflows people can see and tighten, not loosen (Q10).
+> - **Planning artifacts for a project with no repository** go to the factory's own storage (R2), attached to the item (Q15).
+> - Rule 4's "an irreversible outside action is preceded by a person's decision" now allows that decision to be made by `autoApprove` for **merge** and **deploy** stages only ([ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md), Q11 and Q20–Q23). The validator still requires the required gate; `autoApprove` is a typed setting of that gate, and the impact check treats it as a loosening.

@@ -31,3 +31,5 @@ is asked. Most gate decisions on a mature project are approvals made without cha
 > through `decidePending` as `self-improve`. In active mode, every fifth approval is still left to
 > a person, so precision stays measured on fresh decisions. The fallback to shadow is a config
 > version written by the system, a tightening.
+
+> Amended 2026-11-12 (spec 52's answers, questions 12 and 21; [ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md)): two new gate kinds. **Preview** (spec 52's `preview` stage) under the same bar as plan gates. **Merge**, in shadow on every project, and active only per project and only as one condition of `autoApprove`: its approval never merges by itself, the other conditions are checked in code, and "never decides merge" still holds for a project without `autoApprove`. It still never decides deploy or self-modify; deploys are auto-approved only by ADR 0515's conditions once a deploy stage exists. Its approval of a Preview does not carry over to Publish (spec 52, question 2): only a person's does.
