@@ -17,7 +17,11 @@ import {
 import { type AdapterEvent, type Job, RESULT_FILE } from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
 // The proxy is a plain script copied into the image; its rule must match the module's.
-import { createEgressProxy, hostAllowed as proxyHostAllowed } from "../container/egress-proxy.mjs";
+import {
+  createEgressProxy,
+  notPublic,
+  hostAllowed as proxyHostAllowed,
+} from "../container/egress-proxy.mjs";
 import {
   CONTAINER_RECORD,
   type ContainerRecord,
@@ -402,6 +406,8 @@ describe("egress (ADR 0430 §5)", () => {
     const lines: Array<{ host: string; allowed: boolean }> = [];
     const proxy = createEgressProxy({
       allow: [`127.0.0.1:${up}`, `127.0.0.1:${tp}`],
+      // The upstreams are on loopback: exempt from the private-address filter (tests only).
+      privateOk: [`127.0.0.1:${up}`, `127.0.0.1:${tp}`],
       log: (l: { host: string; allowed: boolean }) => lines.push(l),
     });
     await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
@@ -440,6 +446,107 @@ describe("egress (ADR 0430 §5)", () => {
       "example.com false",
       "127.0.0.1 true",
       "example.com false",
+    ]);
+  });
+});
+
+describe("the egress proxy's private-address filter (fifth review)", () => {
+  it("knows which addresses aren't public", () => {
+    for (const a of [
+      "127.0.0.1",
+      "10.1.2.3",
+      "172.17.0.1",
+      "192.168.1.10",
+      "169.254.169.254",
+      "100.101.102.103", // Tailscale
+      "0.250.250.254", // OrbStack's host
+      "198.19.249.3",
+      "::1",
+      "fe80::1",
+      "fd7a:115c:a1e0::1",
+      "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
+      "not-an-ip",
+    ]) {
+      expect(notPublic(a), a).toBe(true);
+    }
+    for (const a of ["104.16.1.1", "2606:4700::1111", "::ffff:104.16.1.1"]) {
+      expect(notPublic(a), a).toBe(false);
+    }
+    expect(notPublic("104.16.1.1", ["104.16.1.1"])).toBe(true); // the runtime's host gateway
+  });
+
+  it("refuses an allowlisted name that resolves to a private address, and connects to the address it resolved once", async () => {
+    const upstream = createHttpServer((_req, res) => res.end("upstream-ok"));
+    await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+    const tcp = createServer((s) => s.end("tcp-ok"));
+    await new Promise<void>((r) => tcp.listen(0, "127.0.0.1", r));
+    const up = (upstream.address() as AddressInfo).port;
+    const tp = (tcp.address() as AddressInfo).port;
+    const lookups: string[] = [];
+    const table: Record<string, string> = {
+      "evil.example": "127.0.0.1",
+      "lan.example": "192.168.1.20",
+      "svc.test": "127.0.0.1",
+    };
+    const lines: Array<{ host: string; allowed: boolean; reason?: string }> = [];
+    const proxy = createEgressProxy({
+      allow: [
+        `evil.example:${up}`,
+        `lan.example:${tp}`,
+        `svc.test:${up}`,
+        `svc.test:${tp}`,
+        `10.0.0.1:${up}`,
+      ],
+      privateOk: [`svc.test:${up}`, `svc.test:${tp}`],
+      lookup: async (host) => {
+        lookups.push(host);
+        const address = table[host];
+        if (!address) throw Object.assign(new Error("no"), { code: "ENOTFOUND" });
+        return [{ address, family: 4 }];
+      },
+      log: (l) => lines.push(l),
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const pp = (proxy.address() as AddressInfo).port;
+    cleanups.push(async () => {
+      for (const s of [upstream, tcp, proxy]) await new Promise((r) => s.close(r));
+    });
+    const get = (url: string) =>
+      new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const r = request({ host: "127.0.0.1", port: pp, path: url, method: "GET" }, (res) => {
+          let body = "";
+          res.on("data", (c) => (body += c));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        r.on("error", reject);
+        r.end();
+      });
+    const tunnel = (target: string) =>
+      new Promise<string>((resolve) => {
+        const s = connect(pp, "127.0.0.1", () =>
+          s.write(`CONNECT ${target} HTTP/1.1\r\nhost: ${target}\r\n\r\n`),
+        );
+        let text = "";
+        s.on("data", (c) => (text += c));
+        s.on("close", () => resolve(text));
+        s.on("error", () => resolve(text));
+      });
+    const evil = await get(`http://evil.example:${up}/x`);
+    expect(evil.status).toBe(403);
+    expect(evil.body).toMatch(/evil\.example resolves to 127\.0\.0\.1, not a public address/);
+    expect(await tunnel(`lan.example:${tp}`)).toMatch(/^HTTP\/1.1 403[\s\S]*192\.168\.1\.20/);
+    expect((await get(`http://10.0.0.1:${up}/x`)).status).toBe(403);
+    // A name the OS can't resolve, reached through the one lookup the proxy made: it connected to
+    // that address, never the name again (no rebinding between the check and the connect).
+    lookups.length = 0;
+    expect(await get(`http://svc.test:${up}/x`)).toEqual({ status: 200, body: "upstream-ok" });
+    expect(await tunnel(`svc.test:${tp}`)).toMatch(/^HTTP\/1.1 200[\s\S]*tcp-ok$/);
+    expect(lookups).toEqual(["svc.test", "svc.test"]);
+    expect(lines.filter((l) => !l.allowed).map((l) => l.host)).toEqual([
+      "evil.example",
+      "lan.example",
+      "10.0.0.1",
     ]);
   });
 });

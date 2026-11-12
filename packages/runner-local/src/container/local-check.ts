@@ -43,6 +43,8 @@ export interface LocalCheckOptions {
   allowedHosts?: string[];
   /** Tests: `--add-host` entries for the proxy. */
   proxyAddHosts?: string[];
+  /** Tests: `host:port` entries the proxy lets through to a private address (a local upstream). */
+  proxyPrivateOk?: string[];
   /** Tests: the image to run (default: the agent image, built on first use). */
   image?: string;
   pidsLimit?: number;
@@ -111,6 +113,7 @@ export function localCheckContainer(
           jobId: job.jobId,
           allow,
           ...(options.proxyAddHosts ? { addHosts: options.proxyAddHosts } : {}),
+          ...(options.proxyPrivateOk ? { privateOk: options.proxyPrivateOk } : {}),
         }),
       );
       await runtime.connect(network, proxyName, PROXY_ALIAS);

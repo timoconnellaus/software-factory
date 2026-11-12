@@ -66,7 +66,12 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    its own pnpm store, and every process gone with it. With no container runtime, checks are not
    run, unless runner.json sets `"checks": { "weakerMacSandbox": true }`: then the macOS OS sandbox
    below, which can't stop a process a check leaves from outliving it, and the merge gate says the
-   checks ran in the weaker sandbox. `sf-runner doctor` says which. Under the OS sandbox a check reads none of the
+   checks ran in the weaker sandbox. `sf-runner doctor` says which. A check container gets 2 CPUs and
+   4 GB of memory (`/tmp` a 1 GB tmpfs within it), and a tree past 10 GB isn't carried to the next
+   check; runner.json `checks` sets `cpus`, `memoryGb`, `tmpGb` and `maxTreeGb`. At most
+   `checks.maxConcurrent` (default 1) checks run at once, each counted as a heavy job, and a check
+   waits while the load backoff has stopped heavy work. Check containers, proxies and networks a
+   runner that died mid-check left are reaped at start-up and on the periodic sweep. Under the OS sandbox a check reads none of the
    owner's home but the toolchain on its PATH, reaches no loopback but the sandbox's proxy (on macOS,
    not even a server it starts itself), and fetches through the proxy (`NODE_USE_ENV_PROXY`, so
    Node ≥ 24.5); srt's sockets go in `~/.local/share/software-factory/runner/s`. Before a job's

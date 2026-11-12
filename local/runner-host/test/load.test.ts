@@ -144,9 +144,11 @@ describe("the project's checks under load (fifth review)", () => {
     let most = 0;
     const capacities: number[] = [];
     const logs: string[] = [];
-    let h: RunnerHost<never, never> | undefined;
+    // The host's capacity as the heartbeat reports it (private: read through a cast).
+    const inUse = () =>
+      (h as unknown as { capacity(): Promise<{ inUse: number }> }).capacity().then((c) => c.inUse);
     const started: string[] = [];
-    h = new RunnerHost({
+    const h = new RunnerHost({
       adapter: fakeAdapter((x) => repo.host.clonePath(x), edit),
       cp,
       git: repo.host,
@@ -162,16 +164,12 @@ describe("the project's checks under load (fifth review)", () => {
         now++;
         most = Math.max(most, now);
         // While it runs, the check is a heavy job of its own on the heartbeat's capacity.
-        capacities.push(
-          await (h as unknown as { capacity(): Promise<{ inUse: number }> })
-            .capacity()
-            .then((c) => c.inUse),
-        );
+        capacities.push(await inUse());
         await new Promise((r) => setTimeout(r, 50));
         now--;
         return { exitCode: 0, timedOut: false, output: "" };
       },
-    } as never);
+    });
     await h.start();
     const setLoad = (l: number) => {
       load = l;

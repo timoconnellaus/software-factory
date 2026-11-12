@@ -266,6 +266,9 @@ export const reviewMerge = defineOperation({
   permission: "approver",
   browserOnly: true,
   presenceDecidable: true,
+  // Merging without checks the runner couldn't run stays off the phone (fifth review), in the
+  // engine, not only in the client: refused with or without a fingerprint.
+  mobileRefuses: (input) => input.mergeWithoutChecks === true,
   input: z.object({
     workItemId,
     openedFullDiff: z.boolean(),
@@ -298,7 +301,7 @@ export const reviewMerge = defineOperation({
     if (pa.status === "pending") {
       const item = requireWorkItem(ctx);
       const head = mergeGateHead(pa) ?? item.head_sha;
-      const without = head ? await decideNotRun(ctx, item, head, input.mergeWithoutChecks) : [];
+      const without = await decideNotRun(ctx, item, head ?? null, input.mergeWithoutChecks);
       if (without.length > 0) {
         const line = `Merged without ${without.length === 1 ? "this check" : "these checks"}, which could not be run on the runner: ${without.join(", ")}.`;
         note = note ? `${line}\n\n${note}` : line;
