@@ -36,6 +36,11 @@ export const DESKTOP_AUTH_TTL_MS = 10 * 60_000;
 export const DESKTOP_TOKEN_TTL_MS = 30 * 24 * 3_600_000;
 /** A presence challenge must be signed and used within this. */
 export const PRESENCE_TTL_MS = 60_000;
+/**
+ * At most this many sign-ins wait for approval at once (desktop/start is unauthenticated). Real use
+ * is one or two; past this, new ones are refused until old ones expire (10 minutes).
+ */
+export const DESKTOP_PENDING_LIMIT = 50;
 /** Desktop tokens start with this, so they're recognisable in a leak scan. */
 export const DESKTOP_TOKEN_PREFIX = "sfd_";
 
@@ -265,6 +270,18 @@ export const desktopAuthStart = defineOperation({
   output: z.object({ requestId: z.string(), approveUrl: z.string(), expiresAt: z.string() }),
   async handler(input, ctx) {
     requireDeviceActor(ctx);
+    const pending = await ctx.db
+      .selectFrom("core_desktop_auth_requests")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("status", "=", "pending")
+      .where("expires_at", ">", ctx.now)
+      .executeTakeFirst();
+    if (Number(pending?.n ?? 0) >= DESKTOP_PENDING_LIMIT) {
+      throw new OperationError(
+        "unavailable",
+        "too many sign-ins are waiting: try again in a few minutes",
+      );
+    }
     try {
       await importKey(input.publicKey);
     } catch {

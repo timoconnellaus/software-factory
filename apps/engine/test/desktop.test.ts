@@ -4,6 +4,7 @@
 import { env } from "cloudflare:workers";
 import { canonicalJson, inputDigest, presenceMessage, rawSignature } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
+import { pruneChannelStore } from "../src/channel.ts";
 import worker from "../src/index.ts";
 import { first, ok, type World, world } from "./helpers.ts";
 
@@ -317,5 +318,40 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect(raw.length).toBe(64);
     expect([...raw.slice(0, 32)]).toEqual([...r]);
     expect(raw[63]).toBe(1);
+  });
+
+  it("caps waiting sign-ins and prunes old requests and challenges", async () => {
+    const w = await world();
+    const { token, device } = await signIn(w);
+    const workItemId = await newItem(w, token);
+    await prove(token, device, "spec.approve", { workItemId });
+    // Age everything past a day after expiry: the cron's prune removes it.
+    const old = new Date(Date.now() - 3 * 24 * 3_600_000).toISOString();
+    await env.DB.prepare("UPDATE core_desktop_auth_requests SET expires_at = ?").bind(old).run();
+    await env.DB.prepare("UPDATE core_presence_challenges SET expires_at = ?").bind(old).run();
+    await pruneChannelStore(env.DB);
+    const left = await first<{ a: number; c: number }>(
+      "SELECT (SELECT COUNT(*) FROM core_desktop_auth_requests) AS a, (SELECT COUNT(*) FROM core_presence_challenges) AS c",
+    );
+    expect(left).toEqual({ a: 0, c: 0 });
+
+    // Fill the pending limit, then the next start is refused.
+    const now = new Date().toISOString();
+    const later = new Date(Date.now() + 600_000).toISOString();
+    const rows = Array.from({ length: 50 }, (_, i) =>
+      env.DB.prepare(
+        `INSERT INTO core_desktop_auth_requests (id, code_challenge, device_name, public_key, state, created_at, expires_at)
+         VALUES (?, 'c', 'x', '{}', 's', ?, ?)`,
+      ).bind(`dar_${i.toString(16).padStart(32, "0")}`, now, later),
+    );
+    await env.DB.batch(rows);
+    const d = await newDevice();
+    const refused = await post("desktop/start", {
+      deviceName: "One too many",
+      publicKey: d.publicKey,
+      codeChallenge: "A".repeat(43),
+      state: "s".repeat(16),
+    });
+    expect(refused.status).toBe(503);
   });
 });
