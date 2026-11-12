@@ -6,8 +6,20 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-/** Where the runner host writes it, with the same defaults as local/runner-host/src/config.ts. */
-export function liveJobsFile(env: Record<string, string | undefined> = process.env): string {
+/**
+ * The whole environment the app's runner child gets (runner.ts): HOME, the login shell's PATH and
+ * the desktop marker, nothing else (no tokens). Paths the child derives come from this alone.
+ */
+export function runnerChildEnv(path: string, home = process.env.HOME ?? homedir()) {
+  return { HOME: home, PATH: path, SF_RUNNER_DESKTOP: "1" };
+}
+
+/**
+ * Where the runner host writes it, with the same defaults as local/runner-host/src/config.ts,
+ * resolved from the child's environment, not the app's: the app may have XDG_STATE_HOME or
+ * SF_RUNNER_STATE_DIR set, the child never does.
+ */
+export function liveJobsFile(env: Record<string, string | undefined> = runnerChildEnv("")): string {
   const home = env.HOME ?? homedir();
   const stateDir =
     env.SF_RUNNER_STATE_DIR ??
@@ -24,6 +36,30 @@ const alive = (pid: number) => {
   }
 };
 
+export interface LiveJobsDoc {
+  jobs: string[];
+  /** When the host last wrote it; a drain (SIGUSR2) rewrites it once no claim is in flight. */
+  updatedAt: string | null;
+}
+
+/** The file as written, or null when no runner host is running (no file, or its writer gone). */
+export function readLive(
+  file = liveJobsFile(),
+  read: (p: string) => string = (p) => readFileSync(p, "utf8"),
+  isAlive: (pid: number) => boolean = alive,
+): LiveJobsDoc | null {
+  try {
+    const doc = JSON.parse(read(file)) as { pid?: unknown; jobs?: unknown; updatedAt?: unknown };
+    if (typeof doc.pid !== "number" || !Array.isArray(doc.jobs) || !isAlive(doc.pid)) return null;
+    return {
+      jobs: doc.jobs.filter((j): j is string => typeof j === "string"),
+      updatedAt: typeof doc.updatedAt === "string" ? doc.updatedAt : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The live job ids; [] when no runner host is running (no file, or its writer is gone). An
  * unreadable file counts as idle: the runner host rewrites it on every change.
@@ -33,11 +69,5 @@ export function liveJobs(
   read: (p: string) => string = (p) => readFileSync(p, "utf8"),
   isAlive: (pid: number) => boolean = alive,
 ): string[] {
-  try {
-    const doc = JSON.parse(read(file)) as { pid?: unknown; jobs?: unknown };
-    if (typeof doc.pid !== "number" || !Array.isArray(doc.jobs) || !isAlive(doc.pid)) return [];
-    return doc.jobs.filter((j): j is string => typeof j === "string");
-  } catch {
-    return [];
-  }
+  return readLive(file, read, isAlive)?.jobs ?? [];
 }

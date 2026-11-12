@@ -46,6 +46,7 @@ and the factory's own planning stage writes specs in this same format.
 | [33](33-container-per-job.md) | A container per job: Docker, only the job's workspace mounted, an egress allowlist, every stage `bypassPermissions` (piece 4 of the hosts plan) | 30 |
 | [34](34-linux-hosts.md) | Linux hosts: the runner as a systemd user service, Linux paths, the harness sandbox and doctor checks on Linux, the install path (piece 5 of the hosts plan) | 08, 30 |
 | [35](35-web-terminal.md) | A web terminal in the dashboard: the job's tmux pane in the Live tab through a Durable Object relay, the owner types and others watch, every attach journalled (piece 6 of the hosts plan) | 30, 31 |
+| [36](36-sprites-sandboxes.md) | Sprites sandboxes: a fresh sprite per job made by the owner's runner host, the egress policy, the pane bridged to the sprite, the result back as a git bundle (piece 7 of the hosts plan) | 30, 33, 35 |
 | [37](37-chat-ui-stream-json.md) | A chat UI on a stream-json session: a second session mode beside tmux, the Chat view on the Live tab, takeover by `claude --resume` (piece 8 of the hosts plan) | 30, 31 |
 | [38](38-runner-updates-without-draining.md) | Runner updates without draining on every deploy: keep claiming until idle, caps at 30 and 60 minutes, `minRunnerCompat`, `RUNNER_SHA` from the deploy | 08 |
 | [39](39-runner-host-readopts-live-jobs.md) | The runner host re-adopts its live jobs after a restart, so an update needs no idle moment (spec only) | 30, 38 |
@@ -76,6 +77,7 @@ Mockups for every R1 screen are in [`.kim/mockups/`](../../.kim/mockups/); the d
 
 ## Planning
 Specs 20–25 make planning work the way kim does ([ADR 0300](../adr/0300-planning-is-a-live-session-on-a-runner.md), plan in [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)). Build them in order: 20 → 21 → 22, then 23; 24 and 25 can run alongside after 20 and 04.
+[Spec 26](26-planning-loop-to-kim.md) fixes what 20 built weaker than kim and adds the design's steering; it comes before 21 ([audit](../reviews/2026-11-12-planning-against-kim.md)).
 
 ## Workflows from stage types
 [Spec 52](52-workflows-from-stage-types.md) is a design for later: workflows built from built-in

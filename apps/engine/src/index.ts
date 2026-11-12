@@ -15,6 +15,7 @@ import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
+import { pullQueuedWork } from "./pull.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
@@ -48,6 +49,7 @@ export default {
     await expireQuietRuns(env, now);
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);
+    await pullQueuedWork(env);
     await runAdjudicator(env);
     // Once an hour: the improver (ADR 0373) decides running trials and starts the next one.
     if (now.getUTCMinutes() === 23) await runImprover(env, now);

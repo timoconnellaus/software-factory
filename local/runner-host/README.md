@@ -186,6 +186,59 @@ Switching a runner: install Docker, then follow these steps with no jobs running
 2. Run `sf-runner doctor --fix`. It checks Docker and the credential, and builds the image.
 3. Run `sf-runner install`, which puts `docker` on the service's PATH and restarts the service.
 
+### A sprite per job (`"isolation": "sprites"`, ADR 0480, spec 36)
+Opt in per runner. Each job (but planning) runs in a fresh sprite on **your** Sprites account
+(Fly.io, [sprites.dev](https://sprites.dev)), made by this host. Jobs no longer use the Mac's CPU:
+the host only bridges the terminal and pulls the run's files, so `maxConcurrent` can go up.
+- **Your Sprites token stays here.** `sf-runner sprites login` keeps it in
+  `~/.config/software-factory/sprites.token` (0600), next to the runner key. It is never in
+  `runner.json`, never sent to the factory and never put in a sprite.
+- **A fresh sprite per job**, named `sf-<runner>-<job>-<hash>`, destroyed once its result is back.
+  First the toolchain: Claude Code at the agent image's pinned version (from
+  `packages/runner-local/container/Dockerfile`), in `/opt/software-factory/claude-code-<version>`,
+  before anything of the job is inside. That takes tens of seconds per job.
+- **Egress** is Sprites' network policy, set to the container allowlist (the stage's hosts,
+  `api.anthropic.com`, `sprites.allowedHosts`) followed by an explicit deny-all, and read back
+  (failing closed on anything unexpected) before the job's files go in. It is DNS-based: a port in
+  an entry is dropped, and there is no request log (the run gets an `egress-policy` artifact
+  instead). That is why a sprites runner doesn't declare `container-isolation`.
+- **What goes in**: the job repo (only the job's history, as for a container), the run dir and the
+  attachments, at the same paths as here. The credential is the active **token account**'s token
+  (a login account is refused), written last to a 0600 file in the sprite's `/dev/shm` (memory) that
+  its entry script reads and deletes. The job's GitHub token never goes in: this host pushes.
+- **Size and lifetime** are explicit: `sprites.cpus`, `memoryMb`, `storageGb` (default 4, 8192, 50)
+  and `sprites.maxLifetimeMinutes` (default 240). The sprite is kept awake only while Claude runs,
+  Claude is stopped at the lifetime, and the host sweeps every 10 minutes for this runner's sprites
+  that no job holds or that are past their lifetime. A sprite that can't be destroyed is logged
+  loudly (`DESTROYING SPRITE … FAILED`, `REAPING SPRITES FAILED`), and that job's release fails.
+- **The session** is still `tmux -L software-factory attach -t sf-<jobId>` here: the pane is bridged
+  to the sprite's terminal (and reattaches after a network drop). Steering and the web terminal work
+  as usual.
+- **The launch check** runs in the sprite (`ps`, the settings' hashes, the sprite's id and policy);
+  `doctor` runs it on running jobs.
+- **After the session** the sprite's repo comes back as a git bundle: the run branch on the agent's
+  HEAD, the rest as uncommitted changes. Then the credential scan, the leftovers commit and the push
+  with the job token, as for a container.
+- **Planning sessions** still run on this host.
+
+**Don't switch a runner yet:** spec 36's live-check gate must pass first (policy shapes and default
+deny, matching, bypasses with `sudo`, Fly's internal network, `/.sprite/api.sock`, checkpoints,
+`max_run_after_disconnect`, exec framing, create's size, the image). Run it on a scratch runner.
+
+Switching a runner, once the gate has passed, with no jobs running:
+1. Get a token at [sprites.dev/account](https://sprites.dev/account) (or `sprite login`, then the
+   org token) and run `pbpaste | local/runner-host/bin/sf-runner sprites login`. It checks the token
+   against the API before saving it.
+2. Make a token account active: `claude setup-token | sf-runner account add work --token-stdin`,
+   `sf-runner account use work`.
+3. In `~/.config/software-factory/runner.json`, set `"isolation": "sprites"` (optionally
+   `"sprites": { "allowedHosts": ["pypi.org"] }`, and a higher `maxConcurrent`).
+4. Run `sf-runner doctor` (token, API, credential, no leftover sprites), then `sf-runner install` to
+   restart the service.
+
+`sf-runner sprites status` shows the token's length (never any of it), the API and this runner's sprites;
+`sf-runner sprites logout` removes the token (revoke it at sprites.dev too).
+
 ## Connecting: `sf-runner login` (ADR 0056)
 From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
 ```sh
@@ -422,11 +475,15 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 | `capabilities` | `hooks`, `ui-takeover`, `own-hardware`, `work-item-attachments` (+ `container-isolation` with containers) | No `browser`: screenshot evidence is skipped |
 | `identity` | `Software Factory <software-factory@users.noreply.github.com>` | Commit author |
 | `autoUpdate` | `true` | Update the runner's checkout to the deployed commit when idle (ADR 0360); `false` reports `blocked` instead |
-| `isolation` | `sandbox` | `container`: a Docker container per job, every stage `bypassPermissions` (ADR 0430, above) |
+| `isolation` | `sandbox` | `container`: a Docker container per job, every stage `bypassPermissions` (ADR 0430, above); `sprites`: a fresh sprite per job on your Sprites account (ADR 0480, above) |
 | `container.env` | — | The model credential for containers on the `default` account: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`. Else the same variable in sf-runner's environment. A token account's token wins; a login account can't be used in a container |
 | `container.docker` | found on PATH, Homebrew, `~/.local/bin`, Docker.app | The `docker` CLI |
 | `container.allowedHosts` | — | More egress hosts for every job on this runner (`host`, `*.host`, `host:port`) |
 | `container.cpus`, `container.memory`, `container.pids` | —, —, 4096 | Limits per job container (`memory` in Docker's syntax, `8g`) |
+| `sprites.apiUrl` | `https://api.sprites.dev` | The Sprites API, with `"isolation": "sprites"` (ADR 0480). The token is not here: `sf-runner sprites login` |
+| `sprites.allowedHosts` | — | More egress hosts for every job's sprite (`host`, `*.host`; a port is dropped) |
+| `sprites.cpus`, `sprites.memoryMb`, `sprites.storageGb` | 4, 8192, 50 | Each sprite's size, sent at creation |
+| `sprites.maxLifetimeMinutes` | 240 | The most a sprite lives: Claude is stopped then, and the sweep destroys older sprites |
 | `repoUrlMap` | — | Test only: clone and push a local bare repo in place of GitHub |
 
 ## End-to-end test (local engine)
@@ -453,8 +510,9 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
-| `src/runner.ts` | Wires config → channel client + git + runner-local, or its container runner with `isolation: container` (the only file naming an adapter) |
+| `src/runner.ts` | Wires config → channel client + git + runner-local, its container runner with `isolation: container`, or its sprites runner with `isolation: sprites` (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
+| `src/sprites-cli.ts` | `sf-runner sprites login/status/logout`: the owner's Sprites token (ADR 0480) |
 | `src/accounts.ts`, `src/account-cli.ts` | Claude accounts on the host (ADR 0410): the registry, token files, config dirs, usage limits, `sf-runner account` |
 | `src/config.ts`, `src/cli.ts` | `sf-runner pair/run/status/doctor/install/uninstall/account` |
 | `src/service.ts`, `src/launchd.ts`, `src/systemd.ts` | The service by platform: launchd on macOS, a systemd user unit on Linux (ADR 0420) |

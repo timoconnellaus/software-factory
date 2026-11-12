@@ -8,6 +8,8 @@
 //   failed download is tried again later);
 // - the staged bundle is signed by this build's Team ID and passes Gatekeeper (update-verify.ts),
 //   checked again right before applying;
+// - the staged bundle's own version.json (inside that seal) says the manifest's version, newer than
+//   the running one, on this build's channel: the manifest alone can't vouch for an old build;
 // - the app sits where it can replace itself (not translocated, its folder writable). If it can't,
 //   the person is told to move it to Applications.
 // Applying restarts the app, so it waits for the person, and for the runner's jobs (index.ts).
@@ -16,7 +18,7 @@ import { accessSync, constants } from "node:fs";
 import { dirname } from "node:path";
 import { isNewer } from "../shared/version.ts";
 import type { Exec, StagedUpdate } from "./update-verify.ts";
-import { stagedUpdate, teamIdOf, verifyBundle } from "./update-verify.ts";
+import { bundleInfo, stagedUpdate, teamIdOf, verifyBundle } from "./update-verify.ts";
 
 export interface UpdateState {
   /** A verified update is staged: "Restart to update" can be offered. */
@@ -47,6 +49,8 @@ export interface UpdatesDeps {
   /** Throws when `path` isn't writable (fs.accessSync with W_OK). */
   writable?: (path: string) => void;
   staged?: (appDataFolder: string) => StagedUpdate | null;
+  /** The version and channel in a bundle's own Resources/version.json. */
+  bundle?: (app: string) => { version: string; channel: string } | null;
   setInterval?: (fn: () => void, ms: number) => unknown;
   setTimeout?: (fn: () => void, ms: number) => unknown;
 }
@@ -87,6 +91,7 @@ export class Updates {
     this.d = {
       writable: (p) => accessSync(p, constants.W_OK),
       staged: (f) => stagedUpdate(f),
+      bundle: (a) => bundleInfo(a),
       setInterval: (fn, ms) => setInterval(fn, ms),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       ...deps,
@@ -151,7 +156,7 @@ export class Updates {
       if (!after.updateReady) {
         return this.fail(after.error || "the download didn't finish", info.version);
       }
-      const why = await this.verifyStaged(running);
+      const why = await this.verifyStaged();
       if (why) return this.fail(why, info.version, false);
       this.set({ ready: true, version: info.version, error: null });
     } catch (error) {
@@ -160,7 +165,9 @@ export class Updates {
   }
 
   /** Null when the staged update may be applied; else why not. */
-  private async verifyStaged(running: string): Promise<string | null> {
+  private async verifyStaged(): Promise<string | null> {
+    const local = await this.d.updater.getLocalInfo();
+    const running = local.version;
     const staged = this.d.staged(await this.d.updater.appDataFolder());
     if (!staged) return "refused: no staged update this app can check";
     if (!isNewer(staged.version, running))
@@ -168,7 +175,17 @@ export class Updates {
     const team = await teamIdOf(this.d.appPath, this.d.exec);
     if (!team) return "refused: this build isn't signed, so it can't check an update's signature";
     const why = await verifyBundle(staged.path, team, this.d.exec);
-    return why ? `refused ${staged.version}: ${why}` : null;
+    if (why) return `refused ${staged.version}: ${why}`;
+    // Read only now, from inside the seal just verified: the manifest's version is the bucket's word.
+    const own = this.d.bundle(staged.path);
+    if (!own) return `refused ${staged.version}: the staged app has no readable version`;
+    if (own.version !== staged.version)
+      return `refused ${staged.version}: the staged app is version ${own.version}, not what the manifest says`;
+    if (!isNewer(own.version, running))
+      return `refused ${own.version}: not newer than this version (${running})`;
+    if (own.channel !== local.channel)
+      return `refused ${own.version}: it is a ${own.channel} build, this is ${local.channel}`;
+    return null;
   }
 
   /**
@@ -177,8 +194,7 @@ export class Updates {
    * brings back whatever it stopped. The reason is in `state.error`.
    */
   async apply(): Promise<void> {
-    const running = (await this.d.updater.getLocalInfo()).version;
-    const why = await this.verifyStaged(running);
+    const why = await this.verifyStaged();
     if (why) return this.fail(why, this.state.version, false);
     await this.d.updater.applyUpdate();
     // Still here: Electrobun didn't restart.

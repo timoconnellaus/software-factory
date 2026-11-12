@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { zipPlan } from "../scripts/hook-post-package.ts";
 import {
+  headResult,
   refusal,
   uploadPlan,
   versionedArchive,
@@ -85,6 +86,30 @@ describe("refusal", () => {
     expect(refusal("canary", "0.1.10", "0.1.9", false)).toBeNull();
     expect(refusal("beta", "1.0.0", null, false)).toMatch(/unknown channel/);
     expect(refusal("stable", "v1", null, false)).toMatch(/not a version/);
+  });
+});
+
+describe("headResult", () => {
+  it("is 'not there' only on a real 404, and fails closed on anything else", () => {
+    expect(headResult(0, "", "k")).toBe(true);
+    expect(
+      headResult(
+        254,
+        "An error occurred (404) when calling the HeadObject operation: Not Found",
+        "k",
+      ),
+    ).toBe(false);
+    expect(() =>
+      headResult(
+        254,
+        "An error occurred (403) when calling the HeadObject operation: Forbidden",
+        "k",
+      ),
+    ).toThrow(/can't tell whether k is published/);
+    expect(() => headResult(255, "Unable to locate credentials", "k")).toThrow(/can't tell/);
+    expect(() => headResult(255, "Could not connect to the endpoint URL", "k")).toThrow(
+      /can't tell/,
+    );
   });
 });
 

@@ -205,17 +205,31 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
     "com.software-factory.desktop" and certificate leaf[subject.OU] = "<Team ID>"`, with the Team ID
     read from the running app's own signature (never the manifest), and `spctl --assess`. An
     unsigned build takes no updates (`src/bun/update-verify.ts`);
+  - after that check it reads the version and channel from the staged bundle's own
+    `Contents/Resources/version.json`, which is inside the seal just verified, and requires the
+    manifest's version, higher than its own, on its own channel. The manifest's version is only
+    the bucket's word: a genuine older signed build served as "9.9.9" would pass the signature
+    checks;
   - an app that can't replace itself (translocated from Downloads, or a folder this account can't
     write) says "Move Software Factory to your Applications folder" instead of failing silently.
 - **Restart to update** waits for the runner: no job is cancelled for an update (spec 38's rule).
-  The app reads the runner host's `live-jobs.json`. While jobs run, the menu shows how many, offers
-  *Restart to update when they finish*, and *Restart anyway (cancels N jobs; their unpushed work is
-  lost)*. If the update doesn't start (nothing staged, a refused signature, a quit handler said no),
-  the runner and the live socket come back.
+  The app reads the runner host's `live-jobs.json`, at the path the runner child resolves (it gets
+  only HOME, PATH and SF_RUNNER_DESKTOP, not the app's XDG or SF_RUNNER_* variables). While jobs
+  run, the menu shows how many, offers *Restart to update when they finish*, and *Restart anyway
+  (cancels N jobs; their unpushed work is lost)*. To close the window between reading the jobs and
+  stopping the runner, the app first asks it to stop claiming (SIGUSR2; the runner host drains and
+  rewrites `live-jobs.json` once any claim in flight has landed), reads the jobs again, and stops
+  only an idle runner; if a job turned up it waits for idle, the runner still drained. If the
+  update doesn't start (nothing staged, a refused signature, a quit handler said no, or a throw),
+  the runner and the live socket come back (`src/bun/restart-update.ts`).
+- **CI without the upload token:** a push to `main` checks for `DESKTOP_R2_*` first and, without
+  them, skips building, signing, notarizing and uploading with one notice in the job summary.
+  `publish-release.ts` fails closed: only a real 404 means "not published".
 - **Verified only by hand:** a canary-to-canary update on a real Mac (download, stage, the
   signature check passing on a real staged bundle, the swap, the relaunch). The unit tests
-  (`test/updates.test.ts`, `test/release.test.ts`) cover the decisions with a fake updater and fake
-  `codesign`; `codesign`/`spctl` accepting a staged `….app.prepared-<hash>` copy of a real signed
+  (`test/updates.test.ts`, `test/release.test.ts`, `test/restart-update.test.ts`) cover the
+  decisions with a fake updater and fake `codesign`, plus a real ad-hoc signed bundle on macOS
+  (the seal covers `version.json`; an old signed build sold as 9.9.9 is refused); `codesign`/`spctl` accepting a staged `….app.prepared-<hash>` copy of a real signed
   build, and refusing it with a wrong Team ID or one changed file, was checked on the M5
   (2026-11-12).
 - **The version handshake** ([ADR 0393](../adr/0393-the-client-door-version-handshake.md)): the app

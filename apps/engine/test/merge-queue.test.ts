@@ -66,7 +66,7 @@ async function deliver(event: string, payload: unknown) {
 async function toMergeGate(w: World, title: string, file: string) {
   const item = await ok<{ workItemId: string }>(
     "workItem.create",
-    { projectId: w.projectId, title },
+    { state: "queued", projectId: w.projectId, title },
     w.human,
   );
   await runStage(w, item.workItemId, "triage", () => triage("small"));

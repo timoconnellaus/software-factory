@@ -79,7 +79,8 @@ export type WorkItemOutcome =
  *   one-shot spec runs with question rounds. `planning: start`, then per round `planning #k: await`,
  *   a wait for the agent's `planning.ready` (escalating open blocking questions on each question
  *   timeout, never auto-accepting), and the spec gate. Request changes goes into the same session
- *   (`planning.note`); a decision ends it (`planning.end`).
+ *   (`planning.note`); a decision ends it (`planning.end`). A person's word at the gate withdraws
+ *   it (ADR 0470) and the next round starts, in the same version.
  */
 /**
  * - v6 (spec 09 M2, ADR 0371): the item's workflow fills the skeleton's three slots. Triage is told
@@ -1482,6 +1483,10 @@ class ItemFlow {
         });
         continue; // the same session revises (spec 20, criterion 10)
       }
+      // A person's word took the spec back (ADR 0470): the message is in the chat already and the
+      // round moved on, so the planner revises and asks again. No version bump: nothing emitted
+      // `withdrawn` for a spec gate before this release.
+      if (decided.decision === "withdrawn") continue;
       await this.act(`planning #${k}: end`, "planning.end", {
         workItemId: id,
         reason: `spec ${decided.decision}`,
@@ -1528,9 +1533,17 @@ class ItemFlow {
   /** Queues a stage job and waits for its run to finish (or stall). Holds no slot while queued. */
   // ---- v6: workflows (spec 09 M2, ADR 0371) ----
 
-  /** The workflows triage may pick from: those of the config version the item started under. */
+  /**
+   * The workflows triage may pick from. None since ADR 0492 (an item follows its project's
+   * workflow, pinned when it was pulled), except for an item started before 0261, which keeps
+   * triage's pick (no `pulled_at`). The step keeps its name so running instances replay.
+   */
   async workflowOptions(): Promise<{ name: string; description: string }[]> {
     const text = await this.step.do("workflow: options", async () => {
+      const row = await this.env.DB.prepare("SELECT pulled_at FROM core_work_items WHERE id = ?")
+        .bind(this.workItemId)
+        .first<{ pulled_at: string | null }>();
+      if (row?.pulled_at) return JSON.stringify([]);
       const policy = await this.pinnedPolicy();
       return JSON.stringify(
         (policy?.workflows ?? []).map((w) => ({ name: w.name, description: w.description })),

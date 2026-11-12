@@ -38,6 +38,12 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
   fetch?: typeof fetch;
   /** Tidies up after a crash: jobs this adapter still holds that the host isn't running. */
   reapOrphans?: (running: Set<string>) => Promise<string[]>;
+  /**
+   * A sweep while the host runs (a sprites runner's: sandboxes no live job holds, or past their
+   * lifetime, ADR 0480), every `sweepMs` (default 10 min). Failures are logged loudly, not hidden.
+   */
+  sweep?: (running: Set<string>) => Promise<string[]>;
+  sweepMs?: number;
   /** Runs once at start, after `reapOrphans` and before the first claim (the repo migration). */
   onStart?: () => Promise<void>;
   /** Where the host records the jobs it is running, for `sf-runner status` and `doctor`. */
@@ -79,6 +85,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private draining = false;
   private stopped = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private sweeper: ReturnType<typeof setInterval> | null = null;
   private ticking: Promise<void> | null = null;
   /** A claim whose answer never arrived is retried with the same id (same job back). */
   private pendingClaimId: string | null = null;
@@ -107,6 +114,25 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
         return [];
       });
       if (reaped.length) this.log(`cleaned up after a previous run: ${reaped.join(", ")}`);
+    }
+    if (this.options.sweep) {
+      const sweep = this.options.sweep;
+      this.sweeper = setInterval(
+        () => {
+          void sweep(new Set(this.running.keys())).then(
+            (swept) => {
+              if (swept.length) this.log(`sweep: removed ${swept.join(", ")}`);
+            },
+            (err) => {
+              this.log(
+                `SWEEP FAILED, sandboxes may still be running and billed: ${err instanceof Error ? err.message : err}`,
+              );
+            },
+          );
+        },
+        this.options.sweepMs ?? 10 * 60_000,
+      );
+      this.sweeper.unref?.();
     }
     await this.recordLive();
     await this.options.onStart?.().catch((err) => {
@@ -248,6 +274,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private async stopForUpdate() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
+    if (this.sweeper) clearInterval(this.sweeper);
     this.log("updated: stopping so the new code starts");
     await this.recordLive();
     // After this turn has finished, so `stop()` from the callback doesn't wait on it.
@@ -326,6 +353,18 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     });
   }
 
+  /**
+   * Stops claiming, locally (the desktop app's "Restart to update", spec 40 M4), and rewrites the
+   * live-jobs file once any claim in flight has landed, so a reader that sees the new `updatedAt`
+   * knows the job list is final. Running jobs carry on.
+   */
+  async drain(): Promise<void> {
+    if (!this.draining) this.log("drain: taking no new jobs (asked locally)");
+    this.draining = true;
+    await this.ticking;
+    await this.recordLive();
+  }
+
   /** Waits for every running job to finish. */
   async idle(): Promise<JobReport[]> {
     return Promise.all([...this.running.values()].map((r) => r.done));
@@ -338,6 +377,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   async stop(options: { cancel?: boolean; timeoutMs?: number } = {}): Promise<void> {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
+    if (this.sweeper) clearInterval(this.sweeper);
     if (options.cancel) {
       for (const r of this.running.values())
         r.controller.abort(new Error("the runner is stopping"));

@@ -123,6 +123,7 @@ async function prove(token: string, device: Device, op: string, input: unknown) 
 
 async function newItem(w: World, token: string) {
   const created = await callOp(token, "workItem.create", {
+    state: "queued",
     projectId: w.projectId,
     title: "From the desktop",
     source: "app",

@@ -152,10 +152,32 @@ function aws(args: string[], opts: { allowFail?: boolean } = {}) {
   return r;
 }
 
-const exists = (key: string) =>
-  aws(["s3api", "head-object", "--bucket", process.env.R2_BUCKET as string, "--key", key], {
-    allowFail: true,
-  }).status === 0;
+/**
+ * What a `head-object` answer means: there (exit 0), not there (a real 404, and only that), or a
+ * throw. Anything else (no credentials, a 403, a network error) fails closed: treating it as "not
+ * there" would let a duplicate or lower version through, and `check` would say "ok to publish".
+ */
+export function headResult(status: number | null, stderr: string, key: string): boolean {
+  if (status === 0) return true;
+  if (/\(404\)|\bNot Found\b|NoSuchKey/.test(stderr)) return false;
+  throw new Error(
+    `can't tell whether ${key} is published (aws exit ${status}): ${stderr.trim().slice(0, 300)}`,
+  );
+}
+
+function exists(key: string): boolean {
+  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY)
+    throw new Error(
+      "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (the bucket's R2 token) must be set",
+    );
+  const r = aws(
+    ["s3api", "head-object", "--bucket", process.env.R2_BUCKET as string, "--key", key],
+    {
+      allowFail: true,
+    },
+  );
+  return headResult(r.status, r.stderr ?? "", key);
+}
 
 function publishedVersion(channel: string, dir: string): string | null {
   const key = `${PREFIX}${channel}-${PLATFORM}-update-v2.json`;
