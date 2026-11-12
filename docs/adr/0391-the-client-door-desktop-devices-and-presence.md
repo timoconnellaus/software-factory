@@ -98,3 +98,10 @@ still never covers security, privacy or irreversible questions. `question.answer
 `question.acceptDefaults` (questions outside a planning session) and every gate (spec, merge,
 approval) keep their presence proof. Whether gates keep it is a separate decision. Spec 26, [ADR
 0470](0470-planning-steering.md).
+
+## Amendment, 2026-11-12: the key helper on signed builds
+On a Developer ID build the helper can only carry the keychain access group as its own bundle with an
+embedded Developer ID provisioning profile (a bare executable with that entitlement is killed). That
+is [ADR 0394](0394-the-key-helper-is-its-own-signed-bundle.md). The key stays `.userPresence`
+(Touch ID, or the login password) with no reuse window, as decided above; the owner kept gate
+approvals on the desktop with Touch ID.

@@ -136,6 +136,10 @@ export const prOpen = defineOperation({
   },
 });
 
+/** What a person sees when GitHub refuses an approved merge because the head moved meanwhile. */
+export const BRANCH_MOVED_AFTER_APPROVAL =
+  "the branch moved after you approved: review the new commit";
+
 export const prMerge = defineOperation({
   name: "pr.merge",
   description:
@@ -160,6 +164,12 @@ export const prMerge = defineOperation({
       sha: input.headSha,
       method: "merge",
     });
+    if (!merged.merged && merged.headMoved) {
+      // The branch moved after the engine's check above: the approval was for a commit that is no
+      // longer the head. Say so, and close the approval (invoke does, for `closeApproval`), so the
+      // gate doesn't stay "approved" for a commit that will never merge.
+      throw new OperationError("conflict", BRANCH_MOVED_AFTER_APPROVAL, { closeApproval: true });
+    }
     if (!merged.merged) throw new OperationError("conflict", `merge refused: ${merged.reason}`);
     ctx.change({ entity: "work_item", id: w.id, after: { merged: merged.sha } });
     return { merged: true as const, sha: merged.sha };

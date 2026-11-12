@@ -11,6 +11,7 @@ import {
   all,
   build,
   first,
+  gateHead,
   gateOpen,
   github,
   itemStatus,
@@ -147,7 +148,15 @@ describe("an attached PR's Workflow (spec 05)", () => {
     );
     expect(size?.size).toBe("large");
 
-    await ok("review.merge", { workItemId: item.workItemId, openedFullDiff: true }, w.human);
+    await ok(
+      "review.merge",
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+        headSha: await gateHead(item.workItemId),
+      },
+      w.human,
+    );
     await itemStatus(item.workItemId, "done");
     const merged = (await github.state(w.repo)).pulls.find((p) => p.number === pr.number);
     expect(merged?.state).toBe("merged");
@@ -208,10 +217,7 @@ describe("an attached PR's Workflow (spec 05)", () => {
     // Approving the stale gate can't merge the old head.
     const refused = await ok(
       "review.merge",
-      {
-        workItemId: item.workItemId,
-        openedFullDiff: true,
-      },
+      { workItemId: item.workItemId, openedFullDiff: true, headSha: pr.headSha },
       w.human,
     ).catch((e: unknown) => e);
     expect(refused).toMatchObject({ code: "conflict" });
@@ -231,7 +237,15 @@ describe("an attached PR's Workflow (spec 05)", () => {
     );
     expect(fresh.id).not.toBe(stale.id);
     expect(JSON.parse(fresh.input)).toMatchObject({ headSha: newHead });
-    await ok("review.merge", { workItemId: item.workItemId, openedFullDiff: true }, w.human);
+    await ok(
+      "review.merge",
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+        headSha: await gateHead(item.workItemId),
+      },
+      w.human,
+    );
     await itemStatus(item.workItemId, "done");
     expect((await github.state(w.repo)).pulls.find((p) => p.number === pr.number)?.state).toBe(
       "merged",

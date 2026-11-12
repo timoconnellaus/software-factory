@@ -11,7 +11,10 @@ import { describe, expect, it } from "vitest";
 import {
   type DeviceSurface,
   deviceDecidable,
+  type HandlerContext,
+  MERGE_NEEDS_COMMIT,
   OPERATIONS,
+  OperationError,
   PHONE_REFUSES_PENDING,
   phoneMayDecidePending,
   presenceSurfaceAllowed,
@@ -241,5 +244,34 @@ describe("device decidability (ADR 0541 decision 5)", () => {
       }
     `);
     expect(PHONE_REFUSES_PENDING).toMatch(/approve this on the desktop app or the website/);
+  });
+});
+
+describe("a merge approval names its commit, on every surface (spec 60)", () => {
+  // Without `headSha` an approval would be for whichever commit the gate is open for now, possibly
+  // one the person never saw. Refused before anything is read, in plain words for the surface: an
+  // old desktop build is told to update (door protocol 2, ADR 0393).
+  const merge = OPERATIONS.find((o) => o.name === "review.merge");
+  const refusal = async (surface: string) => {
+    const ctx = { origin: { surface }, actor: { type: "human", id: "usr_1" } };
+    try {
+      // A bare context: the refusal comes before the handler touches anything.
+      await merge?.handler(
+        { workItemId: "wi_1", openedFullDiff: true, mergeWithoutChecks: false } as never,
+        ctx as unknown as HandlerContext,
+      );
+    } catch (error) {
+      if (error instanceof OperationError) return `${error.code}: ${error.message}`;
+      throw error;
+    }
+    return "accepted";
+  };
+
+  it("refuses review.merge without headSha on the website, the desktop app and the phone", async () => {
+    expect(await refusal("app")).toBe(`invalid_input: ${MERGE_NEEDS_COMMIT.app}`);
+    expect(await refusal("desktop")).toBe(`invalid_input: ${MERGE_NEEDS_COMMIT.desktop}`);
+    expect(await refusal("mobile")).toBe(`invalid_input: ${MERGE_NEEDS_COMMIT.mobile}`);
+    expect(MERGE_NEEDS_COMMIT.desktop).toMatch(/Update the app/);
+    expect(MERGE_NEEDS_COMMIT.app).toMatch(/Reload the page/);
   });
 });
