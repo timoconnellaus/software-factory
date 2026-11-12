@@ -217,8 +217,14 @@ describe("org workflows (spec 52 PR (b))", () => {
     expect(
       (await list(w)).workflows.find((x) => x.id === "wf_attached_pr")?.stages.map((s) => s.id),
     ).toEqual(["triage", "verify", "sign-off", "merge"]);
-    // Taking the added gate out again is a loosening of the org's copy: refused, not held.
-    const looser = await refusal(save(w, workflow));
+    // Taking the added gate out again only goes back to the shipped built-in: a loosening of the
+    // org's copy, which an org admin approves (measured against the shipped floor, not refused).
+    const undo = await save(w, workflow);
+    expect(undo.status).toBe("pending");
+    // Looser than the shipped built-in (no triage, so the PR arrives unsized): refused outright.
+    const looser = await refusal(
+      save(w, { ...workflow, stages: workflow.stages.filter((s) => s.id !== "triage") }),
+    );
     expect(looser.code).toBe("invalid_input");
     expect(looser.message).toContain("only be tightened");
     const archive = await refusal(

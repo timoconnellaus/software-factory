@@ -414,7 +414,10 @@ current (ADR 0370 §2). The **floors** are F-rules: no setting, template or agen
 
 ### The impact check
 `workflowImpact(before, after, registry)` extends `policyImpact` (ADR 0370 §3). Each change is
-`loosens`, `tightens` or `neutral`; anything it can't classify loosens.
+`loosens`, `tightens` or `neutral`. It is an **allow-list** (ADR 0516): a change is neutral or
+tightening only if a rule says so; anything else, including any reorder, any removal, an unclassified
+setting and an unmigratable type version, loosens. A re-added id is compared with its archived version,
+a new workflow with the Software floor.
 - A stage with a gate removed, or a `required` gate's stage removed: **loosens**.
 - A conditional gate's condition widened (for example `requiredFrom` medium → large): loosens;
   narrowed: tightens.

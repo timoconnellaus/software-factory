@@ -3,7 +3,13 @@
 // `core_org_configs` (migration 0280) and written only through the `workflow.*` operations.
 import { z } from "zod";
 import { type AgentConfig, agentSchema } from "../policy/project-policy.ts";
-import { ATTACHED_PR, BUILT_IN_WORKFLOWS, INCIDENT, WORKFLOW_TEMPLATES } from "./builtins.ts";
+import {
+  ATTACHED_PR,
+  BUILT_IN_WORKFLOWS,
+  INCIDENT,
+  SOFTWARE,
+  WORKFLOW_TEMPLATES,
+} from "./builtins.ts";
 import type { ArtifactKind } from "./contract.ts";
 import { workflowImpact } from "./impact.ts";
 import { validateWorkflow, type WorkflowError } from "./validate.ts";
@@ -24,11 +30,35 @@ export const orgConfigSchema = z
       })
       .strict()
       .default({}),
+    /**
+     * The last version of each archived workflow, by id (ADR 0516): a workflow re-added under the
+     * same id is compared against it, so archiving and re-adding can't drop a gate unnoticed.
+     */
+    archived: z.array(workflowDefinitionSchema).max(200).default([]),
   })
   .strict();
 export type OrgConfig = z.infer<typeof orgConfigSchema>;
 
-export const EMPTY_ORG_CONFIG: OrgConfig = { version: 1, agents: [], workflows: [], builtIns: {} };
+export const EMPTY_ORG_CONFIG: OrgConfig = {
+  version: 1,
+  agents: [],
+  workflows: [],
+  builtIns: {},
+  archived: [],
+};
+
+/**
+ * What a save of workflow `id` is compared against (ADR 0516): the org's current version of it,
+ * else the last version archived under that id, else the built-in floor for a change item (the
+ * Software workflow), so a brand-new workflow with fewer gates than Software is a loosening.
+ */
+export function baselineFor(config: OrgConfig, id: string): WorkflowDefinition {
+  const current = config.workflows.find((w) => w.id === id);
+  if (current) return current;
+  const archived = config.archived.find((w) => w.id === id);
+  if (archived) return archived;
+  return { ...SOFTWARE, id };
+}
 
 export type BuiltInKind = keyof typeof BUILT_IN_WORKFLOWS;
 const BUILT_IN_BY_ID: ReadonlyMap<string, BuiltInKind> = new Map([

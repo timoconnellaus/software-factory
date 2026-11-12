@@ -1,72 +1,111 @@
 // `workflowImpact`: a workflow change classified as loosens, tightens or neutral (spec 52, "The
-// impact check"), extending ADR 0370's `policyImpact`. Anything it can't classify loosens.
+// impact check"), extending ADR 0370's `policyImpact`.
+//
+// The classifier is an allow-list (ADR 0516): a change is neutral or tightening only when a rule
+// below (or the stage type's own `impact()`) says so. Anything else, including a setting a type's
+// `impact()` says nothing about, a type version it can't migrate, a reordered stage and a field
+// this code doesn't know, is a loosening, so a person decides it.
 import { type ImpactChange, type PolicyImpact, same } from "../policy/impact.ts";
 import type { AnyStageType } from "./contract.ts";
 import { stageType } from "./registry.ts";
 import { conditionImpact } from "./settings.ts";
 import type { StageInstance, WorkflowDefinition } from "./workflow.ts";
 
-/** A stage whose removal, skipping or moving later weakens what a person or a check sees. */
-function guards(type: AnyStageType | undefined, settings: unknown): boolean {
+/** A stage that checks or gates: removing it, skipping it or moving it weakens what is seen. */
+export function guards(type: AnyStageType | undefined, settings: unknown): boolean {
   if (!type) return true;
   if (type.id === "checks" || type.id === "agent-check") return true;
-  return type.gate(parse(type, settings)) !== null;
+  const parsed = parse(type, settings);
+  return parsed === null || type.gate(parsed) !== null;
 }
 
-function parse(type: AnyStageType, settings: unknown): unknown {
+/** The settings with defaults filled; null when they don't parse (then nothing is classified). */
+function parse(type: AnyStageType, settings: unknown): unknown | null {
   const parsed = type.settings.safeParse(settings ?? {});
-  return parsed.success ? parsed.data : type.settings.parse({});
+  return parsed.success ? parsed.data : null;
+}
+
+const loosens = (path: string, summary: string): ImpactChange => ({
+  path,
+  class: "loosens",
+  summary,
+});
+
+/** Settings saved under `from`, in the type's current shape; null when they can't be. */
+function migrated(type: AnyStageType, settings: unknown, from: number, to: number): unknown | null {
+  if (from === to) return settings;
+  if (to !== type.version || !type.migrate) return null;
+  try {
+    return type.migrate(settings, from);
+  } catch {
+    return null;
+  }
+}
+
+function settingsImpact(
+  type: AnyStageType,
+  before: StageInstance,
+  after: StageInstance,
+): ImpactChange[] {
+  const at = `stages.${after.id}`;
+  const rawBefore = migrated(type, before.settings, before.typeVersion, after.typeVersion);
+  if (rawBefore === null)
+    return [
+      loosens(
+        `${at}.typeVersion`,
+        `${after.name} moves from version ${before.typeVersion} to ${after.typeVersion} of ${type.id}, which can't be compared.`,
+      ),
+    ];
+  const b = parse(type, rawBefore);
+  const a = parse(type, after.settings);
+  if (b === null || a === null)
+    return [loosens(`${at}.settings`, `${after.name}'s settings changed.`)];
+  const out = [...type.impact(b, a, at)];
+  if (before.typeVersion !== after.typeVersion)
+    out.push({
+      path: `${at}.typeVersion`,
+      class: "neutral",
+      summary: `${after.name} moves to version ${after.typeVersion} of its type.`,
+    });
+  // Allow-list: a setting that differs and that the type's impact() said nothing about loosens.
+  const bo = b as Record<string, unknown>;
+  const ao = a as Record<string, unknown>;
+  for (const key of new Set([...Object.keys(bo), ...Object.keys(ao)])) {
+    if (same(bo[key], ao[key])) continue;
+    const path = `${at}.${key}`;
+    if (!out.some((c) => c.path === path || c.path.startsWith(`${path}.`)))
+      out.push(
+        loosens(path, `${after.name}'s ${key} changed in a way the factory can't classify.`),
+      );
+  }
+  return out;
 }
 
 function stageImpact(before: StageInstance, after: StageInstance): ImpactChange[] {
-  const at = after.id;
-  if (before.type !== after.type || before.typeVersion !== after.typeVersion) {
-    return [
-      {
-        path: `stages.${at}`,
-        class: before.type !== after.type ? "loosens" : "neutral",
-        summary:
-          before.type !== after.type
-            ? `${after.name} changes from ${before.type} to ${after.type}.`
-            : `${after.name} moves to version ${after.typeVersion} of its type.`,
-      },
-    ];
-  }
+  const at = `stages.${after.id}`;
+  if (before.type !== after.type)
+    return [loosens(at, `${after.name} changes from ${before.type} to ${after.type}.`)];
   const type = stageType(after.type);
-  const out: ImpactChange[] = [];
-  if (!type) {
-    if (!same(before, after))
-      out.push({ path: `stages.${at}`, class: "loosens", summary: `${after.name} changed.` });
-    return out;
-  }
-  out.push(
-    ...type.impact(parse(type, before.settings), parse(type, after.settings), `stages.${at}`),
-  );
+  if (!type) return same(before, after) ? [] : [loosens(at, `${after.name} changed.`)];
+  const out = settingsImpact(type, before, after);
   if (!same(before.when, after.when)) {
-    if (guards(type, after.settings))
-      out.push(...conditionImpact(`stages.${at}.when`, before.when, after.when));
-    else
-      out.push({
-        path: `stages.${at}.when`,
-        class: "neutral",
-        summary: `${after.name} runs for different items.`,
-      });
+    // A condition on a check or a gate: conditionImpact's rules. On any other stage the effect on
+    // what is checked downstream isn't known (a skipped triage leaves items unsized): loosens.
+    if (guards(type, after.settings) && guards(type, before.settings))
+      out.push(...conditionImpact(`${at}.when`, before.when, after.when));
+    else out.push(loosens(`${at}.when`, `${after.name} runs for different items.`));
   }
   if (before.phase !== after.phase)
-    out.push({
-      path: `stages.${at}.phase`,
-      class: "loosens",
-      summary: `${after.name} moves from ${before.phase} to ${after.phase}.`,
-    });
+    out.push(loosens(`${at}.phase`, `${after.name} moves from ${before.phase} to ${after.phase}.`));
   if (before.agent !== after.agent)
     out.push({
-      path: `stages.${at}.agent`,
+      path: `${at}.agent`,
       class: "neutral",
       summary: `${after.name} hands to ${after.agent ?? "its built-in agent"}.`,
     });
   if (before.name !== after.name)
     out.push({
-      path: `stages.${at}.name`,
+      path: `${at}.name`,
       class: "neutral",
       summary: `${before.name} is now ${after.name}.`,
     });
@@ -74,67 +113,63 @@ function stageImpact(before: StageInstance, after: StageInstance): ImpactChange[
 }
 
 /**
- * How `after` differs from `before` (null: a new workflow, which is neutral until a project uses
- * it). Stages are matched by id.
+ * How `after` differs from `before`. Stages are matched by id. `before` is the version to compare
+ * against: the saved one, the last one archived under this id, or the built-in floor for a new
+ * workflow (`orgConfigImpact` chooses).
  */
 export function workflowImpact(
-  before: WorkflowDefinition | null,
-  after: WorkflowDefinition | null,
+  before: WorkflowDefinition,
+  after: WorkflowDefinition,
 ): PolicyImpact {
   const changes: ImpactChange[] = [];
-  if (!before || !after) {
-    if (before || after)
-      changes.push({
-        path: "workflow",
-        class: "neutral",
-        summary: after
-          ? `Adds the workflow ${after.name}.`
-          : `Archives the workflow ${before?.name}.`,
-      });
-    return summarise(changes);
-  }
   const was = new Map(before.stages.map((s) => [s.id, s]));
   const now = new Map(after.stages.map((s) => [s.id, s]));
+  // Every removal loosens: a gate or a check is gone, or (triage, build) what a later gate or check
+  // depends on is, for example items arriving unsized and so missing the spec gate.
   for (const s of before.stages) {
     if (now.has(s.id)) continue;
-    const g = guards(stageType(s.type), s.settings);
-    changes.push({
-      path: `stages.${s.id}`,
-      class: g ? "loosens" : "neutral",
-      summary: `Removes ${s.name}${g ? ", a gate or a check" : ""}.`,
-    });
+    changes.push(loosens(`stages.${s.id}`, `Removes ${s.name}.`));
   }
   for (const s of after.stages) {
     const old = was.get(s.id);
-    if (!old) {
-      const g = guards(stageType(s.type), s.settings);
-      changes.push({
-        path: `stages.${s.id}`,
-        class: g ? "tightens" : "neutral",
-        summary: `Adds ${s.name}${g ? ", a gate or a check" : ""}.`,
-      });
+    if (old) {
+      changes.push(...stageImpact(old, s));
       continue;
     }
-    changes.push(...stageImpact(old, s));
+    // An added check or gate that runs for every item only adds to what is seen. Anything else
+    // added (work that produces something, a conditional check) is not on the allow-list.
+    const type = stageType(s.type);
+    if (type && guards(type, s.settings) && !s.when && parse(type, s.settings) !== null)
+      changes.push({
+        path: `stages.${s.id}`,
+        class: "tightens",
+        summary: `Adds ${s.name}, a gate or a check.`,
+      });
+    else
+      changes.push(
+        loosens(`stages.${s.id}`, `Adds ${s.name}, which isn't only a check or a gate.`),
+      );
   }
-  // Order: a gate or check that now comes after a stage it used to precede sees less.
+  // Order: every pair of stages both versions have keeps its order. A check or gate moved before
+  // something it used to follow (it no longer sees that work), or work moved after a gate that used
+  // to follow it, loosens; any other reorder isn't on the allow-list either.
   const common = before.stages.map((s) => s.id).filter((id) => now.has(id));
   const posAfter = new Map(after.stages.map((s, i) => [s.id, i]));
   const moved = new Set<string>();
   for (let i = 0; i < common.length; i++) {
     for (let j = i + 1; j < common.length; j++) {
-      const a = common[i] as string;
-      const b = common[j] as string;
-      if ((posAfter.get(a) ?? 0) < (posAfter.get(b) ?? 0)) continue;
-      const stage = now.get(a);
-      if (stage && guards(stageType(stage.type), stage.settings) && !moved.has(a)) {
-        moved.add(a);
-        changes.push({
-          path: `stages.${a}`,
-          class: "loosens",
-          summary: `${stage.name} now runs after ${now.get(b)?.name ?? b}.`,
-        });
-      }
+      const first = common[i] as string;
+      const second = common[j] as string;
+      if ((posAfter.get(first) ?? 0) < (posAfter.get(second) ?? 0)) continue;
+      const key = `${first}<${second}`;
+      if (moved.has(key)) continue;
+      moved.add(key);
+      changes.push(
+        loosens(
+          `stages.${second}`,
+          `${now.get(second)?.name ?? second} now runs before ${now.get(first)?.name ?? first}.`,
+        ),
+      );
     }
   }
   if (before.name !== after.name || before.description !== after.description)
@@ -143,10 +178,18 @@ export function workflowImpact(
       class: "neutral",
       summary: "Name or description changed.",
     });
+  if (!same(before.template, after.template))
+    changes.push({
+      path: "workflow.template",
+      class: "neutral",
+      summary: "Template reference changed.",
+    });
+  if (before.schema !== after.schema || before.id !== after.id)
+    changes.push(loosens("workflow", "The workflow's schema or id changed."));
   return summarise(changes);
 }
 
-function summarise(changes: ImpactChange[]): PolicyImpact {
+export function summarise(changes: ImpactChange[]): PolicyImpact {
   const cls = changes.some((c) => c.class === "loosens")
     ? "loosens"
     : changes.some((c) => c.class === "tightens")

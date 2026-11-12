@@ -144,8 +144,16 @@ export interface StageType<S extends z.ZodType = z.ZodType> {
   action?: (settings: z.infer<S>) => { operation: string; risk: RiskClass; on: ArtifactKind };
   /** The steps it runs for an item. Pure. */
   steps(settings: z.infer<S>, item: ItemFacts): readonly StepPlan[];
-  /** Classifies a settings change. Anything it doesn't classify must loosen. */
+  /**
+   * Classifies a settings change. `workflowImpact` treats any differing setting it returns no
+   * change for as a loosening (the classifier is an allow-list, ADR 0516).
+   */
   impact(before: z.infer<S>, after: z.infer<S>, stageId: string): readonly ImpactChange[];
+  /**
+   * Settings saved under an earlier `typeVersion`, in this version's shape, so a version bump is
+   * compared setting by setting. Absent, or returning null: the bump is a loosening (ADR 0516).
+   */
+  migrate?(settings: unknown, fromVersion: number): unknown | null;
 }
 
 /** Erases a type's settings parameter so different types fit one registry. */

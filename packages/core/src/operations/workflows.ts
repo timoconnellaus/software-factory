@@ -11,10 +11,11 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import type { ImpactChange, PolicyImpact } from "../policy/impact.ts";
 import { agentSchema } from "../policy/project-policy.ts";
 import { BUILT_IN_WORKFLOWS, WORKFLOW_TEMPLATES } from "../stages/builtins.ts";
-import { workflowImpact } from "../stages/impact.ts";
+import { summarise, workflowImpact } from "../stages/impact.ts";
 import {
   BRINGS,
   type BuiltInKind,
+  baselineFor,
   builtIn,
   builtInKind,
   EMPTY_ORG_CONFIG,
@@ -92,15 +93,21 @@ async function storedOrgConfig(db: Db, org: string, version: number): Promise<Or
   return parsed.ok ? parsed.config : null;
 }
 
-/** How `after` changes `before`: each workflow and built-in by id. Agents are practice (neutral). */
+/**
+ * How `after` changes `before`: each workflow and built-in by id. Agents are practice (neutral).
+ * A workflow new to `after` is compared against its baseline (`baselineFor`): the last version
+ * archived under its id, else the Software floor. Archiving is neutral: the archived version is kept.
+ */
 export function orgConfigImpact(before: OrgConfig, after: OrgConfig): PolicyImpact {
   const changes: ImpactChange[] = [];
-  const was = new Map(before.workflows.map((w) => [w.id, w]));
-  const now = new Map(after.workflows.map((w) => [w.id, w]));
-  for (const id of new Set([...was.keys(), ...now.keys()])) {
-    for (const c of workflowImpact(was.get(id) ?? null, now.get(id) ?? null).changes)
-      changes.push({ ...c, path: `${id}.${c.path}` });
+  const now = new Set(after.workflows.map((w) => w.id));
+  for (const w of after.workflows) {
+    for (const c of workflowImpact(baselineFor(before, w.id), w).changes)
+      changes.push({ ...c, path: `${w.id}.${c.path}` });
   }
+  for (const w of before.workflows)
+    if (!now.has(w.id))
+      changes.push({ path: w.id, class: "neutral", summary: `Archives the workflow ${w.name}.` });
   for (const kind of Object.keys(BUILT_IN_WORKFLOWS) as BuiltInKind[]) {
     const b = builtIn(before, kind);
     for (const c of workflowImpact(b, builtIn(after, kind)).changes)
@@ -108,12 +115,7 @@ export function orgConfigImpact(before: OrgConfig, after: OrgConfig): PolicyImpa
   }
   if (JSON.stringify(before.agents) !== JSON.stringify(after.agents))
     changes.push({ path: "agents", class: "neutral", summary: "Agents changed." });
-  const cls = changes.some((c) => c.class === "loosens")
-    ? "loosens"
-    : changes.some((c) => c.class === "tightens")
-      ? "tightens"
-      : "neutral";
-  return { class: cls, changes };
+  return summarise(changes);
 }
 
 function requireBase(version: number, base: number) {
@@ -145,25 +147,12 @@ function withWorkflow(config: OrgConfig, workflow: WorkflowDefinition): OrgConfi
   const exists = config.workflows.some((w) => w.id === workflow.id);
   return {
     ...config,
+    // Re-added: it is current again, and was compared against its archived version.
+    archived: config.archived.filter((w) => w.id !== workflow.id),
     workflows: exists
       ? config.workflows.map((w) => (w.id === workflow.id ? workflow : w))
       : [...config.workflows, workflow],
   };
-}
-
-/** A built-in may only tighten (Q10): a loosening save is refused outright, never sent for approval. */
-function refuseLooseningBuiltIn(before: OrgConfig, workflow: WorkflowDefinition) {
-  const kind = builtInKind(workflow.id);
-  if (!kind) return;
-  const loosened = workflowImpact(builtIn(before, kind), workflow).changes.filter(
-    (c) => c.class === "loosens",
-  );
-  if (loosened.length > 0) {
-    throw new OperationError(
-      "invalid_input",
-      `a built-in workflow can only be tightened: ${loosened.map((c) => c.summary).join(" ")}`,
-    );
-  }
 }
 
 /**
@@ -216,18 +205,25 @@ export async function writeOrgVersion(
   return { version };
 }
 
-/** `self-modify` when the call loosens the org's config; `write` otherwise (or when it'll be refused). */
-async function riskOfSave(db: Db, org: string, base: number, next: (c: OrgConfig) => OrgConfig) {
+/**
+ * `self-modify` when the call loosens the org's config; `write` when it doesn't, or when the handler
+ * will refuse it anyway (a stale base, an invalid document). If working out the risk fails, the
+ * save is `self-modify`: it fails closed, to a person (ADR 0516).
+ */
+export async function riskOfSave(
+  db: Db,
+  org: string,
+  base: number,
+  next: (c: OrgConfig) => OrgConfig,
+): Promise<"write" | "self-modify"> {
   try {
     const { version, config } = await currentOrgConfig(db, org);
-    if (version !== base) return "write" as const;
+    if (version !== base) return "write";
     const after = parseOrgConfig(next(config));
-    if (!after.ok) return "write" as const;
-    return orgConfigImpact(config, after.config).class === "loosens"
-      ? ("self-modify" as const)
-      : ("write" as const);
+    if (!after.ok) return "write";
+    return orgConfigImpact(config, after.config).class === "loosens" ? "self-modify" : "write";
   } catch {
-    return "write" as const;
+    return "self-modify";
   }
 }
 
@@ -338,9 +334,7 @@ export const workflowPreview = defineOperation({
         currentVersion: version,
       };
     }
-    const before = kind
-      ? builtIn(config, kind)
-      : (config.workflows.find((w) => w.id === v.definition.id) ?? null);
+    const before = kind ? builtIn(config, kind) : baselineFor(config, v.definition.id);
     return {
       valid: true,
       errors: [],
@@ -355,14 +349,17 @@ export const workflowSave = defineOperation({
   description:
     "Save an org workflow (spec 52): a new org config version with this workflow added or replaced by id. Name the org config version you edited from (`baseVersion`; 0 before the first save): a stale base is a conflict. An invalid workflow is refused with every broken rule. A save that loosens (a gate or check removed or skipped, a decider broadened, a gate moved later…) is self-modify and waits for an org admin. A built-in workflow (Attached PR, Incident) can only be tightened: a loosening save of one is refused. Org admins only.",
   risk: "write",
+  // A built-in copy looser than the shipped one doesn't parse (refused); one that undoes the org's
+  // own tightening loosens against the org's version, so it waits for an org admin like any other.
   riskOf: (input, at) =>
-    builtInKind(String((input.workflow as { id?: unknown }).id ?? ""))
-      ? "write"
-      : riskOfSave(at.db, input.orgId, input.baseVersion, (c) =>
-          withWorkflow(c, input.workflow as WorkflowDefinition),
-        ),
+    riskOfSave(at.db, input.orgId, input.baseVersion, (c) =>
+      withWorkflow(c, input.workflow as WorkflowDefinition),
+    ),
   actors: ["human"],
   permission: "admin",
+  // Config is a decision made in the app (ADR 0340): never from the CLI, MCP, a desktop device or
+  // any other token an agent session might hold.
+  browserOnly: true,
   input: z.object({ orgId, baseVersion, workflow: definitionView, note }),
   output: z.object({ version: z.number(), impact: impactView }),
   async handler(input, ctx) {
@@ -392,7 +389,6 @@ async function saveWorkflow(
     );
   }
   const after = validated(withWorkflow(config, draft.data));
-  refuseLooseningBuiltIn(config, draft.data);
   const impact = orgConfigImpact(config, after);
   const written = await writeOrgVersion(ctx, input.orgId, version, after, {
     source: "app",
@@ -409,6 +405,7 @@ export const workflowCreateFromTemplate = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "admin",
+  browserOnly: true,
   input: z.object({
     orgId,
     baseVersion,
@@ -454,6 +451,7 @@ export const workflowArchive = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "admin",
+  browserOnly: true,
   input: z.object({ orgId, baseVersion, workflowId: z.string().min(1), note }),
   output: z.object({ version: z.number() }),
   async handler(input, ctx) {
@@ -463,10 +461,13 @@ export const workflowArchive = defineOperation({
     requireBase(version, input.baseVersion);
     const workflow = config.workflows.find((w) => w.id === input.workflowId);
     if (!workflow) throw new OperationError("not_found", `no workflow ${input.workflowId}`);
-    // Projects run their own config until spec 52 PR (d); that PR refuses archiving one in use.
+    // Projects run their own config until spec 52 PR (d), so no org workflow is in use yet; (d)
+    // refuses archiving one a project runs. The archived version is kept: a workflow re-added under
+    // this id is compared against it (ADR 0516).
     const after = validated({
       ...config,
       workflows: config.workflows.filter((w) => w.id !== input.workflowId),
+      archived: [...config.archived.filter((w) => w.id !== input.workflowId), workflow],
     });
     return writeOrgVersion(ctx, input.orgId, version, after, {
       source: "app",
@@ -482,6 +483,7 @@ export const agentSave = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "admin",
+  browserOnly: true,
   input: z.object({ orgId, baseVersion, agent: agentSchema, note }),
   output: z.object({ version: z.number() }),
   async handler(input, ctx) {
@@ -616,6 +618,7 @@ export const orgConfigRollback = defineOperation({
   },
   actors: ["human"],
   permission: "admin",
+  browserOnly: true,
   input: z.object({ orgId, baseVersion, toVersion: z.number().int().positive(), note }),
   output: z.object({ version: z.number(), impact: impactView }),
   async handler(input, ctx) {

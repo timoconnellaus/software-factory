@@ -97,20 +97,44 @@ export const checks: StageType<typeof settings> = {
     );
     if (!same(before.ci, after.ci))
       out.push({ path: `${stageId}.ci`, class: "neutral", summary: "CI waits changed." });
-    if (!same(before.sections, after.sections)) {
-      const hidden = (before.sections ?? []).filter((x) => !(after.sections ?? []).includes(x));
-      out.push({
-        path: `${stageId}.sections`,
-        class: after.sections && hidden.length > 0 ? "loosens" : "neutral",
-        summary:
-          after.sections && hidden.length > 0
-            ? `Hides ${hidden.join(", ")} from the review packet.`
-            : "Review packet sections reordered or added.",
-      });
-    }
+    if (!same(before.sections, after.sections)) out.push(sectionsImpact(stageId, before, after));
     return out;
   },
 };
+
+/**
+ * The review packet's sections. Absent means every section, so setting a list where there was none
+ * may hide any section: a loosening. Dropping one loosens, only adding tightens, reordering is
+ * neutral, and going back to "every section" tightens.
+ */
+function sectionsImpact(
+  stageId: string,
+  before: { sections?: string[] | undefined },
+  after: { sections?: string[] | undefined },
+): ImpactChange {
+  const path = `${stageId}.sections`;
+  if (!after.sections)
+    return { path, class: "tightens", summary: "The review packet shows every section again." };
+  if (!before.sections)
+    return {
+      path,
+      class: "loosens",
+      summary: `The review packet shows only ${after.sections.join(", ")}, hiding every other section.`,
+    };
+  const was = before.sections;
+  const now = after.sections;
+  const hidden = was.filter((x) => !now.includes(x));
+  if (hidden.length > 0)
+    return {
+      path,
+      class: "loosens",
+      summary: `Hides ${hidden.join(", ")} from the review packet.`,
+    };
+  const added = now.filter((x) => !was.includes(x));
+  return added.length > 0
+    ? { path, class: "tightens", summary: `Adds ${added.join(", ")} to the review packet.` }
+    : { path, class: "neutral", summary: "Review packet sections reordered." };
+}
 
 function setImpact(
   path: string,
@@ -133,5 +157,7 @@ function setImpact(
       class: "tightens",
       summary: `Also requires the ${noun} ${added.join(", ")}.`,
     });
+  if (!out.length && !same(before, after))
+    out.push({ path, class: "neutral", summary: `The required ${noun}s reordered.` });
   return out;
 }
