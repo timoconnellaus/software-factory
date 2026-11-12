@@ -36,6 +36,8 @@ export interface OpMap {
   "planning.presence": Def<typeof operations.planningPresence>;
   "planning.move": Def<typeof operations.planningMove>;
   "chat.send": Def<typeof operations.chatSend>;
+  "run.live": Def<typeof operations.runLive>;
+  "run.steer": Def<typeof operations.runSteer>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;
@@ -97,3 +99,6 @@ export type SetupStatus = OpOutput<"setup.status">;
 export type RepoChoice = OpOutput<"github.repos">["repos"][number];
 export type OpenPull = OpOutput<"github.openPullRequests">["pulls"][number];
 export type ConfigView = OpOutput<"config.get">;
+export type LiveView = OpOutput<"run.live">;
+export type LiveEvent = LiveView["events"][number];
+export type LiveSteer = LiveView["steers"][number];

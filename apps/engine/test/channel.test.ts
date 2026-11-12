@@ -418,3 +418,63 @@ describe("planning over the channel (spec 20, ADR 0350)", () => {
     expect(stranger.ok).toBe(false);
   });
 });
+
+describe("steering over the channel (spec 31, ADR 0400)", () => {
+  it("holds the steer call until the runner's owner sends one, hands it over once, never stores it", async () => {
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Steer me" },
+      w.human,
+    );
+    const c = await client(w.runner.runnerId);
+    let job = null;
+    for (let i = 0; i < 100 && !job; i++) {
+      job = (
+        await c.claim({
+          claimId: uid("claim-"),
+          manifest: { ...MANIFEST, capabilities: [...MANIFEST.capabilities, "steer"] },
+          capacity: { max: 2, inUse: 0, accepting: true },
+        })
+      ).job;
+      if (!job) await new Promise((r) => setTimeout(r, 50));
+    }
+    if (!job) throw new Error("no job");
+    expect(job.workItem.id).toBe(item.workItemId);
+    const fence = job.lease.fencingToken;
+
+    // Nothing queued and no wait: an empty answer at once.
+    expect(await c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0 })).toEqual({ steers: [] });
+
+    const live = await ok<{ run: { id: string } }>(
+      "run.live",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    const started = Date.now();
+    const waiting = c.steers?.(job.jobId, { fencingToken: fence, waitMs: 20_000 });
+    await new Promise((r) => setTimeout(r, 300));
+    await ok(
+      "run.steer",
+      { workItemId: item.workItemId, runId: live.run.id, text: "also say thanks" },
+      w.human,
+    );
+    const got = await waiting;
+    expect(got?.steers).toEqual([expect.objectContaining({ text: "also say thanks" })]);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // Delivered once.
+    expect(await c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0 })).toEqual({ steers: [] });
+    const stored = await all<{ idempotency_key: string }>(
+      "SELECT idempotency_key FROM core_channel_requests WHERE runner_id = ? AND idempotency_key LIKE 'steer:%'",
+      w.runner.runnerId,
+    );
+    expect(stored).toEqual([]);
+
+    // A stale fencing token is `fenced` (409: the host stops the job).
+    const stale = await c
+      .steers?.(job.jobId, { fencingToken: fence + 3, waitMs: 0 })
+      .catch((e) => e);
+    expect((stale as ChannelCallError).status).toBe(409);
+    expect((stale as ChannelCallError).code).toBe("fenced");
+  });
+});

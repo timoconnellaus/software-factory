@@ -8,6 +8,7 @@
 // stops the session at once; a fenced run hands nothing back and pushes nothing (ADR 0035).
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   type AdapterEvent,
   type Artifact,
@@ -23,7 +24,9 @@ import {
   type RunnerEvent,
   type SessionHandle,
   type SessionOutcome,
+  STEER_WAIT_MAX_MS,
   type StoredArtifact,
+  steerText,
   type TokenResponse,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
@@ -137,6 +140,74 @@ class EventStream {
   }
 }
 
+/**
+ * The run's steers (spec 31, ADR 0400): while the session runs, keep the channel's held `steer`
+ * call open and type each message the runner's owner sends from the dashboard. Only for an adapter
+ * that declares `steer` and has `steer()`. A 404 (an engine from before ADR 0400) or a run the
+ * cloud no longer runs ends the loop; `fenced`/`killed` stops the job; anything else backs off.
+ */
+export async function steerLoop(options: {
+  adapter: RunnerAdapter<WorkspaceHandle, SessionHandle>;
+  cp: ControlPlaneClient;
+  job: Job;
+  signal: AbortSignal;
+  steer: (text: string) => Promise<void>;
+  push: (event: AdapterEvent) => Promise<void>;
+  onStop: (error: ChannelCallError) => void;
+  log: (message: string) => void;
+  /** First back-off after a failed call (default 5 s). */
+  retryMs?: number;
+}): Promise<void> {
+  const { adapter, cp, job, signal, log } = options;
+  if (!adapter.steer || !cp.steers) return;
+  if (!(await adapter.manifest()).capabilities.includes("steer")) return;
+  const take = cp.steers.bind(cp);
+  let failures = 0;
+  while (!signal.aborted) {
+    let steers: { id: string; text: string }[];
+    try {
+      ({ steers } = await take(
+        job.jobId,
+        { fencingToken: job.lease.fencingToken, waitMs: STEER_WAIT_MAX_MS },
+        signal,
+      ));
+      failures = 0;
+    } catch (error) {
+      if (signal.aborted) return;
+      if (isStop(error)) {
+        options.onStop(error);
+        return;
+      }
+      if (error instanceof ChannelCallError && (error.status === 404 || error.status === 409)) {
+        log(`${job.jobId}: no steers (${error.status} ${error.code ?? ""}); not asking again`);
+        return;
+      }
+      failures++;
+      const wait = Math.min((options.retryMs ?? 5_000) * 2 ** (failures - 1), 60_000);
+      await sleep(wait, undefined, { signal }).catch(() => {});
+      continue;
+    }
+    for (const s of steers) {
+      if (signal.aborted) return;
+      const text = steerText(s.text);
+      if (!text) continue;
+      try {
+        await options.steer(text);
+        log(`${job.jobId}: typed a message from the dashboard (${s.id})`);
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        await options
+          .push({
+            type: "log",
+            stream: "stderr",
+            text: `a message from the dashboard could not be typed: ${why}`.slice(0, 2_000),
+          })
+          .catch(() => {});
+      }
+    }
+  }
+}
+
 export interface RunJobOptions<W extends WorkspaceHandle, S extends SessionHandle> {
   adapter: RunnerAdapter<W, S>;
   cp: ControlPlaneClient;
@@ -212,6 +283,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   /** Whether the branch had commits of its own before that merge. */
   let ahead = true;
   let session: S | undefined;
+  let steering: Promise<void> = Promise.resolve();
+  const steerStop = new AbortController();
   let outcome: SessionOutcome = "failed";
   let summary: string | undefined;
   let error: string | undefined;
@@ -359,12 +432,29 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         sessionRef: session.sessionRef,
         ...(session.takeover ? { takeover: session.takeover } : {}),
       });
-      for await (const event of adapter.events(job, session, signal)) {
-        await stream.push(event);
-        if (event.type === "session.ended") {
-          outcome = event.outcome;
-          summary = event.summary;
+      // A person's messages from the dashboard, typed into the session while it runs (ADR 0400).
+      const live = session;
+      steering = steerLoop({
+        adapter,
+        cp,
+        job,
+        signal: AbortSignal.any([signal, steerStop.signal]),
+        steer: (text) => (adapter.steer as NonNullable<typeof adapter.steer>)(live, text),
+        push: (event) => stream.push(event),
+        onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
+        log,
+      });
+      try {
+        for await (const event of adapter.events(job, session, signal)) {
+          await stream.push(event);
+          if (event.type === "session.ended") {
+            outcome = event.outcome;
+            summary = event.summary;
+          }
         }
+      } finally {
+        steerStop.abort();
+        await steering.catch(() => {});
       }
       if (signal.aborted && outcome !== "completed") outcome = abortedOutcome();
 

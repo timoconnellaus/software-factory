@@ -18,6 +18,7 @@ d1.batch([toStatement(env.DB, db.updateTable(...)), guardChanged(env.DB, "name")
 | 0020 | `core_work_items`, `core_intake_keys`, `core_intake_events`, `core_stages`, `core_questions`, `core_specs`, `core_pending_actions`, `core_review_packets`, `core_incidents`, `core_audit` (append-only), `core_outbox` |
 | 0030 | `core_runners`, `core_runner_shares`, `core_jobs`, `core_runs`, `core_run_events`, `core_artifacts`, `core_leases`, `core_channel_requests` |
 | 0040 | `core_connector_events` (webhook delivery dedupe), `core_verify_checks` (`factory/verify` per head SHA); `core_incidents.root_cause`, `proposed_fix` |
+| 0170 | `core_run_steers` (a person's messages into a live run, ADR 0400) |
 
 `SCHEMA_VERSION` equals the highest migration on this branch (40). Parallel builds number their
 migrations from the block they claim in `docs/parallel-work.md`.

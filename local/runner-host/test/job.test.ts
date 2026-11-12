@@ -250,6 +250,58 @@ describe("runJob", () => {
     expect(adapter.calls).toContain("release");
   });
 
+  it("types the dashboard's steers into the live session, sanitised, while it runs (ADR 0400)", async () => {
+    const { repo, cloud, cp } = await world();
+    const j = job();
+    cloud.claims.set("c", j);
+    cloud.steers.set(j.jobId, [
+      { id: "st_1", text: "also\nthank the reviewer\u0007", at: new Date().toISOString() },
+    ]);
+    const adapter = fakeAdapter(
+      (x) => repo.host.clonePath(x),
+      async (wt, _j, signal) => {
+        // The session runs until the message arrives (or a generous timeout).
+        for (let i = 0; i < 200 && adapter.steered.length === 0 && !signal.aborted; i++) {
+          await sleep(10);
+        }
+        return edit("x")(wt);
+      },
+      { steer: true },
+    );
+    const report = await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
+    expect(report.outcome).toBe("completed");
+    expect(adapter.steered).toEqual(["also thank the reviewer"]);
+    expect(cloud.steerCalls).toBeGreaterThan(0);
+  });
+
+  it("stops asking for steers when the engine doesn't know the call, and the run goes on", async () => {
+    const { repo, cloud, cp } = await world();
+    const j = job();
+    cloud.claims.set("c", j);
+    cloud.noSteerCall = true;
+    const adapter = fakeAdapter(
+      (x) => repo.host.clonePath(x),
+      async (wt) => {
+        await sleep(100);
+        return edit("x")(wt);
+      },
+      { steer: true },
+    );
+    const report = await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
+    expect(report.outcome).toBe("completed");
+    expect(report.handedBack).toBe(true);
+    expect(cloud.steerCalls).toBe(1);
+  });
+
+  it("never asks for steers for an adapter without the capability", async () => {
+    const { repo, cloud, cp } = await world();
+    const j = job();
+    cloud.claims.set("c", j);
+    const adapter = fakeAdapter((x) => repo.host.clonePath(x), edit("x"));
+    await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
+    expect(cloud.steerCalls).toBe(0);
+  });
+
   it("refuses any branch but the job's own run branch", () => {
     expect(() => assertPushable(job({ branch: "main" }))).toThrow();
     expect(() => assertPushable(job({ branch: "factory/7-add-a-line-run-2" }))).toThrow();
