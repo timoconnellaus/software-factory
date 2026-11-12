@@ -1858,8 +1858,9 @@ function CriticNotes({ view }: { view: PlanningView }) {
         </div>
         {critique.summary && <div className="font-medium">{critique.summary}</div>}
         <ul className="grid list-disc gap-1 pl-4">
-          {critique.notes.map((n) => (
-            <li key={n}>{n}</li>
+          {critique.notes.map((n, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: notes are fixed text; two may read the same.
+            <li key={i}>{n}</li>
           ))}
         </ul>
       </PopoverContent>

@@ -1638,18 +1638,24 @@ class ItemFlow {
     const name = `planning #${k}: critic`;
     const spec = await this.step.do(`${name}: spec`, async () => {
       const row = await this.env.DB.prepare(
-        "SELECT body_md, acceptance_criteria FROM core_specs WHERE id = ?",
+        "SELECT body_md, acceptance_criteria, critique FROM core_specs WHERE id = ?",
       )
         .bind(specId)
-        .first<{ body_md: string; acceptance_criteria: string }>();
+        .first<{ body_md: string; acceptance_criteria: string; critique: string | null }>();
       let criteria: string[] = [];
       try {
         criteria = JSON.parse(row?.acceptance_criteria ?? "[]") as string[];
       } catch {
         criteria = [];
       }
-      return { bodyMd: row?.body_md ?? "", acceptanceCriteria: criteria };
+      return {
+        bodyMd: row?.body_md ?? "",
+        acceptanceCriteria: criteria,
+        // Asking for the gate again on the same version doesn't run the critic again (cost).
+        critiqued: row?.critique != null,
+      };
     });
+    if (spec.critiqued) return;
     // The planner, waiting at the gate, holds the item's lease: it yields so the critic can run.
     await this.act(`${name}: yield`, "planning.requestYield", { workItemId: this.workItemId });
     const { jobId } = (await this.act(`${name}: enqueue`, "job.enqueue", {
@@ -1675,9 +1681,10 @@ class ItemFlow {
           .first<{ result: string | null }>();
         return run?.result ?? null;
       });
+      // Over the limits (more than 20 notes, a note over 1,000 characters) is clamped, not lost.
       const parsed =
         event.payload.outcome === "completed" && result
-          ? critiqueResultSchema.safeParse(JSON.parse(result))
+          ? critiqueResultSchema.safeParse(clampCritique(JSON.parse(result)))
           : null;
       if (parsed?.success) {
         notes = parsed.data.notes;
@@ -2016,4 +2023,20 @@ class ItemFlow {
       }
     }
   }
+}
+
+/** A critic's raw result, clamped to what `spec.critique` takes (review of #126). */
+export function clampCritique(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const r = raw as { notes?: unknown; summary?: unknown };
+  return {
+    notes: Array.isArray(r.notes)
+      ? r.notes
+          .map((n) => String(n).trim())
+          .filter(Boolean)
+          .slice(0, 20)
+          .map((n) => (n.length > 1_000 ? `${n.slice(0, 999)}…` : n))
+      : [],
+    ...(typeof r.summary === "string" ? { summary: r.summary.slice(0, 2_000) } : {}),
+  };
 }

@@ -4,6 +4,7 @@
 // takes longer than the policy's timeout, the gate opens without its notes.
 import type { Job, PlanningNews } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
+import { clampCritique } from "../src/workflow/work-item.ts";
 import {
   BALANCED,
   first,
@@ -166,5 +167,20 @@ describe("the spec critic (spec 23 part C)", () => {
       return v.spec?.critique ? v : null;
     });
     expect(view.spec?.critique).toMatchObject({ status: "timed_out", notes: [] });
+  });
+
+  it("clamps a result over the limits instead of losing its notes (review of #126)", async () => {
+    const { critiqueResultSchema } = await import("@software-factory/runner-contract");
+    const raw = {
+      notes: [...Array.from({ length: 21 }, (_, i) => `note ${i}`), "x".repeat(1_500)],
+      summary: "s".repeat(3_000),
+    };
+    expect(critiqueResultSchema.safeParse(raw).success).toBe(false);
+    const parsed = critiqueResultSchema.safeParse(clampCritique(raw));
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.notes).toHaveLength(20);
+    const long = clampCritique({ notes: ["y".repeat(1_500)] }) as { notes: string[] };
+    expect(long.notes[0]).toHaveLength(1_000);
   });
 });
