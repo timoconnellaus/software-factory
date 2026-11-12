@@ -95,6 +95,14 @@ Routing triage questions by decision domain (R1 milestone (c)).
 - **`needs_answers`, spec required** (medium or large): the planning session opens with triage's
   questions already asked (`planning: triage questions`, `planning.seedQuestions`), as the planner's
   open questions in the Planning tab (criterion 3).
+- After review of #125:
+  - `workItem.parkForInfo` parks only from the item's current Workflow instance while it is in
+    triage. It's checked in the handler and guarded in the batch.
+  - Triage parks an item at most three times (`TRIAGE_PARK_CAP`). At the cap the marker is
+    `capped`, with every question asked across the cycles. Answering no longer re-releases it; a
+    person moves it on.
+  - A dead release on a later generation fails the item (freeing its slot). The item id comes from
+    the `release-<itemId>` event type, not the `<id>-r2` instance.
 - Tests: `apps/engine/test/triage-readiness.test.ts` (the three paths through the real Workflow),
   and core `readiness.test.ts` (parking on a new generation; seeding needs an open session). The
   version test freezes v8's step names.

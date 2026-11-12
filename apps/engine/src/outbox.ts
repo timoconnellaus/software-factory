@@ -84,7 +84,10 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // deliver it, it would hold a slot for ever. Fail it, visibly, instead.
       if (!found || FINISHED.has(found.status)) {
         if (message.payload.type.startsWith("release-")) {
-          await failDeadRelease(env, message.payload.instanceId, found?.status ?? "missing");
+          // The item is the event's (`release-<itemId>`), not the instance: a later Workflow
+          // generation's instance is `<itemId>-r2` (spec 23).
+          const workItemId = message.payload.type.slice("release-".length);
+          await failDeadRelease(env, workItemId, found?.status ?? "missing");
         }
         return;
       }

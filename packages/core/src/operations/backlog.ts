@@ -15,6 +15,7 @@ import {
 } from "../operation.ts";
 import { type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
 import {
+  generationOf,
   type NeedsInfo,
   needsInfoOf,
   nextGeneration,
@@ -24,6 +25,7 @@ import {
   precheckPrompt,
   readinessHint,
   refuseIfParked,
+  TRIAGE_PARK_CAP,
 } from "../readiness.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { releaseEvent } from "../workflow-events.ts";
@@ -1328,6 +1330,8 @@ export async function resumeParked(
 ): Promise<"resumed" | "waiting" | "parked again" | null> {
   const marker = needsInfoOf(w.needs_info);
   if (!marker) return null;
+  // Triage parked it the most times it may: a person moves it on (release), not an answer.
+  if (marker.capped) return "waiting";
   const asked = marker.questionIds.length
     ? await ctx.db
         .selectFrom("core_questions")
@@ -1455,13 +1459,52 @@ export const workItemParkForInfo = defineOperation({
   output: z.object({ status: z.string(), questionIds: z.array(z.string()) }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
+    // Only the item's own Workflow, in triage, parks it (review of #125): checked here and guarded
+    // in the batch, so a stale or foreign instance can't.
+    const caller = ctx.origin.workflowId;
+    if (w.stage !== "triage" || !caller || w.workflow_id !== caller) {
+      throw new OperationError(
+        "conflict",
+        "only the work item's current Workflow, in triage, can park it",
+      );
+    }
+    ctx.guardExists(
+      "the item is still in triage on this Workflow",
+      ctx.db
+        .selectFrom("core_work_items")
+        .select("id")
+        .where("id", "=", w.id)
+        .where("stage", "=", "triage")
+        .where("workflow_id", "=", caller),
+    );
     const heading = w.shaping_started_at && !w.pulled_at ? "shaping" : "queued";
+    // At the cap a person decides, with everything asked across the cycles (review of #125).
+    const generation = generationOf(w.id, w.workflow_id);
+    const capped = generation >= TRIAGE_PARK_CAP;
+    const earlier = capped
+      ? await ctx.db
+          .selectFrom("core_questions")
+          .select("prompt")
+          .where("work_item_id", "=", w.id)
+          .where("planning_session_id", "is", null)
+          .orderBy("created_at")
+          .limit(50)
+          .execute()
+      : [];
     const marker = park(ctx, w, {
       heading,
       source: "triage",
-      reason: input.reason,
+      reason: capped
+        ? `triage parked it ${generation} times; a person decides now. ${input.reason}`
+        : input.reason,
       missing: [],
       prompts: input.questions,
+      ...(capped
+        ? {
+            capped: true,
+            asked: [...earlier.map((q) => q.prompt), ...input.questions.map((q) => q.prompt)],
+          }
+        : {}),
     });
     // A fresh start: the next release or shape begins a new Workflow generation, from intake.
     ctx.write(

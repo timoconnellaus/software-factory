@@ -32,6 +32,22 @@ export interface NeedsInfo {
   /** Where it goes once answered. */
   heading: Heading;
   at: string;
+  /**
+   * Triage parked it the most times it may (spec 23, review of #125): answering no longer
+   * re-releases it; a person decides. `asked` lists every question asked across the cycles.
+   */
+  capped?: boolean;
+  asked?: string[];
+}
+
+/** How many times triage may park an item before a person must decide (review of #125). */
+export const TRIAGE_PARK_CAP = 3;
+
+/** Which Workflow generation an instance id is: `<id>` is 1, `<id>-r2` is 2, … */
+export function generationOf(workItemId: string, workflowId: string | null): number {
+  if (!workflowId?.startsWith(`${workItemId}-r`)) return 1;
+  const n = Number(workflowId.slice(workItemId.length + 2));
+  return Number.isFinite(n) && n > 1 ? n : 1;
 }
 
 /** The surfaces whose calls are a person's own (spec 23): MCP is an agent with a person's token. */
@@ -108,6 +124,8 @@ export function park(
     source: NeedsInfo["source"];
     reason: string;
     missing: Missing[];
+    capped?: boolean;
+    asked?: string[];
     /** The questions: a prompt, or triage's draft (options and a default). */
     prompts: (
       | string
@@ -126,6 +144,7 @@ export function park(
     questionIds,
     heading: args.heading,
     at: ctx.now,
+    ...(args.capped ? { capped: true, asked: args.asked ?? [] } : {}),
   };
   ctx.write(
     ctx.db
