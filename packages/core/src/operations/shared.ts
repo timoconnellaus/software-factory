@@ -21,6 +21,22 @@ export const fencingToken = z.number().int().nonnegative();
 export const sha = z.string().regex(/^[0-9a-f]{7,64}$/);
 export const STAGES = ["intake", "triage", "spec", "build", "verify", "merge", "done"] as const;
 
+/**
+ * Each stage's phase (ADR 0493): **shaping** stages run before release (they need a person, hold
+ * no build slot and don't count as active), **delivery** stages after it. These are the fixed
+ * engine's stages (the Software workflow): triage and interview planning (the spec stage and its
+ * gate) shape; everything from build on delivers. Workflow-defined stages will carry their own.
+ */
+export const STAGE_PHASE: Record<(typeof STAGES)[number], "shaping" | "delivery"> = {
+  intake: "shaping",
+  triage: "shaping",
+  spec: "shaping",
+  build: "delivery",
+  verify: "delivery",
+  merge: "delivery",
+  done: "delivery",
+};
+
 export function requireWorkItem(ctx: HandlerContext): WorkItemRow {
   const item = ctx.scope.workItem;
   if (!item) throw new OperationError("not_found", "no such work item");

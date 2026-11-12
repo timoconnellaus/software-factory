@@ -37,6 +37,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
   projects.repositoryList,
   projects.repositoryUpdate,
   backlog.workItemRelease,
+  backlog.workItemShape,
+  backlog.workItemShaped,
   backlog.workItemMove,
   backlog.workItemUpdate,
   backlog.workItemReorder,

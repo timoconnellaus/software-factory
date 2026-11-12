@@ -1006,21 +1006,25 @@ export const killSwitchSet = defineOperation({
       .selectFrom("core_work_items")
       .select(["id", "project_id", "org_id", "workflow_id", "status"])
       .where(column, "=", input.id)
-      .where("status", "in", input.on ? ["running", "waiting"] : ["paused"])
+      // `shaping` too (ADR 0493): its Workflow runs before release. It keeps its status (it isn't
+      // in the pipeline), and its Workflow is paused and resumed like the others.
+      .where("status", "in", input.on ? ["running", "waiting", "shaping"] : ["paused", "shaping"])
       .execute();
 
     if (input.on) {
       for (const item of items) {
-        ctx.write(
-          ctx.db
-            .updateTable("core_work_items")
-            .set({
-              status: "paused",
-              status_reason: `kill switch (${input.scope})`,
-              updated_at: ctx.now,
-            })
-            .where("id", "=", item.id),
-        );
+        if (item.status !== "shaping") {
+          ctx.write(
+            ctx.db
+              .updateTable("core_work_items")
+              .set({
+                status: "paused",
+                status_reason: `kill switch (${input.scope})`,
+                updated_at: ctx.now,
+              })
+              .where("id", "=", item.id),
+          );
+        }
         ctx.emit({ kind: "workflow.pause", payload: { instanceId: item.workflow_id } });
       }
       // Stop their runs and free their slots: cancel active runs and bump the fencing token so the
