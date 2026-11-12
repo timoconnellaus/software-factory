@@ -22,7 +22,7 @@ export const capabilitySchema = z.enum(CAPABILITIES);
 
 export const capabilityManifestSchema = z.object({
   contractVersion: z.literal(CONTRACT_VERSION),
-  /** The adapter kind, e.g. "orca" or "local". Informational: the core never branches on it. */
+  /** The adapter kind, e.g. "local". Informational: the core never branches on it. */
   runnerKind: z.string().min(1).max(40),
   harnesses: z.array(z.enum(HARNESSES)).min(1),
   capabilities: z.array(capabilitySchema),

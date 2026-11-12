@@ -1,4 +1,4 @@
-// The runner's Node 24 (ADR 0380): copies the running Node into vendor/node. CI's release build
+// The runner's Node 24 (ADR 0390): copies the running Node into vendor/node. CI's release build
 // downloads the pinned release from nodejs.org and checks it against SHASUMS256 instead (M4).
 import { chmodSync, copyFileSync, mkdirSync } from "node:fs";
 

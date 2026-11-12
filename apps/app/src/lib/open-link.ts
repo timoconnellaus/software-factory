@@ -1,4 +1,4 @@
-// The trampoline's mapping (ADR 0382): `/open/<path>` on the website → `sf://<path>` in the desktop
+// The trampoline's mapping (ADR 0392): `/open/<path>` on the website → `sf://<path>` in the desktop
 // app. Only paths the app routes pass; anything else is refused rather than passed through.
 const ALLOWED = /^(work\/[A-Za-z0-9_-]{1,80}(\/review)?|attach|inbox|setup)$/;
 

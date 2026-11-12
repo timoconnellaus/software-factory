@@ -1,4 +1,4 @@
-// Spec 03 criterion 8, on the real thing: run a job through runner-orca (real Orca, real Claude Code)
+// Spec 03 criterion 8, on the real thing: run a job through runner-local (real tmux, real Claude Code)
 // against the in-memory signed cloud and ask the harness to report what it sees. Checks that the
 // projected settings reached the session: no GitHub token, no SSH agent, git on the run's own config.
 //
@@ -7,12 +7,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RESULT_FILE } from "@software-factory/runner-contract";
-import { createOrcaRunner, JOB_COMMENT_PREFIX, orcaCli } from "@software-factory/runner-orca";
+import { createLocalRunner, sessionName, tmuxCli } from "@software-factory/runner-local";
 import { runJob } from "../src/job.ts";
 import { controlPlane, fakeCloud, job, scratchRepo } from "../test/helpers.ts";
 
 const repo = await scratchRepo();
 const runs = await mkdtemp(join(tmpdir(), "sf-probe-runs-"));
+const worktrees = await mkdtemp(join(tmpdir(), "sf-probe-worktrees-"));
 const cloud = fakeCloud();
 const cp = await controlPlane(cloud);
 const j = job({
@@ -29,9 +30,10 @@ const j = job({
   limits: { sessionTimeoutMs: 5 * 60_000 },
 });
 cloud.claims.set("probe", j);
-const adapter = createOrcaRunner({
+const adapter = createLocalRunner({
   resolveRepoPath: (x) => repo.host.clonePath(x),
   startPoint: (x) => repo.host.startPoint(x, repo.host.clonePath(x)),
+  worktreesDir: worktrees,
   runsDir: runs,
   pollMs: 1500,
 });
@@ -57,12 +59,11 @@ try {
     seen.includes(`ghcfg=[${join(runs, j.jobId, "empty", "gh")}]`),
     "gh points at an empty config dir",
   );
-  const left = (await orcaCli().worktreePs()).filter(
-    (r) => r.comment === `${JOB_COMMENT_PREFIX}${j.jobId}`,
-  );
-  expect(left.length === 0, "the Orca worktree is gone");
+  const left = (await tmuxCli().jobSessions()).filter((s) => s.name === sessionName(j.jobId));
+  expect(left.length === 0, "the tmux session is gone");
 } finally {
   await repo.cleanup();
   await rm(runs, { recursive: true, force: true });
+  await rm(worktrees, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

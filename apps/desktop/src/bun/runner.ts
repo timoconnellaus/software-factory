@@ -1,4 +1,4 @@
-// This Mac's runner, supervised by the app (ADR 0380): `sf-runner run` on the bundled Node 24,
+// This Mac's runner, supervised by the app (ADR 0390): `sf-runner run` on the bundled Node 24,
 // restarted with backoff, stopped on quit. sf-runner's own host lock (local/runner-host) refuses a
 // second host, so an orphaned one or a launchd service can't run beside it. The app takes over a
 // launchd service only when the person asks, keeping the runner's identity (its config file).

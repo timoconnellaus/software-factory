@@ -1,4 +1,4 @@
-// One app per user (ADR 0380). macOS usually prevents a second copy, but launching the binary
+// One app per user (ADR 0390). macOS usually prevents a second copy, but launching the binary
 // directly doesn't: a pid lock makes the second one quit. And if the launcher dies the Bun process
 // is orphaned (the spike saw this), so a watchdog quits it, stopping the runner, when that happens.
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";

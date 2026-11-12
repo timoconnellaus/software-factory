@@ -1,4 +1,4 @@
--- Migration 0150 (the desktop app, ADR 0381, spec 40 M1): desktop sign-in requests, desktop devices
+-- Migration 0160 (the desktop app, ADR 0391, spec 40 M1): desktop sign-in requests, desktop devices
 -- with their Secure Enclave public keys, the one-time presence challenges a device signs to decide
 -- a gate, and desktop tokens (CLI tokens of kind `desktop`, bound to a device). Only hashes of the
 -- one-time code, the nonce and the token are stored.
@@ -49,4 +49,4 @@ CREATE TABLE core_presence_challenges (
 ALTER TABLE core_cli_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'cli' CHECK (kind IN ('cli', 'desktop'));
 ALTER TABLE core_cli_tokens ADD COLUMN device_id TEXT REFERENCES core_desktop_devices (id) ON DELETE CASCADE;
 
-UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 150) WHERE key = 'schema_version';
+UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 160) WHERE key = 'schema_version';

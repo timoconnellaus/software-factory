@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the .app (macOS only; ADR 0380): the view, the bundled Node 24 and sf-runner, the Secure
+# Builds the .app (macOS only; ADR 0390): the view, the bundled Node 24 and sf-runner, the Secure
 # Enclave helper, then Electrobun's bundle for the given environment (dev | canary | stable).
 set -e
 cd "$(dirname "$0")/.."
