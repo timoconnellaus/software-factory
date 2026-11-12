@@ -64,7 +64,8 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals
   (0374). Plan `.kim/plans/2026-11-11-manage-factory-settings-in-the-ui.md`, mockups
   `.kim/mockups/project-settings.html` and `project-stages.html`. M1 is #45, M2 (workflows, agents,
-  Workflow v6) is #48, M3 (usage, trials, the improver) is stacked on #48. M4 (the adjudicator) is next.
+  Workflow v6) is #48, M3 (usage, trials, the improver) is #50, and M4 (the adjudicator) is stacked on #50. Each PR
+  lists what was deferred in spec 09's "As built" sections.
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.

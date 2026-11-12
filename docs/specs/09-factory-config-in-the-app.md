@@ -293,6 +293,30 @@ This spec is built in four milestones, each its own PR.
 - **App:** Settings shows the agreement per kind and the switch. The gate card shows the shadow
   verdict.
 
+### As built (M4)
+- **Migration 0143** adds `core_adjudications`: one row per gate asked about, with the mode it was
+  asked in, its job, its verdict, and whether it acted.
+- **No Workflow change.** The engine's minute cron (`runAdjudicator`) does the work:
+  - It asks `adjudicator.request` about open spec gates (`spec.accept`) and gate steps
+    (`workflow.gate`) in projects that enable that kind. That queues a read-only `verify`-stage job
+    on the item, role `review`, with `context.adjudicate`.
+  - Once the job hands back, it calls `adjudicator.record`.
+  - Acting as `self-improve`, an approval goes through `decidePending`, so the waiting Workflow
+    carries on as it would for a person.
+- **Precision** is measured on the last 20 of its verdicts that a person also decided.
+  - In active mode, every fifth approve is still left to the person, so precision stays measured.
+  - If it falls below the bar, the kind goes back to `shadow` as a new config version.
+- **Going active** is a loosening save: it waits for an approver. Approving it, or saving it, is
+  refused until the record is there (`requireAdjudicatorEarned`).
+- **Kinds:** `adjudicatorKind` admits only spec gates and gate steps. Merge, `deploy` and
+  `self-modify` are excluded by kind and by risk.
+- **App:** Settings has an Adjudicator section with a mode per kind and its record, and offers
+  `active` only once it's earned.
+- **Deferred:**
+  - the shadow verdict on the gate card (it's in the record and the timeline);
+  - notifying approvers when it falls back to shadow (the fallback is a versioned config change
+    with a note).
+
 ### Acceptance criteria
 1. In shadow mode, verdicts are recorded and never change a gate's outcome.
 2. The switch to active is refused below 20 decisions or 95% precision.

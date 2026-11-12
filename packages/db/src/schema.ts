@@ -175,6 +175,21 @@ export interface CoreConfigTrialsTable {
   decided_at: Iso | null;
 }
 
+export interface CoreAdjudicationsTable {
+  id: string;
+  pending_action_id: string;
+  project_id: string;
+  work_item_id: string;
+  kind: "spec" | "step";
+  mode: "shadow" | "active";
+  job_id: string;
+  verdict: "approve" | "defer" | null;
+  reason: string | null;
+  acted: Generated<Bool>;
+  created_at: Iso;
+  decided_at: Iso | null;
+}
+
 export type KillScope = "org" | "project";
 
 export interface CoreKillSwitchesTable {
@@ -810,6 +825,7 @@ export interface CoreDatabase {
   core_projects: CoreProjectsTable;
   core_project_policies: CoreProjectPoliciesTable;
   core_config_trials: CoreConfigTrialsTable;
+  core_adjudications: CoreAdjudicationsTable;
   core_project_protection: CoreProjectProtectionTable;
   core_kill_switches: CoreKillSwitchesTable;
   core_batch_guard: CoreBatchGuardTable;

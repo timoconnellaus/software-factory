@@ -157,3 +157,11 @@ export const trialsQuery = (projectId: string) =>
     queryFn: () => read("config.trials", { projectId, limit: 20 }),
     staleTime: 30_000,
   });
+
+/** How the adjudicator is doing on a project (ADR 0374), per gate kind. */
+export const adjudicatorQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId, "adjudicator"],
+    queryFn: () => read("adjudicator.stats", { projectId }),
+    staleTime: 30_000,
+  });

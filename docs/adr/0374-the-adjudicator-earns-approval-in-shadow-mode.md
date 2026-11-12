@@ -25,3 +25,9 @@ is asked. Most gate decisions on a mature project are approvals made without cha
 - Spec gates and person `gate` steps are the gate kinds it can take. The merge gate is not
   (`ALWAYS_REVIEW`).
 - It is a policy setting, so enabling it is a human change (ADR 0373).
+
+> Amended 2026-11-12 (spec 09 M4, as built): it runs outside the Workflow, as a minute cron that
+> asks a read-only review job per open gate and records the verdict. An active approval goes
+> through `decidePending` as `self-improve`. In active mode, every fifth approval is still left to
+> a person, so precision stays measured on fresh decisions. The fallback to shadow is a config
+> version written by the system, a tightening.

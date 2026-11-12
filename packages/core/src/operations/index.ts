@@ -1,3 +1,4 @@
+export * from "./adjudicator.ts";
 export * from "./attach.ts";
 export * from "./attachments.ts";
 export * from "./cli.ts";

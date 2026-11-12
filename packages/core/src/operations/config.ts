@@ -10,6 +10,7 @@ import { defineOperation, type HandlerContext, type ProjectRow } from "../operat
 import type { FloorParse } from "../policy/gate.ts";
 import { type ImpactClass, policyImpact } from "../policy/impact.ts";
 import { POLICY_PATH, type ProjectPolicy, parseProjectPolicy } from "../policy/project-policy.ts";
+import { requireAdjudicatorEarned } from "./adjudicator.ts";
 import { projectId, requireProject } from "./shared.ts";
 
 /** The config operations whose loosening saves wait for an approver. */
@@ -363,6 +364,7 @@ export const configSave = defineOperation({
     const project = requireProject(ctx);
     const policy = validate(input.policy);
     requireBase(project, input.baseVersion);
+    await requireAdjudicatorEarned(ctx, policy);
     const impact = policyImpact(ctx.scope.policy, policy, ctx.floor);
     const written = await writeVersion(ctx, project, {
       raw: formatPolicy(input.policy),
@@ -457,7 +459,9 @@ export async function applyApprovedConfig(
     source?: "app" | "import";
     toVersion?: number;
   };
-  if (pa.operation === "config.save") validate(input.policy);
+  if (pa.operation === "config.save") {
+    await requireAdjudicatorEarned(ctx, validate(input.policy));
+  }
   requireBase(project, input.baseVersion);
   const rollback = pa.operation === "config.rollback";
   const restored = rollback ? await storedVersion(ctx.db, project.id, input.toVersion ?? 0) : null;

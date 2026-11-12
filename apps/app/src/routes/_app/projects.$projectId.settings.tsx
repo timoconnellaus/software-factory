@@ -31,7 +31,7 @@ import {
 import { ago } from "#/lib/format";
 import { op, submitKey } from "#/lib/op";
 import { OpError } from "#/lib/ops";
-import { configQuery, trialsQuery } from "#/lib/queries";
+import { adjudicatorQuery, configQuery, trialsQuery } from "#/lib/queries";
 import { useProjects } from "#/lib/session";
 
 export const Route = createFileRoute("/_app/projects/$projectId/settings")({
@@ -39,6 +39,7 @@ export const Route = createFileRoute("/_app/projects/$projectId/settings")({
     Promise.all([
       queryClient.ensureQueryData(configQuery(params.projectId)),
       queryClient.ensureQueryData(trialsQuery(params.projectId)),
+      queryClient.ensureQueryData(adjudicatorQuery(params.projectId)),
     ]).catch(() => null),
   component: SettingsPage,
 });
@@ -509,6 +510,22 @@ function SettingsPage() {
         <Trials projectId={projectId} currentVersion={currentVersion} onChanged={refresh} />
       </Section>
 
+      <Section
+        title="Adjudicator"
+        changed={changedPaths.has("adjudicator")}
+        description="An agent that says how it would decide your spec gates and gate steps. In shadow mode it only records. It can go active for a kind once 20 of its verdicts match yours at least 95% of the time: then it approves (never rejects), and still leaves every fifth to you. Never merge, deploy or self-modify."
+      >
+        <AdjudicatorModes
+          projectId={projectId}
+          modes={obj(doc.adjudicator)}
+          onChange={(kind, mode) =>
+            set((d) => {
+              d.adjudicator = { ...obj(d.adjudicator), [kind]: mode };
+            })
+          }
+        />
+      </Section>
+
       <SaveBar editor={editor} />
 
       <Section
@@ -801,6 +818,50 @@ function Trials({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function AdjudicatorModes({
+  projectId,
+  modes,
+  onChange,
+}: {
+  projectId: string;
+  modes: Record<string, unknown>;
+  onChange: (kind: "spec" | "step", mode: string) => void;
+}) {
+  const stats = useQuery(adjudicatorQuery(projectId));
+  return (
+    <div className="grid" data-testid="adjudicator">
+      {(
+        [
+          ["spec", "Spec gates"],
+          ["step", "Gate steps"],
+        ] as const
+      ).map(([kind, label]) => {
+        const s = stats.data?.[kind];
+        const mode = typeof modes[kind] === "string" ? (modes[kind] as string) : "off";
+        return (
+          <Field
+            key={kind}
+            label={label}
+            help={
+              s
+                ? `${s.decisions} of its verdicts you also decided; ${s.approvals ? `${Math.round(s.precision * 100)}% of its approvals matched yours` : "no approvals yet"}. ${s.eligible ? "It has earned active mode." : "Not earned active mode yet (20 decisions, 95%)."}`
+                : "Loading its record…"
+            }
+          >
+            <Segmented
+              options={
+                s?.eligible || mode === "active" ? ["off", "shadow", "active"] : ["off", "shadow"]
+              }
+              value={mode}
+              onChange={(v) => onChange(kind, v)}
+            />
+          </Field>
+        );
+      })}
     </div>
   );
 }
