@@ -103,6 +103,22 @@ export async function mobileCaller(request: Request, env: Env): Promise<string> 
   return (await mobileMac(env, "caller", key)).slice(0, 32);
 }
 
+/**
+ * The per-caller courtesy limit on mobile/nonce (ADR 0541): ten a minute per caller key, from the
+ * Workers rate limiting binding `MOBILE_NONCE_LIMIT`. The binding counts per Cloudflare location
+ * and isn't exact, which is all a courtesy needs; it writes nothing to D1, so an attacker with many
+ * addresses costs the factory no rows. Throws `unavailable` when the caller is over it.
+ */
+export async function mobileNonceLimit(env: Env, caller: string): Promise<void> {
+  const { success } = await env.MOBILE_NONCE_LIMIT.limit({ key: caller });
+  if (!success) {
+    throw new OperationError(
+      "unavailable",
+      "too many sign-ins from this network: try again in a few minutes",
+    );
+  }
+}
+
 /** The first four groups of an IPv6 address, `::` expanded. */
 export function ipv6Prefix64(ip: string): string {
   const [head = "", tail] = ip.split("::");
@@ -119,20 +135,13 @@ export function ipv6Prefix64(ip: string): string {
 }
 
 /**
- * A guarded write in a phone sign-in found the state changed. For mobile/nonce: the caller's
- * courtesy limit filled. For mobile/start: a typed code's offer was used or closed while it was on
- * its way, or a caller limit filled between the read and the batch. The nonce is already spent
- * (its own statement), and the answer is the one every refused code gets, so it can't tell a right
- * code from a wrong one.
+ * A guarded write in a phone sign-in found the state changed. For mobile/start: a typed code's
+ * offer was used or closed while it was on its way, or a caller limit filled between the read and
+ * the batch. The nonce is already spent (its own statement), and the answer is the one every
+ * refused code gets, so it can't tell a right code from a wrong one.
  */
 export function mobileSignInConflict(route: string, error: unknown): unknown {
   if (!(error instanceof OperationError) || error.code !== "conflict") return error;
-  if (route === "mobile.nonce") {
-    return new OperationError(
-      "unavailable",
-      "too many sign-ins from this network: try again in a few minutes",
-    );
-  }
   if (route === "mobile.authStart") {
     return new OperationError("forbidden", PAIR_CODE_REFUSED, {
       status: "refused",
