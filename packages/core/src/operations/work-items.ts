@@ -11,6 +11,7 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import { endPlanningSessions } from "../planning.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
+import { desiredRunnerVersion } from "../services.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { trialForNewItem } from "./improve.ts";
 import { queuedEntriesQuery, releaseMergeQueue } from "./merge-queue.ts";
@@ -20,7 +21,9 @@ import {
   cancelWorkItem,
   createWorkItem,
   projectId,
+  repositoryId,
   requireProject,
+  requireRepository,
   requireWorkItem,
   STAGES,
   setItemStatus,
@@ -87,6 +90,8 @@ export const workItemCreate = defineOperation({
   input: z
     .object({
       projectId,
+      /** The repository it uses (ADR 0490): needed only when the project has several. */
+      repositoryId: repositoryId.optional(),
       /** Defaults to the first line of the body. */
       title: z.string().trim().min(1).max(200).optional(),
       body: z.string().max(50_000).default(""),
@@ -111,9 +116,11 @@ export const workItemCreate = defineOperation({
     if (!ctx.scope.policy) {
       throw new OperationError(
         "unavailable",
-        `project ${project.name} has no valid .factory/policy.json on ${project.default_branch} (${ctx.scope.policyError}); agents can't work on it`,
+        `project ${project.name} has no valid config (${ctx.scope.policyError}); agents can't work on it`,
       );
     }
+    // Creating an item starts its pipeline, which builds code: it needs a repository (ADR 0490).
+    const repository = requireRepository(ctx);
     const requester = ctx.actor.type === "human" ? ctx.actor.id : input.requesterUserId;
     if (!requester) throw new OperationError("invalid_input", "intake must name the requester");
     const eventId = input.eventId ?? crypto.randomUUID();
@@ -184,6 +191,7 @@ export const workItemCreate = defineOperation({
 
     const created = createWorkItem(ctx, {
       project,
+      repositoryId: repository.id,
       title,
       body: input.body,
       source: input.source,
@@ -427,7 +435,7 @@ export const workItemGet = defineOperation({
           .orderBy("created_at", "desc")
           .limit(1),
         // Where the item stands in the merge queue (ADR 0330); empty outside the merge stage.
-        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : ""),
+        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : "", w.repository_id),
       ]),
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
@@ -1140,7 +1148,7 @@ export const inboxList = defineOperation({
         light: r.light_max === null ? null : { inUse: lightActive, max: r.light_max },
         rateLimitedUntil: limited ? r.rate_limited_until : null,
         lastSeenAt: r.last_seen_at,
-        update: runnerUpdate(r, ctx.services.deployedSha),
+        update: runnerUpdate(r, desiredRunnerVersion(ctx.services)),
       };
     });
 
@@ -1221,15 +1229,19 @@ function queuePosition(
   return i < 0 ? null : { position: i + 1, ahead: queue.slice(0, i).map((e) => e.number) };
 }
 
-/** How a runner's code stands against the deployed commit, for the inbox's health line (ADR 0360). */
+/**
+ * How a runner's code stands against the commit runners should run, for the inbox's health line
+ * (ADR 0360, 0520). A runner that says it is `current` checked that itself: it may be ahead of the
+ * desired commit (on the deployed one, say), which only git on the runner can tell.
+ */
 function runnerUpdate(
   r: { version: string | null; update_state: string | null; update_reason: string | null },
-  deployedSha: string | undefined,
+  desired: string | null,
 ): { state: "behind" | "blocked" | "rolled_back"; reason: string | null } | null {
   if (r.update_state === "blocked" || r.update_state === "rolled_back") {
     return { state: r.update_state, reason: r.update_reason };
   }
-  const desired = /^[0-9a-f]{40}$/.test(deployedSha ?? "") ? deployedSha : null;
+  if (r.update_state === "current") return null;
   if (!r.version || !desired || r.version === desired) return null;
   return { state: "behind", reason: null };
 }

@@ -4,16 +4,18 @@
 // `factory/verify` and the merge gate like everything else. The factory never pushes to its branch.
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
-import { defineOperation, type HandlerContext, type ProjectRow } from "../operation.ts";
+import { defineOperation, type HandlerContext, type RepositoryRow } from "../operation.ts";
 import type { PullRequestInfo } from "../services.ts";
 import { prHeadEvent } from "../workflow-events.ts";
 import {
   createWorkItem,
-  projectForRepo,
   projectId,
   repoName,
   repoRef,
+  repositoryForRepo,
+  repositoryId,
   requireProject,
+  requireRepository,
   requireWorkItem,
   sha,
   workItemId,
@@ -21,18 +23,18 @@ import {
 import { postVerify } from "./verify.ts";
 
 /** The intake dedupe key for a PR: one work item per PR. */
-export const attachKey = (project: Pick<ProjectRow, "repo_owner" | "repo_name">, n: number) =>
-  `github:${project.repo_owner}/${project.repo_name}#${n}`.toLowerCase();
+export const attachKey = (repository: Pick<RepositoryRow, "owner" | "name">, n: number) =>
+  `github:${repository.owner}/${repository.name}#${n}`.toLowerCase();
 
 /** Statuses of an item that still owns its PR: attaching again returns it. */
 const LIVE = ["running", "waiting", "paused", "done"] as const;
 
 /** Why a PR can't be attached, or null when it can. */
 export function attachRefusal(
-  project: Pick<ProjectRow, "repo_owner" | "repo_name" | "default_branch">,
+  repository: Pick<RepositoryRow, "owner" | "name" | "default_branch">,
   pr: PullRequestInfo,
 ): string | null {
-  const repo = `${project.repo_owner}/${project.repo_name}`;
+  const repo = `${repository.owner}/${repository.name}`;
   if (pr.merged) return `#${pr.number} is already merged`;
   if (pr.state !== "open") return `#${pr.number} is closed`;
   if (pr.head.repo?.toLowerCase() !== repo.toLowerCase()) {
@@ -41,14 +43,14 @@ export function attachRefusal(
   if (pr.head.ref.startsWith("factory/")) {
     return `#${pr.number} is on a factory branch (${pr.head.ref}): the factory opened it, so it already has a work item`;
   }
-  if (pr.base.ref !== project.default_branch) {
-    return `#${pr.number} targets ${pr.base.ref}, not ${project.default_branch}: only pull requests into the default branch go through the merge gate`;
+  if (pr.base.ref !== repository.default_branch) {
+    return `#${pr.number} targets ${pr.base.ref}, not ${repository.default_branch}: only pull requests into the default branch go through the merge gate`;
   }
   return null;
 }
 
 /** The live work item already attached to a PR, if there is one. */
-async function attachedItem(ctx: HandlerContext, project: ProjectRow, prNumber: number) {
+async function attachedItem(ctx: HandlerContext, repository: RepositoryRow, prNumber: number) {
   return (
     (await ctx.db
       .selectFrom("core_intake_keys")
@@ -59,18 +61,18 @@ async function attachedItem(ctx: HandlerContext, project: ProjectRow, prNumber: 
         "core_work_items.branch",
         "core_work_items.status",
       ])
-      .where("core_intake_keys.dedupe_key", "=", attachKey(project, prNumber))
+      .where("core_intake_keys.dedupe_key", "=", attachKey(repository, prNumber))
       .executeTakeFirst()) ?? null
   );
 }
 
-async function readPull(ctx: HandlerContext, project: ProjectRow, prNumber: number) {
-  const repo = await repoRef(ctx, project);
+async function readPull(ctx: HandlerContext, repository: RepositoryRow, prNumber: number) {
+  const repo = await repoRef(ctx, repository);
   const pr = await ctx.services.github.getPullRequest(repo, prNumber);
   if (!pr) {
     throw new OperationError(
       "not_found",
-      `no pull request #${prNumber} on ${project.repo_owner}/${project.repo_name}`,
+      `no pull request #${prNumber} on ${repository.owner}/${repository.name}`,
     );
   }
   return { repo, pr };
@@ -88,7 +90,7 @@ const pullView = z.object({
   refusal: z.string().nullable(),
 });
 const view = (
-  project: ProjectRow,
+  repository: RepositoryRow,
   pr: PullRequestInfo,
 ): z.input<typeof pullView> & { body: string } => ({
   number: pr.number,
@@ -99,7 +101,7 @@ const view = (
   branch: pr.head.ref,
   headSha: pr.head.sha,
   draft: pr.draft,
-  refusal: attachRefusal(project, pr),
+  refusal: attachRefusal(repository, pr),
 });
 
 export const workItemAttachPr = defineOperation({
@@ -109,7 +111,12 @@ export const workItemAttachPr = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "member",
-  input: z.object({ projectId, prNumber: z.number().int().positive() }),
+  input: z.object({
+    projectId,
+    /** Needed only when the project has several repositories (ADR 0490). */
+    repositoryId: repositoryId.optional(),
+    prNumber: z.number().int().positive(),
+  }),
   output: z.object({
     workItemId: z.string(),
     number: z.number(),
@@ -121,10 +128,11 @@ export const workItemAttachPr = defineOperation({
     if (!ctx.scope.policy) {
       throw new OperationError(
         "unavailable",
-        `project ${project.name} has no valid .factory/policy.json on ${project.default_branch} (${ctx.scope.policyError}); agents can't work on it`,
+        `project ${project.name} has no valid config (${ctx.scope.policyError}); agents can't work on it`,
       );
     }
-    const existing = await attachedItem(ctx, project, input.prNumber);
+    const repository = requireRepository(ctx);
+    const existing = await attachedItem(ctx, repository, input.prNumber);
     if (existing && (LIVE as readonly string[]).includes(existing.status)) {
       ctx.subject({ workItemId: existing.id });
       return {
@@ -134,14 +142,15 @@ export const workItemAttachPr = defineOperation({
         outcome: "attached" as const,
       };
     }
-    const { repo, pr } = await readPull(ctx, project, input.prNumber);
-    const refusal = attachRefusal(project, pr);
+    const { repo, pr } = await readPull(ctx, repository, input.prNumber);
+    const refusal = attachRefusal(repository, pr);
     if (refusal) throw new OperationError("denied", `can't attach ${refusal}`);
 
-    const dedupeKey = attachKey(project, pr.number);
+    const dedupeKey = attachKey(repository, pr.number);
     const title = pr.title.trim().slice(0, 200) || `Pull request #${pr.number}`;
     const created = createWorkItem(ctx, {
       project,
+      repositoryId: repository.id,
       title,
       body: pr.body.slice(0, 50_000),
       source: "pr",
@@ -207,19 +216,20 @@ export const workItemPreviewAttach = defineOperation({
     pr: pullView.extend({ body: z.string() }),
     attachedWorkItemId: z.string().nullable(),
   }),
-  scope: async (input, db) => ({ projectId: await projectForRepo(db, input.repo) }),
+  scope: async (input, db) => repositoryForRepo(db, input.repo),
   async handler(input, ctx) {
     const project = requireProject(ctx);
-    const existing = await attachedItem(ctx, project, input.prNumber);
-    const { pr } = await readPull(ctx, project, input.prNumber);
+    const repository = requireRepository(ctx);
+    const existing = await attachedItem(ctx, repository, input.prNumber);
+    const { pr } = await readPull(ctx, repository, input.prNumber);
     const live = existing && (LIVE as readonly string[]).includes(existing.status);
     return {
       project: {
         id: project.id,
         name: project.name,
-        repo: `${project.repo_owner}/${project.repo_name}`,
+        repo: `${repository.owner}/${repository.name}`,
       },
-      pr: view(project, pr),
+      pr: view(repository, pr),
       attachedWorkItemId: live ? existing.id : null,
     };
   },
@@ -232,11 +242,11 @@ export const githubOpenPullRequests = defineOperation({
   risk: "read",
   actors: ["human"],
   permission: "member",
-  input: z.object({ projectId }),
+  input: z.object({ projectId, repositoryId: repositoryId.optional() }),
   output: z.object({ pulls: z.array(pullView) }),
   async handler(_input, ctx) {
-    const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const open = (await ctx.services.github.listOpenPullRequests(repo)).filter(
       (pr) => !pr.head.ref.startsWith("factory/"),
     );
@@ -246,7 +256,7 @@ export const githubOpenPullRequests = defineOperation({
         await ctx.db
           .selectFrom("core_work_items")
           .select("pr_number")
-          .where("project_id", "=", project.id)
+          .where("repository_id", "=", repository.id)
           .where(
             "pr_number",
             "in",
@@ -260,7 +270,7 @@ export const githubOpenPullRequests = defineOperation({
       pulls: open
         .filter((pr) => !owned.has(pr.number))
         .map((pr) => {
-          const { body: _body, ...rest } = view(project, pr);
+          const { body: _body, ...rest } = view(repository, pr);
           return rest;
         }),
     };

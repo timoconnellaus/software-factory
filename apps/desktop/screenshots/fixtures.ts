@@ -89,6 +89,18 @@ const project = (id: string, orgId: string, name: string, slug: string) => ({
   name,
   slug,
   repo: { owner: "example", name: slug, defaultBranch: "main" },
+  // One repository per project, as projects have today (ADR 0490).
+  repositories: [
+    {
+      id: `repo_${slug}`,
+      projectId: id,
+      owner: "example",
+      name: slug,
+      defaultBranch: "main",
+      githubInstallationId: null,
+      connection: { status: "connected" as const, account: "example", manageUrl: null },
+    },
+  ],
   policySha: "5da8988",
   configVersion: 3,
   githubInstallationId: null,
@@ -360,6 +372,13 @@ function detail(id: string): OpOutput<"workItem.get"> {
               ],
             },
             risk: [],
+            // The tests-intact guard (ADR 0500): this PR only adds tests, so nothing to flag.
+            testsIntact: {
+              headSha: "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f",
+              intact: true,
+              findings: [],
+              total: 0,
+            },
             runner: { verdict: "pass", checks: PACKET_CHECKS },
             evidencePass: true,
             evidenceReasons: [],

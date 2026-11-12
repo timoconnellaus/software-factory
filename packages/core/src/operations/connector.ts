@@ -7,8 +7,8 @@ import { z } from "zod";
 import { defineOperation, type HandlerContext, type WorkItemRow } from "../operation.ts";
 import { POLICY_PR_BRANCH } from "./onboarding.ts";
 import { ACTIVE_RUN, finishRun } from "./runners.ts";
-import { requireProject } from "./shared.ts";
-import { projectForRepo, repoName } from "./verify.ts";
+import { requireProject, requireRepository } from "./shared.ts";
+import { repoName, repositoryForRepo } from "./verify.ts";
 
 export const connectorReceive = defineOperation({
   name: "connector.receive",
@@ -91,7 +91,7 @@ export const pushObserve = defineOperation({
       .object({ applied: z.boolean(), valid: z.boolean(), error: z.string().nullable() })
       .nullable(),
   }),
-  scope: async (input, db) => ({ projectId: await projectForRepo(db, input.repo) }),
+  scope: async (input, db) => repositoryForRepo(db, input.repo),
   async handler(input, ctx) {
     const project = requireProject(ctx);
     const none = { failedRuns: [] as string[], policy: null };
@@ -103,7 +103,7 @@ export const pushObserve = defineOperation({
       return { outcome: "ignored" as const, detail: `${branch} deleted`, ...none };
     }
 
-    if (branch === project.default_branch) {
+    if (branch === requireRepository(ctx).default_branch) {
       // Config lives in the app (ADR 0370): a push to the default branch never changes it.
       return {
         outcome: "ok" as const,
@@ -127,6 +127,8 @@ export const pushObserve = defineOperation({
           .selectFrom("core_work_items")
           .selectAll()
           .where("project_id", "=", project.id)
+          // The branch is in this repository: an item of another of the project's isn't it.
+          .where("repository_id", "=", requireRepository(ctx).id)
           .where("number", "=", number)
           .executeTakeFirst()) ?? null)
       : null;
@@ -289,15 +291,15 @@ export const githubInstallation = defineOperation({
     }
 
     let q = ctx.db
-      .selectFrom("core_projects")
-      .select(["id", "repo_name", "github_installation_id", "installation_record_id", "org_id"])
-      .where(sql<string>`lower(repo_owner)`, "=", input.account.toLowerCase());
+      .selectFrom("core_repositories")
+      .select(["id", "name", "github_installation_id", "installation_record_id", "org_id"])
+      .where(sql<string>`lower(owner)`, "=", input.account.toLowerCase());
     // A connected installation only links its own org's projects.
     if (record) q = q.where("org_id", "=", record.org_id);
     const names = input.repositories?.map((r) => r.toLowerCase()) ?? null;
     if (names) {
       if (names.length === 0) return { projects: 0, record: record?.id ?? null };
-      q = q.where(sql<string>`lower(repo_name)`, "in", names);
+      q = q.where(sql<string>`lower(name)`, "in", names);
     }
     const projects = await q.execute();
     let n = 0;
@@ -306,7 +308,7 @@ export const githubInstallation = defineOperation({
       if (!adding && p.github_installation_id !== input.installationId) continue;
       // An installation no org has connected never takes over a project that has a connection.
       if (adding && !record && p.installation_record_id) continue;
-      const i = names ? names.indexOf(p.repo_name.toLowerCase()) : -1;
+      const i = names ? names.indexOf(p.name.toLowerCase()) : -1;
       const repoId = i >= 0 ? (input.repositoryIds?.[i] ?? null) : null;
       const next = {
         github_installation_id: adding ? input.installationId : null,
@@ -319,12 +321,12 @@ export const githubInstallation = defineOperation({
         continue;
       ctx.write(
         ctx.db
-          .updateTable("core_projects")
+          .updateTable("core_repositories")
           .set({ ...next, ...(repoId ? { github_repo_id: repoId } : {}) })
           .where("id", "=", p.id),
       );
       ctx.change({
-        entity: "project",
+        entity: "repository",
         id: p.id,
         before: { installation: p.github_installation_id },
         after: { installation: next.github_installation_id },

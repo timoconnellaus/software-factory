@@ -72,7 +72,7 @@ function WorkPage() {
         <h1 className="m-0 font-semibold text-[14px]" data-testid="work-title">
           {project ? project.name : VIEW_LABEL[view]}
         </h1>
-        {project && (
+        {project?.repo && (
           <Chip className="font-mono">
             {project.repo.owner}/{project.repo.name}
           </Chip>

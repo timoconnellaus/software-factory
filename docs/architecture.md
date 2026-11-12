@@ -44,7 +44,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 - **Onboarding** never asks for an id the factory can fetch (ADR 0055, 0056): Connect GitHub goes
   through GitHub's install flow back to sf-app's `/integrations/github/setup`
   (`github.connectInstallation` verifies the single-use state and the installation as the App), a
-  project is picked from the repos an installation reaches (`github.repos`, `project.create`), its
+  project is picked from the repos an installation reaches (`github.repos`, `project.create`; a
+  project is not a repository: it has zero or more in `core_repositories`, added with
+  `repository.add`, and a work item uses one, ADR 0490), its
   first config version is imported from the repo's `.factory/policy.json` or created from the
   template, and a runner connects by device login
   (`/runner/v1/device/*`, approved at `/runners/connect`). `setup.status` is the Setup checklist.
@@ -63,7 +65,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   notifies the org's admins and shows in the inbox. A policy may hold builds while it's red.
 - **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
-  0231). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
+  0231). The packet's **tests-intact** guard reads GitHub's diff for weakened tests, suppressions
+  and gate-file edits; its findings go to a person and block the check-only auto-merge, never the
+  verdict (ADR 0500). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
@@ -106,9 +110,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   instead (ADR 0430): a self-contained job repo with only the job's history, no home or host
   credentials, egress only through the job's allowlist proxy, every stage `bypassPermissions`, and
   the launch check inside the container. The host still pushes, from the job repo.
-  A runner host keeps its own code on the commit `sf-engine` was deployed from (`DEPLOYED_SHA`,
-  sent in each heartbeat): it updates itself when idle and rolls back an update that doesn't start
-  (ADR 0360).
+  A runner host keeps its own code on the last commit that changed runner code (`RUNNER_SHA`, which
+  the deploy computes next to `DEPLOYED_SHA`, sent in each heartbeat): it keeps claiming while an
+  update waits, updates at its first idle heartbeat (light jobs only after 30 minutes, nothing after
+  60), and rolls back an update that doesn't start (ADR 0360, 0520). Only a heartbeat whose
+  `minRunnerCompat` is above the runner's `RUNNER_COMPAT` stops its claims at once.
   A host holds one or more **Claude accounts** (ADR 0410): a login in its own config dir or a token
   in a 0600 file, never sent to the factory. The heartbeat reports their names and the active one;
   the owner picks the active one with `sf-runner account use` or on Setup (`runner.account.use`,
