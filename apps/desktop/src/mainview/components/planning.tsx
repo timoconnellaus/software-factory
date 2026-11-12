@@ -204,7 +204,8 @@ export function Planning({
                 preview={preview}
                 pinMode={pinMode}
                 onPin={(pin) => {
-                  setDraft({ text: "", pin });
+                  // A pin joins the message being written; it never clears it (review of #90, 3).
+                  setDraft((d) => ({ text: d.text, pin }));
                   setPinMode(false);
                   setChatOpen(true);
                 }}
@@ -1004,12 +1005,14 @@ function WorkspaceTabs({
         size="sm"
         variant="outline"
       >
-        <ToggleGroupItem value="plan">Plan</ToggleGroupItem>
-        <ToggleGroupItem value="mockups" className="gap-1 px-3" data-testid="tab-mockups">
-          Mockups{" "}
-          {mockups > 0 && <span className="ml-1 font-mono text-ink-muted text-xs">{mockups}</span>}
+        <ToggleGroupItem value="plan" className="px-3">
+          Plan
         </ToggleGroupItem>
-        <ToggleGroupItem value="canvas" data-testid="tab-canvas">
+        <ToggleGroupItem value="mockups" className="gap-1.5 px-3" data-testid="tab-mockups">
+          Mockups
+          {mockups > 0 && <span className="font-mono text-ink-muted text-xs">{mockups}</span>}
+        </ToggleGroupItem>
+        <ToggleGroupItem value="canvas" className="px-3" data-testid="tab-canvas">
           Canvas
         </ToggleGroupItem>
       </ToggleGroup>

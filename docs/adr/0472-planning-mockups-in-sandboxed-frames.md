@@ -42,3 +42,41 @@ in R2 and mockups served "from a separate, sandboxed origin". Two facts from the
 - A mockup can't call home or exfiltrate through the network beyond the allowed CDNs' GET requests.
 - The 1.9 MB cap is a limit on what the planner can draw (as in kim); larger assets belong in the
   repo, not the plan.
+
+## Amendment, 2026-11-12 (review of #90)
+One sandboxed frame wasn't enough: a mockup could navigate its own frame (a meta refresh, `location =`)
+to a page with no CSP, and `img-src https:` let it send anything out as an image URL. Now:
+- **Two levels.** The app draws an outer frame (`sandbox="allow-scripts"`, opaque origin) holding the
+  app's own document, whose CSP has `frame-src 'none'`; the mockup is that document's inner frame
+  (`srcdoc`, `sandbox="allow-scripts"`). A srcdoc document inherits the outer's CSP, and the mockup
+  gets it again first in its head. The browser refuses any navigation of the inner frame. The
+  outer's watcher requires every document the inner frame holds to check in with a nonce the mockup
+  can't read (the frame script keeps it in a closure and removes itself). Anything else, such as a
+  refused navigation's error page, is replaced with the mockup. After two tries it is replaced with a
+  static notice, so a mockup can't loop.
+- **The CSP** allows only the CDNs for scripts, styles, fonts and images (`img-src data: blob:` and
+  the CDNs), and nothing for connect, frame, child, worker, media, object, manifest, base or form.
+- **WebRTC** isn't governed by CSP, sandbox or Permissions Policy in Chromium or WebKit (`webrtc
+  'block'` isn't implemented; a STUN request reached the trap in both). The frame script removes
+  the WebRTC constructors before the mockup runs, and child frames' windows aren't handed out. The
+  real-engine test proves the direct use is blocked: without the block it leaks. In both engines a
+  fresh child frame gives no working peer connection either. The tests keep the direct case, a fresh
+  iframe and `frames[0]` in CI for both engines. **This is a script-level block, not an engine
+  guarantee.** The engine-level fix is a follow-up (spec 21, "Follow-ups"): turn WebRTC off in the
+  desktop app's WKWebView. In ordinary browsers (the website) there is no such switch. The residual
+  there, if a mockup got past the script block, is a STUN request to a server of its choosing. That
+  reveals that a mockup ran and the viewer's IP address, plus whatever the mockup encodes in the
+  request (the mockup's own content and what was typed into it, never the app's data).
+- **Not enabled in the desktop app yet:** the Electrobun bridge probe
+  (`docs/reviews/2026-11-12-mockup-bridge-probe.md`) must run first and find nothing reachable.
+- The app talks only to the inner frame's window. A `pin` counts only in comment mode, and never
+  clears what the person typed.
+- Storage: an artifact keeps its last 10 revisions (older ones pruned as new ones land), and an item
+  holds at most 50 artifacts and 20 MB. Past that the operation refuses with a plain message.
+- `apps/desktop/test-browser/mockup-isolation.test.ts` loads hostile mockups in Chromium and WebKit
+  (Playwright, in CI). They try meta refresh, `location`, `window.open`, forms, links to `_top`, images,
+  fetch/XHR/beacon/WebSocket/EventSource, CSS url/@import/fonts, prefetch/preload, WebRTC (directly,
+  via a fresh frame, via `frames[0]`), a second looser CSP, `<base href>`, top and parent navigation,
+  nested frames, workers and media. Each test asserts a trap server (HTTP and UDP) saw nothing, the
+  app page didn't move, and the frame holds the mockup (or the stopped notice).
+

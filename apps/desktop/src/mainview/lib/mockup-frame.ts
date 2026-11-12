@@ -1,24 +1,60 @@
-// The document a planning mockup frame renders (spec 21, ADR 0472). A mockup is untrusted HTML: it
-// renders from `srcdoc` in an `<iframe sandbox="allow-scripts">` with an opaque origin, behind the
-// CSP below, which the app puts before anything of the planner's. The frame script talks to the
-// app over `postMessage` only.
+// The document a planning mockup frame renders (spec 21, ADR 0472, review of #90). A mockup is
+// untrusted HTML, rendered in two levels:
+// - the OUTER frame is the app's own document (`outerDocument`), in `<iframe sandbox="allow-scripts">`
+//   with an opaque origin. Its CSP allows no frame navigation (`frame-src 'none'`), so the mockup
+//   inside can't navigate itself anywhere (a meta refresh, `location =`, a link): the browser refuses
+//   the navigation. A small watcher puts the mockup back if the inner frame ever loads twice.
+// - the INNER frame is the mockup (`frameDocument`), from `srcdoc`, in its own `sandbox="allow-scripts"`
+//   (no popups, forms, top navigation or same origin). A srcdoc document inherits the outer's CSP,
+//   and the mockup gets the same CSP again first in its head, so nothing it adds can loosen it.
+// The CSP allows the CDNs for libraries, styles, fonts and images, and nothing else: no fetch, no
+// images from anywhere, no forms. The app talks only to the inner frame's window over `postMessage`.
+
+/** The CDNs a mockup may load from (ADR 0472). */
+const CDNS = [
+  "https://cdn.jsdelivr.net",
+  "https://cdnjs.cloudflare.com",
+  "https://unpkg.com",
+  "https://cdn.tailwindcss.com",
+];
 
 /** The CSP every mockup frame gets first (ADR 0472): CDNs for fonts and libraries, no calls home. */
 export const CSP = [
   "default-src 'none'",
-  "script-src 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://cdn.tailwindcss.com",
-  "style-src 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com",
-  "font-src https://fonts.gstatic.com https://cdn.jsdelivr.net data:",
-  "img-src data: blob: https:",
+  `script-src 'unsafe-inline' ${CDNS.join(" ")}`,
+  `style-src 'unsafe-inline' https://fonts.googleapis.com ${CDNS.join(" ")}`,
+  `font-src https://fonts.gstatic.com ${CDNS.join(" ")} data:`,
+  `img-src data: blob: ${CDNS.join(" ")}`,
+  "media-src 'none'",
   "connect-src 'none'",
+  "frame-src 'none'",
+  "child-src 'none'",
+  "worker-src 'none'",
+  "manifest-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
   "form-action 'none'",
 ].join("; ");
 
 /**
  * The script the app puts in each frame. It knows nothing of the app: it answers `apply`,
- * `preview`, `pin-mode` and `pins`, and posts `ready` and `pin` to its parent.
+ * `preview`, `pin-mode` and `pins` from the app (its parent's parent), and posts `ready` and `pin` to it.
  */
-const FRAME_SCRIPT = `(() => {
+const FRAME_SCRIPT = `((nonce) => {
+  // The nonce proves this document to the outer frame; the script takes itself out of the DOM so
+  // the mockup can never read it.
+  document.currentScript?.remove();
+  // No WebRTC (review of #90): CSP doesn't govern it, so a mockup could reach any STUN server. Its
+  // constructors go before the mockup runs, and a child frame's window isn't handed out (where a
+  // fresh frame would have them again). Best effort: see ADR 0472 for what the WebView must do.
+  for (const k of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCIceTransport", "RTCSctpTransport", "RTCDtlsTransport", "RTCRtpTransceiver"]) {
+    try { Object.defineProperty(window, k, { value: undefined, writable: false, configurable: false }); } catch {}
+  }
+  for (const C of [HTMLIFrameElement, HTMLFrameElement, HTMLObjectElement, HTMLEmbedElement]) {
+    for (const p of ["contentWindow", "contentDocument"]) {
+      try { Object.defineProperty(C.prototype, p, { get: () => null, configurable: false }); } catch {}
+    }
+  }
   const root = document.documentElement;
   let base = {}, preview = null, pinMode = false, pins = [];
   const loadFont = (value) => {
@@ -53,9 +89,9 @@ const FRAME_SCRIPT = `(() => {
     const tag = el.tagName.toLowerCase();
     const parts = []; let node = el;
     while (node && node !== document.body && parts.length < 6) {
-      const parent = node.parentElement; if (!parent) break;
-      const index = Array.prototype.indexOf.call(parent.children, node) + 1;
-      parts.unshift(node.tagName.toLowerCase() + ":nth-child(" + index + ")"); node = parent;
+      const up = node.parentElement; if (!up) break;
+      const index = Array.prototype.indexOf.call(up.children, node) + 1;
+      parts.unshift(node.tagName.toLowerCase() + ":nth-child(" + index + ")"); node = up;
     }
     return { el, element: text ? tag + ' "' + text + '"' : tag, selector: "body > " + parts.join(" > ") };
   };
@@ -70,7 +106,7 @@ const FRAME_SCRIPT = `(() => {
     }
   };
   addEventListener("message", (e) => {
-    if (e.source !== parent || !e.data || typeof e.data !== "object") return;
+    if (e.source !== parent.parent || !e.data || typeof e.data !== "object") return;
     const m = e.data;
     if (m.type === "apply") { base = m.values || {}; render(); }
     else if (m.type === "preview") { preview = m.values || null; if (!preview) { set(base); } render(); }
@@ -82,22 +118,71 @@ const FRAME_SCRIPT = `(() => {
     e.preventDefault(); e.stopPropagation();
     const d = describe(e.target);
     const box = d.el.getBoundingClientRect();
-    parent.postMessage({ type: "pin", element: d.element, selector: d.selector,
+    parent.parent.postMessage({ type: "pin", element: d.element, selector: d.selector,
       x: e.pageX, y: e.pageY,
       fx: box.width ? Math.min(1, Math.max(0, (e.clientX - box.left) / box.width)) : 0,
       fy: box.height ? Math.min(1, Math.max(0, (e.clientY - box.top) / box.height)) : 0,
       width: root.scrollWidth }, "*");
   }, true);
-  const ready = () => parent.postMessage({ type: "ready", height: root.scrollHeight }, "*");
+  const ready = () => {
+    parent.postMessage({ type: "here", nonce }, "*");
+    parent.parent.postMessage({ type: "ready", height: root.scrollHeight }, "*");
+  };
   if (document.readyState === "complete") ready(); else addEventListener("load", ready);
-})();`;
+})(__NONCE__);`;
 
 /** The document a frame renders: the CSP and the frame script first, then the planner's HTML. */
-export function frameDocument(content: string): string {
+export function frameDocument(content: string, nonce = ""): string {
   // Always at the very start, never found by searching the planner's HTML: a `<head>` inside a
   // comment or a string would otherwise put the CSP somewhere the browser ignores. The planner's
   // own doctype goes (ours keeps standards mode); its `<html>` and `<head>` tags then just carry on
   // the head the parser has already opened.
   const html = content.replace(/<!doctype[^>]*>/gi, "");
-  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${CSP}"><script>${FRAME_SCRIPT}</script>${html}`;
+  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${CSP}"><script>${FRAME_SCRIPT.replace("__NONCE__", JSON.stringify(nonce))}</script>${html}`;
+}
+
+/** What a mockup that keeps trying to leave its frame is replaced with. */
+const STOPPED =
+  '<!doctype html><body data-mockup-stopped="1" style="font:13px system-ui;color:#555;padding:16px">This mockup tried to leave its frame and was stopped.</body>';
+
+/** Escapes text for an HTML attribute value in double quotes. */
+const attr = (text: string) =>
+  text.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/**
+ * The outer document: the app's own, holding the mockup in a nested sandboxed frame. Its CSP
+ * forbids frame navigation, so the mockup can't leave; the watcher puts the mockup back when its frame
+ * holds anything else (a refused navigation's error page), and tells the app (`reset`).
+ */
+export function outerDocument(content: string): string {
+  const nonce = crypto.randomUUID();
+  const inner = attr(frameDocument(content, nonce));
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CSP}"><style>html,body{margin:0;height:100%;overflow:hidden;background:#fff}iframe{border:0;display:block;width:100%;height:100%}</style></head><body><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${inner}"></iframe><script>(() => {
+  const frame = document.querySelector("iframe");
+  const doc = frame.getAttribute("srcdoc");
+  // Every document the frame loads must be the mockup, which says so with the nonce once it has
+  // loaded. A navigation the CSP refused leaves an error page that never does: put the mockup back,
+  // and after two tries stop it with a notice (no scripts) instead of letting it loop.
+  let loads = 0, heres = 0, resets = 0, stopped = false;
+  addEventListener("message", (e) => {
+    if (e.source === frame.contentWindow && e.data && e.data.type === "here" && e.data.nonce === ${JSON.stringify(nonce)}) heres++;
+  });
+  frame.addEventListener("load", () => {
+    loads++;
+    setTimeout(() => {
+    if (stopped || loads <= heres) return;
+    loads = 0;
+    heres = 0;
+    if (++resets > 2) {
+      stopped = true;
+      frame.setAttribute("sandbox", "");
+      frame.setAttribute("srcdoc", ${JSON.stringify(STOPPED)});
+      parent.postMessage({ type: "stopped" }, "*");
+      return;
+    }
+    frame.setAttribute("srcdoc", doc);
+    parent.postMessage({ type: "reset" }, "*");
+    }, 700);
+  });
+})();</script></body></html>`;
 }

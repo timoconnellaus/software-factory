@@ -89,7 +89,25 @@ System designs and `.kim/` write-back (spec 22). Phone notifications (spec 15).
   an option or moving a bound slider previews it live. The canvas lays frames in rows by question,
   with zoom (buttons, ctrl-wheel), drag (positions kept per item on the device) and open full size
   at 1280, 834 and 390.
+- **After review of #90** (ADR 0472 amendment): two-level frames whose CSP refuses any
+  navigation; a watcher that puts the mockup back, using a nonce check-in; images only from the
+  CDNs; WebRTC constructors removed in the frame; pins only in comment mode, keeping typed text;
+  frames at most 4,000 px tall (taller documents scroll inside); the last 10 revisions kept per
+  artifact, 50 artifacts and 20 MB per item; `artifact.update` guarded before its insert. Criterion 1
+  is proven in real engines by `apps/desktop/test-browser/mockup-isolation.test.ts` (Chromium and
+  WebKit, in CI).
 - **Deferred:** the agent rendering its own frames on its runner (headless Chrome). It needs a
   runner capability and is left for a later slice; the planner reads its HTML back with
   `artifact.read`.
 - Screenshots: `docs/screenshots/planning/visuals-*.png` (before: `visuals-before.png`).
+
+## Follow-ups
+- **WebRTC off in the desktop WebView** (ADR 0472, review of #90). The frame script removes the
+  WebRTC constructors, which the real-engine tests prove for the direct case, a fresh iframe and
+  `frames[0]`. That's script-level. Turn it off in the desktop app's WKWebView configuration, and
+  add a test that `RTCPeerConnection` is absent in a mockup frame in the app. The website has no
+  such switch: the residual there is a STUN request revealing that a mockup ran and the viewer's
+  IP (ADR 0472).
+- **The Electrobun bridge probe** (`docs/reviews/2026-11-12-mockup-bridge-probe.md`) runs in the
+  real app before mockups are enabled there.
+

@@ -281,4 +281,35 @@ describe("planning visuals (spec 21)", () => {
     );
     expect(other.code).toBe("not_found");
   });
+
+  it("keeps the last 10 revisions, caps an item's artifacts and bytes, and guards an update first (review of #90, 5)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const m = await agent<{ artifactId: string }>("artifact.add", {
+      title: "Settings",
+      content: SETTINGS,
+    });
+    for (let i = 2; i <= 12; i++) {
+      await agent("artifact.update", { artifactId: m.artifactId, content: `${SETTINGS}<!-- ${i} -->` });
+    }
+    const pruned = await refusal(
+      ok("artifact.get", { workItemId: item.workItemId, artifactId: m.artifactId, revision: 2 }, w.human),
+    );
+    expect(pruned.message).toContain("last 10");
+    expect(
+      await ok<{ revision: number }>(
+        "artifact.get",
+        { workItemId: item.workItemId, artifactId: m.artifactId, revision: 3 },
+        w.human,
+      ),
+    ).toMatchObject({ revision: 3 });
+    // Bytes: ten 1.9 MB mockups fit 20 MB; the eleventh doesn't.
+    const big = "x".repeat(1_900_000);
+    for (let i = 0; i < 10; i++) {
+      await agent("artifact.add", { title: `Big ${i}`, content: big });
+    }
+    const full = await refusal(agent("artifact.add", { title: "One more", content: big }));
+    expect(full.code).toBe("conflict");
+    expect(full.message).toContain("MB");
+  });
 });

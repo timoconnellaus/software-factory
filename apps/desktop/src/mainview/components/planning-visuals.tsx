@@ -2,12 +2,12 @@
 // PlanMockups): the planner's mockups rendered in sandboxed frames, options as cards, live
 // controls, the canvas, and comments pinned to an element.
 //
-// A mockup is untrusted HTML. It renders from `srcdoc` in an `<iframe sandbox="allow-scripts">`
-// (no `allow-same-origin`: its origin is opaque, so it can't reach the app's storage, DOM or door),
-// behind a Content-Security-Policy the app puts before anything of the planner's. A small script the app also
-// puts in talks to the app over `postMessage`: it applies control values, previews them, reports
-// the element under a click in comment mode, and draws pins. Messages are accepted only from the
-// frame's own window, and every field is treated as data.
+// A mockup is untrusted HTML, drawn in two sandboxed frames (`lib/mockup-frame.ts`, ADR 0472): the
+// app's own outer document, whose CSP lets nothing navigate, around the mockup in an inner frame with
+// the same CSP first. Both have opaque origins (no `allow-same-origin`), so nothing reaches the
+// app's storage, DOM or door. The app talks only to the inner frame's window over `postMessage`:
+// control values, previews, comment mode and pins in; `ready` and, in comment mode only, `pin` out.
+// Every field is treated as data.
 import { ago, errorMessage } from "@software-factory/client/format";
 import {
   appliedValues,
@@ -28,12 +28,29 @@ import { useQuery } from "@tanstack/react-query";
 import { MapPinIcon, Maximize2Icon, MinusIcon, PlusIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { frameDocument } from "../lib/mockup-frame.ts";
+import { outerDocument } from "../lib/mockup-frame.ts";
 import { op, read, submitKey } from "../lib/op.ts";
 
 type Artifact = PlanningView["artifacts"][number];
 export type Pin = NonNullable<PlanningView["messages"][number]["pin"]>;
 type Values = Record<string, string>;
+
+/** A mockup frame's inner window, the mockup itself; null until it exists. */
+function innerWindow(frame: HTMLIFrameElement | null): Window | null {
+  // Cross-origin, a missing index throws: ask `length` (readable cross-origin) first.
+  try {
+    const outer = frame?.contentWindow;
+    return outer && outer.length > 0 ? (outer[0] ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where the canvas's first frame sits, in its own (unscaled) pixels: clear of the zoom bar. */
+const CANVAS_MARGIN = { x: 96, y: 260 };
+
+/** The tallest a mockup frame is drawn (review of #90): a taller document scrolls inside it. */
+const MAX_FRAME_HEIGHT = 4_000;
 
 /** An artifact's content, from the door (read-only; cached by revision). */
 function useArtifact(workItemId: string, artifact: Pick<Artifact, "id" | "revision">) {
@@ -83,21 +100,31 @@ export function MockupFrame({
   const [height, setHeight] = useState(size.height);
   const [loaded, setLoaded] = useState(0);
   const srcDoc = useMemo(
-    () => (content.data ? frameDocument(content.data.content) : undefined),
+    () => (content.data ? outerDocument(content.data.content) : undefined),
     [content.data],
   );
-  const post = (message: Record<string, unknown>) =>
-    frame.current?.contentWindow?.postMessage(message, "*");
-  // Only this frame's own window is listened to (ADR 0472).
+  // The mockup is the outer frame's inner frame (ADR 0472, review of #90): the app talks to it alone.
+  const inner = () => innerWindow(frame.current);
+  const post = (message: Record<string, unknown>) => inner()?.postMessage(message, "*");
+  const pinModeRef = useRef(pinMode);
+  pinModeRef.current = pinMode;
+  // Only this mockup's own window is listened to, and the outer frame only for `reset`.
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
-      if (e.source !== frame.current?.contentWindow || !e.data || typeof e.data !== "object")
-        return;
+      if (!e.data || typeof e.data !== "object") return;
       const m = e.data as Record<string, unknown>;
+      if (e.source === frame.current?.contentWindow && m.type === "reset") {
+        setLoaded((n) => n + 1);
+        return;
+      }
+      if (!e.source || e.source !== innerWindow(frame.current)) return;
       if (m.type === "ready") {
         setLoaded((n) => n + 1);
-        if (typeof m.height === "number" && m.height > 0) setHeight(Math.min(m.height, 20_000));
-      } else if (m.type === "pin" && onPin) {
+        if (typeof m.height === "number" && m.height > 0) {
+          setHeight(Math.min(m.height, MAX_FRAME_HEIGHT));
+        }
+      } else if (m.type === "pin" && onPin && pinModeRef.current) {
+        // A pin counts only while the person is in comment mode (review of #90, 3).
         const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
         onPin({
           element: String(m.element ?? "element").slice(0, 300),
@@ -132,7 +159,7 @@ export function MockupFrame({
   useEffect(() => {
     post({ type: "pins", pins });
   }, [pinsKey, loaded]);
-  const shown = Math.min(height, interactive ? 20_000 : size.height);
+  const shown = Math.min(height, interactive ? MAX_FRAME_HEIGHT : size.height);
   return (
     <div
       className={cn("relative overflow-hidden rounded-md bg-white", className)}
@@ -499,12 +526,15 @@ export function CanvasPane({
           <PlusIcon className="size-3.5" />
         </Button>
       </div>
-      <div
-        className="relative origin-top-left px-8 pt-28 pb-8"
-        style={{ transform: `scale(${zoom})` }}
-      >
+      <div className="relative origin-top-left" style={{ transform: `scale(${zoom})` }}>
         {layout.map(({ a, x, y: top, w, label }) => (
-          <div key={a.id} className="absolute" style={{ left: x, top }} data-testid="canvas-frame">
+          <div
+            key={a.id}
+            className="absolute"
+            // Room in the scaled space for the row labels and the frames' left edge, below the zoom bar.
+            style={{ left: x + CANVAS_MARGIN.x, top: top + CANVAS_MARGIN.y }}
+            data-testid="canvas-frame"
+          >
             {label && (
               <div className="-mt-12 mb-3 font-semibold text-[28px] text-ink-3">{label}</div>
             )}
@@ -517,13 +547,13 @@ export function CanvasPane({
             >
               <b className="font-semibold">{a.title}</b>
               <span className="font-mono text-ink-muted">rev {a.revision}</span>
-              <button
-                type="button"
-                className="text-status-running underline"
+              <Button
+                variant="link"
+                className="h-auto p-0 text-[24px] text-status-running underline"
                 onClick={() => onOpen(a)}
               >
                 Open
-              </button>
+              </Button>
             </div>
             <MockupFrame
               workItemId={workItemId}
