@@ -17,6 +17,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import {
   ATTACHED_SKIP_REASON,
   approvalEvent,
+  BRANCH_MOVED_AFTER_APPROVAL,
   ciEvent,
   DEFAULT_BUILDER,
   FOREMAN,
@@ -936,7 +937,9 @@ class ItemFlow {
             ? `Sent back at review: ${decided.note ?? ""}`.trim()
             : decided.decision === "withdrawn"
               ? (decided.note ?? "the pull request's head moved")
-              : `the merge was refused (${decided.note ?? "no reason"}): push a fix to the PR`;
+              : decided.note === BRANCH_MOVED_AFTER_APPROVAL
+                ? decided.note
+                : `the merge was refused (${decided.note ?? "no reason"}): push a fix to the PR`;
         await this.waitForHead(b, headSha, reason);
         close = { as: "sent_back", reason };
       }

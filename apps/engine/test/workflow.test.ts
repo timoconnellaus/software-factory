@@ -14,6 +14,7 @@ import {
   BALANCED,
   build,
   first,
+  gateHead,
   gateOpen,
   github,
   itemStatus,
@@ -80,7 +81,11 @@ describe("the work-item Workflow", () => {
     expect(packet?.verdict).toBe("pass");
     const decided = await ok<{ alreadyDecided: boolean }>(
       "review.merge",
-      { workItemId: item.workItemId, openedFullDiff: false },
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: false,
+        headSha: await gateHead(item.workItemId),
+      },
       w.human,
     );
     expect(decided.alreadyDecided).toBe(false);
@@ -264,7 +269,15 @@ describe("the work-item Workflow", () => {
     });
     await runStage(w, item.workItemId, "verify", () => verifyPass);
     await gateOpen(item.workItemId, "merge");
-    await ok("review.merge", { workItemId: item.workItemId, openedFullDiff: true }, w.human);
+    await ok(
+      "review.merge",
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+        headSha: await gateHead(item.workItemId),
+      },
+      w.human,
+    );
     await itemStatus(item.workItemId, "done");
     const stages = await all<{ stage: string; status: string }>(
       "SELECT stage, status FROM core_stages WHERE work_item_id = ? AND stage IN ('build', 'verify', 'merge') ORDER BY started_at, rowid",
@@ -316,7 +329,11 @@ describe("the work-item Workflow", () => {
     await runStage(w, fix, "build", () => build([".factory/checks/loop.md"]));
     await runStage(w, fix, "verify", () => verifyPass);
     await gateOpen(fix, "merge");
-    await ok("review.merge", { workItemId: fix, openedFullDiff: true }, w.human);
+    await ok(
+      "review.merge",
+      { workItemId: fix, openedFullDiff: true, headSha: await gateHead(fix) },
+      w.human,
+    );
     await itemStatus(fix, "done");
     const { def } = definitionFor(BALANCED, "incident");
     await expectStagesAsDefined(fix, def, "small");

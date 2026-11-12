@@ -305,3 +305,14 @@ export async function itemStatus(workItemId: string, status: string) {
     ),
   );
 }
+
+/** The commit the open merge gate of a work item is for: what a person's review.merge names. */
+export async function gateHead(workItemId: string): Promise<string> {
+  const pa = await first<{ input: string }>(
+    "SELECT input FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+    workItemId,
+  );
+  const head = pa ? (JSON.parse(pa.input) as { headSha?: string }).headSha : undefined;
+  if (!head) throw new Error(`no open merge gate with a head for ${workItemId}`);
+  return head;
+}

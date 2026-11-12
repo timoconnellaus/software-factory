@@ -529,10 +529,24 @@ export async function runOperation<O = unknown>(
   try {
     output = op.output.parse(await op.handler(input, ctx));
   } catch (error) {
-    await audit(
+    const failed = audit(
       { decision: gate.decision, outcome: "failed", reason: String(error) },
       subject,
-    ).run();
+    );
+    if (approval && error instanceof OperationError && error.details?.closeApproval === true) {
+      // The approved re-run can never succeed (pr.merge: the head moved after the person approved):
+      // close the approval with why, rather than leave it `approved` for a commit that won't land.
+      await d1.batch([
+        d1
+          .prepare(
+            "UPDATE core_pending_actions SET status = 'rejected', decision = 'withdrawn', note = ? WHERE id = ? AND status = 'approved'",
+          )
+          .bind(error.message, approval.id),
+        failed,
+      ]);
+    } else {
+      await failed.run();
+    }
     throw error;
   }
   if (risk === "read") {

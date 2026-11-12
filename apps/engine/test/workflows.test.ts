@@ -14,6 +14,7 @@ import {
   BALANCED,
   build,
   first,
+  gateHead,
   gateOpen,
   itemStatus,
   ok,
@@ -120,7 +121,15 @@ describe("workflows (spec 09 M2)", () => {
     await ok("approval.decide", { pendingActionId: gate.id, decision: "approved" }, w.human);
 
     await gateOpen(item.workItemId, "merge");
-    await ok("review.merge", { workItemId: item.workItemId, openedFullDiff: false }, w.human);
+    await ok(
+      "review.merge",
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: false,
+        headSha: await gateHead(item.workItemId),
+      },
+      w.human,
+    );
     await itemStatus(item.workItemId, "done");
 
     // The slot steps ran as the compiled definition's slot stages say, and the agent check's

@@ -81,7 +81,7 @@ export const CLIENT_PROTOCOL_HEADER = "x-sf-client-protocol";
  * together). A DESKTOP_MIN_PROTOCOL above it is a mistake that would refuse every build, sign-in
  * included, so it is ignored (and logged) instead of enforced.
  */
-export const DESKTOP_PROTOCOL_LATEST = 1;
+export const DESKTOP_PROTOCOL_LATEST = 2;
 
 /** The floor to enforce, or null (unset, 0, malformed or above DESKTOP_PROTOCOL_LATEST). */
 export function desktopMinProtocol(env: Pick<Env, "DESKTOP_MIN_PROTOCOL">): number | null {
