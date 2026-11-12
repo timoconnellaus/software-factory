@@ -4,7 +4,13 @@
 import { HARNESS_PERMISSION_MODES, JOB_STAGES } from "@software-factory/runner-contract";
 import { ACTOR_TYPES } from "../actors.ts";
 import { decide, type FloorParse, RISK_CLASSES } from "./gate.ts";
-import { type ProjectPolicy, SLOTS, type SlotName, type StepConfig } from "./project-policy.ts";
+import {
+  onOrgWorkflow,
+  type ProjectPolicy,
+  SLOTS,
+  type SlotName,
+  type StepConfig,
+} from "./project-policy.ts";
 
 export type ImpactClass = "loosens" | "tightens" | "neutral";
 
@@ -44,6 +50,7 @@ const KNOWN = new Set([
   "shapingLimit",
   "release",
   "workflow",
+  "workflowOverrides",
   "retryLimit",
   "approvers",
   "backupOwner",
@@ -367,9 +374,20 @@ function harnessChanges(
     add("harness.allowedDomains", "tightens", `Agents may no longer reach ${list(removedHosts)}.`);
 }
 
-function gateSteps(policy: ProjectPolicy): Map<string, string> {
+/**
+ * The slot workflow a project leaves for, or arrives from, an org workflow: `configImpact` compares
+ * what it ran with the org workflow's definition, so its steps aren't also compared here as removed.
+ */
+function handedToOrg(before: ProjectPolicy, after: ProjectPolicy): string | null {
+  if (onOrgWorkflow(before) === onOrgWorkflow(after)) return null;
+  const slot = onOrgWorkflow(before) ? after : before;
+  return slot.workflow?.toLowerCase() ?? null;
+}
+
+function gateSteps(policy: ProjectPolicy, skip: string | null = null): Map<string, string> {
   const gates = new Map<string, string>();
   for (const w of policy.workflows) {
+    if (w.name.toLowerCase() === skip) continue;
     for (const slot of SLOTS) {
       for (const step of w.slots[slot]) {
         if (step.kind === "gate") {
@@ -440,15 +458,25 @@ function itemPath(policy: ProjectPolicy): Map<string, string> {
   return out;
 }
 
+/**
+ * The summary `policyImpact` gives a change to an org workflow choice or its overrides: it can't
+ * classify one without the org's workflow, so it loosens. `configImpact` (stages/project-workflow.ts)
+ * replaces it with the classification against the org workflow.
+ */
+export const ORG_WORKFLOW_UNRESOLVED =
+  "The project's org workflow or its overrides changed (classified against the org workflow).";
+
 /** Every slot step, by `<workflow>/<step id>` (lower-cased workflow name). */
 function slotSteps(
   policy: ProjectPolicy,
+  skip: string | null = null,
 ): Map<string, { workflow: string; slot: SlotName; step: StepConfig }> {
   const out = new Map<string, { workflow: string; slot: SlotName; step: StepConfig }>();
   for (const w of policy.workflows)
-    for (const slot of SLOTS)
-      for (const step of w.slots[slot])
-        out.set(`${w.name.toLowerCase()}/${step.id}`, { workflow: w.name, slot, step });
+    if (w.name.toLowerCase() !== skip)
+      for (const slot of SLOTS)
+        for (const step of w.slots[slot])
+          out.set(`${w.name.toLowerCase()}/${step.id}`, { workflow: w.name, slot, step });
   return out;
 }
 
@@ -471,8 +499,9 @@ function judgeChanges(
   after: ProjectPolicy,
   add: (path: string, cls: ImpactClass, summary: string) => void,
 ) {
-  const was = slotSteps(before);
-  const now = slotSteps(after);
+  const skip = handedToOrg(before, after);
+  const was = slotSteps(before, skip);
+  const now = slotSteps(after, skip);
   for (const [key, { workflow, slot, step: b }] of was) {
     const moved = now.get(key);
     const a = moved?.step;
@@ -532,7 +561,13 @@ function workflowChanges(
   after: ProjectPolicy,
   add: (path: string, cls: ImpactClass, summary: string) => void,
 ) {
-  if ((before.workflow ?? "").toLowerCase() !== (after.workflow ?? "").toLowerCase()) {
+  const onOrg = onOrgWorkflow(before) || onOrgWorkflow(after);
+  if (
+    onOrg &&
+    (before.workflow !== after.workflow || !same(before.workflowOverrides, after.workflowOverrides))
+  )
+    add("workflow", "loosens", ORG_WORKFLOW_UNRESOLVED);
+  if (!onOrg && (before.workflow ?? "").toLowerCase() !== (after.workflow ?? "").toLowerCase()) {
     // Switching the project's workflow changes what every new item passes through: a gate step or
     // an agent check the old workflow had, in that slot and judged that way, and the new one lacks
     // is gone for every item (spec 52, fourth review). Compared by content, so a same-named step
@@ -549,8 +584,9 @@ function workflowChanges(
   }
   judgeChanges(before, after, add);
   if (!same(before.workflows, after.workflows)) {
-    const was = gateSteps(before);
-    const now = gateSteps(after);
+    const skip = handedToOrg(before, after);
+    const was = gateSteps(before, skip);
+    const now = gateSteps(after, skip);
     for (const [key, text] of was) {
       if (!now.has(key)) add("workflows", "loosens", `Removes the gate step ${text}.`);
       else if (now.get(key) !== text)

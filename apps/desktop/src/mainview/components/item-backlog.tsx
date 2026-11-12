@@ -103,6 +103,11 @@ export function NextStep({ detail }: { detail: WorkItemDetail }) {
   const release = () =>
     run(async () => {
       const r = await op("workItem.release", { workItemId: item.id });
+      if (r.releaseFlag) {
+        // Spec 52, Q4: not released; the choice waits in the Inbox.
+        toast(`Not released: ${r.releaseFlag.reason}`);
+        return;
+      }
       const w = waitsText(r.blockedBy);
       toast.success(w ? `Released: it waits in Queued for ${w}` : "Released to the factory");
       if (r.plan?.behindBy) {

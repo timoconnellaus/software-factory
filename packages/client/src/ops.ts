@@ -109,6 +109,7 @@ export interface OpMap {
   "workItem.update": Def<typeof operations.workItemUpdate>;
   "workItem.move": Def<typeof operations.workItemMove>;
   "workItem.release": Def<typeof operations.workItemRelease>;
+  "workItem.releaseChoice": Def<typeof operations.workItemReleaseChoice>;
   "workItem.reorder": Def<typeof operations.workItemReorder>;
   "workItem.link": Def<typeof operations.workItemLink>;
   "workItem.unlink": Def<typeof operations.workItemUnlink>;

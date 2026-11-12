@@ -21,6 +21,25 @@ export const POLICY_PATH = ".factory/policy.json";
 const sizes = ["small", "medium", "large"] as const;
 export type SizeName = (typeof sizes)[number];
 
+/** An org workflow's id (spec 52, ADR 0510): what a project's `workflow` names once it runs one. */
+export const ORG_WORKFLOW_ID = /^wf_[a-z0-9_]{1,60}$/;
+export const isOrgWorkflowId = (name: string | null | undefined): name is string =>
+  !!name && ORG_WORKFLOW_ID.test(name);
+
+/**
+ * Whether the project runs an org workflow: `workflow` is shaped like an org workflow id and no slot
+ * workflow in the config has that name. A slot workflow named like one before spec 52 PR (d) stays a
+ * slot workflow, so an existing config runs exactly as before; only new slot workflows may not take
+ * such a name (`config.save` refuses one).
+ */
+export function onOrgWorkflow(
+  policy: { workflow: string | null; workflows: readonly { name: string }[] } | null,
+): policy is { workflow: string; workflows: readonly { name: string }[] } {
+  if (!policy || !isOrgWorkflowId(policy.workflow)) return false;
+  const named = policy.workflow.toLowerCase();
+  return !policy.workflows.some((w) => w.name.toLowerCase() === named);
+}
+
 /** Names people read and steps refer to. */
 const label = z.string().trim().min(1).max(60);
 const instructions = z.string().max(4_000).default("");
@@ -224,10 +243,20 @@ export const projectPolicySchema = z
     /** Named workflows (ADR 0371). The project runs the one named by `workflow` (ADR 0492). */
     workflows: z.array(workflowSchema).max(20).default([]),
     /**
-     * The project's workflow, by name (ADR 0492): every item follows it. Null: the skeleton alone.
-     * There is no per-item override.
+     * The project's workflow (ADR 0492): every item follows it. Null: the skeleton alone. An org
+     * workflow by id (`wf_…`, spec 52 PR (d)), or a slot workflow above by name. There is no
+     * per-item override.
      */
     workflow: z.string().min(1).max(100).nullable().default(null),
+    /**
+     * The project's overrides of its org workflow's stage settings (spec 52, Q5): `{ [stageId]: {
+     * setting: value } }`, only the settings each stage type lists as `overridable`, checked
+     * against the org workflow when saved. Only with an org workflow.
+     */
+    workflowOverrides: z
+      .record(z.string().min(1).max(40), z.record(z.string().min(1).max(40), z.unknown()))
+      .default({})
+      .refine((o) => Object.keys(o).length <= 20, "at most 20 stages can be overridden"),
     /**
      * Self-improvement (ADR 0373): the factory trials practice changes on the next `trialSize`
      * items, at most `weeklyCap` a week. Turning it on is a policy change for a person.
@@ -256,9 +285,16 @@ export const projectPolicySchema = z
   .superRefine((policy, ctx) => {
     const error = workflowsError(policy.agents, policy.workflows);
     if (error) ctx.addIssue({ code: "custom", path: ["workflows"], message: error });
+    const org = onOrgWorkflow(policy);
+    if (!org && Object.keys(policy.workflowOverrides).length > 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["workflowOverrides"],
+        message: "overrides apply to an org workflow: set `workflow` to one (wf_…) first",
+      });
     const checks = checksError(policy.checks, policy.workflows);
     if (checks) ctx.addIssue({ code: "custom", path: ["checks"], message: checks });
-    const named = policy.workflow?.toLowerCase();
+    const named = org ? undefined : policy.workflow?.toLowerCase();
     if (named && !policy.workflows.some((w) => w.name.toLowerCase() === named)) {
       ctx.addIssue({
         code: "custom",
@@ -356,6 +392,10 @@ export function parseProjectPolicy(raw: string): PolicyParse {
   } catch {
     return { ok: false, error: "policy is not JSON" };
   }
+  // Approvals of looser overrides are the factory's own record (core_override_approvals), never
+  // a document's: a field of that name in a saved or imported config is dropped, not honoured.
+  if (value && typeof value === "object" && !Array.isArray(value))
+    delete (value as Record<string, unknown>).workflowOverrideApprovals;
   const parsed = projectPolicySchema.safeParse(value);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
