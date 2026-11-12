@@ -3,12 +3,12 @@
 // process that leaves with setsid and an exiting middle shell dies with the container; install
 // reaches the registry through the check's own egress proxy and nothing else; nothing of the host's
 // filesystem is visible but the check's tree and store. Needs Docker and the agent image (built by
-// `sf-runner doctor --fix`, or here with SF_BUILD_AGENT_IMAGE=1).
+// `sf-runner doctor --fix`, or here in CI or with SF_BUILD_AGENT_IMAGE=1).
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   currentImage,
   dockerRuntime,
@@ -22,11 +22,9 @@ const hasDocker =
     encoding: "utf8",
   }).stdout?.trim().length > 0;
 const runtime = dockerRuntime();
-const image = hasDocker
-  ? process.env.SF_BUILD_AGENT_IMAGE === "1"
-    ? (await ensureImage(runtime)).id
-    : (await currentImage(runtime)).id
-  : null;
+/** The agent image: built in CI (the container job's test builds it there too), else if present. */
+let image: string | null = null;
+const build = process.env.SF_BUILD_AGENT_IMAGE === "1" || process.env.CI === "true";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -49,10 +47,16 @@ const job = (jobId: string) => ({
   harness: { id: "claude-code" as const, role: "implement" as const, prompt: "" },
 });
 
-describe.skipIf(!hasDocker || !image)(
+describe.skipIf(!hasDocker)(
   "a local job's checks in a check container (real Docker)",
   { timeout: 180_000 },
   () => {
+    beforeAll(async () => {
+      image = build ? (await ensureImage(runtime)).id : (await currentImage(runtime)).id;
+    }, 30 * 60_000);
+    beforeEach((ctx) => {
+      if (!image) ctx.skip();
+    });
     it("reaches a server the check itself starts, on the container's own loopback", async () => {
       const { root, dir } = await checkDir();
       await writeFile(
