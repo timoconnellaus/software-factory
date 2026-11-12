@@ -13,6 +13,7 @@
 // Runtime-neutral: no Node APIs, so the cloud (Workers) and the host (Node) share it. Wire shapes are
 // zod schemas in ./wire.ts; the types here that cross the wire are inferred from them.
 import type { z } from "zod";
+import type { TerminalSize } from "./terminal.ts";
 import type {
   AttachmentMeta,
   artifactSchema,
@@ -44,6 +45,9 @@ export const CONTRACT_VERSION = "1" as const;
  * - `container-isolation`: each job's harness runs in its own container: only the job's repo
  *   mounted, no host credentials, an egress allowlist (ADR 0430). Planning sessions still run on
  *   the host, so a policy should require it for the other stages only.
+ * - `terminal`: the live session's terminal can be bridged to the dashboard's web terminal
+ *   (ADR 0440). The host keeps the channel's `terminal` call open while the session runs and, when
+ *   someone watches, relays `adapter.openTerminal` over a WebSocket to the job's relay.
  */
 export const CAPABILITIES = [
   "browser",
@@ -56,6 +60,7 @@ export const CAPABILITIES = [
   "steer",
   "container-isolation",
   "interrupt",
+  "terminal",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -222,6 +227,33 @@ export interface RunnerAdapter<
    * never a person's words.
    */
   interrupt?(session: S, text: string): Promise<void>;
+  /**
+   * Optional, with the `terminal` capability (ADR 0440): bridge the live session's terminal while
+   * someone watches it from the dashboard. Output is the terminal's raw bytes; `write` types
+   * whatever the person typed (the relay only forwards it from the runner's owner); `resize` sets
+   * the terminal's size (only asked for by the owner: a bridge nobody resized leaves it as it is);
+   * `redraw` sends the current screen as output, in order with the stream. `onExit` fires once,
+   * when the session or the bridge ends. `close` must be safe to call twice.
+   */
+  openTerminal?(session: S, options: OpenTerminalOptions): Promise<TerminalBridge>;
+}
+
+/** What the host hands `openTerminal` (ADR 0440). */
+export interface OpenTerminalOptions {
+  /** The size to start at, when the runner's owner is watching; null leaves the terminal's own. */
+  size: TerminalSize | null;
+  onOutput: (bytes: Uint8Array) => void;
+  /** The terminal's actual size, at start and whenever it changes. */
+  onSize: (size: TerminalSize) => void;
+  onExit: (reason: string) => void;
+}
+
+/** A live bridge to a session's terminal (ADR 0440). */
+export interface TerminalBridge {
+  write(data: string): Promise<void>;
+  resize(size: TerminalSize): Promise<void>;
+  redraw(): Promise<void>;
+  close(): Promise<void>;
 }
 
 /**

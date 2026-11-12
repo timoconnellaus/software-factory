@@ -2,7 +2,13 @@
 // events for the work item page; `run.steer` queues a person's message into the live session, for
 // the owner of the run's runner only (typing runs code on their machine with their model credential,
 // ADR 0023, 0038); `run.takeSteers` is how the runner host takes them over the signed channel.
-import { type CapabilityManifest, STEER_MAX, steerText } from "@software-factory/runner-contract";
+// The web terminal's operations (spec 35, ADR 0440) are in terminal.ts and share the run lookup.
+import {
+  type Capability,
+  type CapabilityManifest,
+  STEER_MAX,
+  steerText,
+} from "@software-factory/runner-contract";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
@@ -11,7 +17,7 @@ import { logPlanning } from "../planning.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 
 /** Runs whose session may still be steered (core_runs.status). */
-const ACTIVE = ["claimed", "preparing", "running", "collecting"];
+export const ACTIVE = ["claimed", "preparing", "running", "collecting"];
 /** Most events one `run.live` answer carries. */
 export const LIVE_EVENTS_MAX = 300;
 /** Most payload characters one `run.live` answer carries (terminal screens are the big ones). */
@@ -30,7 +36,7 @@ function withinBudget<T extends { payload: string }>(rows: T[], keep: "newest" |
   return keep === "newest" ? kept.reverse() : kept;
 }
 
-const runId = z.string().regex(/^run_[0-9a-f]{32}$/, "a run id (run_…)");
+export const runId = z.string().regex(/^run_[0-9a-f]{32}$/, "a run id (run_…)");
 
 const steerView = z.object({
   id: z.string(),
@@ -52,7 +58,7 @@ const eventView = z.object({
   data: z.record(z.string(), z.unknown()),
 });
 
-async function loadRunForItem(ctx: HandlerContext, workItem: string, id?: string) {
+export async function loadRunForItem(ctx: HandlerContext, workItem: string, id?: string) {
   let q = ctx.db
     .selectFrom("core_runs")
     .leftJoin("core_runners", "core_runners.id", "core_runs.runner_id")
@@ -75,7 +81,45 @@ async function loadRunForItem(ctx: HandlerContext, workItem: string, id?: string
   q = id ? q.where("core_runs.id", "=", id) : q.orderBy("core_runs.run_no", "desc");
   return q.executeTakeFirst();
 }
-type LiveRun = NonNullable<Awaited<ReturnType<typeof loadRunForItem>>>;
+export type LiveRun = NonNullable<Awaited<ReturnType<typeof loadRunForItem>>>;
+
+/** Whether the run's runner declared a capability in its last manifest. */
+export function runnerHas(run: LiveRun, capability: Capability): boolean {
+  let manifest: CapabilityManifest | null = null;
+  try {
+    manifest = run.runner_manifest ? (JSON.parse(run.runner_manifest) as CapabilityManifest) : null;
+  } catch {
+    manifest = null;
+  }
+  return !!manifest?.capabilities.includes(capability);
+}
+
+/**
+ * Whether the viewer may open the run's web terminal (ADR 0440), and in which mode: `type` for the
+ * owner of the run's runner, `watch` for everyone else who can read the work item.
+ */
+export function terminalVerdict(
+  run: LiveRun,
+  viewer: string,
+): { allowed: boolean; mode: "type" | "watch" | null; reason: string | null } {
+  if (!ACTIVE.includes(run.status)) {
+    return { allowed: false, mode: null, reason: "The run has ended." };
+  }
+  if (!runnerHas(run, "terminal")) {
+    return {
+      allowed: false,
+      mode: null,
+      reason: "This runner can't share its terminal: update it to use the web terminal.",
+    };
+  }
+  return run.runner_owner === viewer
+    ? { allowed: true, mode: "type", reason: null }
+    : {
+        allowed: true,
+        mode: "watch",
+        reason: "Only the runner's owner can type: it runs on their machine.",
+      };
+}
 
 function canSteer(run: LiveRun, viewer: string): { allowed: boolean; reason: string | null } {
   if (run.runner_owner !== viewer) {
@@ -85,13 +129,7 @@ function canSteer(run: LiveRun, viewer: string): { allowed: boolean; reason: str
     };
   }
   if (!ACTIVE.includes(run.status)) return { allowed: false, reason: "The run has ended." };
-  let manifest: CapabilityManifest | null = null;
-  try {
-    manifest = run.runner_manifest ? (JSON.parse(run.runner_manifest) as CapabilityManifest) : null;
-  } catch {
-    manifest = null;
-  }
-  if (!manifest?.capabilities.includes("steer")) {
+  if (!runnerHas(run, "steer")) {
     return { allowed: false, reason: "This runner can't take messages: update it to steer." };
   }
   return { allowed: true, reason: null };
@@ -133,6 +171,12 @@ export const runLive = defineOperation({
     truncated: z.boolean(),
     steers: z.array(steerView),
     steer: z.object({ allowed: z.boolean(), reason: z.string().nullable(), max: z.number() }),
+    /** Whether the viewer may open the run's web terminal, and whether they could type (ADR 0440). */
+    terminal: z.object({
+      allowed: z.boolean(),
+      mode: z.enum(["type", "watch"]).nullable(),
+      reason: z.string().nullable(),
+    }),
   }),
   async handler(input, ctx) {
     const item = requireWorkItem(ctx);
@@ -146,6 +190,7 @@ export const runLive = defineOperation({
         truncated: false,
         steers: [],
         steer: { allowed: false, reason: "No run yet.", max: STEER_MAX },
+        terminal: { allowed: false, mode: null, reason: "No run yet." },
       };
     }
     const [rows, steers] = await Promise.all([
@@ -225,6 +270,7 @@ export const runLive = defineOperation({
         deliveredAt: s.delivered_at,
       })),
       steer: { ...canSteer(run, ctx.actor.id), max: STEER_MAX },
+      terminal: terminalVerdict(run, ctx.actor.id),
     };
   },
 });

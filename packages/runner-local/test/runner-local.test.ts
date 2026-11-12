@@ -134,7 +134,7 @@ const ownerState = (owner: string) => ({
 });
 
 describe("runner-local adapter", { timeout: 30_000 }, () => {
-  it("declares hooks, takeover, own hardware, attachments, steer and interrupt; no browser, no auto-register", async () => {
+  it("declares hooks, takeover, own hardware, attachments, steer, interrupt and terminal; no browser, no auto-register", async () => {
     const { runner } = await world();
     const m = await runner.manifest();
     expect(m.runnerKind).toBe("local");
@@ -144,6 +144,7 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
         "interrupt",
         "own-hardware",
         "steer",
+        "terminal",
         "ui-takeover",
         "work-item-attachments",
       ].sort(),

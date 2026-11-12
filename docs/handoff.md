@@ -92,6 +92,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   self-contained job repo, an egress allowlist proxy, every stage `bypassPermissions`, and the launch
   check inside the container. The host still pushes. Planning sessions stay on the host. Criteria 1
   and 9 need a live run on the M5 with Docker Desktop (runner-host README, "A container per job").
+  Piece 6, **the web terminal** (block AB, [spec 35](specs/35-web-terminal.md) /
+  [ADR 0440](adr/0440-a-web-terminal-relayed-through-a-durable-object-per-job.md), migration 0210,
+  branch `timoconnellaus/hosts-web-terminal`): the Live tab's Web terminal view (xterm.js), the
+  `TerminalRelay` Durable Object per job, the held `terminal` call and the host's outbound socket,
+  `run.terminal.attach`/`detach`/`host`, the tmux control-mode bridge in runner-local. Criteria 1,
+  2 and 6 need a live run on the M5 (engine deployed first, then the runner updated).
 - **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
   versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals
@@ -116,6 +122,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   attachments over the door as `{ $bytes }`), the work item with Planning and its timeline, the
   review packet (Merge and Send back through Touch ID), Setup and attach, ported into
   `apps/desktop`; the shared logic is in `packages/client`. Next: M4 (signing and updates).
+- **The desktop shell and look** (block AD, [spec 41](specs/41-desktop-shell-and-look.md),
+  [ADR 0460](adr/0460-the-desktop-shell-and-look.md), branch `timoconnellaus/desktop-shell`): slice 1
+  of the approved design (`docs/design/factory-ui/`). The window shell (toolbar, tabs, ⌘K, org rail,
+  sidebar, nested lists, status bar, focus mode), the look as `packages/ui` tokens (`desktop.css`),
+  and the existing screens restyled. Later slices wait on specs 50 and 51, chat and the hosts web
+  terminal (spec 41 lists them).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

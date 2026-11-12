@@ -42,12 +42,15 @@
     "bindings": [
       { "name": "PLANNING_HUB", "class_name": "PlanningHub" },
       // One ClientHub per person (spec 40 M2b): their desktop apps' live connections.
-      { "name": "CLIENT_HUB", "class_name": "ClientHub" }
+      { "name": "CLIENT_HUB", "class_name": "ClientHub" },
+      // One TerminalRelay per job (spec 35, ADR 0440): its web terminal's host and viewer sockets.
+      { "name": "TERMINAL_RELAY", "class_name": "TerminalRelay" }
     ]
   },
   "migrations": [
     { "tag": "v1-planning-hub", "new_sqlite_classes": ["PlanningHub"] },
-    { "tag": "v2-client-hub", "new_sqlite_classes": ["ClientHub"] }
+    { "tag": "v2-client-hub", "new_sqlite_classes": ["ClientHub"] },
+    { "tag": "v3-terminal-relay", "new_sqlite_classes": ["TerminalRelay"] }
   ],
   "workflows": [
     {
