@@ -8,9 +8,9 @@ const db = env.UPGRADE_DB;
 const NOW = "2026-11-12T00:00:00.000Z";
 const hex = (c: string) => c.repeat(32);
 
-describe("migration 0210: a project is not a repository (ADR 0440)", () => {
+describe("migration 0260: a project is not a repository (ADR 0490)", () => {
   beforeAll(async () => {
-    await applyD1Migrations(db, before(210));
+    await applyD1Migrations(db, before(260));
     const P1 = `prj_${hex("a")}`;
     const P2 = `prj_${hex("b")}`;
     await db.batch([
@@ -147,7 +147,7 @@ describe("migration 0210: a project is not a repository (ADR 0440)", () => {
     expect(await count("SELECT count(*) AS n FROM core_verify_checks")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM core_attachments")).toBe(1);
     expect(
-      await count("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'core_0210_%'"),
+      await count("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'core_0260_%'"),
     ).toBe(0);
     expect(await count("SELECT count(*) AS n FROM core_repositories")).toBe(2);
   });
@@ -179,7 +179,7 @@ describe("migration 0210: a project is not a repository (ADR 0440)", () => {
   });
 });
 
-describe("migration 0211: backlog, ready, queued (ADR 0441)", () => {
+describe("migration 0261: backlog, ready, queued (ADR 0491)", () => {
   it("keeps every item, its merge-queue entry and attachments, and adds the new states", async () => {
     // UPGRADE_DB was migrated to the latest in the 0210 block above, with rows from before 0210.
     const item = await db

@@ -8,6 +8,8 @@ import { dirname, join } from "node:path";
 import { PID_FILE, STATUS_FILE, type StatusLine } from "@software-factory/harness-claude";
 import { type Exec, type ExecResult, nodeExec } from "./exec.ts";
 
+export * from "./container/testing.ts";
+
 export interface FakeSession {
   name: string;
   cwd: string;

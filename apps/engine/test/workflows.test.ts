@@ -61,7 +61,7 @@ async function create(w: Awaited<ReturnType<typeof world>>, title = "Add dark mo
 
 describe("workflows (spec 09 M2)", () => {
   it("runs a work step before verify, sends back on its verdict, then holds at a gate step", async () => {
-    // The project runs one workflow (ADR 0442): triage isn't asked to pick, and its pick is ignored.
+    // The project runs one workflow (ADR 0492): triage isn't asked to pick, and its pick is ignored.
     const w = await world({ ...POLICY, workflow: "Ship a feature" });
     const item = await create(w);
     const triaged = await runStage(w, item.workItemId, "triage", (job) => {
@@ -156,7 +156,7 @@ describe("workflows (spec 09 M2)", () => {
   it("runs the skeleton alone for a project with no workflow, with the default Builder", async () => {
     const w = await world(POLICY);
     const item = await create(w);
-    // Triage's pick is ignored (ADR 0442): the project names no workflow.
+    // Triage's pick is ignored (ADR 0492): the project names no workflow.
     await runStage(w, item.workItemId, "triage", () =>
       triage("small", { workflow: "Ship a feature" }),
     );

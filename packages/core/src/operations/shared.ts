@@ -34,7 +34,7 @@ export function requireProject(ctx: HandlerContext): ProjectRow {
 }
 
 /**
- * The repository the call is about (ADR 0440): the work item's, the one named by `repositoryId`, or
+ * The repository the call is about (ADR 0490): the work item's, the one named by `repositoryId`, or
  * the project's only one. Refuses with the reason when there is none, or several and none named.
  */
 export function requireRepository(ctx: HandlerContext): RepositoryRow {
@@ -100,7 +100,7 @@ export function itemBranch(number: number, slug: string): string {
 
 export interface NewWorkItem {
   project: ProjectRow;
-  /** The repository it uses (ADR 0440); null when none is chosen yet. */
+  /** The repository it uses (ADR 0490); null when none is chosen yet. */
   repositoryId: string | null;
   title: string;
   body: string;
@@ -116,7 +116,7 @@ export interface NewWorkItem {
   /** Number to use; the caller read `next_number` and the batch guards it. */
   number: number;
   /**
-   * Where it starts (ADR 0441): `backlog` or `ready` (nothing runs), or `queued` (released; the
+   * Where it starts (ADR 0491): `backlog` or `ready` (nothing runs), or `queued` (released; the
    * caller then pulls it, or starts it at once). Its config version and workflow are pinned when
    * its pipeline starts, not here.
    */
@@ -130,7 +130,7 @@ export interface NewWorkItem {
 /**
  * Queues the writes that create a work item: the item (in `state`), its lease row and the
  * project's number bump (guarded). It doesn't start the pipeline: `startPipeline` / the pull do
- * (ADR 0441).
+ * (ADR 0491).
  */
 export function createWorkItem(
   ctx: HandlerContext,

@@ -35,7 +35,7 @@ export async function openIncident(
           : "needs a factory fix";
   const fix = createWorkItem(ctx, {
     project,
-    // The incident's fix goes to the same repository as the item it is about (ADR 0440).
+    // The incident's fix goes to the same repository as the item it is about (ADR 0490).
     repositoryId: w.repository_id,
     title: `Factory incident: #${w.number} ${what}`,
     body: [
@@ -55,7 +55,7 @@ export async function openIncident(
     requesterUserId: w.requester_user_id,
     parentWorkItemId: w.id,
     number: project.next_number,
-    // The factory's own fix skips the backlog and the active limit (ADR 0441): started at once.
+    // The factory's own fix skips the backlog and the active limit (ADR 0491): started at once.
     state: "queued",
   });
   startPipeline(ctx, fix, project, { policy: ctx.scope.policy, trial: null });

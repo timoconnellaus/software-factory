@@ -45,5 +45,5 @@ export function LiveRun({ detail }: { detail: WorkItemDetail }) {
     await op("run.steer", { workItemId, runId, text }, { idempotencyKey: submitKey() });
     await queryClient.invalidateQueries({ queryKey: ["workItem", workItemId, "live"] });
   };
-  return <LiveRunView data={live.data} me={me} onSteer={onSteer} />;
+  return <LiveRunView data={live.data} me={me} onSteer={onSteer} workItemId={workItemId} />;
 }

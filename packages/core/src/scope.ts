@@ -162,7 +162,7 @@ export async function resolveScope(
 }
 
 /**
- * The repository a call is about (ADR 0440): the work item's; else the one named; else the project's
+ * The repository a call is about (ADR 0490): the work item's; else the one named; else the project's
  * only one. Refuses a named repository that isn't the project's.
  */
 function pickRepository(

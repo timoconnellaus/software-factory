@@ -1,4 +1,4 @@
-// A project is not a repository (spec 50 part A, ADR 0440): zero or more repositories per project,
+// A project is not a repository (spec 50 part A, ADR 0490): zero or more repositories per project,
 // an item uses one, and an operation that needs one refuses rather than guessing between two.
 import { describe, expect, it } from "vitest";
 import {
@@ -45,7 +45,7 @@ async function withSpareRepo(defaultBranch = "trunk") {
   return { w, recordId: record.id, repoId, name };
 }
 
-describe("projects and repositories (ADR 0440)", () => {
+describe("projects and repositories (ADR 0490)", () => {
   it("gives a project created from the repo picker one repository, and the item that repository", async () => {
     const w = await world();
     const [project] = (
@@ -73,7 +73,7 @@ describe("projects and repositories (ADR 0440)", () => {
     expect(p.policy.state).toBe("valid");
     expect(p.configVersion).toBe(1);
     // Work on it that needs code is refused with the reason (part B lets it wait in the backlog).
-    // It can be captured, but not released while its workflow needs a repository (ADR 0441).
+    // It can be captured, but not released while its workflow needs a repository (ADR 0491).
     const captured = await ok<{ workItemId: string; status: string }>(
       "workItem.create",
       { projectId: p.id, title: "Launch post" },

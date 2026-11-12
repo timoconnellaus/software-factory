@@ -1,4 +1,4 @@
-// Work starts in a backlog and is released (spec 50 part B, ADR 0441): creating no longer starts the
+// Work starts in a backlog and is released (spec 50 part B, ADR 0491): creating no longer starts the
 // pipeline, release is a person's call unless config lets agents, and the factory pulls queued work
 // by priority under the active limit, respecting "waits for" links.
 import { describe, expect, it } from "vitest";
@@ -22,7 +22,7 @@ const starts = async (id: string) =>
 const finish = (id: string, status = "done") =>
   ok("workItem.finish", { workItemId: id, status, reason: "test" }, FOREMAN);
 
-describe("capture and release (ADR 0441)", () => {
+describe("capture and release (ADR 0491)", () => {
   it("creates into the backlog by default: no Workflow, no stage beyond intake (criterion 4)", async () => {
     const w = await world();
     const item = await create(w, "Write it down");
@@ -136,7 +136,7 @@ describe("capture and release (ADR 0441)", () => {
   });
 });
 
-describe("the pull (ADR 0441, criterion 6)", () => {
+describe("the pull (ADR 0491, criterion 6)", () => {
   it("takes queued work by priority, then rank, never past the active limit", async () => {
     const w = await world({ ...POLICY, activeLimit: 1 });
     const first_ = await create(w, "First", { state: "queued" });

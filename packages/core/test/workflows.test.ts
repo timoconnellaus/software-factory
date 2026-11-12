@@ -85,7 +85,7 @@ describe("workflows in the config", () => {
   });
 });
 
-describe("an item follows its project's workflow (ADR 0442)", () => {
+describe("an item follows its project's workflow (ADR 0492)", () => {
   it("pins the project's workflow when the item is pulled; setWorkflow is refused", async () => {
     const w = await world(doc({ workflow: "Ship a feature" }));
     const item = await newItem(w);

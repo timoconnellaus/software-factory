@@ -1,19 +1,19 @@
--- Migration 0211 (spec 50 part B, ADR 0441): work starts in a backlog and is released. A work item
+-- Migration 0261 (spec 50 part B, ADR 0491): work starts in a backlog and is released. A work item
 -- may be `backlog` (captured), `ready` (shaped) or `queued` (released, waiting for a slot) before
 -- its pipeline starts; `planning` is reserved for part C (planning before release) so it needs no
 -- second rebuild. Items gain a priority and a manual rank, and "waits for" links between items.
 --
 -- SQLite can't alter a CHECK, so core_work_items is rebuilt as in 0080. Dropping it runs ON DELETE
--- CASCADE in its children even with foreign keys deferred (see 0210), so the rows of the tables that
+-- CASCADE in its children even with foreign keys deferred (see 0260), so the rows of the tables that
 -- cascade from it are copied aside and put back: core_merge_queue and core_attachments (every
--- `REFERENCES core_work_items (id) ON DELETE CASCADE` up to 0210).
+-- `REFERENCES core_work_items (id) ON DELETE CASCADE` up to 0260).
 
-CREATE TABLE core_0211_merge_queue AS SELECT * FROM core_merge_queue;
-CREATE TABLE core_0211_attachments AS SELECT * FROM core_attachments;
+CREATE TABLE core_0261_merge_queue AS SELECT * FROM core_merge_queue;
+CREATE TABLE core_0261_attachments AS SELECT * FROM core_attachments;
 
 PRAGMA defer_foreign_keys = on;
 
-CREATE TABLE core_work_items_0211 (
+CREATE TABLE core_work_items_0261 (
   id TEXT PRIMARY KEY NOT NULL,
   org_id TEXT NOT NULL REFERENCES core_organization (id),
   project_id TEXT NOT NULL REFERENCES core_projects (id),
@@ -50,20 +50,20 @@ CREATE TABLE core_work_items_0211 (
   build_attempts INTEGER NOT NULL DEFAULT 0,
   workflow_id TEXT NOT NULL UNIQUE,
   workflow_version INTEGER,
-  -- The config version in force when the pipeline started (ADR 0370, 0441).
+  -- The config version in force when the pipeline started (ADR 0370, 0491).
   policy_sha TEXT,
   parent_work_item_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   closed_at TEXT,
-  -- 0141 (ADR 0371, 0442): the item's workflow; null is the skeleton alone.
+  -- 0141 (ADR 0371, 0492): the item's workflow; null is the skeleton alone.
   workflow TEXT,
   workflow_reason TEXT,
   -- 0142 (ADR 0373): the trial it runs under, on the trial's candidate version.
   trial_id TEXT,
-  -- 0210 (ADR 0440): the repository it uses; null when none is chosen yet.
+  -- 0260 (ADR 0490): the repository it uses; null when none is chosen yet.
   repository_id TEXT REFERENCES core_repositories (id),
-  -- 0211 (ADR 0441): 0 urgent, 1 high, 2 normal, 3 low; the pull takes lower first.
+  -- 0261 (ADR 0491): 0 urgent, 1 high, 2 normal, 3 low; the pull takes lower first.
   priority INTEGER NOT NULL DEFAULT 2 CHECK (priority BETWEEN 0 AND 3),
   -- The order within a priority (lower first), set by workItem.reorder.
   rank REAL NOT NULL DEFAULT 0,
@@ -71,12 +71,12 @@ CREATE TABLE core_work_items_0211 (
   acceptance_criteria TEXT,
   released_at TEXT,
   released_by TEXT,
-  -- When the pipeline started (the pull). Null for items from before 0211 and those not started.
+  -- When the pipeline started (the pull). Null for items from before 0261 and those not started.
   pulled_at TEXT,
   UNIQUE (project_id, number)
 );
 
-INSERT INTO core_work_items_0211 (
+INSERT INTO core_work_items_0261 (
   id, org_id, project_id, number, slug, title, body, kind, requester_user_id, source, stage,
   status, status_reason, size, spec_required, spec_decision_reason, domains, current_spec_id,
   branch, head_sha, pr_number, pr_url, planning_round, build_attempts, workflow_id,
@@ -92,25 +92,25 @@ SELECT
 FROM core_work_items;
 
 DROP TABLE core_work_items;
-ALTER TABLE core_work_items_0211 RENAME TO core_work_items;
+ALTER TABLE core_work_items_0261 RENAME TO core_work_items;
 
 CREATE INDEX core_work_items_project_idx ON core_work_items (project_id, status, updated_at);
 CREATE INDEX core_work_items_org_idx ON core_work_items (org_id, status);
 CREATE INDEX core_work_items_requester_idx ON core_work_items (requester_user_id, status);
 CREATE INDEX core_work_items_pr_idx ON core_work_items (project_id, pr_number);
 CREATE INDEX core_work_items_repository_idx ON core_work_items (repository_id, pr_number);
--- The pull (ADR 0441): a project's queued items by priority, then rank.
+-- The pull (ADR 0491): a project's queued items by priority, then rank.
 CREATE INDEX core_work_items_pull_idx ON core_work_items (project_id, status, priority, rank);
 
-INSERT INTO core_merge_queue SELECT * FROM core_0211_merge_queue;
-INSERT INTO core_attachments SELECT * FROM core_0211_attachments;
+INSERT INTO core_merge_queue SELECT * FROM core_0261_merge_queue;
+INSERT INTO core_attachments SELECT * FROM core_0261_attachments;
 
 PRAGMA defer_foreign_keys = off;
 
-DROP TABLE core_0211_merge_queue;
-DROP TABLE core_0211_attachments;
+DROP TABLE core_0261_merge_queue;
+DROP TABLE core_0261_attachments;
 
--- "Waits for" (ADR 0441): the item isn't pulled until every item it waits for is done. Same org,
+-- "Waits for" (ADR 0491): the item isn't pulled until every item it waits for is done. Same org,
 -- any project; no cycles (checked by workItem.link).
 CREATE TABLE core_work_item_links (
   work_item_id TEXT NOT NULL REFERENCES core_work_items (id) ON DELETE CASCADE,
@@ -122,4 +122,4 @@ CREATE TABLE core_work_item_links (
 );
 CREATE INDEX core_work_item_links_waits_for_idx ON core_work_item_links (waits_for_id);
 
-UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 211) WHERE key = 'schema_version';
+UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 261) WHERE key = 'schema_version';

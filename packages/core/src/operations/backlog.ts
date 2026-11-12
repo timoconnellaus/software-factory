@@ -1,4 +1,4 @@
-// The work model's front half (spec 50 part B, ADR 0441): work starts in a backlog, is shaped to
+// The work model's front half (spec 50 part B, ADR 0491): work starts in a backlog, is shaped to
 // ready, is released to the factory (queued), and the factory pulls queued items into the pipeline
 // by priority, respecting "waits for" links and the project's active limit. Creating an item no
 // longer starts its Workflow: the pull does (`startPipeline`).
@@ -23,7 +23,7 @@ export const PRE_PIPELINE = ["backlog", "planning", "ready", "queued"] as const;
 export const INTAKE_STATES = ["backlog", "ready", "queued"] as const;
 export type IntakeState = (typeof INTAKE_STATES)[number];
 /** Items in the pipeline: they count against `activeLimit`. */
-export const ACTIVE = ["running", "waiting", "paused"] as const;
+export const ACTIVE_STATUSES = ["running", "waiting", "paused"] as const;
 
 /** Priority names, in pull order: stored as their index (0 urgent … 3 low). */
 export const PRIORITIES = ["urgent", "high", "normal", "low"] as const;
@@ -35,7 +35,7 @@ export const priorityIndex = (p: Priority): number => PRIORITIES.indexOf(p);
 const isPre = (status: string) => (PRE_PIPELINE as readonly string[]).includes(status);
 
 /**
- * Whether an item following `workflow` needs a repository (ADR 0440, 0441): the one place that
+ * Whether an item following `workflow` needs a repository (ADR 0490, 0491): the one place that
  * decides it. Every workflow today runs the skeleton's build, which needs code, so it is always
  * true; a workflow without a code stage (a launch post) would return false.
  */
@@ -47,7 +47,7 @@ export function workflowNeedsRepository(
 }
 
 /**
- * Why `ctx.actor` may not release this item now, or null (ADR 0441). In code, never a prompt:
+ * Why `ctx.actor` may not release this item now, or null (ADR 0491). In code, never a prompt:
  * people may always release; anyone else only where the project's config allows agents to.
  */
 export function releaseRefusal(
@@ -86,8 +86,8 @@ export function releaseRefusal(
 }
 
 /**
- * Starts an item's pipeline (the pull, ADR 0441): it becomes `running`, pins the project's config
- * version (or a running trial's candidate, ADR 0373) and its workflow (ADR 0442), gets its intake
+ * Starts an item's pipeline (the pull, ADR 0491): it becomes `running`, pins the project's config
+ * version (or a running trial's candidate, ADR 0373) and its workflow (ADR 0492), gets its intake
  * stage, and its Workflow is created. Guarded: if another call pulled it first, the batch aborts.
  */
 export function startPipeline(
@@ -152,7 +152,7 @@ export interface PullCandidate {
   created_at: string;
 }
 
-/** Pull order (ADR 0441): priority, then rank, then release time, then creation. */
+/** Pull order (ADR 0491): priority, then rank, then release time, then creation. */
 export function pullOrder(a: PullCandidate, b: PullCandidate): number {
   return (
     a.priority - b.priority ||
@@ -213,7 +213,7 @@ export async function blockersOf(
 }
 
 /**
- * The pull for one project (ADR 0441): while its active items are under `activeLimit`, start the
+ * The pull for one project (ADR 0491): while its active items are under `activeLimit`, start the
  * next queued item whose "waits for" items are all done. Reads happen before this call's writes
  * commit, so the caller passes what its own batch changes: `extra` queued items it is adding or
  * releasing (and their new links), and `leaving` items it is taking out of the pipeline.
@@ -237,7 +237,7 @@ export async function pullQueued(
     .selectFrom("core_work_items")
     .select(sql<number>`count(*)`.as("n"))
     .where("project_id", "=", project.id)
-    .where("status", "in", [...ACTIVE]);
+    .where("status", "in", [...ACTIVE_STATUSES]);
   if (leaving.length) activeQ = activeQ.where("id", "not in", leaving);
   const active = Number((await activeQ.executeTakeFirst())?.n ?? 0);
   let room = policy.activeLimit - active;
@@ -274,7 +274,7 @@ export async function pullQueued(
 
 /**
  * After an item ends: pull its own project (its slot is free) and every other project with queued
- * work waiting on it when it is done (ADR 0441). The cron catches anything this misses.
+ * work waiting on it when it is done (ADR 0491). The cron catches anything this misses.
  */
 export async function pullAfterEnd(
   ctx: HandlerContext,
@@ -379,7 +379,7 @@ const startedOutput = z.object({
 export const workItemRelease = defineOperation({
   name: "workItem.release",
   description:
-    "Release a backlog or ready work item to the factory (ADR 0441): it becomes queued, and the factory pulls it into the pipeline (triage → spec gate → build → verify → merge gate) when the project is under its active limit and everything it waits for is done, by priority then rank. A person may always release; an agent, intake or chat only where the project's config sets `release.agents: true`. Refused when the item's workflow needs a repository and it has none.",
+    "Release a backlog or ready work item to the factory (ADR 0491): it becomes queued, and the factory pulls it into the pipeline (triage → spec gate → build → verify → merge gate) when the project is under its active limit and everything it waits for is done, by priority then rank. A person may always release; an agent, intake or chat only where the project's config sets `release.agents: true`. Refused when the item's workflow needs a repository and it has none.",
   risk: "write",
   actors: ["human", "agent", "intake"],
   permission: "member",
@@ -425,7 +425,7 @@ export const workItemRelease = defineOperation({
 export const workItemMove = defineOperation({
   name: "workItem.move",
   description:
-    "Move a work item between backlog and ready, or take a queued one back to ready (un-release) before the factory pulls it (ADR 0441). Nothing runs in these states.",
+    "Move a work item between backlog and ready, or take a queued one back to ready (un-release) before the factory pulls it (ADR 0491). Nothing runs in these states.",
   risk: "write",
   actors: ["human"],
   permission: "member",
@@ -466,7 +466,7 @@ export const workItemMove = defineOperation({
 export const workItemUpdate = defineOperation({
   name: "workItem.update",
   description:
-    "Edit a work item before its pipeline starts (ADR 0441): title, notes, priority, the repository it uses (one of its project's, ADR 0440), size and acceptance criteria while shaping.",
+    "Edit a work item before its pipeline starts (ADR 0491): title, notes, priority, the repository it uses (one of its project's, ADR 0490), size and acceptance criteria while shaping.",
   risk: "write",
   actors: ["human"],
   permission: "member",
@@ -526,7 +526,7 @@ export const workItemUpdate = defineOperation({
 export const workItemReorder = defineOperation({
   name: "workItem.reorder",
   description:
-    "Place a work item just before or just after another of the same project, before either is pulled (ADR 0441). It takes that item's priority, so it lands next to it in pull order.",
+    "Place a work item just before or just after another of the same project, before either is pulled (ADR 0491). It takes that item's priority, so it lands next to it in pull order.",
   risk: "write",
   actors: ["human"],
   permission: "member",
@@ -582,7 +582,7 @@ export const workItemReorder = defineOperation({
 export const workItemLink = defineOperation({
   name: "workItem.link",
   description:
-    'Say a work item waits for another ("the launch post waits for the feature", ADR 0441): it is not pulled until that item is done. Same org, any project. Refused for an item already in its pipeline, and for a link that would make a cycle.',
+    'Say a work item waits for another ("the launch post waits for the feature", ADR 0491): it is not pulled until that item is done. Same org, any project. Refused for an item already in its pipeline, and for a link that would make a cycle.',
   risk: "write",
   actors: ["human"],
   permission: "member",
@@ -611,7 +611,7 @@ export const workItemLink = defineOperation({
 export const workItemUnlink = defineOperation({
   name: "workItem.unlink",
   description:
-    'Remove a "waits for" link (ADR 0441), for example when the item it waited for was cancelled. A queued item it held is pulled on the next pass.',
+    'Remove a "waits for" link (ADR 0491), for example when the item it waited for was cancelled. A queued item it held is pulled on the next pass.',
   risk: "write",
   actors: ["human"],
   permission: "member",
@@ -636,7 +636,7 @@ export const workItemUnlink = defineOperation({
 export const queuePull = defineOperation({
   name: "queue.pull",
   description:
-    'The factory pulls queued work on a project into the pipeline (ADR 0441): while it is under its active limit, the next queued item whose "waits for" items are all done starts, by priority, then rank, then release time. The engine\'s minute cron runs it for projects with queued work; release, finish and cancel also pull.',
+    'The factory pulls queued work on a project into the pipeline (ADR 0491): while it is under its active limit, the next queued item whose "waits for" items are all done starts, by priority, then rank, then release time. The engine\'s minute cron runs it for projects with queued work; release, finish and cancel also pull.',
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -688,7 +688,7 @@ const boardItem = z.object({
 
 const BOARD_STATES = [
   ...PRE_PIPELINE,
-  ...ACTIVE,
+  ...ACTIVE_STATUSES,
   "done",
   "failed",
   "rejected",
@@ -698,7 +698,7 @@ const BOARD_STATES = [
 export const workItemBoard = defineOperation({
   name: "workItem.board",
   description:
-    "Work items by state, for one project or across the org (ADR 0441): by default backlog, ready, queued and the active ones, each with priority, rank, repository, what it waits for and what blocks it, in the order the factory would pull them; and counts per project and state (every state, done and cancelled included). At most 500 items.",
+    "Work items by state, for one project or across the org (ADR 0491): by default backlog, ready, queued and the active ones, each with priority, rank, repository, what it waits for and what blocks it, in the order the factory would pull them; and counts per project and state (every state, done and cancelled included). At most 500 items.",
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
@@ -714,7 +714,7 @@ export const workItemBoard = defineOperation({
   // The org is the input's; a projectId is only a filter.
   scope: async (input) => ({ orgId: input.orgId }),
   async handler(input, ctx) {
-    const states = input.states ?? [...PRE_PIPELINE, ...ACTIVE];
+    const states = input.states ?? [...PRE_PIPELINE, ...ACTIVE_STATUSES];
     let q = ctx.db
       .selectFrom("core_work_items")
       .selectAll()

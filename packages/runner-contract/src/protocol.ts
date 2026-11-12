@@ -14,6 +14,7 @@
 //   attachment  att:<job>:<uuid>               NOT stored: one attachment's bytes (ADR 0310)
 //   planning    plan:<job>:<uuid>              NOT stored: a planning operation (ADR 0350)
 //   steer       steer:<job>:<uuid>             NOT stored: a held wait for the run's steers (ADR 0400)
+//   terminal    term:<job>:<uuid>              NOT stored: a held wait for a web terminal viewer (ADR 0440)
 //
 // Every job-scoped call carries the job's fencing token; after a takeover or a lost lease the cloud
 // answers 409 with code `fenced`, and the host must stop the run (ADR 0035).
@@ -32,6 +33,8 @@ import type {
   ReleaseRequest,
   SteersRequest,
   SteersResponse,
+  TerminalCallRequest,
+  TerminalCallResponse,
   TokenResponse,
 } from "./wire.ts";
 
@@ -47,6 +50,7 @@ export const PATHS = {
   attachment: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/attachment`,
   planning: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/planning`,
   steer: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/steer`,
+  terminal: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/terminal`,
 } as const;
 
 /** How long the cloud holds a steer call with nothing queued (ADR 0400). */
@@ -76,6 +80,7 @@ export const JOB_CALLS = [
   "attachment",
   "planning",
   "steer",
+  "terminal",
 ] as const;
 export type JobCall = (typeof JOB_CALLS)[number];
 
@@ -96,7 +101,8 @@ export function isUnstoredPath(path: string): boolean {
     call === "attachments" ||
     call === "attachment" ||
     call === "planning" ||
-    call === "steer"
+    call === "steer" ||
+    call === "terminal"
   );
 }
 
@@ -141,6 +147,16 @@ export interface ControlPlaneClient {
    * wait when the session ends.
    */
   steers?(jobId: string, body: SteersRequest, signal?: AbortSignal): Promise<SteersResponse>;
+  /**
+   * Waits for someone to open the job's web terminal (ADR 0440): answers with a one-use socket URL
+   * for the job's relay when a viewer is waiting and no host is connected, else `connect: null`
+   * after about `waitMs`. `signal` aborts the wait when the session ends.
+   */
+  terminal?(
+    jobId: string,
+    body: TerminalCallRequest,
+    signal?: AbortSignal,
+  ): Promise<TerminalCallResponse>;
 }
 
 /** Content-hash id for an artifact, so uploading it twice is a no-op. */
@@ -237,5 +253,8 @@ export function httpControlPlane(config: {
     // Not stored: each wait is new, and taking a steer marks it delivered.
     steers: (jobId, body, signal) =>
       call(PATHS.steer(jobId), `steer:${jobId}:${crypto.randomUUID()}`, body, signal),
+    // Not stored: each wait is new, and its ticket works once.
+    terminal: (jobId, body, signal) =>
+      call(PATHS.terminal(jobId), `term:${jobId}:${crypto.randomUUID()}`, body, signal),
   };
 }

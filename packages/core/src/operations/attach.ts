@@ -114,7 +114,7 @@ export const workItemAttachPr = defineOperation({
   permission: "member",
   input: z.object({
     projectId,
-    /** Needed only when the project has several repositories (ADR 0440). */
+    /** Needed only when the project has several repositories (ADR 0490). */
     repositoryId: repositoryId.optional(),
     prNumber: z.number().int().positive(),
   }),
@@ -159,7 +159,7 @@ export const workItemAttachPr = defineOperation({
       requesterUserId: ctx.actor.id,
       number: project.next_number,
       pr: { branch: pr.head.ref, number: pr.number, url: pr.url, headSha: pr.head.sha },
-      // An attached PR is already built: it skips the backlog and the active limit (ADR 0441).
+      // An attached PR is already built: it skips the backlog and the active limit (ADR 0491).
       state: "queued",
     });
     startPipeline(ctx, created, project, {

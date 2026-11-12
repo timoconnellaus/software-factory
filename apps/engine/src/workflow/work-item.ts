@@ -1524,7 +1524,7 @@ class ItemFlow {
   // ---- v6: workflows (spec 09 M2, ADR 0371) ----
 
   /**
-   * The workflows triage may pick from. None since ADR 0442: an item follows its project's
+   * The workflows triage may pick from. None since ADR 0492: an item follows its project's
    * workflow, pinned when it was pulled. The step keeps its name so running instances replay.
    */
   async workflowOptions(): Promise<{ name: string; description: string }[]> {

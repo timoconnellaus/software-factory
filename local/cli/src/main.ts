@@ -615,7 +615,7 @@ const newCommand: Command = {
       source: "cli",
       // One id per invocation: a retried request is a no-op, not a second item.
       eventId: `cli:${randomUUID()}`,
-      // `sf new` sends straight to the factory: create and release (ADR 0441).
+      // `sf new` sends straight to the factory: create and release (ADR 0491).
       state: "queued",
     });
     if (values.json) printJson(ctx, created);

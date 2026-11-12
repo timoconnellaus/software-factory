@@ -13,7 +13,7 @@ import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import {
-  ACTIVE,
+  ACTIVE_STATUSES,
   INTAKE_STATES,
   linkNewItem,
   PRE_PIPELINE,
@@ -41,7 +41,7 @@ import {
 
 export const SIZES = ["small", "medium", "large"] as const;
 export const ITEM_STATUSES = [
-  // Before the pipeline (ADR 0441); `planning` is spec 50 part C's.
+  // Before the pipeline (ADR 0491); `planning` is spec 50 part C's.
   "backlog",
   "planning",
   "ready",
@@ -93,7 +93,7 @@ const itemSummary = z.object({
   prUrl: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
-  /** ADR 0441: pull priority, the repository it uses (ADR 0440), and when it was released. */
+  /** ADR 0491: pull priority, the repository it uses (ADR 0490), and when it was released. */
   priority: priority.optional(),
   repositoryId: z.string().nullable().optional(),
   releasedAt: z.string().nullable().optional(),
@@ -125,14 +125,14 @@ const summarise = (w: ItemRow): z.input<typeof itemSummary> => ({
 export const workItemCreate = defineOperation({
   name: "workItem.create",
   description:
-    'Capture work on a project (ADR 0441). By default it lands in the backlog and nothing runs; `state: "ready"` marks it shaped; `state: "queued"` creates and releases it in one step (as New work and `sf new` do), and the factory starts its Workflow (triage → spec gate when needed → build → verify → merge gate) as soon as the project is under its active limit and what it waits for is done. Releasing follows workItem.release\'s rules: a person may; an agent or intake only where the config allows; refused when its workflow needs a repository and it has none. Idempotent per intake event: a redelivered `eventId` is a no-op; a new event whose `dedupeKey` maps to an existing item attaches to it instead of creating a second. Refused when the project has no valid `.factory/policy.json` on its default branch.',
+    'Capture work on a project (ADR 0491). By default it lands in the backlog and nothing runs; `state: "ready"` marks it shaped; `state: "queued"` creates and releases it in one step (as New work and `sf new` do), and the factory starts its Workflow (triage → spec gate when needed → build → verify → merge gate) as soon as the project is under its active limit and what it waits for is done. Releasing follows workItem.release\'s rules: a person may; an agent or intake only where the config allows; refused when its workflow needs a repository and it has none. Idempotent per intake event: a redelivered `eventId` is a no-op; a new event whose `dedupeKey` maps to an existing item attaches to it instead of creating a second. Refused when the project has no valid `.factory/policy.json` on its default branch.',
   risk: "write",
   actors: ["human", "intake"],
   permission: "member",
   input: z
     .object({
       projectId,
-      /** The repository it uses (ADR 0440): needed only when the project has several. */
+      /** The repository it uses (ADR 0490): needed only when the project has several. */
       repositoryId: repositoryId.optional(),
       /** Defaults to the first line of the body. */
       title: z.string().trim().min(1).max(200).optional(),
@@ -145,7 +145,7 @@ export const workItemCreate = defineOperation({
       dedupeKey: z.string().min(1).max(300).optional(),
       /** Who the work is for. Intake must name them; for a person it is themselves. */
       requesterUserId: z.string().min(1).optional(),
-      /** Where it starts (ADR 0441): `queued` is create-and-release. */
+      /** Where it starts (ADR 0491): `queued` is create-and-release. */
       state: z.enum(INTAKE_STATES).default("backlog"),
       priority: priority.default("normal"),
       /** Items it waits for (same org, any project): it isn't pulled until they are done. */
@@ -359,7 +359,7 @@ export const workItemGet = defineOperation({
     }),
     /** The workflows it could follow (of the version it started under), for "change workflow". */
     workflows: z.array(z.object({ name: z.string(), description: z.string() })),
-    /** ADR 0441: who released it, and its "waits for" links both ways. */
+    /** ADR 0491: who released it, and its "waits for" links both ways. */
     releasedBy: z.string().nullable().optional(),
     waitsFor: z.array(linkView).optional(),
     waitedOnBy: z.array(linkView).optional(),
@@ -732,7 +732,7 @@ export const workItemCancel = defineOperation({
       }
     }
     if ((PRE_PIPELINE as readonly string[]).includes(w.status)) {
-      // Nothing runs before the pull (ADR 0441): no Workflow, runs or gates to stop.
+      // Nothing runs before the pull (ADR 0491): no Workflow, runs or gates to stop.
       ctx.write(
         ctx.db
           .updateTable("core_work_items")
@@ -754,10 +754,10 @@ export const workItemCancel = defineOperation({
       });
       return { cancelled: true };
     }
-    if (!(ACTIVE as readonly string[]).includes(w.status)) return { cancelled: false };
+    if (!(ACTIVE_STATUSES as readonly string[]).includes(w.status)) return { cancelled: false };
     await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     cancelWorkItem(ctx, w, input.reason);
-    // Its slot is free: the next queued item may start (ADR 0441).
+    // Its slot is free: the next queued item may start (ADR 0491).
     await pullQueued(ctx, requireProject(ctx), ctx.scope.policy, { leaving: [w.id] });
     return { cancelled: true };
   },
@@ -783,8 +783,8 @@ export const workItemTriage = defineOperation({
     const w = requireWorkItem(ctx);
     const policy = ctx.scope.policy;
     if (!policy) throw new OperationError("denied", "no valid policy");
-    // An item follows its project's workflow, pinned when it was pulled (ADR 0442): triage no
-    // longer picks, and a pick it still sends is ignored. Items pulled before 0211 keep theirs.
+    // An item follows its project's workflow, pinned when it was pulled (ADR 0492): triage no
+    // longer picks, and a pick it still sends is ignored. Items pulled before 0261 keep theirs.
     const workflow = w.kind === "attached" ? null : w.workflow;
     const workflowReason = w.kind === "attached" ? null : w.workflow_reason;
     // An attached PR is already built: spec and build are skipped whatever its size (spec 05).
@@ -1013,7 +1013,7 @@ export const workItemFinish = defineOperation({
       before: { status: w.status },
       after: { status: input.status },
     });
-    // Its slot is free, and what waited on it may start (ADR 0441).
+    // Its slot is free, and what waited on it may start (ADR 0491).
     await pullAfterEnd(ctx, w, input.status);
     return { status: input.status };
   },
@@ -1357,7 +1357,7 @@ function runnerUpdate(
 export const workItemSetWorkflow = defineOperation({
   name: "workItem.setWorkflow",
   description:
-    "Refused since ADR 0442: a work item follows its project's workflow (the config's `workflow`), pinned when its pipeline starts, and there is no per-item override. Change the project's workflow in its config instead (config.save).",
+    "Refused since ADR 0492: a work item follows its project's workflow (the config's `workflow`), pinned when its pipeline starts, and there is no per-item override. Change the project's workflow in its config instead (config.save).",
   risk: "write",
   actors: ["human"],
   permission: "member",
@@ -1367,7 +1367,7 @@ export const workItemSetWorkflow = defineOperation({
     requireWorkItem(ctx);
     throw new OperationError(
       "conflict",
-      "an item follows its project's workflow (ADR 0442): change the project's workflow in its config",
+      "an item follows its project's workflow (ADR 0492): change the project's workflow in its config",
     );
   },
 });

@@ -1,4 +1,4 @@
-# ADR 0442: A project runs one workflow
+# ADR 0492: A project runs one workflow
 
 Status: accepted, 2026-11-12. Spec [50](../specs/50-projects-backlog-and-release.md). Amends
 [ADR 0371](0371-workflows-are-presets-over-typed-slots.md) §4.
@@ -13,7 +13,7 @@ live in each project's config version.
 1. **The project's config names its workflow**: `workflow` (a name from the config's `workflows`, or
    null for the skeleton alone). It is part of the config version, so it is versioned, journaled and
    saved only through `config.save`.
-2. **An item takes its project's workflow when it is pulled** (ADR 0441), with the config version it
+2. **An item takes its project's workflow when it is pulled** (ADR 0491), with the config version it
    pins then. There is no per-item override: triage's `workflow` field is ignored, the Workflow's
    `workflow: options` step offers none, and `workItem.setWorkflow` is refused.
 3. **Changing the project's workflow is checked like any config change.** `policyImpact` compares the

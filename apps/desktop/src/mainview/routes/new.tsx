@@ -78,7 +78,7 @@ function NewWorkPage() {
         body: body.trim(),
         source: "app",
         eventId: eventId.current,
-        // New work sends straight to the factory: create and release (ADR 0441).
+        // New work sends straight to the factory: create and release (ADR 0491).
         state: "queued",
       });
       if (files.length > 0) {

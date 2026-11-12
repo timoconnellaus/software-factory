@@ -138,11 +138,11 @@ export const projectPolicySchema = z
     wipLimit: z.number().int().positive().max(100).default(5),
     /**
      * How many items may be in the pipeline at once (running, waiting or paused). Queued items are
-     * pulled while the project is under it (ADR 0441).
+     * pulled while the project is under it (ADR 0491).
      */
     activeLimit: z.number().int().positive().max(100).default(10),
     /**
-     * Who may release work from ready to queued (ADR 0441). A person always may; agents, intakes and
+     * Who may release work from ready to queued (ADR 0491). A person always may; agents, intakes and
      * chat only with `agents: true`. Turning it on is a loosening, so only a person can.
      */
     release: z
@@ -193,10 +193,10 @@ export const projectPolicySchema = z
     reviewPacket: z.object({ sections: z.array(z.string().min(1)).min(1) }).optional(),
     /** Agents steps hand to (ADR 0372). */
     agents: z.array(agentSchema).max(30).default([]),
-    /** Named workflows (ADR 0371). The project runs the one named by `workflow` (ADR 0442). */
+    /** Named workflows (ADR 0371). The project runs the one named by `workflow` (ADR 0492). */
     workflows: z.array(workflowSchema).max(20).default([]),
     /**
-     * The project's workflow, by name (ADR 0442): every item follows it. Null: the skeleton alone.
+     * The project's workflow, by name (ADR 0492): every item follows it. Null: the skeleton alone.
      * There is no per-item override.
      */
     workflow: z.string().min(1).max(100).nullable().default(null),

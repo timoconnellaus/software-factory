@@ -4,7 +4,7 @@ import { call, first, newItem, ok, POLICY, refusal, rows, uid, world } from "./h
 
 describe("intake", () => {
   it("creates once per event, ignores a redelivery, and attaches a new event with the same dedupe key", async () => {
-    // An intake may create and release only where the config lets agents release (ADR 0441).
+    // An intake may create and release only where the config lets agents release (ADR 0491).
     const w = await world({ ...POLICY, release: { agents: true } });
     const event = {
       projectId: w.projectId,

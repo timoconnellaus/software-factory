@@ -333,7 +333,7 @@ export function protectionDriftQuery(
     ctx.db
       .selectFrom("core_project_protection")
       .innerJoin("core_projects", "core_projects.id", "core_project_protection.project_id")
-      // The project's first repository: protection is still recorded per project (ADR 0440).
+      // The project's first repository: protection is still recorded per project (ADR 0490).
       .innerJoin("core_repositories", (join) =>
         join
           .onRef("core_repositories.project_id", "=", "core_projects.id")

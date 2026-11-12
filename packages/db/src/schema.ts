@@ -118,7 +118,7 @@ export interface CoreProjectsTable {
 }
 
 /**
- * 0210 (ADR 0440): a GitHub repository of a project. A project has zero or more; a work item uses
+ * 0260 (ADR 0490): a GitHub repository of a project. A project has zero or more; a work item uses
  * one. The repo columns moved here from core_projects.
  */
 export interface CoreRepositoriesTable {
@@ -223,7 +223,7 @@ export interface CoreBatchGuardTable {
 
 export type Stage = "intake" | "triage" | "spec" | "build" | "verify" | "merge" | "done";
 export type WorkItemStatus =
-  // 0211 (ADR 0441): before the pipeline; `planning` is spec 50 part C's.
+  // 0261 (ADR 0491): before the pipeline; `planning` is spec 50 part C's.
   | "backlog"
   | "planning"
   | "ready"
@@ -276,21 +276,21 @@ export interface CoreWorkItemsTable {
   created_at: Iso;
   updated_at: Iso;
   closed_at: Iso | null;
-  /** 0210 (ADR 0440): the repository it uses; null when none is chosen yet. */
+  /** 0260 (ADR 0490): the repository it uses; null when none is chosen yet. */
   repository_id: string | null;
-  /** 0211 (ADR 0441): 0 urgent, 1 high, 2 normal, 3 low. */
+  /** 0261 (ADR 0491): 0 urgent, 1 high, 2 normal, 3 low. */
   priority: Generated<number>;
-  /** 0211: the order within a priority, lower first. */
+  /** 0261: the order within a priority, lower first. */
   rank: Generated<number>;
-  /** 0211: JSON string[] written while shaping; null when none. */
+  /** 0261: JSON string[] written while shaping; null when none. */
   acceptance_criteria: JsonText | null;
   released_at: Iso | null;
   released_by: string | null;
-  /** 0211: when the pipeline started (the pull). */
+  /** 0261: when the pipeline started (the pull). */
   pulled_at: Iso | null;
 }
 
-/** 0211 (ADR 0441): `work_item_id` waits for `waits_for_id` to be done. */
+/** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
 export interface CoreWorkItemLinksTable {
   work_item_id: string;
   waits_for_id: string;
@@ -622,6 +622,17 @@ export interface CoreRunSteersTable {
   delivered_at: Iso | null;
 }
 
+/** A person opening a run's web terminal (spec 35, ADR 0440). */
+export interface CoreRunTerminalAttachesTable {
+  id: string;
+  run_id: string;
+  work_item_id: string;
+  user_id: string;
+  mode: "type" | "watch";
+  opened_at: Iso;
+  closed_at: Iso | null;
+}
+
 export interface CoreArtifactsTable {
   id: string;
   run_id: string;
@@ -947,6 +958,7 @@ export interface CoreDatabase {
   core_runs: CoreRunsTable;
   core_run_events: CoreRunEventsTable;
   core_run_steers: CoreRunSteersTable;
+  core_run_terminal_attaches: CoreRunTerminalAttachesTable;
   core_artifacts: CoreArtifactsTable;
   core_leases: CoreLeasesTable;
   core_channel_requests: CoreChannelRequestsTable;

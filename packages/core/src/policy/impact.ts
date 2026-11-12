@@ -167,7 +167,7 @@ export function policyImpact(
     );
   }
   if (before.release.agents !== after.release.agents) {
-    // Letting agents release work commits the factory without a person (ADR 0441).
+    // Letting agents release work commits the factory without a person (ADR 0491).
     add(
       "release.agents",
       after.release.agents ? "loosens" : "tightens",
@@ -356,7 +356,7 @@ function gateSteps(policy: ProjectPolicy): Map<string, string> {
   return gates;
 }
 
-/** The gate steps of the project's workflow (ADR 0442), by step name. */
+/** The gate steps of the project's workflow (ADR 0492), by step name. */
 function projectGates(policy: ProjectPolicy): Set<string> {
   const name = policy.workflow?.toLowerCase();
   const w = name ? policy.workflows.find((x) => x.name.toLowerCase() === name) : undefined;
