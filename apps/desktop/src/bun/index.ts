@@ -14,6 +14,7 @@ import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { operationHandlers } from "./operations.ts";
 import { Runner } from "./runner.ts";
 import { saveTo } from "./save.ts";
+import { Terminals } from "./terminal.ts";
 import { titleBarDoubleClick } from "./title-bar.ts";
 import { viewUrl } from "./view-url.ts";
 
@@ -73,11 +74,18 @@ const ops = operationHandlers({
   },
   signedOut: () => {
     auth.forget();
+    terminals.closeAll();
     toView("sessionChanged", auth.session());
     refreshTray();
   },
 });
 const guarded = ops.guarded;
+// Runs' web terminals (spec 42): the door's socket here, its frames to the view over the RPC.
+const terminals = new Terminals(
+  ENGINE_URL,
+  () => auth.currentToken(),
+  (e) => toView("terminalEvent", e),
+);
 
 const rpc = BrowserView.defineRPC<AppRPC>({
   maxRequestTime: 120_000,
@@ -94,6 +102,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       },
       signOut: async () => {
         live.stop();
+        terminals.closeAll();
         await auth.signOut();
         setBadge(0);
         return auth.session();
@@ -102,6 +111,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       call: ops.call,
       batch: ops.batch,
       decide: ops.decide,
+      terminalOpen: (p) => terminals.open(p),
+      terminalSend: (p) => terminals.send(p),
+      terminalClose: (p) => terminals.close(p),
       runnerState: () => runner.state,
       runnerAction: async ({ action }) => {
         if (action === "takeover") await runner.takeOverFromLaunchd();
@@ -145,12 +157,16 @@ function openWindow(path?: string) {
     trafficLightOffset: { x: 5, y: 6 },
   });
   // A link that launched the app arrives before the view listens: send it once the page is up.
+  // A (re)load also means no view holds the open terminals' handles any more (a reload, or WebKit
+  // restarting its content process): close them, or each keeps an attach and a relay viewer slot.
   win.webview.on("dom-ready", () => {
+    terminals.closeAll();
     if (pendingPath) toView("navigate", { path: pendingPath });
     pendingPath = null;
   });
   win.on("close", () => {
     win = null;
+    terminals.closeAll();
   });
 }
 
@@ -248,8 +264,17 @@ const gateLabel = (kind: string) =>
 
 // The live socket (spec 40 M2b): a gate opening reaches the badge and a notification at once.
 const live = new Live(liveUrl(ENGINE_URL), () => auth.currentToken(), {
-  connected: () => void pollInbox(),
+  connected: () => {
+    void pollInbox();
+    // Pushes may have been missed while the socket was down: open Planning views re-read (spec 26).
+    toView("planningChanged", { workItemId: "*" });
+  },
   event: (e) => {
+    // A Planning view this person has open changed (spec 26): the view re-reads it.
+    if (e.type === "planning.changed" && e.workItemId) {
+      toView("planningChanged", { workItemId: e.workItemId });
+      return;
+    }
     if (e.type !== "notify") return;
     void pollInbox({ notify: false }).then(() => {
       if (e.title) Utils.showNotification({ title: "Software Factory", body: e.title });

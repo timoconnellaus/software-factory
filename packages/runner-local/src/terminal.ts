@@ -191,21 +191,36 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
     `=${options.session}`,
   ]);
   let bridge: TerminalBridge | null = null;
-  const pending: { resolve: (b: Block) => void }[] = [];
+  /**
+   * Command lines waiting for their blocks, in order. A line of `count` commands gets one block per
+   * command, unless one fails: then tmux answers that one with `%error` and drops the rest of the
+   * line, so the `%error` ends the whole line (the commands after it read as failed).
+   */
+  const pending: { count: number; blocks: Block[]; resolve: (b: Block[]) => void }[] = [];
+  const failed = (n: number): Block[] =>
+    Array.from({ length: n }, () => ({ ok: false, lines: [] }));
   let pane: string | null = null;
   let exited = false;
   let stderr = "";
   const exit = (reason: string) => {
     if (exited) return;
     exited = true;
-    for (const p of pending.splice(0)) p.resolve({ ok: false, lines: [] });
+    for (const p of pending.splice(0))
+      p.resolve([...p.blocks, ...failed(p.count - p.blocks.length)]);
     options.onExit(reason);
   };
   const parser = new ControlParser({
     output: (id, bytes) => {
       if (id === pane && bytes.length > 0) options.onOutput(bytes);
     },
-    block: (block) => pending.shift()?.resolve(block),
+    block: (block) => {
+      const line = pending[0];
+      if (!line) return;
+      line.blocks.push(block);
+      if (block.ok && line.blocks.length < line.count) return;
+      pending.shift();
+      line.resolve([...line.blocks, ...failed(line.count - line.blocks.length)]);
+    },
     exit,
     pause: (id) => {
       if (id !== pane) return;
@@ -222,13 +237,20 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
   child.stdin?.on("error", () => {});
 
   /** One command line; resolves with its block. */
-  const command = (line: string): Promise<Block> => {
-    if (exited || !child.stdin?.writable) return Promise.resolve({ ok: false, lines: [] });
+  const command = async (line: string): Promise<Block> =>
+    (await commands(line, 1))[0] ?? { ok: false, lines: [] };
+  /**
+   * A command line of several `;`-separated commands: tmux answers each with its own block, all
+   * before any more output, so they are read together and in order with the output stream. One
+   * that fails ends the line (see `pending`).
+   */
+  function commands(line: string, count: number): Promise<Block[]> {
+    if (exited || !child.stdin?.writable) return Promise.resolve(failed(count));
     return new Promise((resolve) => {
-      pending.push({ resolve });
+      pending.push({ count, blocks: [], resolve });
       child.stdin?.write(`${line}\n`);
     });
-  };
+  }
   const text = (block: Block) => block.lines.map((l) => new TextDecoder().decode(l));
 
   let size: TerminalSize = { cols: 80, rows: 24 };
@@ -269,12 +291,15 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
     },
     async redraw() {
       // One command line, so the screen and the cursor are read together, in order with the output.
-      const r = await command(
+      // It answers with two blocks, one per command (reading only one put the cursor at 1;1 and
+      // handed the second block to the next command).
+      const [screen, cursor] = await commands(
         `capture-pane -p -e -t ${pane} ; display-message -p -t ${pane} "#{cursor_x} #{cursor_y} #{pane_width} #{pane_height} #{cursor_flag}"`,
+        2,
       );
-      if (!r.ok) return;
-      const lines = text(r);
-      const [x, y, w, h, visible] = (lines.pop() ?? "").split(" ").map(Number);
+      if (!screen?.ok || !cursor?.ok) return;
+      const lines = text(screen);
+      const [x, y, w, h, visible] = (text(cursor)[0] ?? "").split(" ").map(Number);
       if (w && h) size = { cols: w, rows: h };
       options.onSize(size);
       options.onOutput(

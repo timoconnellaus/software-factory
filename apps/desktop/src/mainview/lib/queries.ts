@@ -53,11 +53,13 @@ export const timelineQuery = (workItemId: string) =>
   });
 
 /** How often the Planning tab re-reads while it is open. */
-export const PLANNING_POLL_MS = 3_000;
+/** A fallback only: the engine pushes `planning.changed` to the live socket (spec 26). */
+export const PLANNING_POLL_MS = 30_000;
 
 /**
- * A work item's planning (spec 20). sf-app streams changes over Server-Sent Events; the client door
- * has no planning stream yet, so the desktop re-reads while the tab is open (spec 40 M3, as built).
+ * A work item's planning (spec 20). The engine pushes a change to the desktop's live socket for
+ * whoever has the view open, and the Planning tab re-reads then (spec 26); this slow poll covers a
+ * dropped socket.
  */
 export const planningQuery = (workItemId: string) =>
   queryOptions({

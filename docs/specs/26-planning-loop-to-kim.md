@@ -190,3 +190,28 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
   - The Rewind-menu check reads only the bottom of the screen and needs the menu's footer line.
   - `desktopDecidable`'s comment lists the operations it covers and why.
 
+**PR C, the Planning tab (desktop).** Built on PR #70's restyle (spec 41); it only adds behaviour.
+- Planning questions are answered with `planning.answer` through a plain call (no Touch ID).
+  Security, privacy and irreversible ones go through `decide` (Touch ID). Bulk accept uses
+  `planning.acceptDefaults`.
+  - The desktop's `DECIDE_OPS` (may go through decide) is now separate from `DECISION_OPS` (must).
+    `test/decisions.test.ts` checks both against core's flags.
+- Skip on an open planning question. Answered rows show "skipped · the planner decides", "default ·
+  finish alone", and a "✓ Read" receipt. A person's chat message shows "Read" too.
+- Chat: Enter sends after the planner's current step, ⌘-Enter interrupts. A hint row says which,
+  or that the runner can't interrupt. An interrupt that didn't happen says why.
+- The activity line has Stop. The chat header has Pause and Resume, and a paused planner is shown.
+  The gate bar has "Let the planner finish alone" (and who turned it on, with Turn off) while the
+  spec isn't at the gate, and "Accept N recommended".
+- Push instead of polling: the engine's `planning.changed` delivery also tells the ClientHub of
+  everyone with the view open (`notifyPlanningViewers`, from presence). The desktop main process
+  forwards it to the view (`planningChanged`), which re-reads. The poll is now a 30 s fallback.
+- Screenshots: `docs/screenshots/planning/` (before and after, docked and focus, and finish alone
+  on).
+- After review: the planning view re-reads when the live socket reconnects (the main process sends
+  `planningChanged` with `*`), and on window focus. Presence is reported again at once when the
+  window comes back. Answers carry `questionRevision`. The Touch ID check is the shared
+  `isSensitiveQuestion`.
+- Deferred: the same behaviours in sf-app, whose screens shrink to auth (ADR 0392), and plan
+  editing and comments (slice 2).
+
