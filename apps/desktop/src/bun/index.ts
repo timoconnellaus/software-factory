@@ -4,6 +4,7 @@
 import { hostname } from "node:os";
 import { join } from "node:path";
 import Electrobun, { BrowserView, BrowserWindow, Tray, Utils } from "electrobun/main";
+import { DECISION_OPS, refuseDecisionCall } from "../shared/decisions.ts";
 import type { AppRPC, CallResult, RunnerState } from "../shared/rpc.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
@@ -106,18 +107,28 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         setBadge(0);
         return auth.session();
       },
-      call: ({ op, input }: { op: string; input: unknown }) =>
-        guarded<CallResult>(() => door().call(op, input), {
-          ok: false,
-          code: "unauthenticated",
-          error: "signed out",
-        }),
+      call: ({
+        op,
+        input,
+        idempotencyKey,
+      }: {
+        op: string;
+        input: unknown;
+        idempotencyKey?: string;
+      }): CallResult | Promise<CallResult> => {
+        // A gate decision needs a presence proof: it goes through decide, never call (ADR 0381).
+        if (DECISION_OPS.has(op)) return refuseDecisionCall(op);
+        return guarded<CallResult>(
+          () => door().call(op, input, idempotencyKey ? { idempotencyKey } : {}),
+          { ok: false, code: "unauthenticated", error: "signed out" },
+        );
+      },
       batch: ({ calls }) =>
         guarded(
           () => door().batch(calls),
           calls.map(() => ({ ok: false as const, code: "unauthenticated", error: "signed out" })),
         ),
-      decide: ({ op, input }) => {
+      decide: ({ op, input, idempotencyKey }) => {
         const key = auth.key;
         if (!key)
           return {
@@ -125,7 +136,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
             code: "unauthenticated",
             error: "sign in again: this Mac has no device key",
           };
-        return guarded(() => door().decide(op, input, (m) => key.sign(m)), {
+        return guarded(() => door().decide(op, input, (m) => key.sign(m), idempotencyKey), {
           ok: false,
           code: "unauthenticated",
           error: "signed out",

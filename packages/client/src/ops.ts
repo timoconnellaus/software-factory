@@ -10,6 +10,7 @@ type Def<T> = T extends { input: infer I extends z.ZodType; output: infer O exte
 
 export interface OpMap {
   "inbox.list": Def<typeof operations.inboxList>;
+  "org.list": Def<typeof operations.orgList>;
   "workItem.create": Def<typeof operations.workItemCreate>;
   "workItem.previewRouting": Def<typeof operations.workItemPreviewRouting>;
   "workItem.get": Def<typeof operations.workItemGet>;

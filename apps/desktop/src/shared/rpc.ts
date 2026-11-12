@@ -28,7 +28,10 @@ export interface Session {
   error: string | null;
 }
 
-/** An operation's answer as the view sees it: the door's `{ result }` or `{ code, error }`. */
+/**
+ * An operation's answer as the view sees it: the door's `{ result }` or `{ code, error }`. A call a
+ * gate holds is `{ ok: false, code: "pending" }`. Bytes travel as `{ $bytes: base64 }` both ways.
+ */
 export type CallResult = { ok: true; result: unknown } | { ok: false; code: string; error: string };
 
 export type AppRPC = {
@@ -37,10 +40,14 @@ export type AppRPC = {
       session: { params: Record<string, never>; response: Session };
       signIn: { params: Record<string, never>; response: Session };
       signOut: { params: Record<string, never>; response: Session };
-      call: { params: { op: string; input: unknown }; response: CallResult };
+      /** One operation; a form submit passes an idempotency key so a retry runs once. */
+      call: { params: { op: string; input: unknown; idempotencyKey?: string }; response: CallResult };
       batch: { params: { calls: { op: string; input: unknown }[] }; response: CallResult[] };
       /** A gate decision: a presence challenge, Touch ID (showing the engine's summary), then the call (ADR 0381). */
-      decide: { params: { op: string; input: unknown }; response: CallResult };
+      decide: {
+        params: { op: string; input: unknown; idempotencyKey?: string };
+        response: CallResult;
+      };
       runnerState: { params: Record<string, never>; response: RunnerState };
       runnerAction: {
         params: { action: "pair" | "takeover" | "restart" };

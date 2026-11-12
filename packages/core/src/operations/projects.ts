@@ -478,7 +478,7 @@ export const projectUpdate = defineOperation({
 export const orgList = defineOperation({
   name: "org.list",
   description:
-    "The orgs you belong to, your Personal org first, with your role in each: what the CLI uses to find your projects (the app reads the same from your session).",
+    "The orgs you belong to, your Personal org first, with your role in each, and your own user id: what the CLI and the desktop app use to find your projects (sf-app reads the same from your session).",
   risk: "read",
   actors: ["human"],
   permission: "signed-in",
@@ -487,6 +487,7 @@ export const orgList = defineOperation({
     orgs: z.array(
       z.object({ id: z.string(), name: z.string(), kind: z.string(), role: z.string() }),
     ),
+    userId: z.string(),
   }),
   async handler(_input, ctx) {
     const rows = await ctx.db
@@ -502,6 +503,7 @@ export const orgList = defineOperation({
     );
     return {
       orgs: rows.map((r) => ({ id: r.id, name: r.name, kind: String(r.kind), role: r.role })),
+      userId: ctx.actor.id,
     };
   },
 });
