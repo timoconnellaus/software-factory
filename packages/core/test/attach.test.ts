@@ -333,6 +333,8 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
       "conflict",
       "the branch moved after you approved: review the new commit",
     ]);
+    // Said in details too, so no caller has to match the message text.
+    expect(refused.details).toMatchObject({ closeApproval: true, mergeRefused: "headMoved" });
     // The approval is closed with why, not left `approved` for a commit that won't merge.
     expect(
       await first(

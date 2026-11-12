@@ -20,6 +20,8 @@ import {
   BRANCH_MOVED_AFTER_APPROVAL,
   ciEvent,
   DEFAULT_BUILDER,
+  type DeliveredEventPayload,
+  deliveredEvent,
   FOREMAN,
   type GateEventPayload,
   has,
@@ -33,6 +35,7 @@ import {
   resolveOrgWorkflow,
   runEvent,
   SLOTS,
+  WORKFLOW_VERSION_FEATURES,
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
 import {
@@ -126,7 +129,18 @@ export type WorkItemOutcome =
  *   `: record`)
  *   runs a review-role job on the plan and records its notes; the gate follows either way.
  */
-export const WORKFLOW_VERSION = 10;
+/*
+ * v11 (spec 53, ADR 0580): approving the merge gate no longer
+ * makes the item land itself. It enters its repository's queue for the babysitter
+ * (`merge #b: deliver: enqueue`) and waits for `delivered-<item>` (`merge #b: deliver: wait #i`,
+ * re-reading its entry after each timeout, `merge #b: deliver: read #i`); the engine's deliverer
+ * updates, CIs and merges it. v11 has every feature of v10 (triage readiness and the spec critic). An incident's check-only auto-merge still lands itself, as v7.
+ */
+/** Whether the table has a row for `version`: an instance on any other version errors. */
+export const isKnownVersion = (version: number): boolean =>
+  Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
+
+export const WORKFLOW_VERSION = 11;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
@@ -329,37 +343,17 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
       async (): Promise<number> => WORKFLOW_VERSION,
     );
     const flow = new ItemFlow(this.env, step, event.payload.workItemId, event.instanceId);
-    if (version >= 1 && version <= WORKFLOW_VERSION) {
-      // An attached PR's own path (spec 05), chosen by kind, whatever version the item started on
-      // (it merges directly, not through the merge queue: the App can't update a person's branch). "meta: item" is runV1's first step
-      // anyway and is read once, so every other item runs exactly the steps it ran before.
-      const meta = await flow.meta();
-      if (meta.kind === "attached") return flow.runAttached(version, meta);
+    if (!isKnownVersion(version)) {
+      throw new Error(`no implementation for Workflow version ${version}`);
     }
-    switch (version) {
-      case 1:
-        return flow.runV1(1);
-      case 2:
-        return flow.runV1(2);
-      case 3:
-        return flow.runV1(3);
-      case 4:
-        return flow.runV1(4);
-      case 5:
-        return flow.runV1(5);
-      case 6:
-        return flow.runV1(6);
-      case 7:
-        return flow.runV1(7);
-      case 8:
-        return flow.runV1(8);
-      case 9:
-        return flow.runV1(9);
-      case 10:
-        return flow.runV1(10);
-      default:
-        throw new Error(`no implementation for Workflow version ${version}`);
-    }
+    // An attached PR's own path (spec 05), chosen by kind, whatever version the item started on
+    // (it merges directly, not through the merge queue: the App can't update a person's branch).
+    // "meta: item" is runV1's first step anyway and is read once, so every other item runs exactly
+    // the steps it ran before.
+    const meta = await flow.meta();
+    if (meta.kind === "attached") return flow.runAttached(version, meta);
+    // Every version runs the same flow; what it does is its row of WORKFLOW_VERSION_FEATURES.
+    return flow.runV1(version);
   }
 }
 
@@ -376,7 +370,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 1): Promise<WorkItemOutcome> {
+  async runV1(version = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       let meta = await this.meta();
@@ -798,7 +792,13 @@ class ItemFlow {
           stage: "merge",
         });
         if (has(version, "merge-queue")) {
-          const landed = await this.mergeV4(meta, b, headSha, pr.touchesFactoryConfig === true);
+          const landed = await this.mergeV4(
+            meta,
+            b,
+            headSha,
+            pr.touchesFactoryConfig === true,
+            version,
+          );
           if (landed.kind === "done") {
             await this.act("end: done", "workItem.finish", {
               workItemId: id,
@@ -970,7 +970,7 @@ class ItemFlow {
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        await this.waitForCi(b, headSha);
+        await this.waitForCi(b, headSha, 2);
         const packet = await this.act(`verify #${b}: packet`, "reviewPacket.record", {
           workItemId: id,
           runId: verify.runId,
@@ -1361,6 +1361,7 @@ class ItemFlow {
     b: number,
     headSha: string,
     touchesFactoryConfig: boolean,
+    version = 4,
   ): Promise<
     | { kind: "done"; reason: string }
     | { kind: "sent_back"; note: string | null }
@@ -1413,6 +1414,9 @@ class ItemFlow {
       // pr.merge ran without a gate (never for `merge` risk; a policy can't loosen it): it merged.
       return { kind: "done", reason: "merged" };
     }
+    // v11: the approval only says this head may merge; the babysitter lands it (spec 53).
+    if (has(version, "babysitter-delivery"))
+      return this.deliverV11(b, headSha, decided.pendingActionId);
     const landed = await this.landV4(b, "queue", headSha, decided.pendingActionId, (at) => ({
       op: "pr.merge",
       input: input(at),
@@ -1537,6 +1541,51 @@ class ItemFlow {
     if (landed.status === "pending")
       return { kind: "pending", pendingActionId: landed.pendingActionId, headSha: at };
     return { kind: "refused", message: landed.message, headSha: at };
+  }
+
+  /**
+   * v11: hands the approved merge to the babysitter (spec 53, ADR 0580) and waits for how it ended.
+   * The entry carries the outcome too, so a missed `delivered-<item>` costs one QUEUE_WAIT.
+   */
+  async deliverV11(
+    b: number,
+    headSha: string,
+    approvalId: string,
+  ): Promise<
+    { kind: "done"; reason: string } | { kind: "conflict" } | { kind: "failed"; reason: string }
+  > {
+    const id = this.workItemId;
+    const p = `merge #${b}: deliver`;
+    await this.act(`${p}: enqueue`, "mergeQueue.enter", {
+      workItemId: id,
+      headSha,
+      pendingActionId: approvalId,
+      driver: "babysitter",
+    });
+    for (let i = 1; ; i++) {
+      let told: DeliveredEventPayload | null = null;
+      try {
+        const event = await this.step.waitForEvent<DeliveredEventPayload>(`${p}: wait #${i}`, {
+          type: deliveredEvent(id),
+          timeout: QUEUE_WAIT,
+        });
+        told = event.payload;
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+        const read = await this.call(`${p}: read #${i}`, "mergeQueue.position", { workItemId: id });
+        if (read.status !== "ok") throw new Ended("failed", "the merge queue couldn't be read");
+        const o = read.output;
+        if (o.queued === true) continue;
+        if (o.outcome === "merged" || o.outcome === "conflict" || o.outcome === "failed") {
+          told = { outcome: o.outcome, reason: String(o.outcomeReason ?? "") };
+        } else {
+          throw new Ended("failed", "the item left the merge queue");
+        }
+      }
+      if (told.outcome === "merged") return { kind: "done", reason: "merged by the babysitter" };
+      if (told.outcome === "conflict") return { kind: "conflict" };
+      return { kind: "failed", reason: told.reason };
+    }
   }
 
   /** v4: waits until the item is the head of its project's merge queue. */

@@ -34,6 +34,8 @@ export const WORKFLOW_FEATURES = [
    * the gate and given to the planner. The gate opens when it's done or after its timeout.
    */
   "spec-critic",
+  /** v11: the babysitter lands the approved merge; the item waits for `delivered-<item>` (spec 53). */
+  "babysitter-delivery",
 ] as const;
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 
@@ -47,6 +49,7 @@ const v7 = [...v6, "release-wait"] as const;
 const v8 = [...v7, "host-checks"] as const;
 const v9 = [...v8, "triage-readiness"] as const;
 const v10 = [...v9, "spec-critic"] as const;
+const v11 = [...v10, "babysitter-delivery"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -60,6 +63,7 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   8: new Set(v8),
   9: new Set(v9),
   10: new Set(v10),
+  11: new Set(v11),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */

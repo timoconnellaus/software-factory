@@ -113,10 +113,12 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
-  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). Designed, not built (spec 53, ADRs 0580–0585): from Workflow v11 an approval only says the
-  head may merge, and the **babysitter** delivers it: a per-repository reconcile pass in the engine
-  (no model) orders, updates and merges approved PRs and holds them while `main` is red, and starts a
-  `babysit` job on a runner only for judgement (a conflict, a failed check, a red `main`). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
+  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). From Workflow v11 (spec 53, ADR 0580) an approval only says the head may merge, and the
+  **babysitter** delivers it: the engine's per-repository deliverer (`apps/engine/src/deliver/`, no
+  model, woken by the outbox's `delivery.wake` and the minute cron, one pass per repository at a time,
+  leased in `core_delivery_state` whose `rev` fences every call it makes, ADR 0586) updates, CIs and merges the head with the approval. Designed, not yet built:
+  holding while `main` is red, the approval across a merge of `main` checked by change digest, and a
+  `babysit` job on a runner for judgement (a conflict, a failed check, a red `main`). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
   auto-merge where policy opts in (ADR 0230, as built today). Accepted, not built: ADR 0230 is
   superseded by **dark factory mode** (ADR 0515, spec 52 PR (e)): an `autoApprove` setting on the

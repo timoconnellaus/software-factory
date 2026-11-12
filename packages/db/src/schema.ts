@@ -932,6 +932,45 @@ export interface CoreMergeQueueTable {
   enqueued_at: Iso;
   updated_at: Iso;
   ended_at: Iso | null;
+  /** 0350 (spec 53, ADR 0580): who lands it, its own Workflow or the babysitter's deliverer. */
+  driver: Generated<MergeQueueDriver>;
+  /** 0350: how it ended, as told to the Workflow; null while queued (and for `workflow` entries). */
+  outcome: DeliveryOutcome | null;
+  /** 0350: when GitHub was last asked to merge the default branch in (update-branch). */
+  update_asked_at: Iso | null;
+  /** 0350: how many times GitHub was asked to (the babysitter bounds it, spec 53 review). */
+  updates: Generated<number>;
+  /** 0350 (spec 53 review): marked just before GitHub is asked to merge; a cancel then waits. */
+  merging_at: Iso | null;
+  /** 0350: the question asked at the update bound, while it is open or not yet read back. */
+  hold_question_id: string | null;
+  /** 0350: update-branch requests a person allowed beyond the bound. */
+  updates_granted: Generated<number>;
+  /** 0350: the person asked to wait until then before the next update. */
+  held_until: Iso | null;
+}
+
+export type MergeQueueDriver = "workflow" | "babysitter";
+/** `withdrawn`: the approval no longer holds for the head (spec 53, ADR 0582). */
+/** `reverify`: the approval holds once the new head passes its own verification (spec 53 PR c). */
+export type DeliveryOutcome = "merged" | "conflict" | "failed" | "withdrawn" | "reverify";
+
+// ---- 0350: the babysitter's deliverer (spec 53, ADR 0580, 0585) ----
+
+/** One row per repository queue: the deliverer's one-pass-at-a-time bookkeeping. */
+export interface CoreDeliveryStateTable {
+  /** `<project id>:<repository id>`, or `<project id>:` for items with no repository recorded. */
+  key: string;
+  project_id: string;
+  repository_id: string | null;
+  rev: Generated<number>;
+  /** A pass is running until then (a pass that died frees it when it passes). */
+  running_until: Iso | null;
+  /** Something changed while a pass ran: it goes round again. */
+  dirty: Generated<number>;
+  /** When the minute cron passes again without an event. */
+  next_check_at: Iso | null;
+  updated_at: Iso;
 }
 
 // ---- 0120: planning, the loop (spec 20, ADR 0300, 0350) ----
@@ -1247,6 +1286,7 @@ export interface CoreDatabase {
   core_runner_device_codes: CoreRunnerDeviceCodesTable;
   core_attachments: CoreAttachmentsTable;
   core_merge_queue: CoreMergeQueueTable;
+  core_delivery_state: CoreDeliveryStateTable;
   core_planning_sessions: CorePlanningSessionsTable;
   core_planning_events: CorePlanningEventsTable;
   core_planning_messages: CorePlanningMessagesTable;

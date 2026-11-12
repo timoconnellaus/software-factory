@@ -2,11 +2,17 @@
 // project. The head is brought up to date with the default branch (GitHub's update-branch), CI runs
 // once on that head, then it merges; the next head is woken and does the same. A conflict or red
 // CI at the head takes the item out of the queue and back to build, and the queue moves on.
+//
+// Every case runs twice: on v7, where the item's own Workflow lands it (`landV4`, still serving
+// instances started before v11), and on v11, where the babysitter's deliverer does (spec 53). The
+// behaviour is the same; only who does it differs.
+import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { sign } from "@software-factory/connector-webhook";
 import { FOREMAN } from "@software-factory/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { WORKFLOW_VERSION } from "../src/workflow/work-item.ts";
 import {
   build,
   call,
@@ -94,7 +100,38 @@ const entry = (workItemId: string, where = "") =>
     workItemId,
   );
 
-describe("the merge queue (v4)", () => {
+describe.each([7, WORKFLOW_VERSION])("the merge queue (v%i)", (version) => {
+  // v7: new instances replay as v7 (their recorded version), landing themselves with landV4.
+  let introspector: Awaited<ReturnType<typeof introspectWorkflow>> | null = null;
+  beforeEach(async () => {
+    if (version === WORKFLOW_VERSION) return;
+    introspector = await introspectWorkflow(env.WORK_ITEM_WORKFLOW);
+    await introspector.modifyAll(async (m) => {
+      await m.mockStepResult({ name: "meta: version" }, version);
+    });
+  });
+  afterEach(async () => {
+    await introspector?.[Symbol.asyncDispose]();
+    introspector = null;
+  });
+
+  it("records who lands the merge", async () => {
+    const w = await world();
+    const a = await toMergeGate(w, "Who lands it", "src/a.ts");
+    await approve(w, a.id);
+    await itemStatus(a.id, "done");
+    const landed = await first<{ actor_id: string }>(
+      "SELECT actor_id FROM core_audit WHERE operation = 'pr.merge' AND work_item_id = ? AND outcome = 'ok'",
+      a.id,
+    );
+    expect(landed?.actor_id).toBe(version === 7 ? "foreman" : "babysitter");
+    const row = await first<{ workflow_version: number }>(
+      "SELECT workflow_version FROM core_work_items WHERE id = ?",
+      a.id,
+    );
+    expect(row?.workflow_version).toBe(version);
+  });
+
   it("lands approved merges one at a time, bringing each head up to date with what landed before it", async () => {
     const w = await world();
     const a = await toMergeGate(w, "First in line", "src/a.ts");

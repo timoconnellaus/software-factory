@@ -3,9 +3,11 @@
 // an accepted run's head), opens the PR and merges it after the merge gate. Runners only ever push
 // their own run branch.
 import { z } from "zod";
+import { BABYSITTER } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { defineOperation } from "../operation.ts";
-import { requireQueueHead } from "./merge-queue.ts";
+import { has } from "../workflow-features.ts";
+import { requireOpenToMerge, requireQueueHead } from "./merge-queue.ts";
 import { repoRef, requireRepository, requireWorkItem, sha, workItemId } from "./shared.ts";
 
 export const branchEnsure = defineOperation({
@@ -143,7 +145,7 @@ export const BRANCH_MOVED_AFTER_APPROVAL =
 export const prMerge = defineOperation({
   name: "pr.merge",
   description:
-    "Merge the work item's PR through the GitHub App. Risk `merge` (`self-modify` when the diff touches `.factory/`): always reviewed, for every actor and policy, so it opens the merge gate; it runs once a person approves with review.merge. Refused if the head moved since the packet was made, and for a queued item unless it is the head of the merge queue at the head the queue recorded (ADR 0330).",
+    'Merge the work item\'s PR through the GitHub App. Risk `merge` (`self-modify` when the diff touches `.factory/`): always reviewed, for every actor and policy, so it opens the merge gate; it runs once a person approves with review.merge. Refused if the head moved since the packet was made, for an item that is no longer open (cancelled, done, failed), for a queued item unless it is the head of the merge queue at the head the queue recorded (ADR 0330), and for the babysitter unless the item\'s entry is still open in its queue (spec 53). When GitHub says the head moved after approval, the refusal carries `details.mergeRefused: "headMoved"`: on a call by the babysitter for a Workflow v11+ item the approval is left to the babysitter, which owns the moved head; otherwise (v10 and earlier, an attached PR) the approval is closed (review the new commit). Any other GitHub refusal carries `mergeRefused: "refused"`.',
   risk: "merge",
   riskOf: (input) => (input.touchesFactoryConfig ? "self-modify" : "merge"),
   actors: ["agent"],
@@ -158,20 +160,89 @@ export const prMerge = defineOperation({
       throw new OperationError("conflict", "the branch moved since the review packet was made");
     }
     await requireQueueHead(ctx, w, input.headSha);
+    // Only an open item merges, and the babysitter only an entry still in its queue (spec 53
+    // review): read now, before GitHub is asked, and guarded again in this call's batch so a cancel
+    // or a leave that commits in between refuses it.
+    await requireOpenToMerge(ctx, w);
     const repo = await repoRef(ctx, requireRepository(ctx));
-    const merged = await ctx.services.github.mergePullRequest(repo, {
-      number: w.pr_number,
-      sha: input.headSha,
-      method: "merge",
-    });
-    if (!merged.merged && merged.headMoved) {
-      // The branch moved after the engine's check above: the approval was for a commit that is no
-      // longer the head. Say so, and close the approval (invoke does, for `closeApproval`), so the
-      // gate doesn't stay "approved" for a commit that will never merge.
-      throw new OperationError("conflict", BRANCH_MOVED_AFTER_APPROVAL, { closeApproval: true });
+    const github = ctx.services.github;
+    // A PR GitHub already shows merged at this head was merged by a call that lost track of it (a
+    // pass that died, or lost its lease, between GitHub's merge and its own record): it is recorded
+    // as merged, not merged again; GitHub refuses a second merge (spec 53 review).
+    const pr = await github.getPullRequest(repo, w.pr_number);
+    let sha: string;
+    if (pr?.merged) {
+      if (pr.head.sha !== input.headSha || !pr.mergeCommitSha) {
+        throw new OperationError(
+          "conflict",
+          `merge refused: #${w.pr_number} was already merged at ${pr.head.sha.slice(0, 7)}, not ${input.headSha.slice(0, 7)}`,
+          { mergeRefused: "refused" },
+        );
+      }
+      sha = pr.mergeCommitSha;
+    } else {
+      const merged = await github.mergePullRequest(repo, {
+        number: w.pr_number,
+        sha: input.headSha,
+        method: "merge",
+      });
+      if (!merged.merged && merged.headMoved) {
+        if (
+          has(w.workflow_version, "babysitter-delivery") &&
+          ctx.actor.type === BABYSITTER.type &&
+          ctx.actor.id === BABYSITTER.id
+        ) {
+          // From v11 the babysitter owns a moved head (spec 53): it re-snapshots, re-verifies and
+          // carries or withdraws the approval itself, so the approval is left for it to decide.
+          // (Its call reached here only with the item's entry open in its queue.)
+          throw new OperationError("conflict", `merge refused: ${merged.reason}`, {
+            mergeRefused: "headMoved",
+          });
+        }
+        // The branch moved after the engine's check above: the approval was for a commit that is
+        // no longer the head. Say so, and close the approval (invoke does, for `closeApproval`),
+        // so the gate doesn't stay "approved" for a commit that will never merge.
+        throw new OperationError("conflict", BRANCH_MOVED_AFTER_APPROVAL, {
+          closeApproval: true,
+          mergeRefused: "headMoved",
+        });
+      }
+      if (!merged.merged) {
+        throw new OperationError("conflict", `merge refused: ${merged.reason}`, {
+          mergeRefused: "refused",
+        });
+      }
+      sha = merged.sha;
     }
-    if (!merged.merged) throw new OperationError("conflict", `merge refused: ${merged.reason}`);
-    ctx.change({ entity: "work_item", id: w.id, after: { merged: merged.sha } });
-    return { merged: true as const, sha: merged.sha };
+    // From here the merge has happened. If a guard below fails the batch (a cancel, a takeover or a
+    // leave that committed while GitHub merged), these still commit: merged wins over a cancel that
+    // raced it, and the item is done with a note saying so (spec 53).
+    ctx.happened(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          status: "done",
+          status_reason: "cancelled after its merge had started",
+          updated_at: ctx.now,
+        })
+        .where("id", "=", w.id)
+        .where("status", "=", "cancelled"),
+    );
+    ctx.happened(
+      ctx.db
+        .updateTable("core_merge_queue")
+        .set({
+          status: "merged",
+          outcome: "merged",
+          end_reason: "merged; the cancel that raced the merge came too late",
+          updated_at: ctx.now,
+        })
+        .where("work_item_id", "=", w.id)
+        .where("status", "=", "left")
+        .where("end_reason", "like", "cancelled:%")
+        .where("ended_at", ">=", ctx.now),
+    );
+    ctx.change({ entity: "work_item", id: w.id, after: { merged: sha } });
+    return { merged: true as const, sha };
   },
 });

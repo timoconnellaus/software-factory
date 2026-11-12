@@ -134,3 +134,4 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0583](0583-the-babysit-job-is-woken-for-judgement.md) | Proposed: the `babysit` job kind, started by the engine only for conflicts, failed checks and red main; what it may and may never do |
 | [0584](0584-red-main-is-attributed-then-fixed-or-reverted.md) | Proposed: a red main is attributed, then fixed or reverted by the engine; a revert merges without a person only under `revertWithoutPerson` and `revertVerdict()` |
 | [0585](0585-one-babysitter-per-repository.md) | Proposed: one babysitter per repository (compare-and-set and a delivery fence); a dead job is replaced, a refused merge re-snapshots |
+| [0586](0586-the-deliverers-lease-is-engine-bookkeeping-and-fences-every-call.md) | Proposed: the deliverer holds one lease per repository in `core_delivery_state` (engine bookkeeping, like the outbox); its `rev` fences every operation it calls |

@@ -187,6 +187,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
   mergeQueue.mergeQueueList,
   mergeQueue.mergeQueueUpdate,
   mergeQueue.mergeQueueLeave,
+  mergeQueue.mergeQueueMerging,
+  mergeQueue.mergeQueueHold,
   verify.reviewPacketRecord,
   verify.ciRead,
   verify.checksForHead,

@@ -29,7 +29,7 @@ import {
   requestPullsAfterEnd,
 } from "./backlog.ts";
 import { refusePhoneCancel } from "./gates.ts";
-import { queuedEntriesQuery, releaseMergeQueue } from "./merge-queue.ts";
+import { queuedEntriesQuery, refuseWhileMerging, releaseMergeQueue } from "./merge-queue.ts";
 import { protectionDriftQuery } from "./protection.ts";
 import {
   ATTACHED_SKIP_REASON,
@@ -835,6 +835,8 @@ export const workItemCancel = defineOperation({
     }
     // From the phone, not while a config change or a self-modify action waits (ADR 0541).
     await refusePhoneCancel(ctx, w.id);
+    // Not while the babysitter is merging it: the merge may already have happened (spec 53 review).
+    await refuseWhileMerging(ctx, w);
     await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     cancelWorkItem(ctx, w, input.reason);
     // Its slot is free: the next queued item may start, after this commits (ADR 0491).

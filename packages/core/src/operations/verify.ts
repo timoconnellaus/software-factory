@@ -735,6 +735,23 @@ export const verifyRefresh = defineOperation({
         },
       });
     }
+    // ...and the babysitter's deliverer, when the head it brought up to date has settled (spec 53).
+    if (ci.state !== "pending" && item.stage === "merge") {
+      const delivering = await ctx.db
+        .selectFrom("core_merge_queue")
+        .select("id")
+        .where("work_item_id", "=", item.id)
+        .where("status", "=", "queued")
+        .where("driver", "=", "babysitter")
+        .where("head_sha", "=", input.headSha)
+        .executeTakeFirst();
+      if (delivering) {
+        ctx.emit({
+          kind: "delivery.wake",
+          payload: { projectId: item.project_id, repositoryId: item.repository_id },
+        });
+      }
+    }
 
     let output: Parameters<typeof postVerify>[1]["output"];
     if (packet) {
@@ -1060,7 +1077,8 @@ function strings(v: unknown): string[] {
 /**
  * Whether the factory itself is merging this item's PR at `headSha`: a merge approval for that
  * head that a person approved (pr.merge may still be running, its batch uncommitted) or that has
- * been applied. A webhook's `merged_by` is the surer sign; this covers a missing one.
+ * been applied, or the babysitter's merging mark on its queue entry. A webhook's `merged_by` is the
+ * surer sign; this covers a missing one.
  */
 async function factoryMerging(
   ctx: HandlerContext,
@@ -1077,11 +1095,23 @@ async function factoryMerging(
     .where("status", "in", ["approved", "applied"])
     .limit(20)
     .execute();
-  return approvals.some((a) => {
+  const approved = approvals.some((a) => {
     try {
       return (JSON.parse(a.input) as { headSha?: unknown }).headSha === headSha;
     } catch {
       return false;
     }
   });
+  if (approved) return true;
+  // The babysitter marks its open entry merging before it asks GitHub (spec 53). A point read on
+  // core_merge_queue_one_open_idx (work_item_id WHERE status = 'queued').
+  const merging = await ctx.db
+    .selectFrom("core_merge_queue")
+    .select("id")
+    .where("work_item_id", "=", item.id)
+    .where("status", "=", "queued")
+    .where("merging_at", "is not", null)
+    .limit(1)
+    .executeTakeFirst();
+  return merging !== undefined;
 }

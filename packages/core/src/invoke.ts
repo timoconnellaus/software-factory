@@ -66,6 +66,13 @@ export interface InvokeOptions {
   idempotencyKey?: string;
   /** The approved pending action this call carries out. */
   approvalId?: string;
+  /**
+   * An engine pass's lease (spec 53, ADR 0586): the babysitter's deliverer holds one per repository
+   * in `core_delivery_state` and every call it makes carries its key and rev. The call is refused
+   * when the rev is no longer current (another pass took over), before the handler runs and again
+   * in the call's own batch.
+   */
+  lease?: { key: string; rev: number };
 }
 
 export type InvokeResult<O = unknown> =
@@ -168,7 +175,7 @@ export async function runOperation<O = unknown>(
   rawInput: unknown,
   options: InvokeOptions,
 ): Promise<InvokeResult<O>> {
-  const { actor, origin, idempotencyKey, approvalId } = options;
+  const { actor, origin, idempotencyKey, approvalId, lease } = options;
   const d1 = deps.d1;
   const db = createDb(d1);
   const now = (deps.now?.() ?? new Date()).toISOString();
@@ -419,6 +426,29 @@ export async function runOperation<O = unknown>(
     fence = { workItemId: scope.workItemId, token };
   }
 
+  // 7b. An engine pass's lease (ADR 0586): a pass that lost its lease changes nothing, GitHub
+  // included, so it is checked before the handler and guarded again in the batch.
+  if (lease) {
+    const held = await db
+      .selectFrom("core_delivery_state")
+      .select("rev")
+      .where("key", "=", lease.key)
+      .executeTakeFirst();
+    if (held?.rev !== lease.rev) {
+      return refuse(
+        {
+          decision: gate.decision,
+          outcome: "fenced",
+          reason: `stale lease ${lease.key}@${lease.rev}`,
+        },
+        new OperationError("fenced", `stale lease: another pass holds ${lease.key}`, {
+          lease: lease.rev,
+          current: held?.rev ?? null,
+        }),
+      );
+    }
+  }
+
   // 8. Permission (humans).
   try {
     const permission = op.permissionOf
@@ -466,6 +496,7 @@ export async function runOperation<O = unknown>(
 
   // 10. Run the handler: it reads now and queues its writes.
   const statements: D1PreparedStatement[] = [];
+  const happened: D1PreparedStatement[] = [];
   const messages: OutboxMessage[] = [];
   const changes: Change[] = [];
   let changed = false;
@@ -499,6 +530,11 @@ export async function runOperation<O = unknown>(
         );
       }
       statements.push(isPrepared(statement) ? statement : toStatement(d1, statement));
+    },
+    happened: (statement) => {
+      const prepared = isPrepared(statement) ? statement : toStatement(d1, statement);
+      statements.push(prepared);
+      happened.push(prepared);
     },
     guardChanged: (guardName) => statements.push(guardChanged(d1, `${op.name}:${guardName}`)),
     guardExists: (guardName, query: Compilable) => {
@@ -600,6 +636,15 @@ export async function runOperation<O = unknown>(
             .bind(fence.workItemId, fence.token),
         ]
       : []),
+    ...(lease
+      ? [
+          d1
+            .prepare(
+              "INSERT INTO core_batch_guard (name, ok) SELECT 'lease', EXISTS (SELECT 1 FROM core_delivery_state WHERE key = ? AND rev = ?)",
+            )
+            .bind(lease.key, lease.rev),
+        ]
+      : []),
     ...(approval
       ? [
           d1
@@ -636,7 +681,42 @@ export async function runOperation<O = unknown>(
   } catch (error) {
     const guard = failedGuard(error);
     const unique = /UNIQUE constraint failed/.test(String(error));
-    const fenced = guard && fence && /fence/.test(String(error));
+    const fenced =
+      guard && ((fence && /fence/.test(String(error))) || (lease && /lease/.test(String(error))));
+    // What already happened outside (GitHub merged) is recorded whatever the guards found: the
+    // record must say it happened (spec 53 review). Unguarded by state; the approval was used.
+    if (guard && happened.length > 0) {
+      await d1.batch([
+        ...happened,
+        ...(approval
+          ? [
+              d1
+                .prepare(
+                  "UPDATE core_pending_actions SET status = 'applied' WHERE id = ? AND status != 'applied'",
+                )
+                .bind(approval.id),
+            ]
+          : []),
+        audit(
+          {
+            decision: gate.decision,
+            outcome: "ok",
+            reason: `done outside the factory, recorded although the state changed underneath this call (${String(error)})`,
+            result: op.redact?.output ? op.redact.output(output) : output,
+            diff: changes,
+            // Always journaled: something happened, whatever `changesOnly` would say.
+            auditId: auditId ?? newId("audit"),
+          },
+          subject,
+        ),
+        clearGuards(d1),
+      ]);
+      throw new OperationError(
+        fenced ? "fenced" : "conflict",
+        `${op.name}: the state changed underneath this call; what it did outside was recorded`,
+        { recorded: true },
+      );
+    }
     await audit(
       {
         decision: gate.decision,

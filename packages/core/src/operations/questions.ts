@@ -28,6 +28,7 @@ import { checkQuestionVisuals } from "../planning-visuals.ts";
 import { approverIds, backupOwnerId } from "../scope.ts";
 import { questionsEvent } from "../workflow-events.ts";
 import { resumeParked } from "./backlog.ts";
+import { holdingEntry, wakeDelivery } from "./merge-queue.ts";
 import { byJob, notifyAway, planningJob, planningJobFields } from "./planning.ts";
 import { fencingToken, jobId, questionId, requireWorkItem, workItemId } from "./shared.ts";
 
@@ -726,6 +727,12 @@ async function answerQuestion(
     await takeBackFromGate(ctx, requireWorkItem(ctx), "a person changed an answer");
     await wakeSession(ctx, requireWorkItem(ctx));
     return { answered: true, revised: revisable, roundComplete: false };
+  }
+  // The babysitter's hold (spec 53 review): no spec round waits on it; its deliverer reads it.
+  const hold = await holdingEntry(ctx, q.work_item_id, q.id);
+  if (hold) {
+    wakeDelivery(ctx, hold);
+    return { answered: true, revised: false, roundComplete: false };
   }
   // A parked item's needs-info question (spec 23): the item goes on once the request is clear.
   // Its Workflow hasn't started (or ended when triage parked it): no round to close.

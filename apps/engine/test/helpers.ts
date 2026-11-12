@@ -17,8 +17,9 @@ export async function call<O = Record<string, unknown>>(
   op: string,
   input: unknown,
   actor: Actor,
+  options: { approvalId?: string } = {},
 ): Promise<InvokeResult<O>> {
-  return invoke<O>(invokeDeps(env), op, input, { actor, origin: { surface: "test" } });
+  return invoke<O>(invokeDeps(env), op, input, { actor, origin: { surface: "test" }, ...options });
 }
 
 export async function ok<O = Record<string, unknown>>(
