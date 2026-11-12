@@ -196,12 +196,10 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         { orgId: o.orgId, baseVersion: 0, workflow: { ...SOFTWARE, id: "wf_ship", name: "Ship" } },
         o.human,
       );
-      const cfg = await ok<{ current: { version: number } | null }>(
-        "config.get",
-        { projectId: o.projectId },
-        o.human,
-      );
-      const policy = cfg.current?.policy as Record<string, unknown>;
+      const cfg = await ok<{
+        current: { version: number; policy: Record<string, unknown> | null } | null;
+      }>("config.get", { projectId: o.projectId }, o.human);
+      const policy = cfg.current?.policy ?? {};
       await ok(
         "config.save",
         {
