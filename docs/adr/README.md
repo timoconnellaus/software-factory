@@ -89,6 +89,9 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0420](0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md) | Linux hosts run the same runner as a systemd user service (linger, `KillMode=process`, the shared self-update wrapper); per-platform deny lists; doctor checks bubblewrap and socat |
 | [0450](0450-a-stream-json-session-mode-with-a-chat-view.md) | A stream-json session mode beside tmux (per runner, the `chat` capability), events from the structured output, a chat view, takeover by `claude --resume` (`run.takeover`) |
 | [0430](0430-a-container-per-job.md) | A container per job (Docker): a self-contained job repo with only the job's history, no home or host credentials, an egress proxy with the stage's allowlist, every stage `bypassPermissions`, the launch check inside the container |
+| [0490](0490-a-project-is-not-a-repository.md) | A project is not a repository: `core_repositories` (backfilled one per project, project ids unchanged), zero or more per project, an item uses one, config stays per project |
+| [0491](0491-work-starts-in-a-backlog-and-is-released.md) | Work starts in a backlog and is released: backlog, ready, queued; `workItem.release` (agents only where config allows); the pull by priority under `activeLimit`, respecting "waits for" links |
+| [0492](0492-a-project-runs-one-workflow.md) | A project runs one workflow (config `workflow`); triage no longer picks and there is no per-item override; org-level workflows are a follow-up |
 | [0390](0390-the-desktop-app-is-the-daily-ui.md) | The desktop app is the daily UI and the runner's supervisor |
 | [0391](0391-the-client-door-desktop-devices-and-presence.md) | One client door; desktop devices decide gates with a presence proof |
 | [0392](0392-the-website-shrinks-to-auth.md) | The website shrinks to auth, links go through a trampoline |
