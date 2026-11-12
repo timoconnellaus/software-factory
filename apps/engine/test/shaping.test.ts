@@ -42,7 +42,7 @@ describe("shaping before release (ADR 0493)", () => {
       { workItemId: item.workItemId },
       w.human,
     );
-    expect(shaped.status).toBe("planning");
+    expect(shaped.status).toBe("shaping");
     // Shaping runs although the project is at its active limit: it isn't delivery.
     await runStage(w, item.workItemId, "triage", () => triage("small"));
     await itemStatus(item.workItemId, "ready");

@@ -16,7 +16,14 @@ import type { ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
-import { projectId, repositoryId, requireProject, requireWorkItem, workItemId } from "./shared.ts";
+import {
+  projectId,
+  repositoryId,
+  requireProject,
+  requireWorkItem,
+  STAGE_PHASE,
+  workItemId,
+} from "./shared.ts";
 
 /** States before release: no Workflow instance exists in them, except `shaping` (part C). */
 export const PRE_PIPELINE = ["backlog", "shaping", "ready", "queued"] as const;
@@ -508,7 +515,7 @@ export const workItemShape = defineOperation({
       ctx.db
         .updateTable("core_work_items")
         .set({
-          status: "planning",
+          status: "shaping",
           status_reason: null,
           shaping_started_at: ctx.now,
           // The version shaping runs under; the pull pins delivery's again at release.
@@ -541,9 +548,9 @@ export const workItemShape = defineOperation({
       entity: "work_item",
       id: w.id,
       before: { status: w.status },
-      after: { status: "planning", shaping: true },
+      after: { status: "shaping" },
     });
-    return { status: "planning" };
+    return { status: "shaping" };
   },
 });
 
@@ -569,7 +576,7 @@ export const workItemShaped = defineOperation({
           updated_at: ctx.now,
         })
         .where("id", "=", w.id)
-        .where("status", "=", "planning"),
+        .where("status", "=", "shaping"),
     );
     ctx.change({
       entity: "work_item",
@@ -881,6 +888,8 @@ const boardItem = z.object({
   status: z.string(),
   statusReason: z.string().nullable(),
   stage: z.string(),
+  /** The stage's phase (ADR 0493): shaping (before release) or delivery. */
+  phase: z.enum(["shaping", "delivery"]),
   priority,
   rank: z.number(),
   size: z.string().nullable(),
@@ -990,6 +999,7 @@ export const workItemBoard = defineOperation({
           status: w.status,
           statusReason: w.status_reason,
           stage: w.stage,
+          phase: STAGE_PHASE[w.stage as keyof typeof STAGE_PHASE] ?? "delivery",
           priority: priorityOf(w.priority),
           rank: w.rank,
           size: w.size,

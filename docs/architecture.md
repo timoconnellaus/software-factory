@@ -57,6 +57,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   cron (`queue.pull`), while the project's active items are under `activeLimit`, by priority and
   rank, skipping items whose "waits for" links (`core_work_item_links`) aren't done. Attached PRs
   and incident fixes start at once. A project runs one workflow (config `workflow`, ADR 0492).
+  Shaping stages (triage, interview planning) can run before release: `workItem.shape` starts the
+  Workflow while the item is `shaping` (no slot), Workflow v7 waits at `release: wait` once it is
+  ready, and the pull wakes it with `release-<item>` (ADR 0493).
 - **Config** (ADR 0370, spec 09): a project's config is a sequence of versions in D1
   (`core_project_policies`, keyed `v<N>`), edited on `/projects/<id>/settings` through
   `config.get` / `config.preview` / `config.save` / `config.rollback` / `config.export`.

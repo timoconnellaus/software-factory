@@ -964,12 +964,13 @@ export const workItemFinish = defineOperation({
   output: z.object({ status: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    // `planning`: a spec rejected while shaping before release ends the item too (ADR 0493).
-    if (!["running", "waiting", "paused", "planning"].includes(w.status)) return { status: w.status };
+    // `shaping`: a spec rejected while shaping before release ends the item too (ADR 0493).
+    if (!["running", "waiting", "paused", "shaping"].includes(w.status))
+      return { status: w.status };
     setItemStatus(
       ctx,
       w.id,
-      ["running", "waiting", "paused", "planning"],
+      ["running", "waiting", "paused", "shaping"],
       input.status,
       input.reason,
     );

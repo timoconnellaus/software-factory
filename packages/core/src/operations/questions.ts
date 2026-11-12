@@ -397,8 +397,8 @@ export const workItemAwaitQuestions = defineOperation({
         .updateTable("core_work_items")
         .set({
           planning_round: round,
-          // A shaping item stays `planning` (ADR 0493): it isn't in the pipeline yet.
-          ...(open > 0 && w.status !== "planning" ? { status: "waiting" as const } : {}),
+          // A shaping item stays `shaping` (ADR 0493): it isn't in the pipeline yet.
+          ...(open > 0 && w.status !== "shaping" ? { status: "waiting" as const } : {}),
           updated_at: ctx.now,
         })
         .where("id", "=", w.id),

@@ -486,7 +486,7 @@ describe("shaping before release (ADR 0493)", () => {
       { workItemId: shaping.workItemId },
       w.human,
     );
-    expect(out.status).toBe("planning");
+    expect(out.status).toBe("shaping");
     expect(await starts(shaping.workItemId)).toBe(1);
     // Shaping isn't delivery: the only slot is still free for released work.
     const next = await create(w, "Released", { state: "queued" });
