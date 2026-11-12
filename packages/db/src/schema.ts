@@ -439,6 +439,13 @@ export interface CoreRunnersTable {
   /** 0120 (ADR 0301): the light pool; null when the runner reports none. */
   light_max: number | null;
   light_in_use: Generated<number>;
+  /** 0130 (ADR 0360): the commit the runner's code is at, as it last reported. */
+  version: string | null;
+  auto_update: Bool | null;
+  /** current | waiting | blocked | updating | rolled_back */
+  update_state: string | null;
+  update_target: string | null;
+  update_reason: string | null;
 }
 
 export interface CoreRunnerSharesTable {

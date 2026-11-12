@@ -1,6 +1,6 @@
 // The page logic the specs pin down, as pure functions.
 import { describe, expect, it } from "vitest";
-import { runnerLabel } from "#/components/runner-health";
+import { runnerLabel, updateLabel } from "#/components/runner-health";
 import { duration } from "#/lib/format";
 import { groupByProject } from "#/lib/inbox";
 import type { Inbox, WorkItemDetail } from "#/lib/ops";
@@ -199,14 +199,44 @@ describe("the inbox", () => {
       light: null,
       rateLimitedUntil: null,
       lastSeenAt: null,
+      update: null,
     };
-    expect(
-      runnerLabel({ ...base, state: "rate-limited", rateLimitedUntil: "2026-11-11T11:30:00.000Z" }),
-    ).toMatch(/^rate-limited until \d\d:\d\d$/);
-    expect(
-      runnerLabel({ ...base, state: "offline", lastSeenAt: "2026-11-11T09:00:00.000Z" }),
-    ).toMatch(/^offline since \d\d:\d\d/);
+    // Today's times (the label adds the date for another day).
+    const soon = new Date(Date.now() + 60_000).toISOString();
+    const earlier = new Date(Date.now() - 60_000).toISOString();
+    expect(runnerLabel({ ...base, state: "rate-limited", rateLimitedUntil: soon })).toMatch(
+      /^rate-limited until \d\d:\d\d$/,
+    );
+    expect(runnerLabel({ ...base, state: "offline", lastSeenAt: earlier })).toMatch(
+      /^offline since \d\d:\d\d/,
+    );
     expect(runnerLabel({ ...base, state: "busy", inUse: 2 })).toBe("busy 2/2");
+  });
+
+  it("says when a runner's code is behind, blocked or rolled back (ADR 0360)", () => {
+    const base = {
+      id: "r",
+      name: "m5",
+      state: "online" as const,
+      inUse: 0,
+      max: 2,
+      light: null,
+      rateLimitedUntil: null,
+      lastSeenAt: null,
+    };
+    expect(updateLabel({ ...base, update: null })).toBe("");
+    expect(updateLabel({ ...base, update: { state: "behind", reason: null } })).toBe(
+      "updating to the latest version",
+    );
+    expect(
+      updateLabel({
+        ...base,
+        update: { state: "blocked", reason: "the checkout has local changes" },
+      }),
+    ).toBe("can't update: the checkout has local changes");
+    expect(updateLabel({ ...base, update: { state: "rolled_back", reason: null } })).toBe(
+      "update rolled back",
+    );
   });
 });
 

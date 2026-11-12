@@ -74,6 +74,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   allowlist (ADR 0038), each run pushes its own branch under a fencing token (ADR 0035), and the
   harness runs without the owner's git or cloud credentials (ADR 0033): the runner host, not the
   harness, pushes the run branch with the job token (ADR 0250).
+  A runner host keeps its own code on the commit `sf-engine` was deployed from (`DEPLOYED_SHA`,
+  sent in each heartbeat): it updates itself when idle and rolls back an update that doesn't start
+  (ADR 0360).
 - **The `sf` CLI** (`local/cli`, ADR 0340) is a surface for people and their agent sessions: it
   calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
   `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses

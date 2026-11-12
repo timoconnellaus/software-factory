@@ -1,6 +1,6 @@
 // Small, pure pieces of `sf-runner pair` and `sf-runner install`, kept apart from the CLI so they can
 // be tested (incident 2026-11-11-bootstrap, docs/incidents/).
-import { delimiter, dirname, isAbsolute } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 /** The Node major the runner host needs (`.nvmrc`; `--experimental-transform-types`). */
 export const MIN_NODE_MAJOR = 24;
@@ -72,4 +72,29 @@ export function serviceNode(input: {
   const bin = dirname(input.execPath);
   const rest = (input.path ?? "/usr/bin:/bin").split(delimiter).filter((p) => p && p !== bin);
   return { node: input.execPath, path: [bin, ...rest].join(delimiter) };
+}
+
+/** Where Orca.app keeps its CLI. */
+export const ORCA_APP_BIN = "/Applications/Orca.app/Contents/Resources/bin";
+
+/**
+ * The service PATH with Orca's bin directory on it (incident 2026-11-11 #9: an install over SSH
+ * captured a PATH without Orca, so the service couldn't start jobs). Unchanged when a directory on
+ * it already has `orca`; otherwise `orcaBin`'s directory from the config, else Orca.app's, is added
+ * at the end. Null `added` when none was found.
+ */
+export function withOrcaOnPath(input: {
+  path: string;
+  orcaBin?: string | undefined;
+  isFile: (file: string) => boolean;
+}): { path: string; added: string | null } {
+  const dirs = input.path.split(delimiter).filter(Boolean);
+  if (dirs.some((d) => input.isFile(join(d, "orca")))) return { path: input.path, added: null };
+  const fromConfig =
+    input.orcaBin && isAbsolute(input.orcaBin) && input.isFile(input.orcaBin)
+      ? dirname(input.orcaBin)
+      : null;
+  const found = fromConfig ?? (input.isFile(join(ORCA_APP_BIN, "orca")) ? ORCA_APP_BIN : null);
+  if (!found) return { path: input.path, added: null };
+  return { path: [...dirs, found].join(delimiter), added: found };
 }

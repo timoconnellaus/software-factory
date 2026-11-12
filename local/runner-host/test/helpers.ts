@@ -60,6 +60,8 @@ export interface FakeCloud {
   /** Planning calls the host relayed (ADR 0350), and how the fake cloud answers them. */
   planningCalls: { jobId: string; op: string; input: Record<string, unknown> }[];
   planning: (call: { jobId: string; op: string; input: Record<string, unknown> }) => unknown;
+  /** What the heartbeat answers as `desiredVersion` (ADR 0360); undefined leaves it out. */
+  desiredVersion?: string | null;
 }
 
 export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
@@ -90,6 +92,9 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
             return {
               body: {
                 commands: cloud.commands.splice(0),
+                ...(cloud.desiredVersion !== undefined
+                  ? { desiredVersion: cloud.desiredVersion }
+                  : {}),
                 leases: hb.activeJobs.map((j) => ({
                   jobId: j.jobId,
                   expiresAt: new Date(Date.now() + 600_000).toISOString(),

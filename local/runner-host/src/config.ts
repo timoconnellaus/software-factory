@@ -24,6 +24,11 @@ export const configSchema = z.object({
   capabilities: z.array(z.enum(CAPABILITIES)).optional(),
   identity: z.object({ name: z.string(), email: z.string() }).optional(),
   orcaBin: z.string().optional(),
+  /**
+   * Update the runner's own checkout to the commit the factory was deployed from (ADR 0360).
+   * `false` turns it off; the runner then reports `blocked` when it is behind.
+   */
+  autoUpdate: z.boolean().default(true),
   /** Test only: clone/push URL per canonical GitHub URL. */
   repoUrlMap: z.record(z.string(), z.string()).optional(),
 });
@@ -41,11 +46,10 @@ export interface Paths {
 export function paths(env: NodeJS.ProcessEnv = process.env): Paths {
   const home = env.HOME ?? homedir();
   const configDir = join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "software-factory");
-  const stateDir = join(
-    env.XDG_STATE_HOME ?? join(home, ".local", "state"),
-    "software-factory",
-    "runner",
-  );
+  // The service gets SF_RUNNER_STATE_DIR from its plist, so the `sh` wrapper and Node agree on it.
+  const stateDir =
+    env.SF_RUNNER_STATE_DIR ??
+    join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "software-factory", "runner");
   return {
     configFile: env.SF_RUNNER_CONFIG ?? join(configDir, "runner.json"),
     configDir,

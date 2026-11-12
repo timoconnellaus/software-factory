@@ -160,6 +160,17 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   asks a blocking `operations` Question (Re-check CI / Stop this work item), no build retry.
 - Merge queue: built, see below (ADR 0330).
 
+**Runners update themselves (ADR 0360, spec 08, incident #9)**
+- The deploy passes `DEPLOYED_SHA` (the deployed commit) to sf-engine. `runner.heartbeat` answers
+  it as `desiredVersion` and records the runner's reported `version` (migration 0130:
+  `core_runners.version`, `auto_update`, `update_state`, `update_target`, `update_reason`).
+- The runner host updates itself: idle → fast-forward to exactly that commit → `pnpm install
+  --frozen-lockfile` → exit 75. launchd runs `local/runner-host/bin/sf-runner-service`, which rolls
+  back after three unconfirmed starts. It reports `blocked` (with the reason) instead of guessing.
+- `runner.list`, the inbox's runner health line and `sf-runner status` show it.
+- An existing runner moves onto the wrapper with one `sf-runner install`, which now adds Orca's bin
+  directory to `PATH` and retries the bootstrap.
+
 **Prompts travel as a file (incident 2026-11-11 #8)**
 - runner-orca writes the job's prompt to `.factory-prompt.md` in the worktree (in
   `PRIVATE_WORKTREE_FILES`, so it's excluded from git) and types only `PROMPT_POINTER`, one line,
