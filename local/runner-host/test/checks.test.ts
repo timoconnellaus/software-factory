@@ -7,6 +7,7 @@ import { runSettings } from "@software-factory/harness-claude";
 import {
   CHECK_FAILURE_MAX,
   checkFailureMessage,
+  checkPassed,
   type ExecutedCheck,
   type Job,
   NOT_RUN_NO_ISOLATION,
@@ -263,9 +264,10 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
         },
         never,
       );
-      expect(r.output).not.toMatch(
-        /READ-PROTECTED|WROTE-OUTSIDE|WROTE-TMP|WROTE-HOME|REACHED-NETWORK/,
-      );
+      // On Linux a read-denied dir is an empty tmpfs inside the sandbox: a write there "works"
+      // but never reaches the host. What counts is the host's files.
+      expect(r.output).not.toMatch(/READ-PROTECTED|WROTE-TMP|WROTE-HOME|REACHED-NETWORK/);
+      await expect(readFile(join(outside, "w"), "utf8")).rejects.toThrow();
       expect(r.output).toContain("ok");
       expect(await readFile(join(dir, "here"), "utf8")).toBe("ok\n");
     },
@@ -288,11 +290,13 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
     async () => {
       const { exec } = await realCheck();
       const run = (cmd: string) => exec({ run: cmd, timeoutMs: 30_000 }, never);
-      expect(await run("echo 1 failing; kill -TERM $$")).toMatchObject({ exitCode: null });
-      expect(await run("echo 1 failing; kill -INT $$")).toMatchObject({ exitCode: null });
-      expect(
-        await run(`node -e "console.log('1 failing'); process.kill(process.pid, 'SIGTERM')"`),
-      ).toMatchObject({ exitCode: null });
+      // Never a pass: on macOS the command dies of the signal (null); on Linux srt's wrapper
+      // shell reports it as 128 + the signal.
+      const failed = (r: { exitCode: number | null }) =>
+        expect(checkPassed({ exitCode: r.exitCode, timedOut: false })).toBe(false);
+      failed(await run("echo 1 failing; kill -TERM $$"));
+      failed(await run("echo 1 failing; kill -INT $$"));
+      failed(await run(`node -e "console.log('1 failing'); process.kill(process.pid, 'SIGTERM')"`));
       // Nothing outside the sandbox can be signalled: the reporter above it survives.
       const parent = await run("kill -TERM $PPID; echo still-reported; exit 4");
       expect(parent).toMatchObject({
@@ -351,8 +355,13 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
         },
         never,
       );
-      expect(first.output).not.toMatch(/WROTE|^srt-settings/m);
+      // On Linux the denied parent is an empty tmpfs inside the sandbox, so a write there "works"
+      // and goes nowhere: the host's files are what count.
+      expect(first.output).toContain("done");
       expect(await readFile(join(parent, "job_2-y"), "utf8")).toBe("another job's");
+      expect(await readFile(join(root, "gitconfig"), "utf8")).toBe("");
+      await expect(readFile(join(root, "tree-1"), "utf8")).rejects.toThrow();
+      await expect(readFile(join(root, "empty", "npmrc"), "utf8")).resolves.toBe("");
       // The next check is as confined as the first.
       const next = await exec(
         { run: `cat ${secret}/key && echo READ-PROTECTED; echo next`, timeoutMs: 30_000 },
