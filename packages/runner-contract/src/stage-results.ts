@@ -81,7 +81,7 @@ export const checkResultSchema = z.object({
 /** `verify`: evidence for the review packet (ADR 0020). The verdict itself comes from CI (spec 04). */
 export const verifyResultSchema = z.object({
   summary: z.string().max(8_000),
-  /** The agent's own report of checks: kept as its opinion, never the verdict (ADR 0451). */
+  /** The agent's own report of checks: kept as its opinion, never the verdict (ADR 0501). */
   checks: z.array(checkResultSchema).max(50).default([]),
   criteria: z
     .array(
@@ -90,7 +90,7 @@ export const verifyResultSchema = z.object({
         met: z.boolean(),
         evidence: z.string().min(1).max(4_000),
         /**
-         * The checks that prove it (ADR 0451): names of the factory's own checks or of CI check
+         * The checks that prove it (ADR 0501): names of the factory's own checks or of CI check
          * runs on the head. Only a linked check that passed makes the criterion Proven; `met` on
          * its own is the reviewer's opinion.
          */

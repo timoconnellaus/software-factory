@@ -1,4 +1,4 @@
-// Spec 51 PR B (ADR 0451): the factory runs the project's checks itself. The build job carries
+// Spec 51 PR B (ADR 0501): the factory runs the project's checks itself. The build job carries
 // them, the host's results decide, a failure after the session's own fixes asks a person, and the
 // reviewer's word alone never proves a criterion.
 import { describe, expect, it } from "vitest";
@@ -47,7 +47,7 @@ const linkedPass = {
   },
 };
 
-describe("checks the factory runs itself (spec 51, ADR 0451)", () => {
+describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
   it("puts the declared checks on the build job and decides from the host's results, marking linked criteria proven", async () => {
     const w = await world(CHECKS);
     const item = await create(w);

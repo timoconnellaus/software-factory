@@ -575,7 +575,7 @@ export interface CoreRunEventsTable {
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */
-/** The factory's own check results, per work item and commit (migration 0220, ADR 0451). */
+/** The factory's own check results, per work item and commit (migration 0270, ADR 0501). */
 export interface CoreCheckResultsTable {
   work_item_id: string;
   head_sha: string;
@@ -598,6 +598,8 @@ export interface CoreRunSteersTable {
   text: string;
   created_at: Iso;
   delivered_at: Iso | null;
+  /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
+  kind: Generated<"message" | "takeover">;
 }
 
 /** A person opening a run's web terminal (spec 35, ADR 0440). */

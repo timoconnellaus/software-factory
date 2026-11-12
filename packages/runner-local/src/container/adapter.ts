@@ -638,7 +638,7 @@ export function createContainerRunner(
       : undefined,
 
     // The project's checks run in a fresh container over the job repo, never on the host (ADR
-    // 0451). No `continueSession`: the agent's container stops when its turn ends, so a failing
+    // 0501). No `continueSession`: the agent's container stops when its turn ends, so a failing
     // check goes to a person rather than back into the session.
     async exec(_job, workspace, command, signal) {
       if (!isContainer(workspace)) throw new Error("this job has no container to run checks in");

@@ -1,4 +1,4 @@
-// What the factory proved itself (ADR 0451, spec 51): the project's declared checks as the runner
+// What the factory proved itself (ADR 0501, spec 51): the project's declared checks as the runner
 // host ran them on the head SHA, and each acceptance criterion marked Proven only when a check it
 // links to passed there (one of the factory's own, or a CI check run). The reviewer agent can link
 // a criterion to checks and argue it is met, but its word alone leaves it Not proven.

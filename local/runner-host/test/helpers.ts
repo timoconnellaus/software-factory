@@ -65,7 +65,7 @@ export interface FakeCloud {
   /** What the heartbeat answers as `desiredVersion` (ADR 0360); undefined leaves it out. */
   desiredVersion?: string | null;
   /** Steers queued per job (ADR 0400); the steer call takes them. */
-  steers: Map<string, { id: string; text: string; at: string }[]>;
+  steers: Map<string, { id: string; text: string; at: string; kind?: "message" | "takeover" }[]>;
   steerCalls: number;
   /** Answer the steer call 404, as an engine from before ADR 0400 does. */
   noSteerCall?: boolean;
@@ -422,7 +422,7 @@ export function fakeAdapter(
           async steer(_s: unknown, text: string) {
             steered.push(text);
           },
-          // Another turn of the same "session" (ADR 0451): the text goes in, the session runs again.
+          // Another turn of the same "session" (ADR 0501): the text goes in, the session runs again.
           async *continueSession(j: Job, _s: unknown, text: string, signal: AbortSignal) {
             steered.push(text);
             const ws = join(clonePath(j), "..", `wt-${j.jobId}`);

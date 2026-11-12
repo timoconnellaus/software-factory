@@ -44,10 +44,12 @@ export interface ChangedFile {
   status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed" | "unchanged";
   previousPath?: string;
   /**
-   * The file's unified diff, when GitHub returned one (ADR 0450). GitHub leaves it out for large
+   * The file's unified diff, when GitHub returned one (ADR 0500). GitHub leaves it out for large
    * or binary files; the tests-intact guard reports a test or gate file without one.
    */
   patch?: string;
+  /** Lines added plus removed, as GitHub counts them (0 for a pure rename). */
+  changes?: number;
 }
 
 /** One rule of a repository ruleset, as GitHub reports it. */

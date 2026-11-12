@@ -30,6 +30,12 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    **Take a run over** with the hint the run shows:
    `tmux -L software-factory attach -t sf-<jobId>` (detach with `C-b d`; the job still ends and
    hands back normally).
+   **Or as a stream** (ADR 0450): with `"session": "stream-json"` in `runner.json` (then restart
+   the service), Claude runs headless as a two-way stream-json session instead (same launch script,
+   same check), the runner declares `chat`, and the Live tab shows the run as a chat. Take one over
+   with **Take over in a terminal** there: the session stops and the run shows a
+   `cd <worktree> && env -u … claude … --resume <id>` command to run on this machine; quit it to
+   hand the run back. `sf-runner` logs the mode it runs at start.
    **Build only:** before the session the host fetches the job's `repo.defaultBranch` too and
    merges it into the run branch (a merge commit, never a rebase, ADR 0320). A conflict is left in
    progress for the session to resolve; unmerged paths at the end fail the run with no push.
@@ -38,7 +44,7 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    call is a `tool` event, a permission or idle notification is `waiting_input` (15 min, then the
    run fails), and `Stop` after the prompt ends the session.
 5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
-6. **The project's checks** (ADR 0451, `src/checks.ts`), when the job carries them: after a build
+6. **The project's checks** (ADR 0501, `src/checks.ts`), when the job carries them: after a build
    session's turn, it commits the leftovers and runs each check in the worktree, on that commit,
    through the adapter's `exec` (a local `/bin/sh -c` with only `PATH`, `HOME` and the like, never
    the owner's tokens, for an adapter without one). A failure is typed into the same session (the
@@ -431,7 +437,7 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 |---|---|
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
-| `src/checks.ts` | The project's checks (ADR 0451): run through the adapter's `exec` or a scrubbed local process, failures back into the same session |
+| `src/checks.ts` | The project's checks (ADR 0501): run through the adapter's `exec` or a scrubbed local process, failures back into the same session |
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
 | `src/runner.ts` | Wires config → channel client + git + runner-local, or its container runner with `isolation: container` (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |

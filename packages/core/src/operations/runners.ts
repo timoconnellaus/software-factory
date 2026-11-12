@@ -733,7 +733,7 @@ async function buildJob(
 }
 
 /**
- * The checks the host runs for this job (ADR 0451), from the project's config version, never the
+ * The checks the host runs for this job (ADR 0501), from the project's config version, never the
  * run's branch: after every build, and before an attached PR's review (it has no build). A factory
  * item's verify uses the build's results for the same head.
  */
@@ -1051,6 +1051,14 @@ export const runReportEvents = defineOperation({
         ? (last.state as "preparing" | "running" | "collecting")
         : null;
     const started = input.events.find((e) => e.type === "session.started");
+    // A stream session handed to a person (ADR 0450): its resume command is the run's takeover.
+    const handed = input.events.findLast((e) => e.type === "takeover");
+    const takeover =
+      handed?.type === "takeover"
+        ? { label: "Resume in a terminal", hint: handed.hint }
+        : started?.type === "session.started" && started.takeover
+          ? started.takeover
+          : null;
     if (isActive(run.status)) {
       ctx.write(
         ctx.db
@@ -1058,9 +1066,7 @@ export const runReportEvents = defineOperation({
           .set({
             last_event_at: ctx.now,
             ...(mapped ? { status: mapped } : {}),
-            ...(started?.type === "session.started" && started.takeover
-              ? { takeover: json(started.takeover) }
-              : {}),
+            ...(takeover ? { takeover: json(takeover) } : {}),
           })
           .where("id", "=", run.id),
       );
@@ -1179,7 +1185,7 @@ export function finishRun(
 export const runHandBack = defineOperation({
   name: "run.handBack",
   description:
-    "A run hands back: its outcome, summary, artifacts, the branch it pushed and its head, the stage's structured result, and the project's checks as the runner host ran them (stored against the SHA each ran on, ADR 0451). The branch must be the run's own branch, and for a build the pushed head is checked on GitHub; otherwise the run fails. The Workflow continues with the result.",
+    "A run hands back: its outcome, summary, artifacts, the branch it pushed and its head, the stage's structured result, and the project's checks as the runner host ran them (stored against the SHA each ran on, ADR 0501). The branch must be the run's own branch, and for a build the pushed head is checked on GitHub; otherwise the run fails. The Workflow continues with the result.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -1193,7 +1199,7 @@ export const runHandBack = defineOperation({
     branch: z.string(),
     headSha: sha.optional(),
     result: z.unknown().optional(),
-    /** The job's checks as the host ran them (ADR 0451); each is stored against its own SHA. */
+    /** The job's checks as the host ran them (ADR 0501); each is stored against its own SHA. */
     checks: z.array(executedCheckSchema).max(60).default([]),
   }),
   output: z.object({ accepted: z.boolean(), reason: z.string().nullable() }),
@@ -1228,7 +1234,7 @@ export const runHandBack = defineOperation({
     }
     const result = input.result === undefined ? null : JSON.stringify(input.result);
     if (result && result.length > MAX_RESULT) return fail("result too large");
-    // The factory's own check results (ADR 0451), whatever the outcome: a failure is evidence too.
+    // The factory's own check results (ADR 0501), whatever the outcome: a failure is evidence too.
     // A later round on the same SHA replaces a check's row.
     for (const c of input.checks) {
       const row = {

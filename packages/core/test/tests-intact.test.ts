@@ -7,7 +7,7 @@ const patch = (...lines: string[]) => ["@@ -10,4 +10,4 @@", ...lines].join("\n")
 const mod = (path: string, p: string): ChangedFile => ({ path, status: "modified", patch: p });
 const kinds = (files: ChangedFile[]) => testsIntact(SHA, files).findings.map((f) => f.kind);
 
-describe("tests intact (ADR 0450)", () => {
+describe("tests intact (ADR 0500)", () => {
   it("finds nothing when a diff only adds code and tests", () => {
     const out = testsIntact(SHA, [
       {
@@ -22,7 +22,7 @@ describe("tests intact (ADR 0450)", () => {
       },
       mod("src/app.ts", patch(" const a = 1;", "-const b = 2;", "+const b = 3;")),
     ]);
-    expect(out).toEqual({ headSha: SHA, intact: true, findings: [] });
+    expect(out).toEqual({ headSha: SHA, intact: true, findings: [], total: 0 });
   });
 
   it("finds a deleted test file, and one renamed out of the tests", () => {
@@ -46,13 +46,26 @@ describe("tests intact (ADR 0450)", () => {
     expect(removed.findings).toMatchObject([
       { kind: "test-removed", path: "test/a.test.ts", line: 10, message: /rejects a bad token/ },
     ]);
-    // Moved to another file: not a removal.
+    // Removed and re-added in the same file (an edit): not a removal.
+    expect(
+      kinds([
+        mod(
+          "test/a.test.ts",
+          patch('-it("rejects a bad token", () => {', '+it("rejects a bad token", async () => {'),
+        ),
+      ]),
+    ).toEqual([]);
+    // Titles match per file: the same title added in another file doesn't hide a removal.
     expect(
       kinds([
         mod("test/a.test.ts", patch('-it("rejects a bad token", () => {')),
         mod("test/b.test.ts", patch('+it("rejects a bad token", () => {')),
       ]),
-    ).toEqual([]);
+    ).toEqual(["test-removed"]);
+    // A title on the next line.
+    expect(
+      kinds([mod("test/a.test.ts", patch("-it(", '-  "spans two lines",', "-  () => {})"))]),
+    ).toEqual(["test-removed"]);
   });
 
   it("finds skipped, focused, todo and x-prefixed tests", () => {
@@ -135,8 +148,9 @@ describe("tests intact (ADR 0450)", () => {
       "gate-file",
       "unreadable",
     ]);
-    // Ordinary source without a patch isn't the guard's business.
-    expect(kinds([{ path: "src/big.ts", status: "modified" }])).toEqual([]);
+    // Code without its patch is unreadable too; an image isn't the guard's business.
+    expect(kinds([{ path: "src/big.ts", status: "modified" }])).toEqual(["unreadable"]);
+    expect(kinds([{ path: "docs/shot.png", status: "modified" }])).toEqual([]);
   });
 
   it("reads line numbers from the patch, and knows test paths", () => {
@@ -157,5 +171,90 @@ describe("tests intact (ADR 0450)", () => {
     for (const p of ["src/testing.ts", "src/contest.ts", "docs/test-plan.md"]) {
       expect(isTestPath(p), p).toBe(false);
     }
+  });
+});
+
+describe("tests intact: review fixes (ADR 0500)", () => {
+  const many = (n: number): ChangedFile[] =>
+    Array.from({ length: n }, (_, i) => ({ path: `docs/n${i}.md`, status: "added", patch: "+x" }));
+
+  it("never reads a truncated or empty compare as intact", () => {
+    expect(kinds(many(299))).toEqual([]);
+    expect(testsIntact(SHA, many(300)).findings).toMatchObject([
+      { kind: "unreadable", message: /300 files/ },
+    ]);
+    expect(kinds([])).toEqual(["unreadable"]);
+  });
+
+  it("finds gate changes that stop tests running without touching a listed file", () => {
+    expect(
+      kinds([mod("package.json", patch('-    "test": "vitest run",', '+    "test": "true",'))]),
+    ).toEqual(["gate-file"]);
+    expect(kinds([mod("package.json", patch('+    "vitest": { "exclude": ["**"] },'))])).toEqual([
+      "gate-file",
+    ]);
+    // A dependency bump isn't a gate change.
+    expect(
+      kinds([mod("package.json", patch('-    "zod": "4.1.0",', '+    "zod": "4.2.0",'))]),
+    ).toEqual([]);
+    expect(kinds([mod("tsconfig.json", patch('+  "exclude": ["src/legacy"],'))])).toEqual([
+      "gate-file",
+    ]);
+    for (const p of [
+      ".github/actions/setup/action.yml",
+      "vitest.shared.ts",
+      "apps/x/vitest.e2e.config.ts",
+      "jest.setup.js",
+      ".eslintignore",
+    ]) {
+      expect(kinds([mod(p, patch("+x"))]), p).toContain("gate-file");
+    }
+  });
+
+  it("finds a test moved where the run won't pick it up; a plain rename between test paths is clean", () => {
+    const move = (from: string, to: string): ChangedFile => ({
+      path: to,
+      previousPath: from,
+      status: "renamed",
+      changes: 0,
+    });
+    expect(kinds([move("test/a.test.ts", "test/disabled/a.test.ts")])).toEqual(["test-deleted"]);
+    expect(kinds([move("src/a.test.ts", "spikes/a.test.ts")])).toEqual(["test-deleted"]);
+    expect(kinds([move("src/a.test.ts", "src/theme/a.test.ts")])).toEqual([]);
+  });
+
+  it("keeps the total when it cuts the findings to 100", () => {
+    const lines = Array.from({ length: 150 }, () => "+// @ts-ignore").join("\n");
+    const out = testsIntact(SHA, [mod("src/a.ts", `@@ -1,1 +1,150 @@\n${lines}`)]);
+    expect([out.findings.length, out.total]).toEqual([100, 150]);
+  });
+
+  it("finds the skips the first pattern missed", () => {
+    for (const line of [
+      '+test.fails("a", () => {});',
+      '+it.concurrent.skip("a", () => {});',
+      '+it.each([1, 2])("a %d", () => {}).skip',
+      "+describe.each`a`.only",
+      '+describe.skipIf(process.env.CI)("a", () => {});',
+      "+  ctx.skip();",
+      "+    this.skip();",
+    ]) {
+      expect(kinds([mod("tests/x.test.ts", patch(line))]), line).toEqual(["test-skipped"]);
+    }
+    expect(kinds([mod("tests/x.test.ts", patch("+/*", '+it("a", () => {});', "+*/"))])).toEqual([
+      "test-commented-out",
+      "test-commented-out",
+    ]);
+  });
+
+  it("only treats coverage keys as thresholds, not every min*", () => {
+    expect(
+      kinds([mod("vitest.config.ts", patch("-  minutes: 30,", "+  minutes: 5,"))]).filter(
+        (k) => k !== "gate-file",
+      ),
+    ).toEqual([]);
+    expect(
+      kinds([mod("jest.config.js", patch("-  minCoverage: 90,", "+  minCoverage: 50,"))]),
+    ).toEqual(["gate-file", "threshold-lowered"]);
   });
 });

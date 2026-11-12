@@ -18,9 +18,9 @@ import { type TestsIntact, testFindingLines, testsIntact } from "./tests-intact.
 
 export interface PacketEvidence {
   summary: string;
-  /** The reviewer's judgement per criterion, and the checks it links each to (ADR 0451). */
+  /** The reviewer's judgement per criterion, and the checks it links each to (ADR 0501). */
   criteria: { criterion: string; met: boolean; evidence: string; checks?: string[] | undefined }[];
-  /** What the reviewer agent says it ran: its opinion, never the verdict (ADR 0451). */
+  /** What the reviewer agent says it ran: its opinion, never the verdict (ADR 0501). */
   checks: CheckResult[];
   reviewer: {
     role: "review";
@@ -42,7 +42,7 @@ export interface PacketInput {
   sameModelAsImplementer: boolean;
   /** What the runner said (kept in the packet; never decides). */
   runnerVerdict?: "pass" | "fail" | undefined;
-  /** The checks the project declares for this item (ADR 0451), by name. */
+  /** The checks the project declares for this item (ADR 0501), by name. */
   declaredChecks?: readonly string[] | undefined;
   /** What the runner host ran on this SHA (core_check_results). */
   checksRun?: readonly CheckRun[] | undefined;
@@ -63,11 +63,11 @@ export interface AssembledPacket {
   /** Flags for the packet's `risk_flags` column: the computed ones, then the reviewer's. */
   riskFlags: string[];
   /**
-   * Whether the diff weakens the tests (ADR 0450). Never part of the verdict and never from an
+   * Whether the diff weakens the tests (ADR 0500). Never part of the verdict and never from an
    * agent: a person looks at the findings at the merge gate, and they block the auto-merge.
    */
   testsIntact: TestsIntact;
-  /** The declared checks as the host ran them on the SHA (ADR 0451). */
+  /** The declared checks as the host ran them on the SHA (ADR 0501). */
   executed: ExecutedChecks;
   /** Each criterion, Proven only by a linked check that passed on the SHA. */
   proof: CriterionProof[];
@@ -115,7 +115,7 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
 
   if (executed.declared.length === 0) {
     warnings.push(
-      "the project declares no checks, so the factory ran none itself: only CI backs this verdict (ADR 0451)",
+      "the project declares no checks, so the factory ran none itself: only CI backs this verdict (ADR 0501)",
     );
   }
   const proof = proveCriteria(evidence.criteria, executed, ci);
@@ -134,6 +134,7 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
             message: "the diff couldn't be read from GitHub, so nothing says the tests are intact",
           },
         ],
+        total: 1,
       };
   const verdict = evidencePass && ci.state === "success" ? "pass" : "fail";
   const evidenceReasons = [...missing.map((m) => `incomplete: ${m}`), ...reasons];
@@ -176,9 +177,11 @@ export function verifyCheckOutput(args: {
   riskFlags: string[];
   ci: CiSummary;
   workItem: { number: number; title: string };
-  /** The tests-intact findings for this SHA (ADR 0450): shown first, for a person. */
+  /** The tests-intact findings for this SHA (ADR 0500): shown first, for a person. */
   testFindings?: string[];
-  /** The factory's own checks on this SHA, one line each (ADR 0451). */
+  /** How many findings there were in all (the lines may stop at MAX_FINDINGS). */
+  testFindingsTotal?: number;
+  /** The factory's own checks on this SHA, one line each (ADR 0501). */
   checkLines?: string[];
   /** How many criteria an executed check proves. */
   proven?: { proven: number; total: number } | null;
@@ -197,10 +200,11 @@ export function verifyCheckOutput(args: {
       : ""
   }`;
   const findings = args.testFindings ?? [];
+  const findingCount = args.testFindingsTotal ?? findings.length;
   const summary = [
     `Work item #${args.workItem.number}: ${args.workItem.title}`,
     "",
-    ...list("Tests not intact: a person must look at these (ADR 0450)", findings),
+    ...list("Tests not intact: a person must look at these (ADR 0500)", findings),
     ...list("What fails", args.evidencePass ? [] : args.evidenceReasons),
     ...list("Warnings", args.warnings),
     ...list("Risk flags", args.riskFlags),
@@ -238,8 +242,8 @@ export function verifyCheckOutput(args: {
   return {
     status: "completed",
     conclusion: "success",
-    title: findings.length
-      ? `Verified by the factory; ${findings.length} test finding${findings.length === 1 ? "" : "s"} for a person`
+    title: findingCount
+      ? `Verified by the factory; ${findingCount} test finding${findingCount === 1 ? "" : "s"} for a person`
       : "Verified by the factory",
     summary,
   };
@@ -248,9 +252,14 @@ export function verifyCheckOutput(args: {
 const short = (sha: string) => sha.slice(0, 7);
 
 /** The tests-intact finding lines stored in a packet's sections (for `verifyCheckOutput`). */
-export function storedTestFindings(sections: Record<string, unknown>): string[] {
+export function storedTestFindings(sections: Record<string, unknown>): {
+  testFindings: string[];
+  testFindingsTotal: number;
+} {
   const t = sections.testsIntact as Partial<TestsIntact> | undefined;
-  return Array.isArray(t?.findings) ? testFindingLines(t.findings) : [];
+  if (!Array.isArray(t?.findings)) return { testFindings: [], testFindingsTotal: 0 };
+  const total = typeof t.total === "number" ? t.total : t.findings.length;
+  return { testFindings: testFindingLines(t.findings, total), testFindingsTotal: total };
 }
 
 /** The check lines and proven count stored in a packet's sections (for `verifyCheckOutput`). */

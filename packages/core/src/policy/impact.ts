@@ -260,7 +260,7 @@ export function policyImpact(
     );
   }
 
-  // The factory's own checks (ADR 0451): dropping or changing one lowers the bar; adding raises it.
+  // The factory's own checks (ADR 0501): dropping or changing one lowers the bar; adding raises it.
   checkChanges("checks", before.checks, after.checks, add);
   for (const w of after.workflows) {
     const was = before.workflows.find((x) => x.name.toLowerCase() === w.name.toLowerCase());

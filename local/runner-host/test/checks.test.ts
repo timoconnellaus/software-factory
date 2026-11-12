@@ -19,7 +19,7 @@ afterEach(async () => {
 const SHA = "b".repeat(40);
 const never = new AbortController().signal;
 
-describe("the host's checks (ADR 0451)", () => {
+describe("the host's checks (ADR 0501)", () => {
   it("runs a command locally in the worktree, with its exit code and output, and a timeout", async () => {
     const dir = await mkdtemp(join(tmpdir(), "sf-checks-"));
     cleanups.push(() => rm(dir, { recursive: true, force: true }));
@@ -136,7 +136,7 @@ describe("the host's checks (ADR 0451)", () => {
   });
 });
 
-describe("runJob with checks (ADR 0451)", () => {
+describe("runJob with checks (ADR 0501)", () => {
   it("runs the checks on the build's commit, types a failure into the same session, and hands back the results", async () => {
     const repo = await scratchRepo();
     cleanups.push(repo.cleanup);

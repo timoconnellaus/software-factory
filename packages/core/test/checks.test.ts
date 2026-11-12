@@ -1,4 +1,4 @@
-// Spec 51 PR B (ADR 0451): checks the factory runs itself, and criteria proven only by them.
+// Spec 51 PR B (ADR 0501): checks the factory runs itself, and criteria proven only by them.
 import { describe, expect, it } from "vitest";
 import {
   assemblePacket,
@@ -154,7 +154,7 @@ describe("executed checks and proof (pure)", () => {
   });
 });
 
-describe("checks.forHead (ADR 0451)", () => {
+describe("checks.forHead (ADR 0501)", () => {
   // Storing results from the hand-back, and the packet built from them, run end to end in
   // apps/engine/test/checks-flow.test.ts.
   it("names the declared checks and says why a head without results doesn't pass", async () => {

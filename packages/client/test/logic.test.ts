@@ -107,7 +107,7 @@ describe("review packet sections (spec 14, criterion 1)", () => {
     // A packet from before the tests-intact guard reads as not checked, never as intact.
     expect(packetTestsIntact(p)).toBeNull();
   });
-  it("reads the factory's checks and each criterion's proof (ADR 0451)", () => {
+  it("reads the factory's checks and each criterion's proof (ADR 0501)", () => {
     const p = parsePacket({
       id: "rp_3",
       headSha: "a".repeat(40),
@@ -158,7 +158,7 @@ describe("review packet sections (spec 14, criterion 1)", () => {
     const old = parsePacket({ ...p, sections: {} });
     expect([packetExecuted(old), packetProof(old)]).toEqual([null, null]);
   });
-  it("reads the tests-intact findings (ADR 0450)", () => {
+  it("reads the tests-intact findings (ADR 0500)", () => {
     const p = parsePacket({
       id: "rp_2",
       headSha: "a".repeat(40),

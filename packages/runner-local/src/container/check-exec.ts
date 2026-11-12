@@ -1,4 +1,4 @@
-// The project's checks for a container job (ADR 0451 on top of ADR 0430). The host runs each check
+// The project's checks for a container job (ADR 0501 on top of ADR 0430). The host runs each check
 // through the adapter's `exec`; for a container job that is a fresh container from the agent's own
 // spec (the same image, user, mounts and limits, so it sees exactly the job repo the agent saw),
 // with no network at all and no model credential. Never a process on the host: the project's code

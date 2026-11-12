@@ -1,4 +1,4 @@
--- Migration 0220: the factory's own check results (spec 51, ADR 0451). The runner host runs the
+-- Migration 0270: the factory's own check results (spec 51, ADR 0501). The runner host runs the
 -- project's declared checks in the job's worktree and reports each on the hand-back; `run.handBack`
 -- stores them here against the work item and the commit they ran on. They belong to that SHA only:
 -- a new head has none until checks run on it. A later run on the same SHA replaces a check's row.
@@ -20,4 +20,4 @@ CREATE TABLE core_check_results (
   PRIMARY KEY (work_item_id, head_sha, name)
 );
 
-UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 220) WHERE key = 'schema_version';
+UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 270) WHERE key = 'schema_version';

@@ -1,4 +1,4 @@
-// The project's checks, run by the host itself (ADR 0451, spec 51). After a build session's turn
+// The project's checks, run by the host itself (ADR 0501, spec 51). After a build session's turn
 // ends, the host commits what it left and runs each declared check in the job's worktree, on that
 // commit. A failure goes back into the same session with the exact command, exit code and log tail,
 // and the session's fix is checked again, up to `fixRounds`. The results ride on the hand-back; the

@@ -1,4 +1,4 @@
-// The project's checks, run by the runner host itself (ADR 0451, spec 51): the commands a job
+// The project's checks, run by the runner host itself (ADR 0501, spec 51): the commands a job
 // carries, what the host reports for each on the hand-back, and the text a failing check sends back
 // into the build session. The agent's own report of checks is never the verdict.
 import { z } from "zod";
@@ -68,7 +68,7 @@ export function logTail(text: string, max = CHECK_LOG_TAIL_MAX): string {
 export const CHECK_FAILURE_MAX = 1_900;
 
 /**
- * What the host types into the build session when checks fail (ADR 0451): the exact failure (the
+ * What the host types into the build session when checks fail (ADR 0501): the exact failure (the
  * command, the exit code, the end of its output), never a summary. It goes in as one steer, so it
  * is one line within CHECK_FAILURE_MAX; the log tails share what's left after the fixed text.
  */

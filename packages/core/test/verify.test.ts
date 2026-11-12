@@ -392,7 +392,30 @@ describe("the check-only auto-merge (ADR 0230)", () => {
     expect((await github.state(w.repo)).pulls[0]?.state).toBe("merged");
   });
 
-  it("refuses a check-only fix whose packet has a tests-intact finding (ADR 0450)", async () => {
+  it("takes a real check-only diff with a finding through the packet and refuses its auto-merge (ADR 0500)", async () => {
+    const { item, head } = await incidentAtMerge(OPT_IN, [
+      ...CHECK_ONLY,
+      {
+        path: "evals/regressions/inc_2.test.ts",
+        status: "added",
+        patch: '@@ -0,0 +1,1 @@\n+it.only("catches the slip", () => {});',
+      },
+    ]);
+    const packet = await ok<{ verdict: string; testFindings: string[] }>(
+      "reviewPacket.record",
+      { workItemId: item.workItemId, headSha: head, ...evidence },
+      FOREMAN,
+    );
+    expect(packet.verdict).toBe("pass");
+    expect(packet.testFindings).toEqual([expect.stringMatching(/skipped, focused/)]);
+    const e = await refusal(
+      ok("pr.autoMerge", { workItemId: item.workItemId, headSha: head }, FOREMAN),
+    );
+    expect(e.code).toBe("denied");
+    expect(e.message).toMatch(/tests aren't intact .*1 finding/);
+  });
+
+  it("refuses a check-only fix whose packet has a tests-intact finding (ADR 0500)", async () => {
     // A check-only diff can't carry a finding today, so the packet's section is set directly: the
     // refusal must hold whatever the patterns become, and for a packet from before the guard.
     for (const [section, reason] of [
@@ -486,7 +509,12 @@ describe("the check-only auto-merge (ADR 0230)", () => {
   });
 });
 
-describe("tests intact (ADR 0450)", () => {
+describe("tests intact (ADR 0500)", () => {
+  const THEME = {
+    path: "src/theme.ts",
+    status: "modified" as const,
+    patch: "@@ -1,1 +1,1 @@\n-export const dark = false;\n+export const dark = true;",
+  };
   const SKIP = {
     path: "src/theme.test.ts",
     status: "modified" as const,
@@ -494,7 +522,7 @@ describe("tests intact (ADR 0450)", () => {
   };
 
   it("records the findings on the packet for that SHA, passes the verdict and lists them for a person", async () => {
-    const { w, item, head } = await atVerify(["src/theme.ts", SKIP]);
+    const { w, item, head } = await atVerify([THEME, SKIP]);
     const out = await ok<{ verdict: string; testFindings: string[]; reviewPacketId: string }>(
       "reviewPacket.record",
       { workItemId: item.workItemId, headSha: head, ...evidence },
@@ -531,7 +559,7 @@ describe("tests intact (ADR 0450)", () => {
   });
 
   it("can't be set by the caller's sections, and a new head has none until its own packet", async () => {
-    const { w, item, head } = await atVerify(["src/theme.ts", SKIP]);
+    const { w, item, head } = await atVerify([THEME, SKIP]);
     await ok(
       "reviewPacket.record",
       {

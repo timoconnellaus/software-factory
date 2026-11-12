@@ -250,7 +250,7 @@ export const verifyPass = {
 };
 /**
  * The reviewer finds a criterion unmet. Its own report of a failing check no longer fails the
- * verdict (ADR 0451): only the factory's checks and CI do.
+ * verdict (ADR 0501): only the factory's checks and CI do.
  */
 export const verifyFail = {
   result: {

@@ -89,7 +89,7 @@ export type WorkItemOutcome =
  *   back to build, or ask), a gate step through `workflow.gate` (always a person).
  */
 /**
- * - v7 (spec 51, ADR 0451): the runner host runs the project's checks after the build session and
+ * - v7 (spec 51, ADR 0501): the runner host runs the project's checks after the build session and
  *   sends failures back into the same session. After `build #b: advance`, `build #b: checks` reads
  *   the results on the pushed head; any declared check still failing there asks a person
  *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. The reviewer
@@ -528,7 +528,7 @@ class ItemFlow {
         }
         const headSha = String(advanced.sha);
 
-        // v7: the factory's own checks on the pushed head (ADR 0451). The host already sent any
+        // v7: the factory's own checks on the pushed head (ADR 0501). The host already sent any
         // failure back into the same session up to the retry limit; one still failing goes to a
         // person, never a cold retry.
         let checkNames: string[] = [];
@@ -1416,7 +1416,7 @@ class ItemFlow {
 
   /**
    * v7: the factory's checks still fail on the build's head after the session's own fixes (ADR
-   * 0451). A person decides: build again (with the failure as the note) or stop the item.
+   * 0501). A person decides: build again (with the failure as the note) or stop the item.
    */
   async askChecksFailing(meta: Meta, b: number, headSha: string, failing: string[]) {
     const name = `build #${b}: checks failing`;

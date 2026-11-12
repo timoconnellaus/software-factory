@@ -155,6 +155,11 @@ export async function steerLoop(options: {
   job: Job;
   signal: AbortSignal;
   steer: (text: string) => Promise<void>;
+  /**
+   * Stops the stream session for a person (ADR 0450): a `takeover` row from `run.takeover`. The
+   * adapter's events then report the resume command and follow the resumed session.
+   */
+  takeover?: () => Promise<void>;
   push: (event: AdapterEvent) => Promise<void>;
   onStop: (error: ChannelCallError) => void;
   log: (message: string) => void;
@@ -167,7 +172,7 @@ export async function steerLoop(options: {
   const take = cp.steers.bind(cp);
   let failures = 0;
   while (!signal.aborted) {
-    let steers: { id: string; text: string }[];
+    let steers: { id: string; text: string; kind?: "message" | "takeover" }[];
     try {
       ({ steers } = await take(
         job.jobId,
@@ -192,6 +197,23 @@ export async function steerLoop(options: {
     }
     for (const s of steers) {
       if (signal.aborted) return;
+      if (s.kind === "takeover") {
+        try {
+          if (!options.takeover) throw new Error("this session can't be taken over from here");
+          await options.takeover();
+          log(`${job.jobId}: stopped the session for a takeover (${s.id})`);
+        } catch (error) {
+          const why = error instanceof Error ? error.message : String(error);
+          await options
+            .push({
+              type: "log",
+              stream: "stderr",
+              text: `the session could not be handed over: ${why}`.slice(0, 2_000),
+            })
+            .catch(() => {});
+        }
+        continue;
+      }
       const text = steerText(s.text);
       if (!text) continue;
       try {
@@ -296,7 +318,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let error: string | undefined;
   let headSha: string | undefined;
   let result: unknown;
-  /** The project's checks as this host ran them (ADR 0451), for the hand-back. */
+  /** The project's checks as this host ran them (ADR 0501), for the hand-back. */
   let executed: ExecutedCheck[] = [];
   let stored: StoredArtifact[] = [];
   const notes: string[] = [];
@@ -439,6 +461,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         type: "session.started",
         sessionRef: session.sessionRef,
         ...(session.takeover ? { takeover: session.takeover } : {}),
+        // How it runs (ADR 0450): the dashboard shows a stream session as a chat.
+        ...(session.mode ? { mode: session.mode } : {}),
       });
       // A person's messages from the dashboard, typed into the session while it runs (ADR 0400).
       const live = session;
@@ -448,6 +472,9 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         job,
         signal: AbortSignal.any([signal, steerStop.signal]),
         steer: (text) => (adapter.steer as NonNullable<typeof adapter.steer>)(live, text),
+        ...(adapter.takeover
+          ? { takeover: () => (adapter.takeover as NonNullable<typeof adapter.takeover>)(live) }
+          : {}),
         push: (event) => stream.push(event),
         onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
         log,
@@ -519,7 +546,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       }
 
       // The project's checks, run here on the commit handed back, and a failure sent back into the
-      // same session (ADR 0451). See ./checks.ts.
+      // same session (ADR 0501). See ./checks.ts.
       if (hasChecks(job) && outcome === "completed" && !error && session) {
         const ws = workspace;
         const live = session;

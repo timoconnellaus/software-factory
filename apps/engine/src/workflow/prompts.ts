@@ -119,7 +119,7 @@ export function verifyPrompt(
     criteria: string[];
     headSha: string;
     /**
-     * The factory's own checks (ADR 0451), which the runner host runs itself. null: an instance
+     * The factory's own checks (ADR 0501), which the runner host runs itself. null: an instance
      * from before v7, whose reviewer still runs and reports the checks.
      */
     checks?: string[] | null;

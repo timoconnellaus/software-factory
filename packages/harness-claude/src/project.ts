@@ -1,6 +1,7 @@
 // Writes a run's harness files: the settings (into the run dir, passed with `--settings`, and the
 // same bytes into the worktree's `.claude/settings.local.json`), the git config and empty tool dirs
 // into the run's private directory, the run's temp dir, and the launch script and record (ADR 0270).
+import { randomUUID } from "node:crypto";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,6 +13,8 @@ import {
   launchPaths,
   launchScript,
   launchUnsets,
+  RESUME_SCRIPT,
+  resumeScript,
   sha256,
 } from "./launch.ts";
 import { mergeHooks, planningHooks, writePlanningFiles } from "./planning/project.ts";
@@ -71,6 +74,11 @@ export async function projectHarness(
      */
     planning?: { relay: PlanningRelay; nodeBin?: string };
     /**
+     * `stream`: launch a two-way stream-json session (ADR 0450) instead of the TUI. A non-planning
+     * run gets its own conversation id (`--session-id`), so it can be resumed in a terminal.
+     */
+    session?: "terminal" | "stream";
+    /**
      * The Claude account the run uses (ADR 0410). Default: the host's own (`default`), with the
      * environment as it is.
      */
@@ -100,9 +108,12 @@ export async function projectHarness(
   const {
     statusHook: _statusHook,
     planning: _planning,
+    session: _session,
     account: _account,
     ...settingsOptions
   } = options;
+  const streamSessionId =
+    options.session === "stream" ? (planning?.launch.sessionRef ?? randomUUID()) : null;
   // The account's credentials (its token file, a login's credentials file) are the owner's: a run
   // never reads them, whatever else the runner protects (ADR 0410). The config dir itself stays
   // readable, as `~/.claude` always was: Claude's sandboxed shell reads its snapshots from there.
@@ -157,12 +168,22 @@ export async function projectHarness(
       ...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
       ...(options.profile ? { profile: options.profile } : {}),
       ...(planning ? { planning: planning.launch } : {}),
+      ...(streamSessionId ? { stream: { sessionId: streamSessionId } } : {}),
       ...(options.isolation ? { isolation: options.isolation } : {}),
     }),
     settingsHash: sha256(text),
     settingsPaths: [paths.runSettings, paths.localSettings],
     pidFile: paths.pidFile,
     worktree: options.worktree,
+    unset: launchUnsets(settings.env),
+    ...(streamSessionId
+      ? {
+          stream: {
+            sessionId: streamSessionId,
+            resumeScript: join(options.runDir, RESUME_SCRIPT),
+          },
+        }
+      : {}),
     ...(options.account
       ? {
           account: options.account.name,
@@ -176,11 +197,19 @@ export async function projectHarness(
     await writeFile(statusScript, statusHookSource(), { mode: 0o600 });
   }
   await writeFile(paths.record, `${JSON.stringify(launch, null, 2)}\n`, { mode: 0o600 });
-  await writeFile(
-    paths.script,
-    launchScript(launch, launchUnsets(settings.env), accountLaunchLines(options.account)),
-    { mode: 0o700 },
-  );
+  const accountLines = accountLaunchLines(options.account);
+  await writeFile(paths.script, launchScript(launch, launch.unset ?? [], accountLines), {
+    mode: 0o700,
+  });
+  // A stream session's takeover (ADR 0450): the same environment and account, interactive, the
+  // conversation resumed. Run by the person, never by the runner.
+  if (launch.stream?.resumeScript) {
+    await writeFile(
+      launch.stream.resumeScript,
+      resumeScript(launch, launch.unset ?? [], accountLines),
+      { mode: 0o700 },
+    );
+  }
   return {
     settingsPath: paths.runSettings,
     localSettingsPath: paths.localSettings,

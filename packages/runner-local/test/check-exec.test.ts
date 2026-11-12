@@ -1,4 +1,4 @@
-// The project's checks for a container job run in a fresh container, never on the host (ADR 0451).
+// The project's checks for a container job run in a fresh container, never on the host (ADR 0501).
 import { describe, expect, it } from "vitest";
 import {
   type ContainerRuntime,
@@ -36,7 +36,7 @@ const runtime = (removed: string[]) =>
     },
   }) as unknown as ContainerRuntime;
 
-describe("checks in a container (ADR 0451)", () => {
+describe("checks in a container (ADR 0501)", () => {
   it("runs the agent's image and mounts with no network, no credential and no terminal", () => {
     const spec = checkSpec(agent, "pnpm test", 1);
     expect(spec).toMatchObject({

@@ -7,7 +7,7 @@ const criterion = z.object({
   criterion: z.string(),
   met: z.boolean(),
   evidence: z.string(),
-  /** The checks the reviewer linked it to (ADR 0451). */
+  /** The checks the reviewer linked it to (ADR 0501). */
   checks: z.array(z.string()).default([]),
 });
 const check = z.object({
@@ -203,11 +203,13 @@ const testsIntactSection = z.object({
       }),
     )
     .default([]),
+  /** How many findings there were in all; the list stops at 100. */
+  total: z.number().optional(),
 });
 export type TestsIntactSection = z.infer<typeof testsIntactSection>;
 
 /**
- * The tests-intact guard's result for the packet's SHA (ADR 0450), or null for a packet from before
+ * The tests-intact guard's result for the packet's SHA (ADR 0500), or null for a packet from before
  * the guard (which reads as "not checked", never as intact).
  */
 export function packetTestsIntact(p: ParsedPacket): TestsIntactSection | null {
@@ -244,7 +246,7 @@ export type CheckOutcome = z.infer<typeof checkOutcome>;
 export type CriterionProof = z.infer<typeof proofSection>[number];
 
 /**
- * The project's checks as the runner host ran them on the packet's SHA (ADR 0451): each declared
+ * The project's checks as the runner host ran them on the packet's SHA (ADR 0501): each declared
  * check with its result, or null when it didn't run there. Null for a packet from before.
  */
 export function packetExecuted(p: ParsedPacket): {
@@ -260,7 +262,7 @@ export function packetExecuted(p: ParsedPacket): {
 }
 
 /**
- * Each criterion's proof by criterion text (ADR 0451): Proven only by a linked check that passed.
+ * Each criterion's proof by criterion text (ADR 0501): Proven only by a linked check that passed.
  * Null for a packet from before, whose criteria show the reviewer's met/unmet as before.
  */
 export function packetProof(p: ParsedPacket): Map<string, CriterionProof> | null {

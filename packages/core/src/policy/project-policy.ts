@@ -69,7 +69,7 @@ export const stepSchema = z
 export type StepConfig = z.infer<typeof stepSchema>;
 
 /**
- * A check the factory runs itself (ADR 0451): the runner host runs `run` in the job's worktree on
+ * A check the factory runs itself (ADR 0501): the runner host runs `run` in the job's worktree on
  * the head it hands back. Its result, not an agent's report, is what the verdict uses. Removing or
  * changing one loosens the config (a person).
  */
@@ -106,7 +106,7 @@ export const workflowSchema = z
      * the workflow, so it has none; verify and the reviewer stay code's own (ADR 0371).
      */
     core: z.object({ build: label.optional() }).strict().default({}),
-    /** Checks this workflow adds to the project's own (ADR 0451). */
+    /** Checks this workflow adds to the project's own (ADR 0501). */
     checks: z.array(checkDeclSchema).max(10).default([]),
   })
   .strict();
@@ -195,7 +195,7 @@ export const projectPolicySchema = z
       .strict()
       .default({ onRed: "warn", requiredChecks: [...DEFAULT_REQUIRED_CHECKS] }),
     /**
-     * The project's checks (ADR 0451): lint, typecheck, tests, whatever proves the work. The runner
+     * The project's checks (ADR 0501): lint, typecheck, tests, whatever proves the work. The runner
      * host runs them on the head SHA after every build; the verdict needs each to pass there.
      */
     checks: z.array(checkDeclSchema).max(10).default([]),
@@ -251,7 +251,7 @@ function checksError(project: CheckDecl[], workflows: WorkflowConfig[]): string 
 }
 
 /**
- * The checks an item runs (ADR 0451): the project's, then its workflow's, as the job carries them.
+ * The checks an item runs (ADR 0501): the project's, then its workflow's, as the job carries them.
  * Empty when the project declares none.
  */
 export function declaredChecks(

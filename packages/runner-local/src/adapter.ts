@@ -57,6 +57,17 @@ import {
 } from "@software-factory/runner-contract";
 import { exists, findCheckout, isUnder } from "./checkouts.ts";
 import { type Exec, nodeExec, run } from "./exec.ts";
+import {
+  killStream,
+  type LocalSessionMode,
+  type StreamOptions,
+  type StreamState,
+  startStreamSession,
+  steerStream,
+  streamAlive,
+  streamEvents,
+  takeOverStream,
+} from "./stream.ts";
 import { openTmuxTerminal } from "./terminal.ts";
 import {
   attachCommand,
@@ -104,6 +115,8 @@ export interface LocalSession extends SessionHandle {
   startedAt: number;
   /** When the prompt pointer was sent: only a turn submitted after it can end the job. */
   promptSentAt: number;
+  /** A stream-json session's process (ADR 0450); absent in tmux. */
+  stream?: StreamState;
   /** The run's Claude account (ADR 0410) and its config dir, where its transcript goes. */
   account: string;
   configDir: string;
@@ -157,6 +170,15 @@ export interface LocalRunnerConfig {
   screenLogMs?: number;
   /** Capabilities to declare. Defaults to everything this adapter gives. */
   capabilities?: Capability[];
+  /**
+   * How sessions run (ADR 0450): `tmux` (the TUI in tmux, the default) or `stream-json` (Claude
+   * headless as a two-way stream, shown as a chat; declares `chat`).
+   */
+  session?: LocalSessionMode;
+  /** Stream mode: how long to wait for a steer's turn after a result (see `StreamOptions`). */
+  turnGraceMs?: number;
+  /** Stream mode: the session's environment (default: the host's, credentials dropped). */
+  streamEnv?: Record<string, string>;
   exec?: Exec;
   /** The tmux executable and socket (tests use their own socket). */
   tmux?: Omit<TmuxOptions, "exec">;
@@ -261,7 +283,25 @@ export function createLocalRunner(
   const startTimeoutMs = config.startTimeoutMs ?? 90_000;
   const submitTimeoutMs = config.submitTimeoutMs ?? 30_000;
   const screenLogMs = config.screenLogMs ?? 10_000;
-  const capabilities = config.capabilities ?? DEFAULT_CAPABILITIES;
+  const streamMode = config.session === "stream-json";
+  // `chat` follows the session mode, whatever else is configured.
+  const capabilities = [
+    // A stream session has no terminal to share (ADR 0440): its takeover is by resume.
+    ...(config.capabilities ?? DEFAULT_CAPABILITIES).filter(
+      (c) => c !== "chat" && !(streamMode && c === "terminal"),
+    ),
+    ...(streamMode ? (["chat"] as Capability[]) : []),
+  ];
+  /** Live stream sessions, for capacity (tmux counts its own sessions). */
+  const streams = new Map<string, LocalSession>();
+  const streamOptions = (): StreamOptions => ({
+    ...(config.readCommand ? { readCommand: config.readCommand } : {}),
+    startTimeoutMs,
+    pollMs,
+    waitingInputTimeoutMs,
+    ...(config.turnGraceMs !== undefined ? { turnGraceMs: config.turnGraceMs } : {}),
+    ...(config.streamEnv ? { env: config.streamEnv } : {}),
+  });
   const search = {
     dirs: config.checkouts ?? [],
     exclude: [config.worktreesDir, ...(config.ownReposDir ? [config.ownReposDir] : [])],
@@ -316,6 +356,9 @@ export function createLocalRunner(
     };
     const name = workspace?.name ?? session?.name ?? sessionName(job.jobId);
     // Already gone is fine everywhere: release must be safe to call twice.
+    const live = session ?? streams.get(job.jobId);
+    if (live?.stream) killStream(live.stream);
+    streams.delete(job.jobId);
     await attempt("kill session", () => tmux.kill(name));
     if (workspace) {
       await attempt("remove worktree", () => removeWorktree(workspace.checkout, workspace.path));
@@ -356,7 +399,9 @@ export function createLocalRunner(
     },
 
     async capacity(): Promise<Capacity> {
-      const inUse = (await tmux.jobSessions().catch(() => [])).length;
+      const inUse =
+        (await tmux.jobSessions().catch(() => [])).length +
+        [...streams.values()].filter(streamAlive).length;
       return { max: config.maxConcurrent ?? 2, inUse, accepting: true };
     },
 
@@ -466,6 +511,7 @@ export function createLocalRunner(
           protectPaths: [...new Set([...(config.protectPaths ?? []), checkout])],
           ...(commonDir && gitDir ? { git: { commonDir, gitDir } } : {}),
           ...(capabilities.includes("work-item-attachments") ? { attachmentsDir } : {}),
+          ...(streamMode ? { session: "stream" as const } : {}),
           // The factory's status hook: agent status from Claude Code's hooks (ADR 0380).
           statusHook: config.node ? { node: config.node } : true,
           ...(config.identity ? { identity: config.identity } : {}),
@@ -502,6 +548,18 @@ export function createLocalRunner(
     },
 
     async startSession(job, workspace, signal): Promise<LocalSession> {
+      if (streamMode) {
+        // ADR 0450: a two-way stream-json session instead of the TUI, same launch and check.
+        const session = await startStreamSession(
+          job,
+          workspace,
+          signal,
+          streamOptions(),
+          (problems) => new HarnessConfigMismatch(problems),
+        );
+        streams.set(job.jobId, session);
+        return session;
+      }
       const name = workspace.name;
       // A session left by a crashed run of this same job would block the name.
       await tmux.kill(name);
@@ -611,6 +669,10 @@ export function createLocalRunner(
     },
 
     async *events(job, session, signal): AsyncIterable<AdapterEvent> {
+      if (session.stream) {
+        yield* streamEvents(job, session, signal, streamOptions());
+        return;
+      }
       // A planning session (ADR 0300) idles in its Stop hook between turns: Stop and waiting are
       // normal there. It ends when the host stops it (a yield, the gate decided) or Claude exits.
       const planning = job.stage === "planning";
@@ -626,7 +688,7 @@ export function createLocalRunner(
       // conversation's file holds earlier turns: only messages from this session are sent.
       let tailing: string | null = null;
       let transcriptOffset = 0;
-      // A second call after a steer (the host sending a failing check back, ADR 0451) reports the
+      // A second call after a steer (the host sending a failing check back, ADR 0501) reports the
       // turn that steer started: only what was said since it was typed.
       const since = Math.max(session.startedAt, session.promptSentAt) - 5_000;
       /** What the agent said, not yet yielded, oldest first. */
@@ -897,23 +959,25 @@ export function createLocalRunner(
     release,
 
     /**
-     * A person's message (ADR 0400): one sanitised line, typed in short pieces so the TUI doesn't
-     * take it as a paste (a long paste arrives truncated, incident 2026-11-11 #8), then Enter. Claude
-     * Code queues a message typed while it works and reads it at its next step.
-     */
-    /**
-     * Another turn in the same session (ADR 0451): Claude is still alive in its tmux pane after a
-     * Stop, so the text goes in like a steer and `events()` follows that turn to its own Stop.
+     * Another turn in the same session (ADR 0501): Claude is still alive after its turn (in its tmux
+     * pane, or as the stream-json process), so the text goes in like a steer and `events()` follows
+     * that turn to its own end.
      */
     async *continueSession(job, session, text, signal) {
       await this.steer?.(session, text);
       yield* this.events(job, session, signal);
     },
+    /**
+     * A person's message (ADR 0400): one sanitised line, typed in short pieces so the TUI doesn't
+     * take it as a paste (a long paste arrives truncated, incident 2026-11-11 #8), then Enter. Claude
+     * Code queues a message typed while it works and reads it at its next step.
+     */
     async steer(session, text) {
+      if (session.stream) return steerStream(session, text);
       const line = steerText(text);
       if (!line) return;
       // A steer starts a turn: a later `events()` call waits for this turn's own submit and Stop,
-      // not the ones before (ADR 0451). Mid-turn it changes nothing (the turn is already submitted).
+      // not the ones before (ADR 0501). Mid-turn it changes nothing (the turn is already submitted).
       session.promptSentAt = Date.now();
       for (let i = 0; i < line.length; i += STEER_CHUNK) {
         await tmux.sendText(session.name, line.slice(i, i + STEER_CHUNK));
@@ -924,10 +988,24 @@ export function createLocalRunner(
     },
 
     /**
+     * Hands a stream session to a person (ADR 0450): stops it cleanly; `events()` then reports the
+     * `claude --resume` command and follows the resumed session. A tmux session is taken over by
+     * attaching, so there is nothing to stop.
+     */
+    async takeover(session) {
+      if (!session.stream) throw new Error("attach to the tmux session to take it over");
+      await takeOverStream(session);
+    },
+
+    /**
      * The web terminal (ADR 0440): a tmux control-mode client on the job's session, started while
-     * someone watches from the dashboard and closed when they leave.
+     * someone watches from the dashboard and closed when they leave. A stream session (ADR 0450)
+     * has no terminal: it is taken over by resume instead.
      */
     openTerminal(session, options) {
+      if (session.stream) {
+        return Promise.reject(new Error("a stream-json session has no terminal: take it over"));
+      }
       return openTmuxTerminal({
         ...options,
         session: session.name,

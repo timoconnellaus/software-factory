@@ -1,10 +1,15 @@
-// Tests intact (ADR 0450, spec 51): does a diff weaken the tests the build is judged by? Read from
+// Tests intact (ADR 0500, spec 51): does a diff weaken the tests the build is judged by? Read from
 // GitHub's compare of the default branch with the head SHA, with each file's patch, never from the
 // runner or an agent. A finding is never judged by an agent: it goes on the review packet for that
 // SHA and to a person, and it blocks the check-only auto-merge (ADR 0230).
 //
 // Pure functions. The patterns are heuristics for TypeScript, JavaScript and some Python; they only
-// add findings, and a test or gate file whose patch GitHub didn't return is a finding of its own.
+// add findings, and anything the guard couldn't read (a truncated compare, a code, test or gate file
+// without its patch) is a finding of its own: unknown never reads as intact.
+//
+// What it does NOT see: weakening inside a test that keeps its shape, such as `expect(true)`, an
+// emptied body or `if (false)`. "No findings" means these checks found nothing, not that the tests
+// are as strong as before.
 import type { ChangedFile } from "../services.ts";
 
 export const TEST_FINDING_KINDS = [
@@ -33,11 +38,17 @@ export interface TestFinding {
 export interface TestsIntact {
   headSha: string;
   intact: boolean;
+  /** The first MAX_FINDINGS findings. */
   findings: TestFinding[];
+  /** How many there were in all. */
+  total: number;
 }
 
-/** At most this many findings are kept; the count says how many there were. */
+/** At most this many findings are kept; `total` says how many there were. */
 export const MAX_FINDINGS = 100;
+
+/** GitHub's compare lists at most this many files; a compare that reaches it may be cut short. */
+export const COMPARE_FILE_LIMIT = 300;
 
 const TEST_FILE =
   /(^|\/)(__tests__|__test__|tests?|spec|e2e)\/|\.(test|spec|e2e)\.[cm]?[jt]sx?$|(^|\/)test_[^/]+\.py$|_test\.(py|go)$/;
@@ -47,14 +58,27 @@ export function isTestPath(path: string): boolean {
   return TEST_FILE.test(path);
 }
 
+/** Directories a test runner's usual globs leave out, or that say the test is parked. */
+const PARKED =
+  /(^|\/)(disabled|skip|skipped|parked|archive|archived|old|deprecated|spikes?|fixtures?|__fixtures__|node_modules|tmp|\.[^/]+)\//i;
+
+/** Whether a test path looks parked where the test run won't pick it up. */
+export function isParkedPath(path: string): boolean {
+  return PARKED.test(path);
+}
+
 const GATE_FILES: { test: (p: string) => boolean; what: string }[] = [
   { test: (p) => p === ".factory" || p.startsWith(".factory/"), what: "the factory's config" },
   { test: (p) => p.startsWith(".github/workflows/"), what: "a CI workflow" },
+  { test: (p) => p.startsWith(".github/actions/"), what: "a CI action" },
   {
+    // vitest.config.ts, vitest.e2e.config.ts, vitest.shared.ts, jest.setup.js, vite.config.mts…
     test: (p) =>
-      /(^|\/)(vitest|vite|jest|playwright|karma|cypress)\.(config|workspace)\.[cm]?[jt]s$/.test(
+      /(^|\/)(vitest|jest|playwright|karma|cypress|mocha|ava)[\w.-]*\.([cm]?[jt]s|json|ya?ml)$/.test(
         p,
-      ) || /(^|\/)vitest\.workspace\.(json|[cm]?[jt]s)$/.test(p),
+      ) ||
+      /(^|\/)vite\.config[\w.-]*\.[cm]?[jt]s$/.test(p) ||
+      /(^|\/)\.mocharc(\.[a-z]+)?$/.test(p),
     what: "test config",
   },
   {
@@ -67,7 +91,8 @@ const GATE_FILES: { test: (p: string) => boolean; what: string }[] = [
     test: (p) =>
       /(^|\/)biome\.jsonc?$/.test(p) ||
       /(^|\/)\.eslintrc(\.[a-z]+)?$/.test(p) ||
-      /(^|\/)eslint\.config\.[cm]?[jt]s$/.test(p),
+      /(^|\/)eslint\.config\.[cm]?[jt]s$/.test(p) ||
+      /(^|\/)\.(eslintignore|biomeignore)$/.test(p),
     what: "lint config",
   },
   { test: (p) => /(^|\/)turbo\.json$/.test(p), what: "the task pipeline that runs the checks" },
@@ -79,12 +104,25 @@ export function gateFile(path: string): string | null {
 }
 
 const CASE = /^\s*(?:it|test|describe|suite|context)(?:\.\w+)*\s*\(\s*(['"`])(.*?)\1/;
+/** A case whose title is on the next line: `it(` alone. */
+const CASE_OPEN = /^\s*(?:it|test|describe|suite|context)(?:\.\w+)*\s*\(\s*$/;
+const TITLE = /^\s*(['"`])(.*?)\1/;
+const MODIFIERS = "skip|only|todo|fixme|fails|failing|skipIf|runIf";
 const SKIPPED: RegExp[] = [
-  /\b(?:it|test|describe|suite|context|bench)\s*\.\s*(skip|only|todo|fixme|skipIf|runIf)\b/,
+  // it.skip, test.only, it.concurrent.skip, describe.skipIf(…), test.fails
+  new RegExp(
+    `\\b(?:it|test|describe|suite|context|bench)(?:\\s*\\.\\s*\\w+)*?\\s*\\.\\s*(${MODIFIERS})\\b`,
+  ),
+  // it.each(…).skip, describe.each`…`.only
+  new RegExp(`[)\`]\\s*\\.\\s*(${MODIFIERS})\\b`),
   /(^|[^\w.])(xit|xtest|xdescribe|xcontext|fit|fdescribe)\s*\(/,
-  /@pytest\.mark\.(skip|skipif|xfail)\b|@unittest\.(skip|expectedFailure)\b/,
+  // ctx.skip(), this.skip(), t.skip() inside a body
+  /\b(?:ctx|context|this|t|test)\s*\.\s*skip\s*\(/,
+  /@pytest\.mark\.(skip|skipif|xfail)\b|@unittest\.(skip|skipIf|skipUnless|expectedFailure)\b|pytest\.skip\(/,
 ];
 const COMMENTED_CASE = /^\s*(?:\/\/+|\/?\*+|#)\s*(?:it|test|describe)(?:\.\w+)*\s*\(/;
+/** A block comment opened or closed: it can hide whole cases between the two lines. */
+const BLOCK_COMMENT = /^\s*\/\*(?!\*?\s*@)|\*\/\s*$/;
 const SUPPRESSIONS: { re: RegExp; what: string }[] = [
   { re: /biome-ignore/, what: "a `biome-ignore`" },
   { re: /@ts-ignore\b/, what: "a `@ts-ignore`" },
@@ -96,16 +134,22 @@ const SUPPRESSIONS: { re: RegExp; what: string }[] = [
   { re: /\bas\s+any\b|<any>\s*[\w(]/, what: "an `any` cast" },
 ];
 const TSCONFIG = /(^|\/)tsconfig[^/]*\.json$/;
+const PACKAGE_JSON = /(^|\/)package\.json$/;
 /** Source files a suppression comment or cast means something in. */
 const CODE = /\.([cm]?[jt]sx?|py|go|rs|svelte|vue)$/;
 /** Files a coverage or threshold number lives in (besides test and gate files). */
 const THRESHOLD_FILE =
-  /(^|\/)(package\.json|pyproject\.toml|setup\.cfg|\.coveragerc|codecov\.ya?ml|[^/]*config[^/]*)$/;
+  /(^|\/)(package\.json|pyproject\.toml|setup\.cfg|\.coveragerc|codecov\.ya?ml|[^/]*(vitest|jest|coverage|c8|nyc)[^/]*)$/;
+/** In package.json: the scripts that run checks, and test-runner config keys. */
+const PACKAGE_GATE =
+  /^\s*"(test|tests|lint|typecheck|check|checks|ci|verify|coverage|e2e)(:[\w:.-]*)?"\s*:|^\s*"(vitest|jest|c8|nyc|ava|mocha|biome|eslintConfig)"\s*:/;
+/** In tsconfig: what the compiler (and so typecheck) looks at. */
+const TSCONFIG_SCOPE = /^\s*"(include|exclude|files|references)"\s*:/;
 const STRICT_OFF =
   /"(strict|noImplicitAny|strictNullChecks|noUncheckedIndexedAccess|exactOptionalPropertyTypes|noImplicitReturns)"\s*:\s*false/;
-/** `key: 80` or `"key": 80` or `key = 80`, for keys that name a bar a test run must clear. */
+/** `key: 80` or `"key": 80` or `key = 80`, for the keys that name a coverage bar. */
 const THRESHOLD =
-  /["']?((?:lines|branches|functions|statements|threshold\w*|coverage\w*|min\w*|fail_under|failUnder))["']?\s*[:=]\s*(-?\d+(?:\.\d+)?)/i;
+  /["']?\b(lines|branches|functions|statements|thresholds?|coverageThreshold|minCoverage|min_coverage|minimumCoverage|fail_under|failUnder|fail-under|perFile)["']?\s*[:=]\s*(-?\d+(?:\.\d+)?)/i;
 
 interface PatchLine {
   sign: "+" | "-";
@@ -151,18 +195,35 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
   const findings: TestFinding[] = [];
   const add = (f: TestFinding) => findings.push(f);
 
-  // Test titles added anywhere in the diff: a case removed here and added back elsewhere moved.
-  const addedTitles = new Set<string>();
-  for (const f of files) {
-    if (f.patch === undefined) continue;
-    for (const l of patchLines(f.patch)) {
-      // A case commented out is its own finding, not also a removal.
-      const m = l.sign === "+" ? CASE.exec(l.text.replace(/^\s*(?:\/\/+|\/?\*+|#)/, "")) : null;
-      if (m?.[2]) addedTitles.add(m[2]);
-    }
+  // A compare GitHub may have cut short, or one with nothing in it, can't say anything is intact.
+  if (files.length === 0) {
+    add({
+      kind: "unreadable",
+      path: "",
+      line: null,
+      text: null,
+      message: "GitHub's compare listed no changed files, so nothing could be checked",
+    });
+  } else if (files.length >= COMPARE_FILE_LIMIT) {
+    add({
+      kind: "unreadable",
+      path: "",
+      line: null,
+      text: null,
+      message: `the diff lists ${files.length} files, GitHub's limit: files past it weren't checked, so check the rest by hand`,
+    });
   }
 
   for (const f of files) {
+    const lines = f.patch === undefined ? [] : patchLines(f.patch);
+    // Test titles added back in this file: a case removed and re-added here (an edit) isn't gone.
+    const addedTitles = new Set<string>();
+    for (const [i, l] of lines.entries()) {
+      if (l.sign !== "+") continue;
+      // A case commented out is its own finding, not also a removal.
+      const title = caseTitle(l.text.replace(/^\s*(?:\/\/+|\/?\*+|#)/, ""), lines[i + 1]);
+      if (title !== null) addedTitles.add(title);
+    }
     const test = isTestPath(f.path) || (f.previousPath ? isTestPath(f.previousPath) : false);
     // A new check under `.factory/checks/` only adds a failure mode (ADR 0230): not a gate edit.
     const newCheck = f.status === "added" && f.path.startsWith(".factory/checks/");
@@ -191,6 +252,20 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
         text: null,
         message: `the test file \`${f.previousPath}\` was renamed to \`${f.path}\`, which isn't a test file`,
       });
+    } else if (
+      f.status === "renamed" &&
+      f.previousPath &&
+      isTestPath(f.previousPath) &&
+      isParkedPath(f.path) &&
+      !isParkedPath(f.previousPath)
+    ) {
+      add({
+        kind: "test-deleted",
+        path: f.previousPath,
+        line: null,
+        text: null,
+        message: `the test file \`${f.previousPath}\` was moved to \`${f.path}\`, where the test run may not pick it up`,
+      });
     }
     if (gate) {
       add({
@@ -202,8 +277,16 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
       });
     }
 
+    const code = CODE.test(f.path);
     if (f.patch === undefined) {
-      if ((test || gate) && f.status !== "removed" && f.status !== "unchanged") {
+      // A rename with no content change has no patch: nothing to read, nothing changed.
+      const pureRename = f.status === "renamed" && (f.changes === undefined || f.changes === 0);
+      if (
+        (test || gate || code || PACKAGE_JSON.test(f.path) || TSCONFIG.test(f.path)) &&
+        f.status !== "removed" &&
+        f.status !== "unchanged" &&
+        !pureRename
+      ) {
         add({
           kind: "unreadable",
           path: f.path,
@@ -215,21 +298,44 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
       continue;
     }
 
-    const lines = patchLines(f.patch);
-    const code = CODE.test(f.path);
+    const pkg = PACKAGE_JSON.test(f.path);
+    const tsconfig = TSCONFIG.test(f.path);
+    let pkgGate = false;
+    let scopeGate = false;
     const thresholds = test || gate !== null || THRESHOLD_FILE.test(f.path);
     const removedThresholds = new Map<string, { value: number; line: number }>();
-    for (const l of lines) {
+    for (const [i, l] of lines.entries()) {
+      if (pkg && !pkgGate && PACKAGE_GATE.test(l.text)) {
+        pkgGate = true;
+        add({
+          kind: "gate-file",
+          path: f.path,
+          line: l.line,
+          text: clip(l.text),
+          message:
+            "a script that runs the checks, or the test runner's config, changed in package.json",
+        });
+      }
+      if (tsconfig && !scopeGate && TSCONFIG_SCOPE.test(l.text)) {
+        scopeGate = true;
+        add({
+          kind: "gate-file",
+          path: f.path,
+          line: l.line,
+          text: clip(l.text),
+          message: "what TypeScript checks changed (include, exclude, files or references)",
+        });
+      }
       if (l.sign === "-") {
         if (test) {
-          const m = CASE.exec(l.text);
-          if (m?.[2] !== undefined && !addedTitles.has(m[2])) {
+          const title = caseTitle(l.text, lines[i + 1]);
+          if (title !== null && !addedTitles.has(title)) {
             add({
               kind: "test-removed",
               path: f.path,
               line: l.line,
               text: clip(l.text),
-              message: `a test was removed: "${clip(m[2])}"`,
+              message: `a test was removed: "${clip(title)}"`,
             });
           }
         }
@@ -260,6 +366,14 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
           line: l.line,
           text: clip(l.text),
           message: "a test case was commented out",
+        });
+      } else if (test && BLOCK_COMMENT.test(l.text)) {
+        add({
+          kind: "test-commented-out",
+          path: f.path,
+          line: l.line,
+          text: clip(l.text),
+          message: "a block comment was opened or closed in a test file: it can hide whole cases",
         });
       }
       for (const s of code ? SUPPRESSIONS : []) {
@@ -306,10 +420,34 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
     headSha,
     intact: findings.length === 0,
     findings: findings.slice(0, MAX_FINDINGS),
+    total: findings.length,
   };
 }
 
-/** One line per finding, for `factory/verify`'s summary and the Workflow's notes. */
-export function testFindingLines(findings: readonly TestFinding[]): string[] {
-  return findings.map((f) => `${f.message}${f.line ? ` (${f.path}:${f.line})` : ""}`);
+/** A case's title from its line, or from the next one when the line is `it(` alone. */
+function caseTitle(text: string, next: PatchLine | undefined): string | null {
+  const m = CASE.exec(text);
+  if (m?.[2] !== undefined) return m[2];
+  if (CASE_OPEN.test(text) && next) {
+    const t = TITLE.exec(next.text);
+    if (t?.[2] !== undefined) return t[2];
+  }
+  return null;
+}
+
+/**
+ * One line per finding, for `factory/verify`'s summary and the Workflow's notes, and a last line
+ * saying how many more there were when they were cut at MAX_FINDINGS.
+ */
+export function testFindingLines(
+  findings: readonly TestFinding[],
+  total = findings.length,
+): string[] {
+  const lines = findings.map((f) => `${f.message}${f.line ? ` (${f.path}:${f.line})` : ""}`);
+  if (total > findings.length) {
+    lines.push(
+      `…and ${total - findings.length} more (${total} in all; only the first ${findings.length} are kept)`,
+    );
+  }
+  return lines;
 }
