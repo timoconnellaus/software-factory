@@ -1254,8 +1254,11 @@ screen needs).
    delivery will run on, and the start is guarded on the org still being at that version: an item
    released under v2 whose shaping changed in v3 before it started goes back to Ready, flagged. And
    `accept` refuses once the org has saved past the version the flag named, flagging the item again
-   against the current version so the person sees the new difference. Still to come in (d): the tightening re-pin at the next
-   boundary (Q3), and moving each project's slot workflow to the org.
+   against the current version so the person sees the new difference. (d4) The shadow pass compares
+   an item on an org workflow with the org workflow it pinned (`org_config_version`, resolved with
+   the project's overrides and that version's approvals by `effectivePolicy`); before, such an item
+   had no comparable definition. Still to come in (d): the tightening re-pin at the next boundary
+   (Q3), and moving each project's slot workflow to the org.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the

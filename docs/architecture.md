@@ -89,7 +89,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
   its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each
   stage history through the reconciler and writes one verdict row per item (`core_reconcile_items`,
-  migration 0281; `reconcile.report`). It drives nothing. It compares stage order and skips only;
+  migration 0281; `reconcile.report`). An item on an org workflow is compared with the org workflow
+  it pinned (its `org_config_version`), resolved with the project's overrides as the engine ran it. It drives nothing. It compares stage order and skips only;
   everything else (jobs, gates, send-back targets, retries, slot steps, ends other than Done) counts
   as a divergence, and `reconcile.streak` says "comparison incomplete" and what is missing until it
   is compared. Known differences are reported by name and count as divergences until settled: the
