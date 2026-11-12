@@ -1,9 +1,9 @@
-// The runner as a launchd service (a per-user LaunchAgent, not a system daemon: Orca and Claude Code
-// run in the owner's GUI session, and the runner drives them there).
+// The runner as a launchd service (a per-user LaunchAgent, not a system daemon: Claude Code runs as
+// the owner, with their Claude login and keychain, in tmux sessions the owner can attach to).
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Exec } from "@software-factory/runner-orca";
+import type { Exec } from "@software-factory/runner-local";
 
 export const LABEL = "com.software-factory.runner";
 
@@ -17,9 +17,9 @@ const xml = (s: string) =>
 /**
  * The service definition. launchd runs the `sh` wrapper `bin/sf-runner-service` (ADR 0360), which
  * checks the self-update record and then starts `src/cli.ts run` on the pinned Node. `PATH` is
- * captured at install time (plus Orca's bin directory, incident #9) so the service finds the same
- * `node`, `pnpm`, `orca`, `claude` and `git` as the shell that installed it; nothing else from that
- * shell's environment is carried over (no tokens, no SSH agent).
+ * captured at install time (plus the directories of `tmux` and `claude`, incident #9) so the
+ * service finds the same `node`, `pnpm`, `tmux`, `claude` and `git` as the shell that installed
+ * it; nothing else from that shell's environment is carried over (no tokens, no SSH agent).
  */
 export function plist(input: {
   node: string;

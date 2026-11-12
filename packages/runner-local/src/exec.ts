@@ -1,4 +1,4 @@
-// Running commands on the runner host. Injectable so adapters and the host can be tested without a
+// Running commands on the runner host. Injectable so the adapter and the host can be tested without a
 // shell.
 
 import { execFile } from "node:child_process";

@@ -1,5 +1,5 @@
 // The runner contract (ADR 0014, ADR 0100). The factory schedules and runners execute: the core knows
-// only these shapes, never a particular runner. An adapter (runner-orca, runner-local, later dev
+// only these shapes, never a particular runner. An adapter (runner-local, later dev
 // boxes, CF Sandbox, GitHub Actions) implements `RunnerAdapter`; the generic runner host
 // (`local/runner-host`) claims jobs over the signed channel and drives the adapter:
 //
