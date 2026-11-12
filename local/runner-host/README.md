@@ -45,13 +45,19 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    run fails), and `Stop` after the prompt ends the session.
 5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
 6. **The project's checks** (ADR 0501, `src/checks.ts`), when the job carries them: after a build
-   session's turn, it commits the leftovers and runs each check in the worktree, on that commit,
-   through the adapter's `exec` (a local `/bin/sh -c` with only `PATH`, `HOME` and the like, never
-   the owner's tokens, for an adapter without one). A failure is typed into the same session (the
-   command, exit code and log tail, one steer) and the fix checked again, up to `fixRounds`. An
-   attached PR's verify job runs them once, with no fixes. The results go on the hand-back.
-7. **Build only:** it commits any leftovers, then pushes `HEAD` to the run branch, and only there,
-   with a *fresh* job token. It never forces.
+   session's turn, it commits the leftovers and runs each check on a **clean copy of that commit**
+   (a throwaway index and `checkout-index`: no ignored files, no git dir), through the adapter's
+   `exec` (a container job: a check container with no network or credential), else under the OS
+   sandbox with the harness's floor (`src/check-sandbox.ts`: `srt` with the harness's deny lists, a
+   temporary HOME and the job's network allowlist). With neither it runs nothing and reports each
+   check "not run". A failure is typed into the same session (the command, exit code and log tail,
+   one steer) and the fix checked again, up to `fixRounds`. Before any host git after the session,
+   a check or a fix round, the git config and the adapter's `checkWorkspace` are checked again. An
+   attached PR's verify job runs them once, on the PR's head, before its reviewer session. The
+   results, with secrets redacted, go on the hand-back.
+7. **Build only:** it commits any leftovers (unless checks ran: then it pushes exactly the last
+   checked commit and never commits after it), then pushes to the run branch, and only there, with
+   a *fresh* job token. It never forces.
 8. It uploads artifacts: the diff, the terminal screen, check output from Claude's transcript, and a summary.
 9. It hands back `{ branch, headSha, result, checks }`, releases the workspace, revokes the tokens and calls `release`.
 
@@ -437,7 +443,8 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 |---|---|
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
-| `src/checks.ts` | The project's checks (ADR 0501): run through the adapter's `exec` or a scrubbed local process, failures back into the same session |
+| `src/checks.ts` | The project's checks (ADR 0501): clean trees, the git guards, failures back into the same session |
+| `src/check-sandbox.ts` | The OS sandbox a local check runs in (`srt` with the harness's floor), or none: checks not run |
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
 | `src/runner.ts` | Wires config → channel client + git + runner-local, or its container runner with `isolation: container` (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |

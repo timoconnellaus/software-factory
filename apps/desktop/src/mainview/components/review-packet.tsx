@@ -458,6 +458,12 @@ function CriterionEvidence({
     <div className="grid gap-0.5" data-testid="criterion-proof" data-proven={proof.proven}>
       <div className="font-medium text-foreground">
         {proof.proven ? `Proven by ${proof.provenBy.join(", ")}` : "Not proven"}
+        {proof.weakened && (
+          <span className="font-normal text-amber-700 dark:text-amber-400">
+            {" "}
+            · weakened: gate files changed on this commit (see Tests intact)
+          </span>
+        )}
         {!proof.proven && proof.unproven.length > 0 && (
           <span className="font-normal text-muted-foreground">
             {" "}
@@ -465,6 +471,13 @@ function CriterionEvidence({
           </span>
         )}
       </div>
+      {(proof.provenBy.length > 0 || proof.unproven.length > 0 || proof.notCounted.length > 0) && (
+        <div className="text-muted-foreground text-xs" data-testid="criterion-linked-by">
+          {proof.linkedBy === "spec" ? "Linked in the approved spec" : "Linked by the reviewer"}
+          {proof.notCounted.length > 0 &&
+            ` · ${proof.notCounted.join(", ")} passed but can't prove a criterion (a static check, or CI the spec doesn't name)`}
+        </div>
+      )}
       <div>Reviewer's opinion: {evidence || "no evidence"}</div>
     </div>
   );
@@ -478,7 +491,11 @@ function FactoryChecks({ packet }: { packet: ParsedPacket }) {
   return (
     <Panel
       title="Checks run by the factory"
-      subtitle={`Run by the runner host on ${packet.headSha.slice(0, 7)}, not reported by an agent`}
+      subtitle={
+        executed.ranOn
+          ? `Ran on ${executed.ranOn.slice(0, 7)}, not on ${packet.headSha.slice(0, 7)}: the merge queue carried this packet to the updated head`
+          : `Run by the runner host on ${packet.headSha.slice(0, 7)}, not reported by an agent`
+      }
       testId="section-factoryChecks"
     >
       {rows.length === 0 ? (
@@ -620,7 +637,11 @@ function VerdictRow({ packet }: { packet: ParsedPacket }) {
           label: "Criteria",
           value: `${proven}/${c.total} proven`,
           status: c.met < c.total ? "failed" : c.total && proven === c.total ? "done" : "waiting",
-          ...(c.total > proven && c.met === c.total ? { extra: "rest: opinion" } : {}),
+          ...(c.total > proven && c.met === c.total
+            ? { extra: "rest: opinion" }
+            : proof && [...proof.values()].some((x) => x.weakened)
+              ? { extra: "weakened: gate files changed" }
+              : {}),
         }
       : {
           label: "Criteria",

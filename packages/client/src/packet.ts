@@ -238,6 +238,12 @@ const proofSection = z.array(
     proven: z.boolean(),
     provenBy: z.array(z.string()).default([]),
     unproven: z.array(z.string()).default([]),
+    /** Linked checks that passed but can't prove it (a static check, a reviewer-picked CI job). */
+    notCounted: z.array(z.string()).default([]),
+    /** Who linked the checks: the approved spec, or the reviewer agent. */
+    linkedBy: z.enum(["spec", "reviewer"]).default("reviewer"),
+    /** The tests-intact guard found gate-file edits on this SHA. */
+    weakened: z.boolean().default(false),
     reviewerMet: z.boolean(),
     opinion: z.string().default(""),
   }),
@@ -252,12 +258,16 @@ export type CriterionProof = z.infer<typeof proofSection>[number];
 export function packetExecuted(p: ParsedPacket): {
   rows: { name: string; result: CheckOutcome | null }[];
   extra: CheckOutcome[];
+  /** Set when the merge queue carried this packet to a new head: the SHA the checks ran on. */
+  ranOn: string | null;
 } | null {
   const r = executedSection.safeParse(p.sections.executed);
   if (!r.success) return null;
+  const ranOn = p.sections.checksRanOn;
   return {
     rows: r.data.declared.map((name, i) => ({ name, result: r.data.results[i] ?? null })),
     extra: r.data.extra,
+    ranOn: typeof ranOn === "string" ? ranOn : null,
   };
 }
 

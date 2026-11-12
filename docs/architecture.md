@@ -68,7 +68,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   verdict (ADR 0500). The runner host runs the project's declared **checks** itself on the head
   SHA after a build (through the adapter's `exec`), sends a failure back into the same session, and
   hands back the results; the verdict uses them, not the agent's report, and a criterion is
-  **Proven** only by a check that passed (Workflow v7, ADR 0501). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
+  **Proven** only by a check that passed (Workflow v8, ADR 0501). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,

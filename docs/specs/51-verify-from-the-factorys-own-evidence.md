@@ -52,8 +52,10 @@ commands it ran on the head SHA, and CI. The reviewer's opinion stays, labelled 
   config (self-modify, a person).
 - **The runner host runs them.** A build or verify job carries the item's checks (`job.checks`).
   After the build session's turn ends, the host commits what the session left, then runs each
-  check in the job's worktree **through the runner adapter's `exec`** (a container runner runs them
-  in the container), falling back to a local process only for adapters that don't declare it. Each
+  check on a **clean copy of the commit** (no ignored files, no git dir) **through the runner
+  adapter's `exec`** (a container runner runs them in a check container), else under the host's OS
+  sandbox with the harness's floor; with neither, each check is reported not run (ADR 0501,
+  amended 2026-11-12). The project declares its install as a check. Each
   result is `{ name, command, exitCode, durationMs, logTail, headSha }` (log tail ≤ 8 KB).
 - **A failure goes back to the same session.** When a check fails and the adapter can steer, the
   host types the failure (command, exit code, log tail) into the same build session, waits for that
@@ -62,15 +64,17 @@ commands it ran on the head SHA, and CI. The reviewer's opinion stays, labelled 
 - **Reported through the runner channel**, on the hand-back (`checks`), and stored by
   `run.handBack` in `core_check_results` against the work item and head SHA (migration 0270).
   A new head has no results until checks run on it.
-- **The Workflow (v7)** reads the build's results for the pushed head: all passed → verify; any
+- **The Workflow (v8; v7 is spec 50 part C's)** reads the build's results for the pushed head: all passed → verify; any
   failed after the session's fixes → a question to a person (try another build, or stop), never a
   cold retry. For an attached PR, the verify job runs the checks before its review session.
 - **The verdict** (`reviewPacket.record`) uses the executed results for the head SHA, never the
   agent's report of checks: every declared check must have a passing result on the SHA, and CI must
   be green. A project with no declared checks is a warning in the packet.
 - **Proven criteria.** The reviewer maps each criterion to check names (`checks: [...]`, executed
-  check names or CI check run names). A criterion is **Proven** only when a linked executed check or
-  CI check run passed on the head SHA; otherwise **Not proven**, with the reviewer's reasoning
+  check names or CI check run names), or the approved spec does (`[checks: …]` on a criterion), which wins. A
+  criterion is **Proven** only when a linked executed check passed on the head SHA (not a static
+  check like lint or typecheck; a CI check run only when the spec names it), marked weakened when
+  the tests-intact guard found gate-file edits; otherwise **Not proven**, with the reviewer's reasoning
   shown as opinion. The reviewer can't mark a criterion proven on its own say-so. A criterion the
   reviewer judges unmet still fails the verdict.
 - **`factory/verify`** reflects the executed results: its summary lists each check's result and
