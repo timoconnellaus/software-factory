@@ -42,7 +42,11 @@
     "GH_APP_SLUG": "software-factory-zerobsai",
     // V1 has one user (docs/v1-scope.md): GitHub logins allowed to sign in, comma-separated. Empty
     // lets nobody in (fail closed).
-    "ALLOWED_GITHUB_LOGINS": "timoconnellaus"
+    "ALLOWED_GITHUB_LOGINS": "timoconnellaus",
+    // The phone app's release signing certificate (ADR 0541): SHA-256, comma-separated, as
+    // `keytool -list -v` prints it; the same value as sf-engine's. /.well-known/assetlinks.json
+    // names it so Android opens /mobile/callback and /mobile/pair in the app. Empty: no App Links.
+    "MOBILE_SIGNING_CERTS": ""
   }
   // Secrets (synced by the deploy workflow, never committed): BETTER_AUTH_SECRET and
   // GH_APP_CLIENT_SECRET. Typed in src/server/env.ts so a deploy doesn't fail before they exist.
