@@ -83,3 +83,10 @@ carries the new spec stage.
   isolate per work item; if a hub is evicted, the next change or wait re-creates it, and the app
   re-reads on reconnect.
 - The spec stage's old one-shot prompt stays for v1–v4 instances until they drain.
+
+## Amendment, 2026-11-12 (spec 26, ADR 0470)
+PostToolUse takes news every 2 s, not 15 s. `planning.ready` is refused while a person's answer or
+message is unread. A person's chat, answer or revised answer while the spec waits at the gate
+withdraws the gate (`withdrawn`), and the Workflow's planning stage starts the next round in the
+same version. See [ADR 0470](0470-planning-steering.md).
+

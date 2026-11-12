@@ -67,18 +67,24 @@ export const AUTONOMY_TABLE: Record<AutonomyPolicyName, Record<NonHuman, Row>> =
     runner: row("allow", "allow", "deny", "review", "review", "deny", "deny", "deny"),
     intake: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
     "self-improve": row("allow", "review", "review", "deny", "review", "review", "deny", "review"),
+    // The pull only starts released work (ADR 0491): read and write, nothing else, in every policy.
+    scheduler: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
   },
   balanced: {
     agent: row("allow", "allow", "review", "review", "review", "review", "review", "review"),
     runner: row("allow", "allow", "deny", "review", "review", "deny", "deny", "deny"),
     intake: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
     "self-improve": row("allow", "allow", "review", "deny", "review", "review", "deny", "review"),
+    // The pull only starts released work (ADR 0491): read and write, nothing else, in every policy.
+    scheduler: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
   },
   autonomous: {
     agent: row("allow", "allow", "review", "allow", "allow", "review", "review", "review"),
     runner: row("allow", "allow", "deny", "allow", "review", "deny", "deny", "deny"),
     intake: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
     "self-improve": row("allow", "allow", "review", "review", "review", "review", "deny", "review"),
+    // The pull only starts released work (ADR 0491): read and write, nothing else, in every policy.
+    scheduler: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
   },
 };
 

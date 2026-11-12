@@ -71,7 +71,7 @@ describe("Workflow v5: the planning session (spec 20)", () => {
     const w = await world();
     const item = await ok<{ workItemId: string; branch: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Add CSV export" },
+      { state: "queued", projectId: w.projectId, title: "Add CSV export" },
       w.human,
     );
     await runStage(w, item.workItemId, "triage", () => triage("medium"));
@@ -104,6 +104,7 @@ describe("Workflow v5: the planning session (spec 20)", () => {
 
     // The person answers; the agent asks for the gate.
     await ok("question.answer", { questionId: asked.questionIds[0], answer: "Stream" }, w.human);
+    await agent(w, job, "planning.news", {});
     await agent(w, job, "planning.ready", { note: "Ready" });
     await gateOpen(item.workItemId, "spec");
 
@@ -171,11 +172,63 @@ describe("Workflow v5: the planning session (spec 20)", () => {
     expect(file).toContain("## Clarifications\n- 2026-11-12 [Q1]: Stream or email? → Stream");
   }, 60_000);
 
+  it("takes the spec back from the gate when a person writes, and the same session asks again (spec 26, criterion 3)", async () => {
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Add CSV export" },
+      w.human,
+    );
+    await runStage(w, item.workItemId, "triage", () => triage("medium"));
+    const job = await claimPlanning(w, item.workItemId);
+    await agent(w, job, "spec.revise", SPEC);
+    await agent(w, job, "planning.ready", {});
+    const first_ = await gateOpen(item.workItemId, "spec");
+
+    // A person redirects while the spec waits at the gate: the gate is withdrawn.
+    await ok(
+      "chat.send",
+      { workItemId: item.workItemId, text: "Actually, tab-separated." },
+      w.human,
+    );
+    const withdrawn = await first<{ decision: string }>(
+      "SELECT decision FROM core_pending_actions WHERE id = ?",
+      first_.id,
+    );
+    expect(withdrawn?.decision).toBe("withdrawn");
+
+    // The planner reads it, revises in the same session, and the Workflow opens a new gate.
+    const news = await agent<PlanningNews>(w, job, "planning.news", {});
+    expect(news.events).toEqual([
+      expect.objectContaining({ type: "chat.message", text: "Actually, tab-separated." }),
+    ]);
+    await agent(w, job, "spec.revise", { ...SPEC, summary: "tab-separated" });
+    await agent(w, job, "planning.ready", {});
+    const second = await waitFor("a new spec gate", () =>
+      first<{ id: string }>(
+        "SELECT id FROM core_pending_actions WHERE work_item_id = ? AND kind = 'spec' AND status = 'pending' AND id != ?",
+        item.workItemId,
+        first_.id,
+      ),
+    );
+    expect(second.id).not.toBe(first_.id);
+    await ok("spec.approve", { workItemId: item.workItemId }, w.human);
+    await waitFor("the session ended", () =>
+      first(
+        "SELECT id FROM core_planning_sessions WHERE work_item_id = ? AND status = 'ended'",
+        item.workItemId,
+      ),
+    );
+    expect(
+      await all("SELECT id FROM core_planning_sessions WHERE work_item_id = ?", item.workItemId),
+    ).toHaveLength(1);
+  }, 60_000);
+
   it("ends the planning session when the spec is rejected, and when the item is cancelled", async () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Something else" },
+      { state: "queued", projectId: w.projectId, title: "Something else" },
       w.human,
     );
     await runStage(w, item.workItemId, "triage", () => triage("medium"));

@@ -4,6 +4,7 @@
 import type { OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
 import { planningHub } from "./planning-hub.ts";
+import { pullProject } from "./pull.ts";
 
 interface OutboxRow {
   id: string;
@@ -106,6 +107,10 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       if (found && !FINISHED.has(found.status)) await found.instance.terminate();
       return;
     }
+    case "queue.pull":
+      // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
+      await pullProject(env, message.payload.projectId);
+      return;
     case "planning.changed":
       // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
       await planningHub(env, message.payload.workItemId).notify();
