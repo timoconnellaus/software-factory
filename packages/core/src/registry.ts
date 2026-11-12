@@ -9,6 +9,7 @@ import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
 import * as config from "./operations/config.ts";
 import * as connector from "./operations/connector.ts";
+import * as delivery from "./operations/delivery.ts";
 import * as desktop from "./operations/desktop.ts";
 import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
@@ -152,6 +153,9 @@ export const OPERATIONS: readonly AnyOperation[] = [
   mergeQueue.mergeQueueList,
   mergeQueue.mergeQueueUpdate,
   mergeQueue.mergeQueueLeave,
+  delivery.mainObserve,
+  delivery.workItemMarkRepair,
+  delivery.deliveryStatus,
   verify.reviewPacketRecord,
   verify.ciRead,
   verify.verifyRefresh,

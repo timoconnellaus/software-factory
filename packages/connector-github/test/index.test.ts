@@ -219,4 +219,36 @@ describe("routing GitHub App webhooks", () => {
     expect(routeGitHubEvent("issues", {}, SLUG).ignored).toMatch(/isn't used/);
     expect(routeGitHubEvent("push", { nope: true }, SLUG).ignored).toMatch(/unreadable/);
   });
+
+  it("observes main's health on CI or a push on the default branch only (spec 53)", () => {
+    const withDefault = { ...repository, default_branch: "main" };
+    const suite = (branch: string) =>
+      routeGitHubEvent(
+        "check_suite",
+        {
+          action: "completed",
+          repository: withDefault,
+          check_suite: {
+            head_sha: sha("d"),
+            head_branch: branch,
+            status: "completed",
+            app: { slug: "github-actions" },
+          },
+        },
+        SLUG,
+      ).calls.map((c) => c.op);
+    expect(suite("main")).toEqual(["verify.refresh", "main.observe"]);
+    expect(suite("factory/1-x")).toEqual(["verify.refresh"]);
+    const push = (ref: string) =>
+      routeGitHubEvent(
+        "push",
+        { ref, before: sha("e"), after: sha("f"), repository: withDefault },
+        SLUG,
+      ).calls;
+    expect(push("refs/heads/main")[1]).toEqual({
+      op: "main.observe",
+      input: { repo, headSha: sha("f"), trigger: "push" },
+    });
+    expect(push("refs/heads/factory/1-x").map((c) => c.op)).toEqual(["push.observe"]);
+  });
 });

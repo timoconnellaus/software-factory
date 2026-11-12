@@ -109,8 +109,11 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     red", with the episode's start time and failing checks;
   - an item's own verify still runs, and its merge gate can still be approved: holding is about
     landing, not about work;
-  - a delivery already updated and waiting for CI when `main` turns red finishes its CI and is held
-    before the merge.
+  - a held delivery isn't brought up to date either: merging a red `main` in would fail its CI and
+    send good work back to build. One already updated and waiting for CI when `main` turns red
+    finishes its CI and is held before the merge;
+  - repairs land first: a repair goes ahead of everything else in its queue. Until the `babysit` job
+    opens repairs itself (§4), a person marks one with `workItem.markRepair` (an approver's call).
 - **Who is told, and where** (decision 3):
   - **Inbox**: one card per red episode for the project's approvers, "`main` is red on <repo>", with
     the failing checks, the suspects, what the babysitter is doing (rerunning, attributing, a fix or
@@ -120,6 +123,12 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
   - **The phone** (spec 60, once push lands): a push to the project's approvers when an episode
     starts, when a revert needs a person (§5), and when `main` is green again. Nothing per held item.
 - `main` turning green releases every hold on the next pass, in approval order.
+- **As built (PR b):** `core_main_health` (migration 0351) is per repository, and the episode is its
+  `red_since`/`first_red_sha` (a separate episodes table with suspects comes with §5). Health counts
+  every check on the head except the factory's own, as verify's CI read does; narrowing it to the
+  ruleset's required checks waits for per-repository protection (spec 50). The Inbox card is
+  `inbox.list`'s `mainRed`; the phone push is a `notify` (`main.red`, `main.green`) that spec 60 can
+  deliver.
 
 ### 3. An approval survives a clean merge of main (ADR 0582, decision 1)
 ADR 0330 already carries an approval over GitHub's update-branch when the new head's first parent is

@@ -1144,6 +1144,24 @@ export const inboxList = defineOperation({
         files: z.array(z.object({ kind: z.enum(RULESET_KINDS), filename: z.string() })),
       }),
     ),
+    /**
+     * "`main` is red" (spec 53, ADR 0581): one card per open red episode, while the line is
+     * stopped: the failing checks, since when, and how many approved items are held behind it.
+     */
+    mainRed: z.array(
+      z.object({
+        projectId: z.string(),
+        name: z.string(),
+        repositoryId: z.string(),
+        repo: z.object({ owner: z.string(), name: z.string() }),
+        branch: z.string(),
+        headSha: z.string(),
+        failing: z.array(z.string()),
+        redSince: z.string(),
+        lastGreenSha: z.string().nullable(),
+        held: z.number(),
+      }),
+    ),
   }),
   async handler(input, ctx) {
     const me = ctx.actor.id;
@@ -1154,7 +1172,7 @@ export const inboxList = defineOperation({
       .select("organization_id")
       .where("user_id", "=", me)
       .$if(!!input.orgId, (q) => q.where("organization_id", "=", input.orgId ?? ""));
-    const [pending, questionRows, running, runnerRows, holds, drift, planningRows] =
+    const [pending, questionRows, running, runnerRows, holds, drift, planningRows, redRows] =
       await readBatch(ctx.d1, [
         ctx.db
           .selectFrom("core_pending_actions")
@@ -1257,6 +1275,35 @@ export const inboxList = defineOperation({
           .where("core_planning_sessions.status", "not in", ["ended", "moved"])
           .orderBy("core_planning_sessions.announced_at", "desc")
           .limit(50),
+        ctx.db
+          .selectFrom("core_main_health as h")
+          .innerJoin("core_projects as p", "p.id", "h.project_id")
+          .innerJoin("core_repositories as r", "r.id", "h.repository_id")
+          .select((eb) => [
+            "h.project_id",
+            "p.name",
+            "h.repository_id",
+            "r.owner",
+            "r.name as repo",
+            "r.default_branch",
+            "h.head_sha",
+            "h.failing",
+            "h.red_since",
+            "h.last_green_sha",
+            eb
+              .selectFrom("core_merge_queue as q")
+              .innerJoin("core_work_items as w", "w.id", "q.work_item_id")
+              .select(eb.fn.countAll<number>().as("n"))
+              .whereRef("q.project_id", "=", "h.project_id")
+              .where("q.status", "=", "queued")
+              .where("q.driver", "=", "babysitter")
+              .where("w.repairs_main", "=", 0)
+              .where("w.status", "in", ["running", "waiting", "paused"])
+              .as("held"),
+          ])
+          .where("p.org_id", "in", myOrgs)
+          .where("h.red_since", "is not", null)
+          .orderBy("h.red_since"),
       ]);
     const gates = pending
       .filter((g) => g.assignee_user_id === me)
@@ -1347,6 +1394,18 @@ export const inboxList = defineOperation({
           ).map((kind) => ({ kind, filename: `${d.repo}-${kind}.json` })),
         };
       }),
+      mainRed: redRows.map((r) => ({
+        projectId: r.project_id,
+        name: r.name,
+        repositoryId: r.repository_id,
+        repo: { owner: r.owner, name: r.repo },
+        branch: r.default_branch,
+        headSha: r.head_sha,
+        failing: parseJson<string[]>(r.failing, []),
+        redSince: String(r.red_since),
+        lastGreenSha: r.last_green_sha,
+        held: Number(r.held ?? 0),
+      })),
     };
   },
 });

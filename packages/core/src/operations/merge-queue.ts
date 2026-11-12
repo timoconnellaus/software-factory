@@ -18,6 +18,7 @@ import {
 } from "../operation.ts";
 import type { RepoRef } from "../services.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
+import { lineStopped } from "./delivery.ts";
 import {
   pendingActionId,
   projectId,
@@ -45,6 +46,7 @@ interface QueueRow {
   title: string;
   repository_id: string | null;
   driver: MergeQueueDriver;
+  repairs_main: number;
 }
 
 /**
@@ -72,6 +74,7 @@ export function queuedEntriesQuery(
         "w.number",
         "w.title",
         "w.repository_id",
+        "w.repairs_main",
       ])
       .where("q.project_id", "=", project)
       // One queue per repository (ADR 0490): an item lands on its own repository's default branch.
@@ -82,6 +85,8 @@ export function queuedEntriesQuery(
       )
       .where("q.status", "=", "queued")
       .where("w.status", "in", [...OPEN_ITEM])
+      // A repair of a red default branch goes first (spec 53, ADR 0581): it is what may land.
+      .orderBy("w.repairs_main", "desc")
       .orderBy("q.enqueued_at", "asc")
       .orderBy("q.id", "asc")
   );
@@ -228,6 +233,11 @@ const position = z.object({
    */
   outcome: z.enum(["merged", "conflict", "failed"]).nullable(),
   outcomeReason: z.string().nullable(),
+  /**
+   * Held (spec 53, ADR 0581): the default branch is red and this isn't a repair, so the babysitter
+   * won't land it until it is green. Null otherwise.
+   */
+  held: z.object({ since: z.string(), failing: z.array(z.string()) }).nullable(),
 });
 
 async function positionOf(
@@ -254,9 +264,12 @@ async function positionOf(
       driver: null,
       outcome: last?.outcome ?? null,
       outcomeReason: last?.outcome ? last.end_reason : null,
+      held: null,
     };
   }
   const entry = entries[i] as QueueRow;
+  const stopped =
+    entry.driver === "babysitter" && entry.repairs_main !== 1 ? await lineStopped(ctx, item) : null;
   return {
     queued: true,
     entryId: entry.id,
@@ -267,6 +280,7 @@ async function positionOf(
     driver: entry.driver,
     outcome: null,
     outcomeReason: null,
+    held: stopped ? { since: stopped.since, failing: stopped.failing } : null,
   };
 }
 
@@ -332,6 +346,7 @@ export const mergeQueueEnter = defineOperation({
         driver: input.driver,
         outcome: null,
         outcomeReason: null,
+        held: null,
       };
     }
     return positionOf(ctx, w);

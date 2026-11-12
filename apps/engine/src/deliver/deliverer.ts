@@ -23,6 +23,8 @@ export const UPDATE_GIVE_UP_MS = 2 * 60_000;
 export const CI_RECHECK_MS = 10 * 60_000;
 export const CI_GIVE_UP_MS = 12 * CI_RECHECK_MS;
 export const CI_MISSING_GIVE_UP_MS = 3 * CI_RECHECK_MS;
+/** A held queue: `main.observe` wakes it when main is green; this is only the safety look. */
+const HELD_RECHECK_MS = 30 * 60_000;
 /** A queue whose head is someone else's (a v4–v7 Workflow) or empty: a slow safety look. */
 const IDLE_RECHECK_MS = 60 * 60_000;
 /** Rounds of one wake: a pass, then again while something changed meanwhile. */
@@ -39,6 +41,9 @@ interface HeadRow {
   updated_at: string;
   item_status: string;
   number: number;
+  repairs_main: number;
+  project_id: string;
+  repository_id: string | null;
 }
 
 type Called =
@@ -157,12 +162,13 @@ async function readHead(
   // The same order as mergeQueue's queuedEntries: oldest open entry whose work item is still open.
   return env.DB.prepare(
     `SELECT q.id, q.work_item_id, q.pending_action_id, q.approved_sha, q.head_sha, q.driver,
-            q.update_asked_at, q.updated_at, w.status AS item_status, w.number
+            q.update_asked_at, q.updated_at, w.status AS item_status, w.number, w.repairs_main,
+            q.project_id, w.repository_id
      FROM core_merge_queue q JOIN core_work_items w ON w.id = q.work_item_id
      WHERE q.project_id = ?1 AND q.status = 'queued'
        AND w.status IN ('running', 'waiting', 'paused')
        AND (?2 IS NULL OR w.repository_id = ?2)
-     ORDER BY q.enqueued_at ASC, q.id ASC LIMIT 1`,
+     ORDER BY w.repairs_main DESC, q.enqueued_at ASC, q.id ASC LIMIT 1`,
   )
     .bind(projectId, repositoryId)
     .first<HeadRow>();
@@ -215,6 +221,10 @@ async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<
   if (head.pending_action_id && (await approvalUsed(env, head.pending_action_id))) {
     return end("merged", "merged", "merged");
   }
+  // Stop the line (ADR 0581): while main is red only a repair lands. Held before the update too,
+  // or merging a red main in would fail its CI and send good work back to build. A green
+  // `main.observe` wakes the queue.
+  if (await held(env, head)) return HELD_RECHECK_MS;
 
   const u = await call(env, "mergeQueue.update", { workItemId: id });
   if (u.status !== "ok") {
@@ -256,6 +266,8 @@ async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<
     }
   }
 
+  // main may have turned red while CI ran on the updated head: hold it before the merge.
+  if (await held(env, head)) return HELD_RECHECK_MS;
   // Land it, at the head the queue recorded, with the approval (pr.merge stays ALWAYS_REVIEW).
   if (!head.pending_action_id) {
     return end("left", "failed", "the babysitter lands only an approved merge");
@@ -274,6 +286,18 @@ async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<
     "failed",
     `pr.merge failed after approval: ${landed.status === "refused" ? landed.message : "still pending"}`,
   );
+}
+
+/** Whether the head must wait: its repository's line is stopped and it isn't a repair. */
+async function held(env: Env, head: HeadRow): Promise<boolean> {
+  if (head.repairs_main === 1) return false;
+  const row = await env.DB.prepare(
+    `SELECT red_since FROM core_main_health WHERE repository_id = COALESCE(?1,
+       (SELECT id FROM core_repositories WHERE project_id = ?2 ORDER BY created_at, id LIMIT 1))`,
+  )
+    .bind(head.repository_id, head.project_id)
+    .first<{ red_since: string | null }>();
+  return !!row?.red_since;
 }
 
 const refusal = (c: Called) =>

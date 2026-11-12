@@ -301,6 +301,8 @@ export interface CoreWorkItemsTable {
   /** 0262: when the shaping stages finished, and the default branch's head then. */
   shaped_at: Iso | null;
   shaped_base_sha: string | null;
+  /** 0351 (spec 53, ADR 0581): its merge repairs a red default branch; it lands while held. */
+  repairs_main: Generated<number>;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
@@ -833,6 +835,25 @@ export interface CoreDeliveryStateTable {
   updated_at: Iso;
 }
 
+// ---- 0351: main health (spec 53, ADR 0581) ----
+
+export type MainHealthState = "green" | "red" | "pending";
+
+/** One row per repository: its default branch head's CI and the open red episode. */
+export interface CoreMainHealthTable {
+  repository_id: string;
+  project_id: string;
+  head_sha: string;
+  state: MainHealthState;
+  /** JSON array of failing check names. */
+  failing: Generated<string>;
+  last_green_sha: string | null;
+  /** The open red episode's start: the line is stopped while it is set. */
+  red_since: Iso | null;
+  first_red_sha: string | null;
+  checked_at: Iso;
+}
+
 // ---- 0120: planning, the loop (spec 20, ADR 0300, 0350) ----
 
 export type PlanningSessionStatus =
@@ -1040,6 +1061,7 @@ export interface CoreDatabase {
   core_attachments: CoreAttachmentsTable;
   core_merge_queue: CoreMergeQueueTable;
   core_delivery_state: CoreDeliveryStateTable;
+  core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;
   core_planning_events: CorePlanningEventsTable;
   core_planning_messages: CorePlanningMessagesTable;
