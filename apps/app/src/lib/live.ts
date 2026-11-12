@@ -101,6 +101,14 @@ export function transcriptItems(events: LiveEvent[], steers: LiveSteer[]): Trans
         text: message ? `${s.text}: ${message}` : s.text,
         tone: s.tone,
       });
+    } else if (e.type === "takeover") {
+      items.push({
+        kind: "status",
+        key,
+        at: e.at,
+        text: "Handed over: resume it in a terminal",
+        tone: "waiting",
+      });
     } else if (e.type === "session.started") {
       items.push({ kind: "status", key, at: e.at, text: "Session started", tone: "running" });
     } else if (e.type === "session.ended") {
@@ -114,7 +122,20 @@ export function transcriptItems(events: LiveEvent[], steers: LiveSteer[]): Trans
       });
     }
   }
-  for (const s of steers) items.push({ kind: "steer", key: `s${s.id}`, at: s.at, steer: s });
+  for (const s of steers) {
+    // A takeover request (ADR 0450) has no text: shown as a status line.
+    if (s.kind === "takeover") {
+      items.push({
+        kind: "status",
+        key: `s${s.id}`,
+        at: s.at,
+        text: "Takeover asked",
+        tone: "waiting",
+      });
+    } else {
+      items.push({ kind: "steer", key: `s${s.id}`, at: s.at, steer: s });
+    }
+  }
   // Stable: events keep their seq order; a steer goes after the events of the same instant.
   return items
     .map((item, i) => ({ item, i, t: Date.parse(item.at) }))

@@ -32,6 +32,7 @@ import {
 } from "@software-factory/runner-contract";
 import { assertPushable, type HostGit, revokeToken } from "./git.ts";
 import { type RunningRelay, startPlanningRelay } from "./planning-relay.ts";
+import { type Connect, terminalLoop } from "./terminal.ts";
 
 export interface JobReport {
   jobId: string;
@@ -152,6 +153,11 @@ export async function steerLoop(options: {
   job: Job;
   signal: AbortSignal;
   steer: (text: string) => Promise<void>;
+  /**
+   * Stops the stream session for a person (ADR 0450): a `takeover` row from `run.takeover`. The
+   * adapter's events then report the resume command and follow the resumed session.
+   */
+  takeover?: () => Promise<void>;
   push: (event: AdapterEvent) => Promise<void>;
   onStop: (error: ChannelCallError) => void;
   log: (message: string) => void;
@@ -164,7 +170,7 @@ export async function steerLoop(options: {
   const take = cp.steers.bind(cp);
   let failures = 0;
   while (!signal.aborted) {
-    let steers: { id: string; text: string }[];
+    let steers: { id: string; text: string; kind?: "message" | "takeover" }[];
     try {
       ({ steers } = await take(
         job.jobId,
@@ -189,6 +195,23 @@ export async function steerLoop(options: {
     }
     for (const s of steers) {
       if (signal.aborted) return;
+      if (s.kind === "takeover") {
+        try {
+          if (!options.takeover) throw new Error("this session can't be taken over from here");
+          await options.takeover();
+          log(`${job.jobId}: stopped the session for a takeover (${s.id})`);
+        } catch (error) {
+          const why = error instanceof Error ? error.message : String(error);
+          await options
+            .push({
+              type: "log",
+              stream: "stderr",
+              text: `the session could not be handed over: ${why}`.slice(0, 2_000),
+            })
+            .catch(() => {});
+        }
+        continue;
+      }
       const text = steerText(s.text);
       if (!text) continue;
       try {
@@ -218,6 +241,8 @@ export interface RunJobOptions<W extends WorkspaceHandle, S extends SessionHandl
   onEvent?: (e: RunnerEvent) => void;
   log?: (message: string) => void;
   fetch?: typeof fetch;
+  /** How the web terminal's socket is opened (default Node's WebSocket; tests use a fake). */
+  connectTerminal?: Connect;
   /** How often buffered log events are flushed. */
   flushMs?: number;
   /** Called once the cloud has the hand-back: the job no longer holds its lease. */
@@ -284,6 +309,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let ahead = true;
   let session: S | undefined;
   let steering: Promise<void> = Promise.resolve();
+  let terminal: Promise<void> = Promise.resolve();
   const steerStop = new AbortController();
   let outcome: SessionOutcome = "failed";
   let summary: string | undefined;
@@ -431,6 +457,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         type: "session.started",
         sessionRef: session.sessionRef,
         ...(session.takeover ? { takeover: session.takeover } : {}),
+        // How it runs (ADR 0450): the dashboard shows a stream session as a chat.
+        ...(session.mode ? { mode: session.mode } : {}),
       });
       // A person's messages from the dashboard, typed into the session while it runs (ADR 0400).
       const live = session;
@@ -440,9 +468,23 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         job,
         signal: AbortSignal.any([signal, steerStop.signal]),
         steer: (text) => (adapter.steer as NonNullable<typeof adapter.steer>)(live, text),
+        ...(adapter.takeover
+          ? { takeover: () => (adapter.takeover as NonNullable<typeof adapter.takeover>)(live) }
+          : {}),
         push: (event) => stream.push(event),
         onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
         log,
+      });
+      // The dashboard's web terminal, relayed while someone watches (ADR 0440).
+      terminal = terminalLoop({
+        adapter,
+        cp,
+        job,
+        open: (o) => (adapter.openTerminal as NonNullable<typeof adapter.openTerminal>)(live, o),
+        signal: AbortSignal.any([signal, steerStop.signal]),
+        onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
+        log,
+        ...(options.connectTerminal ? { connect: options.connectTerminal } : {}),
       });
       try {
         for await (const event of adapter.events(job, session, signal)) {
@@ -455,6 +497,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       } finally {
         steerStop.abort();
         await steering.catch(() => {});
+        await terminal.catch(() => {});
       }
       if (signal.aborted && outcome !== "completed") outcome = abortedOutcome();
 

@@ -30,6 +30,12 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    **Take a run over** with the hint the run shows:
    `tmux -L software-factory attach -t sf-<jobId>` (detach with `C-b d`; the job still ends and
    hands back normally).
+   **Or as a stream** (ADR 0450): with `"session": "stream-json"` in `runner.json` (then restart
+   the service), Claude runs headless as a two-way stream-json session instead (same launch script,
+   same check), the runner declares `chat`, and the Live tab shows the run as a chat. Take one over
+   with **Take over in a terminal** there: the session stops and the run shows a
+   `cd <worktree> && env -u … claude … --resume <id>` command to run on this machine; quit it to
+   hand the run back. `sf-runner` logs the mode it runs at start.
    **Build only:** before the session the host fetches the job's `repo.defaultBranch` too and
    merges it into the run branch (a merge commit, never a rebase, ADR 0320). A conflict is left in
    progress for the session to resolve; unmerged paths at the end fail the run with no push.
@@ -44,6 +50,14 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
 8. It hands back `{ branch, headSha, result }`, releases the workspace, revokes the tokens and calls `release`.
 
 A `409 fenced|killed`, or a cancel command, stops the session at once: no push and no hand-back.
+
+While a session runs, the host also keeps the channel's held `steer` call open (messages from the
+dashboard, ADR 0400) and, for an adapter with `terminal`, the held `terminal` call (ADR 0440,
+`src/terminal.ts`). When someone opens the run's **Web terminal** on the Live tab, the call answers
+with a one-use socket URL for the job's relay in sf-engine; the host connects outbound, starts the
+adapter's bridge, and relays until the relay says nobody is watching, the session ends, or the job
+stops. No port opens on the machine, and only the runner's owner's keys reach the session (the
+relay enforces it).
 
 ### Pools and planning sessions (spec 20, ADR 0301, 0350)
 Capacity has two pools: heavy (build, verify; `maxConcurrent`) and light (triage, spec, planning;

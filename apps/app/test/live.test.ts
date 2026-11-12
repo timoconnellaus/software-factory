@@ -29,12 +29,15 @@ function view(runId: string, events: LiveEvent[], over: Partial<LiveView> = {}):
       startedAt: T(0),
       endedAt: null,
       takeover: null,
+      mode: null,
     },
     events,
     lastSeq: events.at(-1)?.seq ?? 0,
     truncated: false,
     steers: [],
     steer: { allowed: true, reason: null, max: 2000 },
+    takeover: { allowed: false, reason: null, requested: false },
+    terminal: { allowed: false, mode: null, reason: "This runner can't share its terminal." },
     ...over,
   };
 }
@@ -111,6 +114,7 @@ describe("the Live tab", () => {
       authorName: "tim",
       status: "delivered",
       deliveredAt: T(3),
+      kind: "message",
     };
     const items = transcriptItems(
       [

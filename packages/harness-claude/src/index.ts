@@ -16,6 +16,7 @@ export * from "./planning/relay.ts";
 export * from "./project.ts";
 export * from "./settings.ts";
 export * from "./status.ts";
+export * from "./stream-json.ts";
 export * from "./transcript.ts";
 
 export const HARNESS_ID: HarnessId = "claude-code";

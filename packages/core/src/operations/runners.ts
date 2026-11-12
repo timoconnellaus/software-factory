@@ -1031,6 +1031,14 @@ export const runReportEvents = defineOperation({
         ? (last.state as "preparing" | "running" | "collecting")
         : null;
     const started = input.events.find((e) => e.type === "session.started");
+    // A stream session handed to a person (ADR 0450): its resume command is the run's takeover.
+    const handed = input.events.findLast((e) => e.type === "takeover");
+    const takeover =
+      handed?.type === "takeover"
+        ? { label: "Resume in a terminal", hint: handed.hint }
+        : started?.type === "session.started" && started.takeover
+          ? started.takeover
+          : null;
     if (isActive(run.status)) {
       ctx.write(
         ctx.db
@@ -1038,9 +1046,7 @@ export const runReportEvents = defineOperation({
           .set({
             last_event_at: ctx.now,
             ...(mapped ? { status: mapped } : {}),
-            ...(started?.type === "session.started" && started.takeover
-              ? { takeover: json(started.takeover) }
-              : {}),
+            ...(takeover ? { takeover: json(takeover) } : {}),
           })
           .where("id", "=", run.id),
       );
