@@ -149,3 +149,11 @@ export const configQuery = (projectId: string) =>
     queryFn: () => read("config.get", { projectId }),
     staleTime: 10_000,
   });
+
+/** A project's trials of practice changes (ADR 0373): the factory's own changes, newest first. */
+export const trialsQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId, "trials"],
+    queryFn: () => read("config.trials", { projectId, limit: 20 }),
+    staleTime: 30_000,
+  });

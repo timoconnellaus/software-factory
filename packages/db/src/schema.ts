@@ -158,6 +158,23 @@ export interface CoreProjectPoliciesTable {
   parent_version: number | null;
 }
 
+export interface CoreConfigTrialsTable {
+  id: string;
+  project_id: string;
+  base_sha: string;
+  candidate_sha: string;
+  kind: string;
+  summary: string;
+  evidence: Generated<JsonText>;
+  target_items: number;
+  status: Generated<"running" | "promoted" | "disabled">;
+  outcome: JsonText | null;
+  reason: string | null;
+  created_by: string;
+  created_at: Iso;
+  decided_at: Iso | null;
+}
+
 export type KillScope = "org" | "project";
 
 export interface CoreKillSwitchesTable {
@@ -210,6 +227,8 @@ export interface CoreWorkItemsTable {
   /** 0141 (ADR 0371): the workflow triage picked; null is the skeleton alone. */
   workflow: string | null;
   workflow_reason: string | null;
+  /** 0142 (ADR 0373): the trial it ran under, on the trial's candidate version. */
+  trial_id: string | null;
   domains: Generated<JsonText>;
   current_spec_id: string | null;
   branch: string;
@@ -790,6 +809,7 @@ export interface CoreDatabase {
   core_factories: CoreFactoriesTable;
   core_projects: CoreProjectsTable;
   core_project_policies: CoreProjectPoliciesTable;
+  core_config_trials: CoreConfigTrialsTable;
   core_project_protection: CoreProjectProtectionTable;
   core_kill_switches: CoreKillSwitchesTable;
   core_batch_guard: CoreBatchGuardTable;

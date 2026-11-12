@@ -12,6 +12,7 @@ import { endPlanningSessions } from "../planning.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
+import { trialForNewItem } from "./improve.ts";
 import { queuedEntriesQuery, releaseMergeQueue } from "./merge-queue.ts";
 import { protectionDriftQuery } from "./protection.ts";
 import {
@@ -188,6 +189,7 @@ export const workItemCreate = defineOperation({
       source: input.source,
       requesterUserId: requester,
       number: project.next_number,
+      trial: await trialForNewItem(ctx, project.id),
     });
     ctx.write(
       ctx.db

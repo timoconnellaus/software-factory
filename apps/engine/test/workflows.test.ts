@@ -146,12 +146,14 @@ describe("workflows (spec 09 M2)", () => {
     });
   });
 
-  it("falls back to the skeleton for a workflow the project doesn't have", async () => {
+  it("falls back to the skeleton for a workflow the project doesn't have, with the default Builder", async () => {
     const w = await world(POLICY);
     const item = await create(w);
     await runStage(w, item.workItemId, "triage", () => triage("small", { workflow: "Nope" }));
     await runStage(w, item.workItemId, "build", (job) => {
-      expect(job.harness.model).toBe(resolveModel("implement"));
+      // No workflow: the build uses the agent called Builder (ADR 0372), light here.
+      expect(job.harness.model).toBe(resolveModel("implement", {}, "light"));
+      expect(job.harness.prompt).toContain("Run pnpm test first.");
       return build();
     });
     await runStage(w, item.workItemId, "verify", (job) => {
@@ -164,5 +166,17 @@ describe("workflows (spec 09 M2)", () => {
     );
     expect(row?.workflow).toBeNull();
     expect(row?.workflow_reason).toMatch(/doesn't have/);
+  });
+});
+
+describe("the default builder", () => {
+  it("leaves the build on the standard tier when the project has no Builder agent", async () => {
+    const w = await world(BALANCED);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", (job) => {
+      expect(job.harness.model).toBe(resolveModel("implement"));
+      return build();
+    });
   });
 });

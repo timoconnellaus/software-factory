@@ -223,6 +223,42 @@ This spec is built in four milestones, each its own PR.
 - **App:** Settings gains a Self-improvement section (on/off, trial size, weekly cap). There is a
   trials list with status and evidence, the digest card, and the gate reason prompt.
 
+### As built (M3)
+- **Usage** travels as a `usage` artifact, not a new table.
+  - `harness-claude` sums tokens per model from the session transcript's assistant messages (each
+    message counted once), plus the wall time.
+  - `runner-orca` uploads it as `{kind: "usage", harness, entries, wallMs}`, and core stores it in
+    `core_artifacts`.
+- **Migration 0142** adds `core_config_trials` and `core_work_items.trial_id`.
+- **Drafting is rule-based in V1, not a model.** It is `draftCandidate` in `packages/core/src/improve.ts`:
+  - **Effectiveness:** when the same check fails verify in at least 2 of the last 10 items, it adds
+    a line to the builder's instructions.
+  - **Efficiency:** when the last 5 items all passed first time, it moves the builder to the
+    `light` tier.
+  - A change disabled in the last 30 days isn't drafted again.
+  - The critic is deferred along with model drafting: there's no free-form draft to critique yet.
+- **Practice only is enforced in code** (`practiceOnlyError`): the candidate may change only agents'
+  tier and instructions, or add the default **Builder** (an `implement` agent of that name builds
+  items whose workflow names no builder). Anything else, or anything `policyImpact` calls loosening,
+  is refused.
+- **Trials are per project, one at a time.** Items join a running trial when they're created
+  (`trial_id`, pinned to the candidate version) until it has `trialSize`.
+- **`config.trial.resolve`** compares the trial's finished items with as many earlier items on the
+  base version (`evaluateTrial`):
+  - It **promotes** when items are done at least as often, with no more failed rounds.
+  - It **disables** otherwise, and also if the config moved on.
+  - It decides on what it has after 14 days.
+  - A person can stop a trial, and revert a promoted one (`config.rollback` to its base).
+- **Self-improve and the gate:** the engine's hourly pass (`runImprover`) acts as `self-improve`.
+  Under Cautious, that actor's writes go to review, so a trial becomes a proposal for a person.
+- **Turning `improve.enabled` on** is loosening, so it waits for an approver.
+- **The digest** is "The factory's changes" in Settings (`config.trials`), not an inbox card.
+- **Deferred:**
+  - `metrics.configVersions` (the comparison lives in each trial's outcome);
+  - the gate-reason prompt (the notes on send-back, request-changes and approval already carry
+    reasons);
+  - a runner owner opting out of trials.
+
 ### Acceptance criteria
 1. A completed run has usage rows with model, harness and tokens, taken from a recorded stream-json
    fixture.

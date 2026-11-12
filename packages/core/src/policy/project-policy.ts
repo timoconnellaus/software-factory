@@ -182,6 +182,18 @@ export const projectPolicySchema = z
     agents: z.array(agentSchema).max(30).default([]),
     /** Named workflows; triage picks one per work item. None means the skeleton alone (ADR 0371). */
     workflows: z.array(workflowSchema).max(20).default([]),
+    /**
+     * Self-improvement (ADR 0373): the factory trials practice changes on the next `trialSize`
+     * items, at most `weeklyCap` a week. Turning it on is a policy change for a person.
+     */
+    improve: z
+      .object({
+        enabled: z.boolean().default(false),
+        trialSize: z.number().int().min(3).max(20).default(5),
+        weeklyCap: z.number().int().min(1).max(10).default(3),
+      })
+      .strict()
+      .default({ enabled: false, trialSize: 5, weeklyCap: 3 }),
   })
   .strict()
   .superRefine((policy, ctx) => {

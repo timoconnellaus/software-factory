@@ -18,6 +18,7 @@ import {
   ATTACHED_SKIP_REASON,
   approvalEvent,
   ciEvent,
+  DEFAULT_BUILDER,
   FOREMAN,
   type GateEventPayload,
   invoke,
@@ -189,26 +190,30 @@ interface PlannedStep {
   skip?: string;
 }
 
-/** An item's workflow, decided once before build (v6, ADR 0371). */
+/** An item's workflow, decided once before build (v6, ADR 0371). `name` null: the skeleton alone. */
 export interface WorkflowPlan {
-  name: string;
+  name: string | null;
   slots: Record<SlotName, PlannedStep[]>;
   build: PlannedAgent | null;
 }
 
 const SIZE_RANK: Record<string, number> = { small: 0, medium: 1, large: 2 };
 
-/** Resolves a workflow's steps against its agents and the item's size and domains. Pure. */
+/**
+ * Resolves a workflow's steps against its agents and the item's size and domains. Pure. With no
+ * workflow (or an unknown one) the slots are empty and the build uses the default builder, if the
+ * project has one.
+ */
 export function planWorkflow(
   policy: ProjectPolicy | null,
   workflow: string | null,
   size: string | null,
   domainsJson: string | null,
 ): WorkflowPlan | null {
+  if (!policy) return null;
   const def = workflow
-    ? policy?.workflows.find((w) => w.name.toLowerCase() === workflow.toLowerCase())
+    ? policy.workflows.find((w) => w.name.toLowerCase() === workflow.toLowerCase())
     : undefined;
-  if (!policy || !def) return null;
   let domains: string[] = [];
   try {
     domains = domainsJson ? (JSON.parse(domainsJson) as string[]) : [];
@@ -229,6 +234,17 @@ export function planWorkflow(
         }
       : null;
   };
+  const builder = (name: string | undefined) => {
+    const a = agentOf(name);
+    return a?.role === "implement" ? a : null;
+  };
+  if (!def) {
+    return {
+      name: null,
+      slots: { afterSpec: [], beforeVerify: [], afterVerify: [] },
+      build: builder(DEFAULT_BUILDER),
+    };
+  }
   const slots = Object.fromEntries(
     SLOTS.map((slot) => [
       slot,
@@ -255,7 +271,7 @@ export function planWorkflow(
       }),
     ]),
   ) as Record<SlotName, PlannedStep[]>;
-  return { name: def.name, slots, build: agentOf(def.core.build) };
+  return { name: def.name, slots, build: builder(def.core.build ?? DEFAULT_BUILDER) };
 }
 
 export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
@@ -1574,7 +1590,7 @@ class ItemFlow {
       const record = (outcome: "passed" | "sentBack" | "asked" | "skipped", summary: string) =>
         this.act(`${name}: record`, "workflow.record", {
           workItemId: id,
-          workflow: plan.name,
+          workflow: plan.name ?? "",
           slot,
           stepId: s.id,
           name: s.name,
@@ -1588,7 +1604,7 @@ class ItemFlow {
       if (s.kind === "gate") {
         const decided = await this.gate(meta, name, "workflow.gate", {
           workItemId: id,
-          workflow: plan.name,
+          workflow: plan.name ?? "",
           stepId: s.id,
           name: s.name,
           ...(s.approver ? { approver: s.approver } : {}),
@@ -1607,7 +1623,7 @@ class ItemFlow {
         "verify",
         agent.role as ModelRole,
         stepPrompt(meta, {
-          workflow: plan.name,
+          workflow: plan.name ?? "",
           step: s.name,
           slot,
           instructions: [agent.instructions, s.instructions].filter(Boolean).join("\n\n"),

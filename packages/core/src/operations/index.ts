@@ -6,6 +6,7 @@ export * from "./connector.ts";
 export * from "./devices.ts";
 export * from "./gates.ts";
 export * from "./github.ts";
+export * from "./improve.ts";
 export * from "./incidents.ts";
 export * from "./merge-queue.ts";
 export * from "./onboarding.ts";

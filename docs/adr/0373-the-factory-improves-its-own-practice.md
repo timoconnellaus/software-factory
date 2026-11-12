@@ -58,3 +58,10 @@ loosen permissions.
   safety argument: a bad practice change shows up as failed verifies or send-backs, and the trial
   rolls it back.
 - Eval replay of a candidate before its trial (ADR 0027) is the next step after V1.
+
+> Amended 2026-11-12 (spec 09 M3, as built): V1's improver drafts with two rules, not a model.
+> The rules are a repeated failing check (an instruction for the builder) and a run of first-time
+> passes (the builder to the `light` tier). So the critic step waits for model-drafted changes.
+> Practice is narrowed in code to agents' tier and instructions, plus adding the default
+> **Builder** agent. Trials are per project, one at a time, and items join when they're created.
+> Usage comes from the harness transcript as a `usage` artifact. The digest is a list in Settings.

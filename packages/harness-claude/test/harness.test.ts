@@ -586,3 +586,63 @@ describe("a planning session's projection (spec 20, ADR 0350)", () => {
     ).rejects.toThrow(/relay/);
   });
 });
+
+describe("usage from the transcript (spec 09 M3)", () => {
+  it("sums tokens per model, counting a streamed message once, and the wall time", () => {
+    const line = (o: unknown) => JSON.stringify(o);
+    const msg = (id: string, model: string, usage: Record<string, number>, timestamp: string) => ({
+      type: "assistant",
+      timestamp,
+      message: { id, model, usage, content: [{ type: "text", text: "hi" }] },
+    });
+    const jsonl = [
+      line({ type: "user", timestamp: "2026-11-12T00:00:00.000Z", message: { content: "go" } }),
+      line(
+        msg(
+          "m1",
+          "model-a",
+          { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 5 },
+          "2026-11-12T00:00:01.000Z",
+        ),
+      ),
+      // The same message again (streamed): not counted twice.
+      line(
+        msg(
+          "m1",
+          "model-a",
+          { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 5 },
+          "2026-11-12T00:00:01.500Z",
+        ),
+      ),
+      line(
+        msg("m2", "model-a", { input_tokens: 50, output_tokens: 5 }, "2026-11-12T00:00:30.000Z"),
+      ),
+      line(
+        msg(
+          "m3",
+          "model-b",
+          { input_tokens: 7, output_tokens: 3, cache_creation_input_tokens: 2 },
+          "2026-11-12T00:01:00.000Z",
+        ),
+      ),
+    ].join("\n");
+    const summary = parseTranscript(jsonl);
+    expect(summary.usage).toEqual([
+      {
+        model: "model-a",
+        inputTokens: 150,
+        outputTokens: 15,
+        cacheReadTokens: 5,
+        cacheWriteTokens: 0,
+      },
+      {
+        model: "model-b",
+        inputTokens: 7,
+        outputTokens: 3,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 2,
+      },
+    ]);
+    expect(summary.wallMs).toBe(60_000);
+  });
+});
