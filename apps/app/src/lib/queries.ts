@@ -141,3 +141,27 @@ export function useRefreshAfterDecision() {
         : Promise.resolve(),
     ]);
 }
+
+/** A project's config: the current version and its history (ADR 0370). */
+export const configQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId],
+    queryFn: () => read("config.get", { projectId }),
+    staleTime: 10_000,
+  });
+
+/** A project's trials of practice changes (ADR 0373): the factory's own changes, newest first. */
+export const trialsQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId, "trials"],
+    queryFn: () => read("config.trials", { projectId, limit: 20 }),
+    staleTime: 30_000,
+  });
+
+/** How the adjudicator is doing on a project (ADR 0374), per gate kind. */
+export const adjudicatorQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId, "adjudicator"],
+    queryFn: () => read("adjudicator.stats", { projectId }),
+    staleTime: 30_000,
+  });

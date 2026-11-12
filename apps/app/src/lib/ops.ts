@@ -16,6 +16,7 @@ export interface OpMap {
   "workItem.list": Def<typeof operations.workItemList>;
   "workItem.timeline": Def<typeof operations.workItemTimeline>;
   "workItem.cancel": Def<typeof operations.workItemCancel>;
+  "workItem.setWorkflow": Def<typeof operations.workItemSetWorkflow>;
   "workItem.attachPr": Def<typeof operations.workItemAttachPr>;
   "workItem.previewAttach": Def<typeof operations.workItemPreviewAttach>;
   "github.openPullRequests": Def<typeof operations.githubOpenPullRequests>;
@@ -38,7 +39,14 @@ export interface OpMap {
   "github.connectStart": Def<typeof operations.githubConnectStart>;
   "github.repos": Def<typeof operations.githubRepos>;
   "policy.resync": Def<typeof operations.policyResync>;
-  "policy.proposeTemplate": Def<typeof operations.policyProposeTemplate>;
+  "config.get": Def<typeof operations.configGet>;
+  "config.preview": Def<typeof operations.configPreview>;
+  "config.save": Def<typeof operations.configSave>;
+  "config.rollback": Def<typeof operations.configRollback>;
+  "config.export": Def<typeof operations.configExport>;
+  "config.trials": Def<typeof operations.configTrials>;
+  "config.trial.resolve": Def<typeof operations.configTrialResolve>;
+  "adjudicator.stats": Def<typeof operations.adjudicatorStatsOp>;
   "setup.status": Def<typeof operations.setupStatus>;
   "protection.check": Def<typeof operations.protectionCheck>;
   "runner.deviceLookup": Def<typeof operations.runnerDeviceLookup>;
@@ -66,6 +74,7 @@ export const APP_OPERATIONS = [
   "workItem.list",
   "workItem.timeline",
   "workItem.cancel",
+  "workItem.setWorkflow",
   "workItem.attachPr",
   "workItem.previewAttach",
   "github.openPullRequests",
@@ -88,7 +97,14 @@ export const APP_OPERATIONS = [
   "github.connectStart",
   "github.repos",
   "policy.resync",
-  "policy.proposeTemplate",
+  "config.get",
+  "config.preview",
+  "config.save",
+  "config.rollback",
+  "config.export",
+  "config.trials",
+  "config.trial.resolve",
+  "adjudicator.stats",
   "setup.status",
   "protection.check",
   "runner.deviceLookup",
@@ -118,6 +134,10 @@ export const APP_READ_OPERATIONS = [
   "github.repos",
   "setup.status",
   "runner.list",
+  "config.get",
+  "config.preview",
+  "config.trials",
+  "adjudicator.stats",
 ] as const satisfies readonly OpName[];
 export type ReadOpName = (typeof APP_READ_OPERATIONS)[number];
 
@@ -155,3 +175,4 @@ export type Project = OpOutput<"project.list">["projects"][number];
 export type SetupStatus = OpOutput<"setup.status">;
 export type RepoChoice = OpOutput<"github.repos">["repos"][number];
 export type OpenPull = OpOutput<"github.openPullRequests">["pulls"][number];
+export type ConfigView = OpOutput<"config.get">;

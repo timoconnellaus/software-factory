@@ -86,6 +86,8 @@ export interface NewWorkItem {
   pr?: { branch: string; number: number; url: string; headSha: string };
   /** Number to use; the caller read `next_number` and the batch guards it. */
   number: number;
+  /** A running trial it joins (ADR 0373): it then runs on the trial's candidate version. */
+  trial?: { id: string; candidateSha: string } | null;
 }
 
 /**
@@ -126,7 +128,8 @@ export function createWorkItem(
       pr_number: item.pr?.number ?? null,
       pr_url: item.pr?.url ?? null,
       workflow_id: id,
-      policy_sha: item.project.policy_sha,
+      policy_sha: item.trial?.candidateSha ?? item.project.policy_sha,
+      trial_id: item.trial?.id ?? null,
       parent_work_item_id: item.parentWorkItemId ?? null,
       created_at: ctx.now,
       updated_at: ctx.now,

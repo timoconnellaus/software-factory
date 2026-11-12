@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { RunnerVersion } from "@software-factory/runner-contract";
-import { nodeExec } from "@software-factory/runner-orca";
+import { nodeExec } from "@software-factory/runner-local";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunnerHost } from "../src/host.ts";
 import {

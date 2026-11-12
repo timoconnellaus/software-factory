@@ -1,8 +1,8 @@
 {
   "name": "runner-adapter-resolves-existing-repo",
-  "description": "Incident 2026-11-11 bootstrap #5 (ADR 0260): runner-orca registered its own clone next to the owner's Orca repo and unregistered it after every job, so Orca showed two source repos for one project and churned a new repo id per job. The adapter must resolve the existing Orca repo by canonical identity, and it never unregisters a repo (only the startup migration in workspace.ts retires the runner's own earlier clone).",
-  "appliesTo": ["packages/runner-orca/src/adapter.ts"],
-  "forbid": ["repoForget\\("],
-  "require": ["findRepoForJob\\("],
-  "message": "Resolve the job's repo with findRepoForJob (canonical remote identity) before registering anything, register the runner's clone at most once and permanently, and never unregister a repo in prepareWorkspace or release. See .factory/checks/runner-adapters.md and ADR 0260."
+  "description": "Incident 2026-11-11 bootstrap #5 (ADR 0260, amended by ADR 0380): the first runner adapter (runner-orca, since deleted) registered its own clone next to the owner's checkout and unregistered it after every job, so one project showed two source repos and churned a new repo id per job. A runner adapter must resolve the checkout the machine already has for the job's repo by canonical identity and make the job's worktree there; per-job state is a worktree and a run branch, never a checkout or its registration.",
+  "appliesTo": ["packages/runner-*/src/adapter.ts"],
+  "forbid": ["repoForget\\(", "rm\\(\\s*(workspace\\.)?checkout\\b"],
+  "require": ["findCheckout\\(|resolveCheckout"],
+  "message": "Resolve the job's checkout by canonical remote identity (runner-local's findCheckout) before falling back to the host's clone, and never remove or unregister a checkout in prepareWorkspace or release. See .factory/checks/runner-adapters.md and ADR 0260."
 }

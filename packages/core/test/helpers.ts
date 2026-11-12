@@ -100,9 +100,15 @@ export async function world(policy: unknown = POLICY) {
     { owner: "timoconnellaus", name: repoName },
     "Software factory",
   );
-  const policySha = sha40(uid("p"));
-  if (policy !== null) {
-    await ok(
+  // project.create gives every project a template config (ADR 0370). `null` asks for a project
+  // with none at all, as one created before config lived in the app: it fails closed.
+  let policySha: string = sha40(uid("p"));
+  if (policy === null) {
+    await env.DB.prepare("UPDATE core_projects SET policy_sha = NULL WHERE id = ?")
+      .bind(project.id)
+      .run();
+  } else {
+    const synced = await ok<{ version: string | null }>(
       "policy.sync",
       {
         projectId: project.id,
@@ -112,6 +118,7 @@ export async function world(policy: unknown = POLICY) {
       },
       human,
     );
+    policySha = synced.version ?? policySha;
   }
   const repo = { installationId, owner: "timoconnellaus", repo: repoName };
   return { userId, orgId, human, projectId: project.id, policySha, repo };

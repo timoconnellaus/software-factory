@@ -22,7 +22,7 @@ export const capabilitySchema = z.enum(CAPABILITIES);
 
 export const capabilityManifestSchema = z.object({
   contractVersion: z.literal(CONTRACT_VERSION),
-  /** The adapter kind, e.g. "orca" or "local". Informational: the core never branches on it. */
+  /** The adapter kind, e.g. "local". Informational: the core never branches on it. */
   runnerKind: z.string().min(1).max(40),
   harnesses: z.array(z.enum(HARNESSES)).min(1),
   capabilities: z.array(capabilitySchema),
@@ -209,6 +209,27 @@ export const artifactSchema = z.discriminatedUnion("kind", [
     base64: z.string(),
   }),
   z.object({ kind: z.literal("summary"), text: z.string() }),
+  /**
+   * What the run used, per model, read from the harness's own transcript (spec 09 M3, ADR 0373).
+   * Counts only: the factory never sees keys or bills (ADR 0023).
+   */
+  z.object({
+    kind: z.literal("usage"),
+    harness: z.string().max(40),
+    entries: z
+      .array(
+        z.object({
+          model: z.string().max(100),
+          inputTokens: z.number().int().nonnegative(),
+          outputTokens: z.number().int().nonnegative(),
+          cacheReadTokens: z.number().int().nonnegative().default(0),
+          cacheWriteTokens: z.number().int().nonnegative().default(0),
+        }),
+      )
+      .max(20),
+    /** First to last message of the session. */
+    wallMs: z.number().int().nonnegative().optional(),
+  }),
 ]);
 
 /** An artifact on the wire; `id` is a content hash (`artifactId`) so re-uploads are idempotent. */

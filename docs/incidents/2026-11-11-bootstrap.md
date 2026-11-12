@@ -317,6 +317,33 @@ to notice the runner was behind, log in, and run commands whose effects depended
 **What would have caught it.** A runner that reports its version: the cloud then knows it's
 running old code. That is now part of every heartbeat.
 
+## 10. runner-local's agents couldn't read their own worktree
+**What happened.** On 2026-11-12, the first live runs on the M5 after switching it to `runner-local`
+(PR #40, spec 30). Work item #6's three triage runs each ended in about 20 s. Claude said it
+couldn't read `.factory-prompt.md`: "the Read tool refused the path because the directory is denied
+by the permission settings", and a `cat` through Bash was denied too. With no result file, triage
+failed three times, and the factory opened incident #7, whose triage then hit the same wall. The
+tmux session, the launch check, the prompt pointer and the status hook all worked.
+
+**Root cause (`runner`: workspace location).**
+- **Where the worktree went.** runner-local put job worktrees in
+  `~/.local/state/software-factory/runner/worktrees`.
+- **What the harness denies.** harness-claude denies every stage reads of
+  `~/.local/state/software-factory` (`DENY_HOME`: the runner's key, runs and clones).
+- Under Orca, worktrees lived in Orca's workspace folder, so the two rules never met.
+- The adapter's tests run with temp dirs, and the real-tmux test uses a stand-in `claude` that
+  doesn't enforce deny rules, so nothing exercised them together.
+
+**Fix.**
+- **Moved the agent's dirs.** Worktrees and attachments now live under the data dir
+  (`$XDG_DATA_HOME` or `~/.local/share/software-factory/runner`).
+- **What stays denied.** The key, run dirs and clones stay where they were, still denied.
+- **Test.** `local/runner-host/test/paths.test.ts` checks that the agent's own dirs are under no
+  `DENY_HOME` path and that the private ones still are.
+
+**What would have caught it.** A smoke run of a real `claude` against the projected settings before
+the adapter shipped. That's spec 30's criteria 1–2, which this incident is how we met.
+
 ## Follow-ups (not done here)
 - ~~Add the spec-template rules from 1 and 3 when the stage-spec template is next touched.~~ Done
   with the onboarding rebuild (below).

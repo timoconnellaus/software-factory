@@ -25,6 +25,25 @@ export const triageResultSchema = z.object({
    */
   specRequested: z.enum(["skip", "require"]).optional(),
   summary: z.string().max(4_000).optional(),
+  /** The project workflow that fits this work (ADR 0371), by name; omitted: the skeleton alone. */
+  workflow: z.string().max(60).optional(),
+  /** Why that workflow, logged with the choice. */
+  workflowReason: z.string().max(1_000).optional(),
+});
+
+/**
+ * A workflow's `work` step result (ADR 0371): advisory. `sendBack` returns the item to build with
+ * the notes; `ask` puts questions to a person first.
+ */
+export const stepResultSchema = z.object({
+  verdict: z.enum(["pass", "sendBack", "ask"]),
+  summary: z.string().min(1).max(4_000),
+  /** For sendBack: what the builder should change. */
+  notes: z.string().max(8_000).optional(),
+  questions: z
+    .array(z.lazy(() => questionDraftSchema))
+    .max(5)
+    .default([]),
 });
 
 export const questionDraftSchema = z.object({
@@ -84,6 +103,7 @@ export const verifyResultSchema = z.object({
 });
 
 export type TriageResult = z.infer<typeof triageResultSchema>;
+export type StepResult = z.infer<typeof stepResultSchema>;
 export type QuestionDraft = z.infer<typeof questionDraftSchema>;
 export type SpecResult = z.infer<typeof specResultSchema>;
 export type BuildResult = z.infer<typeof buildResultSchema>;

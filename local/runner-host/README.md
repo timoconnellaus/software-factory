@@ -2,8 +2,10 @@
 
 The runner host daemon (`sf-runner`). It runs on a person's machine, connects **outbound** to the
 factory over the signed channel (`https://sf-engine.zerobsai.com/runner/v1/*`, ADR 0016), and drives a
-runner adapter. V1 wires `runner-orca` with the `harness-claude` harness. Decisions:
-[ADR 0250](../../docs/adr/0250-runner-host-pushes-and-harness-projection.md).
+runner adapter. It wires `runner-local` (git worktrees + tmux, no desktop app) with the
+`harness-claude` harness. Decisions:
+[ADR 0250](../../docs/adr/0250-runner-host-pushes-and-harness-projection.md),
+[ADR 0380](../../docs/adr/0380-runner-local-tmux-and-hook-status.md).
 
 ## What it does
 Every ~20 s it heartbeats: the manifest, capacity, and the jobs it holds with their fencing tokens.
@@ -11,20 +13,30 @@ The heartbeat renews each lease (10 min), and cancel/drain commands come back on
 While it has room it claims jobs; a retried claim reuses its `claimId`. For each job (`src/job.ts`):
 
 1. It fetches a **job token** (`run.issueToken`): a GitHub App installation token for the one repo.
-2. It fetches the item branch into the checkout this machine's Orca already has for the repo (found
-   by canonical remote identity, ADR 0260), by URL, into `refs/software-factory/heads/<branch>`,
-   with the token only in that git process's environment. It never changes that checkout's config,
-   remotes, branches or working tree. Only when Orca has no repo for the remote does it clone, once,
-   into `~/.local/state/software-factory/runner/repos/<owner>/<name>` (push URL disabled, no
-   credential helper), which the adapter registers once and keeps.
-3. runner-orca makes an Orca worktree, in that repo, on the run branch `factory/<n>-<slug>-run-<k>` and projects
-   `harness-claude`'s per-run settings into it. Claude Code then starts in an Orca terminal (you can
-   take it over there), with the harness's own flags, and is checked before it gets the prompt
-   (ADR 0270).
+2. It fetches the item branch into the checkout this machine already has for the repo: the git repo
+   directly under one of the `checkouts` dirs in `runner.json` whose `origin` is the job's repo
+   (canonical remote identity, ADR 0260). It fetches by URL, into
+   `refs/software-factory/heads/<branch>`, with the token only in that git process's environment, and
+   never changes that checkout's config, remotes, branches or working tree. Only when no checkout
+   matches does it clone, once, into `~/.local/state/software-factory/runner/repos/<owner>/<name>`
+   (push URL disabled, no credential helper), and keeps it.
+3. runner-local adds a git worktree of that checkout at
+   `~/.local/share/software-factory/runner/worktrees/sf-<jobId>` (the data dir: the harness may not read the state dir, incident #10) on the run branch
+   `factory/<n>-<slug>-run-<k>` (hooks off, no upstream written) and projects `harness-claude`'s
+   per-run settings into it. Claude Code then starts in the tmux session `sf-<jobId>` on the
+   factory's own tmux server (`tmux -L software-factory`, never your default one or your
+   `~/.tmux.conf`), with the harness's own flags, and is checked before it gets the prompt
+   (ADR 0270). The prompt goes in `.factory-prompt.md`; the terminal gets one line pointing at it.
+   **Take a run over** with the hint the run shows:
+   `tmux -L software-factory attach -t sf-<jobId>` (detach with `C-b d`; the job still ends and
+   hands back normally).
    **Build only:** before the session the host fetches the job's `repo.defaultBranch` too and
    merges it into the run branch (a merge commit, never a rebase, ADR 0320). A conflict is left in
    progress for the session to resolve; unmerged paths at the end fail the run with no push.
-4. It streams events (state, agent status, tools, terminal output) with the fencing token.
+4. It streams events (state, agent status, tools, terminal output) with the fencing token. Agent
+   status comes from the harness's status hook (`<runDir>/status.jsonl`), not the screen: a tool
+   call is a `tool` event, a permission or idle notification is `waiting_input` (15 min, then the
+   run fails), and `Stop` after the prompt ends the session.
 5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
 6. **Build only:** it commits any leftovers, then pushes `HEAD` to the run branch, and only there,
    with a *fresh* job token. It never forces.
@@ -43,8 +55,9 @@ A **planning** job is a long-lived Claude session that plans one work item with 
   secret. The harness's planning MCP server and hooks call it; the host adds the job and fencing
   token and signs the call (`/runner/v1/jobs/:id/planning`). The runner key never reaches the
   harness.
-- runner-orca puts every job of a session in the same worktree path (`sf-plan-<session>`), so a
-  resume (`claude --resume <sessionRef>`) finds the conversation.
+- runner-local puts every job of a session in the same worktree path (`sf-plan-<session>`), so a
+  resume (`claude --resume <sessionRef>`) finds the conversation. Its tmux session is still
+  `sf-<jobId>`; the worktree names its job in its private git dir (`sf-job`), for reaping.
 - The session idles in its Stop hook between turns. When the factory asks it to yield, the hook calls
   `planning.yield`; the host then ends Claude and hands back `{ planning: "yielded" }`. No result file,
   no diff, no push.
@@ -63,13 +76,15 @@ A **planning** job is a long-lived Claude session that plans one work item with 
 - The harness's settings also do four things:
   - blank or redirect every credential variable (`GH_TOKEN`, `SSH_AUTH_SOCK`, AWS, Cloudflare, …);
   - point `GIT_CONFIG_GLOBAL` at a per-run config with no credential helper, and set `GIT_CONFIG_NOSYSTEM` (on macOS that turns off the keychain helper);
-  - deny `git push`, `gh`, `ssh`, `wrangler`, cloud CLIs, `orca`, `security` and similar;
+  - deny `git push`, `gh`, `ssh`, `wrangler`, cloud CLIs, `tmux`, `orca`, `security` and similar;
   - deny reads of `~/.ssh`, `~/.config/gh`, this runner's key and its clones.
 - Before pushing, the host compares the push-relevant git config (remotes, URL rewrites, credential
   helpers, `http.*`, includes, hooks path) with what it was before the session. If anything changed,
   it refuses to push and fails the run.
-- Orca's terminal gives Claude Orca's environment. The launch script unsets the credential variables
-  and Orca's plugin dirs; the sandbox (ADR 0270) is what confines it.
+- The tmux session inherits the runner host's environment (under launchd: `PATH` and `HOME`). The
+  launch script unsets the credential variables and `CLAUDE_CODE_PLUGIN_DIRS`; the sandbox
+  (ADR 0270) is what confines it. The status hook runs outside the sandbox, as every hook does: it
+  only appends to the run's status file and always answers `{}`.
 
 ## Connecting: `sf-runner login` (ADR 0056)
 From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
@@ -79,6 +94,8 @@ local/runner-host/bin/sf-runner login            # --name m5, --no-install, --no
 It prints a code and a link (and opens it on macOS). Open the link, check the code matches, name the
 runner and approve. The CLI then receives its key (once), proves it with a signed heartbeat, saves
 `~/.config/software-factory/runner.json` (0600) and installs the launchd service. Nothing is copied.
+If `checkouts` isn't set yet, `login` sets it once: the parent directories of the repos the Orca
+desktop app knows, when it is installed, else `[]` (edit it to list where you keep your clones).
 
 ## Pairing with a key (fallback)
 1. In the app (Setup → "Can't use a login code? Pair with a key instead"), register a runner. This calls `runner.register` and shows the runner id and key **once**.
@@ -94,19 +111,21 @@ runner and approve. The CLI then receives its key (once), proves it with a signe
    heavy slots, build and verify, default 2; `--max-light` for light slots, triage and planning
    sessions, default 6: ADR 0301) and restarts the service if one is installed. Pass the key on stdin, not as an
    argument, so it stays out of your shell history.
-3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, orca, claude, Orca being reachable,
-   the channel, and Orca's repos: a project (canonical remote) with more than one source repo, and
-   `sf-job:` worktrees with no live job. `sf-runner doctor --fix` removes the orphaned worktrees and
-   retires a clone the runner registered next to your own checkout (ADR 0260). It never touches your
+3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, tmux ≥ 3.2, claude, the channel,
+   and the checkouts: `checkouts` set and present, one checkout per remote under them, and no
+   `sf-*` job worktree or tmux session without a live job. `sf-runner doctor --fix` sets `checkouts`
+   once if it is unset (as `login` does) and kills and removes the orphans. It never touches your
    own checkouts: two of yours for one remote are reported, not fixed. While a service is running that
-   doesn't report its jobs (one from before this change), it treats every job worktree as live.
+   doesn't report its jobs (one from before this change), it treats every job as live.
    It also checks each running job's Claude against its launch record (permission mode, setting
    sources, settings hash) and reports `harness-config-mismatch` (ADR 0270).
+   Job worktrees an older runner made in Orca (`sf-job:` comments) aren't this runner's to reap:
+   remove them in Orca.
 
 The e2e driver below calls `runner.register` through `EngineApi` against a local engine.
 
 ## Running as a launchd service (macOS)
-It's a per-user LaunchAgent, because Orca and Claude Code run in your GUI session:
+It's a per-user LaunchAgent, because Claude Code runs as you, with your Claude login:
 ```sh
 local/runner-host/bin/sf-runner install     # ~/Library/LaunchAgents/com.software-factory.runner.plist
 local/runner-host/bin/sf-runner status      # config (key redacted), service, jobs, version and update state
@@ -119,18 +138,19 @@ local/runner-host/bin/sf-runner uninstall
 - `install` refuses to run on Node < 24 and says how to fix it (`nvm use 24`, or
   `SF_RUNNER_NODE=/abs/path/to/node24 local/runner-host/bin/sf-runner install`). The plist pins
   that absolute Node (`SF_RUNNER_NODE`).
-- The service gets the `PATH` of the shell you install from (so it finds `pnpm`, `orca`, `claude`
-  and `git`), with the pinned Node's directory first, and nothing else from that shell. If `orca`
-  isn't on that `PATH` (an SSH session), `install` adds Orca's bin directory: `orcaBin`'s from the
-  config, else `/Applications/Orca.app/Contents/Resources/bin` (incident #9).
+- The service gets the `PATH` of the shell you install from (so it finds `pnpm`, `tmux`, `claude`
+  and `git`), with the pinned Node's directory first, and nothing else from that shell. If `tmux`
+  or `claude` isn't on that `PATH` (an SSH session), `install` adds the directory it finds them in:
+  Homebrew's `/opt/homebrew/bin` or `/usr/local/bin`, or `~/.local/bin` for `claude` (incident #9).
 - `install` replaces a running service (`bootout`, then `bootstrap`, retried up to 5 times when
   launchd is still tearing the old one down). That cancels running jobs, so run it when `status`
-  shows none. You only need it once per machine: after that the runner updates itself.
+  shows none and no job sessions in tmux. You only need it once per machine: after that the runner
+  updates itself.
 - It restarts after a crash, and after a self-update (exit 75). An unpaired runner exits cleanly,
   and launchd leaves it stopped until `pair`.
-- On start it reaps orphaned job worktrees, then retires any clone it registered earlier next to your
-  own Orca repo for the same remote (ADR 0260), before claiming work. It records the jobs it is
-  running in `~/.local/state/software-factory/runner/live-jobs.json`.
+- On start it reaps orphans (`sf-*` tmux sessions on its socket and `sf-*` worktrees it isn't
+  running) before claiming work. It records the jobs it is running in
+  `~/.local/state/software-factory/runner/live-jobs.json`.
 
 ## Updating itself (spec 08, ADR 0360)
 The engine answers each heartbeat with `desiredVersion`: the commit it was deployed from, which
@@ -172,7 +192,7 @@ checkout on Node 24:
 ```sh
 git pull --ff-only && pnpm install --frozen-lockfile && local/runner-host/bin/sf-runner install
 ```
-Over SSH this works too: `install` adds Orca's bin directory and retries the bootstrap.
+Over SSH this works too: `install` adds tmux's and claude's directories and retries the bootstrap.
 
 **Reading `sf-runner status`:**
 ```
@@ -192,11 +212,11 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 |---|---|---|
 | `baseUrl` | `https://sf-engine.zerobsai.com` | The engine |
 | `runnerId`, `key` | from `pair` | |
-| `maxConcurrent` | 2 | Heavy jobs at once: build and verify (each an Orca worktree + a Claude session) |
+| `maxConcurrent` | 2 | Heavy jobs at once: build and verify (each a git worktree + a Claude session in tmux) |
 | `maxLight` | 6 | Light jobs at once: triage, spec and planning sessions (ADR 0301). An idle planning session holds one |
 | `heartbeatMs` | 20000 | |
-| `permissionMode` | `dontAsk` for every stage | e.g. `{ "build": "auto" }` to use Claude's auto mode for builds |
-| `capabilities` | Orca's: `browser`, `ui-takeover`, `auto-register`, `hooks`, `own-hardware` | |
+| `checkouts` | set once by `login` / `doctor --fix` | Directories whose immediate git repos are your checkouts, e.g. `["~/code", "~/orca/projects"]`. A job runs as a worktree of the one whose `origin` is its repo; none → the runner's own clone |
+| `capabilities` | `hooks`, `ui-takeover`, `own-hardware`, `work-item-attachments` | No `browser`: screenshot evidence is skipped |
 | `identity` | `Software Factory <software-factory@users.noreply.github.com>` | Commit author |
 | `autoUpdate` | `true` | Update the runner's checkout to the deployed commit when idle (ADR 0360); `false` reports `blocked` instead |
 | `repoUrlMap` | — | Test only: clone and push a local bare repo in place of GitHub |
@@ -209,7 +229,7 @@ to a test-only driver Worker. The driver does three things:
 - mirrors each real push into the fake GitHub, so the engine's hand-back and fast-forward checks run unchanged.
 
 A bare repo on disk stands in for GitHub's git side. The test files one small work item and lets the
-runner triage, build and verify it with real Claude sessions in Orca. It stops at the merge gate,
+runner triage, build and verify it with real Claude sessions in tmux. It stops at the merge gate,
 cancels the item, and checks that nothing is left behind.
 ```sh
 cd local/runner-host/e2e
@@ -225,7 +245,8 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
-| `src/runner.ts` | Wires config → channel client + git + runner-orca (the only file naming an adapter) |
+| `src/runner.ts` | Wires config → channel client + git + runner-local (the only file naming an adapter) |
+| `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
 | `src/config.ts`, `src/cli.ts`, `src/launchd.ts` | `sf-runner pair/run/status/doctor/install/uninstall` |
 | `test/` | The lifecycle against a fake cloud serving the real signed protocol and a local bare repo |
 | `e2e/` | The end-to-end test above |
