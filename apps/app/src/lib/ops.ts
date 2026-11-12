@@ -66,6 +66,13 @@ export const APP_OPERATIONS = [
   "desktop.denyDevice",
   "desktopDevice.list",
   "desktopDevice.revoke",
+  "device.list",
+  "device.revoke",
+  "mobile.authLookup",
+  "mobile.approveDevice",
+  "mobile.denyDevice",
+  "mobile.pairOffer",
+  "mobile.pairOfferStatus",
   "killSwitch.set",
 ] as const satisfies readonly OpName[];
 
@@ -86,6 +93,8 @@ export const APP_READ_OPERATIONS = [
   "setup.status",
   "runner.list",
   "desktopDevice.list",
+  "device.list",
+  "mobile.pairOfferStatus",
   "config.get",
   "config.preview",
   "config.trials",
