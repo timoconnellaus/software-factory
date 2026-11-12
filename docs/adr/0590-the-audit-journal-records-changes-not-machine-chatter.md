@@ -1,7 +1,7 @@
 # ADR 0590: The audit journal records changes, not machine chatter
 
-Status: accepted for the journal's writes, 2026-11-12. Retention is **proposed**: the owner decides
-(the question is at the end). Block AQ, the Cloudflare cost work
+Status: accepted for the journal's writes, 2026-11-12. Retention: **decided** by the owner on
+2026-11-12, as proposed (see the note at the end). Block AQ, the Cloudflare cost work
 ([AGENTS.md, "Cloudflare cost"](../../AGENTS.md#cloudflare-cost), rule 12). Amends ADR 0004, 0011 and 0050 (one
 batch, one audit row per call).
 
@@ -186,3 +186,13 @@ Keep everything in D1 forever, or archive the machine rows (runner, scheduler, f
 calls that were allowed and succeeded) to R2 after **90 days**, as a hash chain recorded in D1?
 Decisions, refusals and gates stay in D1 either way. If you choose to archive: is 90 days right, and
 may the no-delete trigger be replaced by one that allows only archived machine rows to be deleted?
+
+## Decided, 2026-11-12
+The owner chose to archive, as proposed: routine machine rows (runner, scheduler, foreman and intake
+calls that were allowed and succeeded) are archived to R2 after **90 days** as the hash chain
+recorded in `core_audit_archives`, still verifiable, then deleted from D1. Decisions, refusals and
+approvals stay in D1 forever. The no-delete trigger is replaced by one that allows deleting only
+archived machine rows, as the proposal describes. The build is the next Cloudflare cost PR after
+#118 (the run-event archive), in block AQ. Run logs, the other answer, are archived 30 days after
+the run ends and read back from the archive (#118). Request logs on sf-engine are not sampled
+(#124): every request is logged.

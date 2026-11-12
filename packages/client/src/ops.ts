@@ -41,10 +41,14 @@ export interface OpMap {
   "planning.pause": Def<typeof operations.planningPause>;
   "planning.resume": Def<typeof operations.planningResume>;
   "planning.finishAlone": Def<typeof operations.planningFinishAlone>;
+  "spec.edit": Def<typeof operations.specEdit>;
+  "artifact.get": Def<typeof operations.artifactGet>;
+  "spec.releaseEdit": Def<typeof operations.specReleaseEdit>;
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;
   "run.takeover": Def<typeof operations.runTakeover>;
+  "run.reportArchiveMissing": Def<typeof operations.runReportArchiveMissing>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;
@@ -97,6 +101,9 @@ export interface OpMap {
   "orgConfig.get": Def<typeof operations.orgConfigGet>;
   "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
   "stageType.list": Def<typeof operations.stageTypeList>;
+  // The reconciler in shadow (spec 52 PR (c)).
+  "reconcile.report": Def<typeof operations.reconcileReport>;
+  "reconcile.streak": Def<typeof operations.reconcileStreak>;
   // The work model (spec 50): the backlog, ready and release.
   "workItem.board": Def<typeof operations.workItemBoard>;
   "workItem.update": Def<typeof operations.workItemUpdate>;

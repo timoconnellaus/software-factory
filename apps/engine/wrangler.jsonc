@@ -11,21 +11,21 @@
   // Next to D1 (ADR 0241), for the fetch handlers: the runner channel and the GitHub webhook. RPC
   // from sf-app runs where sf-app runs.
   "placement": { "region": "aws:us-west-1" },
-  // Workers Logs (AGENTS.md, Cloudflare cost, rule 11). From 1 Dec 2026 logs are billed by size
-  // (Observability pricing): 50 GB ingested per billing cycle included, then $0.25/GB, measured
-  // uncompressed, and the 50 GB is shared with traces and every other Cloudflare log. This Worker's
-  // invocations are mostly machine chatter: per runner a heartbeat and a claim every 20 s, per
-  // running job a steer and a terminal hold every 25 s and a log batch up to every 3 s, plus an RPC
-  // for each of sf-app's polls. Three runners, eight busy jobs and two open tabs come to ~11M
-  // invocations a month; at 1 to 4 KB an invocation's log (an estimate: not measured) that is 11 to
-  // 44 GB at 1.0, too close to the shared 50 GB. Head sampling keeps 1 invocation in 4 with all its
-  // lines (3 to 11 GB), leaving room for three times the jobs. What is lost: 3 of 4 invocations log
-  // nothing, failures included. A failure that repeats (every heartbeat, every claim) still shows
-  // within a minute; a one-off failure is logged with a 1 in 4 chance. Set it to 1 while chasing an
-  // incident.
+  // Workers Logs (AGENTS.md, Cloudflare cost, rule 11). Every request is logged (1.0, no
+  // sampling): the owner chose this on 12 Nov 2026, so a one-off failure is never lost to sampling.
+  // From 1 Dec 2026 logs are billed by size (Observability pricing): 50 GB ingested per billing
+  // cycle included, then $0.25/GB, measured uncompressed, and the 50 GB is shared with traces and
+  // every other Cloudflare log. This Worker's invocations are mostly machine chatter: per runner a
+  // heartbeat and a claim every 20 s, per running job a steer and a terminal hold every 25 s and a
+  // log batch up to every 3 s, plus an RPC for each of sf-app's polls. At current volume (three
+  // runners, eight busy jobs, two open tabs: ~11M invocations a month) and 1 to 4 KB of log an
+  // invocation (an estimate, not measured), that is about 11 to 44 GB a month against the 50 GB
+  // included: inside it, with little room to grow. Volume is kept down at the source instead: the
+  // hot paths (heartbeat, claim, held waits, polls) write no per-request lines, only warnings and
+  // errors. If usage nears 50 GB, cut log lines first; sampling is the owner's call.
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 0.25
+    "head_sampling_rate": 1
   },
   // CPU per invocation (rule 11), default 30 s. The cap applies to every invocation of this Worker:
   // channel and webhook requests, sf-app's RPCs, the cron, every Workflow step and every request to
@@ -57,7 +57,13 @@
   ],
   // One instance per work item; the instance id is the work item id (ADR 0006, 0053).
   // Work item attachments (ADR 0310): private, reached only through the attachment operations.
-  "r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "sf-attachments" }],
+  // The archive (AGENTS.md "Cloudflare cost", rule 3): a run's events and steers, moved out of D1 30
+  // days after the run ended (src/retention.ts) and read back by run.live. Its own bucket, so the
+  // attachments' stray-blob sweep never sees it. Provisioned by scripts/deploy/provision.ts.
+  "r2_buckets": [
+    { "binding": "ATTACHMENTS", "bucket_name": "sf-attachments" },
+    { "binding": "ARCHIVE", "bucket_name": "sf-archive" }
+  ],
   // One PlanningHub per work item (spec 20, ADR 0350): live Planning tabs and the planning
   // agent's held waits hear about changes here.
   "durable_objects": {
