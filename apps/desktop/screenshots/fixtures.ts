@@ -3,6 +3,7 @@
 // (docs/design/factory-ui) so the build and the design can be compared side by side. Never shipped:
 // the app's own bridge talks to the main process.
 import type { OpInput, OpName, OpOutput } from "@software-factory/client/ops";
+import { planBlocks } from "@software-factory/client/planning";
 
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
@@ -869,6 +870,7 @@ function question(n: number, prompt: string, extra: Partial<PlanningQ>): Plannin
     note: null,
     acceptedDefault: false,
     acceptedAlone: false,
+    answeredViaEdit: null,
     skipped: false,
     answerDeliveredAt: ago(29),
     answeredBy: ME,
@@ -892,6 +894,19 @@ const alone = () => {
   return seenAlone;
 };
 
+/** `?fixture=dropped`: an edit the plan no longer keeps (second review of #85 screenshot). */
+let seenDropped = false;
+const dropped = () => {
+  seenDropped ||= (globalThis.location?.hash ?? "").includes("fixture=dropped");
+  return seenDropped;
+};
+
+/** The blocks an edit wrote, by section, as the server stores them. */
+const wrote = (after: string) =>
+  planBlocks(PLAN_MD)
+    .filter((b) => planBlocks(after).some((a) => a.text === b.text))
+    .map(({ section, parent, text }) => ({ section, parent, text }));
+
 function kept(n: number, prompt: string, answer: string, options: string[]): PlanningQ {
   return question(n, prompt, {
     options,
@@ -913,9 +928,20 @@ A labelled GitHub issue from a trusted author becomes a work item in the backlog
 ## Scope
 - The GitHub App webhook takes \`issues\` events for connected repositories [repo]
 - Only issues with the \`factory\` label come in [Q1]
+  - the label name is set on the GitHub connection
+  - relabelling an open issue brings it in
 - Authors must be org members or collaborators; anything else is ignored and logged [Q2]
-- New items land in the inbox of the project that owns the repository [Q3]
+- New items land in the Backlog of the project that owns the repository [Q3]
 - The issue gets one comment with a link to the item, and is closed when the item merges [Q4]
+
+  The comment is posted by the App, never with a person's token.
+
+## Webhook filter
+\`\`\`yaml
+on:
+  issues:
+    types: [opened, labeled]
+\`\`\`
 
 ## Out of scope
 - Issues from repositories that are not connected, pull request comments [request]
@@ -961,11 +987,13 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             "Anyone",
           ]),
           question(3, "Where do they land?", {
-            options: ["The org inbox", "The project's inbox"],
+            options: ["The org inbox", "The project's inbox", "Backlog"],
             defaultValues: ["The org inbox"],
             defaultAnswer: "The org inbox",
             recommendation: "The org inbox",
-            answer: "The project's inbox",
+            answer: "Backlog",
+            // Spec 27: recorded by the planner from the person's edit of the plan.
+            answeredViaEdit: "pe_1",
           }),
           kept(4, "What goes back to the issue?", "A link, then closed on merge", [
             "A link, then closed on merge",
@@ -1019,6 +1047,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             replyTo: null,
             kind: "chat",
             deliveredAt: ago(20),
+            anchor: null,
             createdAt: ago(20),
           },
           {
@@ -1031,8 +1060,130 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             replyTo: null,
             kind: "chat",
             deliveredAt: ago(12),
+            anchor: null,
             createdAt: ago(12),
           },
+          {
+            id: "m3",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Does a bot account count as a collaborator here?",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(3),
+            // Spec 27: a comment on a line of the plan.
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 10,
+              lineEnd: 10,
+              quote:
+                "- Authors must be org members or collaborators; anything else is ignored and logged [Q2]",
+            },
+            createdAt: ago(3),
+          },
+          {
+            id: "m6",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Does this cover a label renamed on GitHub?",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(2),
+
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 8,
+              lineEnd: 8,
+              quote: "  - the label name is set on the GitHub connection",
+            },
+            createdAt: ago(2),
+          },
+          {
+            id: "m7",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Add edited too, so a label added later counts.",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(1),
+
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 17,
+              lineEnd: 21,
+              quote: "```yaml\non:\n  issues:\n    types: [opened, labeled]\n```",
+            },
+            createdAt: ago(1),
+          },
+        ]
+      : [],
+    // Spec 27: the person's edit of the Q3 line, which the planner kept.
+    edits: live
+      ? [
+          {
+            id: "pe_1",
+            specId: "spec_wi_12",
+            lineStart: 11,
+            lineEnd: 11,
+            before: "- New items land in the inbox of the project that owns the repository [Q3]",
+            after: "- New items land in the Backlog of the project that owns the repository [Q3]",
+            authorId: ME,
+            authorName: "You",
+            createdAt: ago(4),
+            kept: true,
+            whyNotKept: null,
+            mentions: [],
+            blocks: wrote(
+              "- New items land in the Backlog of the project that owns the repository [Q3]",
+            ),
+          },
+          {
+            id: "pe_2",
+            specId: "spec_wi_12",
+            lineStart: 9,
+            lineEnd: 9,
+            before: "  - relabelling brings it in",
+            after: "  - relabelling an open issue brings it in",
+            authorId: ME,
+            authorName: "You",
+            createdAt: ago(3),
+            kept: true,
+            whyNotKept: null,
+            mentions: [],
+            blocks: wrote("  - relabelling an open issue brings it in"),
+          },
+          // Second review of #85: an edit the plan no longer keeps holds the gate until released.
+          ...(dropped()
+            ? [
+                {
+                  id: "pe_3",
+                  specId: "spec_wi_12",
+                  lineStart: 12,
+                  lineEnd: 12,
+                  before: "",
+                  after: "- A closed issue is reopened when its item fails",
+                  authorId: "u_ana",
+                  authorName: "Ana",
+                  createdAt: ago(2),
+                  kept: false,
+                  whyNotKept: "the plan doesn't have its words as written, in their place",
+                  mentions: ["- Reopening issues the factory closed is out of scope"],
+                  blocks: [
+                    {
+                      section: "Take work from GitHub issues › Scope",
+                      parent: "",
+                      text: "- A closed issue is reopened when its item fails",
+                    },
+                  ],
+                },
+              ]
+            : []),
         ]
       : [],
     present: live ? [{ userId: ME, name: "You" }] : [],

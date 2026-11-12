@@ -21,6 +21,7 @@ export const ID_PREFIXES = {
   mergeQueueEntry: "mq",
   planningSession: "ps",
   planningMessage: "pm",
+  specEdit: "pe",
   cliDeviceCode: "cdc",
   cliToken: "cli",
   desktopAuthRequest: "dar",

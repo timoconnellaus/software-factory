@@ -1,5 +1,5 @@
-// This branch's own migrations on a database that already has everything else (review of #85 /
-// #90, spec 23): production has main's migrations applied when these land, so each must apply
+// This branch's own migrations on a database that already has everything else (reviews of #85 and
+// #117): production has main's migrations applied when these land, so each must apply
 // cleanly after all of them, and must not touch a table a higher-numbered migration rebuilt (a
 // column added under such a rebuild is silently dropped on a fresh database).
 import { applyD1Migrations } from "cloudflare:test";
@@ -13,7 +13,7 @@ const OWN = ["0370_needs_info.sql", "0371_work_item_title_index.sql"];
 const COLUMNS = ["core_work_items.needs_info"];
 
 async function columns(db: D1Database): Promise<Set<string>> {
-  const tables = ["core_work_items", "core_questions", "core_planning_messages"];
+  const tables = [...new Set(COLUMNS.map((c) => c.split(".")[0] as string))];
   const found = new Set<string>();
   for (const t of tables) {
     const { results } = await db.prepare(`PRAGMA table_info(${t})`).all<{ name: string }>();

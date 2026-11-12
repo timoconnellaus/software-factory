@@ -166,6 +166,17 @@ export function answerText(kind: string, values: string[]): string {
   return kind === "multiple-choice" ? kept.join(", ") : (kept[0] ?? "");
 }
 
+/** The plan's blocks, as the server compares them (spec 27): one segmentation for both. */
+export {
+  changedSpan,
+  dedent,
+  editAnswer,
+  editWrote,
+  foldSpace,
+  normalizeLines,
+  type PlanBlock,
+  planBlocks,
+} from "@software-factory/runner-contract";
 /** The one sensitive-question check, shared with the server (ADR 0042, review of #71). */
 export { isSensitiveQuestion };
 

@@ -270,6 +270,7 @@ describe("a planning job on the runner host (spec 20)", () => {
       "planning_news",
       "planning_ready",
       "planning_yield",
+      "question_answerFromEdit",
       "question_ask",
       "question_delete",
       "question_focus",
