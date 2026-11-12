@@ -122,6 +122,8 @@ export function enqueuePlanningJob(
       session_timeout_ms: PLANNING_SESSION_TIMEOUT_MS,
       created_at: ctx.now,
       pool: "light",
+      // Shaping work is claimed after released work (ADR 0493, migration 0363).
+      shaping: w.status === "shaping" ? 1 : 0,
       pinned_runner_id: options.pinnedRunnerId ?? null,
       planning_session_id: session.id,
     }),

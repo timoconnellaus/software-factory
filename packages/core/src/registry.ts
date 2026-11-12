@@ -29,6 +29,7 @@ import * as specs from "./operations/specs.ts";
 import * as terminal from "./operations/terminal.ts";
 import * as verify from "./operations/verify.ts";
 import * as workItems from "./operations/work-items.ts";
+import * as workflows from "./operations/workflows.ts";
 
 export const OPERATIONS: readonly AnyOperation[] = [
   projects.projectCreate,
@@ -206,6 +207,16 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.leaseHeartbeat,
   runners.leaseRelease,
   runners.workItemPreviewRouting,
+  workflows.workflowList,
+  workflows.workflowGet,
+  workflows.workflowPreview,
+  workflows.workflowSave,
+  workflows.workflowCreateFromTemplate,
+  workflows.workflowArchive,
+  workflows.agentSave,
+  workflows.orgConfigGet,
+  workflows.orgConfigRollback,
+  workflows.stageTypeList,
 ];
 
 const byName = new Map<string, AnyOperation>();

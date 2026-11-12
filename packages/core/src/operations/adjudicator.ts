@@ -148,7 +148,7 @@ export const adjudicatorRequest = defineOperation({
     if (existing) return { adjudicationId: existing.id, reason: "already asked" };
     const item = await ctx.db
       .selectFrom("core_work_items")
-      .select(["number", "title", "body", "current_spec_id"])
+      .select(["number", "title", "body", "current_spec_id", "status"])
       .where("id", "=", pa.work_item_id)
       .executeTakeFirstOrThrow();
     let detail: string;
@@ -181,6 +181,8 @@ export const adjudicatorRequest = defineOperation({
         session_timeout_ms: 30 * 60_000,
         created_at: ctx.now,
         pool: "heavy",
+        // Shaping work is claimed after released work (ADR 0493, migration 0363).
+        shaping: item.status === "shaping" ? 1 : 0,
       }),
     );
     ctx.write(

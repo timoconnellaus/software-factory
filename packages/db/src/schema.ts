@@ -76,6 +76,22 @@ export interface CoreOrganizationTable {
   kind: Generated<OrgKind>;
   github_installation_id: string | null;
   created_at: Iso;
+  /** The org's current config version (spec 52, migration 0280); null before its first save. */
+  config_version: number | null;
+}
+
+/** An org's config versions: its workflows and agents (spec 52, migration 0280). */
+export interface CoreOrgConfigsTable {
+  org_id: string;
+  version: number;
+  raw: string;
+  source: string;
+  created_by: string | null;
+  note: string | null;
+  parent_version: number | null;
+  created_at: Iso;
+  /** How this version changed the one before it, recorded when it was written. */
+  impact: "loosens" | "tightens" | "neutral" | null;
 }
 
 export interface CoreMemberTable {
@@ -597,6 +613,8 @@ export interface CoreJobsTable {
   finished_at: Iso | null;
   /** 0120 (ADR 0301). */
   pool: Generated<"heavy" | "light">;
+  /** Queued for an item still shaping (ADR 0493): the claim takes it after released work (0363). */
+  shaping: Generated<number>;
   pinned_runner_id: string | null;
   planning_session_id: string | null;
   /** 0141 (ADR 0372): standard | light; null is standard. */
@@ -1058,6 +1076,7 @@ export interface CoreDatabase {
   core_projects: CoreProjectsTable;
   core_repositories: CoreRepositoriesTable;
   core_project_policies: CoreProjectPoliciesTable;
+  core_org_configs: CoreOrgConfigsTable;
   core_config_trials: CoreConfigTrialsTable;
   core_adjudications: CoreAdjudicationsTable;
   core_project_protection: CoreProjectProtectionTable;

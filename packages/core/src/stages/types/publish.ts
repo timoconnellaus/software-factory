@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import { same } from "../../policy/impact.ts";
 import type { StageType } from "../contract.ts";
+import { gateOf, gateStep, latest, RECHECK } from "../reconcile.ts";
 import { deciderImpact, deciderSchema } from "../settings.ts";
 
 const settings = z
@@ -68,6 +69,44 @@ export const publish: StageType<typeof settings> = {
     { id: "decide", kind: "decision" },
     { id: "act", kind: "check" },
   ],
+  // The merge gate on the review packet; approved, the merge through the queue (or directly).
+  next: (ctx) => {
+    const at = ctx.entry.stageId;
+    if (ctx.observations.merged) return { kind: "complete", stageId: at };
+    // A person's send-back here isn't a failed attempt (today's Workflow doesn't count it).
+    const gated = gateStep(ctx, "gate", gateOf(ctx.gate), null, (note) => ({
+      kind: "sendBack",
+      stageId: at,
+      to: "",
+      note,
+      free: true,
+    }));
+    if (gated) return gated;
+    // The approval holds for the head it was given on, as today (`pr.merge` carries `headSha` and
+    // refuses a moved head): a new head is checked again and decided again.
+    const approved = latest(ctx.steps, "gate")?.step.headSha;
+    const head = ctx.observations.headSha;
+    if (!approved || !head)
+      return {
+        kind: "fail",
+        stageId: at,
+        reason: "the merge approval or the PR's head is unknown: it can't be tied to a head",
+      };
+    if (approved !== head)
+      return {
+        kind: "sendBack",
+        stageId: at,
+        to: RECHECK,
+        note: `the head moved from ${approved.slice(0, 7)} to ${head.slice(0, 7)} after the merge was approved`,
+        free: true,
+      };
+    if (ctx.settings.via === "mergeQueue" && !ctx.observations.queueTurn)
+      return { kind: "wait", stageId: at, why: "queue" };
+    const merge = latest(ctx.steps, "merge")?.step;
+    if (!merge) return { kind: "operation", stageId: at, stepId: "merge", operation: "pr.merge" };
+    if (merge.status === "failed") return { kind: "fail", stageId: at, reason: "the merge failed" };
+    return { kind: "wait", stageId: at, why: "merge" };
+  },
   impact: (before, after, stageId) => {
     const out: ImpactChange[] = deciderImpact(`${stageId}.decider`, before.decider, after.decider);
     if (before.via !== after.via)
