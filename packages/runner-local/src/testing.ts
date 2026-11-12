@@ -225,6 +225,10 @@ const sessionId = at("--session-id") ?? at("--resume") ?? "no-session";
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 let n = 0, inited = false, busy = Promise.resolve(), interrupted = false, asked = false;
 let wake = () => {};
+// A permission request waits for its answer, as Claude Code does: the turn goes on only once the
+// runner's control_response for it arrives (else the test raced the job's end).
+let answered = () => {};
+const answer = new Promise((r) => { answered = r; });
 const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
 async function turn(text) {
   n++;
@@ -233,6 +237,7 @@ async function turn(text) {
   if (k === 1 && opts.askPermission && !asked) {
     asked = true;
     out({ type: "control_request", request_id: "perm-1", request: { subtype: "can_use_tool", tool_name: "Bash" } });
+    await answer;
   }
   out({ type: "assistant", session_id: sessionId, message: { role: "assistant", content: [{ type: "text", text: "Turn " + k + ": " + text.slice(0, 40) }] } });
   out({ type: "assistant", session_id: sessionId, message: { role: "assistant", content: [{ type: "tool_use", id: "tu_" + k, name: "Bash", input: { command: "echo " + k } }] } });
@@ -259,6 +264,7 @@ process.stdin.on("data", (chunk) => {
     appendFileSync(opts.stdinLog, line + "\\n");
     let msg;
     try { msg = JSON.parse(line); } catch { continue; }
+    if (msg.type === "control_response" && msg.response?.request_id === "perm-1") answered();
     if (msg.type === "control_request" && msg.request?.subtype === "interrupt") {
       interrupted = true;
       wake();
