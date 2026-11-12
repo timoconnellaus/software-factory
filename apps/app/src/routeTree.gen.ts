@@ -18,6 +18,7 @@ import { Route as AppSetupRouteImport } from './routes/_app/setup'
 import { Route as AppCliConnectRouteImport } from './routes/_app/cli.connect'
 import { Route as AppRunnersConnectRouteImport } from './routes/_app/runners.connect'
 import { Route as AppWorkIndexRouteImport } from './routes/_app/work.index'
+import { Route as AppProjectsProjectIdSettingsRouteImport } from './routes/_app/projects.$projectId.settings'
 import { Route as AppWorkIdIndexRouteImport } from './routes/_app/work.$id.index'
 import { Route as AppWorkIdReviewRouteImport } from './routes/_app/work.$id.review'
 
@@ -65,6 +66,12 @@ const AppWorkIndexRoute = AppWorkIndexRouteImport.update({
   path: '/work/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppProjectsProjectIdSettingsRoute =
+  AppProjectsProjectIdSettingsRouteImport.update({
+    id: '/projects/$projectId/settings',
+    path: '/projects/$projectId/settings',
+    getParentRoute: () => AppRoute,
+  } as any)
 const AppWorkIdIndexRoute = AppWorkIdIndexRouteImport.update({
   id: '/work/$id/',
   path: '/work/$id/',
@@ -85,6 +92,7 @@ export interface FileRoutesByFullPath {
   '/cli/connect': typeof AppCliConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
   '/work/': typeof AppWorkIndexRoute
+  '/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
   '/work/$id/': typeof AppWorkIdIndexRoute
 }
@@ -97,6 +105,7 @@ export interface FileRoutesByTo {
   '/cli/connect': typeof AppCliConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
   '/work': typeof AppWorkIndexRoute
+  '/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
   '/work/$id': typeof AppWorkIdIndexRoute
 }
@@ -111,6 +120,7 @@ export interface FileRoutesById {
   '/_app/cli/connect': typeof AppCliConnectRoute
   '/_app/runners/connect': typeof AppRunnersConnectRoute
   '/_app/work/': typeof AppWorkIndexRoute
+  '/_app/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
   '/_app/work/$id/review': typeof AppWorkIdReviewRoute
   '/_app/work/$id/': typeof AppWorkIdIndexRoute
 }
@@ -125,6 +135,7 @@ export interface FileRouteTypes {
     | '/cli/connect'
     | '/runners/connect'
     | '/work/'
+    | '/projects/$projectId/settings'
     | '/work/$id/review'
     | '/work/$id/'
   fileRoutesByTo: FileRoutesByTo
@@ -137,6 +148,7 @@ export interface FileRouteTypes {
     | '/cli/connect'
     | '/runners/connect'
     | '/work'
+    | '/projects/$projectId/settings'
     | '/work/$id/review'
     | '/work/$id'
   id:
@@ -150,6 +162,7 @@ export interface FileRouteTypes {
     | '/_app/cli/connect'
     | '/_app/runners/connect'
     | '/_app/work/'
+    | '/_app/projects/$projectId/settings'
     | '/_app/work/$id/review'
     | '/_app/work/$id/'
   fileRoutesById: FileRoutesById
@@ -224,6 +237,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppWorkIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/projects/$projectId/settings': {
+      id: '/_app/projects/$projectId/settings'
+      path: '/projects/$projectId/settings'
+      fullPath: '/projects/$projectId/settings'
+      preLoaderRoute: typeof AppProjectsProjectIdSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/work/$id/': {
       id: '/_app/work/$id/'
       path: '/work/$id'
@@ -249,6 +269,7 @@ interface AppRouteChildren {
   AppCliConnectRoute: typeof AppCliConnectRoute
   AppRunnersConnectRoute: typeof AppRunnersConnectRoute
   AppWorkIndexRoute: typeof AppWorkIndexRoute
+  AppProjectsProjectIdSettingsRoute: typeof AppProjectsProjectIdSettingsRoute
   AppWorkIdReviewRoute: typeof AppWorkIdReviewRoute
   AppWorkIdIndexRoute: typeof AppWorkIdIndexRoute
 }
@@ -261,6 +282,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppCliConnectRoute: AppCliConnectRoute,
   AppRunnersConnectRoute: AppRunnersConnectRoute,
   AppWorkIndexRoute: AppWorkIndexRoute,
+  AppProjectsProjectIdSettingsRoute: AppProjectsProjectIdSettingsRoute,
   AppWorkIdReviewRoute: AppWorkIdReviewRoute,
   AppWorkIdIndexRoute: AppWorkIdIndexRoute,
 }

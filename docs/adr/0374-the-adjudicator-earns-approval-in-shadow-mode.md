@@ -1,11 +1,11 @@
-# ADR 0354: The adjudicator earns gate approvals in shadow mode
+# ADR 0374: The adjudicator earns gate approvals in shadow mode
 
 Status: accepted, 2026-11-12 (interview; idea 6 in [`docs/research/ideas-from-crm-and-cloudflare-os.md`](../research/ideas-from-crm-and-cloudflare-os.md)).
-Spec [08](../specs/08-factory-config-in-the-app.md) M4. Amends [ADR 0007](0007-human-gates-are-pending-actions.md)
+Spec [09](../specs/09-factory-config-in-the-app.md) M4. Amends [ADR 0007](0007-human-gates-are-pending-actions.md)
 and [ADR 0008](0008-autonomy-presets-and-floor.md).
 
 ## Context
-Self-improvement (ADR 0353) reduces how often work goes wrong. It doesn't reduce how often a person
+Self-improvement (ADR 0373) reduces how often work goes wrong. It doesn't reduce how often a person
 is asked. Most gate decisions on a mature project are approvals made without changes.
 
 ## Decision
@@ -24,4 +24,4 @@ is asked. Most gate decisions on a mature project are approvals made without cha
 ## Consequences
 - Spec gates and person `gate` steps are the gate kinds it can take. The merge gate is not
   (`ALWAYS_REVIEW`).
-- It is a policy setting, so enabling it is a human change (ADR 0353).
+- It is a policy setting, so enabling it is a human change (ADR 0373).

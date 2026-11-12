@@ -130,3 +130,11 @@ export function useRefreshAfterDecision() {
         : Promise.resolve(),
     ]);
 }
+
+/** A project's config: the current version and its history (ADR 0370). */
+export const configQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId],
+    queryFn: () => read("config.get", { projectId }),
+    staleTime: 10_000,
+  });

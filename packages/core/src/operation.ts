@@ -12,7 +12,7 @@ import type {
 import type { Compilable, Selectable } from "kysely";
 import type { z } from "zod";
 import type { Actor, ActorType, Origin } from "./actors.ts";
-import type { RiskClass } from "./policy/gate.ts";
+import type { FloorParse, RiskClass } from "./policy/gate.ts";
 import type { ProjectPolicy } from "./policy/project-policy.ts";
 import type { FactoryServices } from "./services.ts";
 
@@ -68,6 +68,11 @@ export interface Scope {
   policy: ProjectPolicy | null;
   policySha: string | null;
   policyError: string | null;
+  /**
+   * The config version the work item was created under, when it differs from the current one
+   * (ADR 0370 §5): the gate uses the stricter of the two. Null otherwise, or when it isn't valid.
+   */
+  pinnedPolicy: ProjectPolicy | null;
 }
 
 /** What a call names in its input, from which `invoke()` resolves the scope. */
@@ -98,6 +103,8 @@ export interface HandlerContext {
   now: string;
   services: FactoryServices;
   scope: Scope;
+  /** The global floor in force for this call (ADR 0008). */
+  floor: FloorParse;
   /** Set when this call is the approved re-run of a pending action. */
   approval?: PendingActionRow;
   /** Queue a write. Writes, guards, the audit row and outbox rows commit in one D1 batch. */
@@ -120,8 +127,15 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
   description: string;
   /** The declared risk class (and the default for `riskOf`). */
   risk: RiskClass;
-  /** A risk that depends on the input, e.g. a merge whose diff touches `.factory/` is self-modify. */
-  riskOf?: (input: z.output<I>) => RiskClass;
+  /**
+   * A risk that depends on the input, e.g. a merge whose diff touches `.factory/` is self-modify, or
+   * on the resolved scope, e.g. a config save that loosens the current version (ADR 0370). Called
+   * once the scope is known; refusals audited before that carry the declared `risk`.
+   */
+  riskOf?: (
+    input: z.output<I>,
+    at: { scope: Scope; floor: FloorParse; db: Db },
+  ) => RiskClass | Promise<RiskClass>;
   input: I;
   output: O;
   /** Actor types that may call it at all (checked before the gate). */

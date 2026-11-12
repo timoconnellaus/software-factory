@@ -149,6 +149,13 @@ export interface CoreProjectPoliciesTable {
   valid: Bool;
   error: string | null;
   received_at: Iso;
+  /** The config version (ADR 0370); null on rows read from git before migration 0140. */
+  version: number | null;
+  /** app | import | migrated | improver | rollback */
+  source: string | null;
+  created_by: string | null;
+  note: string | null;
+  parent_version: number | null;
 }
 
 export type KillScope = "org" | "project";

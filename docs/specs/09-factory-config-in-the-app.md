@@ -1,11 +1,11 @@
-# Spec 08: Factory config in the app, workflows, and a factory that improves itself
+# Spec 09: Factory config in the app, workflows, and a factory that improves itself
 
 **Read first**:
-- [ADR 0350](../adr/0350-factory-config-lives-in-the-app.md) (config versions)
-- [0351](../adr/0351-workflows-are-presets-over-typed-slots.md) (workflow slots)
-- [0352](../adr/0352-agents-are-harness-neutral.md) (agents)
-- [0353](../adr/0353-the-factory-improves-its-own-practice.md) (self-improvement)
-- [0354](../adr/0354-the-adjudicator-earns-approval-in-shadow-mode.md) (adjudicator)
+- [ADR 0370](../adr/0370-factory-config-lives-in-the-app.md) (config versions)
+- [0371](../adr/0371-workflows-are-presets-over-typed-slots.md) (workflow slots)
+- [0372](../adr/0372-agents-are-harness-neutral.md) (agents)
+- [0373](../adr/0373-the-factory-improves-its-own-practice.md) (self-improvement)
+- [0374](../adr/0374-the-adjudicator-earns-approval-in-shadow-mode.md) (adjudicator)
 - the plan [`.kim/plans/2026-11-11-manage-factory-settings-in-the-ui.md`](../../.kim/plans/2026-11-11-manage-factory-settings-in-the-ui.md)
 - the review [`docs/reviews/2026-11-12-config-and-workflows-review.md`](../reviews/2026-11-12-config-and-workflows-review.md)
 - the mockups [`.kim/mockups/project-settings.html`](../../.kim/mockups/project-settings.html) and
@@ -22,7 +22,7 @@ This spec is built in four milestones, each its own PR.
 ## M1: Config versions and the Settings page
 
 ### Scope
-- **Migration 0120:** `core_project_policies` gains `version`, `source`, `created_by`, `note` and
+- **Migration 0140:** `core_project_policies` gains `version`, `source`, `created_by`, `note` and
   `parent_version`. Each project's current git policy becomes version 1 (`sha` = `v1`, source
   `migrated`), and `core_projects.policy_sha` points at it.
 - **`packages/core/src/policy/impact.ts`:** `policyImpact(old, new, floor)` returns each change with
@@ -59,7 +59,7 @@ This spec is built in four milestones, each its own PR.
   - `policy.proposeTemplate` and the Setup step's "Create policy PR" are removed.
   - `policy.sync` becomes human-only and writes a version (it's kept for tests and as an import
     path).
-- **Pinning (ADR 0350 §5):** the gate in `invoke()` and the harness profile in `buildJob` use the
+- **Pinning (ADR 0370 §5):** the gate in `invoke()` and the harness profile in `buildJob` use the
   stricter of the work item's recorded version and the current one.
 - **App:** `/projects/$projectId/settings`, as in the mockup:
   - sections for Autonomy + overrides, Timeouts + backup owner, Throughput (WIP, default retry),
@@ -78,7 +78,7 @@ This spec is built in four milestones, each its own PR.
   - This repo's `.factory/policy.json` stays only as the export of its v1.
 
 ### Acceptance criteria
-1. After migration 0120, every project with a valid git policy has version 1 with the same document,
+1. After migration 0140, every project with a valid git policy has version 1 with the same document,
    and every existing test that reads the policy passes unchanged.
 2. `config.save` with a valid tightening draft (for example a lower WIP limit) applies at once as
    version N+1, and the gate uses it on the next call.
@@ -94,17 +94,17 @@ This spec is built in four milestones, each its own PR.
 7. `project.create` on a repo with no `policy.json` leaves the project with a valid v1. The Setup
    policy step is satisfied without a PR.
 8. A work item created under v3 whose project moves to a looser v4 is still gated as v3. If the
-   project moves to a stricter v4, it is gated as v4.
+   project moves to a stricter v4, it is gated as v5.
 9. `config.rollback` to v2 writes a new version equal to v2's document. A rollback that loosens
    waits for an approver.
 10. The Settings page saves, shows the impact summary before saving, lists History, and exports and
     imports. The app's API test covers `config.save` and `config.preview` through the server
     function.
 
-## M2: Agents and workflow slots (Workflow v5)
+## M2: Agents and workflow slots (Workflow v6)
 
 ### Scope
-- **The policy document gains `agents` and `workflows`** (ADR 0351, ADR 0352). Both are optional,
+- **The policy document gains `agents` and `workflows`** (ADR 0371, ADR 0372). Both are optional,
   and an absent block means the built-in defaults.
   - **An agent** has `name`, `role`, `tier` (`standard` | `light`), `instructions`, `permissions`
     (`edit`, `allow`, `hosts`) and `requires`.
@@ -119,12 +119,12 @@ This spec is built in four milestones, each its own PR.
   - Agent permissions must fit inside the project harness and the stage-kind ceiling.
 - **Triage picks the workflow.** Its result gains `workflow`, journaled with a reason;
   `workItem.setWorkflow` (human) changes it until build starts. The item records its workflow name.
-- **Workflow v5** runs each slot's steps:
+- **Workflow v6** runs each slot's steps:
   - A `work` step enqueues a job with stage `step`, the agent's role and tier, and the step's
     instructions. Its result is `pass`, `sendBack` (with notes) or `ask`.
   - A `gate` step opens a pending action through `invoke()`.
   - Step names are `slot:<slot>:<index>:<id>`.
-  - The default workflow is empty slots, which equals v4.
+  - The default workflow is empty slots, which equals v5.
 - **The runner contract:**
   - `JOB_STAGES` gains `step`.
   - The job's harness carries `tier` and the agent's compiled profile.
@@ -136,7 +136,7 @@ This spec is built in four milestones, each its own PR.
   the item's workflow and lets a person change it before build.
 
 ### Acceptance criteria
-1. A project without `workflows` runs exactly as v4. v1–v4 replays are unchanged, and v5's step
+1. A project without `workflows` runs exactly as v5. v1–v5 replays are unchanged, and v5's step
    names are frozen in `workflow-versions.test.ts`.
 2. A workflow with a `beforeVerify` work step runs it after build and before verify. Its `sendBack`
    returns the item to build with the step's notes, and counts against `retryLimit`.
@@ -158,7 +158,7 @@ This spec is built in four milestones, each its own PR.
     messages.
   - The handback carries `usage: { model, harness, inputTokens, outputTokens, cacheReadTokens }[]`
     plus wall-clock times.
-  - Migration 0121 adds `core_run_usage`.
+  - Migration 0141 adds `core_run_usage`.
   - Runs record the runner and the config version.
 - **Gate reasons:** send-back, edit and reject prompt for a short reason (optional), stored on the
   decision.
@@ -175,7 +175,7 @@ This spec is built in four milestones, each its own PR.
   - If `policyImpact` says it is practice, it starts a **trial**: the draft applies to the next N
     items of one workflow only.
   - Otherwise it becomes an inbox proposal for a person.
-  - Migration 0121 adds `core_config_trials`.
+  - Migration 0141 adds `core_config_trials`.
   - Trial items run under the candidate version; others run under the current one.
 - **Trial resolution:** after N items, or after 14 days with fewer, it compares outcomes against the
   previous version's items of the same workflow and model class.
@@ -238,4 +238,4 @@ This spec is built in four milestones, each its own PR.
 - Eval replay of a candidate before its trial (ADR 0027): next, after V1.
 - Parallel steps and arbitrary branching in workflows.
 - Org-wide shared agents and workflow templates across projects.
-- A second harness (Codex): ADR 0352 makes room, but V1 ships the Claude adapter only.
+- A second harness (Codex): ADR 0372 makes room, but V1 ships the Claude adapter only.

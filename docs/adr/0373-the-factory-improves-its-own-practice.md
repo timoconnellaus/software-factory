@@ -1,7 +1,7 @@
-# ADR 0353: The factory improves its own practice; policy stays with people
+# ADR 0373: The factory improves its own practice; policy stays with people
 
 Status: accepted, 2026-11-12 (interview, with prior art from Cursor Bugbot's learned rules, Warp
-Factories and Devin). Spec [08](../specs/08-factory-config-in-the-app.md) M3. Amends
+Factories and Devin). Spec [09](../specs/09-factory-config-in-the-app.md) M3. Amends
 [ADR 0008](0008-autonomy-presets-and-floor.md), [ADR 0009](0009-factory-config-in-git.md)'s
 self-improvement PRs, [ADR 0011](0011-audit-journal-is-the-metrics.md),
 [ADR 0027](0027-evals.md) and AGENTS.md's "self-modify always goes to a human".
@@ -26,7 +26,7 @@ loosen permissions.
    - **Policy** is *what's allowed*: autonomy and overrides, approvers, gate steps, harness
      permissions that widen, the floor, the spec threshold, and the verify/reviewer prompts and
      models. These go to a person, as an inbox proposal with evidence.
-   - `policyImpact` (ADR 0350) decides the tier. Anything it can't classify is policy.
+   - `policyImpact` (ADR 0370) decides the tier. Anything it can't classify is policy.
 2. **Every practice change is a trial.**
    - Its lifecycle is candidate → trial → promoted or disabled.
    - A trial applies to the next N items of one workflow (default 5), and only one trial runs per
@@ -49,7 +49,7 @@ loosen permissions.
    - Comparisons are like for like (same harness and model class).
    - On subscription runners, cost means time and rate-limit hits. Tokens × a price table count
      only for API-key runners.
-5. **An adjudicator reduces approvals** (ADR 0354), separately from the improver.
+5. **An adjudicator reduces approvals** (ADR 0374), separately from the improver.
 
 ## Consequences
 - AGENTS.md's rule narrows: loosening and policy changes stay human-only; practice changes may be

@@ -34,7 +34,7 @@
 ## Engine
 A full interpreter is expensive. Step names are the replay API, the existing Workflow versions have to keep running until they drain, and most of `work-item.ts` (CI waits, conflicts, the merge queue) stays in code anyway.
 
-**A cheaper middle ground:** a `runV5` that keeps the fixed skeleton with **typed slots** (after spec, before verify, after verify), each holding agent work steps or person gates. Named workflows become presets over those slots. The default is empty slots, which behaves exactly like v4, so the gate rules come from the structure itself rather than from a validator.
+**A cheaper middle ground:** a `runV6` that keeps the fixed skeleton with **typed slots** (after spec, before verify, after verify), each holding agent work steps or person gates. Named workflows become presets over those slots. The default is empty slots, which behaves exactly like v4, so the gate rules come from the structure itself rather than from a validator.
 
 ## To check
 - ADR 0230's `check-merge` auto-merges fixes under `.factory/checks/`. Confirm it matches paths exactly before `.factory/workflows/` and `.factory/agents/` exist.

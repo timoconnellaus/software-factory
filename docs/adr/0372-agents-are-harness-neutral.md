@@ -1,11 +1,11 @@
-# ADR 0352: Agents are harness-neutral; the runner resolves the model
+# ADR 0372: Agents are harness-neutral; the runner resolves the model
 
-Status: accepted, 2026-11-12 (interview). Spec [08](../specs/08-factory-config-in-the-app.md) M2.
+Status: accepted, 2026-11-12 (interview). Spec [09](../specs/09-factory-config-in-the-app.md) M2.
 Amends [ADR 0017](0017-harness-adapters.md), [ADR 0018](0018-model-roles.md) and
 [ADR 0023](0023-runners-owned-by-users-and-requester-routing.md).
 
 ## Context
-Workflow steps hand to agents (ADR 0351). Jobs run on the requester's own runner and subscription
+Workflow steps hand to agents (ADR 0371). Jobs run on the requester's own runner and subscription
 (ADR 0023). Today that is Claude Code; Codex and shared cloud runners are coming. So an agent can't
 name a model or a harness: the same "Backend Agent" must run on any runner that can take the job.
 
@@ -38,7 +38,7 @@ name a model or a harness: the same "Backend Agent" must run on any runner that 
 ## Consequences
 - ADR 0018's open question (where the role map lives) is answered: defaults in code, preferences in
   the project's config, caps on the runner.
-- The improver (ADR 0353) changes tiers and preferences, never model ids, and compares runs like for
+- The improver (ADR 0373) changes tiers and preferences, never model ids, and compares runs like for
   like using the recorded harness and model.
 - V1 implements the Claude adapter only. The runner-side owner map and caps are declared through
   the runner contract's capabilities when a second harness exists.

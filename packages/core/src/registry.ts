@@ -5,6 +5,7 @@ import type { AnyOperation } from "./operation.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
 import * as cli from "./operations/cli.ts";
+import * as config from "./operations/config.ts";
 import * as connector from "./operations/connector.ts";
 import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
@@ -27,11 +28,15 @@ export const OPERATIONS: readonly AnyOperation[] = [
   projects.projectUpdate,
   projects.policySync,
   projects.killSwitchSet,
+  config.configGet,
+  config.configPreview,
+  config.configSave,
+  config.configRollback,
+  config.configExport,
   onboarding.githubConnectStart,
   onboarding.githubConnectInstallation,
   onboarding.githubRepos,
   onboarding.policyResync,
-  onboarding.policyProposeTemplate,
   onboarding.setupStatus,
   protection.protectionRuleset,
   protection.protectionCheck,

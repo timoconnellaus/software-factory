@@ -18,4 +18,4 @@ from the work item's branch, an agent could loosen its own policy by editing a f
 - Resolves ADR 0009's open question (how the control plane learns `.factory/` changed).
 - A policy change takes effect for new runs after it merges, never for the run that proposed it.
 
-> Amended 2026-11-12 ([ADR 0350](0350-factory-config-lives-in-the-app.md), spec 08): **superseded.** Policy is no longer read from git, so there is no branch for an agent to edit it on. Config operations are human-only (plus `self-improve` for practice changes), and a loosening save is `self-modify`. A work item still records the config version it started under; the gate uses the stricter of that version and the current one.
+> Amended 2026-11-12 ([ADR 0370](0370-factory-config-lives-in-the-app.md), spec 09): **superseded.** Policy is no longer read from git, so there is no branch for an agent to edit it on. Config operations are human-only (plus `self-improve` for practice changes), and a loosening save is `self-modify`. A work item still records the config version it started under; the gate uses the stricter of that version and the current one.

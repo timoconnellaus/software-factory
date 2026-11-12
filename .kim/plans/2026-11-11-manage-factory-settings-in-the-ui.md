@@ -55,7 +55,7 @@ Manage factory config in the app, and let the factory improve its own config (ef
 
 ## Build: one spec, in milestones
 1. **M1:** config store (versions, operations, validation before save, export/import), migrating from `policy.json`, and the Settings page.
-2. **M2:** agents + workflow slots (`runV5`); today's pipeline becomes the default workflow.
+2. **M2:** agents + workflow slots (`runV6`); today's pipeline becomes the default workflow.
 3. **M3:** run usage reporting, plus the improver (proposals, trials, comparison, rollback, digest).
 4. **M4:** the adjudicator, in shadow mode first.
 
