@@ -1,0 +1,26 @@
+{
+  "name": "@software-factory/client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "What both front ends (sf-app and the desktop app) need that isn't React: the operation types and OpError, the inbox grouping, the review packet, planning, questions, work item steps, runner labels, attachment checks and formatting. Pure, so a view, workerd and Node all run it.",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@software-factory/core": "workspace:*",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "@cloudflare/workers-types": "5.20261104.1",
+    "@software-factory/config": "workspace:*",
+    "@software-factory/ui": "workspace:*",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}
