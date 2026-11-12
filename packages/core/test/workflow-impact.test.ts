@@ -222,13 +222,12 @@ describe("the save path", () => {
 });
 
 describe("who may save, approve and roll back org workflows", () => {
-  const surfaces = ["cli", "mcp", "desktop"] as const;
+  const surfaces = ["cli", "mcp", "desktop", "mobile"] as const;
   type Way = { label: string; actor: (w: W) => Actor; surface: (typeof surfaces)[number] | "test" };
   const WAYS: Way[] = [
     { label: "an agent", actor: () => ({ type: "agent", id: "foreman" }), surface: "test" },
     { label: "a runner", actor: () => RUNNER_ACTOR("run_x"), surface: "test" },
-    // A desktop device's token, and any other surface a token reaches (the CLI, MCP; a phone is
-    // another non-app surface, refused by the same rule).
+    // A desktop device's and a phone's token, and any other surface a token reaches (the CLI, MCP).
     ...surfaces.map((surface) => ({
       label: `a person's ${surface} token`,
       actor: (w: W) => w.human,
@@ -241,7 +240,7 @@ describe("who may save, approve and roll back org workflows", () => {
       actor: way.actor(w),
       origin: {
         surface: way.surface,
-        ...(way.surface === "desktop" ? { deviceId: "dev_x" } : {}),
+        ...(way.surface === "desktop" || way.surface === "mobile" ? { deviceId: "dev_x" } : {}),
       },
     });
   }
