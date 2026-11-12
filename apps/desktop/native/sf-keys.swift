@@ -1,4 +1,4 @@
-// sf-keys: the desktop app's device key in the Secure Enclave (ADR 0381). A P-256 key made with
+// sf-keys: the desktop app's device key in the Secure Enclave (ADR 0391). A P-256 key made with
 // .privateKeyUsage and .userPresence, so every signature asks the person for Touch ID (or their
 // password); the private key never leaves the chip.
 //
@@ -10,7 +10,7 @@
 // Only this helper is signed with the keychain access group, so the app's `bun` (which any process
 // of the user can run with its own script) can't use the key at all. And it signs only a presence
 // message (nonce, op, input digest, summary), with the Touch ID prompt built from the message's
-// own summary line, which the engine wrote: no caller chooses what the prompt says (ADR 0381).
+// own summary line, which the engine wrote: no caller chooses what the prompt says (ADR 0391).
 // Unsigned builds fail at `create` and the app falls back to a software key it declares as such.
 import Foundation
 import LocalAuthentication

@@ -1,4 +1,4 @@
-// sf:// links (ADR 0381, 0372): the sign-in callback, and app routes from the /open/* trampoline.
+// sf:// links (ADR 0391, 0372): the sign-in callback, and app routes from the /open/* trampoline.
 export type DeepLink =
   | { kind: "auth"; code: string; state: string }
   | { kind: "route"; path: string }

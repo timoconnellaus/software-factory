@@ -20,7 +20,7 @@ const github = services.github;
 const INTAKE = { type: "intake" as const, id: "github" };
 const manifest: CapabilityManifest = {
   contractVersion: CONTRACT_VERSION,
-  runnerKind: "orca",
+  runnerKind: "local",
   harnesses: ["claude-code"],
   capabilities: ["hooks"],
 };

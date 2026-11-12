@@ -11,9 +11,13 @@ export interface LiveJobs {
   updatedAt: string;
 }
 
+let writes = 0;
+
 export async function writeLiveJobs(file: string, jobs: string[]): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
+  // Its own temp file per write: two overlapping writes (a job ending while the host stops) shared
+  // one name, and the second rename failed with ENOENT. The last rename wins.
+  const tmp = `${file}.${process.pid}.${++writes}.tmp`;
   const body: LiveJobs = { pid: process.pid, jobs, updatedAt: new Date().toISOString() };
   await writeFile(tmp, `${JSON.stringify(body)}\n`);
   await rename(tmp, file);

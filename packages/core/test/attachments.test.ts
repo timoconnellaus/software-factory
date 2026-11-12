@@ -379,7 +379,7 @@ describe("work item attachments", () => {
 describe("attachments over the runner channel's operations", () => {
   const manifest = (capabilities: CapabilityManifest["capabilities"]): CapabilityManifest => ({
     contractVersion: CONTRACT_VERSION,
-    runnerKind: "orca",
+    runnerKind: "local",
     harnesses: ["claude-code"],
     capabilities,
   });

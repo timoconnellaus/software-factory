@@ -1,54 +1,45 @@
-// Spec 08 criterion 7: `sf-runner install` from a shell without Orca still gives the service
-// Orca's bin directory, retries a bootstrap that fails right after bootout, and runs the wrapper.
+// Spec 08 criterion 7 (with Orca gone, spec 30): `sf-runner install` from a shell without them
+// (an SSH session) still gives the service the directories of `tmux` and `claude`, retries a
+// bootstrap that fails right after bootout, and runs the wrapper.
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Exec } from "@software-factory/runner-orca";
+import type { Exec } from "@software-factory/runner-local";
 import { afterEach, describe, expect, it } from "vitest";
 import { install, plist } from "../src/launchd.ts";
-import { ORCA_APP_BIN, withOrcaOnPath } from "../src/pairing.ts";
+import { findOnPath, serviceNode } from "../src/pairing.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const c of cleanups.splice(0)) await c();
 });
 
-describe("the service PATH gets Orca's bin directory", () => {
+describe("the service PATH gets tmux's and claude's directories", () => {
   const files =
     (...present: string[]) =>
     (f: string) =>
       present.includes(f);
 
-  it("adds Orca.app's bin directory when orca isn't on the installing shell's PATH (an SSH session)", () => {
+  it("finds claude in ~/.local/bin and tmux in Homebrew when the shell's PATH has neither (an SSH session)", () => {
+    const isFile = files("/opt/homebrew/bin/tmux", "/Users/t/.local/bin/claude");
+    const tmux = findOnPath("tmux", "/usr/bin:/bin", isFile, ["/Users/t/.local/bin"]);
+    const claude = findOnPath("claude", "/usr/bin:/bin", isFile, ["/Users/t/.local/bin"]);
+    expect([tmux, claude]).toEqual(["/opt/homebrew/bin/tmux", "/Users/t/.local/bin/claude"]);
     expect(
-      withOrcaOnPath({
-        path: "/n/bin:/usr/bin:/bin",
-        isFile: files(`${ORCA_APP_BIN}/orca`),
-      }),
-    ).toEqual({ path: `/n/bin:/usr/bin:/bin:${ORCA_APP_BIN}`, added: ORCA_APP_BIN });
+      serviceNode({
+        execPath: "/n/bin/node",
+        version: "v24.1.0",
+        path: "/usr/bin:/bin",
+        tools: [tmux, claude].filter((t): t is string => !!t),
+      }).path,
+    ).toBe("/n/bin:/usr/bin:/bin:/opt/homebrew/bin:/Users/t/.local/bin");
   });
 
-  it("prefers the config's orcaBin", () => {
-    expect(
-      withOrcaOnPath({
-        path: "/usr/bin",
-        orcaBin: "/opt/orca/bin/orca",
-        isFile: files("/opt/orca/bin/orca", `${ORCA_APP_BIN}/orca`),
-      }),
-    ).toEqual({ path: "/usr/bin:/opt/orca/bin", added: "/opt/orca/bin" });
-  });
-
-  it("leaves a PATH that already has orca alone", () => {
-    expect(
-      withOrcaOnPath({ path: "/x:/usr/bin", isFile: files("/x/orca", `${ORCA_APP_BIN}/orca`) }),
-    ).toEqual({ path: "/x:/usr/bin", added: null });
-  });
-
-  it("adds nothing when there is no Orca to find", () => {
-    expect(withOrcaOnPath({ path: "/usr/bin", isFile: () => false })).toEqual({
-      path: "/usr/bin",
-      added: null,
-    });
+  it("prefers the shell's PATH and finds nothing that isn't there", () => {
+    expect(findOnPath("tmux", "/x:/usr/bin", files("/x/tmux", "/opt/homebrew/bin/tmux"))).toBe(
+      "/x/tmux",
+    );
+    expect(findOnPath("claude", "/usr/bin", () => false, ["/Users/t/.local/bin"])).toBeNull();
   });
 });
 
@@ -58,7 +49,7 @@ describe("plist", () => {
       node: "/n/bin/node",
       wrapper: "/r/local/runner-host/bin/sf-runner-service",
       workingDirectory: "/r/local/runner-host",
-      path: `/n/bin:/usr/bin:${ORCA_APP_BIN}`,
+      path: `/n/bin:/usr/bin:/opt/homebrew/bin`,
       home: "/Users/t",
       logFile: "/Users/t/Library/Logs/software-factory/runner.log",
       stateDir: "/Users/t/.local/state/software-factory/runner",
@@ -70,7 +61,9 @@ describe("plist", () => {
     expect(text).toContain(
       "<key>SF_RUNNER_STATE_DIR</key>\n    <string>/Users/t/.local/state/software-factory/runner</string>",
     );
-    expect(text).toContain(`<key>PATH</key>\n    <string>/n/bin:/usr/bin:${ORCA_APP_BIN}</string>`);
+    expect(text).toContain(
+      `<key>PATH</key>\n    <string>/n/bin:/usr/bin:/opt/homebrew/bin</string>`,
+    );
     expect(text).toMatch(/<key>SuccessfulExit<\/key>\s*<false\/>/);
   });
 });

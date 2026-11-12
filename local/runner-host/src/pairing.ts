@@ -1,5 +1,6 @@
 // Small, pure pieces of `sf-runner pair` and `sf-runner install`, kept apart from the CLI so they can
 // be tested (incident 2026-11-11-bootstrap, docs/incidents/).
+import { accessSync, constants } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 /** The Node major the runner host needs (`.nvmrc`; `--experimental-transform-types`). */
@@ -49,11 +50,14 @@ export function parsePairingInput(
  * The Node the launchd service runs, and the PATH it gets. Refuses a Node older than
  * {@link MIN_NODE_MAJOR}: the service would otherwise pin whatever `node` the installing shell had.
  * The chosen Node's directory goes first on PATH, so tools the runner spawns use the same Node.
+ * `tools` are absolute paths of executables the service needs (tmux): their directories are added
+ * to PATH when missing.
  */
 export function serviceNode(input: {
   execPath: string;
   version: string;
   path: string | undefined;
+  tools?: string[];
 }): { node: string; path: string } {
   const major = Number(input.version.replace(/^v/, "").split(".")[0]);
   if (!Number.isFinite(major) || major < MIN_NODE_MAJOR) {
@@ -71,30 +75,38 @@ export function serviceNode(input: {
   }
   const bin = dirname(input.execPath);
   const rest = (input.path ?? "/usr/bin:/bin").split(delimiter).filter((p) => p && p !== bin);
+  for (const tool of input.tools ?? []) {
+    const dir = dirname(tool);
+    if (isAbsolute(tool) && dir !== bin && !rest.includes(dir)) rest.push(dir);
+  }
   return { node: input.execPath, path: [bin, ...rest].join(delimiter) };
 }
 
-/** Where Orca.app keeps its CLI. */
-export const ORCA_APP_BIN = "/Applications/Orca.app/Contents/Resources/bin";
+/** Homebrew's and the usual places, searched after PATH for the service's tools. */
+export const EXTRA_TOOL_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
 
 /**
- * The service PATH with Orca's bin directory on it (incident 2026-11-11 #9: an install over SSH
- * captured a PATH without Orca, so the service couldn't start jobs). Unchanged when a directory on
- * it already has `orca`; otherwise `orcaBin`'s directory from the config, else Orca.app's, is added
- * at the end. Null `added` when none was found.
+ * The absolute path of an executable on PATH, then the usual Homebrew dirs, then `extraDirs`
+ * (`~/.local/bin`, where Claude Code's installer puts `claude`), or null. An install over SSH
+ * captures a shell PATH without them (incident 2026-11-11 #9, then Orca; now tmux and claude).
  */
-export function withOrcaOnPath(input: {
-  path: string;
-  orcaBin?: string | undefined;
-  isFile: (file: string) => boolean;
-}): { path: string; added: string | null } {
-  const dirs = input.path.split(delimiter).filter(Boolean);
-  if (dirs.some((d) => input.isFile(join(d, "orca")))) return { path: input.path, added: null };
-  const fromConfig =
-    input.orcaBin && isAbsolute(input.orcaBin) && input.isFile(input.orcaBin)
-      ? dirname(input.orcaBin)
-      : null;
-  const found = fromConfig ?? (input.isFile(join(ORCA_APP_BIN, "orca")) ? ORCA_APP_BIN : null);
-  if (!found) return { path: input.path, added: null };
-  return { path: [...dirs, found].join(delimiter), added: found };
+export function findOnPath(
+  name: string,
+  path: string | undefined,
+  isExecutable: (file: string) => boolean = (file) => {
+    try {
+      accessSync(file, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  extraDirs: string[] = [],
+): string | null {
+  for (const dir of [...(path ?? "").split(delimiter), ...EXTRA_TOOL_DIRS, ...extraDirs]) {
+    if (!dir || !isAbsolute(dir)) continue;
+    const file = join(dir, name);
+    if (isExecutable(file)) return file;
+  }
+  return null;
 }

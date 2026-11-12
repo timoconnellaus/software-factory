@@ -1,4 +1,4 @@
-// The desktop app's main process (Bun; ADR 0380, spec 40 M2): the window, the menu-bar icon, the
+// The desktop app's main process (Bun; ADR 0390, spec 40 M2): the window, the menu-bar icon, the
 // RPC the view calls, the sf:// links, the inbox count (badge, notifications) and this Mac's runner.
 // The desktop token and the device key stay here; the view only ever sees results.
 import { hostname } from "node:os";
@@ -281,7 +281,7 @@ async function quit() {
 Electrobun.events.on("before-quit", async () => {
   await runner.stop();
 });
-// If the launcher dies, don't linger as an orphan with a runner (ADR 0380).
+// If the launcher dies, don't linger as an orphan with a runner (ADR 0390).
 watchParent(() => void quit());
 
 refreshTray();

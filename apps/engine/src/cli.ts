@@ -1,4 +1,4 @@
-// The client door (ADR 0340, ADR 0381, specs 07 and 30): `/client/v1` on sf-engine, next to the
+// The client door (ADR 0340, ADR 0391, specs 07 and 30): `/client/v1` on sf-engine, next to the
 // runner channel; `/cli/v1` is the same door under its first name, which `sf` uses.
 // - `device/start` and `device/poll` are the CLI's unsigned device login (as CLI_DEVICE_ACTOR).
 // - `desktop/start` and `desktop/exchange` are the desktop app's unsigned sign-in (as

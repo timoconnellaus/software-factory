@@ -1,4 +1,4 @@
-// The RPC between the Bun main process and the webview (ADR 0380). The view never holds the desktop
+// The RPC between the Bun main process and the webview (ADR 0390). The view never holds the desktop
 // token: it asks the main process to call operations, and to decide gates (which asks for Touch ID).
 // No message or response here carries a token, a nonce or a key (test/rpc.test.ts checks).
 
@@ -39,7 +39,7 @@ export type AppRPC = {
       signOut: { params: Record<string, never>; response: Session };
       call: { params: { op: string; input: unknown }; response: CallResult };
       batch: { params: { calls: { op: string; input: unknown }[] }; response: CallResult[] };
-      /** A gate decision: a presence challenge, Touch ID (showing the engine's summary), then the call (ADR 0381). */
+      /** A gate decision: a presence challenge, Touch ID (showing the engine's summary), then the call (ADR 0391). */
       decide: { params: { op: string; input: unknown }; response: CallResult };
       runnerState: { params: Record<string, never>; response: RunnerState };
       runnerAction: {
