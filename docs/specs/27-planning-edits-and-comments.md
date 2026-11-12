@@ -68,5 +68,33 @@ on them), and sf-app's tab.
     plan".
   - An answered question recorded from an edit reads "from your edit".
 - Screenshots: `docs/screenshots/planning/edits-*.png`.
+- After review (fixes on #85):
+  - **Block-exact.** The plan is split into blocks (`planBlocks` in runner-contract: a heading, a
+    list item with its continuation, a paragraph or a fence; spaces folded). An edit is kept only
+    while each block it wrote is still a whole block of the plan. Text the planner adds to an
+    edited block makes the block the planner's (refused while the edit stands), and a short edit
+    no longer matches inside another block. The exact block text is the anchor: an edit has no
+    position that could drift, and the app marks a block as a person's only when it is exactly
+    one of the blocks the edit wrote.
+  - **A lifecycle.** A later edit whose rewritten blocks include every block an earlier edit wrote
+    retires it (`coveredEdits`). `spec.releaseEdit` lets a person release an edit, which reaches
+    the planner as their message. A deletion is kept while the blocks it removed stay out.
+  - **After approval.** `spec.edit` refuses once the spec gate is decided (`takeBackFromGate` says
+    `decided`), and the guards make that hold in a race.
+  - **Guards.** `spec.revise` updates `current_spec_id` only if it is still the version it
+    replaces. `planning.ready` refuses a plan that doesn't keep a standing edit. `planning.get`
+    marks each edit `kept`, and the gate bar warns when one isn't.
+  - **`question.answerFromEdit`** also needs the edit to stand, be newer than the question's last
+    answer, carry the question's `[Qn]` before and after, and be made by someone who may answer
+    (the assignee or an approver).
+  - **Tags.** An edit can't add `[Qn]` while Qn is open.
+  - **Comments.** A comment is anchored to the block with its text (the nearest one when several
+    read the same). One whose block is gone is listed under the plan, not dropped. `chat.send`
+    checks the anchor's plan version belongs to the item.
+  - Migration 0242 adds `released_at` and `released_by`, and a unique index on `core_specs
+    (work_item_id, version)`.
+  - Tests cover edit against revise in both orders (`beforeCommit`), an edit after approval,
+    appended text, a deletion, a covering edit, a release, stale, off-topic and unassigned
+    `answerFromEdit`, and a tag on an open question.
 - Deferred: resolving comments, editing the structured lists (acceptance criteria, assumptions,
   coverage), and sf-app.

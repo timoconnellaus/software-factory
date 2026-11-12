@@ -934,6 +934,8 @@ export interface CoreSpecEditsTable {
   author_id: string;
   created_at: Iso;
   replaced_by: string | null;
+  released_at: Iso | null;
+  released_by: string | null;
 }
 
 export interface CorePlanningPresenceTable {

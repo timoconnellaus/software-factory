@@ -13,8 +13,11 @@ CREATE TABLE core_spec_edits (
   after TEXT NOT NULL,
   author_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  -- A later edit of the same lines by a person replaces this one.
-  replaced_by TEXT
+  -- A later edit by a person that covers this one retires it.
+  replaced_by TEXT,
+  -- A person let the planner reword it (spec.releaseEdit).
+  released_at TEXT,
+  released_by TEXT
 );
 CREATE INDEX core_spec_edits_item_idx ON core_spec_edits (work_item_id, created_at);
 
@@ -22,5 +25,8 @@ CREATE INDEX core_spec_edits_item_idx ON core_spec_edits (work_item_id, created_
 ALTER TABLE core_planning_messages ADD COLUMN anchor TEXT;
 -- The edit an answer was recorded from (`question.answerFromEdit`).
 ALTER TABLE core_questions ADD COLUMN answered_via_edit TEXT;
+
+-- One version number per plan: racing writes can't both take it (review of #85).
+CREATE UNIQUE INDEX IF NOT EXISTS core_specs_item_version_idx ON core_specs (work_item_id, version);
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 242) WHERE key = 'schema_version';

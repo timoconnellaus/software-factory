@@ -252,8 +252,25 @@ _Avoid_: client, install
 **Presence proof**
 A one-time challenge, signed by a desktop device's Secure Enclave key after Touch ID, bound to one
 operation and the digest of its input. The client door checks it; `invoke()` needs it for a gate
-decision from the desktop (ADR 0391).
+decision from the desktop (ADR 0391). On a phone device the key is a biometric-bound Keystore
+key and the person gives a fingerprint (ADR 0541, proposed).
 _Avoid_: 2FA, confirmation
+
+**Phone device** (proposed, spec 60)
+An Android phone running the phone app, registered by scanning a pairing offer's QR code or by a
+GitHub sign-in in the phone's browser (ADR 0541). It holds a per-use, fingerprint-bound Keystore
+key whose attestation the engine checked, plus a `mobile` token for the `mobile` surface. Plan
+approvals, merges and policy approvals take a fingerprint; ordinary answers are one tap.
+_Avoid_: mobile client, handset
+
+**Pairing offer** (proposed, spec 60)
+A one-use, five-minute QR code (with a typed fallback) that a signed-in person shows on the desktop
+or website to add a phone. Showing it is the approval (ADR 0541).
+
+**Config proposal** (proposed, spec 60)
+A config change drafted by chat or a person that changes nothing until a human approver approves it
+with `config.approve`, whose proof binds the base version and the proposal's digest (ADR 0543).
+_Avoid_: draft policy
 
 **Merge queue**
 A project's approved merges, waiting to land one at a time (ADR 0330). The **head** (the oldest

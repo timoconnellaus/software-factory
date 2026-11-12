@@ -117,6 +117,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   artifacts.artifactShow,
   artifacts.artifactGet,
   artifacts.artifactRead,
+  planning.specReleaseEdit,
   planning.planningWait,
   planning.planningYield,
   planning.planningReady,

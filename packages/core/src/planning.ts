@@ -11,6 +11,7 @@ import {
   PLANNING_SETTLE_MS,
   type PlanningNews,
   type PlanningNewsEvent,
+  planBlocks,
 } from "@software-factory/runner-contract";
 import type { Selectable } from "kysely";
 import { OperationError } from "./errors.ts";
@@ -995,29 +996,46 @@ export async function interruptPlanning(
 /** Text compared word for word, spaces aside. */
 export const normalizePlanText = (text: string) => text.replace(/\s+/g, " ").trim();
 
-/** A work item's standing plan edits: each person's latest edit of its lines. */
+/** A work item's standing plan edits: not covered by a later edit, not released by a person. */
 export async function standingEdits(ctx: Pick<HandlerContext, "db">, workItemId: string) {
   return ctx.db
     .selectFrom("core_spec_edits")
     .selectAll()
     .where("work_item_id", "=", workItemId)
     .where("replaced_by", "is", null)
+    .where("released_at", "is", null)
     .orderBy("created_at")
     .execute();
 }
 
+/** The block texts of a plan, for exact comparison. */
+const blockSet = (md: string) => new Set(planBlocks(md).map((b) => b.text));
+
 /**
- * The standing edits a plan body no longer keeps word for word: an edit's new text must still be in
- * it, and a deletion's old text must still be gone (ADR 0471).
+ * The standing edits a plan body no longer keeps (ADR 0471, review of #85): each block an edit
+ * wrote must still be a whole block of the plan, word for word, so text the planner adds to it or a
+ * short edit matching inside another block doesn't count; a deletion is kept while the blocks it
+ * removed stay absent.
  */
-export function droppedEdits(
+export function droppedEdits<E extends { before: string; after: string }>(
   body: string,
-  edits: { id: string; before: string; after: string }[],
-): { id: string; before: string; after: string }[] {
-  const text = normalizePlanText(body);
+  edits: E[],
+): E[] {
+  const blocks = blockSet(body);
   return edits.filter((e) => {
-    const after = normalizePlanText(e.after);
-    return after ? !text.includes(after) : text.includes(normalizePlanText(e.before));
+    const after = planBlocks(e.after);
+    return after.length
+      ? !after.every((b) => blocks.has(b.text))
+      : planBlocks(e.before).some((b) => blocks.has(b.text));
+  });
+}
+
+/** The standing edits a new edit covers: every block they wrote is among the blocks it rewrites. */
+export function coveredEdits<E extends { after: string }>(before: string, edits: E[]): E[] {
+  const rewritten = blockSet(before);
+  return edits.filter((e) => {
+    const after = planBlocks(e.after);
+    return after.length > 0 && after.every((b) => rewritten.has(b.text));
   });
 }
 

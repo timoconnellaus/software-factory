@@ -17,6 +17,7 @@ import {
   blocks,
   bulkAcceptable,
   chipTag,
+  foldSpace,
   gateSummary,
   initialAnswer,
   isChanged,
@@ -24,6 +25,7 @@ import {
   markTags,
   type PlanningQuestion,
   type PlanningView,
+  planBlocks,
   questionOptions,
   sessionPill,
 } from "@software-factory/client/planning";
@@ -1010,11 +1012,36 @@ function WorkspaceTabs({
 }
 type Anchor = { specId: string; lineStart: number; lineEnd: number; quote: string };
 
-const squash = (text: string) => text.replace(/\s+/g, " ").trim();
-const sameText = (a: string, b: string) => squash(a) === squash(b);
-/** Whether a block holds a person's edit: the edit's new text, word for word (ADR 0471). */
+/**
+ * Whether a block is a person's edit: one of the blocks the edit wrote, exactly, as the server
+ * compares them (ADR 0471, review of #85). Text the planner adds to it makes it the planner's.
+ */
 const matchesEdit = (raw: string, after: string) =>
-  squash(after) !== "" && squash(raw).includes(squash(after));
+  planBlocks(after).some((b) => b.text === foldSpace(raw));
+
+/**
+ * The comments anchored to a block: the same text, and when several blocks read the same, the one
+ * nearest the lines the comment was made on (review of #85).
+ */
+function commentsOn(
+  view: PlanningView,
+  raw: string,
+  lineStart: number,
+  blocks: { text: string; lineStart: number }[],
+) {
+  const text = foldSpace(raw);
+  const same = blocks.filter((b) => b.text === text);
+  return view.messages.filter((m) => {
+    if (!m.anchor || foldSpace(m.anchor.quote) !== text) return false;
+    const nearest = same.reduce((best, b) =>
+      Math.abs(b.lineStart - (m.anchor?.lineStart ?? 0)) <
+      Math.abs(best.lineStart - (m.anchor?.lineStart ?? 0))
+        ? b
+        : best,
+    );
+    return nearest.lineStart === lineStart;
+  });
+}
 
 /**
  * One block of the plan, with Edit and Comment (spec 27, design PlanFocus): Edit opens its source
@@ -1162,9 +1189,53 @@ function PlanBlock({
             ? ` and updated ${updated.map((q) => `Q${q.number ?? "?"}`).join(", ")} to match`
             : ""}
           .
+          <button
+            type="button"
+            className="ml-1 underline"
+            title="Let the planner reword it"
+            onClick={async () => {
+              try {
+                await op(
+                  "spec.releaseEdit",
+                  { workItemId, editId: edit.id },
+                  { idempotencyKey: submitKey() },
+                );
+              } catch (error) {
+                toast.error(errorMessage(error));
+              }
+            }}
+            data-testid="plan-block-release"
+          >
+            Let it reword
+          </button>
         </span>
       )}
     </Tag>
+  );
+}
+
+/** Comments whose lines are no longer in the plan (review of #85): listed, never dropped. */
+function OrphanedComments({ view, bodyMd }: { view: PlanningView; bodyMd: string }) {
+  const present = new Set(planBlocks(bodyMd).map((b) => b.text));
+  const orphaned = view.messages.filter((m) => m.anchor && !present.has(foldSpace(m.anchor.quote)));
+  if (!orphaned.length) return null;
+  return (
+    <div
+      className="grid gap-1.5 rounded-lg bg-selected px-3 py-2 text-xs"
+      data-testid="orphaned-comments"
+    >
+      <b className="font-medium">Comments on parts no longer in the plan</b>
+      {orphaned.map((m) => (
+        <div key={m.id} className="grid gap-0.5">
+          <span className="truncate text-ink-muted italic">
+            {m.anchor?.quote.replace(/^\s*[-*+]\s+/, "")}
+          </span>
+          <span>
+            <b className="font-medium">{m.authorName}</b>: {m.text}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1240,7 +1311,7 @@ function Spec({
           workItemId={workItemId}
           edit={view.edits.find((e) => matchesEdit(raw, e.after))}
           settled={view.questions.filter((q) => q.answeredViaEdit !== null)}
-          comments={view.messages.filter((m) => m.anchor && sameText(m.anchor.quote, raw)).length}
+          comments={commentsOn(view, raw, lineStart, planBlocks(spec.bodyMd)).length}
           me={me}
           onComment={onComment}
         >
@@ -1300,6 +1371,7 @@ function Spec({
               </ol>
             </div>
           )}
+          <OrphanedComments view={view} bodyMd={spec.bodyMd} />
           {spec.assumptions.length > 0 && (
             <div data-testid="assumptions">
               <b>Assumptions</b>
@@ -1727,6 +1799,11 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
       <span className="text-muted-foreground text-sm" data-testid="planning-progress">
         {gateSummary(view)}
       </span>
+      {view.edits.some((e) => !e.kept) && (
+        <span className="text-destructive text-xs" data-testid="edits-not-kept">
+          {view.edits.filter((e) => !e.kept).length} of your edits aren't in the plan as written
+        </span>
+      )}
       {specGate && partial && partial.length > 0 && (
         <span className="text-status-waiting text-xs">
           {partial.length} coverage categor{partial.length === 1 ? "y" : "ies"} still partial
