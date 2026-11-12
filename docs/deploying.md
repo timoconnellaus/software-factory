@@ -154,6 +154,23 @@ checks (write), administration (**read only**: write would let the App delete re
 installation repositories, repository ruleset, branch protection rule (`APP_REQUIREMENTS` in
 `packages/connector-github`).
 
+## The desktop app's releases
+`.github/workflows/desktop-release.yml` (spec 40 M4) builds, signs, notarizes and uploads the macOS
+app to R2 bucket `sf-desktop-releases`, served at `https://downloads.zerobsai.com/desktop` (a custom
+domain on the bucket, set up once with `wrangler r2 bucket domain add`). It uses the `release`
+environment, which only `main` and `v*` tags may deploy to. Its secrets:
+
+| Secret | What |
+| --- | --- |
+| `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD` | The Developer ID Application certificate and its key (base64 .p12) |
+| `MACOS_SIGNING_IDENTITY` | `Developer ID Application: …` |
+| `APPLE_TEAM_ID` | The Team ID |
+| `ASC_KEY_P8`, `ASC_KEY_ID`, `ASC_ISSUER_ID` | An App Store Connect API key (Developer role) for `notarytool` |
+
+The upload uses the repo's `CLOUDFLARE_API_TOKEN` (Workers R2 Storage: Edit). First install:
+download `https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip` (or
+`stable-…`), unzip and move it to `/Applications`. After that the app updates itself.
+
 ## Deploying by hand
 
 From a checkout, logged in with `wrangler login` or with `CLOUDFLARE_API_TOKEN` and

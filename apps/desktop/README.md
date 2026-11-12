@@ -34,7 +34,17 @@ itself to `~/.hutch` and adds a PATH line to your shell profile the first time.
 | `src/mainview/lib/` | `op` / `read` (one `batch` per tick) / `decide`, the queries, the session from `org.list`, decisions, attachments over the door. |
 | `src/mainview/routes/`, `components/` | The screens, ported from sf-app (spec 40 M3): Inbox, Work, New work, attach, the work item with Planning and its timeline, the review packet, Setup, This Mac. Pure logic is in `packages/client`. |
 
-## Signing the key helper (M4)
+## Releases (M4)
+Signed, notarized builds come from `.github/workflows/desktop-release.yml`: canary on every merge to
+`main` that touches the app, stable on a `v*` tag. Install once from
+`https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip`; after that the app
+updates itself (menu bar: *Restart to update*). Signing happens in Electrobun's `postBuild` (the full
+app, before it's compressed) and `postWrap` (the self-extracting wrapper) hooks,
+`scripts/hook-post-*.ts`, and does nothing without `MACOS_SIGNING_IDENTITY`, so local builds stay
+unsigned. On a Mac with the Developer ID in its keychain you can sign a local build the same way:
+`MACOS_SIGNING_IDENTITY="Developer ID Application: …" pnpm bundle:canary`.
+
+## Signing the key helper (M4b)
 Only `sf-keys` gets the `keychain-access-groups` entitlement (the Developer ID team's group), so only
 it can use the Secure Enclave key. The app's `bun` must not have it: any process of the user can run
 that binary with its own script. `sf-keys` signs only presence messages, and the Touch ID prompt

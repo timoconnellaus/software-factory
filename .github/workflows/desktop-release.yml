@@ -1,0 +1,123 @@
+name: Desktop release
+
+# Signed, notarized builds of the desktop app (spec 40 M4, ADR 0390), uploaded to
+# downloads.zerobsai.com/desktop, where the app's updater looks:
+# - every push to main that touches the app or what it bundles → canary (version 0.1.<run>)
+# - a tag v1.2.3 → stable (version 1.2.3)
+# The signing material lives in the `release` environment, which only main and v* tags may use, so
+# no pull request can reach it.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - apps/desktop/**
+      - packages/ui/**
+      - packages/client/**
+      - local/runner-host/**
+      - packages/runner-*/**
+      - packages/harness-*/**
+      - .github/workflows/desktop-release.yml
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: desktop release
+    runs-on: macos-15
+    environment: release
+    timeout-minutes: 60
+    env:
+      NODE_DIST_VERSION: "24.21.0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_DIST_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Channel and version
+        id: channel
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=canary" >> "$GITHUB_OUTPUT"
+            echo "version=0.1.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The Developer ID goes into a throwaway keychain that is deleted at the end.
+      - name: Signing keychain
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KC_PW=$(openssl rand -hex 24)
+          security create-keychain -p "$KC_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PW" "$KEYCHAIN"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security import "$RUNNER_TEMP/devid.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -P "$RUNNER_TEMP/devid.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          printf %s "$ASC_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          echo "MACOS_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Build, sign and notarize
+        working-directory: apps/desktop
+        env:
+          SF_DESKTOP_VERSION: ${{ steps.channel.outputs.version }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          export NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8"
+          sh scripts/bundle.sh "${{ steps.channel.outputs.channel }}"
+          ls -la artifacts
+
+      - name: Check the signature
+        working-directory: apps/desktop
+        run: |
+          app=$(ls -d build/*-macos-arm64/*.app)
+          codesign --verify --strict --deep --verbose=2 "$app"
+          spctl --assess --type exec --verbose=2 "$app"
+          xcrun stapler validate "$app"
+
+      # The artifacts are flat and prefixed by channel, so canary and stable share one folder.
+      - name: Upload to downloads.zerobsai.com/desktop
+        working-directory: apps/desktop
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          for f in artifacts/*; do
+            name=$(basename "$f")
+            case "$name" in
+              *.json) type=application/json; cache="no-cache" ;;
+              *.zip) type=application/zip; cache="no-cache" ;;
+              *) type=application/octet-stream; cache="public, max-age=31536000, immutable" ;;
+            esac
+            pnpm --filter @software-factory/engine exec wrangler r2 object put \
+              "sf-desktop-releases/desktop/$name" --file "$PWD/$f" --remote \
+              --content-type "$type" --cache-control "$cache"
+          done
+          echo "::notice title=Desktop ${{ steps.channel.outputs.channel }} ${{ steps.channel.outputs.version }}::https://downloads.zerobsai.com/desktop/${{ steps.channel.outputs.channel }}-macos-arm64-Software-Factory.zip"
+
+      - name: Clean up the keychain
+        if: always()
+        run: |
+          [ -n "${MACOS_KEYCHAIN:-}" ] && security delete-keychain "$MACOS_KEYCHAIN" || true
+          rm -f "$RUNNER_TEMP/notary.p8"

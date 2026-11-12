@@ -103,6 +103,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   attachments over the door as `{ $bytes }`), the work item with Planning and its timeline, the
   review packet (Merge and Send back through Touch ID), Setup and attach, ported into
   `apps/desktop`; the shared logic is in `packages/client`. Next: M4 (signing and updates).
+  **M4a is built** (`desktop-m4`): signed, notarized canary/stable releases from
+  `.github/workflows/desktop-release.yml` to `downloads.zerobsai.com/desktop` (R2 `sf-desktop-releases`),
+  and the in-app updater. Next: M4b (a Developer ID provisioning profile so `sf-keys` can hold the
+  Secure Enclave key), then M5.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

@@ -163,6 +163,28 @@ The in-app updater follows the channel. The client door's version handshake can 
 - A tag publishes stable.
 - No signing material is in the repo.
 
+**As built (M4a).** `.github/workflows/desktop-release.yml` runs on a macOS runner in the `release`
+environment (only `main` and `v*` tags may use it):
+- **Signing:** the Developer ID goes into a throwaway keychain. Electrobun's `postBuild` hook signs
+  every binary in the full app, with hardened runtime and a timestamp, before it is compressed into
+  the update archive. Only Bun and Node get the JIT entitlements. The hook then notarizes and staples
+  the app. `postWrap` does the same for the self-extracting wrapper and zips it as the first-install
+  download.
+- **Node:** the runner's Node is downloaded from nodejs.org at a pinned version and checked against
+  `SHASUMS256.txt`.
+- **Upload:** artifacts go to R2 bucket `sf-desktop-releases` under `desktop/`, served at
+  `https://downloads.zerobsai.com/desktop` (the build's `release.baseUrl`).
+- **The app** checks every 6 hours, downloads in the background and offers *Restart to update*,
+  stopping the runner cleanly first.
+- **Not yet:**
+  - The `update_required` version handshake.
+  - **M4b, the Secure Enclave key.** Tested on the M5 with the real Developer ID: a command-line
+    `sf-keys` signed with `keychain-access-groups` is killed by macOS (restricted entitlement, no
+    profile), and without the entitlement the Secure Enclave refuses (`-34018`). So the key helper
+    has to become its own small bundle (`SF Keys.app` inside the app) with an embedded **Developer ID
+    provisioning profile** for its own App ID. That profile is made in the Apple Developer portal.
+    Until then signed builds sign in with a software key and decide gates on the website.
+
 ## M5: the website shrinks to auth
 `apps/app` keeps sign-in, Connect GitHub, the device approval pages, device management and
 `/open/*`. Everything else is removed. The `factory/verify` check and notifications link through
