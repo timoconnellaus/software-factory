@@ -4,7 +4,7 @@
 import { HARNESS_PERMISSION_MODES, JOB_STAGES } from "@software-factory/runner-contract";
 import { ACTOR_TYPES } from "../actors.ts";
 import { decide, type FloorParse, RISK_CLASSES } from "./gate.ts";
-import { type ProjectPolicy, SLOTS } from "./project-policy.ts";
+import { isOrgWorkflowId, type ProjectPolicy, SLOTS } from "./project-policy.ts";
 
 export type ImpactClass = "loosens" | "tightens" | "neutral";
 
@@ -377,12 +377,30 @@ function projectGates(policy: ProjectPolicy): Set<string> {
   return gates;
 }
 
+/**
+ * The summary `policyImpact` gives a change to an org workflow choice or its overrides: it can't
+ * classify one without the org's workflow, so it loosens. `configImpact` (stages/project-workflow.ts)
+ * replaces it with the classification against the org workflow.
+ */
+export const ORG_WORKFLOW_UNRESOLVED =
+  "The project's org workflow or its overrides changed (classified against the org workflow).";
+
 function workflowChanges(
   before: ProjectPolicy,
   after: ProjectPolicy,
   add: (path: string, cls: ImpactClass, summary: string) => void,
 ) {
-  if ((before.workflow ?? "").toLowerCase() !== (after.workflow ?? "").toLowerCase()) {
+  const onOrg = isOrgWorkflowId(before.workflow) || isOrgWorkflowId(after.workflow);
+  if (
+    onOrg &&
+    (before.workflow !== after.workflow ||
+      !same(before.workflowOverrides, after.workflowOverrides))
+  )
+    add("workflow", "loosens", ORG_WORKFLOW_UNRESOLVED);
+  if (
+    !onOrg &&
+    (before.workflow ?? "").toLowerCase() !== (after.workflow ?? "").toLowerCase()
+  ) {
     // Switching the project's workflow removes the old one's gate steps from every new item.
     const was = projectGates(before);
     const now = projectGates(after);

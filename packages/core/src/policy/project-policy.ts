@@ -19,6 +19,11 @@ export const POLICY_PATH = ".factory/policy.json";
 const sizes = ["small", "medium", "large"] as const;
 export type SizeName = (typeof sizes)[number];
 
+/** An org workflow's id (spec 52, ADR 0510): what a project's `workflow` names once it runs one. */
+export const ORG_WORKFLOW_ID = /^wf_[a-z0-9_]{1,60}$/;
+export const isOrgWorkflowId = (name: string | null | undefined): name is string =>
+  !!name && ORG_WORKFLOW_ID.test(name);
+
 /** Names people read and steps refer to. */
 const label = z.string().trim().min(1).max(60);
 const instructions = z.string().max(4_000).default("");
@@ -201,10 +206,20 @@ export const projectPolicySchema = z
     /** Named workflows (ADR 0371). The project runs the one named by `workflow` (ADR 0492). */
     workflows: z.array(workflowSchema).max(20).default([]),
     /**
-     * The project's workflow, by name (ADR 0492): every item follows it. Null: the skeleton alone.
-     * There is no per-item override.
+     * The project's workflow (ADR 0492): every item follows it. Null: the skeleton alone. An org
+     * workflow by id (`wf_…`, spec 52 PR (d)), or a slot workflow above by name. There is no
+     * per-item override.
      */
     workflow: z.string().min(1).max(100).nullable().default(null),
+    /**
+     * The project's overrides of its org workflow's stage settings (spec 52, Q5): `{ [stageId]: {
+     * setting: value } }`, only the settings each stage type lists as `overridable`, checked
+     * against the org workflow when saved. Only with an org workflow.
+     */
+    workflowOverrides: z
+      .record(z.string().min(1).max(40), z.record(z.string().min(1).max(40), z.unknown()))
+      .default({})
+      .refine((o) => Object.keys(o).length <= 20, "at most 20 stages can be overridden"),
     /**
      * Self-improvement (ADR 0373): the factory trials practice changes on the next `trialSize`
      * items, at most `weeklyCap` a week. Turning it on is a policy change for a person.
@@ -233,7 +248,21 @@ export const projectPolicySchema = z
   .superRefine((policy, ctx) => {
     const error = workflowsError(policy.agents, policy.workflows);
     if (error) ctx.addIssue({ code: "custom", path: ["workflows"], message: error });
-    const named = policy.workflow?.toLowerCase();
+    for (const w of policy.workflows)
+      if (isOrgWorkflowId(w.name))
+        ctx.addIssue({
+          code: "custom",
+          path: ["workflows"],
+          message: `a workflow can't be called "${w.name}": names like that are org workflow ids`,
+        });
+    const org = isOrgWorkflowId(policy.workflow);
+    if (!org && Object.keys(policy.workflowOverrides).length > 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["workflowOverrides"],
+        message: "overrides apply to an org workflow: set `workflow` to one (wf_…) first",
+      });
+    const named = org ? undefined : policy.workflow?.toLowerCase();
     if (named && !policy.workflows.some((w) => w.name.toLowerCase() === named)) {
       ctx.addIssue({
         code: "custom",
