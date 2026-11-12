@@ -89,7 +89,7 @@ describe.skipIf(!hasDocker)(
       // session of its own, writing a file in the tree for as long as it lives.
       const r = await exec(
         {
-          run: `( ( cd / && exec perl -MPOSIX -e 'POSIX::setsid(); while (1) { open(F, ">", $ARGV[0]); print F time; close F; sleep 1 }' "$PWD/alive" & ) & ); sleep 1; echo left-it`,
+          run: `d="$PWD"; ( ( cd / && exec perl -MPOSIX -e 'POSIX::setsid(); while (1) { open(F, ">", $ARGV[0]); print F time; close F; sleep 1 }' "$d/alive" & ) & ); sleep 1; echo left-it`,
           timeoutMs: 60_000,
         },
         never,

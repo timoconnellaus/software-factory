@@ -710,7 +710,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
             // Fourth review, S5: a test that starts a server and talks to it.
             `node -e "const s = require('http').createServer((q, r) => r.end('pong')).listen(0, '127.0.0.1', async () => { console.log('server said ' + await (await fetch('http://127.0.0.1:' + s.address().port)).text()); s.close() })"`,
             // Fourth review, S1: the middle shell exits at once; the grandchild calls setsid.
-            `( ( cd / && exec perl -MPOSIX -e 'POSIX::setsid(); $0 = "${marker}"; while (1) { open(F, ">", $ARGV[0]); print F time; close F; sleep 1 }' "$PWD/alive" & ) & )`,
+            `d="$PWD"; ( ( cd / && exec perl -MPOSIX -e 'POSIX::setsid(); $0 = "${marker}"; while (1) { open(F, ">", $ARGV[0]); print F time; close F; sleep 1 }' "$d/alive" & ) & )`,
             "sleep 1; echo left-it",
           ].join("\n"),
           timeoutMs: 60_000,
