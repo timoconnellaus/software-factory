@@ -17,7 +17,10 @@ CREATE TABLE core_spec_edits (
   replaced_by TEXT,
   -- A person let the planner reword it (spec.releaseEdit).
   released_at TEXT,
-  released_by TEXT
+  released_by TEXT,
+  -- What the edit asks the planner to keep: `{ blocks: [{section, text}], gone: [{section, text,
+  -- max}] }`, by section and count (review of #85, round 2).
+  footprint TEXT NOT NULL DEFAULT '{"blocks":[],"gone":[]}'
 );
 CREATE INDEX core_spec_edits_item_idx ON core_spec_edits (work_item_id, created_at);
 
@@ -26,7 +29,7 @@ ALTER TABLE core_planning_messages ADD COLUMN anchor TEXT;
 -- The edit an answer was recorded from (`question.answerFromEdit`).
 ALTER TABLE core_questions ADD COLUMN answered_via_edit TEXT;
 
--- One version number per plan: racing writes can't both take it (review of #85).
-CREATE UNIQUE INDEX IF NOT EXISTS core_specs_item_version_idx ON core_specs (work_item_id, version);
+-- One version number per plan is core_specs' own UNIQUE (work_item_id, version), since 0020: no
+-- duplicate can exist, so racing writes fail on it (review of #85, round 2).
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 242) WHERE key = 'schema_version';

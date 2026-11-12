@@ -2,6 +2,7 @@
 // (ADR 0016), the wire shapes and each stage's result shape. Runtime-neutral (Web APIs + zod); it
 // names no runner.
 export * from "./channel.ts";
+export * from "./plan-blocks.ts";
 export * from "./planning.ts";
 export * from "./protocol.ts";
 export * from "./stage-results.ts";

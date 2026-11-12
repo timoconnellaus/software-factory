@@ -294,6 +294,7 @@ export interface CoreWorkItemsTable {
   acceptance_criteria: JsonText | null;
   released_at: Iso | null;
   released_by: string | null;
+  footprint: Generated<string>;
   /** 0261: when the pipeline started (the pull). */
   pulled_at: Iso | null;
   /** 0262 (ADR 0493): when its Workflow started to run the shaping stages, before release. */
@@ -900,6 +901,7 @@ export interface CoreSpecEditsTable {
   replaced_by: string | null;
   released_at: Iso | null;
   released_by: string | null;
+  footprint: Generated<string>;
 }
 
 export interface CorePlanningPresenceTable {

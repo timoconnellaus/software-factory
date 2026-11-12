@@ -5,6 +5,8 @@
 import { json, parseJson } from "@software-factory/db";
 import {
   chatReplyInputSchema,
+  droppedEdits,
+  editFootprint,
   PLANNING_INTERRUPT_LINES,
   planningNewsInputSchema,
   planningPeekInputSchema,
@@ -18,10 +20,9 @@ import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import {
   batchDue,
-  coveredEdits,
   type Delivered,
-  droppedEdits,
   enqueuePlanningJob,
+  guardCurrentSpec,
   guardNoUnreadPersonNews,
   hasUnreadPersonNews,
   interruptPlanning,
@@ -459,13 +460,7 @@ export const specRevise = defineOperation({
     if (dropped.length) {
       throw new OperationError(
         "conflict",
-        `a person edited the plan, and this revision doesn't keep their wording: ${dropped
-          .map((e) =>
-            e.after.trim()
-              ? JSON.stringify(e.after.trim())
-              : `(removed ${JSON.stringify(e.before.trim())})`,
-          )
-          .join("; ")}. Keep it word for word, or ask them in the chat.`,
+        `a person edited the plan, and this revision doesn't keep their wording: ${await describeEdits(ctx, dropped)}. Keep each word for word in its section, as many times as they wrote it, or ask them in the chat.`,
         { editIds: dropped.map((e) => e.id) },
       );
     }
@@ -483,6 +478,7 @@ export const specRevise = defineOperation({
         .where("work_item_id", "=", w.id)
         .where("status", "=", "draft"),
     );
+    guardCurrentSpec(ctx, w, "the plan is still the version this revision replaces");
     ctx.write(
       ctx.db.insertInto("core_specs").values({
         id: specId,
@@ -867,7 +863,7 @@ export const planningReady = defineOperation({
     if (notKept.length) {
       throw new OperationError(
         "conflict",
-        `the plan doesn't keep ${notKept.length} of a person's edits word for word: restore them with spec_revise, or ask them to release the edit`,
+        `the plan doesn't keep these edits word for word: ${await describeEdits(ctx, notKept)}. Restore them with spec_revise, or ask the person in the chat to release the edit (they can, under the plan)`,
         { editIds: notKept.map((e) => e.id) },
       );
     }
@@ -958,11 +954,23 @@ export const chatSend = defineOperation({
     if (input.anchor) {
       const anchored = await ctx.db
         .selectFrom("core_specs")
-        .select("work_item_id")
+        .select(["work_item_id", "body_md"])
         .where("id", "=", input.anchor.specId)
         .executeTakeFirst();
       if (anchored?.work_item_id !== w.id) {
         throw new OperationError("not_found", "no such plan version");
+      }
+      // The quote is what those lines of that version say (review of #85, round 2).
+      const { lineStart, lineEnd, quote } = input.anchor;
+      const said = anchored.body_md
+        .split("\n")
+        .slice(lineStart, lineEnd + 1)
+        .join("\n");
+      if (lineEnd < lineStart || said !== quote) {
+        throw new OperationError(
+          "invalid_input",
+          "the comment's quote isn't what those lines of the plan say: look again",
+        );
       }
     }
     const messageId = newId("planningMessage");
@@ -1238,6 +1246,9 @@ export const specEdit = defineOperation({
     if (input.after === input.before) {
       throw new OperationError("invalid_input", "nothing changed");
     }
+    // The edit must be whole blocks, and read in the plan as it reads alone (review of #85, round 2).
+    const planned = editFootprint(spec.body_md, input.lineStart, input.lineEnd, input.after);
+    if (!planned.ok) throw new OperationError("invalid_input", planned.reason);
     // A tag that says a question decided this line must be true (review of #85): an edit can't
     // put [Q3] on a line while Q3 is still open.
     const added = [...input.after.matchAll(/\[Q(\d+)\]/g)]
@@ -1267,11 +1278,7 @@ export const specEdit = defineOperation({
         "the plan was just approved: edits no longer reach it. Ask the approver to send it back if it must change",
       );
     }
-    const body = [
-      ...lines.slice(0, input.lineStart),
-      ...(input.after === "" ? [] : input.after.split("\n")),
-      ...lines.slice(input.lineEnd + 1),
-    ].join("\n");
+    const body = planned.result;
     const latest = await ctx.db
       .selectFrom("core_specs")
       .select((eb) => eb.fn.max("version").as("v"))
@@ -1287,6 +1294,7 @@ export const specEdit = defineOperation({
         .where("work_item_id", "=", w.id)
         .where("status", "=", "draft"),
     );
+    guardCurrentSpec(ctx, w, "the plan is still the version edited");
     ctx.write(
       ctx.db.insertInto("core_specs").values({
         id: specIdValue,
@@ -1312,8 +1320,13 @@ export const specEdit = defineOperation({
         .where("current_spec_id", "=", input.specId),
     );
     ctx.guardChanged("the plan is still the version edited");
-    // A later edit that rewrites every block an earlier one wrote retires it (review of #85).
-    const covered = coveredEdits(input.before, await standingEdits(ctx, w.id));
+    // A person's later word stands (review of #85, round 2): an earlier edit this one no longer keeps
+    // (it rewrote that edit's lines, or brought back what it deleted) is retired, not left to hold
+    // the planner. The new edit is taken first, so it keeps the copies it wrote.
+    const mine = { id: editId, footprint: planned.footprint };
+    const covered = droppedEdits(body, [mine, ...(await standingEdits(ctx, w.id))]).filter(
+      (e) => e.id !== editId,
+    );
     if (covered.length) {
       ctx.write(
         ctx.db
@@ -1339,6 +1352,7 @@ export const specEdit = defineOperation({
         after: input.after,
         author_id: ctx.actor.id,
         created_at: ctx.now,
+        footprint: JSON.stringify(planned.footprint),
       }),
     );
     logPlanning(ctx, w.id, "spec.edited", { editId, specId: specIdValue, version });
@@ -1521,6 +1535,8 @@ export const planningGet = defineOperation({
         createdAt: z.string(),
         /** Whether the current plan keeps it word for word (shown at the gate when it doesn't). */
         kept: z.boolean(),
+        /** The blocks it wrote, by section: the plan's blocks that show as this person's. */
+        blocks: z.array(z.object({ section: z.string(), text: z.string() })),
       }),
     ),
     present: z.array(z.object({ userId: z.string(), name: z.string() })),
@@ -1605,6 +1621,8 @@ export const planningGet = defineOperation({
       createdBy: s.created_by,
     });
     const current = specs.find((s) => s.id === w.current_spec_id) ?? specs[0];
+    // Edits are kept in order, each taking the copies it wrote (review of #85, round 2).
+    const notKept = new Set(current ? droppedEdits(current.body_md, edits).map((e) => e.id) : []);
     const previous = specs.find((s) => current && s.version < current.version);
     const open = session && OPEN_SESSION.includes(session.status);
     return {
@@ -1697,7 +1715,8 @@ export const planningGet = defineOperation({
           : null,
       })),
       edits: edits.map((e) => ({
-        kept: !(current && droppedEdits(current.body_md, [e]).length),
+        kept: !notKept.has(e.id),
+        blocks: e.footprint.blocks,
         id: e.id,
         specId: e.spec_id,
         lineStart: e.line_start,
@@ -1712,3 +1731,32 @@ export const planningGet = defineOperation({
     };
   },
 });
+
+/** Names edits for a refusal: each edit's words (or what it removed), its section and its author. */
+async function describeEdits(
+  ctx: HandlerContext,
+  edits: {
+    after: string;
+    before: string;
+    author_id: string;
+    footprint: { blocks: { section: string }[]; gone: { section: string }[] };
+  }[],
+): Promise<string> {
+  const ids = [...new Set(edits.map((e) => e.author_id))];
+  const names = new Map<string, string>();
+  for (const u of await ctx.db
+    .selectFrom("core_user")
+    .select(["id", "name", "github_login"])
+    .where("id", "in", ids)
+    .execute())
+    names.set(u.id, u.name || u.github_login || u.id);
+  return edits
+    .map((e) => {
+      const section = (e.footprint.blocks[0] ?? e.footprint.gone[0])?.section;
+      const what = e.after.trim()
+        ? JSON.stringify(e.after.trim())
+        : `removing ${JSON.stringify(e.before.trim())}`;
+      return `${what}${section ? ` (in ${section})` : ""} by ${names.get(e.author_id) ?? e.author_id}`;
+    })
+    .join("; ");
+}

@@ -48,3 +48,10 @@ revision is guarded on the plan version it replaces, `planning.ready` re-checks 
 answer recorded from an edit must be about that question, newer than its last answer, and by someone
 who may answer it.
 
+## Amendment, 2026-11-12 (second review of #85)
+One segmentation: the server and the app both cut the plan with `planBlocks`, and the app renders
+it block by block from it. An edit is kept by section and count, not as a set of texts, and fence
+content is compared exactly. An edit the resulting plan would read differently (an unclosed fence,
+a lost list marker) is refused. A person's later edit retires any earlier one it overrides,
+including a deletion whose text it brings back, and every standing edit can be released from under
+the plan. An answer recorded from an edit must be words the person wrote in it.

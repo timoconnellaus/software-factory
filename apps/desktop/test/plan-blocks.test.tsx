@@ -1,78 +1,100 @@
-// Review of #85, round 2: the Planning tab's blocks are the server's. A list item with a nested
-// list is the item's own lines (react-markdown's span takes in the nested list), so a comment on it
-// is found again and nothing throws; every rendered block is a block `planBlocks` knows.
-import { foldSpace, type PlanningView, planBlocks } from "@software-factory/client/planning";
-import type { ReactNode } from "react";
+// Second review of #85: the Planning tab renders the plan block by block from `planBlocks`, the
+// server's segmentation, so every block on screen is one the server knows, whatever the Markdown:
+// nested lists, a paragraph or fence inside an item, a paragraph straight before a numbered item.
+// A comment no block reads like is an orphan and never throws.
+import { type PlanningView, planBlocks } from "@software-factory/client/planning";
 import { renderToStaticMarkup } from "react-dom/server";
-import Markdown from "react-markdown";
 import { describe, expect, it } from "vitest";
-import { commentsOn, ownBlock } from "../src/mainview/lib/plan-blocks.ts";
+import { PlanBody } from "../src/mainview/components/plan-body.tsx";
+import { commentsOn, orphanedComments, quoteText } from "../src/mainview/lib/plan-blocks.ts";
 
-const PLAN = `# Plan
+const PLAN = [
+  "## Scope",
+  "- a",
+  "  - b",
+  "    - c",
+  "- d",
+  "",
+  "  a paragraph inside d",
+  "",
+  "  ```yaml",
+  "  key:",
+  "    nested: 1",
+  "  ```",
+  "",
+  "A paragraph",
+  "2. a numbered item",
+].join("\n");
 
-- Issues labelled factory become work items
-  - only from org members
-  - edits update the item
-- Closed on merge
+const anchored = (id: string, quote: string, lineStart: number) =>
+  ({
+    id,
+    author: "person",
+    authorId: "u",
+    authorName: "You",
+    text: "?",
+    questionId: null,
+    replyTo: null,
+    kind: "chat",
+    deliveredAt: null,
+    createdAt: "2026-11-12T00:00:00.000Z",
+    anchor: { specId: "s", lineStart, lineEnd: lineStart, quote },
+  }) as PlanningView["messages"][number];
 
-A paragraph after the list.
-
-1. First step
-   with a second line
-2. Second step`;
-
-function render(messages: PlanningView["messages"] = []) {
-  const parts = planBlocks(PLAN);
-  const lines = PLAN.split("\n");
-  const seen: { raw: string; comments: number }[] = [];
-  const view = { messages } as PlanningView;
-  const block =
-    (tag: "p" | "li") =>
-    ({ node, children }: { node?: unknown; children?: ReactNode }) => {
-      const own = ownBlock(tag, node, parts, lines);
-      if (own) {
-        seen.push({
-          raw: own.raw,
-          comments: commentsOn(view, own.raw, own.lineStart, parts).length,
-        });
-      }
-      return tag === "li" ? <li>{children}</li> : <p>{children}</p>;
-    };
-  renderToStaticMarkup(<Markdown components={{ p: block("p"), li: block("li") }}>{PLAN}</Markdown>);
-  return seen;
+function view(messages: PlanningView["messages"]): PlanningView {
+  return { messages, edits: [], questions: [] } as unknown as PlanningView;
 }
 
-describe("plan blocks in the Planning tab", () => {
-  it("gives every rendered block exactly the server's lines, a nested list's item included", () => {
-    const known = new Set(planBlocks(PLAN).map((b) => b.text));
-    const seen = render();
-    expect(seen.map((s) => s.raw)).toEqual([
-      "- Issues labelled factory become work items",
-      "  - only from org members",
-      "  - edits update the item",
-      "- Closed on merge",
-      "A paragraph after the list.",
-      "1. First step\n   with a second line",
-      "2. Second step",
+function render(v: PlanningView) {
+  return renderToStaticMarkup(
+    <PlanBody
+      view={v}
+      bodyMd={PLAN}
+      specId="s"
+      previous={null}
+      components={{}}
+      workItemId="wi"
+      me="u"
+      onComment={() => {}}
+    />,
+  );
+}
+
+describe("the plan, block by block", () => {
+  it("renders exactly the server's blocks, each with its own controls", () => {
+    const html = render(view([]));
+    const kinds = [...html.matchAll(/data-block="(\w+)"/g)].map((m) => m[1]);
+    expect(kinds).toEqual(planBlocks(PLAN).map((b) => b.kind));
+    expect(kinds).toEqual([
+      "heading",
+      "item",
+      "item",
+      "item",
+      "item",
+      "paragraph",
+      "fence",
+      "paragraph",
+      "item",
     ]);
-    for (const s of seen) expect(known.has(foldSpace(s.raw))).toBe(true);
+    expect(html.match(/data-testid="plan-block-edit"/g)).toHaveLength(9);
+    // A fence's indentation survives (rendered from its own dedented lines).
+    expect(html).toContain("key:\n  nested: 1");
   });
 
-  it("finds a comment on an item with a nested list, and a quote no block has doesn't throw", () => {
-    const anchored = (quote: string, lineStart: number) =>
-      ({
-        id: `m${lineStart}`,
-        anchor: { specId: "s", lineStart, lineEnd: lineStart, quote },
-      }) as PlanningView["messages"][number];
-    const seen = render([
-      anchored("- Issues labelled factory become work items", 2),
-      // An old anchor taken from react-markdown's span: no block reads like this any more.
-      anchored(
-        "- Issues labelled factory become work items\n  - only from org members\n  - edits update the item",
-        2,
-      ),
+  it("counts comments on a nested item and a fence, and lists a stale quote as an orphan without throwing", () => {
+    const stale = anchored("old", "- a\n  - b\n    - c", 1);
+    const v = view([
+      anchored("nested", "  - b", 2),
+      anchored("fence", "  ```yaml\n  key:\n    nested: 1\n  ```", 8),
+      stale,
     ]);
-    expect(seen[0]).toEqual({ raw: "- Issues labelled factory become work items", comments: 1 });
-    expect(seen.slice(1).every((s) => s.comments === 0)).toBe(true);
+    const html = render(v);
+    expect(html.match(/data-testid="plan-block-comments"/g)).toHaveLength(2);
+    const parts = planBlocks(PLAN);
+    const fence = parts.find((b) => b.kind === "fence");
+    if (!fence) throw new Error("no fence");
+    expect(commentsOn(v, fence, parts).map((m) => m.id)).toEqual(["fence"]);
+    expect(orphanedComments(v, PLAN).map((m) => m.id)).toEqual(["old"]);
+    expect(quoteText(stale.anchor?.quote ?? "")).not.toBe(parts[1]?.text);
   });
 });

@@ -6,6 +6,7 @@
 // change is an event in the planning log.
 import { parseJson } from "@software-factory/db";
 import {
+  foldSpace,
   isSensitiveQuestion,
   type PlanningQuestion,
   planningQuestionSchema,
@@ -954,6 +955,15 @@ export const questionAnswerFromEdit = defineOperation({
     if (!edit.before.includes(tag) || !edit.after.includes(tag)) {
       throw ask(
         `that edit isn't about Q${q.number} (the line doesn't carry ${tag} before and after)`,
+      );
+    }
+    // The answer is the edit's own words (review of #85, round 2): it must appear in what the person
+    // wrote and not in what was there before, so a typo fix on a tagged line settles nothing.
+    const words = (t: string) => foldSpace(t).toLowerCase();
+    const said = words(input.answer);
+    if (!said || !words(edit.after).includes(said) || words(edit.before).includes(said)) {
+      throw ask(
+        `that edit doesn't say ${JSON.stringify(input.answer)} (an answer from an edit must be words the person wrote in it)`,
       );
     }
     const approvers = await approverIds(ctx.db, requireWorkItem(ctx).org_id, ctx.scope.policy);

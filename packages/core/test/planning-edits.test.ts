@@ -338,6 +338,7 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
       await edit(w, item.workItemId, specId);
       revise.release();
       expect((await refusal(revise.result)).code).toBe("conflict");
+      await caughtByGuard("spec.revise");
       expect((await current(item.workItemId)).body_md).toContain("Backlog");
     }
     // The person reads, the planner's revision commits, then the edit: refused, nothing changed.
@@ -361,6 +362,7 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
       await agent("spec.revise", { ...SPEC, summary: "meanwhile" });
       e.release();
       expect((await refusal(e.result)).code).toBe("conflict");
+      await caughtByGuard("spec.edit");
       expect((await current(item.workItemId)).body_md).not.toContain("Backlog");
     }
   });
@@ -441,49 +443,289 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
     expect(await agent("spec.revise", SPEC)).toMatchObject({});
   });
 
-  it("lets a person release an edit the plan can no longer keep, so the gate isn't held forever (review of #85, round 2)", async () => {
+  // ---- second review of #85 ----
+
+  /** The refused call's audit row says a guard caught it, not the version's UNIQUE. */
+  const caughtByGuard = async (operation: string) => {
+    const row = await first<{ reason: string }>(
+      "SELECT reason FROM core_audit WHERE operation = ? AND outcome = 'failed' ORDER BY at DESC, id DESC LIMIT 1",
+      operation,
+    );
+    expect(row.reason).toMatch(/^conflict: a guarded write/);
+  };
+
+  it("retires an earlier edit a person's later edit overrides: a deletion whose text comes back (case a), or a block it rewrote", async () => {
     const w = await world();
     const { item, agent } = await planning(w);
-    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
-    const label = "- Only issues with the sf label come in [Q1]";
-    const where = "- New items land in the project's Backlog [Q2]";
-    const a = await ok<{ specId: string; editId: string }>(
-      "spec.edit",
-      {
-        workItemId: item.workItemId,
-        specId,
-        lineStart: 3,
-        lineEnd: 4,
-        before: BODY.split("\n").slice(3, 5).join("\n"),
-        after: `${label}\n${where}`,
-      },
-      w.human,
+    const { specId } = await agent<{ specId: string }>("spec.revise", {
+      ...SPEC,
+      specMd: `${BODY}\n- a\n- b`,
+    });
+    const del = await edit(w, item.workItemId, specId, "- a", "", 5);
+    // The person later rewrites "- b" into the line they deleted: their later word stands.
+    const back = await edit(w, item.workItemId, del.specId, "- b", "- a", 5);
+    const standing = await rows<{ id: string }>(
+      "SELECT id FROM core_spec_edits WHERE work_item_id = ? AND replaced_by IS NULL AND released_at IS NULL",
+      item.workItemId,
     );
-    // Someone rewrites half of it: the first edit isn't covered, and the plan can't keep it.
+    expect(standing.map((e) => e.id)).toEqual([back.editId]);
+    await agent("planning.news");
+    expect(await agent("planning.ready")).toMatchObject({ round: 1 });
+  });
+
+  it("keeps a deletion of one of two identical lines (case b), and refuses edits the plan would read differently (cases c, d)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const tbd = `${BODY}\n- TBD\n- TBD`;
+    const { specId } = await agent<{ specId: string }>("spec.revise", { ...SPEC, specMd: tbd });
+    const del = await edit(w, item.workItemId, specId, "- TBD", "", 6);
+    await agent("planning.news");
+    expect(await agent("planning.ready")).toMatchObject({ round: 1 });
+    expect((await refusal(agent("spec.revise", { ...SPEC, specMd: tbd }))).code).toBe("conflict");
+    // (c) an unclosed fence would swallow the rest; (d) a lost marker joins the item above.
+    for (const after of ["```\nconfig", "joins the item above"]) {
+      const refused = await refusal(edit(w, item.workItemId, del.specId, LINE, after));
+      expect(refused.code).toBe("invalid_input");
+    }
+  });
+
+  it("keeps an edit in its section, and a fence's indentation exactly (review of #85, round 2: 3, 4)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const md = `${BODY}\n\n## Out of scope\n- Billing\n\n## Config\n\`\`\`yaml\nkey:\n  nested: 1\n\`\`\``;
+    const { specId } = await agent<{ specId: string }>("spec.revise", { ...SPEC, specMd: md });
+    const a = await edit(w, item.workItemId, specId);
+    const fence = "```yaml\nkey:\n  nested: 2\n```";
+    const lines = md.split("\n");
+    const at = lines.indexOf("```yaml");
     await ok(
       "spec.edit",
       {
         workItemId: item.workItemId,
         specId: a.specId,
-        lineStart: 3,
-        lineEnd: 3,
-        before: label,
-        after: "- Only issues with the agent label come in [Q1]",
+        lineStart: at,
+        lineEnd: at + 3,
+        before: lines.slice(at, at + 4).join("\n"),
+        after: fence,
       },
       w.human,
     );
     await agent("planning.news");
+    const now = (await current(item.workItemId)).body_md;
+    // Moved to Out of scope: the same words, another section.
+    const moved = now.replace(`${EDITED}\n`, "").replace("- Billing", `- Billing\n${EDITED}`);
+    expect((await refusal(agent("spec.revise", { ...SPEC, specMd: moved }))).message).toContain(
+      "Scope",
+    );
+    // The fence re-indented: space folding would call it the same; it isn't.
+    const flat = now.replace("  nested: 2", "nested: 2");
+    expect((await refusal(agent("spec.revise", { ...SPEC, specMd: flat }))).code).toBe("conflict");
+    expect(await agent("spec.revise", { ...SPEC, specMd: now, summary: "same" })).toMatchObject({});
+  });
+
+  it("lets a person release any standing edit, and names a not-kept edit and its author when it holds the gate", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+    const a = await edit(w, item.workItemId, specId);
+    await agent("planning.news");
+    // However the plan came to lose it (an older write, a restore): the gate is held, and says why.
+    await rows("UPDATE core_specs SET body_md = ? WHERE id = ?", BODY, a.specId);
     const held = await refusal(agent("planning.ready"));
     expect(held.code).toBe("conflict");
+    expect(held.message).toContain(EDITED);
+    expect(held.message).toMatch(/by \S+/);
     const view = await ok<{ edits: { id: string; kept: boolean }[] }>(
       "planning.get",
       { workItemId: item.workItemId },
       w.human,
     );
-    expect(view.edits.find((e) => e.id === a.editId)?.kept).toBe(false);
+    expect(view.edits).toEqual([expect.objectContaining({ id: a.editId, kept: false })]);
     await ok("spec.releaseEdit", { workItemId: item.workItemId, editId: a.editId }, w.human);
     await agent("planning.news");
     expect(await agent("planning.ready")).toMatchObject({ round: 1 });
+  });
+
+  it("guards an edit against an approval racing it, both ways (review of #85, round 2: 7)", async () => {
+    const atGate = async () => {
+      const w = await world();
+      const { item, agent } = await planning(w);
+      const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+      await agent("planning.ready");
+      const gate = await call("spec.accept", { workItemId: item.workItemId, specId }, FOREMAN);
+      if (gate.status !== "pending") throw new Error("expected the spec gate");
+      return { w, item, specId };
+    };
+    {
+      // The edit reads the open gate; the approval commits; the edit is refused, the plan as approved.
+      const { w, item, specId } = await atGate();
+      const e = held(
+        "spec.edit",
+        {
+          workItemId: item.workItemId,
+          specId,
+          lineStart: 4,
+          lineEnd: 4,
+          before: LINE,
+          after: EDITED,
+        },
+        w.human,
+      );
+      await e.reached;
+      await ok("spec.approve", { workItemId: item.workItemId }, w.human);
+      e.release();
+      expect((await refusal(e.result)).code).toBe("conflict");
+      await caughtByGuard("spec.edit");
+      expect((await current(item.workItemId)).body_md).toContain(LINE);
+    }
+    {
+      // The approval reads the open gate; the edit commits and withdraws it; the approval is refused.
+      const { w, item, specId } = await atGate();
+      const approve = held("spec.approve", { workItemId: item.workItemId }, w.human);
+      await approve.reached;
+      await edit(w, item.workItemId, specId);
+      approve.release();
+      expect((await refusal(approve.result)).code).toBe("conflict");
+      await caughtByGuard("spec.approve");
+    }
+  });
+
+  it("guards an edit against planning.ready racing it, both ways, and two edits at once (review of #85, round 2: 7)", async () => {
+    {
+      // planning.ready reads no news; the edit commits; ready is refused.
+      const w = await world();
+      const { item, job, m5, agent } = await planning(w);
+      const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+      const ready = held(
+        "planning.ready",
+        { jobId: job.jobId, fencingToken: job.lease.fencingToken },
+        m5,
+      );
+      await ready.reached;
+      await edit(w, item.workItemId, specId);
+      ready.release();
+      expect((await refusal(ready.result)).code).toBe("conflict");
+      await caughtByGuard("planning.ready");
+    }
+    {
+      // The edit reads the spec not at the gate; ready commits; the edit is refused.
+      const w = await world();
+      const { item, agent } = await planning(w);
+      const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+      const e = held(
+        "spec.edit",
+        {
+          workItemId: item.workItemId,
+          specId,
+          lineStart: 4,
+          lineEnd: 4,
+          before: LINE,
+          after: EDITED,
+        },
+        w.human,
+      );
+      await e.reached;
+      await agent("planning.ready");
+      e.release();
+      expect((await refusal(e.result)).code).toBe("conflict");
+      await caughtByGuard("spec.edit");
+    }
+    {
+      // Two people edit different lines of the same version at once: the second is refused, the first stands.
+      const w = await world();
+      const { item, agent } = await planning(w);
+      const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+      const e = held(
+        "spec.edit",
+        {
+          workItemId: item.workItemId,
+          specId,
+          lineStart: 4,
+          lineEnd: 4,
+          before: LINE,
+          after: EDITED,
+        },
+        w.human,
+      );
+      await e.reached;
+      await edit(
+        w,
+        item.workItemId,
+        specId,
+        "- Only issues with the factory label come in [Q1]",
+        "- Only issues with the sf label come in [Q1]",
+        3,
+      );
+      e.release();
+      expect((await refusal(e.result)).code).toBe("conflict");
+      await caughtByGuard("spec.edit");
+      const now = (await current(item.workItemId)).body_md;
+      expect(now).toContain("sf label");
+      expect(now).toContain(LINE);
+    }
+  });
+
+  it("refuses spec.propose while a planning session writes the plan, and guards it otherwise (review of #85, round 2: 6)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    await agent("spec.revise", SPEC);
+    const draft = { specMd: BODY, acceptanceCriteria: ["x"], assumptions: [] };
+    expect(
+      (await refusal(ok("spec.propose", { workItemId: item.workItemId, spec: draft }, FOREMAN)))
+        .code,
+    ).toBe("conflict");
+    // No session: two proposals racing, the later is refused by its guard.
+    const other = await newItem(w, "No planning here");
+    await ok("spec.propose", { workItemId: other.workItemId, spec: draft }, FOREMAN);
+    const p = held("spec.propose", { workItemId: other.workItemId, spec: draft }, FOREMAN);
+    await p.reached;
+    await ok("spec.propose", { workItemId: other.workItemId, spec: draft }, FOREMAN);
+    p.release();
+    expect((await refusal(p.result)).code).toBe("conflict");
+    await caughtByGuard("spec.propose");
+  });
+
+  it("records an answer from an edit only in the edit's own words (review of #85, round 2: 5), and checks a comment's quote", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { questionIds } = await agent<{ questionIds: string[] }>("question.ask", {
+      questions: [{ prompt: "Which label?", default: "factory" }],
+    });
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+    // A typo-level edit on the tagged line: it says nothing about "agent".
+    const { editId, specId: next } = await edit(
+      w,
+      item.workItemId,
+      specId,
+      "- Only issues with the factory label come in [Q1]",
+      "- Only issues with the factory label come in, nothing else [Q1]",
+      3,
+    );
+    const q = questionIds[0];
+    const refused = await refusal(
+      agent("question.answerFromEdit", { questionId: q, answer: "agent", editId }),
+    );
+    expect(refused.message).toContain("words the person wrote");
+    // Words already there before the edit don't count either.
+    expect(
+      (
+        await refusal(
+          agent("question.answerFromEdit", { questionId: q, answer: "factory", editId }),
+        )
+      ).code,
+    ).toBe("conflict");
+    const wrongQuote = await refusal(
+      ok(
+        "chat.send",
+        {
+          workItemId: item.workItemId,
+          text: "?",
+          anchor: { specId: next, lineStart: 3, lineEnd: 3, quote: "- Something else" },
+        },
+        w.human,
+      ),
+    );
+    expect(wrongQuote.code).toBe("invalid_input");
   });
 
   it("records an answer from an edit only when it still stands, is newest, is about the question, and its author may answer (review of #85, 4)", async () => {
