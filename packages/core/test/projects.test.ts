@@ -181,7 +181,7 @@ describe("project.update (admin fix, not in onboarding)", () => {
   it("sets the installation by detection, audited", async () => {
     const w = await world();
     await env.DB.prepare(
-      "UPDATE core_projects SET github_installation_id = NULL, installation_record_id = NULL WHERE id = ?",
+      "UPDATE core_repositories SET github_installation_id = NULL, installation_record_id = NULL WHERE project_id = ?",
     )
       .bind(w.projectId)
       .run();
