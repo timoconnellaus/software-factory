@@ -46,6 +46,18 @@ export async function pullQueuedWork(env: Env, limit = 20): Promise<number> {
        AND (SELECT count(*) FROM core_work_items a
             WHERE a.project_id = w.project_id AND a.status IN ('running', 'waiting', 'paused'))
            < COALESCE(json_extract(CASE WHEN json_valid(pp.raw) THEN pp.raw END, '$.activeLimit'), 10)
+       -- Never a project the pull would refuse anyway, so it can't hold a slot of the LIMIT:
+       -- a kill switch on it or its org,
+       AND NOT EXISTS (
+         SELECT 1 FROM core_kill_switches k WHERE k.is_on = 1
+         AND ((k.scope = 'project' AND k.scope_id = p.id) OR (k.scope = 'org' AND k.scope_id = p.org_id)))
+       -- a config that defines workflows but names none (ADR 0492),
+       AND NOT (COALESCE(json_array_length(CASE WHEN json_valid(pp.raw) THEN pp.raw END, '$.workflows'), 0) > 0
+                AND json_extract(CASE WHEN json_valid(pp.raw) THEN pp.raw END, '$.workflow') IS NULL)
+       -- or a pull approval still pending (a floor that reviews the scheduler).
+       AND NOT EXISTS (
+         SELECT 1 FROM core_pending_actions x
+         WHERE x.operation = 'queue.pull' AND x.project_id = p.id AND x.status = 'pending')
      GROUP BY w.project_id ORDER BY oldest LIMIT ?`,
   )
     .bind(limit)

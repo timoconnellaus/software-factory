@@ -33,4 +33,25 @@ describe("the pull in the engine", () => {
     expect(await pullQueuedWork(env)).toBeGreaterThanOrEqual(1);
     expect(await statusOf(two.workItemId)).toBe("running");
   });
+
+  it("never spends the cron's pass on a project the pull would refuse", async () => {
+    const w = await world();
+    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: true }, w.human);
+    const held = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Held" },
+      w.human,
+    );
+    expect(await statusOf(held.workItemId)).toBe("queued");
+    const before = await first<{ n: number }>(
+      "SELECT count(*) AS n FROM core_audit WHERE operation = 'queue.pull' AND project_id = ?",
+      w.projectId,
+    );
+    await pullQueuedWork(env);
+    const after = await first<{ n: number }>(
+      "SELECT count(*) AS n FROM core_audit WHERE operation = 'queue.pull' AND project_id = ?",
+      w.projectId,
+    );
+    expect(after?.n).toBe(before?.n);
+  });
 });
