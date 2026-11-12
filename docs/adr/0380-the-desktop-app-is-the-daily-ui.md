@@ -1,6 +1,6 @@
-# ADR 0370: The desktop app is the daily UI and the runner's supervisor
+# ADR 0380: The desktop app is the daily UI and the runner's supervisor
 
-Status: accepted, 2026-11-12. Spec [30](../specs/30-desktop-app.md). Promotes the spike's proposed
+Status: accepted, 2026-11-12. Spec [40](../specs/40-desktop-app.md). Promotes the spike's proposed
 ADR 0130 ([`spikes/electrobun`](../../spikes/electrobun/README.md)). Plan:
 [`.kim/plans/2026-11-11-software-factory-desktop-app-electrobun.md`](../../.kim/plans/2026-11-11-software-factory-desktop-app-electrobun.md).
 
@@ -39,7 +39,7 @@ native app that replaces both for day-to-day use, with the website kept for auth
    - Served from a public R2 bucket on a custom domain.
    - A canary channel on every merge that touches the app; stable on a tag.
 5. **Code asks for operations, never tables.** The app is one more surface on the client door
-   ([ADR 0371](0371-the-client-door-desktop-devices-and-presence.md)).
+   ([ADR 0381](0381-the-client-door-desktop-devices-and-presence.md)).
 
 ## Consequences
 - The app is about 200 MB installed (Node about 116 MB, Bun about 85 MB). Updates are about 60 MB

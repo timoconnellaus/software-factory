@@ -1,6 +1,6 @@
 # 0130. The desktop app on Electrobun
 
-Status: promoted to [ADR 0370](../../../docs/adr/0370-the-desktop-app-is-the-daily-ui.md) and [0371](../../../docs/adr/0371-the-client-door-desktop-devices-and-presence.md), 2026-11-12
+Status: promoted to [ADR 0380](../../../docs/adr/0380-the-desktop-app-is-the-daily-ui.md) and [0381](../../../docs/adr/0381-the-client-door-desktop-devices-and-presence.md), 2026-11-12
 Date: 2026-11-12
 
 ## Context

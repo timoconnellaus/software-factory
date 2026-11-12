@@ -62,10 +62,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.
-- **Desktop app** (`desktop-app`, block U, spec [30](specs/30-desktop-app.md), ADRs 0370–0372): a macOS app
+- **Desktop app** (`desktop-app`, block V, spec [40](specs/40-desktop-app.md), ADRs 0380–0382): a macOS app
   on Electrobun that is the daily UI and supervises the runner; the website shrinks to auth. The spike
   (`spikes/electrobun`, #44) showed a Keychain token can't prove a person, so gate decisions from the
-  desktop need a Secure Enclave presence proof (ADR 0371, amends 0340). Five milestones: M1 the client
+  desktop need a Secure Enclave presence proof (ADR 0381, amends 0340). Five milestones: M1 the client
   door + desktop devices + presence (cloud), M2 `apps/desktop` shell + runner, M3 screens, M4 signing
   and updates, M5 the website strip-down. **M1 is built** (`desktop-m1`, migration 0140): `/client/v1`,
   `desktop.*`, `desktopDevice.*`, `presence.*`, `/desktop/connect`, `/open/*`, Setup's devices card.
