@@ -1,6 +1,6 @@
 # ADR 0511: A reconciler runs the stage list
 
-Status: **proposed**, 2026-11-12 (spec [52](../specs/52-workflows-from-stage-types.md)); awaiting
+Status: accepted, 2026-11-12 (the owner, spec 52 question 14; proposed earlier the same day, spec [52](../specs/52-workflows-from-stage-types.md)). Was awaiting
 the owner. Would amend [ADR 0006](0006-work-item-workflows.md), [ADR 0053](0053-workflow-versioning.md)
 and [ADR 0110](0110-work-item-workflow-and-gate.md).
 
@@ -35,3 +35,5 @@ The factory review (PR #61, item 4) suggested a reconciler, as Optio uses.
   idempotent, and replay cost on long items. Shadow mode is where these get measured.
 - If the owner keeps the replayed Workflow instead, spec 52's alternative A applies: a
   `runStages` version that walks the list, with step names from stage id, round and step id.
+
+> Amended 2026-11-12: **accepted** (the owner's answer to spec 52's question 14). The reconciler runs in shadow beside today's Workflow until it agrees on **20 items in a row** (every transition of 20 consecutive finished items matches, with no divergence); any divergence resets the count. The switch-over of Software items is its own PR, approved by a person. Spec 52's build plan, PR (c).
