@@ -1,0 +1,28 @@
+{
+  "incident": "inc_02eee5417fff499d9883e7527f5433f3",
+  "rootCause": "runner",
+  "summary": "Work item #45's triage stalled three times (no hand-back before the stall timeout). Triage requires no capabilities (no `requires` in .factory/policy.json, none from the agent), so placement wasn't it; the runner was. In the incident #11 window (2026-11-12, load 17-25) runner-local's capacity() read a tmux session listing that timed out as zero sessions, so the host reported nothing in use, kept claiming triage jobs into the overloaded machine, and they never handed back in time. Fixed in code by spec 43 (ADR 0550, 0552) with tests only; this check keeps the pattern out of every runner adapter.",
+  "check": "runner-tmux-failure-is-not-absence",
+  "cases": [
+    {
+      "path": "packages/runner-local/src/adapter.ts",
+      "content": "    async capacity(): Promise<Capacity> {\n      const inUse =\n        (await tmux.jobSessions().catch(() => [])).length +\n        [...streams.values()].filter(streamAlive).length;\n      return { max: config.maxConcurrent ?? 2, inUse, accepting: true };\n    },\n",
+      "expect": "fail"
+    },
+    {
+      "path": "packages/runner-local/src/adapter.ts",
+      "content": "  const CAPACITY_DEADLINE_MS = 12_000;\n    async capacity(): Promise<Capacity> {\n      const sessions = await tmux.listSessions().catch(() => null);\n      if (!sessions) return { max, inUse: 0, accepting: true };\n      // TmuxUnavailable is never thrown here, so accepting: false is unreachable\n      return { max, inUse: sessions.length, accepting: sessions.length < max };\n    },\n",
+      "expect": "fail"
+    },
+    {
+      "path": "packages/runner-local/src/adapter.ts",
+      "content": "  const CAPACITY_DEADLINE_MS = 12_000;\n    async capacity(): Promise<Capacity> {\n      const max = config.maxConcurrent ?? 2;\n      try {\n        let timer: ReturnType<typeof setTimeout> | undefined;\n        const sessions = await Promise.race([\n          quickTmux.jobSessions(),\n          new Promise<never>((_, reject) => {\n            timer = setTimeout(\n              () => reject(new TmuxUnavailable(\"tmux list-sessions took too long\")),\n              CAPACITY_DEADLINE_MS,\n            );\n          }),\n        ]).finally(() => clearTimeout(timer));\n        return { max, inUse: sessions.length, accepting: true };\n      } catch (err) {\n        return {\n          max,\n          inUse: started.size,\n          accepting: false,\n          paused: { reason: \"tmux\", pools: [\"heavy\", \"light\"], detail: String(err) },\n        };\n      }\n    },\n",
+      "expect": "pass"
+    },
+    {
+      "path": "packages/runner-local/src/reap.ts",
+      "content": "for (const s of await tmux.jobSessions().catch(() => [])) await tmux.kill(s.name);\n",
+      "expect": "pass"
+    }
+  ]
+}

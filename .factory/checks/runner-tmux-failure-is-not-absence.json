@@ -1,0 +1,10 @@
+{
+  "name": "runner-tmux-failure-is-not-absence",
+  "description": "Incident inc_02eee5417fff499d9883e7527f5433f3 (#45's triage stalled three times) and incident 2026-11-11 #11 (spec 43, ADR 0550, 0552): under load tmux answered in minutes or not at all, and runner-local's capacity() read a failed `list-sessions` as no sessions (`jobSessions().catch(() => [])`), so the host reported zero in use and kept claiming into an overloaded machine; jobs it claimed there never handed back in time and were expired as stalled. A runner adapter's capacity must never read 'tmux didn't answer' as 'nothing running': it answers within a deadline and, when tmux can't say, takes nothing new.",
+  "appliesTo": ["packages/runner-*/src/adapter.ts"],
+  "forbid": [
+    "\\.(jobSessions|listSessions)\\(\\)\\s*\\.catch\\(\\s*\\(\\)\\s*=>\\s*(\\[\\]|null|undefined|0)\\s*\\)"
+  ],
+  "require": ["CAPACITY_DEADLINE_MS", "TmuxUnavailable", "accepting:\\s*false"],
+  "message": "Don't swallow a tmux session listing into an empty list in a runner adapter: a failure is not absence (ADR 0550). capacity() races the listing against CAPACITY_DEADLINE_MS and, on TmuxUnavailable or any error, reports `accepting: false` with a tmux pause so the host claims nothing until tmux answers. See .factory/checks/runner-adapters.md and incident 2026-11-11 #11."
+}
