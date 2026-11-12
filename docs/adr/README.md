@@ -104,3 +104,5 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0512](0512-the-review-packet-is-artifact-evidence-and-decision.md) | Proposed: the review packet is an artifact, its evidence and a decision, all bound to one digest |
 | [0513](0513-skills-are-shared-by-the-org-and-attached-where-used.md) | Skills are shared by the org and attached to agents, stages and stage types; the factory proposes edits, a person accepts |
 | [0514](0514-autopilots-file-work-they-never-ship-it.md) | Autopilots file work on a trigger; they never merge, deploy or change config, and release only where policy allows |
+| [0500](0500-the-factory-guards-the-tests.md) | The factory guards the tests: deleted, skipped or weakened tests, new suppressions and gate-file edits are found in code from the diff, go to a person, and block the check-only auto-merge |
+| [0501](0501-the-factory-runs-the-checks-and-only-executed-evidence-proves-a-criterion.md) | The runner host runs the project's checks on the head SHA (through the adapter's `exec`), a failure goes back to the same session, and only executed evidence proves a criterion |
