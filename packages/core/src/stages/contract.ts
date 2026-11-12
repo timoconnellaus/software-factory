@@ -75,6 +75,12 @@ export interface GateSpec {
   risk: RiskClass;
   /** Who besides a person may decide it once earned or set (ADR 0374, 0515). Code, not settings. */
   delegable: readonly ("adjudicator" | "autoApprove")[];
+  /**
+   * A person decides it whatever the autonomy policy and overrides say (a workflow's decision step,
+   * ADR 0371; merge and deploy, ADR 0008). The gate's `risk` alone would let "agents may plan" pass a
+   * decision step, so `stageGateDecision()` and the reconciler read this, never the risk alone.
+   */
+  alwaysReview: boolean;
 }
 
 export interface StageRequirements {

@@ -5,6 +5,7 @@ import { env } from "cloudflare:workers";
 import type { Job } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { pullQueuedWork } from "../src/pull.ts";
+import { definitionFor, expectPhasesAsDefined, expectStagesAsDefined } from "./definition.ts";
 import {
   BALANCED,
   build,
@@ -106,11 +107,8 @@ describe("shaping before release (ADR 0493)", () => {
   });
 
   it("shapes a medium item through interview planning and the spec gate, then delivers it on release", async () => {
-    const w = await world({
-      ...BALANCED,
-      workflow: "Ship",
-      workflows: [{ name: "Ship", slots: {} }],
-    });
+    const policy = { ...BALANCED, workflow: "Ship", workflows: [{ name: "Ship", slots: {} }] };
+    const w = await world(policy);
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
       { projectId: w.projectId, title: "Add CSV export" },
@@ -183,6 +181,11 @@ describe("shaping before release (ADR 0493)", () => {
       return build();
     });
     expect(built.stage).toBe("build");
+    // The compiled definition (spec 52 PR (a)): spec runs for a medium item, and exactly its
+    // shaping stages ran before release.
+    const { def } = definitionFor(policy, "change");
+    await expectStagesAsDefined(item.workItemId, def, "medium");
+    await expectPhasesAsDefined(item.workItemId, def, "medium");
     expect(
       await first<{ n: number }>(
         "SELECT count(*) AS n FROM core_jobs WHERE work_item_id = ? AND stage = 'triage'",

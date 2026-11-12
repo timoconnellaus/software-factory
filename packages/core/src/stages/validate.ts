@@ -182,7 +182,7 @@ export function validateWorkflow(input: unknown, opts: ValidateOptions): Workflo
       err("F6", inst.id, `${inst.name} acts irreversibly without an action a person must review`);
       return;
     }
-    if (gate?.mode !== "required" || gate.on !== action.on)
+    if (gate?.mode !== "required" || gate.on !== action.on || !gate.alwaysReview)
       err(
         "F6",
         inst.id,

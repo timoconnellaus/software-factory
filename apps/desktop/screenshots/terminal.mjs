@@ -106,10 +106,15 @@ async function connect(port) {
   throw new Error("Chrome didn't start");
 }
 
-const server = await createServer({ configFile: resolve(here, "vite.config.ts") });
+// SF_SHOTS_PORT moves the view's server (and the debugging port) off 5741 when it is taken.
+const viewPort = Number(process.env.SF_SHOTS_PORT ?? 5741);
+const server = await createServer({
+  configFile: resolve(here, "vite.config.ts"),
+  server: { port: viewPort, strictPort: true },
+});
 await server.listen();
-const base = "http://localhost:5741/";
-const port = 9334;
+const base = `http://localhost:${viewPort}/`;
+const port = viewPort + 3593;
 const chrome = spawn(
   CHROME,
   [
@@ -134,7 +139,10 @@ const SHOTS_AFTER = [
   { name: "build-unavailable", path: "/work/wi_9", mode: "none", attachInstead: true },
   { name: "plan-focus", path: "/work/wi_12?tab=plan", keys: ["f"], type: "pwd\r" },
 ];
-const SHOTS = process.argv.includes("--before") ? BEFORE : SHOTS_AFTER;
+const only = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+const SHOTS = process.argv.includes("--before")
+  ? BEFORE
+  : SHOTS_AFTER.filter((s) => only.length === 0 || only.includes(s.name));
 
 try {
   const cdp = await connect(port);

@@ -47,6 +47,8 @@ export const decision: StageType<typeof settings> = {
     operation: "workflow.gate",
     risk: "plan",
     delegable: ["adjudicator"],
+    // `workflow.gate` is `alwaysReview`: no policy lets an agent pass a decision step (ADR 0371).
+    alwaysReview: true,
   }),
   needsPerson: true,
   reversibility: "internal",

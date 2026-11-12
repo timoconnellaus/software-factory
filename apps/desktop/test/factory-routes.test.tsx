@@ -51,7 +51,8 @@ describe("Overview", () => {
 
   it("shows the figures and tables when there is work", async () => {
     const text = textOf(await renderPage("/factory"));
-    expect(text).toContain("Queued 1 waiting for a slot");
+    // #28 (the work model's fixtures) and #43 are both queued.
+    expect(text).toContain("Queued 2 waiting for a slot");
     expect(text).toContain("#42 Keep the runner count fresh");
     expect(text).toContain("1 open incident.");
   });
