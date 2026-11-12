@@ -90,6 +90,9 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0420](0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md) | Linux hosts run the same runner as a systemd user service (linger, `KillMode=process`, the shared self-update wrapper); per-platform deny lists; doctor checks bubblewrap and socat |
 | [0450](0450-a-stream-json-session-mode-with-a-chat-view.md) | A stream-json session mode beside tmux (per runner, the `chat` capability), events from the structured output, a chat view, takeover by `claude --resume` (`run.takeover`) |
 | [0430](0430-a-container-per-job.md) | A container per job (Docker): a self-contained job repo with only the job's history, no home or host credentials, an egress proxy with the stage's allowlist, every stage `bypassPermissions`, the launch check inside the container |
+| [0490](0490-a-project-is-not-a-repository.md) | A project is not a repository: `core_repositories` (backfilled one per project, project ids unchanged), zero or more per project, an item uses one, config stays per project |
+| [0491](0491-work-starts-in-a-backlog-and-is-released.md) | Work starts in a backlog and is released: backlog, ready, queued; `workItem.release` (agents only where config allows); the pull by priority under `activeLimit`, respecting "waits for" links |
+| [0492](0492-a-project-runs-one-workflow.md) | A project runs one workflow (config `workflow`); triage no longer picks and there is no per-item override; org-level workflows are a follow-up |
 | [0390](0390-the-desktop-app-is-the-daily-ui.md) | The desktop app is the daily UI and the runner's supervisor |
 | [0391](0391-the-client-door-desktop-devices-and-presence.md) | One client door; desktop devices decide gates with a presence proof |
 | [0392](0392-the-website-shrinks-to-auth.md) | The website shrinks to auth, links go through a trampoline |
@@ -100,5 +103,10 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0350](0350-how-the-planning-loop-is-wired.md) | How the planning loop is wired: one planning call on the channel scoped by the job, a host relay for the harness, the log's id as the cursor, held waits, yields and pinned resumes, pools, the PlanningHub, Workflow v5 |
 | [0330](0330-the-factory-runs-its-own-merge-queue.md) | The factory runs its own merge queue per project: approved merges land one at a time, the head is updated by GitHub's update-branch and the approval carries over a clean update (Workflow v4) |
 | [0320](0320-factory-branches-stay-mergeable.md) | Factory branches merge the default branch before a build; a PR that can't merge goes back to build, and CI that never reports asks a person (Workflow v3) |
+| [0510](0510-workflows-are-ordered-stages-of-stage-types.md) | Workflows are ordered stages of built-in stage types, defined once per org; floors in code (spec 52, not built) |
+| [0511](0511-a-reconciler-runs-the-stage-list.md) | Proposed: a reconciler (a pure function from a D1 snapshot to the next action, on events and a tick) runs the stage list |
+| [0512](0512-the-review-packet-is-artifact-evidence-and-decision.md) | Proposed: the review packet is an artifact, its evidence and a decision, all bound to one digest |
+| [0513](0513-skills-are-shared-by-the-org-and-attached-where-used.md) | Skills are shared by the org and attached to agents, stages and stage types; the factory proposes edits, a person accepts |
+| [0514](0514-autopilots-file-work-they-never-ship-it.md) | Autopilots file work on a trigger; they never merge, deploy or change config, and release only where policy allows |
 | [0500](0500-the-factory-guards-the-tests.md) | The factory guards the tests: deleted, skipped or weakened tests, new suppressions and gate-file edits are found in code from the diff, go to a person, and block the check-only auto-merge |
 | [0501](0501-the-factory-runs-the-checks-and-only-executed-evidence-proves-a-criterion.md) | The runner host runs the project's checks on the head SHA (through the adapter's `exec`), a failure goes back to the same session, and only executed evidence proves a criterion |

@@ -50,6 +50,7 @@ and the factory's own planning stage writes specs in this same format.
 | [38](38-runner-updates-without-draining.md) | Runner updates without draining on every deploy: keep claiming until idle, caps at 30 and 60 minutes, `minRunnerCompat`, `RUNNER_SHA` from the deploy | 08 |
 | [39](39-runner-host-readopts-live-jobs.md) | The runner host re-adopts its live jobs after a restart, so an update needs no idle moment (spec only) | 30, 38 |
 | [40](40-desktop-app.md) | The desktop app (Electrobun): the client door, desktop devices with Touch ID presence proofs, `apps/desktop`, the website shrinks to auth | 07, 08 |
+| [50](50-projects-backlog-and-release.md) | Projects, repositories, backlog and release: a project has zero or more repositories, work starts in a backlog and is released, the factory pulls queued items by priority under an active limit, "waits for" links, a project runs one workflow | 05, 06, 09 |
 | [wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md) | Work item attachments (picker, drag-and-drop, paste; R2; runs read them) | 01, 03, 13 |
 | [wi-4](wi-4-let-s-improve-the-event-log-so-it-s-usef.md) | A readable event log: one pure module (`packages/timeline`) words each audit entry for the dashboard's timeline and `sf timeline` | 07, 13 |
 
@@ -74,3 +75,9 @@ Mockups for every R1 screen are in [`.kim/mockups/`](../../.kim/mockups/); the d
 
 ## Planning
 Specs 20–25 make planning work the way kim does ([ADR 0300](../adr/0300-planning-is-a-live-session-on-a-runner.md), plan in [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)). Build them in order: 20 → 21 → 22, then 23; 24 and 25 can run alongside after 20 and 04.
+
+## Workflows from stage types
+[Spec 52](52-workflows-from-stage-types.md) is a design for later: workflows built from built-in
+stage types and defined per org, skills and autopilots, the generic review packet and a reconciler
+([ADRs 0510–0514](../adr/0510-workflows-are-ordered-stages-of-stage-types.md)). Don't build it until
+its "When to start" holds.
