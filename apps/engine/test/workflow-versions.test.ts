@@ -93,12 +93,23 @@ const V9_STEPS = [
   "`triage #${k}: record`",
   '"planning: triage questions"',
 ];
+// The steps v10 adds (spec 23 part C): the spec critic before each planning gate.
+const V10_STEPS = [
+  "`planning #${k}: critic`",
+  "`${name}: spec`",
+  "`${name}: yield`",
+  "`${name}: enqueue`",
+  "`${name}: wait`",
+  "`${name}: result`",
+  "`${name}: expire`",
+  "`${name}: record`",
+];
 // The tags v4 builds `{p}` from: frozen like the step names.
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 9 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(9);
+  it("starts new instances on version 10 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(10);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -111,7 +122,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(9);
+    expect(row.workflow_version).toBe(10);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -154,6 +165,9 @@ describe("Workflow versions", () => {
     for (const name of V7_STEPS) expect(source, name).toContain(name);
     for (const name of V8_STEPS) expect(source, name).toContain(name);
     for (const name of V9_STEPS) expect(source, name).toContain(name);
+    for (const name of V10_STEPS) expect(source, name).toContain(name);
+    // v9 instances still dispatch to the same flow, with v10's critic switched off.
+    expect(source).toContain("return flow.runV1(9);");
     // v8 instances still dispatch to the same flow, with v9's triage readiness switched off.
     expect(source).toContain("return flow.runV1(8);");
     expect(source).toContain("return flow.runV1(7);");

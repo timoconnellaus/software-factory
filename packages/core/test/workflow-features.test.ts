@@ -5,13 +5,15 @@ import { has, WORKFLOW_FEATURES, WORKFLOW_VERSION_FEATURES } from "../src/index.
 describe("Workflow features per version", () => {
   it("has a row for every version, each adding to the one before, and nothing for an unknown one", () => {
     const versions = Object.keys(WORKFLOW_VERSION_FEATURES).map(Number);
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect([...(WORKFLOW_VERSION_FEATURES[1] ?? [])]).toEqual([]);
-    expect([...(WORKFLOW_VERSION_FEATURES[9] ?? [])]).toEqual([...WORKFLOW_FEATURES]);
+    expect([...(WORKFLOW_VERSION_FEATURES[10] ?? [])]).toEqual([...WORKFLOW_FEATURES]);
     expect(has(7, "host-checks")).toBe(false);
     expect(has(8, "host-checks")).toBe(true);
     expect(has(8, "triage-readiness")).toBe(false);
     expect(has(9, "triage-readiness")).toBe(true);
+    expect(has(9, "spec-critic")).toBe(false);
+    expect(has(10, "spec-critic")).toBe(true);
     expect(has(null, "verify-packet")).toBe(false);
     expect(has(undefined, "verify-packet")).toBe(false);
     expect(has(99, "verify-packet")).toBe(false);
@@ -27,6 +29,7 @@ describe("Workflow features per version", () => {
       "workflow-plan": 6,
       "release-wait": 7,
       "triage-readiness": 9,
+      "spec-critic": 10,
     } as const;
     const older = WORKFLOW_FEATURES.filter((f): f is keyof typeof since => f in since);
     expect(older.sort()).toEqual(Object.keys(since).sort());

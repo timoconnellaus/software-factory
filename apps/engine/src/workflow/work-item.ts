@@ -35,6 +35,7 @@ import {
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
 import {
+  critiqueResultSchema,
   type JobStage,
   type ModelRole,
   specResultSchema,
@@ -46,6 +47,7 @@ import { invokeDeps } from "../deps.ts";
 import {
   attachedTriagePrompt,
   buildPrompt,
+  criticPrompt,
   type ItemBrief,
   specPrompt,
   stepPrompt,
@@ -118,8 +120,12 @@ export type WorkItemOutcome =
  *   a spec asks triage's questions and re-triages on the answers (`triage #k: ask`, `#k: answers`,
  *   `triage #k`, `#k: record`, at most two rounds); with a spec, the planning session opens with them
  *   (`planning: triage questions`).
+ * - v10 (spec 23 part C; provisional): the spec critic ("spec-critic"). Before each planning gate,
+ *   `planning #k: critic` (`: spec`, `: yield`, `: enqueue`, `: wait`, `: result` or `: expire`,
+ *   `: record`)
+ *   runs a review-role job on the plan and records its notes; the gate follows either way.
  */
-export const WORKFLOW_VERSION = 9;
+export const WORKFLOW_VERSION = 10;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
@@ -203,6 +209,8 @@ interface Meta extends ItemBrief {
   retryLimit: number;
   gateTimeoutMs: number;
   questionTimeoutMs: number;
+  /** v10 (spec 23): how long the spec gate waits for the critic. */
+  criticTimeoutMs: number;
 }
 
 type SlotName = (typeof SLOTS)[number];
@@ -346,6 +354,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(8);
       case 9:
         return flow.runV1(9);
+      case 10:
+        return flow.runV1(10);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -365,7 +375,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       let meta = await this.meta();
@@ -463,7 +473,7 @@ class ItemFlow {
             scores && triage.readiness === "needs_answers" && triage.questions.length
               ? triage.questions
               : null;
-          criteria = await this.planningStage(meta, seed);
+          criteria = await this.planningStage(meta, seed, has(version, "spec-critic"));
         }
         for (let k = 1; !has(version, "planning-spec"); k++) {
           const mayAsk = k <= QUESTION_ROUNDS;
@@ -1129,7 +1139,7 @@ class ItemFlow {
       if (!row.default_branch) throw new Error(`work item ${this.workItemId} has no repository`);
       let policy: {
         retryLimit?: number;
-        timeouts?: { gateHours?: number; questionHours?: number };
+        timeouts?: { gateHours?: number; questionHours?: number; criticMinutes?: number };
       } = {};
       try {
         policy = row.raw ? JSON.parse(row.raw) : {};
@@ -1148,6 +1158,7 @@ class ItemFlow {
         retryLimit: policy.retryLimit ?? 2,
         gateTimeoutMs: (policy.timeouts?.gateHours ?? 72) * 3_600_000,
         questionTimeoutMs: (policy.timeouts?.questionHours ?? 48) * 3_600_000,
+        criticTimeoutMs: (policy.timeouts?.criticMinutes ?? 20) * 60_000,
       };
     });
   }
@@ -1636,6 +1647,8 @@ class ItemFlow {
   async planningStage(
     meta: Meta,
     seed: TriageResult["questions"] | null = null,
+    /** v10: the spec critic's notes before each gate. */
+    critic = false,
   ): Promise<string[]> {
     const id = this.workItemId;
     await this.act("planning: start", "planning.start", { workItemId: id });
@@ -1665,6 +1678,8 @@ class ItemFlow {
           });
         }
       }
+      // v10 (spec 23): the critic's notes first; the gate opens when it's done or timed out.
+      if (critic && specId) await this.critic(meta, k, specId);
       const decided = await this.gate(meta, `planning #${k}: gate`, "spec.accept", {
         workItemId: id,
         specId,
@@ -1708,6 +1723,88 @@ class ItemFlow {
         `spec ${decided.decision}${decided.note ? `: ${decided.note}` : ""}`,
       );
     }
+  }
+
+  /**
+   * The spec critic (v10, spec 23 part C): a review-role run in the light pool reads the plan going
+   * to the gate and the repository, and its notes are recorded (`spec.critique`), shown at the gate
+   * and given to the planner. It decides nothing: the gate follows whatever it says. If it isn't
+   * done within the policy's critic timeout, its run is expired and the gate opens without notes.
+   */
+  async critic(meta: Meta, k: number, specId: string): Promise<void> {
+    const name = `planning #${k}: critic`;
+    const spec = await this.step.do(`${name}: spec`, async () => {
+      const row = await this.env.DB.prepare(
+        "SELECT body_md, acceptance_criteria, critique FROM core_specs WHERE id = ?",
+      )
+        .bind(specId)
+        .first<{ body_md: string; acceptance_criteria: string; critique: string | null }>();
+      let criteria: string[] = [];
+      try {
+        criteria = JSON.parse(row?.acceptance_criteria ?? "[]") as string[];
+      } catch {
+        criteria = [];
+      }
+      return {
+        bodyMd: row?.body_md ?? "",
+        acceptanceCriteria: criteria,
+        // Asking for the gate again on the same version doesn't run the critic again (cost).
+        critiqued: row?.critique != null,
+      };
+    });
+    if (spec.critiqued) return;
+    // The planner, waiting at the gate, holds the item's lease: it yields so the critic can run.
+    await this.act(`${name}: yield`, "planning.requestYield", { workItemId: this.workItemId });
+    const { jobId } = (await this.act(`${name}: enqueue`, "job.enqueue", {
+      workItemId: this.workItemId,
+      stage: "spec",
+      role: "review",
+      prompt: criticPrompt(meta, spec),
+      context: { specId },
+      sessionTimeoutMs: meta.criticTimeoutMs,
+      tier: "light",
+    })) as { jobId: string };
+    let status: "done" | "timed_out" | "failed" = "done";
+    let notes: string[] = [];
+    let summary: string | null = null;
+    try {
+      const event = await this.step.waitForEvent<RunEventPayload>(`${name}: wait`, {
+        type: runEvent(jobId),
+        timeout: meta.criticTimeoutMs,
+      });
+      const result = await this.step.do(`${name}: result`, async () => {
+        const run = await this.env.DB.prepare("SELECT result FROM core_runs WHERE id = ?")
+          .bind(event.payload.runId)
+          .first<{ result: string | null }>();
+        return run?.result ?? null;
+      });
+      // Over the limits (more than 20 notes, a note over 1,000 characters) is clamped, not lost.
+      const parsed =
+        event.payload.outcome === "completed" && result
+          ? critiqueResultSchema.safeParse(clampCritique(JSON.parse(result)))
+          : null;
+      if (parsed?.success) {
+        notes = parsed.data.notes;
+        summary = parsed.data.summary ?? null;
+      } else {
+        status = "failed";
+      }
+    } catch (error) {
+      if (!isWaitTimeout(error)) throw error;
+      status = "timed_out";
+      await this.act(`${name}: expire`, "run.expire", {
+        jobId,
+        reason: "the spec critic ran past its time",
+        cancelQueued: true,
+      });
+    }
+    await this.act(`${name}: record`, "spec.critique", {
+      workItemId: this.workItemId,
+      specId,
+      status,
+      notes,
+      summary,
+    });
   }
 
   /** Waits until the open blocking questions are answered, escalating on each timeout. */
@@ -2040,4 +2137,20 @@ class ItemFlow {
       }
     }
   }
+}
+
+/** A critic's raw result, clamped to what `spec.critique` takes (review of #126). */
+export function clampCritique(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const r = raw as { notes?: unknown; summary?: unknown };
+  return {
+    notes: Array.isArray(r.notes)
+      ? r.notes
+          .map((n) => String(n).trim())
+          .filter(Boolean)
+          .slice(0, 20)
+          .map((n) => (n.length > 1_000 ? `${n.slice(0, 999)}…` : n))
+      : [],
+    ...(typeof r.summary === "string" ? { summary: r.summary.slice(0, 2_000) } : {}),
+  };
 }
