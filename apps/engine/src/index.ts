@@ -17,6 +17,7 @@ import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
 import { pullQueuedWork } from "./pull.ts";
 import { pruneReconcileShadow, shadowPass } from "./reconcile-shadow.ts";
+import { pruneExpired } from "./retention.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
@@ -63,8 +64,12 @@ export default {
         console.error("shadow pass failed", error);
       }
     }
-    // Once an hour: the shadow reconciler's old verdicts (spec 52 PR (c)), a bounded batch.
-    if (now.getUTCMinutes() === 41) await pruneReconcileShadow(env, now);
+    // Once an hour: the shadow reconciler's old verdicts (spec 52 PR (c)), a bounded batch, on a
+    // minute of its own so it doesn't add to retention's tick.
+    if (now.getUTCMinutes() === 47) await pruneReconcileShadow(env, now);
+    // Retention (AGENTS.md "Cloudflare cost", rule 3): once an hour, expired rows go in bounded
+    // batches.
+    if (now.getUTCMinutes() === 41) await pruneExpired(env.DB, now);
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
       await sweepStrayAttachmentBlobs(env.DB, r2AttachmentBlobs(env.ATTACHMENTS), now);
