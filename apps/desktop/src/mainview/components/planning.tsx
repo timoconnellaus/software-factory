@@ -19,6 +19,7 @@ import {
   gateSummary,
   initialAnswer,
   isChanged,
+  isSensitiveQuestion,
   markTags,
   type PlanningQuestion,
   type PlanningView,
@@ -257,11 +258,25 @@ function useLive(workItemId: string, view: PlanningView | undefined) {
   useEffect(
     () =>
       onPlanningChanged((id) => {
-        if (id !== workItemId) return;
+        // "*": the live socket (re)connected, so anything may have changed meanwhile.
+        if (id !== workItemId && id !== "*") return;
         void queryClient.invalidateQueries({ queryKey: ["workItem", workItemId, "planning"] });
       }),
     [workItemId, queryClient],
   );
+  // Back in front, re-read at once: the view may have missed pushes while hidden (review of #78).
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void queryClient.invalidateQueries({ queryKey: ["workItem", workItemId, "planning"] });
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [workItemId, queryClient]);
   useEffect(() => {
     if (!view) return;
     const first = seen.current === undefined;
@@ -278,6 +293,12 @@ function usePresence(workItemId: string) {
     const say = (open: boolean) =>
       op("planning.presence", { workItemId, open }).catch(() => undefined);
     void say(true);
+    // Back in front: say so at once, not at the next beat (review of #78).
+    const back = () => {
+      if (!stopped && document.visibilityState === "visible") void say(true);
+    };
+    window.addEventListener("focus", back);
+    document.addEventListener("visibilitychange", back);
     const timer = setInterval(() => {
       if (!stopped && document.visibilityState === "visible") void say(true);
     }, PRESENCE_MS);
@@ -287,6 +308,8 @@ function usePresence(workItemId: string) {
       stopped = true;
       clearInterval(timer);
       window.removeEventListener("pagehide", leave);
+      window.removeEventListener("focus", back);
+      document.removeEventListener("visibilitychange", back);
       void say(false);
     };
   }, [workItemId]);
@@ -535,13 +558,20 @@ function QuestionCard({
       });
     }
     if (needsTouchId(q)) {
-      return decide({ kind: "planning.answer", workItemId, questionId: q.id, ...input, ...note_ });
+      return decide({
+        kind: "planning.answer",
+        workItemId,
+        questionId: q.id,
+        questionRevision: q.revision,
+        ...input,
+        ...note_,
+      });
     }
     setSending(true);
     try {
       await op(
         "planning.answer",
-        { questionId: q.id, ...input, ...note_ },
+        { questionId: q.id, questionRevision: q.revision, ...input, ...note_ },
         { idempotencyKey: submitKey() },
       );
       return true;
@@ -743,11 +773,8 @@ function QuestionCard({
 }
 
 /** Security, privacy and irreversible planning questions are still answered with Touch ID. */
-function needsTouchId(q: Pick<PlanningQuestion, "domain" | "irreversible">) {
-  return (
-    ["security", "privacy", "security-privacy"].includes(q.domain.toLowerCase()) || q.irreversible
-  );
-}
+const needsTouchId = (q: Pick<PlanningQuestion, "domain" | "irreversible">) =>
+  isSensitiveQuestion(q);
 
 /** "✓ Read": when an answer or a message reached the planner (spec 26). */
 function ReadReceipt({ at }: { at: string | null | undefined }) {

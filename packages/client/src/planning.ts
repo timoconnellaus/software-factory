@@ -166,6 +166,9 @@ export function answerText(kind: string, values: string[]): string {
   return kind === "multiple-choice" ? kept.join(", ") : (kept[0] ?? "");
 }
 
+/** The one sensitive-question check, shared with the server (ADR 0042, review of #71). */
+export { isSensitiveQuestion };
+
 /** Whether "Accept remaining defaults" covers a question (ADR 0042). */
 export function bulkAcceptable(q: PlanningQuestion): boolean {
   return q.status === "open" && q.defaultAnswer !== null && !isSensitiveQuestion(q);

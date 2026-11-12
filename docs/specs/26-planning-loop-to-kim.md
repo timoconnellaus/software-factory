@@ -206,7 +206,12 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
 - Push instead of polling: the engine's `planning.changed` delivery also tells the ClientHub of
   everyone with the view open (`notifyPlanningViewers`, from presence). The desktop main process
   forwards it to the view (`planningChanged`), which re-reads. The poll is now a 30 s fallback.
-- Screenshots: `docs/screenshots/planning/` (before and after, docked and focus).
+- Screenshots: `docs/screenshots/planning/` (before and after, docked and focus, and finish alone
+  on).
+- After review: the planning view re-reads when the live socket reconnects (the main process sends
+  `planningChanged` with `*`), and on window focus. Presence is reported again at once when the
+  window comes back. Answers carry `questionRevision`. The Touch ID check is the shared
+  `isSensitiveQuestion`.
 - Deferred: the same behaviours in sf-app, whose screens shrink to auth (ADR 0392), and plan
   editing and comments (slice 2).
 
