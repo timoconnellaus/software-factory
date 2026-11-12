@@ -177,6 +177,15 @@ export const approvalDecide = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "approver",
+  // A loosening of a project's org workflow is an org admin's to decide (spec 52, Q6).
+  async permissionOf(input, at) {
+    const pa = await at.db
+      .selectFrom("core_pending_actions")
+      .select("decider")
+      .where("id", "=", input.pendingActionId)
+      .executeTakeFirst();
+    return pa?.decider === "org-admin" ? "admin" : "approver";
+  },
   browserOnly: true,
   presenceDecidable: true,
   // On the phone, rejecting holds work back and is one tap; approving takes the fingerprint.

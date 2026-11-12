@@ -2,14 +2,19 @@
 // in `core_org_configs` versions, written only through these operations with ADR 0370's machinery:
 // validate first, a stale base is a conflict, and a save that loosens is `self-modify`, which an
 // org admin approves (Q6). Built-in workflows (Attached PR, Incident) are visible and may only be
-// tightened (Q10). Projects still run their own config: nothing here changes what an item does
-// until PR (d) points projects at org workflows.
+// tightened (Q10). Projects name an org workflow by id (PR (d)): a change that would leave one
+// unable to run (archiving its workflow, a save today's engine can't run) is refused, naming them.
 import type { Db } from "@software-factory/db";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
-import type { ImpactChange, PolicyImpact } from "../policy/impact.ts";
-import { agentSchema } from "../policy/project-policy.ts";
+import { type ImpactChange, type PolicyImpact, same } from "../policy/impact.ts";
+import {
+  agentSchema,
+  onOrgWorkflow,
+  type ProjectPolicy,
+  parseProjectPolicy,
+} from "../policy/project-policy.ts";
 import { BUILT_IN_WORKFLOWS, WORKFLOW_TEMPLATES } from "../stages/builtins.ts";
 import { summarise, workflowImpact } from "../stages/impact.ts";
 import {
@@ -25,6 +30,11 @@ import {
   orgConfigRaw,
   parseOrgConfig,
 } from "../stages/org-config.ts";
+import {
+  normaliseOverrides,
+  orgValueOf,
+  resolveProjectWorkflow,
+} from "../stages/project-workflow.ts";
 import { STAGE_TYPES, stageType } from "../stages/registry.ts";
 import { validateWorkflow } from "../stages/validate.ts";
 import { type WorkflowDefinition, workflowDefinitionSchema } from "../stages/workflow.ts";
@@ -183,6 +193,74 @@ function withWorkflow(config: OrgConfig, workflow: WorkflowDefinition): OrgConfi
   };
 }
 
+/** The most projects an org config change checks; an org with more can't be checked, so fails closed. */
+const MAX_ORG_PROJECTS = 500;
+
+/**
+ * The org's projects and their current config documents, to see which run which org workflow. An
+ * org config change is a person's rare act, so this reads every project of the org (by the
+ * `(org_id, slug)` unique index) and its current config row (by primary key).
+ */
+export async function orgProjects(
+  db: Db,
+  org: string,
+): Promise<{ id: string; name: string; policy: ProjectPolicy | null }[]> {
+  const rows = await db
+    .selectFrom("core_projects as p")
+    .leftJoin("core_project_policies as pp", (j) =>
+      j.onRef("pp.project_id", "=", "p.id").onRef("pp.sha", "=", "p.policy_sha"),
+    )
+    .select(["p.id", "p.name", "pp.raw", "pp.valid"])
+    .where("p.org_id", "=", org)
+    .orderBy("p.slug")
+    .limit(MAX_ORG_PROJECTS + 1)
+    .execute();
+  if (rows.length > MAX_ORG_PROJECTS)
+    throw new OperationError(
+      "conflict",
+      `the org has more than ${MAX_ORG_PROJECTS} projects, so which use its workflows can't be checked`,
+    );
+  return rows.map((r) => {
+    const parsed = r.valid && r.raw ? parseProjectPolicy(r.raw) : null;
+    return { id: r.id, name: r.name, policy: parsed?.ok ? parsed.policy : null };
+  });
+}
+
+/** The projects whose current config runs org workflow `id`. */
+export function projectsOn(
+  projects: { name: string; policy: ProjectPolicy | null }[],
+  id: string,
+): string[] {
+  return projects
+    .filter((p) => p.policy && onOrgWorkflow(p.policy) && p.policy.workflow === id)
+    .map((p) => p.name);
+}
+
+/**
+ * Why `config` would leave a project unable to run, or null: every project on an org workflow must
+ * still resolve against it (the workflow exists, its overrides apply, and today's engine can run it).
+ * Checked before an org version is written, not discovered when every item on it fails closed.
+ */
+export function strandedBy(
+  projects: { name: string; policy: ProjectPolicy | null }[],
+  config: OrgConfig,
+  /** The version it replaces: a project that couldn't run on it either isn't this change's doing. */
+  before: OrgConfig,
+): string | null {
+  const stranded: string[] = [];
+  for (const p of projects) {
+    if (!p.policy) continue;
+    const resolved = resolveProjectWorkflow(p.policy, config);
+    if (!resolved || resolved.ok) continue;
+    const was = resolveProjectWorkflow(p.policy, before);
+    if (was && !was.ok) continue;
+    stranded.push(`${p.name} (${resolved.error})`);
+  }
+  return stranded.length
+    ? `this would leave projects that use the workflow unable to run: ${stranded.join("; ")}`
+    : null;
+}
+
 /**
  * Queues a new version and points the org at it. The batch aborts if the org moved past `expect`
  * in the meantime, so two saves can't both apply.
@@ -201,6 +279,90 @@ export async function writeOrgVersion(
   },
 ): Promise<{ version: number }> {
   const version = expect + 1;
+  const projects = await orgProjects(ctx.db, org);
+  const stranded = strandedBy(projects, config, input.before);
+  if (stranded) throw new OperationError("invalid_input", stranded);
+  // An org admin's approval of a project's looser override counts for one org version
+  // (core_override_approvals). The factory carries it to this version where the org leaves that
+  // setting's value as it was; where the org moved it and the override is still looser, it lapses:
+  // the stricter applies, and the org's admins are told (spec 52, fourth review).
+  const approvals =
+    expect === 0
+      ? []
+      : await ctx.db
+          .selectFrom("core_override_approvals")
+          .selectAll()
+          .where("org_id", "=", org)
+          .where("org_version", "=", expect)
+          .limit(500)
+          .execute();
+  const lapsed: string[] = [];
+  for (const a of approvals) {
+    const p = projects.find((x) => x.id === a.project_id);
+    if (!p?.policy) continue;
+    let approved: unknown;
+    try {
+      approved = JSON.parse(a.value);
+    } catch {
+      continue;
+    }
+    // Only for the override the project still has.
+    if (!same(p.policy.workflowOverrides[a.stage_id]?.[a.setting], approved)) continue;
+    const was = orgValueOf(p.policy, input.before, a.stage_id, a.setting);
+    const now = orgValueOf(p.policy, config, a.stage_id, a.setting);
+    if (!now.found) continue;
+    if (was.found && same(was.value, now.value)) {
+      ctx.write(
+        ctx.db.insertInto("core_override_approvals").values({ ...a, org_version: version }),
+      );
+      continue;
+    }
+    const n = normaliseOverrides(p.policy, config);
+    if (n.looser.some((l) => l.stageId === a.stage_id && l.key === a.setting))
+      lapsed.push(`${p.name}: ${a.stage_id} ${a.setting}`);
+  }
+  // An override that was as strict as the org's value, or stricter, and that this version makes
+  // looser has no approval: the stricter value applies until an org admin approves it or the
+  // project drops it, and the org's admins are told so (spec 52, fifth review). In memory: the
+  // projects are already read.
+  const unapproved: string[] = [];
+  for (const p of projects) {
+    if (!p.policy || !onOrgWorkflow(p.policy)) continue;
+    const was = normaliseOverrides(p.policy, input.before).looser;
+    for (const l of normaliseOverrides(p.policy, config).looser)
+      if (!was.some((x) => x.stageId === l.stageId && x.key === l.key))
+        unapproved.push(`${p.name}: ${l.stageId} ${l.key}`);
+  }
+  if (lapsed.length || unapproved.length) {
+    const admins = await ctx.db
+      .selectFrom("core_member")
+      .select("user_id")
+      .where("organization_id", "=", org)
+      .where("role", "in", ["owner", "admin"])
+      .execute();
+    for (const admin of admins) {
+      if (lapsed.length)
+        ctx.emit({
+          kind: "notify",
+          payload: {
+            event: "workflow.overrideLapsed",
+            userId: admin.user_id,
+            title: `The org's workflow change ends approved project overrides (the stricter value applies): ${lapsed.join("; ")}`,
+            url: "/settings",
+          },
+        });
+      if (unapproved.length)
+        ctx.emit({
+          kind: "notify",
+          payload: {
+            event: "workflow.overrideNeedsApproval",
+            userId: admin.user_id,
+            title: `The org's workflow change makes project overrides looser than the org's values; each needs an org admin's approval or removal (the stricter value applies until then): ${unapproved.join("; ")}`,
+            url: "/settings",
+          },
+        });
+    }
+  }
   ctx.guardExists(
     "org config base unchanged",
     ctx.db
@@ -252,6 +414,8 @@ export async function riskOfSave(
     if (version !== base) return "write";
     const after = parseOrgConfig(next(config));
     if (!after.ok) return "write";
+    // A change that would strand a project is refused by the handler, not asked of an admin.
+    if (strandedBy(await orgProjects(db, org), after.config, config)) return "write";
     return orgConfigImpact(config, after.config).class === "loosens" ? "self-modify" : "write";
   } catch {
     return "self-modify";
@@ -494,9 +658,15 @@ export const workflowArchive = defineOperation({
     requireBase(version, input.baseVersion);
     const workflow = config.workflows.find((w) => w.id === input.workflowId);
     if (!workflow) throw new OperationError("not_found", `no workflow ${input.workflowId}`);
-    // Projects run their own config until spec 52 PR (d), so no org workflow is in use yet; (d)
-    // refuses archiving one a project runs. The archived version is kept: a workflow re-added under
-    // this id is compared against it (ADR 0516).
+    // A workflow a project runs can't be archived: the project would have nothing to run. The
+    // archived version is kept: a workflow re-added under this id is compared against it (ADR 0516).
+    const using = projectsOn(await orgProjects(ctx.db, input.orgId), input.workflowId);
+    if (using.length)
+      throw new OperationError(
+        "conflict",
+        `${workflow.name} is in use by ${using.join(", ")}: move ${using.length === 1 ? "it" : "them"} to another workflow first`,
+        { projects: using },
+      );
     // The document keeps the last version of up to MAX_ARCHIVED archived workflows. The next archive
     // is refused, never made by dropping the oldest: a dropped one could be re-added under its id
     // compared only against the Software floor (ADR 0516). Re-adding or replacing an archived

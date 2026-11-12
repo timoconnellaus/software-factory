@@ -4,7 +4,9 @@ import type { Db, KillScope } from "@software-factory/db";
 import type { Actor } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import type { ProjectRow, RepositoryRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
-import { type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
+import { onOrgWorkflow, type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
+import { EMPTY_ORG_CONFIG, parseOrgConfig } from "./stages/org-config.ts";
+import { effectivePolicy, type OverrideApprovals } from "./stages/project-workflow.ts";
 
 const EMPTY: Scope = {
   orgId: null,
@@ -15,6 +17,7 @@ const EMPTY: Scope = {
   repositories: [],
   repository: null,
   policy: null,
+  rawPolicy: null,
   policySha: null,
   policyError: null,
   pinnedPolicy: null,
@@ -46,12 +49,12 @@ export async function resolveScope(db: Db, ref: ScopeRef): Promise<Scope>;
 export async function resolveScope(
   db: Db,
   ref: ScopeRef,
-  batch: { d1: D1Database; userId: string | null },
+  batch: { d1: D1Database; userId: string | null; skipOrgWorkflow?: boolean },
 ): Promise<Scope & { role: string | null | undefined }>;
 export async function resolveScope(
   db: Db,
   ref: ScopeRef,
-  batch?: { d1: D1Database; userId: string | null },
+  batch?: { d1: D1Database; userId: string | null; skipOrgWorkflow?: boolean },
 ): Promise<Scope & { role?: string | null | undefined }> {
   let workItemId = ref.workItemId ?? null;
   if (!workItemId && ref.jobId) {
@@ -104,7 +107,13 @@ export async function resolveScope(
   }
 
   if (batch) {
-    return resolveBatched(batch.d1, { workItemId, projectId, orgId, repositoryId }, batch.userId);
+    return resolveBatched(
+      db,
+      batch.d1,
+      { workItemId, projectId, orgId, repositoryId },
+      batch.userId,
+      batch.skipOrgWorkflow ?? false,
+    );
   }
 
   let workItem: WorkItemRow | null = null;
@@ -141,11 +150,12 @@ export async function resolveScope(
     .orderBy("id")
     .execute();
   const repository = pickRepository(repositories, workItem, repositoryId);
-  const { policy, policyError } = await loadPolicy(db, project);
-  const pinnedPolicy =
+  const raw = await loadPolicy(db, project);
+  const pinnedRaw =
     workItem?.policy_sha && workItem.policy_sha !== project.policy_sha
       ? (await loadPolicy(db, { id: project.id, policy_sha: workItem.policy_sha })).policy
       : null;
+  const resolved = await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem, project.id);
   return {
     orgId,
     projectId,
@@ -154,10 +164,8 @@ export async function resolveScope(
     project,
     repositories,
     repository,
-    policy,
+    ...resolved,
     policySha: project.policy_sha,
-    policyError,
-    pinnedPolicy,
   };
 }
 
@@ -183,6 +191,7 @@ type PolicyRow = { raw: string; valid: number; error: string | null };
 
 /** `resolveScope`'s lookups as one D1 batch: the same answers and the same refusals. */
 async function resolveBatched(
+  db: Db,
   d1: D1Database,
   ids: {
     workItemId: string | null;
@@ -191,6 +200,7 @@ async function resolveBatched(
     repositoryId: string | null;
   },
   userId: string | null,
+  skipOrgWorkflow: boolean,
 ): Promise<Scope & { role: string | null | undefined }> {
   // The project is the work item's when there is one (as in the unbatched path).
   const projectExpr = ids.workItemId
@@ -289,11 +299,21 @@ async function resolveBatched(
       ? []
       : ((results[at.repositories]?.results ?? []) as unknown as RepositoryRow[]);
   const repository = pickRepository(repositories, workItem, ids.repositoryId);
-  const { policy, policyError } = interpretPolicy(project, first<PolicyRow>(at.policy));
+  const raw = interpretPolicy(project, first<PolicyRow>(at.policy));
   const pinnedRow = first<PolicyRow>(at.pinned);
-  const pinnedPolicy = pinnedRow
+  const pinnedRaw = pinnedRow
     ? interpretPolicy({ policy_sha: workItem?.policy_sha ?? null }, pinnedRow).policy
     : null;
+  // A read that uses none of what an org workflow decides (polled timelines, planning, the queue)
+  // doesn't resolve it: the project's config as saved, and no org config read or parsed.
+  const { policy, rawPolicy, policyError, pinnedPolicy } = skipOrgWorkflow
+    ? {
+        policy: raw.policy,
+        rawPolicy: raw.policy,
+        policyError: raw.policyError,
+        pinnedPolicy: pinnedRaw,
+      }
+    : await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem, project.id);
   return {
     orgId,
     projectId,
@@ -303,11 +323,153 @@ async function resolveBatched(
     repositories,
     repository,
     policy,
+    rawPolicy,
     policySha: project.policy_sha,
     policyError,
     pinnedPolicy,
     role,
   };
+}
+
+/**
+ * The project's policy as the factory runs it, and the item's pinned one (spec 52 PR (d)): a project
+ * on an org workflow has it resolved in (`effectivePolicy`), under the org's current config version,
+ * or for the item the version it pinned. Unresolvable fails closed, with the reason. A project not
+ * on an org workflow reads nothing more.
+ */
+export async function withOrgWorkflow(
+  db: Db,
+  orgId: string,
+  raw: { policy: ProjectPolicy | null; policyError: string | null },
+  pinnedRaw: ProjectPolicy | null,
+  workItem: Pick<WorkItemRow, "org_config_version"> | null,
+  projectId: string | null = null,
+): Promise<{
+  policy: ProjectPolicy | null;
+  rawPolicy: ProjectPolicy | null;
+  policyError: string | null;
+  pinnedPolicy: ProjectPolicy | null;
+}> {
+  const current = await resolveOrgWorkflow(db, orgId, raw.policy, null, projectId);
+  const pinnedVersion = workItem?.org_config_version ?? null;
+  const pinnedBase = pinnedRaw ?? (pinnedVersion !== null ? raw.policy : null);
+  const pinned =
+    pinnedBase && (pinnedRaw || onOrgWorkflow(pinnedBase))
+      ? await resolveOrgWorkflow(db, orgId, pinnedBase, pinnedVersion, projectId)
+      : null;
+  return {
+    policy: current.policy,
+    rawPolicy: raw.policy,
+    policyError: raw.policyError ?? current.error,
+    pinnedPolicy: pinned?.policy ?? null,
+  };
+}
+
+/**
+ * Parsed and validated org config documents by `org:version`, per isolate. A version is immutable
+ * once written, so an entry never goes stale; the map is bounded so an isolate serving many orgs
+ * keeps only the most recent.
+ */
+const ORG_CONFIGS = new Map<string, OrgConfigParse>();
+const ORG_CONFIG_CACHE_SIZE = 64;
+type OrgConfigParse = ReturnType<typeof parseOrgConfig>;
+
+/** For tests: forget every cached org config. */
+export function clearOrgConfigCache() {
+  ORG_CONFIGS.clear();
+}
+
+/** The org's config at `version`, parsed once per isolate (the document is up to 256 KiB). */
+async function orgConfigAt(db: Db, orgId: string, version: number): Promise<OrgConfigParse> {
+  const key = `${orgId}:${version}`;
+  const hit = ORG_CONFIGS.get(key);
+  if (hit) {
+    // Most recently used last.
+    ORG_CONFIGS.delete(key);
+    ORG_CONFIGS.set(key, hit);
+    return hit;
+  }
+  // A point read by primary key (org_id, version).
+  const row = await db
+    .selectFrom("core_org_configs")
+    .select("raw")
+    .where("org_id", "=", orgId)
+    .where("version", "=", version)
+    .executeTakeFirst();
+  const parsed: OrgConfigParse = row
+    ? parseOrgConfig(JSON.parse(row.raw))
+    : { ok: true, config: EMPTY_ORG_CONFIG };
+  if (!row) return parsed;
+  ORG_CONFIGS.set(key, parsed);
+  if (ORG_CONFIGS.size > ORG_CONFIG_CACHE_SIZE) {
+    const oldest = ORG_CONFIGS.keys().next().value;
+    if (oldest !== undefined) ORG_CONFIGS.delete(oldest);
+  }
+  return parsed;
+}
+
+/**
+ * The org admins' approvals of a project's looser overrides for one org version
+ * (`core_override_approvals`, by its primary key's prefix): stage → setting → the value approved.
+ */
+export async function overrideApprovals(
+  db: Db,
+  projectId: string,
+  orgVersion: number,
+): Promise<OverrideApprovals> {
+  const rows = await db
+    .selectFrom("core_override_approvals")
+    .select(["stage_id", "setting", "value"])
+    .where("project_id", "=", projectId)
+    .where("org_version", "=", orgVersion)
+    .limit(50)
+    .execute();
+  const out: OverrideApprovals = {};
+  for (const r of rows) {
+    try {
+      out[r.stage_id] = { ...out[r.stage_id], [r.setting]: JSON.parse(r.value) as unknown };
+    } catch {
+      // A row that isn't JSON approves nothing.
+    }
+  }
+  return out;
+}
+
+/** `policy` with its org workflow resolved under `version` (null: the org's current one). */
+export async function resolveOrgWorkflow(
+  db: Db,
+  orgId: string,
+  policy: ProjectPolicy | null,
+  version: number | null,
+  /** Whose override approvals apply; null: none (every looser override takes the stricter value). */
+  projectId: string | null = null,
+): Promise<{ policy: ProjectPolicy | null; error: string | null }> {
+  if (!policy || !onOrgWorkflow(policy)) return { policy, error: null };
+  // The org's current version is one point read of its row; the document is read and parsed only
+  // the first time this isolate sees that version. Only for a project on an org workflow.
+  const at =
+    version ??
+    (
+      await db
+        .selectFrom("core_organization")
+        .select("config_version")
+        .where("id", "=", orgId)
+        .executeTakeFirst()
+    )?.config_version ??
+    null;
+  const org =
+    at === null
+      ? { ok: true as const, config: EMPTY_ORG_CONFIG }
+      : await orgConfigAt(db, orgId, at);
+  if (!org.ok) return { policy: null, error: `the org config v${at} doesn't validate` };
+  const approvals =
+    projectId && at !== null && Object.keys(policy.workflowOverrides).length
+      ? await overrideApprovals(db, projectId, at)
+      : {};
+  const effective = effectivePolicy(policy, org.config, approvals);
+  return effective.ok
+    ? { policy: effective.value, error: null }
+    : { policy: null, error: `the project's workflow: ${effective.error}` };
 }
 
 /** The project's policy at its recorded default-branch SHA, or why there is none. */

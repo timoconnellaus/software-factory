@@ -75,8 +75,16 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   run time reads them yet (build plan PR (a)). An **org config** (`core_org_configs`, migration 0280)
   holds the org's workflows and agents as versions, edited through `workflow.*`, `agent.save` and
   `orgConfig.*`; a loosening save is `self-modify` for an org admin (the classifier is an
-  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one.
-  Projects keep running their own config until PR (d). The **reconciler** (ADR 0511) is
+  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one. A
+  project may name an org workflow by id (`workflow: "wf_…"`) with
+  `workflowOverrides` of the few settings each type lists as `overridable` (spec 52 PR (d)); until
+  the switch-over, today's Workflow runs it through `effectivePolicy` (the scope's `policy`; config
+  operations read `rawPolicy`), under the org config version the item pinned
+  (`core_work_items.org_config_version`, migration 0282). Overrides apply as the stricter of the
+  org's value and the project's, unless an org admin approved that looser value for that org
+  version (`core_override_approvals`, written only by the approve path; carried to a new version only
+  where the org left the value unchanged). The parsed org
+  config is cached per isolate by (org, version). The **reconciler** (ADR 0511) is
   `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**, off the Workflow's
   path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
   its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each

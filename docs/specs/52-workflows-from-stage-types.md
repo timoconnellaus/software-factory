@@ -1203,6 +1203,38 @@ screen needs).
    no approval. (d) moves those steps onto the org workflow, where `workflowImpact` classifies them,
    and makes the project config's remaining step and agent-instruction changes loosen the same way:
    a test saves "pass everything" into a slot step and into its agent and expects `self-modify`.
+   **As built so far:** (d1) closes that route (#120). (d2) lets a project name an org workflow by
+   id (`workflow: "wf_…"`, or `wf_software`) with `workflowOverrides` (`overridable` per type:
+   `requiredFrom`, `retryLimit`, `sections`, `requiredChecks`); `config.save` refuses an id the org
+   doesn't have or an override a type doesn't list, and classifies an override or a switch by
+   comparing the definitions (`configImpact`): one that loosens against the org's value is
+   `self-modify`. Until the switch-over, today's replayed Workflow runs it: `effectivePolicy` turns
+   the org workflow (with the overrides) back into the slot workflow, agents and settings the engine
+   already reads, so no Workflow version is needed, and a workflow it can't run as written
+   (`runsOnToday`: anything but Software's stages in order with checks and decisions in its slots,
+   or a setting the engine would ignore) is refused at save and fails closed at run time. An item
+   pins `org_config_version` (migration 0282) when shaping starts and again at the pull, beside
+   `policy_sha`. After review: a save stores only the overrides that differ from the org's value,
+   and at resolve time the stricter of the org's value and the override applies (`requiredFrom`: the
+   smaller; `requiredChecks` and `sections`: both), unless an org admin approved that exact looser
+   value for the org version being resolved (`core_override_approvals`, migration 0282, written only
+   when an org admin approves a pending action whose decider is `org-admin`, and only for the looser
+   overrides that change itself brings or changes, never one it merely keeps; never read from a config document or an imported file, whose
+   `workflowOverrideApprovals` field is dropped). A new org version carries an approval only where
+   it leaves that setting's value unchanged; where the org moved it, the approval lapses, the
+   stricter applies, and the org's admins are notified (`workflow.overrideLapsed`). An override the
+   org's new version makes looser (it was as strict or stricter) has no approval: the stricter
+   applies, and the org's admins are told it needs an org admin's approval or removal
+   (`workflow.overrideNeedsApproval`). A loosening of the org workflow (an override, or a switch that drops a check) is
+   decided by an org admin: the pending action carries `decider = 'org-admin'` (migration 0282) and
+   `approval.decide` asks for one. A judging stage is compared by what its agent is (role, tier,
+   instructions, requirements), not its name. An org change that would leave a project unable to
+   run (archiving its workflow, a save `runsOnToday` refuses, a rollback) is refused, naming the
+   projects. A slot workflow already named like an org id (`wf_x`) stays a slot workflow; only new
+   ones may not take such a name. The org config is parsed once per isolate and version, and polled
+   reads that use nothing it decides (`skipsOrgWorkflow`) don't resolve it.
+   Still to come in (d): the release flag when shaping stages changed (Q4), the tightening re-pin at
+   the next boundary (Q3), and moving each project's slot workflow to the org.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the
@@ -1262,7 +1294,7 @@ sections above were rewritten.
 | 23 | Does it switch itself off when something goes wrong? | Yes | The per-project hold; ADR 0515 |
 
 ### Known gaps
-- **A judging agent's instructions are neutral in a project's config, until (d).** On main,
+- **Closed by (d1), #120:** a judging agent's instructions were neutral in a project's config. On main,
   `config.save` by any project member classes a change to slot steps and to agent instructions as
   neutral (`policyImpact`'s `workflows` and `agents` branches). An agent judging a slot `work` step
   can be told to pass everything with no approval. Org workflows (b) don't have this gap
