@@ -57,6 +57,7 @@ import {
 } from "@software-factory/runner-contract";
 import { exists, findCheckout, isUnder } from "./checkouts.ts";
 import { type Exec, nodeExec, run } from "./exec.ts";
+import { openTmuxTerminal } from "./terminal.ts";
 import {
   attachCommand,
   type PaneState,
@@ -83,6 +84,13 @@ export interface LocalWorkspace extends WorkspaceHandle {
   attachmentsDir: string;
   /** The Claude account the run uses (ADR 0410), taken when the workspace was prepared. */
   account: HarnessAccount;
+  /**
+   * How the live harness's command line is read, when `ps` on the host can't see it (a container
+   * job reads it with `docker exec`, ADR 0430). Default: the adapter's `readCommand`.
+   */
+  readCommand?: ReadCommand;
+  /** More checks before the prompt (a container job's own configuration, ADR 0430). */
+  launchChecks?: () => Promise<string[]>;
 }
 
 export interface LocalSession extends SessionHandle {
@@ -175,6 +183,7 @@ export const DEFAULT_CAPABILITIES: Capability[] = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "terminal",
 ];
 
 /** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
@@ -556,7 +565,10 @@ export function createLocalRunner(
 
       // Before the job does anything: the live process and its settings must be exactly what the
       // harness set. Otherwise kill it and fail the job (incident 2026-11-11 #6).
-      const problems = await verifyLaunch(workspace.launch, config.readCommand);
+      const problems = [
+        ...(await verifyLaunch(workspace.launch, workspace.readCommand ?? config.readCommand)),
+        ...((await workspace.launchChecks?.()) ?? []),
+      ];
       if (problems.length > 0) await fail(new HarnessConfigMismatch(problems));
 
       // The prompt goes in a file; the terminal gets one short line pointing at it. A long paste
@@ -889,6 +901,14 @@ export function createLocalRunner(
      * take it as a paste (a long paste arrives truncated, incident 2026-11-11 #8), then Enter. Claude
      * Code queues a message typed while it works and reads it at its next step.
      */
+    /**
+     * Another turn in the same session (ADR 0451): Claude is still alive in its tmux pane after a
+     * Stop, so the text goes in like a steer and `events()` follows that turn to its own Stop.
+     */
+    async *continueSession(job, session, text, signal) {
+      await this.steer?.(session, text);
+      yield* this.events(job, session, signal);
+    },
     async steer(session, text) {
       const line = steerText(text);
       if (!line) return;
@@ -901,6 +921,19 @@ export function createLocalRunner(
       }
       await sleep(200);
       await tmux.sendKeys(session.name, "Enter");
+    },
+
+    /**
+     * The web terminal (ADR 0440): a tmux control-mode client on the job's session, started while
+     * someone watches from the dashboard and closed when they leave.
+     */
+    openTerminal(session, options) {
+      return openTmuxTerminal({
+        ...options,
+        session: session.name,
+        socket: tmux.socket,
+        ...(config.tmux?.bin ? { bin: config.tmux.bin } : {}),
+      });
     },
   };
 }

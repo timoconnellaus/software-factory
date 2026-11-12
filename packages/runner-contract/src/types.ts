@@ -13,6 +13,7 @@
 // Runtime-neutral: no Node APIs, so the cloud (Workers) and the host (Node) share it. Wire shapes are
 // zod schemas in ./wire.ts; the types here that cross the wire are inferred from them.
 import type { z } from "zod";
+import type { TerminalSize } from "./terminal.ts";
 import type {
   AttachmentMeta,
   artifactSchema,
@@ -39,6 +40,12 @@ export const CONTRACT_VERSION = "1" as const;
  *   without it still runs every job; its agent just sees no attachments.
  * - `steer`: a person can send a message into the live session from the dashboard (ADR 0400). The
  *   host keeps the channel's `steer` call open while the session runs and calls `adapter.steer`.
+ * - `container-isolation`: each job's harness runs in its own container: only the job's repo
+ *   mounted, no host credentials, an egress allowlist (ADR 0430). Planning sessions still run on
+ *   the host, so a policy should require it for the other stages only.
+ * - `terminal`: the live session's terminal can be bridged to the dashboard's web terminal
+ *   (ADR 0440). The host keeps the channel's `terminal` call open while the session runs and, when
+ *   someone watches, relays `adapter.openTerminal` over a WebSocket to the job's relay.
  */
 export const CAPABILITIES = [
   "browser",
@@ -49,6 +56,8 @@ export const CAPABILITIES = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "container-isolation",
+  "terminal",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -213,11 +222,8 @@ export interface RunnerAdapter<
    * Optional (ADR 0451): run one command in the job's workspace, where the session runs (in its
    * container, for a containerised runner), and return its exit code and combined output. The host
    * runs the project's checks through it; without it the host runs them as a local process in
-   * `workspace.path`. Must honour `timeoutMs` and `signal` (exitCode null, timedOut true).
-   *
-   * An adapter that has `steer` must also let the host continue a session after `session.ended`:
-   * a steer then starts a new turn, and a second `events()` call reports that turn until its own
-   * `session.ended` (the host uses this to send a failing check back to the same session).
+   * `workspace.path`. An isolated runner (a container) must have one, so the code under test never
+   * runs on the host. Must honour `timeoutMs` and `signal` (exitCode null, timedOut true).
    */
   exec?(
     job: Job,
@@ -225,6 +231,27 @@ export interface RunnerAdapter<
     command: { run: string; timeoutMs: number },
     signal: AbortSignal,
   ): Promise<ExecResult>;
+  /**
+   * Optional (ADR 0451): after `session.ended`, give the same session another turn with `text`
+   * (a failing check's command, exit code and log tail) and report that turn, ending with its own
+   * `session.ended`. Only for an adapter whose session is still alive after its turn; without it
+   * the host hands a failing check to a person.
+   */
+  continueSession?(
+    job: Job,
+    session: S,
+    text: string,
+    signal: AbortSignal,
+  ): AsyncIterable<AdapterEvent>;
+  /**
+   * Optional, with the `terminal` capability (ADR 0440): bridge the live session's terminal while
+   * someone watches it from the dashboard. Output is the terminal's raw bytes; `write` types
+   * whatever the person typed (the relay only forwards it from the runner's owner); `resize` sets
+   * the terminal's size (only asked for by the owner: a bridge nobody resized leaves it as it is);
+   * `redraw` sends the current screen as output, in order with the stream. `onExit` fires once,
+   * when the session or the bridge ends. `close` must be safe to call twice.
+   */
+  openTerminal?(session: S, options: OpenTerminalOptions): Promise<TerminalBridge>;
 }
 
 /** What `exec` returns. */
@@ -233,6 +260,24 @@ export interface ExecResult {
   timedOut: boolean;
   /** stdout and stderr interleaved; the host keeps only the tail. */
   output: string;
+}
+
+/** What the host hands `openTerminal` (ADR 0440). */
+export interface OpenTerminalOptions {
+  /** The size to start at, when the runner's owner is watching; null leaves the terminal's own. */
+  size: TerminalSize | null;
+  onOutput: (bytes: Uint8Array) => void;
+  /** The terminal's actual size, at start and whenever it changes. */
+  onSize: (size: TerminalSize) => void;
+  onExit: (reason: string) => void;
+}
+
+/** A live bridge to a session's terminal (ADR 0440). */
+export interface TerminalBridge {
+  write(data: string): Promise<void>;
+  resize(size: TerminalSize): Promise<void>;
+  redraw(): Promise<void>;
+  close(): Promise<void>;
 }
 
 /**

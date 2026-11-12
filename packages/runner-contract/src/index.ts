@@ -6,6 +6,7 @@ export * from "./checks.ts";
 export * from "./planning.ts";
 export * from "./protocol.ts";
 export * from "./stage-results.ts";
+export * from "./terminal.ts";
 export * from "./types.ts";
 export * from "./untrusted.ts";
 export * from "./wire.ts";

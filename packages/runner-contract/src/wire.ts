@@ -429,6 +429,21 @@ export const steersResponseSchema = z.object({
   steers: z.array(z.object({ id: z.string(), text: z.string(), at: iso })),
 });
 export type SteersRequest = z.infer<typeof steersRequestSchema>;
+
+/**
+ * The held terminal call (ADR 0440): answers with the job relay's socket URL, carrying a one-use
+ * ticket, when someone is waiting to watch and no host is connected; else `connect: null` after
+ * about `waitMs` (at most TERMINAL_WAIT_MAX_MS).
+ */
+export const terminalCallRequestSchema = z.object({
+  fencingToken,
+  waitMs: z.number().int().min(0).max(60_000).optional(),
+});
+export const terminalCallResponseSchema = z.object({
+  connect: z.object({ url: z.string() }).nullable(),
+});
+export type TerminalCallRequest = z.infer<typeof terminalCallRequestSchema>;
+export type TerminalCallResponse = z.infer<typeof terminalCallResponseSchema>;
 export type SteersResponse = z.infer<typeof steersResponseSchema>;
 
 /** Every non-2xx answer from the channel carries this body. */

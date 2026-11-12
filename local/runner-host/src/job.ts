@@ -34,6 +34,7 @@ import {
 import { checkEnv, checkLoop, hasChecks, localExec } from "./checks.ts";
 import { assertPushable, type HostGit, revokeToken } from "./git.ts";
 import { type RunningRelay, startPlanningRelay } from "./planning-relay.ts";
+import { type Connect, terminalLoop } from "./terminal.ts";
 
 export interface JobReport {
   jobId: string;
@@ -220,6 +221,8 @@ export interface RunJobOptions<W extends WorkspaceHandle, S extends SessionHandl
   onEvent?: (e: RunnerEvent) => void;
   log?: (message: string) => void;
   fetch?: typeof fetch;
+  /** How the web terminal's socket is opened (default Node's WebSocket; tests use a fake). */
+  connectTerminal?: Connect;
   /** How often buffered log events are flushed. */
   flushMs?: number;
   /** Called once the cloud has the hand-back: the job no longer holds its lease. */
@@ -286,6 +289,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let ahead = true;
   let session: S | undefined;
   let steering: Promise<void> = Promise.resolve();
+  let terminal: Promise<void> = Promise.resolve();
   const steerStop = new AbortController();
   let outcome: SessionOutcome = "failed";
   let summary: string | undefined;
@@ -448,6 +452,17 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
         log,
       });
+      // The dashboard's web terminal, relayed while someone watches (ADR 0440).
+      terminal = terminalLoop({
+        adapter,
+        cp,
+        job,
+        open: (o) => (adapter.openTerminal as NonNullable<typeof adapter.openTerminal>)(live, o),
+        signal: AbortSignal.any([signal, steerStop.signal]),
+        onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
+        log,
+        ...(options.connectTerminal ? { connect: options.connectTerminal } : {}),
+      });
       try {
         for await (const event of adapter.events(job, session, signal)) {
           await stream.push(event);
@@ -459,6 +474,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       } finally {
         steerStop.abort();
         await steering.catch(() => {});
+        await terminal.catch(() => {});
       }
       if (signal.aborted && outcome !== "completed") outcome = abortedOutcome();
 
@@ -507,8 +523,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       if (hasChecks(job) && outcome === "completed" && !error && session) {
         const ws = workspace;
         const live = session;
-        const steer = adapter.steer?.bind(adapter);
-        const canSteer = !!steer && (await adapter.manifest()).capabilities.includes("steer");
+        const next = adapter.continueSession?.bind(adapter);
         const checked = await checkLoop({
           checks: job.checks,
           exec: adapter.exec
@@ -526,18 +541,26 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
             return git.headSha(ws.path);
           },
           continueSession:
-            job.stage === "build" && canSteer && steer
+            job.stage === "build" && next
               ? async (text) => {
-                  // A fix round gets the job's session timeout again, and stops on a cancel.
+                  // A fix round gets the job's session timeout again, and stops on a cancel. A
+                  // session that can't take the turn is a failed round, never a failed hand-back.
                   const round = AbortSignal.any([
                     signal,
                     AbortSignal.timeout(job.limits.sessionTimeoutMs),
                   ]);
-                  await steer(live, text);
                   let ended: SessionOutcome = "failed";
-                  for await (const event of adapter.events(job, live, round)) {
-                    await stream.push(event);
-                    if (event.type === "session.ended") ended = event.outcome;
+                  try {
+                    for await (const event of next(job, live, text, round)) {
+                      await stream.push(event);
+                      if (event.type === "session.ended") ended = event.outcome;
+                    }
+                  } catch (err) {
+                    if (err instanceof StopJob) throw err;
+                    log(
+                      `${job.jobId}: the fix round failed: ${err instanceof Error ? err.message : err}`,
+                    );
+                    return "failed";
                   }
                   return round.aborted ? abortedOutcome() : ended;
                 }
