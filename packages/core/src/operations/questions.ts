@@ -6,9 +6,13 @@
 // change is an event in the planning log.
 import { parseJson } from "@software-factory/db";
 import {
+  changedSpan,
+  editAnswer,
+  foldSpace,
   isSensitiveQuestion,
   type PlanningQuestion,
   planningQuestionSchema,
+  questionAnswerFromEditInputSchema,
   questionDeleteInputSchema,
   questionDraftSchema,
   questionFocusInputSchema,
@@ -520,6 +524,8 @@ function answer(
   skipped = false,
   /** Accepted under this person's "finish alone" instruction (ADR 0470): recorded as theirs. */
   alone: string | null = null,
+  /** Recorded from this person's plan edit (spec 27): theirs, and not news to the planner. */
+  fromEdit: { editId: string; by: string } | null = null,
 ) {
   const revising = q.status === "answered";
   const revision = q.answer_revision + 1;
@@ -534,7 +540,8 @@ function answer(
         answer_delivered_at: null,
         accepted_default: acceptedDefault ? 1 : 0,
         accepted_alone: alone ? 1 : 0,
-        answered_by: alone ?? ctx.actor.id,
+        answered_via_edit: fromEdit?.editId ?? null,
+        answered_by: fromEdit?.by ?? alone ?? ctx.actor.id,
         answered_at: ctx.now,
         answer_revision: revision,
       })
@@ -544,10 +551,13 @@ function answer(
   );
   ctx.guardChanged(revising ? `revise ${q.id} once` : `answer ${q.id} once`);
   if (q.planning_session_id) {
-    logPlanning(ctx, q.work_item_id, revising ? "answer.revised" : "answer.submitted", {
-      questionId: q.id,
-      revision,
-    });
+    // An answer the planner recorded from an edit is its own doing: logged, but not news to it.
+    logPlanning(
+      ctx,
+      q.work_item_id,
+      fromEdit ? "answer.fromEdit" : revising ? "answer.revised" : "answer.submitted",
+      { questionId: q.id, revision, ...(fromEdit ? { editId: fromEdit.editId } : {}) },
+    );
   }
   ctx.change({
     entity: "question",
@@ -910,5 +920,83 @@ export const planningFinishAlone = defineOperation({
     const { accepted } = await acceptDefaults(ctx, { planningOnly: true, alone: ctx.actor.id });
     if (!accepted.length) await wakeSession(ctx, w);
     return { on: true, accepted };
+  },
+});
+
+export const questionAnswerFromEdit = defineOperation({
+  name: "question.answerFromEdit",
+  description:
+    "The planning agent records the answer a person's plan edit settled (spec 27, ADR 0471): the question is answered as that person, marked as coming from their edit. Refused for security & privacy and irreversible questions (a person answers those) and for an edit of another work item.",
+  risk: "write",
+  actors: ["runner"],
+  permission: "signed-in",
+  input: questionAnswerFromEditInputSchema.extend(planningJobFields),
+  output: z.object({ questionId: z.string(), revision: z.number() }),
+  scope: byJob,
+  async handler(input, ctx) {
+    await planningJob(ctx, input);
+    const q = await agentQuestion(ctx, input.questionId);
+    if (isSensitiveQuestion(q)) {
+      throw new OperationError(
+        "forbidden",
+        "a security, privacy or irreversible question is answered by a person: ask them in the chat",
+      );
+    }
+    const edit = await ctx.db
+      .selectFrom("core_spec_edits")
+      .selectAll()
+      .where("id", "=", input.editId)
+      .executeTakeFirst();
+    if (!edit || edit.work_item_id !== q.work_item_id) {
+      throw new OperationError("forbidden", "that edit isn't this work item's");
+    }
+    // The edit settles this question only if it still stands, came after the answer it replaces,
+    // was made by someone who may answer it, and is about it: the block carries the question's tag
+    // before and after (review of #85). Otherwise ask the person.
+    const ask = (why: string) =>
+      new OperationError("conflict", `${why}: ask the person in the chat instead`);
+    if (edit.replaced_by || edit.released_at) throw ask("that edit no longer stands");
+    if (q.answered_at && q.answered_at > edit.created_at && q.answered_via_edit !== edit.id) {
+      throw ask("the question was answered after that edit");
+    }
+    const tag = `[Q${q.number}]`;
+    if (!edit.before.includes(tag) || !edit.after.includes(tag)) {
+      throw ask(
+        `that edit isn't about Q${q.number} (the line doesn't carry ${tag} before and after)`,
+      );
+    }
+    // No reading of meaning (fourth review of #85): the changed span must BE one of the options
+    // (case and edge punctuation aside), or the whole span for a question with no options.
+    // Anything else answers nothing: the app asks the person to confirm with one tap.
+    const given = editAnswer(
+      changedSpan(edit.before, edit.after, tag),
+      parseJson<string[]>(q.options, []),
+    );
+    if (
+      given === null ||
+      foldSpace(given).toLowerCase() !== foldSpace(input.answer).toLowerCase()
+    ) {
+      throw ask(
+        `the edit's change isn't exactly ${given === null ? "one of the question's options" : JSON.stringify(given)}; the app offers the person a one-tap confirm of their edit as the answer, so ask them in the chat if it matters now`,
+      );
+    }
+    const approvers = await approverIds(ctx.db, requireWorkItem(ctx).org_id, ctx.scope.policy);
+    if (q.assignee_user_id !== edit.author_id && !approvers.includes(edit.author_id)) {
+      throw new OperationError(
+        "forbidden",
+        "the person who edited the plan can't answer this question",
+      );
+    }
+    answer(
+      ctx,
+      q,
+      input.answer,
+      input.answer === q.default_answer,
+      "from their edit to the plan",
+      false,
+      null,
+      { editId: edit.id, by: edit.author_id },
+    );
+    return { questionId: q.id, revision: q.answer_revision + 1 };
   },
 });

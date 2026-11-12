@@ -324,3 +324,10 @@ Small follow-ups, on their own PR (migration 0311):
   per-caller typed-code cap and the nonce limit start afresh for everyone (at most an hour's
   counts are lost). Phone tokens, device keys and presence proofs don't depend on it. A split into
   two secrets would let one rotate without the other; not worth a second secret to provision yet.
+
+## Amendment, 2026-11-12 (spec 27, review of #85)
+The list of operations that are one tap on the phone also names `spec.edit` and `spec.releaseEdit`:
+a person's edit to the plan and their release of one. Like the other planning steering (ADR 0470,
+0471), they are desktop-decidable, and so one tap on the phone ("everything desktop-decidable is
+also one tap on the phone"). `packages/core/test/decidability.test.ts` pins them.
+
