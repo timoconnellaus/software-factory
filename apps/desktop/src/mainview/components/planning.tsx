@@ -427,6 +427,7 @@ function Questions({
               workItemId={workItemId}
               me={me}
               total={total}
+              edit={view.edits.find((e) => e.id === q.answeredViaEdit)}
             />
           ))}
         </div>
@@ -457,11 +458,14 @@ function AnsweredRow({
   workItemId,
   me,
   total,
+  edit,
 }: {
   question: PlanningQuestion;
   workItemId: string;
   me: string | null;
   total: number;
+  /** The edit the planner read this answer from (spec 27), shown beside it. */
+  edit?: PlanningView["edits"][number];
 }) {
   const [editing, setEditing] = useState(false);
   if (editing) {
@@ -518,6 +522,25 @@ function AnsweredRow({
           )}
           <ReadReceipt at={q.answerDeliveredAt} />
         </span>
+        {q.answeredViaEdit && (
+          // The planner's reading of a person's edit, not their own words (third review of #85):
+          // the edit as written beside it, and one click on the row to correct it.
+          <span
+            className="mt-1 block text-ink-muted text-xs"
+            data-testid={`answered-from-edit-${q.id}`}
+          >
+            The planner read this from {q.answeredBy === me ? "your" : "an"} edit
+            {edit ? (
+              <>
+                :{" "}
+                <q className="text-ink-3 italic">
+                  {edit.after.trim().replace(/^\s*([-*+]|\d+[.)])\s+/, "")}
+                </q>
+              </>
+            ) : null}
+            . <span className="text-status-running underline">Correct it</span>
+          </span>
+        )}
         {q.note && <span className="mt-0.5 block text-ink-muted text-xs">Note: {q.note}</span>}
       </span>
     </button>
@@ -938,7 +961,7 @@ function Spec({
             </div>
           )}
           <OrphanedComments view={view} bodyMd={spec.bodyMd} />
-          <YourEdits view={view} workItemId={workItemId} me={me} />
+          <YourEdits view={view} workItemId={workItemId} me={me} components={components} />
           {spec.assumptions.length > 0 && (
             <div data-testid="assumptions">
               <b>Assumptions</b>

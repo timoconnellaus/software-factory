@@ -6,6 +6,7 @@ import {
   dedent,
   isChanged,
   markTags,
+  normalizeLines,
   type PlanningQuestion,
   type PlanningView,
   planBlocks,
@@ -22,6 +23,13 @@ import { op, submitKey } from "../lib/op.ts";
 import { commentsOn, editOf } from "../lib/plan-blocks.ts";
 
 /** Lines of the plan a comment is about (spec 27). */
+/** A reference link definition (`[x]: https://…`), which may sit in any block. */
+const DEFINITION = /^ {0,3}\[[^\]^][^\]]*\]:\s*\S+/;
+
+/** An ordered item's source with its number in the list, so 1. 1. 1. renders 1, 2, 3. */
+const numbered = (md: string, ordinal: number | null) =>
+  ordinal === null ? md : md.replace(/^(\s*)\d{1,9}([.)])/, `$1${ordinal}$2`);
+
 export type Anchor = { specId: string; lineStart: number; lineEnd: number; quote: string };
 
 /** Lets the planner reword a person's edit: it stops standing (spec 27, ADR 0471). */
@@ -96,9 +104,10 @@ function PlanBlock({
   return (
     <Tag
       className={cn(
-        "group/block relative",
+        // A right gutter inside the block for its comment count and Edit / Comment.
+        "group/block relative pr-16",
         className,
-        edit && "-ml-2 rounded-md bg-status-running/8 pl-2 ring-1 ring-status-running/30",
+        edit && "rounded-md bg-status-running/8 px-2 py-0.5 ring-1 ring-status-running/30",
       )}
       style={style}
       {...data}
@@ -133,45 +142,47 @@ function PlanBlock({
         children
       )}
       {!editing && (
-        <span className="absolute top-0 -right-1 hidden translate-x-full gap-0.5 pl-1 group-hover/block:flex">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            title="Edit this block"
-            aria-label="Edit this block"
-            className="text-ink-3"
-            onClick={() => {
-              setValue(raw);
-              setEditing(true);
-            }}
-            data-testid="plan-block-edit"
-          >
-            <PencilIcon className="size-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            title="Comment on this block"
-            aria-label="Comment on this block"
-            className="text-ink-3"
-            onClick={() => onComment(anchor)}
-            data-testid="plan-block-comment"
-          >
-            <MessageSquarePlusIcon className="size-3.5" />
-          </Button>
+        <span className="absolute top-0 right-0 flex items-center gap-0.5">
+          {comments > 0 && (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => onComment(anchor)}
+              className="h-5 gap-0.5 rounded-full bg-status-waiting/15 px-1.5 text-[10.5px] text-status-waiting hover:bg-status-waiting/25"
+              data-testid="plan-block-comments"
+            >
+              <MessageSquareIcon className="size-2.5" />
+              {comments}
+            </Button>
+          )}
+          <span className="hidden gap-0.5 group-hover/block:flex">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              title="Edit this block"
+              aria-label="Edit this block"
+              className="text-ink-3"
+              onClick={() => {
+                setValue(raw);
+                setEditing(true);
+              }}
+              data-testid="plan-block-edit"
+            >
+              <PencilIcon className="size-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              title="Comment on this block"
+              aria-label="Comment on this block"
+              className="text-ink-3"
+              onClick={() => onComment(anchor)}
+              data-testid="plan-block-comment"
+            >
+              <MessageSquarePlusIcon className="size-3.5" />
+            </Button>
+          </span>
         </span>
-      )}
-      {comments > 0 && !editing && (
-        <Button
-          variant="ghost"
-          size="xs"
-          onClick={() => onComment(anchor)}
-          className="absolute top-0.5 -left-9 h-5 gap-0.5 rounded-full bg-status-waiting/15 px-1.5 text-[10.5px] text-status-waiting hover:bg-status-waiting/25"
-          data-testid="plan-block-comments"
-        >
-          <MessageSquareIcon className="size-2.5" />
-          {comments}
-        </Button>
       )}
       {edit && !editing && (
         <span
@@ -226,12 +237,25 @@ export function PlanBody({
   onComment: (anchor: Anchor) => void;
 }) {
   const parts = useMemo(() => planBlocks(bodyMd), [bodyMd]);
-  const lines = bodyMd.split("\n");
+  const lines = normalizeLines(bodyMd).split("\n");
+  // Reference link definitions anywhere in the plan resolve in every block (third review of #85).
+  const definitions = useMemo(
+    () =>
+      lines
+        .filter((l) => DEFINITION.test(l))
+        .map((l) => l.trim())
+        .join("\n"),
+    [lines],
+  );
   const settled = view.questions.filter((q) => q.answeredViaEdit !== null);
   return (
     <>
-      {parts.map((b) => {
+      {parts.map((b, i) => {
         const raw = lines.slice(b.lineStart, b.lineEnd + 1).join("\n");
+        const prev = parts[i - 1];
+        // A loose list (blank lines between its items) keeps its spacing.
+        const loose = b.kind === "item" && prev?.kind === "item" && b.lineStart - prev.lineEnd > 1;
+        const onlyDefinitions = raw.split("\n").every((l) => DEFINITION.test(l));
         const marked = markTags(raw);
         const changed = raw.split("\n").some((l) => isChanged(markTags(l), previous));
         const assumption = marked.includes("⟦assumption⟧");
@@ -242,6 +266,7 @@ export function PlanBody({
             className={cn(
               assumption && "rounded bg-status-waiting/10 px-1",
               changed && "border-status-running border-l-2 pl-2",
+              loose && "mt-2",
               "[&_ol]:my-0 [&_p]:my-1 [&_pre]:my-1 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-selected [&_pre]:p-2 [&_ul]:my-0",
             )}
             style={{ marginLeft: `${b.indent * 0.5}rem` }}
@@ -259,9 +284,15 @@ export function PlanBody({
             me={me}
             onComment={onComment}
           >
-            <Markdown components={components}>
-              {markTags(dedent(raw.split("\n"), b.indent).join("\n"))}
-            </Markdown>
+            {onlyDefinitions ? (
+              <code className="text-ink-muted text-xs" data-testid="plan-block-definitions">
+                {raw.trim()}
+              </code>
+            ) : (
+              <Markdown components={components}>
+                {`${markTags(numbered(dedent(raw.split("\n"), b.indent).join("\n"), b.ordinal))}${definitions ? `\n\n${definitions}` : ""}`}
+              </Markdown>
+            )}
           </PlanBlock>
         );
       })}
@@ -277,10 +308,12 @@ export function YourEdits({
   view,
   workItemId,
   me,
+  components,
 }: {
   view: PlanningView;
   workItemId: string;
   me: string | null;
+  components: Components;
 }) {
   if (view.edits.length === 0) return null;
   return (
@@ -293,13 +326,22 @@ export function YourEdits({
         <div key={e.id} className="flex items-start gap-2" data-testid={`edit-${e.id}`}>
           <PencilIcon className="mt-0.5 size-3 flex-none text-status-running" />
           <span className="grid min-w-0 grow gap-0.5">
-            <span className="line-clamp-2 whitespace-pre-wrap">
-              {e.after.trim() || `Removed: ${e.before.trim()}`}
+            <span className="line-clamp-3 [&_li]:ml-4 [&_li]:list-disc [&_ol>li]:list-decimal [&_ol]:my-0 [&_p]:my-0 [&_ul]:my-0">
+              {e.after.trim() ? (
+                <Markdown components={components}>{markTags(e.after.trim())}</Markdown>
+              ) : (
+                <span className="text-ink-muted">
+                  Removed: <Markdown components={components}>{markTags(e.before.trim())}</Markdown>
+                </span>
+              )}
             </span>
             <span className="text-muted-foreground">
               {e.authorId === me ? "You" : e.authorName}, {ago(e.createdAt)}
               {e.blocks[0]?.section ? ` · ${e.blocks[0].section}` : ""}
-              {!e.kept && (
+              {!e.kept && e.whyNotKept && (
+                <span className="text-destructive"> · not kept: {e.whyNotKept}</span>
+              )}
+              {!e.kept && !e.whyNotKept && (
                 <span className="text-destructive">
                   {" "}
                   · not in the plan as written: holds the gate

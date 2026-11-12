@@ -171,6 +171,7 @@ export {
   dedent,
   editWrote,
   foldSpace,
+  normalizeLines,
   type PlanBlock,
   planBlocks,
 } from "@software-factory/runner-contract";

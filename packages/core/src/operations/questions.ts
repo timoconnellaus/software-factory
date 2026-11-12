@@ -957,13 +957,14 @@ export const questionAnswerFromEdit = defineOperation({
         `that edit isn't about Q${q.number} (the line doesn't carry ${tag} before and after)`,
       );
     }
-    // The answer is the edit's own words (review of #85, round 2): it must appear in what the person
-    // wrote and not in what was there before, so a typo fix on a tagged line settles nothing.
-    const words = (t: string) => foldSpace(t).toLowerCase();
-    const said = words(input.answer);
-    if (!said || !words(edit.after).includes(said) || words(edit.before).includes(said)) {
+    // The answer is what the person changed (third review of #85): the whole changed span of the
+    // tagged line, as written, or one of the question's options said in that span with no "not" or
+    // "instead of" around it. "TBD" → "not Postgres, use SQLite" can't be recorded as "Postgres".
+    const span = changedSpan(edit.before, edit.after, tag);
+    const options = parseJson<string[]>(q.options, []);
+    if (!answerInSpan(input.answer, span, options)) {
       throw ask(
-        `that edit doesn't say ${JSON.stringify(input.answer)} (an answer from an edit must be words the person wrote in it)`,
+        `the edit changed ${JSON.stringify(span ?? "")}, which doesn't say ${JSON.stringify(input.answer)} as an answer (an answer from an edit must be the words it changed, or an option it names without negating it)`,
       );
     }
     const approvers = await approverIds(ctx.db, requireWorkItem(ctx).org_id, ctx.scope.policy);
@@ -986,3 +987,48 @@ export const questionAnswerFromEdit = defineOperation({
     return { questionId: q.id, revision: q.answer_revision + 1 };
   },
 });
+
+/** Words without the edges' punctuation, lowercased: how a span and an answer compare. */
+const plain = (t: string) =>
+  foldSpace(t)
+    .toLowerCase()
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+
+/**
+ * What an edit changed on the line carrying `tag`: the words of the new line between the words it
+ * shares with the old line at the start and at the end. Null when no line carries the tag.
+ */
+export function changedSpan(before: string, after: string, tag: string): string | null {
+  const line = (t: string) =>
+    t
+      .split("\n")
+      .find((l) => l.includes(tag))
+      ?.replace(tag, " ")
+      .replace(/^\s*([-*+]|\d+[.)])\s+/, "");
+  const b = line(before)?.split(/\s+/).filter(Boolean);
+  const a = line(after)?.split(/\s+/).filter(Boolean);
+  if (!a || !b) return null;
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let end = 0;
+  while (
+    end < a.length - start &&
+    end < b.length - start &&
+    a[a.length - 1 - end] === b[b.length - 1 - end]
+  )
+    end++;
+  return a.slice(start, a.length - end).join(" ");
+}
+
+const NEGATION =
+  /(^|[^\p{L}])(not|no|never|without|instead|rather|except|avoid|reject(?:ed)?|drop(?:ped)?|isn't|aren't|don't|doesn't|won't|can't)([^\p{L}]|$)/iu;
+
+/** Whether an answer is what an edit said: the whole changed span, or an option it names plainly. */
+export function answerInSpan(answer: string, span: string | null, options: string[]): boolean {
+  if (!span || !plain(answer)) return false;
+  if (plain(answer) === plain(span)) return true;
+  const option = options.find((o) => plain(o) === plain(answer));
+  if (!option || NEGATION.test(span)) return false;
+  const escaped = plain(option).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "u").test(plain(span));
+}

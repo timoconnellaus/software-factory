@@ -705,7 +705,7 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
     const refused = await refusal(
       agent("question.answerFromEdit", { questionId: q, answer: "agent", editId }),
     );
-    expect(refused.message).toContain("words the person wrote");
+    expect(refused.message).toContain("the words it changed");
     // Words already there before the edit don't count either.
     expect(
       (
@@ -726,6 +726,80 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
       ),
     );
     expect(wrongQuote.code).toBe("invalid_input");
+  });
+
+  it("records only what an edit changed, never a negated option (third review of #85, 1)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { questionIds } = await agent<{ questionIds: string[] }>("question.ask", {
+      questions: [
+        {
+          kind: "single-choice",
+          prompt: "Which database?",
+          options: ["Postgres", "SQLite"],
+          default: "Postgres",
+        },
+      ],
+    });
+    const q = questionIds[0];
+    await ok("question.answer", { questionId: q, answer: "Postgres" }, w.human);
+    await agent("planning.news");
+    const md = `${BODY}\n- Database: TBD [Q1]`;
+    const { specId } = await agent<{ specId: string }>("spec.revise", { ...SPEC, specMd: md });
+    const e = await edit(
+      w,
+      item.workItemId,
+      specId,
+      "- Database: TBD [Q1]",
+      "- Database: not Postgres, use SQLite [Q1]",
+      5,
+    );
+    const negated = await refusal(
+      agent("question.answerFromEdit", { questionId: q, answer: "Postgres", editId: e.editId }),
+    );
+    expect(negated.code).toBe("conflict");
+    // The whole changed span, as written, is the person's words.
+    await agent("question.answerFromEdit", {
+      questionId: q,
+      answer: "not Postgres, use SQLite",
+      editId: e.editId,
+    });
+    expect(
+      (await first<{ answer: string }>("SELECT answer FROM core_questions WHERE id = ?", q)).answer,
+    ).toBe("not Postgres, use SQLite");
+  });
+
+  it("carries a renamed heading's edits along, and lists edits under a deleted heading as not kept with why (third review of #85, 3)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+    const a = await edit(w, item.workItemId, specId);
+    const renamed = await edit(w, item.workItemId, a.specId, "## Scope", "## In scope", 2);
+    await agent("planning.news");
+    expect(await agent("planning.ready")).toMatchObject({ round: 1 });
+    const standing = await rows<{ id: string; footprint: string }>(
+      "SELECT id, footprint FROM core_spec_edits WHERE work_item_id = ? AND replaced_by IS NULL AND released_at IS NULL ORDER BY created_at, id",
+      item.workItemId,
+    );
+    expect(standing.map((e) => e.id)).toEqual([a.editId, renamed.editId]);
+    expect(standing[0]?.footprint).toContain("In scope");
+    // Deleting the heading: the edit under it isn't dropped silently.
+    const w2 = await world();
+    const p2 = await planning(w2);
+    const s2 = await p2.agent<{ specId: string }>("spec.revise", SPEC);
+    const b = await edit(w2, p2.item.workItemId, s2.specId);
+    await edit(w2, p2.item.workItemId, b.specId, "## Scope", "", 2);
+    const view = await ok<{ edits: { id: string; kept: boolean; whyNotKept: string | null }[] }>(
+      "planning.get",
+      { workItemId: p2.item.workItemId },
+      w2.human,
+    );
+    expect(view.edits.find((e) => e.id === b.editId)).toMatchObject({
+      kept: false,
+      whyNotKept: expect.stringContaining("no longer in the plan"),
+    });
+    await p2.agent("planning.news");
+    expect((await refusal(p2.agent("planning.ready"))).message).toContain("no longer in the plan");
   });
 
   it("records an answer from an edit only when it still stands, is newest, is about the question, and its author may answer (review of #85, 4)", async () => {
