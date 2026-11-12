@@ -1,6 +1,8 @@
-// The Planning tab, layout A (spec 20; mockups planning-three-pane, planning-full-screen and
-// planning-session-states): questions | spec | chat, the gate bar at the bottom, the session pill,
-// a full-screen toggle (F / Esc) and tabs on a phone. It reports who has it open (presence).
+// The Planning tab (spec 20; restyled for spec 41, design ItemPlan and PlanFocus): questions | the
+// plan | chat, the gate bar at the bottom and the session pill. Docked in the work item, chat folds
+// to a strip; F gives planning the whole window (focus mode, the shell hides its chrome), Esc gives
+// it back. Only what the planning operations support today: new ways to steer the planner are the
+// planning build's. It reports who has it open (presence).
 // Ported from sf-app for spec 40 M3. sf-app's tab follows a Server-Sent-Events stream; the client
 // door has no planning stream, so here `planningQuery` re-reads every few seconds while the tab is
 // mounted, and the item (its gates) is re-read whenever the planning view changes.
@@ -38,119 +40,192 @@ import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Maximize2Icon, MessageSquareIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { toast } from "sonner";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { op, submitKey } from "../lib/op.ts";
 import { planningQuery } from "../lib/queries.ts";
+import { setFocus, updateViewState } from "../lib/view-state.ts";
+import { OpenTerminal } from "./open-terminal.tsx";
 
-type Pane = "questions" | "spec" | "chat";
 /** How often an open Planning tab says it is still here. */
 const PRESENCE_MS = 20_000;
 
-export function Planning({ detail }: { detail: WorkItemDetail }) {
+export function Planning({
+  detail,
+  mode,
+}: {
+  detail: WorkItemDetail;
+  /** Docked in the work item's Plan tab, or focus: the whole window (spec 41). */
+  mode: "docked" | "focus";
+}) {
   const { item } = detail;
   const planning = useQuery(planningQuery(item.id));
   useLive(item.id, planning.data);
   usePresence(item.id);
-  const [full, setFull] = useState(false);
-  const [pane, setPane] = useState<Pane>("questions");
+  const focus = mode === "focus";
+  // Docked, chat folds to a strip on the right; in focus it stays open.
+  const [chatOpen, setChatOpen] = useState(false);
   const [draft, setDraft] = useState<{ text: string; questionId?: string }>({ text: "" });
 
+  // F gives planning the whole window, Esc gives it back (not while typing).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable=true]")) return;
-      if (e.key === "Escape") setFull(false);
+      if (document.querySelector("[role=dialog]")) return;
+      if (e.key === "Escape" && focus) updateViewState((s) => setFocus(s, null));
       else if ((e.key === "f" || e.key === "F") && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        setFull((f) => !f);
+        updateViewState((s) => setFocus(s, focus ? null : item.id));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [focus, item.id]);
 
   const view = planning.data;
   if (!view) {
     return (
-      <Card className="px-5 py-6 text-muted-foreground text-sm">
+      <div className="px-[22px] py-6 text-ink-muted">
         {planning.error ? errorMessage(planning.error) : "Loading the planning view…"}
-      </Card>
+      </div>
     );
   }
   const discuss = (questionId: string, text = "") => {
     setDraft({ text, questionId });
-    setPane("chat");
+    setChatOpen(true);
   };
+  const showChat = focus || chatOpen;
 
   return (
     <div
-      className={cn(
-        "grid gap-3",
-        full && "fixed inset-0 z-50 grid-rows-[auto_auto_minmax(0,1fr)_auto] bg-background p-4",
-      )}
+      className="flex min-h-0 min-w-0 flex-1 flex-col bg-page"
       data-testid="planning"
-      data-fullscreen={full ? "true" : "false"}
+      data-fullscreen={focus ? "true" : "false"}
     >
-      <SessionHeader
-        view={view}
-        title={full ? `#${item.number} · ${item.title}` : null}
-        full={full}
-        onFull={() => setFull((f) => !f)}
-        workItemId={item.id}
-      />
-      <div className="flex gap-1 md:hidden" role="tablist" data-testid="planning-phone-tabs">
-        {(["questions", "spec", "chat"] as const).map((p) => (
-          <Button
-            key={p}
-            size="sm"
-            variant={pane === p ? "default" : "outline"}
-            role="tab"
-            aria-selected={pane === p}
-            onClick={() => setPane(p)}
-          >
-            {p === "questions"
-              ? `Questions ${view.questions.filter((q) => q.status === "open").length}`
-              : p === "spec"
-                ? "Spec"
-                : "Chat"}
-          </Button>
-        ))}
-      </div>
-      <div
-        className={cn(
-          "grid gap-3 md:grid-cols-[minmax(240px,1fr)_minmax(0,1.6fr)] xl:grid-cols-[minmax(260px,1fr)_minmax(0,1.6fr)_minmax(260px,1fr)]",
-          full && "min-h-0",
-        )}
-      >
+      {!focus && <SessionHeader view={view} detail={detail} />}
+      <div className="flex min-h-0 flex-1 border-line-soft border-t">
         <Questions
           view={view}
           workItemId={item.id}
           onDiscuss={discuss}
-          className={cn(pane !== "questions" && "hidden md:grid", full && "min-h-0 overflow-auto")}
+          className={cn(
+            "w-[300px] flex-none overflow-y-auto border-line-soft border-r px-3 py-3",
+            focus && "w-[336px]",
+          )}
         />
         <Spec
           view={view}
           onOverturn={(a) => {
             setDraft({ text: `Overturn this assumption and ask me instead: “${a}”` });
-            setPane("chat");
+            setChatOpen(true);
           }}
-          className={cn(pane !== "spec" && "hidden md:grid", full && "min-h-0 overflow-auto")}
+          className="min-w-0 flex-1 overflow-y-auto"
         />
-        <Chat
-          view={view}
-          workItemId={item.id}
-          draft={draft}
-          onDraft={setDraft}
-          className={cn(
-            pane !== "chat" && "hidden xl:grid",
-            pane === "chat" && "md:col-span-2 xl:col-span-1",
-            full && "min-h-0",
-          )}
-        />
+        {showChat ? (
+          <Chat
+            view={view}
+            workItemId={item.id}
+            draft={draft}
+            onDraft={setDraft}
+            onClose={focus ? undefined : () => setChatOpen(false)}
+            className="w-[330px] flex-none border-line-soft border-l"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setChatOpen(true)}
+            className="flex w-10 flex-none flex-col items-center gap-2 border-line-soft border-l bg-panel pt-3 text-ink-3 hover:text-ink"
+            data-testid="chat-strip"
+            aria-label="Open the chat"
+          >
+            <MessageSquareIcon className="size-4" />
+            {view.messages.length > 0 && (
+              <span className="flex size-4 items-center justify-center rounded-full bg-status-running font-semibold text-[10px] text-white">
+                {view.messages.length}
+              </span>
+            )}
+            <span className="[writing-mode:vertical-rl]">Chat</span>
+          </button>
+        )}
       </div>
       <GateBar view={view} detail={detail} />
+    </div>
+  );
+}
+
+/** The session's pill: the planner's state, with its dot. */
+export function SessionPill({ view }: { view: PlanningView }) {
+  const pill = sessionPill(view.session, view.present.length);
+  if (!pill) {
+    return (
+      <span className="text-ink-muted text-xs">
+        No planning session: this item's spec was planned in one-shot rounds.
+      </span>
+    );
+  }
+  const dot =
+    pill.state === "attached" || pill.state === "working"
+      ? "running"
+      : pill.state === "waiting" || pill.state === "gate"
+        ? "waiting"
+        : pill.state === "ended"
+          ? "done"
+          : "idle";
+  return (
+    <span
+      className="flex h-7 items-center gap-2 rounded-[7px] bg-selected px-2.5"
+      data-testid="session-pill"
+      data-state={pill.state}
+      title={pill.detail ?? undefined}
+    >
+      <StatusDot status={dot} />
+      {pill.label}
+    </span>
+  );
+}
+
+/** Docked: one line above the panes with the session, who's here, and the way into focus. */
+function SessionHeader({ view, detail }: { view: PlanningView; detail: WorkItemDetail }) {
+  const [moving, setMoving] = useState(false);
+  const canMove =
+    !!view.session && (view.session.waitingForRunner || view.session.status === "interrupted");
+  const pill = sessionPill(view.session, view.present.length);
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-[22px] py-2">
+      <SessionPill view={view} />
+      {pill?.detail && (
+        <span className="text-ink-muted text-xs" data-testid="session-detail">
+          {pill.detail}
+        </span>
+      )}
+      <span className="grow" />
+      {view.present.length > 0 && (
+        <span className="flex items-center gap-1 text-ink-muted text-xs">
+          <StatusDot status="done" /> {view.present.map((p) => p.name).join(", ")} here
+        </span>
+      )}
+      {canMove && (
+        <Button variant="outline" onClick={() => setMoving(true)}>
+          Continue on another runner…
+        </Button>
+      )}
+      <OpenTerminal detail={detail} stage="spec" />
+      <Button
+        onClick={() => updateViewState((s) => setFocus(s, detail.item.id))}
+        data-testid="fullscreen"
+      >
+        <Maximize2Icon className="size-3.5" />
+        Focus <Kbd className="bg-transparent text-primary-foreground/70">F</Kbd>
+      </Button>
+      <MoveDialog
+        open={moving}
+        onOpenChange={setMoving}
+        runner={view.session?.runner?.name ?? null}
+        workItemId={detail.item.id}
+      />
     </div>
   );
 }
@@ -190,81 +265,6 @@ function usePresence(workItemId: string) {
       void say(false);
     };
   }, [workItemId]);
-}
-
-function SessionHeader({
-  view,
-  title,
-  full,
-  onFull,
-  workItemId,
-}: {
-  view: PlanningView;
-  title: string | null;
-  full: boolean;
-  onFull: () => void;
-  workItemId: string;
-}) {
-  const pill = sessionPill(view.session, view.present.length);
-  const [moving, setMoving] = useState(false);
-  const canMove =
-    !!view.session && (view.session.waitingForRunner || view.session.status === "interrupted");
-  const dot =
-    pill?.state === "attached" || pill?.state === "working"
-      ? "running"
-      : pill?.state === "waiting" || pill?.state === "gate"
-        ? "waiting"
-        : pill?.state === "ended"
-          ? "done"
-          : "idle";
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {title && <div className="font-semibold">{title}</div>}
-      {pill ? (
-        <div
-          className={cn(
-            "flex items-center gap-2 rounded-full border px-3 py-1 text-sm",
-            pill.state === "waiting" && "border-status-waiting/50 bg-status-waiting/10",
-          )}
-          data-testid="session-pill"
-          data-state={pill.state}
-          title={pill.detail ?? undefined}
-        >
-          <StatusDot status={dot} />
-          {pill.label}
-        </div>
-      ) : (
-        <span className="text-muted-foreground text-sm">
-          No planning session: this item's spec was planned in one-shot rounds.
-        </span>
-      )}
-      {pill?.detail && (
-        <span className="text-muted-foreground text-xs" data-testid="session-detail">
-          {pill.detail}
-        </span>
-      )}
-      <span className="grow" />
-      {view.present.length > 0 && (
-        <span className="flex items-center gap-1 text-muted-foreground text-xs">
-          <StatusDot status="done" /> {view.present.map((p) => p.name).join(", ")} here
-        </span>
-      )}
-      {canMove && (
-        <Button size="sm" variant="outline" onClick={() => setMoving(true)}>
-          Continue on another runner…
-        </Button>
-      )}
-      <Button size="sm" variant="ghost" onClick={onFull} data-testid="fullscreen">
-        {full ? "⤡ Exit full screen" : "⤢ Full screen"} <Kbd>{full ? "Esc" : "F"}</Kbd>
-      </Button>
-      <MoveDialog
-        open={moving}
-        onOpenChange={setMoving}
-        runner={view.session?.runner?.name ?? null}
-        workItemId={workItemId}
-      />
-    </div>
-  );
 }
 
 function MoveDialog({
@@ -337,9 +337,20 @@ function Questions({
     (a, b) => Number(b.id === focused) - Number(a.id === focused) || a.position - b.position,
   );
   return (
-    <section className={cn("grid content-start gap-3", className)} data-testid="questions-pane">
-      <div className="font-semibold text-sm">
-        Questions <span className="text-muted-foreground">· open {open.length}</span>
+    <section className={cn("flex flex-col gap-2.5", className)} data-testid="questions-pane">
+      <div className="flex items-center gap-2.5 px-1 font-semibold">
+        Questions
+        <span className="h-1 flex-1 overflow-hidden rounded-full bg-line">
+          <span
+            className="block h-full rounded-full bg-status-running"
+            style={{
+              width: `${view.questions.length ? (100 * (view.questions.length - open.length)) / view.questions.length : 0}%`,
+            }}
+          />
+        </span>
+        <span className="font-mono font-normal text-ink-muted text-xs">
+          {view.questions.length - open.length} of {view.questions.length}
+        </span>
       </div>
       {view.questions.length === 0 && (
         <Card className="px-4 py-5 text-muted-foreground text-sm">
@@ -648,9 +659,9 @@ function Spec({
     </Markdown>
   );
   return (
-    <Card className={cn("content-start gap-0 py-0", className)} data-testid="living-spec">
-      <div className="flex flex-wrap items-center gap-2 border-b px-4 pt-3 pb-2">
-        <div className="font-semibold text-sm">Spec</div>
+    <section className={cn("bg-panel", className)} data-testid="living-spec">
+      <div className="sticky top-0 z-10 flex h-11 flex-wrap items-center gap-2 border-line-soft border-b bg-panel px-6">
+        <div className="font-semibold">Plan</div>
         {spec && (
           <Badge variant="outline">
             rev {spec.version} ·{" "}
@@ -664,8 +675,8 @@ function Spec({
           No spec yet. The planning agent drafts it, then revises it as you answer.
         </div>
       ) : (
-        <div className="grid gap-4 px-4 py-3 text-sm">
-          <div className="text-sm [&_h1]:font-semibold [&_h1]:text-base [&_h2]:mt-3 [&_h2]:font-semibold [&_li]:ml-4 [&_li]:list-disc [&_ol>li]:list-decimal [&_p]:my-1.5 [&_code]:font-mono [&_code]:text-xs">
+        <div className="mx-auto grid max-w-[760px] gap-4 px-8 py-6 leading-relaxed">
+          <div className="[&_h1]:mb-3 [&_h1]:font-semibold [&_h1]:text-[20px] [&_h2]:mt-5 [&_h2]:mb-1 [&_h2]:font-medium [&_h2]:text-[11px] [&_h2]:text-ink-muted [&_h2]:uppercase [&_h2]:tracking-[0.06em] [&_h2]:mt-3 [&_h2]:font-semibold [&_li]:ml-4 [&_li]:list-disc [&_ol>li]:list-decimal [&_p]:my-1.5 [&_code]:font-mono [&_code]:text-xs">
             <Markdown components={components}>{markTags(spec.bodyMd)}</Markdown>
           </div>
           {!/^#{1,4}\s*acceptance criteria/im.test(spec.bodyMd) && (
@@ -766,7 +777,7 @@ function Spec({
           )}
         </div>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -777,12 +788,14 @@ function Chat({
   workItemId,
   draft,
   onDraft,
+  onClose,
   className,
 }: {
   view: PlanningView;
   workItemId: string;
   draft: { text: string; questionId?: string };
   onDraft: (d: { text: string; questionId?: string }) => void;
+  onClose?: (() => void) | undefined;
   className?: string;
 }) {
   const [busy, setBusy] = useState(false);
@@ -812,12 +825,21 @@ function Chat({
     }
   }
   return (
-    <Card
-      className={cn("grid-rows-[auto_minmax(0,1fr)_auto] content-start gap-0 py-0", className)}
-      data-testid="chat-pane"
-    >
-      <div className="border-b px-4 pt-3 pb-2 font-semibold text-sm">Chat</div>
-      <div className="grid max-h-[60vh] content-start gap-2 overflow-auto px-4 py-3 text-sm">
+    <section className={cn("flex min-h-0 flex-col bg-panel", className)} data-testid="chat-pane">
+      <div className="flex h-11 flex-none items-center gap-2 px-4 font-semibold">
+        Chat
+        {onClose && (
+          <button
+            type="button"
+            aria-label="Fold the chat"
+            onClick={onClose}
+            className="ml-auto flex size-6 items-center justify-center rounded-md text-ink-3 hover:bg-selected"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        )}
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-2">
         {view.messages.length === 0 && (
           <div className="text-muted-foreground text-xs">
             Ask the planning agent anything, or tell it what to change. It reads the chat while it
@@ -828,8 +850,10 @@ function Chat({
           <div
             key={m.id}
             className={cn(
-              "grid gap-0.5 rounded-md px-3 py-2",
-              m.author === "agent" ? "bg-muted" : "bg-accent",
+              "grid gap-0.5 rounded-[10px] px-3 py-2",
+              m.author === "agent"
+                ? "bg-selected"
+                : "ml-6 bg-ink text-window [&_.text-muted-foreground]:text-window/70 [&_.text-foreground]:text-window",
               m.kind === "gate" && "border border-status-waiting/50",
             )}
             data-testid={`message-${m.id}`}
@@ -853,7 +877,7 @@ function Chat({
         )}
         <div ref={end} />
       </div>
-      <div className="grid gap-1.5 border-t px-4 py-3">
+      <div className="grid flex-none gap-1.5 border-line-soft border-t px-4 py-3">
         {draft.questionId && (
           <div className="flex items-center gap-2 text-muted-foreground text-xs">
             About <Chip tag={`Q${numbers.get(draft.questionId) ?? "?"}`} />
@@ -886,7 +910,7 @@ function Chat({
           </Button>
         </div>
       </div>
-    </Card>
+    </section>
   );
 }
 
@@ -902,7 +926,10 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
   const canApprove = !!specGate && detail.viewer.isApprover;
   const partial = view.spec?.coverage.filter((c) => (c as { status: string }).status === "partial");
   return (
-    <Card className="flex-row flex-wrap items-center gap-2 px-4 py-2.5" data-testid="gate-bar">
+    <div
+      className="flex flex-none flex-wrap items-center gap-2 border-line-soft border-t bg-panel px-[22px] py-2.5"
+      data-testid="gate-bar"
+    >
       <span className="text-muted-foreground text-sm" data-testid="planning-progress">
         {gateSummary(view)}
       </span>
@@ -959,6 +986,6 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         confirm="Send to the planning agent"
         onConfirm={(note) => decide({ kind: "spec.requestChanges", workItemId: item.id, note })}
       />
-    </Card>
+    </div>
   );
 }

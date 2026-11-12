@@ -136,6 +136,9 @@ function openWindow(path?: string) {
     url: "views://mainview/index.html",
     rpc,
     frame: { width: 1200, height: 800, x: 120, y: 80 },
+    // The view draws the toolbar under the traffic lights and marks it as the drag region (spec 41).
+    titleBarStyle: "hiddenInset",
+    trafficLightOffset: { x: 14, y: 16 },
   });
   // A link that launched the app arrives before the view listens: send it once the page is up.
   win.webview.on("dom-ready", () => {

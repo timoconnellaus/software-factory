@@ -48,6 +48,30 @@
   --status-failed: hsl(0 84% 60%);
   --status-idle: hsl(240 5% 65%);
   --status-local: hsl(262 83% 58%);
+
+  /* The factory desktop look (docs/design/factory-ui, ADR 0460). Additive: only the desktop's
+     desktop.css maps the base tokens onto these, so the web app keeps its look. */
+  --window: #f1f1ef;
+  --panel: #ffffff;
+  --page: #fafaf9;
+  --ink: #1c1c1e;
+  --ink-2: #3a3a3e;
+  --ink-3: #55555a;
+  --ink-muted: #6e6e73;
+  --ink-faint: #a3a3a0;
+  --line: #e3e3e0;
+  --line-soft: #ececea;
+  --line-strong: #dcdcd8;
+  --field: #e7e7e4;
+  --selected: #f1f1ef;
+  --chip-amber: #fdecc8;
+  --chip-amber-ink: #7a4a00;
+  --chip-blue: #e3edfd;
+  --chip-blue-ink: #1d4ed8;
+  --chip-green: #e4f4e8;
+  --chip-green-ink: #17603a;
+  --needs-you: #f0b541;
+  --link: #1d4ed8;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -78,6 +102,28 @@
     --sidebar-accent-foreground: hsl(0 0% 98%);
     --sidebar-border: hsl(240 3.7% 15.9%);
     --sidebar-ring: hsl(240 4.9% 83.9%);
+
+    --window: #1b1b1d;
+    --panel: #232326;
+    --page: #1f1f22;
+    --ink: #ececee;
+    --ink-2: #d4d4d8;
+    --ink-3: #b0b0b6;
+    --ink-muted: #8e8e95;
+    --ink-faint: #5f5f66;
+    --line: #34343a;
+    --line-soft: #2e2e33;
+    --line-strong: #3d3d43;
+    --field: #2c2c30;
+    --selected: #2e2e33;
+    --chip-amber: #4a3410;
+    --chip-amber-ink: #f6cf85;
+    --chip-blue: #1c2b4d;
+    --chip-blue-ink: #9cbcff;
+    --chip-green: #173524;
+    --chip-green-ink: #8fd8aa;
+    --needs-you: #d99a2b;
+    --link: #8fb0ff;
   }
 }
 
@@ -121,6 +167,31 @@
   --color-status-failed: var(--status-failed);
   --color-status-idle: var(--status-idle);
   --color-status-local: var(--status-local);
+  --color-window: var(--window);
+  --color-panel: var(--panel);
+  --color-page: var(--page);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-line-strong: var(--line-strong);
+  --color-field: var(--field);
+  --color-selected: var(--selected);
+  --color-chip-amber: var(--chip-amber);
+  --color-chip-amber-ink: var(--chip-amber-ink);
+  --color-chip-blue: var(--chip-blue);
+  --color-chip-blue-ink: var(--chip-blue-ink);
+  --color-chip-green: var(--chip-green);
+  --color-chip-green-ink: var(--chip-green-ink);
+  --color-needs-you: var(--needs-you);
+  --color-link: var(--link);
+  /* The desktop panel and cards: a hairline ring and a soft drop (design: box-shadow). */
+  --shadow-panel: 0 0 0 1px var(--line), 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-ring: 0 0 0 1px var(--line);
+  --shadow-needs-you: 0 0 0 1.5px var(--needs-you);
   /* "Needs you" cards (design system: --shadow-ring-waiting). */
   --shadow-waiting: 0 0 0 2px color-mix(in oklab, var(--status-waiting) 60%, transparent);
 }
