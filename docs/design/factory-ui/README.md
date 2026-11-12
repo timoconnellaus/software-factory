@@ -74,6 +74,7 @@ way the app already does.
 | [WorkReady.html](WorkReady.html) | Work: ready | 1440 × 980 |
 | [WorkActiveAll.html](WorkActiveAll.html) | Work: in the factory | 1440 × 1060 |
 | [WorkActive.html](WorkActive.html) | Work: software | 1440 × 1060 |
+| [WorkActivePanel.html](WorkActivePanel.html) | Work: an item opened in the side panel | 1440 × 900 |
 | [WorkActiveMarketing.html](WorkActiveMarketing.html) | Work: marketing | 1440 × 1060 |
 | [WorkDone.html](WorkDone.html) | Work: done | 1440 × 900 |
 | [WorkNew.html](WorkNew.html) | Work: new item | 1440 × 980 |
@@ -116,3 +117,12 @@ gives planning the whole window: the org rail, sidebar and nested list go, the t
 session bar, and the status bar stays.
 
 The plan is a plain document in its pane, not a page placed on a canvas. Only the Canvas tab is a canvas.
+
+## The item side panel
+Clicking a card on a board or a row in a list opens the work item in a panel on the right, over the
+board, instead of leaving the page. The panel shows the item (title, stage, agent, project), its
+activity as a stream of hand-offs and agent cards (the plan with its tasks, the live run with its
+current step and checks, the pull request), and a composer that messages the running agent (Enter
+after its current step, ⌘Enter to interrupt), with Open terminal and Stop. **Expand** (⌘Enter on the
+panel, or the button) opens the same item full size, with its tabs. This replaces a separate
+"live run" page as the normal way to look at a running agent.
