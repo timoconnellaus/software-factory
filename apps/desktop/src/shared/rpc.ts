@@ -55,6 +55,11 @@ export type AppRPC = {
       };
       loginItem: { params: { enable?: boolean }; response: { enabled: boolean } };
       openExternal: { params: { url: string }; response: { ok: boolean } };
+      /** Saves a file to ~/Downloads (base64 bytes) and shows it in Finder. */
+      saveDownload: {
+        params: { filename: string; base64: string };
+        response: { ok: boolean; path: string | null };
+      };
     };
     messages: Record<string, never>;
   };

@@ -56,6 +56,7 @@ export type ReadOpName =
   | "github.repos"
   | "setup.status"
   | "runner.list"
+  | "protection.ruleset"
   | "desktopDevice.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(

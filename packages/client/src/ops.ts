@@ -52,6 +52,7 @@ export interface OpMap {
   "adjudicator.stats": Def<typeof operations.adjudicatorStatsOp>;
   "setup.status": Def<typeof operations.setupStatus>;
   "protection.check": Def<typeof operations.protectionCheck>;
+  "protection.ruleset": Def<typeof operations.protectionRuleset>;
   "runner.deviceLookup": Def<typeof operations.runnerDeviceLookup>;
   "runner.approveDevice": Def<typeof operations.runnerApproveDevice>;
   "runner.denyDevice": Def<typeof operations.runnerDenyDevice>;

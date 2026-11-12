@@ -13,6 +13,7 @@ import { acquireInstanceLock, watchParent } from "./instance.ts";
 import { Live, liveUrl } from "./live.ts";
 import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { Runner } from "./runner.ts";
+import { saveTo } from "./save.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
 /** The inbox count's fallback refresh; the live socket brings changes the moment they happen. */
@@ -153,6 +154,15 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         enabled: enable === undefined ? loginItemEnabled() : setLoginItem(enable),
       }),
       openExternal: ({ url }) => ({ ok: /^https:\/\//.test(url) && Utils.openExternal(url) }),
+      saveDownload: ({ filename, base64 }) => {
+        try {
+          const path = saveTo(Utils.paths.downloads, filename, Buffer.from(base64, "base64"));
+          Utils.showItemInFolder(path);
+          return { ok: true, path };
+        } catch {
+          return { ok: false, path: null };
+        }
+      },
     },
     messages: {},
   },
