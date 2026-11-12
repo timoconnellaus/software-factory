@@ -786,6 +786,10 @@ export interface CorePlanningSessionsTable {
   /** ADR 0470: who told the planner to finish alone, and when; null while it's off. */
   finish_alone_by: string | null;
   finish_alone_at: Iso | null;
+  /** Spec 26: the highest cursor handed to the harness; a hook's ack is clamped to it. */
+  handed_cursor: Generated<number>;
+  /** Spec 26: JSON `{ questionId: answer revision }` handed out, for read receipts. */
+  handed_answers: string | null;
   /** Spec 26: the last "away" notice, so questions and replies notify once per burst. */
   notified_at: Iso | null;
   replaces_session_id: string | null;

@@ -123,6 +123,19 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
   - A planning steer's chat message is marked read when the host takes the steer (`steer_id`), and
     it takes the spec back from the gate.
   - Away notices go once per burst (`notified_at`, 2 minutes).
+- After the second review (fixes on #67):
+  - The agent can't forge its read cursor. `ack`, `hold` and `cursor` are not in its MCP tool
+    schemas (`PLANNING_TOOL_INPUTS`), and the MCP server forwards only what the tool's schema
+    parsed. On the server, an `ack` is clamped to `handed_cursor` (the highest cursor this session
+    was handed), and a `cursor` only re-reads, never past what was delivered.
+  - Receipts are per answer revision. `handed_answers` records the revision each answer was handed
+    at, and an ack stamps a question only if that revision is still current. News answers carry
+    `revision`.
+  - The hook acknowledges only events shown whole: a shortened one stays unread until the agent
+    reads it with `planning_news`.
+  - A message that loses the race to an approval is told so (`chat.send`'s `note`).
+  - The race tests are deterministic. `InvokeDeps.beforeCommit`, a test seam, holds one call
+    between its reads and its commit while the other runs, in both orders.
 - Not in A: the interrupt, Stop, Pause and finish alone (PR B), and the UI (PR C).
 
 **PR B, steering.** Migration 0241 (`core_run_steers.interrupt`, `core_planning_sessions.paused_at`,
@@ -162,6 +175,20 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
   - `planning.answer` keeps the presence proof on the desktop for security, privacy and
     irreversible questions (also `presenceDecidable`; `ctx.presence` tells the handler a proof
     came). Ordinary answers and bulk accept stay proof-free.
+- After the second review (fixes on #71):
+  - Decision domains are a closed list, normalised on the way in (`decisionDomainSchema`:
+    "Security" → `security`, "security & privacy" → `security`). One shared predicate,
+    `isSensitiveQuestion` in runner-contract, used by core and the clients, decides what a person
+    must answer themselves.
+  - Finish alone covers only questions its setter may answer (the assignee, or an approver). Only an
+    approver, or the person the open questions are assigned to, may turn it on. An ask that answers
+    in the setter's name is guarded on finish alone still being on.
+  - `planning.answer` takes `questionRevision`, and an answer to a question the planner changed
+    meanwhile is refused. `question.update` reopens an answer when the question becomes sensitive,
+    or its kind or options change.
+  - The 10 s interrupt spacing is guarded in the batch.
+  - The Rewind-menu check reads only the bottom of the screen and needs the menu's footer line.
+  - `desktopDecidable`'s comment lists the operations it covers and why.
 
 **PR C, the Planning tab (desktop).** Built on PR #70's restyle (spec 41); it only adds behaviour.
 - Planning questions are answered with `planning.answer` through a plain call (no Touch ID).
