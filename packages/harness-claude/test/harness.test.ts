@@ -14,13 +14,17 @@ import {
   type LaunchRecord,
   launchProblems,
   launchScript,
+  parseStatusLines,
   parseTranscript,
   projectDirName,
   projectHarness,
   psCommand,
   readLaunchRecord,
+  readStatusFrom,
   runSettings,
   SETTINGS_FILE,
+  STATUS_FILE,
+  STATUS_HOOK_EVENTS,
   scrubbedProcessEnv,
   streamJsonToEvents,
   verifyLaunch,
@@ -181,6 +185,84 @@ describe("run settings", () => {
       { worktree: "/w", runDir: "/r", hooks: { Stop: hook } },
     );
     expect(ok.hooks?.Stop).toEqual(hook);
+  });
+
+  it("adds the factory's status hook on every status event, PreToolUse included (ADR 0350)", () => {
+    const hook = [{ hooks: [{ type: "command" as const, command: "x" }] }];
+    const s = runSettings(
+      { stage: "build" },
+      { worktree: "/w", runDir: "/r", statusHook: "status-cmd", hooks: { Stop: hook } },
+    );
+    expect(Object.keys(s.hooks ?? {}).sort()).toEqual([...STATUS_HOOK_EVENTS].sort());
+    expect(s.hooks?.PreToolUse).toEqual([
+      { hooks: [{ type: "command", command: "status-cmd", timeout: 10 }] },
+    ]);
+    // The runner's own hooks stay, the status hook after them.
+    expect(s.hooks?.Stop?.map((h) => h.hooks[0]?.command)).toEqual(["x", "status-cmd"]);
+    expect(s.hooks?.PermissionRequest).toBeUndefined();
+    expect(s.permissions.deny).toContain("Bash(tmux:*)");
+    expect(s.permissions.deny).toContain("Bash(orca:*)");
+  });
+
+  it("the status hook appends one line per event and always answers {} with exit 0", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sf-status-"));
+    dirs.push(dir);
+    const projected = await projectHarness(
+      {
+        stage: "build",
+        jobId: "job_s",
+        harness: { id: "claude-code", role: "implement", prompt: "p" },
+      },
+      {
+        worktree: join(dir, "wt"),
+        runDir: join(dir, "run"),
+        runTmp: join(dir, "tmp"),
+        statusHook: true,
+      },
+    );
+    expect(projected.statusFile).toBe(join(dir, "run", STATUS_FILE));
+    const command = projected.settings.hooks?.PreToolUse?.[0]?.hooks[0]?.command ?? "";
+    const runHook = (input: string) =>
+      spawnSync("/bin/sh", ["-c", command], { input, encoding: "utf8" });
+    const long = "y".repeat(10_000);
+    for (const input of [
+      JSON.stringify({
+        hook_event_name: "SessionStart",
+        source: "startup",
+        transcript_path: "/t.jsonl",
+      }),
+      JSON.stringify({
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: long },
+      }),
+      JSON.stringify({
+        hook_event_name: "Notification",
+        notification_type: "permission_prompt",
+        message: "Claude needs your permission to use Bash",
+      }),
+      "not json at all",
+      "",
+    ]) {
+      const r = runHook(input);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("{}\n");
+    }
+    const lines = parseStatusLines(await readFile(projected.statusFile ?? "", "utf8"));
+    expect(lines.map((l) => l.event)).toEqual([
+      "SessionStart",
+      "PreToolUse",
+      "Notification",
+      "unknown",
+    ]);
+    expect(lines[0]).toMatchObject({ reason: "startup", transcript: "/t.jsonl" });
+    expect(lines[1]?.tool).toBe("Bash");
+    expect(lines[1]?.input?.length).toBeLessThan(2_100);
+    expect(lines[2]).toMatchObject({ type: "permission_prompt" });
+    // Read incrementally, as the adapter tails it.
+    const first = await readStatusFrom(projected.statusFile ?? "", 0);
+    expect(first.lines).toHaveLength(4);
+    expect((await readStatusFrom(projected.statusFile ?? "", first.offset)).lines).toEqual([]);
   });
 
   it("denies reads of protected paths", () => {
@@ -439,11 +521,11 @@ describe("transcripts", () => {
 
   it("finds the newest transcript for a working directory", async () => {
     const root = await temp("sf-h-claude-");
-    const cwd = "/Users/x/orca/workspaces/repo/sf-job.1";
+    const cwd = "/Users/x/work/worktrees/repo/sf-job.1";
     const dir = join(root, "projects", projectDirName(cwd));
     execFileSync("mkdir", ["-p", dir]);
     await writeFile(join(dir, "a.jsonl"), lines);
-    expect(projectDirName(cwd)).toBe("-Users-x-orca-workspaces-repo-sf-job-1");
+    expect(projectDirName(cwd)).toBe("-Users-x-work-worktrees-repo-sf-job-1");
     expect(await findTranscript(cwd, { configDirs: [root] })).toBe(join(dir, "a.jsonl"));
     expect(await findTranscript(cwd, { configDirs: [root], since: Date.now() + 60_000 })).toBe(
       null,

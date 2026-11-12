@@ -1,5 +1,5 @@
 // @software-factory/harness-claude: the Claude Code harness (ADR 0017). A runner adapter hosts the
-// session (an Orca terminal, a headless process, later a dev box); this package says how Claude
+// session (a tmux session, a headless process, later a dev box); this package says how Claude
 // runs there: the per-run settings it projects (permission mode and allowlist per stage, the OS
 // sandbox, deny rules, a credential-free environment), the run's git identity, the exact launch
 // command and the post-launch check (ADR 0270), and how to read a session's transcript or stream.
@@ -10,6 +10,7 @@ export * from "./attachments.ts";
 export * from "./launch.ts";
 export * from "./project.ts";
 export * from "./settings.ts";
+export * from "./status.ts";
 export * from "./transcript.ts";
 
 export const HARNESS_ID: HarnessId = "claude-code";

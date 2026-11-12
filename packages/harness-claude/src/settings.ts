@@ -18,6 +18,7 @@ import type {
   JobStage,
 } from "@software-factory/runner-contract";
 import { RESULT_FILE } from "@software-factory/runner-contract";
+import { statusHooks } from "./status.ts";
 
 export const SETTINGS_FILE = ".claude/settings.local.json";
 /** The authoritative copy, in the run's private directory, passed with `--settings`. */
@@ -112,6 +113,12 @@ export interface SettingsOptions {
    * permission decision: those events are refused.
    */
   hooks?: ClaudeHooks;
+  /**
+   * The factory's own status hook command (`statusHookCommand`, ADR 0350), run on every status
+   * event. It is the harness's, not the runner's: it only records the event and always answers
+   * `{}`, so it may run on `PreToolUse`, where a runner's own hooks may not.
+   */
+  statusHook?: string;
   /**
    * Where the run's attachments are written (ADR 0310), outside the worktree: the harness may read
    * there, never write.
@@ -219,6 +226,8 @@ export const DENY_COMMANDS = [
   "vercel",
   "netlify",
   "orca",
+  // The run's own terminal and every other session on the host: an agent must not drive them.
+  "tmux",
   "claude",
   "sudo",
   "launchctl",
@@ -476,7 +485,13 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
     env: harnessEnv(options.runDir, runTmp),
     includeCoAuthoredBy: false,
   };
-  if (options.hooks && Object.keys(options.hooks).length > 0) settings.hooks = options.hooks;
+  const hooks: ClaudeHooks = { ...(options.hooks ?? {}) };
+  if (options.statusHook) {
+    for (const [event, entries] of Object.entries(statusHooks(options.statusHook))) {
+      hooks[event] = [...(hooks[event] ?? []), ...entries];
+    }
+  }
+  if (Object.keys(hooks).length > 0) settings.hooks = hooks;
   if (mode === "bypassPermissions") settings.skipDangerousModePermissionPrompt = true;
   return settings;
 }

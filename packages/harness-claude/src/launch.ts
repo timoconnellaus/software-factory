@@ -1,6 +1,6 @@
 // How Claude Code is started for a run, and the check that it really started that way (ADR 0270,
 // incident 2026-11-11 bootstrap #6). The harness owns the exact invocation: a runner adapter only
-// hosts it (an Orca terminal, a headless process) and runs the launch script as it is.
+// hosts it (a tmux session, a headless process) and runs the launch script as it is.
 //
 //   claude --permission-mode <mode> --setting-sources project,local
 //          --settings <runDir>/claude-settings.json --strict-mcp-config [--model <model>]
@@ -67,8 +67,8 @@ export function shellQuote(word: string): string {
 
 /**
  * Environment variables the launch script unsets before starting Claude: every credential the
- * harness env blanks, and the launcher's own additions that would bring the owner's config back
- * (Orca adds its plugin dirs to every terminal).
+ * harness env blanks, and `CLAUDE_CODE_PLUGIN_DIRS`, which a terminal host may set to bring
+ * plugins in (harmless when unset).
  */
 export function launchUnsets(env: Record<string, string>): string[] {
   return [
