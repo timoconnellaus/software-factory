@@ -24,6 +24,7 @@ import {
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
+import { kimConflicts } from "../kim.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import {
   batchDue,
@@ -881,6 +882,15 @@ export const planningReady = defineOperation({
         { editIds: notKept.map((e) => e.id) },
       );
     }
+    // Spec 22: pulled .kim/ files that changed on the default branch must be merged first.
+    const conflicts = await kimConflicts(ctx, w);
+    if (conflicts.length) {
+      throw new OperationError(
+        "conflict",
+        `${conflicts.map((c) => c.path).join(", ")} changed on the default branch since you pulled ${conflicts.length === 1 ? "it" : "them"}: design_pull ${conflicts.length === 1 ? "it" : "each"} again (it takes the new copy as the base), merge your changes into it with artifact_update, then ask for the gate again`,
+        { paths: conflicts.map((c) => c.path) },
+      );
+    }
     const open = await ctx.db
       .selectFrom("core_questions")
       .select("number")
@@ -1616,6 +1626,13 @@ export const planningGet = defineOperation({
         controls: z.array(z.string()),
         size: z.number(),
         updatedAt: z.string(),
+        /** A design's type (spec 22); null for mockups, diagrams and documents. */
+        designType: z.string().nullable(),
+        /**
+         * The `.kim/` file it was pulled from (spec 22); its base there is revision 0, which the app
+         * compares the latest revision with.
+         */
+        pulledPath: z.string().nullable(),
       }),
     ),
     /** People's standing edits to the plan (spec 27): the planner keeps them word for word. */
@@ -1690,6 +1707,8 @@ export const planningGet = defineOperation({
           .select([
             "a.id",
             "a.kind",
+            "a.design_type",
+            "a.pulled_path",
             "a.title",
             "a.description",
             "a.revision",
@@ -1861,6 +1880,8 @@ export const planningGet = defineOperation({
         controls: parseJson<string[]>(a.controls, []),
         size: a.size,
         updatedAt: a.updated_at,
+        designType: a.design_type,
+        pulledPath: a.pulled_path,
       })),
       edits: edits.map((e) => ({
         kept: !notKept.has(e.id),

@@ -1378,6 +1378,8 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             keep: false,
             controls: ["--accent"],
             size: MOCKUP_A.length,
+            designType: null,
+            pulledPath: null,
             updatedAt: ago(5),
           },
           {
@@ -1390,6 +1392,8 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             keep: false,
             controls: ["--accent"],
             size: MOCKUP_B.length,
+            designType: null,
+            pulledPath: null,
             updatedAt: ago(9),
           },
         ]
@@ -1539,6 +1543,45 @@ export const ANSWERS: Answers = {
   "workItem.timeline": () => TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),
+  // Review of #130: what approving the plan writes, listed at the gate.
+  "spec.writeBack": () => {
+    const spec = "# Archive old runs\n\n## Scope\n- Runs older than 90 days move to R2\n";
+    const base = "app -> d1: reads\napp -> queue: jobs\n";
+    return {
+      files: [
+        {
+          path: "docs/specs/wi-12-archive-old-runs.md",
+          kind: "spec",
+          status: "new",
+          content: spec,
+          base: null,
+        },
+        {
+          path: ".kim/plans/wi-12-archive-old-runs.md",
+          kind: "plan",
+          status: "new",
+          content: spec,
+          base: null,
+        },
+        {
+          path: ".kim/designs/system.d2",
+          kind: "design",
+          status: "changed",
+          content:
+            "app -> d1: reads\napp -> queue: archive jobs\nqueue -> r2: <old runs> & chunks\n",
+          base,
+        },
+        {
+          path: ".kim/mockups/archive-settings.html",
+          kind: "mockup",
+          status: "new",
+          content: "<section>\n  <h2>Archive</h2>\n  <p>Runs older than 90 days</p>\n</section>\n",
+          base: null,
+        },
+      ],
+      kimCount: 3,
+    };
+  },
   "artifact.get": (input) => ({
     artifactId: input.artifactId,
     kind: "mockup",

@@ -7,6 +7,7 @@ import type { CoreDatabase, GateDecisionKind } from "@software-factory/db";
 import type { ExpressionBuilder } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
+import { bindKimApproval, kimConflicts } from "../kim.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
 import { assertSpecGateCurrent } from "../planning.ts";
 import { backupOwnerId } from "../scope.ts";
@@ -150,6 +151,31 @@ export function decidePending(
   return { pendingActionId: pa.id, decision, alreadyDecided: false };
 }
 
+/**
+ * Before a spec gate is approved, by any operation: the planner still stands behind it; no pulled
+ * `.kim/` file changed on the default branch since (spec 22: nothing is overwritten until the
+ * planner merges it); and the `.kim/` files the person sees at the gate are recorded on the spec,
+ * revision and content hash, so the commit writes exactly those (review of #130).
+ */
+async function approvingSpecGate(ctx: HandlerContext, pa: PendingActionRow): Promise<void> {
+  await assertSpecGateCurrent(ctx, pa.work_item_id);
+  if (!pa.work_item_id) return;
+  const conflicts = await kimConflicts(ctx, { id: pa.work_item_id });
+  if (conflicts.length) {
+    throw new OperationError(
+      "conflict",
+      `${conflicts.map((c) => c.path).join(", ")} changed on the default branch since the planner pulled ${conflicts.length === 1 ? "it" : "them"}: request changes so the planner merges ${conflicts.length === 1 ? "it" : "them"}, then approve`,
+      { paths: conflicts.map((c) => c.path) },
+    );
+  }
+  const w = await ctx.db
+    .selectFrom("core_work_items")
+    .select(["id", "number", "slug", "current_spec_id"])
+    .where("id", "=", pa.work_item_id)
+    .executeTakeFirst();
+  if (w) await bindKimApproval(ctx, w);
+}
+
 /** The work item's newest pending action of a kind (open first). */
 async function gateFor(
   ctx: HandlerContext,
@@ -208,7 +234,7 @@ export const approvalDecide = defineOperation({
       throw new OperationError("forbidden", "approve a merge with review.merge");
     }
     if (pa.kind === "spec" && pa.status === "pending" && input.decision === "approved") {
-      await assertSpecGateCurrent(ctx, pa.work_item_id);
+      await approvingSpecGate(ctx, pa);
     }
     // An org config proposal is decided in the app only (ADR 0516): not with a desktop device's
     // presence proof, nor any other surface's token.
@@ -259,7 +285,7 @@ export const specApprove = defineOperation({
   async handler(input, ctx) {
     const pa = await gateFor(ctx, input.workItemId, "spec");
     // A gate the planner no longer stands behind (a person wrote after it asked) can't be approved.
-    if (pa.status === "pending") await assertSpecGateCurrent(ctx, pa.work_item_id);
+    if (pa.status === "pending") await approvingSpecGate(ctx, pa);
     return decidePending(ctx, pa, "approved", input.note ?? null);
   },
 });

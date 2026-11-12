@@ -85,6 +85,14 @@ export const SCREENS = [
     keys: ["f"],
     clicks: ['[data-testid="critic-notes"]'],
   },
+  // Review of #130: the files approving writes, one changed design opened (escaped, marked).
+  {
+    name: "plan-write-back",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="write-back-file"]:nth-child(3) button'],
+  },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
