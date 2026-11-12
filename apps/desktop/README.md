@@ -38,11 +38,13 @@ itself to `~/.hutch` and adds a PATH line to your shell profile the first time.
 Signed, notarized builds come from `.github/workflows/desktop-release.yml`: canary on every merge to
 `main` that touches the app, stable on a `v*` tag. Install once from
 `https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip`; after that the app
-updates itself (menu bar: *Restart to update*). Signing happens in Electrobun's `postBuild` (the full
-app, before it's compressed) and `postWrap` (the self-extracting wrapper) hooks,
-`scripts/hook-post-*.ts`, and does nothing without `MACOS_SIGNING_IDENTITY`, so local builds stay
-unsigned. On a Mac with the Developer ID in its keychain you can sign a local build the same way:
-`MACOS_SIGNING_IDENTITY="Developer ID Application: …" pnpm bundle:canary`.
+updates itself (menu bar: *Restart to update*). Electrobun signs and notarizes itself (`mac.codesign`/`notarize`
+in `electrobun.config.ts`). It has to: it writes the build hash into `Resources/version.json` after
+every hook that could sign, and a file changed after signing makes macOS call the app "damaged". The
+build switches on with `ELECTROBUN_DEVELOPER_ID` (plus `ELECTROBUN_TEAMID`, `ELECTROBUN_APPLEAPIKEY`,
+`ELECTROBUN_APPLEAPIISSUER`, `ELECTROBUN_APPLEAPIKEYPATH` to notarize), so local builds stay
+unsigned. On a Mac with the Developer ID in its keychain:
+`ELECTROBUN_DEVELOPER_ID="Developer ID Application: …" ELECTROBUN_TEAMID=… pnpm bundle:canary`.
 
 ## Signing the key helper (M4b)
 Only `sf-keys` gets the `keychain-access-groups` entitlement (the Developer ID team's group), so only

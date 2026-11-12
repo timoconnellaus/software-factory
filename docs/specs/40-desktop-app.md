@@ -165,11 +165,11 @@ The in-app updater follows the channel. The client door's version handshake can 
 
 **As built (M4a).** `.github/workflows/desktop-release.yml` runs on a macOS runner in the `release`
 environment (only `main` and `v*` tags may use it):
-- **Signing:** the Developer ID goes into a throwaway keychain. Electrobun's `postBuild` hook signs
-  every binary in the full app, with hardened runtime and a timestamp, before it is compressed into
-  the update archive. Only Bun and Node get the JIT entitlements. The hook then notarizes and staples
-  the app. `postWrap` does the same for the self-extracting wrapper and zips it as the first-install
-  download.
+- **Signing:** the Developer ID goes into a throwaway keychain, and Electrobun's own
+  `mac.codesign`/`notarize` sign (hardened runtime, JIT entitlements) and notarize with the App
+  Store Connect key. Signing from a build hook doesn't work: Electrobun writes the build hash into
+  `Resources/version.json` after every hook, which broke the seal ("damaged" on first launch, found
+  on the M5). A `postPackage` hook zips the signed wrapper as the first-install download.
 - **Node:** the runner's Node is downloaded from nodejs.org at a pinned version and checked against
   `SHASUMS256.txt`.
 - **Upload:** artifacts go to R2 bucket `sf-desktop-releases` under `desktop/`, served at

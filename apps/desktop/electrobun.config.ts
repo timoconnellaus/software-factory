@@ -16,12 +16,9 @@ export default {
     // It lives in the menu bar: closing the window keeps the app and the runner up.
     exitOnLastWindowClosed: false,
   },
-  // Signing and notarization (spec 40 M4): postBuild signs the full app before it is compressed into
-  // the update archive; postWrap signs the self-extracting wrapper people download first. Both do
-  // nothing without MACOS_SIGNING_IDENTITY, so local builds stay unsigned.
+  // The first-install download (spec 40 M4): postPackage zips the signed wrapper.
   scripts: {
-    postBuild: "scripts/hook-post-build.ts",
-    postWrap: "scripts/hook-post-wrap.ts",
+    postPackage: "scripts/hook-post-package.ts",
   },
   // Updates (spec 40 M4): canary and stable share one folder; files are prefixed by channel.
   release: {
@@ -43,6 +40,19 @@ export default {
     mac: {
       bundleCEF: false,
       createDmg: false,
+      // Signing and notarization (spec 40 M4) are Electrobun's own: they have to happen after it
+      // writes the build hash into Resources/version.json, which no hook sees. They switch on with
+      // the release environment's variables: ELECTROBUN_DEVELOPER_ID, ELECTROBUN_TEAMID, and the
+      // App Store Connect key (ELECTROBUN_APPLEAPIKEY, ELECTROBUN_APPLEAPIISSUER,
+      // ELECTROBUN_APPLEAPIKEYPATH). Local builds stay unsigned.
+      codesign: !!process.env.ELECTROBUN_DEVELOPER_ID,
+      notarize: !!process.env.ELECTROBUN_DEVELOPER_ID && !!process.env.ELECTROBUN_APPLEAPIKEYPATH,
+      // Bun (JavaScriptCore) and Node (V8) JIT-compile under the hardened runtime. Nothing else: no
+      // keychain access group (only the key helper may carry one, ADR 0391).
+      entitlements: {
+        "com.apple.security.cs.allow-jit": true,
+        "com.apple.security.cs.allow-unsigned-executable-memory": true,
+      },
     },
   },
 } satisfies ElectrobunConfig;

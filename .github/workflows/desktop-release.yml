@@ -78,13 +78,15 @@ jobs:
 
       - name: Build, sign and notarize
         working-directory: apps/desktop
+        # Electrobun signs and notarizes itself (after it writes the build hash into the bundle).
         env:
           SF_DESKTOP_VERSION: ${{ steps.channel.outputs.version }}
-          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-          NOTARY_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          NOTARY_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ELECTROBUN_DEVELOPER_ID: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          ELECTROBUN_TEAMID: ${{ secrets.APPLE_TEAM_ID }}
+          ELECTROBUN_APPLEAPIKEY: ${{ secrets.ASC_KEY_ID }}
+          ELECTROBUN_APPLEAPIISSUER: ${{ secrets.ASC_ISSUER_ID }}
         run: |
-          export NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8"
+          export ELECTROBUN_APPLEAPIKEYPATH="$RUNNER_TEMP/notary.p8"
           sh scripts/bundle.sh "${{ steps.channel.outputs.channel }}"
           ls -la artifacts
 
