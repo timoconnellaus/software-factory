@@ -16,6 +16,13 @@ current step or as an interrupt, Stop, Pause, and "Let the planner finish alone"
 - **News at almost every step.** PostToolUse looks for news at most every 2 s, not 15 s (kim takes
   its own interview at every step). `planning.news` writes nothing when nothing changed, so a look
   costs one read.
+- **Delivery is what the agent saw.** A hook asks with `hold` and acknowledges the cursor it showed
+  (`ack`) on its next call, after it has printed the news. News a hook couldn't show (a timeout, a
+  cut) comes again, and read receipts mean the agent was shown it. A read (`planning.peek`) comes
+  first, so an empty look writes nothing.
+- **Races are guarded, not just checked.** Each rule below is enforced in the operation's D1 batch
+  (`guardExists`, `guardChanged`). The call that loses a race is refused as `conflict` and retried.
+  It never commits half.
 - **No gate on stale news.** `planning.ready` is refused (`conflict`) while a person's answer or
   message since the agent's cursor is undelivered. The agent reads the news and asks again.
 - **A person's word takes the spec back from the gate.** While the spec waits at the gate, a person's
@@ -33,6 +40,10 @@ current step or as an interrupt, Stop, Pause, and "Let the planner finish alone"
   agent to read its planning news. No person's text is typed into the terminal: the message reaches
   the agent through the UserPromptSubmit hook's news, as untrusted data like any chat. That is why a
   member may interrupt while `run.steer`, which types its text as-is, stays with the runner's owner.
+- **Interrupts come from a person and are spaced out.** Interrupt, Stop, Pause and Resume are
+  refused from a CLI or MCP token. One interrupt is queued per run at a time, and none goes within
+  10 s of the last, because a second Escape within a second opens Claude Code's Rewind menu. The
+  adapter also closes that menu if it finds it after its Escape.
 - **Stop and Pause.** *Stop* is an interrupt with no message: the agent ends its turn and waits.
   *Pause* (`planning.pause`) interrupts and marks the session paused. A paused session's Stop hook
   isn't woken by news, and the session yields its slot when the light pool needs it, as an idle one

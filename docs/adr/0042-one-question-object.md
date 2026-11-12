@@ -30,7 +30,9 @@ what is one thing: a decision someone needs to make.
 Decided by the owner on 2026-11-12, in his words: "touch id approvals is overkill. We'll assume the
 user's computer is secure." Answering a planning session's questions, one at a time
 (`planning.answer`, which also skips) or in bulk (`planning.acceptDefaults`), is an ordinary member
-write from the desktop: these operations are `desktopDecidable` and ask for no presence proof. They
+write from the desktop: these operations are `desktopDecidable` and ask for no presence proof,
+except for security, privacy and irreversible questions, which keep it until the owner decides
+otherwise (review, 2026-11-12). They
 stay `browserOnly` everywhere else, so a CLI or MCP token still can't answer for a person. Bulk accept
 still never covers security, privacy or irreversible questions. `question.answer` and
 `question.acceptDefaults` (questions outside a planning session) and every gate (spec, merge,

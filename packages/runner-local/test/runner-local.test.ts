@@ -134,7 +134,7 @@ const ownerState = (owner: string) => ({
 });
 
 describe("runner-local adapter", { timeout: 30_000 }, () => {
-  it("declares hooks, takeover, own hardware, attachments, steer and interrupt; no browser, no auto-register", async () => {
+  it("declares hooks, takeover, own hardware, attachments, steer, interrupt and terminal; no browser, no auto-register", async () => {
     const { runner } = await world();
     const m = await runner.manifest();
     expect(m.runnerKind).toBe("local");
@@ -144,6 +144,7 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
         "interrupt",
         "own-hardware",
         "steer",
+        "terminal",
         "ui-takeover",
         "work-item-attachments",
       ].sort(),
@@ -632,6 +633,25 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
       PROMPT_POINTER,
       "also update the changelog",
     ]);
+    await w.runner.release(job(), ws, session);
+  });
+
+  it("closes Claude Code's Rewind menu before typing when the Escape opened it (review of #71)", async () => {
+    const w = await world();
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    const session = await w.runner.startSession(job(), ws, signal);
+    const fake = w.tmux.sessions.get("sf-job_1");
+    if (!fake) throw new Error("no session");
+    fake.screen =
+      " Rewind\n Restore the code and/or conversation to the point before…\n ❯ (current)";
+    const before = w.tmux.calls.length;
+    await w.runner.interrupt?.(session, "read your planning news");
+    const keys = w.tmux.calls
+      .slice(before)
+      .filter((c) => c.includes("send-keys"))
+      .map((c) => c.at(-1));
+    expect(keys).toEqual(["Escape", "Escape", "read your planning news", "Enter"]);
     await w.runner.release(job(), ws, session);
   });
 

@@ -44,6 +44,8 @@ and the factory's own planning stage writes specs in this same format.
 | [32](32-claude-accounts-on-a-host.md) | Claude accounts on a host: several per host, manual switching on the host or from Setup, credentials never leave the host (piece 3 of the hosts plan) | 30 |
 | [33](33-container-per-job.md) | A container per job: Docker, only the job's workspace mounted, an egress allowlist, every stage `bypassPermissions` (piece 4 of the hosts plan) | 30 |
 | [34](34-linux-hosts.md) | Linux hosts: the runner as a systemd user service, Linux paths, the harness sandbox and doctor checks on Linux, the install path (piece 5 of the hosts plan) | 08, 30 |
+| [35](35-web-terminal.md) | A web terminal in the dashboard: the job's tmux pane in the Live tab through a Durable Object relay, the owner types and others watch, every attach journalled (piece 6 of the hosts plan) | 30, 31 |
+| [37](37-chat-ui-stream-json.md) | A chat UI on a stream-json session: a second session mode beside tmux, the Chat view on the Live tab, takeover by `claude --resume` (piece 8 of the hosts plan) | 30, 31 |
 | [40](40-desktop-app.md) | The desktop app (Electrobun): the client door, desktop devices with Touch ID presence proofs, `apps/desktop`, the website shrinks to auth | 07, 08 |
 | [wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md) | Work item attachments (picker, drag-and-drop, paste; R2; runs read them) | 01, 03, 13 |
 | [wi-4](wi-4-let-s-improve-the-event-log-so-it-s-usef.md) | A readable event log: one pure module (`packages/timeline`) words each audit entry for the dashboard's timeline and `sf timeline` | 07, 13 |

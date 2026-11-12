@@ -13,6 +13,7 @@
 // Runtime-neutral: no Node APIs, so the cloud (Workers) and the host (Node) share it. Wire shapes are
 // zod schemas in ./wire.ts; the types here that cross the wire are inferred from them.
 import type { z } from "zod";
+import type { TerminalSize } from "./terminal.ts";
 import type {
   AttachmentMeta,
   artifactSchema,
@@ -41,9 +42,15 @@ export const CONTRACT_VERSION = "1" as const;
  *   host keeps the channel's `steer` call open while the session runs and calls `adapter.steer`.
  * - `interrupt`: with `steer`, the adapter can stop the agent's current step and submit a line
  *   (`adapter.interrupt`: Escape, then the line), for a person's interrupt in planning (ADR 0470).
+ * - `chat`: sessions run as a structured two-way stream (Claude Code's stream-json, ADR 0450): the
+ *   events carry tool results and turn ends, the dashboard shows the run as a chat, and the owner
+ *   can take a session over in a terminal by resuming it (`run.takeover`, `adapter.takeover`).
  * - `container-isolation`: each job's harness runs in its own container: only the job's repo
  *   mounted, no host credentials, an egress allowlist (ADR 0430). Planning sessions still run on
  *   the host, so a policy should require it for the other stages only.
+ * - `terminal`: the live session's terminal can be bridged to the dashboard's web terminal
+ *   (ADR 0440). The host keeps the channel's `terminal` call open while the session runs and, when
+ *   someone watches, relays `adapter.openTerminal` over a WebSocket to the job's relay.
  */
 export const CAPABILITIES = [
   "browser",
@@ -54,8 +61,10 @@ export const CAPABILITIES = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "chat",
   "container-isolation",
   "interrupt",
+  "terminal",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -139,6 +148,13 @@ export interface WorkspaceHandle {
   baseSha: string;
 }
 
+/**
+ * How a session runs (ADR 0450): `terminal`, an interactive TUI in a terminal (tmux); `stream`, a
+ * structured two-way stream (stream-json) the dashboard shows as a chat.
+ */
+export const SESSION_MODES = ["terminal", "stream"] as const;
+export type SessionMode = (typeof SESSION_MODES)[number];
+
 /** What an adapter returns from startSession. */
 export interface SessionHandle {
   jobId: string;
@@ -146,6 +162,16 @@ export interface SessionHandle {
   sessionRef: string;
   /** How a person can attach, when the runner declares `ui-takeover`. Shown as-is in the UI. */
   takeover?: { label: string; hint: string };
+  /** How the session runs (ADR 0450). Absent: a terminal. */
+  mode?: SessionMode;
+}
+
+/** Token counts for one turn of a stream session (ADR 0450): counts only, never cost or keys. */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 export type JobState =
@@ -162,13 +188,32 @@ export type SessionOutcome = "completed" | "failed" | "timed_out" | "cancelled";
 
 /** Events the adapter yields while a session runs. The host stamps them with seq + time. */
 export type AdapterEvent =
-  | { type: "session.started"; sessionRef: string; takeover?: SessionHandle["takeover"] }
+  | {
+      type: "session.started";
+      sessionRef: string;
+      takeover?: SessionHandle["takeover"];
+      mode?: SessionMode;
+    }
   | { type: "agent.status"; status: AgentStatus; message?: string }
   /** `screen`: the visible screen, as opposed to lines that scrolled off (ADR 0400). */
   | { type: "log"; stream: "terminal" | "stdout" | "stderr"; text: string; screen?: boolean }
   /** What the agent said (assistant) or was told (user), as the transcript has it (ADR 0400). */
   | { type: "message"; role: "assistant" | "user"; text: string }
-  | { type: "tool"; name: string; input?: string }
+  /** `id` pairs a stream session's tool call with its `tool.result` (ADR 0450). */
+  | { type: "tool"; name: string; input?: string; id?: string }
+  /** A tool call's result, from a stream session (ADR 0450). Output ≤ TOOL_OUTPUT_MAX. */
+  | { type: "tool.result"; toolId: string; output: string; isError?: boolean }
+  /** One turn of a stream session ended (ADR 0450). */
+  | {
+      type: "turn";
+      outcome: "success" | "error";
+      durationMs?: number;
+      turns?: number;
+      usage?: TurnUsage;
+      error?: string;
+    }
+  /** A stream session stopped so a person can resume it in a terminal (ADR 0450). */
+  | { type: "takeover"; sessionId: string; hint: string }
   | { type: "session.ended"; outcome: SessionOutcome; summary?: string };
 
 /**
@@ -222,6 +267,39 @@ export interface RunnerAdapter<
    * never a person's words.
    */
   interrupt?(session: S, text: string): Promise<void>;
+  /**
+   * Optional, with the `chat` capability (ADR 0450): stop the live stream session cleanly so a
+   * person can resume it in a terminal. `events()` then yields a `takeover` event with the command
+   * and follows the resumed session until it ends; the job keeps its workspace meanwhile.
+   */
+  takeover?(session: S): Promise<void>;
+  /**
+   * Optional, with the `terminal` capability (ADR 0440): bridge the live session's terminal while
+   * someone watches it from the dashboard. Output is the terminal's raw bytes; `write` types
+   * whatever the person typed (the relay only forwards it from the runner's owner); `resize` sets
+   * the terminal's size (only asked for by the owner: a bridge nobody resized leaves it as it is);
+   * `redraw` sends the current screen as output, in order with the stream. `onExit` fires once,
+   * when the session or the bridge ends. `close` must be safe to call twice.
+   */
+  openTerminal?(session: S, options: OpenTerminalOptions): Promise<TerminalBridge>;
+}
+
+/** What the host hands `openTerminal` (ADR 0440). */
+export interface OpenTerminalOptions {
+  /** The size to start at, when the runner's owner is watching; null leaves the terminal's own. */
+  size: TerminalSize | null;
+  onOutput: (bytes: Uint8Array) => void;
+  /** The terminal's actual size, at start and whenever it changes. */
+  onSize: (size: TerminalSize) => void;
+  onExit: (reason: string) => void;
+}
+
+/** A live bridge to a session's terminal (ADR 0440). */
+export interface TerminalBridge {
+  write(data: string): Promise<void>;
+  resize(size: TerminalSize): Promise<void>;
+  redraw(): Promise<void>;
+  close(): Promise<void>;
 }
 
 /**

@@ -103,6 +103,26 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
 - `notifyAway` sends `planning.question` and `planning.reply` notices after the announcement, when
   nobody is present.
 - `run.steer` on a planning run writes a delivered chat message and logs `chat.steered` (not news).
+- After review (fixes on #67):
+  - Every check is guarded in the operation's batch:
+    - `planning.ready` guards "nothing from a person is unread" and "the round hasn't moved";
+    - `takeBackFromGate` guards "not at the gate" when it doesn't act, and "still at the gate,
+      gate still pending" when it does. It leaves a gate that was just decided alone;
+    - approving a spec gate guards "the planner still stands behind it".
+    The loser of a race is refused as `conflict` and retried. A core test races `planning.ready`
+    against a chat, and an approval against a chat at the gate.
+  - Delivery is confirmed by the hook. `planning.news` and `planning.wait` take `ack` (the cursor
+    the hooks last showed the agent) and `hold` (don't mark this call's news read). The hooks save
+    the cursor they showed only after printing it. `planning_ready` sends the same `ack` through the
+    MCP server.
+  - `fitNews` never drops answers or messages. Long texts are shortened, and events that don't fit
+    come at the next step, because only the shown cursor is acknowledged.
+  - `planning.peek` (read risk) comes first, so a look with nothing new and the same activity costs
+    no write and no audit row.
+  - `hasUnreadPersonNews` counts without the 500-event page.
+  - A planning steer's chat message is marked read when the host takes the steer (`steer_id`), and
+    it takes the spec back from the gate.
+  - Away notices go once per burst (`notified_at`, 2 minutes).
 - Not in A: the interrupt, Stop, Pause and finish alone (PR B), and the UI (PR C).
 
 **PR B, steering.** Migration 0241 (`core_run_steers.interrupt`, `core_planning_sessions.paused_at`,
@@ -126,4 +146,20 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
   `planning.note` (changes requested) turns it off. The planner hears `finish.alone` in its news.
   `planning.get` gains `session.finishAlone` and `acceptedAlone` on each question. Migration 0241
   adds `finish_alone_by`, `finish_alone_at` and `core_questions.accepted_alone`.
+- After review (fixes on #71):
+  - A paused session isn't resumed by news (`wakeSession` checks `paused_at`; `planning.resume`
+    resumes it).
+  - `chat.send { interrupt }`, `planning.stop`, `planning.pause` and `planning.resume` are
+    `browserOnly` and `desktopDecidable`: a person in the app or on the desktop, never a CLI or MCP
+    token.
+  - Interrupts merge: one queued per run. They are spaced out: none within 10 s
+    (`INTERRUPT_GAP_MS`) of the last delivered.
+  - Tested in a real Claude Code session: one Escape mid-turn stops the step, and the typed line
+    becomes the next prompt. Two Escapes within about a second open the Rewind menu, which swallows
+    the line (Enter there could rewind). So runner-local's `interrupt` looks at the screen after its
+    Escape and closes the menu before typing. A stream session gets its interrupt control line
+    (`interruptStream`).
+  - `planning.answer` keeps the presence proof on the desktop for security, privacy and
+    irreversible questions (also `presenceDecidable`; `ctx.presence` tells the handler a proof
+    came). Ordinary answers and bulk accept stay proof-free.
 

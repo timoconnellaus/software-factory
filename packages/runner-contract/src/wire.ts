@@ -11,12 +11,19 @@ import {
   HARNESSES,
   JOB_STAGES,
   MODEL_ROLES,
+  SESSION_MODES,
 } from "./types.ts";
 
 const iso = z.iso.datetime({ offset: true });
 
 /** Most characters of one `message` event's text; the runner clips longer ones. */
 export const MESSAGE_MAX = 8_000;
+/** Most characters of one `tool.result` event's output (ADR 0450). */
+export const TOOL_OUTPUT_MAX = 4_000;
+/** Most characters of a `turn` event's error (ADR 0450). */
+export const TURN_ERROR_MAX = 2_000;
+/** Most characters of a `takeover` event's hint (ADR 0450). */
+export const TAKEOVER_HINT_MAX = 4_000;
 const sha = z.string().regex(/^[0-9a-f]{7,64}$/);
 const fencingToken = z.number().int().nonnegative();
 const id = z.string().min(1).max(100);
@@ -149,6 +156,8 @@ export const runnerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("session.started"),
     sessionRef: z.string(),
     takeover: takeoverSchema.optional(),
+    /** How the session runs (ADR 0450). Optional, additive: absent is a terminal. */
+    mode: z.enum(SESSION_MODES).optional(),
   }),
   z.object({
     ...eventBase,
@@ -179,6 +188,43 @@ export const runnerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("tool"),
     name: z.string(),
     input: z.string().max(8_000).optional(),
+    /** Pairs the call with its `tool.result` (ADR 0450). Optional, additive. */
+    id: z.string().max(100).optional(),
+  }),
+  /**
+   * A stream session's tool result, its call's `id` as `toolId` (ADR 0450). Additive: only a
+   * runner with `chat`, at the engine's deployed commit, sends it.
+   */
+  z.object({
+    ...eventBase,
+    type: z.literal("tool.result"),
+    toolId: z.string().max(100),
+    output: z.string().max(TOOL_OUTPUT_MAX),
+    isError: z.boolean().optional(),
+  }),
+  /** One turn of a stream session ended (ADR 0450): counts only, never cost. Additive. */
+  z.object({
+    ...eventBase,
+    type: z.literal("turn"),
+    outcome: z.enum(["success", "error"]),
+    durationMs: z.number().int().nonnegative().optional(),
+    turns: z.number().int().nonnegative().optional(),
+    usage: z
+      .object({
+        inputTokens: z.number().int().nonnegative(),
+        outputTokens: z.number().int().nonnegative(),
+        cacheReadTokens: z.number().int().nonnegative(),
+        cacheWriteTokens: z.number().int().nonnegative(),
+      })
+      .optional(),
+    error: z.string().max(TURN_ERROR_MAX).optional(),
+  }),
+  /** A stream session stopped so a person can resume it in a terminal (ADR 0450). Additive. */
+  z.object({
+    ...eventBase,
+    type: z.literal("takeover"),
+    sessionId: z.string().max(100),
+    hint: z.string().max(TAKEOVER_HINT_MAX),
   }),
   z.object({
     ...eventBase,
@@ -424,10 +470,30 @@ export const steersResponseSchema = z.object({
       at: iso,
       /** Stop the current step first (`adapter.interrupt`, ADR 0470); else type it as is. */
       interrupt: z.boolean().optional(),
+      /**
+       * `takeover`: stop the stream session for a person (ADR 0450), not a message to type.
+       * Optional, additive: absent is a message.
+       */
+      kind: z.enum(["message", "takeover"]).optional(),
     }),
   ),
 });
 export type SteersRequest = z.infer<typeof steersRequestSchema>;
+
+/**
+ * The held terminal call (ADR 0440): answers with the job relay's socket URL, carrying a one-use
+ * ticket, when someone is waiting to watch and no host is connected; else `connect: null` after
+ * about `waitMs` (at most TERMINAL_WAIT_MAX_MS).
+ */
+export const terminalCallRequestSchema = z.object({
+  fencingToken,
+  waitMs: z.number().int().min(0).max(60_000).optional(),
+});
+export const terminalCallResponseSchema = z.object({
+  connect: z.object({ url: z.string() }).nullable(),
+});
+export type TerminalCallRequest = z.infer<typeof terminalCallRequestSchema>;
+export type TerminalCallResponse = z.infer<typeof terminalCallResponseSchema>;
 export type SteersResponse = z.infer<typeof steersResponseSchema>;
 
 /** Every non-2xx answer from the channel carries this body. */
