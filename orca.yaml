@@ -1,0 +1,19 @@
+# Orca workspace config. See scripts/orca-vm/README.md for the Sprites recipe.
+scripts:
+  # Runs in every new worktree, local or in a sprite.
+  setup: |
+    set -e
+    pnpm install --frozen-lockfile
+
+environmentRecipes:
+  - id: sprite
+    name: Fly Sprite
+    create: ./scripts/orca-vm/sprite-create.sh
+    suspend: ./scripts/orca-vm/sprite-suspend.sh
+    resume: ./scripts/orca-vm/sprite-resume.sh
+    destroy: ./scripts/orca-vm/sprite-destroy.sh
+    timeoutSeconds:
+      create: 1200
+      resume: 300
+      suspend: 120
+      destroy: 120
