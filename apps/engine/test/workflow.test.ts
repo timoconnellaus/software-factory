@@ -1,6 +1,14 @@
 import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { SHADOW_NOT_COMPARED, type ShadowVerdict } from "@software-factory/core/stages";
 import { describe, expect, it } from "vitest";
+import { SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
+import {
+  definitionFor,
+  expectPhasesAsDefined,
+  expectSendBacksAsDefined,
+  expectStagesAsDefined,
+} from "./definition.ts";
 import {
   all,
   BALANCED,
@@ -26,6 +34,33 @@ async function create(w: Awaited<ReturnType<typeof world>>, title = "Add dark mo
     { state: "queued", projectId: w.projectId, title },
     w.human,
   );
+}
+
+/**
+ * The shadow reconciler's verdict on an ended item (spec 52 PR (c)), once the cron's shadow pass has
+ * read it: the transitions it compared, and what it couldn't (each a divergence).
+ */
+async function shadowVerdictOf(workItemId: string) {
+  // The Workflow wrote nothing for the shadow: no verdict until the pass runs.
+  expect(
+    await first("SELECT work_item_id FROM core_reconcile_items WHERE work_item_id = ?", workItemId),
+  ).toBeNull();
+  // Past the pass's lag, so the item's last write is old enough to read.
+  const later = new Date(Date.now() + SHADOW_LAG_MS + 60_000);
+  while ((await shadowPass(env, later)) > 0);
+  const row = await first<{ report: string; divergences: number }>(
+    "SELECT report, divergences FROM core_reconcile_items WHERE work_item_id = ?",
+    workItemId,
+  );
+  if (!row) throw new Error("no shadow verdict");
+  const verdict = JSON.parse(row.report) as ShadowVerdict;
+  expect(verdict.uncompared).toEqual([...SHADOW_NOT_COMPARED]);
+  expect(row.divergences).toBe(
+    verdict.transitions.filter((t) => !t.agrees).length +
+      SHADOW_NOT_COMPARED.length +
+      verdict.known.length,
+  );
+  return verdict.transitions.map((t) => (t.agrees ? t.observed : `${t.observed} ≠ ${t.predicted}`));
 }
 
 describe("the work-item Workflow", () => {
@@ -67,6 +102,19 @@ describe("the work-item Workflow", () => {
       "done:done",
     ]);
     expect(stages.find((s) => s.stage === "spec")?.reason).toMatch(/below the spec threshold/);
+    // The reconciler in shadow predicted every stage transition. What it doesn't compare yet still
+    // counts against the item (shadowVerdictOf checks), so it doesn't count toward a streak.
+    expect(await shadowVerdictOf(item.workItemId)).toEqual([
+      "enter triage",
+      "skip spec",
+      "enter build",
+      "enter verify",
+      "enter merge",
+      "end done",
+    ]);
+    // The compiled Software definition passes and skips the same stages (spec 52 PR (a)).
+    const { def } = definitionFor(BALANCED, "change");
+    await expectStagesAsDefined(item.workItemId, def, "small");
 
     // The journal tells the whole story, including the gate decision and how long it was open.
     const trail = await all<{ operation: string; actor_type: string; outcome: string }>(
@@ -222,6 +270,14 @@ describe("the work-item Workflow", () => {
       "SELECT stage, status FROM core_stages WHERE work_item_id = ? AND stage IN ('build', 'verify', 'merge') ORDER BY started_at, rowid",
       item.workItemId,
     );
+    // The shadow doesn't guess a send-back's target from its own output: the stage after each
+    // send-back is not compared, and says so.
+    const shadow = await shadowVerdictOf(item.workItemId);
+    expect(shadow.filter((t) => t.includes("not compared: a send-back's target"))).toHaveLength(2);
+    // Both send-backs went where the compiled definition sends them (spec 52 PR (a)).
+    const { def } = definitionFor({ ...BALANCED, retryLimit: 2 }, "change");
+    await expectStagesAsDefined(item.workItemId, def, "small");
+    expect(await expectSendBacksAsDefined(item.workItemId, def)).toBe(2);
     // Both loops ran inside the one instance: verify → build on a failed check, merge → build on a send-back.
     expect(stages.map((s) => `${s.stage}:${s.status}`)).toEqual([
       "build:done",
@@ -233,6 +289,38 @@ describe("the work-item Workflow", () => {
       "verify:done",
       "merge:done",
     ]);
+  });
+
+  it("runs an incident's fix as the Incident definition says: opened released, nothing shaped, every stage in delivery (spec 52 PR (a))", async () => {
+    const w = await world();
+    const item = await create(w, "Something broke");
+    const opened = await ok<{ fixWorkItemId: string | null }>(
+      "incident.open",
+      { workItemId: item.workItemId, kind: "manual", reason: "the run looped" },
+      w.human,
+    );
+    const fix = opened.fixWorkItemId;
+    if (!fix) throw new Error("no fix item");
+    // Only the fix's jobs for this runner.
+    await ok(
+      "workItem.cancel",
+      { workItemId: item.workItemId, reason: "not in this test" },
+      w.human,
+    );
+    const kind = await first<{ kind: string }>(
+      "SELECT kind FROM core_work_items WHERE id = ?",
+      fix,
+    );
+    expect(kind?.kind).toBe("incident");
+    await runStage(w, fix, "triage", () => triage("small"));
+    await runStage(w, fix, "build", () => build([".factory/checks/loop.md"]));
+    await runStage(w, fix, "verify", () => verifyPass);
+    await gateOpen(fix, "merge");
+    await ok("review.merge", { workItemId: fix, openedFullDiff: true }, w.human);
+    await itemStatus(fix, "done");
+    const { def } = definitionFor(BALANCED, "incident");
+    await expectStagesAsDefined(fix, def, "small");
+    await expectPhasesAsDefined(fix, def, "small");
   });
 
   it("flags a diff that touches .factory/ as self-modify at the merge gate", async () => {

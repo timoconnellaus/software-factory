@@ -381,3 +381,12 @@ export async function projectForRepo(
 ): Promise<string> {
   return (await repositoryForRepo(db, repo)).projectId;
 }
+
+/**
+ * A run's events and steers move to the archive (R2) this many days after it ended (sf-engine's
+ * retention.ts); run.live reads a run that ended longer ago than this from the archive as well.
+ */
+export const RUN_ARCHIVE_AFTER_DAYS = 30;
+
+/** The most events one run.reportEvents call takes, so the most log lines one stored row holds. */
+export const RUN_EVENTS_BATCH_MAX = 500;

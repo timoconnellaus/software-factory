@@ -29,6 +29,14 @@ ALTER TABLE core_merge_queue ADD COLUMN update_asked_at TEXT;
 -- How many times GitHub was asked to update the entry's head: the deliverer stops asking after a
 -- few, so a default branch that keeps moving while CI runs can't keep a head updating for ever.
 ALTER TABLE core_merge_queue ADD COLUMN updates INTEGER NOT NULL DEFAULT 0;
+-- When the deliverer marked the entry as merging, just before it asks GitHub to merge (spec 53
+-- review): a cancel meanwhile is refused ("this is merging"). A mark older than a pass is stale.
+ALTER TABLE core_merge_queue ADD COLUMN merging_at TEXT;
+-- At the update bound the deliverer holds the entry and asks a person (spec 53 review): the
+-- question, the updates the person granted beyond the bound, and until when they asked it to wait.
+ALTER TABLE core_merge_queue ADD COLUMN hold_question_id TEXT;
+ALTER TABLE core_merge_queue ADD COLUMN updates_granted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE core_merge_queue ADD COLUMN held_until TEXT;
 
 -- The minute cron's sweep (`deliverDue`) reads only open babysitter entries: a partial index, so it
 -- never scans the entries kept after they end.

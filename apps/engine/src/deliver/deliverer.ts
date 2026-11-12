@@ -33,14 +33,19 @@ const IDLE_RECHECK_MS = 60 * 60_000;
 const ROUNDS = 5;
 /**
  * Update-branch requests per entry: a default branch that keeps moving while CI runs gets the head
- * updated (and CI'd) at most this many times, then the item goes back (spec 53 review).
+ * updated (and CI'd) at most this many times, then the head is held and a person asked whether to
+ * update once more (`mergeQueue.hold`); good, approved work is never sent back for it (spec 53).
  */
 export const MAX_UPDATES = 3;
 
-/** Test seam only: called after CI was read green and before pr.merge (deterministic races). */
-export const deliverTestSeams: { beforeLand: ((workItemId: string) => Promise<void>) | null } = {
-  beforeLand: null,
-};
+/**
+ * Test seams only (deterministic races): `beforeMark` after CI was read green and before the head is
+ * marked merging; `beforeLand` after the mark and before pr.merge.
+ */
+export const deliverTestSeams: {
+  beforeMark: ((workItemId: string) => Promise<void>) | null;
+  beforeLand: ((workItemId: string) => Promise<void>) | null;
+} = { beforeMark: null, beforeLand: null };
 
 /** The pass's lease on its repository: sent with every operation it calls. */
 interface Lease {
@@ -59,6 +64,8 @@ interface HeadRow {
   head_sha: string;
   driver: "workflow" | "babysitter";
   update_asked_at: string | null;
+  merging_at: string | null;
+  held_until: string | null;
   updated_at: string;
   item_status: string;
   number: number;
@@ -201,8 +208,8 @@ async function readHead(
   // item is still open.
   return env.DB.prepare(
     `SELECT q.id, q.work_item_id, q.pending_action_id, q.approved_sha, q.head_sha, q.driver,
-            q.update_asked_at, q.updated_at, w.status AS item_status, w.number, w.repairs_main,
-            q.project_id, w.repository_id
+            q.update_asked_at, q.merging_at, q.held_until, q.updated_at,
+            w.status AS item_status, w.number, w.repairs_main, q.project_id, w.repository_id
      FROM core_merge_queue q JOIN core_work_items w ON w.id = q.work_item_id
      WHERE q.project_id = ?1 AND q.status = 'queued'
        AND w.status IN ('running', 'waiting', 'paused')
@@ -274,8 +281,13 @@ async function deliverHead(
   }
   // Stop the line (ADR 0581): while main is red only a repair lands. Held before the update too,
   // or merging a red main in would fail its CI and send good work back to build. A green
-  // `main.observe` wakes the queue.
-  if (await held(env, lease, head)) return HELD_RECHECK_MS;
+  // `main.observe` wakes the queue. A head already marked merging finishes first (GitHub may have
+  // merged it).
+  if (head.merging_at === null && (await held(env, lease, head))) return HELD_RECHECK_MS;
+  // A person asked to wait before the next update.
+  if (head.held_until && Date.parse(head.held_until) > clock().getTime()) {
+    return Date.parse(head.held_until) - clock().getTime();
+  }
 
   // Bring the head up to date (bounded: MAX_UPDATES requests per entry). Returns the head to
   // land, or how long to wait (or null: it left).
@@ -309,6 +321,22 @@ async function deliverHead(
     if (state === "withdrawn") {
       return { wait: await end("left", "withdrawn", String(u.output.reason ?? "")) };
     }
+    if (state === "held") {
+      // At the bound: hold it and ask a person, never rebuild approved work (spec 53 review).
+      const h = await call(env, lease, "mergeQueue.hold", {
+        workItemId: id,
+        reason: String(u.output.reason ?? ""),
+      });
+      if (h.status !== "ok") {
+        return { wait: await end("left", "failed", `the babysitter couldn't ask: ${refusal(h)}`) };
+      }
+      const asked = String(h.output.state);
+      if (asked === "resumed") return snapshot(); // one more update, now
+      if (asked === "holding" && h.output.until) {
+        return { wait: Math.max(0, Date.parse(String(h.output.until)) - clock().getTime()) };
+      }
+      return { wait: IDLE_RECHECK_MS }; // the answer wakes the queue
+    }
     if (state !== "current" && state !== "updated") {
       return {
         wait: await end(
@@ -321,14 +349,16 @@ async function deliverHead(
     return { at: String(u.output.headSha), state };
   };
 
-  const snap = await snapshot();
+  // A pass that marked the head merging and didn't finish: GitHub may have merged it. pr.merge
+  // finds a merged PR merged (and records it), so land again at the same head before anything else.
+  const snap = head.merging_at !== null ? { at: head.head_sha } : await snapshot();
   if ("wait" in snap) return snap.wait;
   const at = snap.at;
 
   // The head merges only on green CI there (ADR 0330): one the queue brought up to date, and one
   // a person approved again after a withdrawal (ADR 0582). An approved head's CI was green at
   // verify, so this read answers at once.
-  {
+  if (head.merging_at === null) {
     const ci = await call(env, lease, "ci.read", { workItemId: id, headSha: at });
     const since = Date.parse(head.updated_at);
     const waited = clock().getTime() - (Number.isNaN(since) ? clock().getTime() : since);
@@ -354,6 +384,13 @@ async function deliverHead(
     return end("left", "failed", "the babysitter lands only an approved merge");
   }
   const touchesFactoryConfig = await approvedFlag(env, head.pending_action_id);
+  // Marked merging first, so a cancel from here until GitHub answers is refused ("this is
+  // merging") rather than racing the merge (spec 53 review).
+  await deliverTestSeams.beforeMark?.(id);
+  const marked = await call(env, lease, "mergeQueue.merging", { workItemId: id, merging: true });
+  if (marked.status !== "ok") {
+    return end("left", "failed", `the babysitter couldn't start the merge: ${refusal(marked)}`);
+  }
   await deliverTestSeams.beforeLand?.(id);
   const landed = await call(
     env,
@@ -364,6 +401,8 @@ async function deliverHead(
   );
   if (mergedForGood(landed)) return end("merged", "merged", "merged");
   const why = landed.status === "refused" ? landed.message : "still pending";
+  // GitHub didn't merge: the mark goes, so the item can be cancelled again.
+  await call(env, lease, "mergeQueue.merging", { workItemId: id, merging: false });
   // GitHub refused the merge itself (the default branch moved since the snapshot): never retried as
   // is. Re-snapshot: a moved default branch updates the head again (bounded) and CI runs there; a
   // refusal with nothing changed goes back (spec 53 review; asking a person is PR d's).

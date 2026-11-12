@@ -72,8 +72,23 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
   let key: Promise<CryptoKey> | null = null;
   const cache = new Map<string, { token: string; expiresAt: string }>();
 
+  // The App JWT lives 9 minutes; reused while it has more than one left, so a client kept for the
+  // isolate's life signs one every 8 minutes instead of one per GitHub call.
+  let jwt: { value: string; exp: number } | null = null;
+
   async function appJwt(): Promise<string> {
-    key ??= importPrivateKey(config.privateKey);
+    const nowS = Math.floor(now().getTime() / 1000);
+    if (jwt && jwt.exp - nowS > 60) return jwt.value;
+    jwt = { value: await signAppJwt(), exp: nowS - 60 + 540 };
+    return jwt.value;
+  }
+
+  async function signAppJwt(): Promise<string> {
+    // A failed import isn't kept: the client lives as long as the isolate.
+    key ??= importPrivateKey(config.privateKey).catch((error: unknown) => {
+      key = null;
+      throw error;
+    });
     const iat = Math.floor(now().getTime() / 1000) - 60;
     const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
     const payload = b64url(JSON.stringify({ iat, exp: iat + 540, iss: config.appId }));
@@ -108,12 +123,31 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
     repo: RepoRef,
     permissions: Record<string, string> = CONTROL_PLANE_PERMISSIONS,
   ): Promise<string> {
-    const id = `${repo.installationId}/${repo.owner}/${repo.repo}/${Object.keys(permissions).join(",")}`;
+    const id = controlKey(repo, permissions);
     const cached = cache.get(id);
     if (cached && Date.parse(cached.expiresAt) - now().getTime() > 5 * 60_000) return cached.token;
     const fresh = await installationToken(repo, permissions);
     cache.set(id, fresh);
     return fresh.token;
+  }
+
+  const controlKey = (repo: RepoRef, permissions: Record<string, string>) =>
+    `${repo.installationId}/${repo.owner}/${repo.repo}/${Object.keys(permissions).join(",")}`;
+
+  /**
+   * Fetches with a cached installation token; on 401 (a token GitHub no longer accepts: revoked, or
+   * its installation changed) the token is dropped and the call made once more with a fresh one.
+   * The client lives as long as the isolate, so a bad token must not stay cached until it expires.
+   */
+  async function withCachedToken(
+    cacheKey: string,
+    token: () => Promise<string>,
+    send: (token: string) => Promise<Response>,
+  ): Promise<Response> {
+    const response = await send(await token());
+    if (response.status !== 401) return response;
+    cache.delete(cacheKey);
+    return send(await token());
   }
 
   async function api(
@@ -123,11 +157,16 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
     body?: unknown,
     permissions: Record<string, string> = CONTROL_PLANE_PERMISSIONS,
   ): Promise<{ status: number; json: unknown }> {
-    const response = await doFetch(`${API}/repos/${repo.owner}/${repo.repo}${path}`, {
-      method,
-      headers: headers(`token ${await controlToken(repo, permissions)}`),
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const response = await withCachedToken(
+      controlKey(repo, permissions),
+      () => controlToken(repo, permissions),
+      (token) =>
+        doFetch(`${API}/repos/${repo.owner}/${repo.repo}${path}`, {
+          method,
+          headers: headers(`token ${token}`),
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+    );
     const text = await response.text();
     let json: unknown = null;
     try {
@@ -153,11 +192,29 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
    * A metadata-only installation token: for every repo the installation reaches, or only for
    * `repositoryIds` (GitHub refuses with 422 when the installation can't reach one of them).
    */
+  const metaKey = (installationId: string, repositoryIds?: number[]) =>
+    `meta:${installationId}:${repositoryIds?.join(",") ?? "*"}`;
+
+  /** A metadata token's call, made once more with a fresh token on 401 (see withCachedToken). */
+  async function withMetadataToken(
+    installationId: string,
+    repositoryIds: number[] | undefined,
+    send: (token: string) => Promise<Response>,
+  ): Promise<{ ok: true; response: Response } | { ok: false; status: number; message: string }> {
+    for (let attempt = 0; ; attempt++) {
+      const token = await metadataToken(installationId, repositoryIds);
+      if (!token.ok) return token;
+      const response = await send(token.token);
+      if (response.status !== 401 || attempt > 0) return { ok: true, response };
+      cache.delete(metaKey(installationId, repositoryIds));
+    }
+  }
+
   async function metadataToken(
     installationId: string,
     repositoryIds?: number[],
   ): Promise<{ ok: true; token: string } | { ok: false; status: number; message: string }> {
-    const cacheKey = `meta:${installationId}:${repositoryIds?.join(",") ?? "*"}`;
+    const cacheKey = metaKey(installationId, repositoryIds);
     const cached = cache.get(cacheKey);
     if (cached && Date.parse(cached.expiresAt) - now().getTime() > 5 * 60_000) {
       return { ok: true, token: cached.token };
@@ -210,16 +267,17 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       };
     },
     async listInstallationRepos(installationId) {
-      const token = await metadataToken(installationId);
-      if (!token.ok) {
-        throw new Error(`GitHub installation token: HTTP ${token.status} ${token.message}`);
-      }
       const out: InstallationRepo[] = [];
       for (let page = 1; page <= 20; page++) {
-        const response = await doFetch(
-          `${API}/installation/repositories?per_page=100&page=${page}`,
-          { headers: headers(`token ${token.token}`) },
+        const sent = await withMetadataToken(installationId, undefined, (token) =>
+          doFetch(`${API}/installation/repositories?per_page=100&page=${page}`, {
+            headers: headers(`token ${token}`),
+          }),
         );
+        if (!sent.ok) {
+          throw new Error(`GitHub installation token: HTTP ${sent.status} ${sent.message}`);
+        }
+        const response = sent.response;
         if (!response.ok) {
           throw new Error(`GitHub installation repositories: HTTP ${response.status}`);
         }
@@ -235,17 +293,17 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
     async getInstallationRepo(installationId, repoId) {
       // A token limited to this one repo: GitHub refuses it (422) unless the installation reaches
       // it. Reading /repositories/{id} alone would also answer for any public repo.
-      const token = await metadataToken(installationId, [repoId]);
-      if (!token.ok) {
-        if (token.status === 422 || token.status === 404) return null;
+      const sent = await withMetadataToken(installationId, [repoId], (token) =>
+        doFetch(`${API}/repositories/${repoId}`, { headers: headers(`token ${token}`) }),
+      );
+      if (!sent.ok) {
+        if (sent.status === 422 || sent.status === 404) return null;
         throw new OperationError(
           "unavailable",
-          `GitHub answered ${token.status} for an installation token: ${token.message}`,
+          `GitHub answered ${sent.status} for an installation token: ${sent.message}`,
         );
       }
-      const response = await doFetch(`${API}/repositories/${repoId}`, {
-        headers: headers(`token ${token.token}`),
-      });
+      const response = sent.response;
       if (response.status === 404) return null;
       if (!response.ok) {
         throw new OperationError(
@@ -776,6 +834,7 @@ interface GitHubPull {
   state: "open" | "closed";
   merged?: boolean;
   merged_at?: string | null;
+  merge_commit_sha?: string | null;
   draft?: boolean;
   user?: { login: string } | null;
   head: { ref: string; sha: string; repo: { full_name: string } | null };
@@ -795,5 +854,7 @@ function pullInfo(p: GitHubPull): PullRequestInfo {
     author: p.user?.login ?? null,
     head: { ref: p.head.ref, sha: p.head.sha, repo: p.head.repo?.full_name ?? null },
     base: { ref: p.base.ref },
+    // Before a merge GitHub reports a test-merge commit here: only a merged PR's is its merge.
+    mergeCommitSha: (p.merged ?? Boolean(p.merged_at)) ? (p.merge_commit_sha ?? null) : null,
   };
 }

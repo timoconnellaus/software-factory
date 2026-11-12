@@ -76,6 +76,8 @@ interface FakePull {
   headRepo?: string;
   /** A fork's head SHA (a fork's branch isn't in this repo's refs). */
   headSha?: string;
+  /** The merge commit, once merged. */
+  mergeSha?: string;
 }
 
 const TABLE = "fake_github_repos";
@@ -133,6 +135,10 @@ export interface FakeGitHub extends GitHubService {
   ): Promise<string>;
   /** GitHub truncates this commit's tree listing (a very large tree). */
   truncateTree(repo: RepoRef, at: string): Promise<void>;
+  /** Points a branch at an existing commit, as a force-push does. */
+  forcePush(repo: RepoRef, branch: string, sha: string): Promise<void>;
+  /** Sets a commit's committer date, as whoever pushed it chose (past or future). */
+  setCommitTime(repo: RepoRef, sha: string, at: string): Promise<void>;
   /** Sets a person's role on the repo (null: not a collaborator). */
   setPermission(repo: RepoRef, login: string, permission: string | null): Promise<void>;
   /** What `GET /app` reports (default: every event the factory needs). */
@@ -495,6 +501,16 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         headSha: state.refs[pull.head] ?? null,
       };
     },
+    async forcePush(r, branch, at) {
+      const state = await load(r);
+      state.refs[branch] = at;
+      await save(r, state);
+    },
+    async setCommitTime(r, at, when) {
+      const state = await load(r);
+      state.times = { ...(state.times ?? {}), [at]: when };
+      await save(r, state);
+    },
     async refuseNextMerge(r, number, reason) {
       const state = await load(r);
       state.refuseMerge = { ...(state.refuseMerge ?? {}), [number]: reason };
@@ -613,11 +629,14 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         await save(r, state);
         return { merged: false, reason: refused };
       }
-      if (pull.state === "merged") return { merged: true, sha: state.refs[pull.base] ?? expected };
+      // GitHub refuses to merge a PR twice (405 "Pull Request is not mergeable"): a caller that
+      // merges again after a merge it lost track of must find it merged instead (spec 53 review).
+      if (pull.state !== "open") return { merged: false, reason: "Pull Request is not mergeable" };
       if (state.refs[pull.head] !== expected) return { merged: false, reason: "head moved" };
       const merge = await commit(state, expected, `merge-${number}`);
       state.refs[pull.base] = merge;
       pull.state = "merged";
+      pull.mergeSha = merge;
       await save(r, state);
       return { merged: true, sha: merge };
     },
@@ -809,5 +828,6 @@ function pullInfo(r: RepoRef, state: RepoState, p: FakePull): PullRequestInfo {
       repo: p.headRepo ?? `${r.owner}/${r.repo}`,
     },
     base: { ref: p.base },
+    mergeCommitSha: p.mergeSha ?? null,
   };
 }

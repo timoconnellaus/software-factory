@@ -2,6 +2,7 @@
 // stalls, a new work item in the same project proposes a fix to `.factory/` (a check, a skill or
 // prompt, context, policy) plus a regression case in evals/. It goes through the normal gates.
 // Depth limit: an incident's own failures don't open further incidents.
+import { sql } from "kysely";
 import { z } from "zod";
 import { newId } from "../ids.ts";
 import { classifyIncident, ROOT_CAUSES } from "../incidents/classify.ts";
@@ -83,6 +84,89 @@ export async function openIncident(
     after: { kind: input.kind, fixWorkItemId: fix.id, rootCause },
   });
   return { incidentId, fixWorkItemId: fix.id, rootCause };
+}
+
+/**
+ * A run's archived log is lost (an object the chunk index names is gone from sf-archive): an
+ * incident for a person, never one that starts an agent's fix, since no agent can bring the object
+ * back. Its record is a work item of kind `incident` left in the backlog (nothing runs until a
+ * person releases it; it shows in Checks and incidents) and a core_incidents row of kind
+ * `archive_missing`. One per run: the row is written only while the run has none, and the batch
+ * aborts otherwise (a viewer and the daily sample racing each other).
+ */
+export function openArchiveIncident(
+  ctx: HandlerContext,
+  input: { runId: string; runNo: number; key: string },
+): { incidentId: string; workItemId: string; number: number } {
+  const w = requireWorkItem(ctx);
+  const project = requireProject(ctx);
+  const incidentId = newId("incident");
+  const fix = createWorkItem(ctx, {
+    project,
+    repositoryId: w.repository_id,
+    title: `Factory incident: #${w.number} run ${input.runNo}'s archived log is missing`,
+    body: [
+      `Run ${input.runNo} of work item #${w.number} (${w.title}) was archived, and part of its log`,
+      `is no longer in the archive: \`${input.key}\` is missing from sf-archive.`,
+      "",
+      "This needs a person: an agent can't bring the object back. Check the bucket (a lifecycle",
+      "rule, a manual delete, a restore from a backup) and close this item when it is resolved.",
+      "",
+      `Incident: ${incidentId}`,
+    ].join("\n"),
+    source: "incident",
+    kind: "incident",
+    requesterUserId: w.requester_user_id,
+    parentWorkItemId: w.id,
+    number: project.next_number,
+    // Left in the backlog: nothing runs until a person releases it (ADR 0491).
+    state: "backlog",
+  });
+  ctx.subject({ workItemId: w.id });
+  ctx.write(
+    ctx.db
+      .insertInto("core_incidents")
+      .columns([
+        "id",
+        "org_id",
+        "project_id",
+        "source_work_item_id",
+        "run_id",
+        "kind",
+        "reason",
+        "fix_work_item_id",
+        "created_by",
+        "created_at",
+      ])
+      // Selected from the source item's own row (one row), unless the run already has one.
+      .expression(
+        ctx.db
+          .selectFrom("core_work_items")
+          .select([
+            sql<string>`${incidentId}`.as("id"),
+            sql<string>`${w.org_id}`.as("org_id"),
+            sql<string>`${w.project_id}`.as("project_id"),
+            sql<string>`${w.id}`.as("source_work_item_id"),
+            sql<string>`${input.runId}`.as("run_id"),
+            sql<string>`'archive_missing'`.as("kind"),
+            sql<string>`${`${input.key} is missing from sf-archive`}`.as("reason"),
+            sql<string>`${fix.id}`.as("fix_work_item_id"),
+            sql<string>`${ctx.actor.id}`.as("created_by"),
+            sql<string>`${ctx.now}`.as("created_at"),
+          ])
+          .where("id", "=", w.id)
+          .where(
+            sql<boolean>`NOT EXISTS (SELECT 1 FROM core_incidents WHERE run_id = ${input.runId} AND kind = 'archive_missing')`,
+          ),
+      ),
+  );
+  ctx.guardChanged("one archive incident per run");
+  ctx.change({
+    entity: "incident",
+    id: incidentId,
+    after: { kind: "archive_missing", runId: input.runId, fixWorkItemId: fix.id },
+  });
+  return { incidentId, workItemId: fix.id, number: fix.number };
 }
 
 export const incidentOpen = defineOperation({

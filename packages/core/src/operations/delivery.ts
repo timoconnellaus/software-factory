@@ -93,33 +93,39 @@ function countedRuns(runs: readonly CheckRunInfo[]): CheckRunInfo[] {
   );
 }
 
-/** The latest start or completion among the runs, as GitHub gives it; '' when it gives none. */
-function latestEvent(runs: readonly CheckRunInfo[]): string {
-  let at = "";
+/**
+ * GitHub's newest run among the head's runs: a rerun is a new check run with a higher id (the
+ * check-runs API carries no run attempt), so it orders two reads at the same moment. 0 when none.
+ */
+function newestRun(runs: readonly CheckRunInfo[]): number {
+  let n = 0;
   for (const r of runs) {
-    for (const t of [r.startedAt, r.completedAt]) if (t && t > at) at = t;
+    const id = Number(r.id);
+    if (Number.isSafeInteger(id) && id > n) n = id;
   }
-  return at;
+  return n;
 }
 
 /**
- * Whether an observation `(headSha, headAt, eventAt)` is newer than the stored one: a later head
- * commit, or the same head with a later (or equal) check event. Mirrored in SQL by `newerGuard`.
+ * Whether an observation is newer than the stored one (second review of #104). Only what the engine
+ * itself knows orders them: which commit is the branch's head is what GitHub reports when the
+ * engine reads it, and observations are ordered by when the engine read (`observed_at`, this call's
+ * start), GitHub's newest run breaking a tie. Never by commit dates: whoever pushes sets those, so a
+ * force-push back to an older commit, or a future-dated commit, must not freeze the state.
  */
 function isNewer(
-  before: Pick<MainHealthRow, "head_sha" | "head_at" | "event_at"> | undefined,
-  o: { headSha: string; headAt: string; eventAt: string },
+  before: Pick<MainHealthRow, "observed_at" | "attempt"> | undefined,
+  o: { observedAt: string; attempt: number },
 ): boolean {
   if (!before) return true;
-  if (o.headAt > before.head_at) return true;
-  if (o.headSha === before.head_sha) return o.eventAt >= before.event_at;
-  return o.headAt === before.head_at && o.eventAt > before.event_at;
+  if (o.observedAt !== before.observed_at) return o.observedAt > before.observed_at;
+  return o.attempt > before.attempt;
 }
 
 export const mainObserve = defineOperation({
   name: "main.observe",
   description:
-    "Record whether a repository's default branch is green (spec 53, ADR 0581): read the branch's head and its CI on GitHub (the factory's own checks don't count; a run cancelled before it started doesn't either). A red head opens a red episode, which stops the line: only repairs land until a green head closes it. Observations are ordered by the head commit's time and the latest check event GitHub gives; an older one never overwrites a newer one, and one that changes nothing writes nothing. Called by the GitHub connector on a check suite or a push to the default branch, and by the babysitter's held recheck; safe to repeat.",
+    "Record whether a repository's default branch is green (spec 53, ADR 0581): read the branch's head and its CI on GitHub (the factory's own checks don't count; a run cancelled before it started doesn't either). A red head opens a red episode, which stops the line: only repairs land until a green head closes it. Observations are ordered by when the engine read them (the branch's head is what GitHub reports then; never commit dates, which the pusher sets), GitHub's newest run breaking a tie; an older one never overwrites a newer one, and one that changes nothing writes no audit row. Called by the GitHub connector on a check suite or a push to the default branch, and by the babysitter's held recheck; safe to repeat.",
   risk: "write",
   actors: ["intake", "agent"],
   permission: "signed-in",
@@ -140,13 +146,9 @@ export const mainObserve = defineOperation({
     const github = ctx.services.github;
     const head = await github.getBranchSha(repo, repository.default_branch);
     if (!head) throw new OperationError("not_found", `no ${repository.default_branch} branch`);
-    const [headAt, runs] = await Promise.all([
-      github.commitTime(repo, head),
-      github.listCheckRuns(repo, head),
-    ]);
-    const counted = countedRuns(runs);
+    const counted = countedRuns(await github.listCheckRuns(repo, head));
     const ci = summarizeCi(counted, github.app.slug);
-    const observed = { headSha: head, headAt: headAt ?? "", eventAt: latestEvent(counted) };
+    const observed = { observedAt: ctx.now, attempt: newestRun(counted) };
     const state: MainHealthState =
       ci.state === "success" ? "green" : ci.state === "failure" ? "red" : "pending";
     const before = await ctx.db
@@ -172,8 +174,8 @@ export const mainObserve = defineOperation({
       red_since: state === "green" ? null : opens ? ctx.now : (before?.red_since ?? null),
       first_red_sha: state === "green" ? null : opens ? head : (before?.first_red_sha ?? null),
       checked_at: ctx.now,
-      head_at: observed.headAt,
-      event_at: observed.eventAt,
+      observed_at: observed.observedAt,
+      attempt: observed.attempt,
       audience: audience
         ? JSON.stringify(audience)
         : state === "green"
@@ -186,8 +188,10 @@ export const mainObserve = defineOperation({
       before.state !== row.state ||
       before.failing !== row.failing ||
       before.red_since !== row.red_since;
-    // Only a change is written (and audited): the same state seen again is not a row (Cloudflare
-    // cost rule). The newer observation's times wait for the next change.
+    // The same state seen again writes nothing, not even its time (no row, no audit: Cloudflare
+    // cost rule 12). The cost: a read that started before this one and saw another state can still
+    // commit after it; that needs main to flap within one read's few seconds, and the next check
+    // suite or held recheck corrects it.
     if (!changed) return { ...mainHealthOf(row), changed: false };
     // Guarded in this batch: another observation that committed meanwhile and is newer than this
     // one refuses it (a push and a check suite read together; GitHub's answers can cross).
@@ -195,11 +199,10 @@ export const mainObserve = defineOperation({
       ctx.d1
         .prepare(
           `INSERT INTO core_batch_guard (name, ok) SELECT 'main.observe:newer', NOT EXISTS (
-             SELECT 1 FROM core_main_health WHERE repository_id = ?1 AND NOT (
-               head_at < ?2 OR (head_sha = ?3 AND event_at <= ?4)
-               OR (head_at = ?2 AND event_at < ?4)))`,
+             SELECT 1 FROM core_main_health WHERE repository_id = ?1 AND
+               (observed_at > ?2 OR (observed_at = ?2 AND attempt >= ?3)))`,
         )
-        .bind(repository.id, observed.headAt, head, observed.eventAt),
+        .bind(repository.id, observed.observedAt, observed.attempt),
     );
     ctx.write(
       ctx.db
@@ -214,8 +217,8 @@ export const mainObserve = defineOperation({
             red_since: row.red_since,
             first_red_sha: row.first_red_sha,
             checked_at: row.checked_at,
-            head_at: row.head_at,
-            event_at: row.event_at,
+            observed_at: row.observed_at,
+            attempt: row.attempt,
             audience: row.audience,
           }),
         ),
@@ -254,6 +257,15 @@ export const mainObserve = defineOperation({
           },
         });
       }
+      // The episode is over, and so are its repairs: an item marked for this one must not skip the
+      // hold in the next (second review of #104). Partial index core_work_items_repair_idx.
+      ctx.write(
+        ctx.db
+          .updateTable("core_work_items")
+          .set({ repairs_main: 0, updated_at: ctx.now })
+          .where("repository_id", "=", repository.id)
+          .where("repairs_main", "=", 1),
+      );
       // Held deliveries may land now (one wake: the queue is keyed by the repository, ADR 0586).
       ctx.emit({
         kind: "delivery.wake",

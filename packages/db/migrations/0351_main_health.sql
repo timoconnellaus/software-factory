@@ -16,12 +16,13 @@ CREATE TABLE core_main_health (
   red_since TEXT,
   first_red_sha TEXT,
   checked_at TEXT NOT NULL,
-  -- Where this observation sits in time, from GitHub: the head commit's committer date, then the
-  -- latest start or completion among the head's counted check runs. `main.observe` writes only an
-  -- observation newer than the row's (compared in SQL in the same batch), so a push and a check
-  -- suite arriving together, or a late read, never put an older state back.
-  head_at TEXT NOT NULL DEFAULT '',
-  event_at TEXT NOT NULL DEFAULT '',
+  -- Where this observation sits in time, by what the engine itself knows (second review of #104):
+  -- when it read the branch's head and checks (`observed_at`), then GitHub's newest check run id on
+  -- that head (a rerun is a new run with a higher id) as a tiebreak. Never commit dates: the pusher
+  -- sets those. `main.observe` writes only a newer observation (compared in SQL in the same batch),
+  -- so a push and a check suite arriving together, or a late read, never put an older state back.
+  observed_at TEXT NOT NULL DEFAULT '',
+  attempt INTEGER NOT NULL DEFAULT 0,
   -- Who is told about the open red episode (JSON user ids, fixed when it opens): the project's
   -- approvers, owner question 4's recommendation. The Inbox card goes to them only.
   audience TEXT NOT NULL DEFAULT '[]'
@@ -33,5 +34,8 @@ CREATE INDEX core_main_health_project_idx ON core_main_health (project_id);
 -- line is stopped, ahead of everything else in its queue. Set by a person (`workItem.markRepair`)
 -- or, later, by the babysit job.
 ALTER TABLE core_work_items ADD COLUMN repairs_main INTEGER NOT NULL DEFAULT 0;
+-- `main.observe` clears a closed episode's repairs (UPDATE … WHERE repository_id = ? AND
+-- repairs_main = 1, once per episode): only the few marked items are in it.
+CREATE INDEX core_work_items_repair_idx ON core_work_items (repository_id) WHERE repairs_main = 1;
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 351) WHERE key = 'schema_version';
