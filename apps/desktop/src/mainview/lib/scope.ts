@@ -47,3 +47,16 @@ export function orgsWaiting(inbox: Inbox, orgOf: OrgOf): Set<string> {
 
 /** An org's square: its initial. */
 export const orgInitial = (name: string) => (name.trim()[0] ?? "?").toUpperCase();
+
+/**
+ * The org the window shows (null: All): the rail's choice, the Personal org before one is made, and
+ * All for an org you've since left. Pages and their loaders both use it, so they agree.
+ */
+export function orgScope(
+  session: { personalOrgId: string | null; orgs: { id: string }[] },
+  chosen: string | null | undefined,
+): string | null {
+  if (chosen === undefined) return session.personalOrgId;
+  if (chosen !== null && !session.orgs.some((o) => o.id === chosen)) return null;
+  return chosen;
+}

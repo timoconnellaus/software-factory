@@ -418,5 +418,9 @@ export async function pruneChannelStore(db: D1Database, now = new Date()): Promi
     // their expiry for the audit's sake, then gone. Devices and tokens stay (they're revocable).
     db.prepare("DELETE FROM core_desktop_auth_requests WHERE expires_at < ?").bind(dayAgo),
     db.prepare("DELETE FROM core_presence_challenges WHERE expires_at < ?").bind(dayAgo),
+    // The phone's attestation nonces, spent pair offers and typed-code tries (ADR 0541), likewise.
+    db.prepare("DELETE FROM core_mobile_nonces WHERE expires_at < ?").bind(dayAgo),
+    db.prepare("DELETE FROM core_pair_offers WHERE expires_at < ?").bind(dayAgo),
+    db.prepare("DELETE FROM core_pair_code_tries WHERE at < ?").bind(dayAgo),
   ]);
 }

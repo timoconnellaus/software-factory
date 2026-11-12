@@ -771,7 +771,8 @@ function withdrawOne(
   gate: { id: string; workflow_id: string | null },
   note: string,
 ) {
-  ctx.write(
+  ctx.writePendingStatus(
+    "close",
     ctx.db
       .updateTable("core_pending_actions")
       .set({

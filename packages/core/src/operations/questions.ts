@@ -631,17 +631,19 @@ async function answerQuestion(
     .where("id", "=", input.questionId)
     .executeTakeFirst();
   if (!q) throw new OperationError("not_found", "no such question");
-  // Security, privacy and irreversible questions keep their presence proof on the desktop until the
-  // owner says otherwise (review of #71): only ordinary planning answers are proof-free.
+  // Security, privacy and irreversible questions keep their presence proof on the desktop and the
+  // phone (review of #71, ADR 0541): only ordinary answers are proof-free.
   if (
     options.proofForSensitive &&
-    ctx.origin.surface === "desktop" &&
+    (ctx.origin.surface === "desktop" || ctx.origin.surface === "mobile") &&
     !ctx.presence &&
     isSensitiveQuestion(q)
   ) {
     throw new OperationError(
       "forbidden",
-      "a security, privacy or irreversible question is answered with Touch ID on the desktop",
+      ctx.origin.surface === "mobile"
+        ? "a security, privacy or irreversible question is answered with your fingerprint on the phone"
+        : "a security, privacy or irreversible question is answered with Touch ID on the desktop",
       { presenceRequired: true },
     );
   }
@@ -695,10 +697,12 @@ export const questionAnswer = defineOperation({
   permission: "member",
   browserOnly: true,
   presenceDecidable: true,
+  // One tap on the phone (ADR 0541); security, privacy and irreversible ones ask for the fingerprint.
+  mobileDecidable: true,
   input: answerInput,
   output: answerOutput,
   async handler(input, ctx) {
-    return answerQuestion(input, ctx);
+    return answerQuestion(input, ctx, { proofForSensitive: true });
   },
 });
 
@@ -779,6 +783,8 @@ export const questionAcceptDefaults = defineOperation({
   permission: "member",
   browserOnly: true,
   presenceDecidable: true,
+  // One tap on the phone (ADR 0541): bulk accept never covers the sensitive questions.
+  mobileDecidable: true,
   input: z.object({ workItemId }),
   output: acceptOutput,
   async handler(_input, ctx) {

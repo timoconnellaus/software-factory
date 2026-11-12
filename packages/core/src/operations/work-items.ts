@@ -25,6 +25,7 @@ import {
   requestPull,
   requestPullsAfterEnd,
 } from "./backlog.ts";
+import { refusePhoneCancel } from "./gates.ts";
 import { queuedEntriesQuery, releaseMergeQueue } from "./merge-queue.ts";
 import { protectionDriftQuery } from "./protection.ts";
 import {
@@ -761,6 +762,8 @@ export const workItemCancel = defineOperation({
     ) {
       return { cancelled: false };
     }
+    // From the phone, not while a config change or a self-modify action waits (ADR 0541).
+    await refusePhoneCancel(ctx, w.id);
     await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     cancelWorkItem(ctx, w, input.reason);
     // Its slot is free: the next queued item may start, after this commits (ADR 0491).
