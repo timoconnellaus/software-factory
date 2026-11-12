@@ -155,14 +155,15 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   builds; CI is where releases are signed. After the first canary release, check that
   `https://downloads.zerobsai.com/desktop/canary-macos-arm64-update-v2.json` and
   `…/canary-macos-arm64-Software-Factory.zip` load, and that an installed canary updates to the next.
-  **On hold (2026-11-12):** M4b (the Secure Enclave key, Touch ID approvals; the owner decided it's
-  overkill, so don't ask for an App ID or provisioning profile) and M5 (the website keeps everything
+  **M4b is back on (2026-11-12):** the owner kept gate approvals on the desktop with Touch ID
+  (`.userPresence`). Spec 40 M4b and ADR 0394 have the design and the owner's steps (an App ID
+  `com.software-factory.desktop.keys`, a Developer ID profile in `MACOS_KEYS_PROFILE`); build it once
+  the owner has made them. **On hold:** M5 (the website keeps everything
   until the desktop app has the Factory and Settings sections). Signed builds use a software key and
   the engine refuses software keys for gate decisions (`DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in
   production). Why it stays empty: tested on the M5, no keychain restriction protects the desktop
   token or the software key from a local agent, because the app's `bun` runs any script under the
-  app's signature. So gate decisions are not available from a signed desktop build; the owner is
-  deciding between approving on the phone, the Touch ID helper, or container-only runners. Next: the client door's `update_required` version handshake. Traps in `apps/desktop`:
+  app's signature. So gate decisions are not available from a signed desktop build until M4b ships. Next: the client door's `update_required` version handshake. Traps in `apps/desktop`:
   stage files explicitly on branches without its `.gitignore` (a `git add -A` once committed 138k
   lines of `.hutch/` and `build/`); Electrobun's request proxy is a function, so RPC names like `call`
   hit `Function.prototype` (use `bunRequests`, `src/mainview/request.ts`).

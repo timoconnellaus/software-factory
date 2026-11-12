@@ -234,21 +234,113 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
   (2026-11-12).
 - **Not yet:**
   - The `update_required` version handshake.
-  - **M4b, the Secure Enclave key.** Tested on the M5 with the real Developer ID: a command-line
-    `sf-keys` signed with `keychain-access-groups` is killed by macOS (restricted entitlement, no
-    profile), and without the entitlement the Secure Enclave refuses (`-34018`). So the key helper
-    has to become its own small bundle (`SF Keys.app` inside the app) with an embedded **Developer ID
-    provisioning profile** for its own App ID. That profile is made in the Apple Developer portal.
-    Until then signed builds sign in with a software key and decide gates on the website.
-    **On hold (2026-11-12):** the owner decided Touch ID approvals are overkill; whether desktop gate
-    decisions need any presence proof is being settled separately.
-  - **Why signed builds can't decide gates (2026-11-12, tested on the M5).** No keychain
-    restriction protects the desktop token or a software key from an agent running as the same
-    user: the app's `bun` runs any script under the app's signature, so a keychain ACL naming the
-    app admits the agent too. So `DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in production and gate
-    decisions are not available from a signed desktop build. The owner is deciding between
-    approving on the phone, the Touch ID helper (M4b), or container-only runners (no agent shares
-    the person's user account).
+  - **M4b, the Secure Enclave key:** its own section below. Until it ships, signed builds sign in
+    with a software key, `DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in production, and gate decisions
+    are made on the website. (2026-11-12, tested on the M5: no keychain restriction protects the
+    desktop token or a software key from an agent running as the same user, because the app's `bun`
+    runs any script under the app's signature, so a keychain ACL naming the app admits the agent
+    too. That is why only a key the agent can't use may decide.)
+
+## M4b: the Secure Enclave key helper
+The owner chose (2026-11-12) to keep gate approvals on the desktop with Touch ID, so the key helper
+is made to work on signed builds ([ADR 0394](../adr/0394-the-key-helper-is-its-own-signed-bundle.md)).
+Tested on the M5 with the real Developer ID: a command-line `sf-keys` signed with
+`keychain-access-groups` is killed by macOS (a restricted entitlement needs an embedded profile, and
+a bare executable can't carry one), and without the entitlement the Secure Enclave refuses to make
+the key (`-34018`). So the helper becomes `SF Keys.app`, a small bundle inside the app with its own
+App ID and an embedded Developer ID provisioning profile. ADR 0391's guarantees hold unchanged: only
+the helper can use the key, the key asks for the person every time (`.userPresence`: Touch ID, or
+the login password as the fallback, as ADR 0391 decided; no reuse window), and the prompt shows only
+the signed, engine-written summary of what is being approved.
+
+**Owner steps** (by hand, once; nothing in Xcode)
+1. **Register the App ID.** [developer.apple.com/account](https://developer.apple.com/account) →
+   Certificates, Identifiers & Profiles → Identifiers → **+** → App IDs → App. Platform macOS,
+   description `SF Keys`, **Explicit** Bundle ID `com.software-factory.desktop.keys`. Use the team
+   that issued the Developer ID Application certificate in `MACOS_CERT_P12` (the App ID prefix shown
+   is that Team ID, `APPLE_TEAM_ID`). **Tick no capabilities** (no iCloud, App Groups or Push): the
+   team's own `<TeamID>.com.software-factory.desktop.keys` keychain group is authorised by the
+   profile's application identifier. Nothing else gets an App ID; the main app needs none.
+2. **Make the profile.** Profiles → **+** → Distribution → **Developer ID** (macOS; not "Mac App
+   Store", not "Mac Development"). Choose the App ID `com.software-factory.desktop.keys`, then the
+   **same** Developer ID Application certificate that is in `MACOS_CERT_P12` (if there are several,
+   the one whose SHA-1 matches `security find-identity -v -p codesigning`; a profile naming another
+   certificate makes macOS kill the helper). Name it `SF Keys Developer ID` and download the
+   `.provisionprofile`.
+3. **Store it.** In the GitHub repo's `release` **environment** (not the repo's secrets), add
+   `MACOS_KEYS_PROFILE` = the profile as one line of base64:
+   `base64 -i SF_Keys_Developer_ID.provisionprofile | pbcopy`. It isn't secret strictly (every
+   shipped app embeds it), but it belongs with the other release inputs.
+4. **After the first M4b canary installs:** open the app, approve the one Touch ID prompt that makes
+   the key, and approve this Mac again on the website when the app asks you to sign in (a new key is
+   a new device; signing out revokes the software-key device).
+5. **When the Developer ID certificate is renewed (5-year expiry) or revoked:** make a new profile
+   for the new certificate (step 2) and replace `MACOS_KEYS_PROFILE`, or the helper stops launching
+   and the app falls back to a software key (gate decisions then stop working from the desktop).
+6. `DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in production. Nothing about M4b changes that.
+
+**Build**
+- **The bundle.** `scripts/bundle.sh` builds `vendor/SF Keys.app` from `native/sf-keys.swift`: the
+  executable in `Contents/MacOS/sf-keys`, an `Info.plist` with `CFBundleIdentifier`
+  `com.software-factory.desktop.keys` and `LSUIElement` true, and, on a release,
+  `Contents/embedded.provisionprofile` from `MACOS_KEYS_PROFILE`. `electrobun.config.ts` copies it to
+  `Resources/app/native/SF Keys.app`; `device-key.ts` runs `…/SF Keys.app/Contents/MacOS/sf-keys`.
+- **The helper's signature.** Signed on its own, before Electrobun signs the app, with the Developer
+  ID, the hardened runtime and exactly these entitlements (`native/sf-keys.entitlements`, Team ID
+  filled in at build time): `com.apple.application-identifier` and `keychain-access-groups` =
+  `<TeamID>.com.software-factory.desktop.keys`, `com.apple.developer.team-identifier` = `<TeamID>`.
+  No JIT, no `disable-library-validation`. The app's own entitlements stay JIT-only.
+- **First thing to check:** that Electrobun's signing of the app leaves the nested helper's
+  signature, entitlements and profile alone. If it re-signs nested code with the app's entitlements,
+  the release re-signs the helper and then the app's outer seal before notarizing, and says so here.
+- **The helper's code.** `create`, `public`, `sign` and `delete` add `kSecUseDataProtectionKeychain`
+  and `kSecAttrAccessGroup` (`<TeamID>.com.software-factory.desktop.keys`, read from its own
+  entitlements at run time, so the Team ID isn't hard-coded). The key stays P-256 in the Secure
+  Enclave with `.privateKeyUsage` and `.userPresence`, `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`,
+  and no `touchIDAuthenticationAllowableReuseDuration`. `sign` keeps refusing anything but a presence
+  message and builds the prompt from its summary line.
+- **The release.** `desktop-release.yml` decodes `MACOS_KEYS_PROFILE` into the bundle and **fails**
+  without it (a release that silently can't decide is worse than none). After signing, "Check the
+  signature" also checks the helper: `codesign --verify --strict` with the requirement
+  `anchor apple generic and identifier "com.software-factory.desktop.keys" and certificate
+  leaf[subject.OU] = "$TEAM_ID"`; `codesign -d --entitlements -` shows the access group on the
+  helper and **none** on the app's `bun` or launcher; the embedded profile (`security cms -D -i`)
+  names `<TeamID>.com.software-factory.desktop.keys` and the signing certificate.
+- **Migration.** A Mac signed in with a software key on an earlier signed build: on launch, when the
+  helper works and the stored key is `software`, the app says "This Mac can now keep its key in the
+  Secure Enclave: sign in again". Choosing it signs out as today (`desktopDevice.revoke` on its own
+  device, then the software key is forgotten), and the sign-in makes the Secure Enclave key and
+  registers it as a new device (`desktop.authStart`). Unsigned dev builds
+  have no profile, so `create` fails as today and they keep a declared software key
+  (`keyStorage: "software"`), which can't decide gates.
+
+**What it does and doesn't protect against**
+- **Does:** a same-user process (an agent, any script the app's `bun` runs) can't use the key: the
+  keychain gives an access group's items only to a process whose own signed entitlements name it,
+  and only the helper's do; adding the entitlement to anything else means re-signing it, which
+  breaks the Developer ID chain the profile names, and macOS kills it. Hardened runtime with library
+  validation keeps code from being injected into the helper.
+- **Doesn't:** stop a same-user process from running `SF Keys.app` itself. It can make a prompt
+  appear for a call of its choosing (the summary names that call truthfully, and the engine refuses a
+  signature over any other), and a person who approves an unexpected prompt approves that call
+  (ADR 0391: **an unexpected Touch ID prompt is a reason to stop**). It can also run `create` or
+  `delete` and destroy the key, which is denial of service (the person signs in again), not a
+  forged decision. With `.userPresence` the proof is as strong as the Mac's login password.
+
+**Acceptance criteria**
+- A release build's helper launches, makes the key and signs a presence message after a Touch ID
+  prompt that shows the call's summary; the app shows `keyStorage: "secure-enclave"`, and a gate
+  decided from the desktop is recorded with its presence proof.
+- The release fails without `MACOS_KEYS_PROFILE`, and its signature check fails if the access group
+  is on anything but the helper or the helper's requirement doesn't hold.
+- Run on the M5 with a dummy key (tag `com.software-factory.desktop.m4b-test`, made by the release
+  helper, never the real device key): a test binary that is not the helper (the app's `bun` running a
+  script, and an ad-hoc signed Swift tool) asking for that tag in the access group gets nothing
+  (`-34018` or not found); the helper finds it. The test deletes the dummy key afterwards.
+- `sign` with no reuse window prompts on every call (two signatures in a row, two prompts).
+- A Mac signed in with a software key on an earlier build is asked to sign in again once and then
+  holds a Secure Enclave key; an unsigned dev build still signs in with a declared software key.
+- `DESKTOP_ALLOW_SOFTWARE_KEYS` is empty in every deployed config (the existing test still passes).
 
 ## M5: the website shrinks to auth
 `apps/app` keeps sign-in, Connect GitHub, the device approval pages, device management and

@@ -101,6 +101,7 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0390](0390-the-desktop-app-is-the-daily-ui.md) | The desktop app is the daily UI and the runner's supervisor |
 | [0391](0391-the-client-door-desktop-devices-and-presence.md) | One client door; desktop devices decide gates with a presence proof |
 | [0392](0392-the-website-shrinks-to-auth.md) | The website shrinks to auth, links go through a trampoline |
+| [0394](0394-the-key-helper-is-its-own-signed-bundle.md) | The key helper is its own signed bundle (`SF Keys.app`) with its own App ID and a Developer ID profile, so only it can use the Secure Enclave key |
 | [0460](0460-the-desktop-shell-and-look.md) | The desktop shell and look: a `hiddenInset` window, sections as route layouts with a nested list, tabs/pins/org as this Mac's view state, the look as `packages/ui` tokens with a desktop-only mapping, real data only |
 | [0530](0530-the-client-door-carries-the-web-terminal.md) | The client door carries the web terminal: `GET /client/v1/terminal/<item>/<run>` for desktop tokens, the same attach as sf-app's route, the token kept in the main process, the terminal view shared from `packages/client` |
 | [0400](0400-watch-and-steer-runs-from-the-dashboard.md) | Watch and steer runs from the dashboard: `run.steer` (runner owner only, journalled), a held `steer` call on the channel, `message` events from the transcript, `run.live` polled |
