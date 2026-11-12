@@ -144,8 +144,11 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     red", with the episode's start time and failing checks;
   - an item's own verify still runs, and its merge gate can still be approved: holding is about
     landing, not about work;
-  - a delivery already updated and waiting for CI when `main` turns red finishes its CI and is held
-    before the merge.
+  - a held delivery isn't brought up to date either: merging a red `main` in would fail its CI and
+    send good work back to build. One already updated and waiting for CI when `main` turns red
+    finishes its CI and is held before the merge;
+  - repairs land first: a repair goes ahead of everything else in its queue. Until the `babysit` job
+    opens repairs itself (§4), a person marks one with `workItem.markRepair` (an approver's call).
 - **Who is told, and where** (decision 3):
   - **Inbox**: one card per red episode for the project's approvers, "`main` is red on <repo>", with
     the failing checks, the suspects, what the babysitter is doing (rerunning, attributing, a fix or
@@ -155,6 +158,42 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
   - **The phone** (spec 60, once push lands): a push to the project's approvers when an episode
     starts, when a revert needs a person (§5), and when `main` is green again. Nothing per held item.
 - `main` turning green releases every hold on the next pass, in approval order.
+- **As built (PR b):** `core_main_health` (migration 0351) is per repository, and the episode is its
+  `red_since`/`first_red_sha` (a separate episodes table with suspects comes with §5). Health counts
+  every check on the head except the factory's own, as verify's CI read does; narrowing it to the
+  ruleset's required checks waits for per-repository protection (spec 50). The Inbox card is
+  `inbox.list`'s `mainRed`; the phone push is a `notify` (`main.red`, `main.green`) that spec 60 can
+  deliver.
+- **Review fixes (PR b):**
+  - **Reconciled from GitHub.** A held queue's recheck (every 30 minutes, `HELD_RECHECK_MS`, or on
+    any wake) calls `main.observe` before it holds anything, so one missed green webhook costs at
+    most one recheck. Cost: per repository with held work, one recheck per 30 minutes: two GitHub
+    reads (the branch ref, its check runs), two D1 point reads, and a D1
+    write and audit row only when the state changed.
+  - **Ordered by what the engine knows** (second review of #104). Which commit is `main`'s head is
+    what GitHub reports when the engine reads the branch, never inferred from commit dates (whoever
+    pushes sets those: a force-push back to an older commit, or a future-dated one, must not freeze
+    the state). Observations are ordered by when the engine read them (`observed_at`, the call's
+    start), GitHub's newest check run id on the head breaking a tie (a rerun is a new run with a
+    higher id; the check-runs API has no run attempt). `main.observe` writes only an observation
+    newer than the stored one, checked when it reads and guarded in SQL in its batch, so a push and a
+    check suite read together, or a read that commits late, never put an older state back. A rerun in flight is `pending` and keeps the
+    episode open; a run cancelled or timed out after it started is red; one cancelled before it
+    started (or GitHub's `stale`) doesn't count. Flapping opens one episode per red spell.
+  - **Only changes are written.** An observation that changes nothing (the same head, state,
+    failing checks and episode) writes nothing, not even an audit row (`quietWhenUnchanged`).
+  - **`workItem.markRepair`** is refused unless the line is stopped on the item's repository
+    (guarded in its batch). It is browser-only: a person in sf-app, or on the desktop or phone with a
+    presence proof for that call (like a merge decision); never the CLI, MCP, a runner or an agent.
+    Risk stays `write`: the classes above it would make a person's own mark open a gate for another
+    person; the presence proof is the confirmation. A repair sorts first **only while** its
+    repository is red; the green that closes the episode clears every mark in that repository, so an
+    item marked in one episode is held in the next unless someone marks it again.
+  - **Items landing through their own Workflow (v4 to v7) are never held**: they started before the
+    babysitter and land as they always did until they drain. Only the babysitter's deliveries hold.
+  - **Who is told (owner question 4, recommended, not yet answered):** the project's approvers,
+    fixed when the episode opens (`core_main_health.audience`, one function: `mainRedAudience`).
+    The Inbox card and the `main.red`/`main.green` pushes go to them only.
 
 ### 3. An approval survives a clean merge of main (ADR 0582, decision 1)
 ADR 0330 already carries an approval over GitHub's update-branch when the new head's first parent is

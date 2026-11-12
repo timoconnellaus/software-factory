@@ -417,6 +417,8 @@ const INBOX: OpOutput<"inbox.list"> = {
       files: [{ kind: "default-branch", filename: "software-factory-default-branch.json" }],
     },
   ],
+  // The "main is red" card (spec 53): no screen shows it yet.
+  mainRed: [],
 };
 
 // As main's verify run reports its checks (verifyResultSchema): the agent's own words in `detail`.

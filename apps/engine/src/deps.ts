@@ -119,6 +119,7 @@ function unavailableGitHub(): FactoryServices["github"] {
     pullRequestMergeability: no,
     compareCommits: no,
     commitParents: no,
+    commitTime: no,
     updatePullRequestBranch: no,
     compareFiles: no,
     readFile: no,

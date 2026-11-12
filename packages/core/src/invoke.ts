@@ -591,6 +591,14 @@ export async function runOperation<O = unknown>(
     }
     return { status: "ok", output: output as O, auditId: null };
   }
+  if (
+    op.quietWhenUnchanged &&
+    statements.length === 0 &&
+    messages.length === 0 &&
+    changes.length === 0
+  ) {
+    return { status: "ok", output: output as O, auditId: null };
+  }
 
   // 11. One batch: writes + guards + fence + approval consumed + audit + outbox. All or nothing.
   //     A changes-only operation that changed nothing writes no audit row (ADR 0590).

@@ -22,6 +22,9 @@ export interface CheckRunInfo {
   /** The App that posted it (`github-actions` for Actions), when GitHub says. */
   appSlug: string | null;
   url: string | null;
+  /** When GitHub started and completed the run, if it says (spec 53: orders `main` observations). */
+  startedAt?: string | null;
+  completedAt?: string | null;
 }
 
 /** What `factory/verify` (or any check the App posts) should say about one head SHA. */
@@ -241,6 +244,8 @@ export interface GitHubService {
   ): Promise<{ aheadBy: number; behindBy: number }>;
   /** A commit's parents, in order (`GET /commits/{sha}`). */
   commitParents(repo: RepoRef, sha: string): Promise<string[]>;
+  /** The commit's committer date as GitHub gives it (ISO), or null when it isn't there. */
+  commitTime(repo: RepoRef, sha: string): Promise<string | null>;
   /**
    * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
    * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`

@@ -1248,6 +1248,25 @@ export const inboxList = defineOperation({
         files: z.array(z.object({ kind: z.enum(RULESET_KINDS), filename: z.string() })),
       }),
     ),
+    /**
+     * "`main` is red" (spec 53, ADR 0581): one card per open red episode, while the line is
+     * stopped, for the project's approvers only (owner question 4, recommended; not yet answered):
+     * the failing checks and since when. What is held behind it is `delivery.status`
+     * (no count here: the inbox doesn't count rows of a growing table).
+     */
+    mainRed: z.array(
+      z.object({
+        projectId: z.string(),
+        name: z.string(),
+        repositoryId: z.string(),
+        repo: z.object({ owner: z.string(), name: z.string() }),
+        branch: z.string(),
+        headSha: z.string(),
+        failing: z.array(z.string()),
+        redSince: z.string(),
+        lastGreenSha: z.string().nullable(),
+      }),
+    ),
   }),
   async handler(input, ctx) {
     const me = ctx.actor.id;
@@ -1258,117 +1277,146 @@ export const inboxList = defineOperation({
       .select("organization_id")
       .where("user_id", "=", me)
       .$if(!!input.orgId, (q) => q.where("organization_id", "=", input.orgId ?? ""));
-    const [pending, questionRows, running, runnerRows, holds, drift, planningRows, flagged] =
-      await readBatch(ctx.d1, [
-        ctx.db
-          .selectFrom("core_pending_actions")
-          .leftJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
-          .select([
-            "core_pending_actions.id",
-            "core_pending_actions.kind",
-            "core_pending_actions.work_item_id",
-            "core_pending_actions.project_id",
-            "core_pending_actions.org_id",
-            "core_pending_actions.operation",
-            "core_pending_actions.assignee_user_id",
-            "core_pending_actions.created_at",
-            "core_pending_actions.timeout_at",
-            "core_pending_actions.escalations",
-            "core_work_items.title",
-          ])
-          .where("core_pending_actions.status", "=", "pending")
-          .where("core_pending_actions.org_id", "in", myOrgs)
-          .orderBy("core_pending_actions.project_id")
-          .orderBy("core_pending_actions.created_at"),
-        ctx.db
-          .selectFrom("core_questions")
-          .innerJoin("core_work_items", "core_work_items.id", "core_questions.work_item_id")
-          .select([
-            "core_questions.id",
-            "core_questions.work_item_id",
-            "core_questions.project_id",
-            "core_questions.domain",
-            "core_questions.prompt",
-            "core_questions.options",
-            "core_questions.default_answer",
-            "core_questions.recommendation",
-            "core_questions.irreversible",
-            "core_work_items.title",
-          ])
-          .where("core_questions.status", "=", "open")
-          .where("core_questions.assignee_user_id", "=", me)
-          .where("core_questions.org_id", "in", myOrgs)
-          .orderBy("core_questions.project_id")
-          .orderBy("core_questions.created_at"),
-        ctx.db
-          .selectFrom("core_work_items")
-          .selectAll()
-          .where("org_id", "in", myOrgs)
-          .where("status", "in", ["running", "waiting", "paused"])
-          .orderBy("updated_at", "desc")
-          .limit(100),
-        ctx.db
-          .selectFrom("core_runners")
-          .selectAll()
-          .select((eb) =>
-            eb
-              .selectFrom("core_runs")
-              .select(eb.fn.countAll<number>().as("n"))
-              .whereRef("core_runs.runner_id", "=", "core_runners.id")
-              .where("core_runs.status", "in", ACTIVE_RUN_STATUSES)
-              .as("active_runs"),
-          )
-          .select((eb) =>
-            eb
-              .selectFrom("core_runs")
-              .innerJoin("core_jobs", "core_jobs.id", "core_runs.job_id")
-              .select(eb.fn.countAll<number>().as("n"))
-              .whereRef("core_runs.runner_id", "=", "core_runners.id")
-              .where("core_runs.status", "in", ACTIVE_RUN_STATUSES)
-              .where("core_jobs.pool", "=", "light")
-              .as("light_runs"),
-          )
-          .where("owner_user_id", "=", me)
-          .where("revoked_at", "is", null),
-        ctx.db
-          .selectFrom("core_jobs")
-          .select(["project_id", (eb) => eb.fn.countAll().as("n")])
-          .where("org_id", "in", myOrgs)
-          .where("status", "=", "queued")
-          .where("wait_reason", "=", WIP_WAIT_REASON)
-          .groupBy("project_id"),
-        protectionDriftQuery(ctx, myOrgs),
-        ctx.db
-          .selectFrom("core_planning_sessions")
-          .innerJoin("core_work_items", "core_work_items.id", "core_planning_sessions.work_item_id")
-          .select((eb) => [
-            "core_planning_sessions.work_item_id",
-            "core_planning_sessions.status",
-            "core_planning_sessions.at_gate",
-            "core_planning_sessions.announced_at",
-            "core_work_items.project_id",
-            "core_work_items.number",
-            "core_work_items.title",
-            eb
-              .selectFrom("core_questions")
-              .select(eb.fn.countAll<number>().as("n"))
-              .whereRef("core_questions.work_item_id", "=", "core_planning_sessions.work_item_id")
-              .where("core_questions.status", "=", "open")
-              .as("open_questions"),
-          ])
-          .where("core_work_items.org_id", "in", myOrgs)
-          .where("core_planning_sessions.announced_at", "is not", null)
-          .where("core_planning_sessions.status", "not in", ["ended", "moved"])
-          .orderBy("core_planning_sessions.announced_at", "desc")
-          .limit(50),
-        // Spec 52, Q4: by core_work_items_release_flag_idx (migration 0285), this person's only.
-        ctx.db
-          .selectFrom("core_work_items")
-          .select(["id", "project_id", "number", "title", "release_flag"])
-          .where("release_flag_user_id", "=", me)
-          .where("org_id", "in", myOrgs)
-          .limit(50),
-      ]);
+    const [
+      pending,
+      questionRows,
+      running,
+      runnerRows,
+      holds,
+      drift,
+      planningRows,
+      redRows,
+      flagged,
+    ] = await readBatch(ctx.d1, [
+      ctx.db
+        .selectFrom("core_pending_actions")
+        .leftJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
+        .select([
+          "core_pending_actions.id",
+          "core_pending_actions.kind",
+          "core_pending_actions.work_item_id",
+          "core_pending_actions.project_id",
+          "core_pending_actions.org_id",
+          "core_pending_actions.operation",
+          "core_pending_actions.assignee_user_id",
+          "core_pending_actions.created_at",
+          "core_pending_actions.timeout_at",
+          "core_pending_actions.escalations",
+          "core_work_items.title",
+        ])
+        .where("core_pending_actions.status", "=", "pending")
+        .where("core_pending_actions.org_id", "in", myOrgs)
+        .orderBy("core_pending_actions.project_id")
+        .orderBy("core_pending_actions.created_at"),
+      ctx.db
+        .selectFrom("core_questions")
+        .innerJoin("core_work_items", "core_work_items.id", "core_questions.work_item_id")
+        .select([
+          "core_questions.id",
+          "core_questions.work_item_id",
+          "core_questions.project_id",
+          "core_questions.domain",
+          "core_questions.prompt",
+          "core_questions.options",
+          "core_questions.default_answer",
+          "core_questions.recommendation",
+          "core_questions.irreversible",
+          "core_work_items.title",
+        ])
+        .where("core_questions.status", "=", "open")
+        .where("core_questions.assignee_user_id", "=", me)
+        .where("core_questions.org_id", "in", myOrgs)
+        .orderBy("core_questions.project_id")
+        .orderBy("core_questions.created_at"),
+      ctx.db
+        .selectFrom("core_work_items")
+        .selectAll()
+        .where("org_id", "in", myOrgs)
+        .where("status", "in", ["running", "waiting", "paused"])
+        .orderBy("updated_at", "desc")
+        .limit(100),
+      ctx.db
+        .selectFrom("core_runners")
+        .selectAll()
+        .select((eb) =>
+          eb
+            .selectFrom("core_runs")
+            .select(eb.fn.countAll<number>().as("n"))
+            .whereRef("core_runs.runner_id", "=", "core_runners.id")
+            .where("core_runs.status", "in", ACTIVE_RUN_STATUSES)
+            .as("active_runs"),
+        )
+        .select((eb) =>
+          eb
+            .selectFrom("core_runs")
+            .innerJoin("core_jobs", "core_jobs.id", "core_runs.job_id")
+            .select(eb.fn.countAll<number>().as("n"))
+            .whereRef("core_runs.runner_id", "=", "core_runners.id")
+            .where("core_runs.status", "in", ACTIVE_RUN_STATUSES)
+            .where("core_jobs.pool", "=", "light")
+            .as("light_runs"),
+        )
+        .where("owner_user_id", "=", me)
+        .where("revoked_at", "is", null),
+      ctx.db
+        .selectFrom("core_jobs")
+        .select(["project_id", (eb) => eb.fn.countAll().as("n")])
+        .where("org_id", "in", myOrgs)
+        .where("status", "=", "queued")
+        .where("wait_reason", "=", WIP_WAIT_REASON)
+        .groupBy("project_id"),
+      protectionDriftQuery(ctx, myOrgs),
+      ctx.db
+        .selectFrom("core_planning_sessions")
+        .innerJoin("core_work_items", "core_work_items.id", "core_planning_sessions.work_item_id")
+        .select((eb) => [
+          "core_planning_sessions.work_item_id",
+          "core_planning_sessions.status",
+          "core_planning_sessions.at_gate",
+          "core_planning_sessions.announced_at",
+          "core_work_items.project_id",
+          "core_work_items.number",
+          "core_work_items.title",
+          eb
+            .selectFrom("core_questions")
+            .select(eb.fn.countAll<number>().as("n"))
+            .whereRef("core_questions.work_item_id", "=", "core_planning_sessions.work_item_id")
+            .where("core_questions.status", "=", "open")
+            .as("open_questions"),
+        ])
+        .where("core_work_items.org_id", "in", myOrgs)
+        .where("core_planning_sessions.announced_at", "is not", null)
+        .where("core_planning_sessions.status", "not in", ["ended", "moved"])
+        .orderBy("core_planning_sessions.announced_at", "desc")
+        .limit(50),
+      ctx.db
+        .selectFrom("core_main_health as h")
+        .innerJoin("core_projects as p", "p.id", "h.project_id")
+        .innerJoin("core_repositories as r", "r.id", "h.repository_id")
+        .select([
+          "h.project_id",
+          "p.name",
+          "h.repository_id",
+          "r.owner",
+          "r.name as repo",
+          "r.default_branch",
+          "h.head_sha",
+          "h.failing",
+          "h.red_since",
+          "h.last_green_sha",
+          "h.audience",
+        ])
+        .where("p.org_id", "in", myOrgs)
+        .where("h.red_since", "is not", null)
+        .orderBy("h.red_since"),
+      // Spec 52, Q4: by core_work_items_release_flag_idx (migration 0285), this person's only.
+      ctx.db
+        .selectFrom("core_work_items")
+        .select(["id", "project_id", "number", "title", "release_flag"])
+        .where("release_flag_user_id", "=", me)
+        .where("org_id", "in", myOrgs)
+        .limit(50),
+    ]);
     const gates = pending
       .filter((g) => g.assignee_user_id === me)
       .map((g) => ({
@@ -1475,6 +1523,21 @@ export const inboxList = defineOperation({
           ).map((kind) => ({ kind, filename: `${d.repo}-${kind}.json` })),
         };
       }),
+      // Only to the episode's audience: the project's approvers (owner question 4's
+      // recommendation, `mainRedAudience`).
+      mainRed: redRows
+        .filter((r) => parseJson<string[]>(r.audience, []).includes(me))
+        .map((r) => ({
+          projectId: r.project_id,
+          name: r.name,
+          repositoryId: r.repository_id,
+          repo: { owner: r.owner, name: r.repo },
+          branch: r.default_branch,
+          headSha: r.head_sha,
+          failing: parseJson<string[]>(r.failing, []),
+          redSince: String(r.red_since),
+          lastGreenSha: r.last_green_sha,
+        })),
     };
   },
 });

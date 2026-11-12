@@ -47,6 +47,8 @@ interface RepoState {
   deferUpdates?: boolean;
   /** A merge commit's second parent (what `update-branch` merged in), by merge commit SHA. */
   merged?: Record<string, string>;
+  /** When each commit was made (ISO), for `commitTime`; increasing in the order they were made. */
+  times?: Record<string, string>;
   tokens: number;
 }
 
@@ -106,6 +108,10 @@ export interface FakeGitHub extends GitHubService {
   setMergeable(repo: RepoRef, number: number, mergeable: boolean | null): Promise<void>;
   /** GitHub refuses the PR's next merge with this reason (once). */
   refuseNextMerge(repo: RepoRef, number: number, reason: string): Promise<void>;
+  /** Points a branch at an existing commit, as a force-push does. */
+  forcePush(repo: RepoRef, branch: string, sha: string): Promise<void>;
+  /** Sets a commit's committer date, as whoever pushed it chose (past or future). */
+  setCommitTime(repo: RepoRef, sha: string, at: string): Promise<void>;
   /** Sets a person's role on the repo (null: not a collaborator). */
   setPermission(repo: RepoRef, login: string, permission: string | null): Promise<void>;
   /** What `GET /app` reports (default: every event the factory needs). */
@@ -251,6 +257,10 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
   const commit = async (state: RepoState, parent: string | null, salt: string) => {
     const next = await sha(`${parent}:${salt}:${crypto.randomUUID()}`);
     state.parents[next] = parent;
+    // Strictly increasing, so the order commits were made in is the order their times say.
+    const last = Math.max(0, ...Object.values(state.times ?? {}).map((t) => Date.parse(t)));
+    const at = new Date(Math.max(Date.now(), last + 1000)).toISOString();
+    state.times = { ...(state.times ?? {}), [next]: at };
     return next;
   };
 
@@ -423,6 +433,16 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         headSha: state.refs[pull.head] ?? null,
       };
     },
+    async forcePush(r, branch, at) {
+      const state = await load(r);
+      state.refs[branch] = at;
+      await save(r, state);
+    },
+    async setCommitTime(r, at, when) {
+      const state = await load(r);
+      state.times = { ...(state.times ?? {}), [at]: when };
+      await save(r, state);
+    },
     async refuseNextMerge(r, number, reason) {
       const state = await load(r);
       state.refuseMerge = { ...(state.refuseMerge ?? {}), [number]: reason };
@@ -441,6 +461,9 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         aheadBy: [...h].filter((c) => !b.has(c)).length,
         behindBy: [...b].filter((c) => !h.has(c)).length,
       };
+    },
+    async commitTime(r, at) {
+      return (await load(r)).times?.[at] ?? null;
     },
     async commitParents(r, at) {
       const state = await load(r);

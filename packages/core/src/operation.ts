@@ -303,6 +303,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    * step, ADR 0371). `deny` still refuses.
    */
   alwaysReview?: boolean;
+  /**
+   * A write operation that, when its handler queued nothing (no write, event or change), commits
+   * nothing either: no audit row (spec 53 review, the Cloudflare cost rule). For observations
+   * repeated on every webhook (`main.observe`), where only a change is worth a row. Its
+   * idempotency key then records nothing, so a retry runs it again: it must be safe to repeat.
+   */
+  quietWhenUnchanged?: true;
   /** Who should decide a `review` (a GitHub login); falls back to the approvers. */
   assignee?: (input: z.output<I>) => string | null;
   /** Which inbox card a `review` answer becomes. Default `approval`. */
