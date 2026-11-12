@@ -31,6 +31,7 @@ import {
   checkSandbox,
   checkSandboxEnv,
   checkSandboxSettings,
+  macUserDirs,
   processesUnder,
   SRT_VENDOR,
   sandboxAvailable,
@@ -665,7 +666,10 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       const dir = join(root, "tree");
       await mkdir(dir, { recursive: true });
       const inTmp = `/tmp/sf-s3-probe-${process.pid}`;
-      const inVar = join(tmpdir(), `sf-s3-probe-${process.pid}`);
+      // The user's real /var/folders temp, from the system: under turbo TMPDIR is unset.
+      const userTemp = macUserDirs()[0];
+      if (!userTemp) throw new Error("getconf DARWIN_USER_TEMP_DIR gave nothing");
+      const inVar = join(userTemp, `sf-s3-probe-${process.pid}`);
       await writeFile(inTmp, "TMP-SECRET");
       await writeFile(inVar, "VARFOLDERS-SECRET");
       cleanups.push(() => rm(inTmp, { force: true }));
@@ -680,7 +684,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
         {
           run: [
             `cat ${inTmp} /private${inTmp} ${inVar}`,
-            `ls ${dirname(realpathSync(tmpdir()))} >/dev/null 2>&1 && echo LISTED-VAR-FOLDERS`,
+            `ls ${dirname(realpathSync(userTemp))} >/dev/null 2>&1 && echo LISTED-VAR-FOLDERS`,
             "launchctl print gui/$(id -u) 2>&1 | head -3",
             "/bin/launchctl print gui/$(id -u) >/dev/null 2>&1 && echo LAUNCHCTL-WORKED",
             "echo ok > here && cat here",

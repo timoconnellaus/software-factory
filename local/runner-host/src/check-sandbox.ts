@@ -23,10 +23,10 @@
 // Where the sandbox can't run (no `sandbox-exec` on macOS, no bubblewrap and socat on Linux, a
 // kernel that refuses bubblewrap's namespaces, another platform) nothing runs: each check is "not
 // run" with the reason (`sandboxTrial`, which `sf-runner doctor` can call too).
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readlink, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, sep } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -207,20 +207,45 @@ export function sandboxAvailable(
 }
 
 /**
- * The shared temp dirs a check on macOS may not read (fourth review, S3): `/tmp` and `/private/tmp`,
- * and the user's own `/var/folders/<x>/<y>` (its `T`, `C` and `0`), where the owner's other tools
- * keep their temp files and caches. The check's own temp is under its own dir.
+ * The user's own per-user dirs on macOS, `/var/folders/<x>/<y>/T` and `.../C`, read from
+ * `getconf` (the system's own answer, from the user's uid), never from TMPDIR: the runner's launchd
+ * job sets only PATH and HOME, and Node's `tmpdir()` is `/tmp` when TMPDIR is unset, which would
+ * leave the real ones readable. Asked once per process. Empty when `getconf` can't answer.
  */
-export function macTempDenies(tmp: string = tmpdir()): string[] {
-  const out = ["/tmp", "/private/tmp"];
-  let real = tmp;
-  try {
-    real = realpathSync(tmp);
-  } catch {
-    // as given
+export function macUserDirs(env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin" }): string[] {
+  const out: string[] = [];
+  for (const name of ["DARWIN_USER_TEMP_DIR", "DARWIN_USER_CACHE_DIR"]) {
+    try {
+      const dir = execFileSync("/usr/bin/getconf", [name], { env, encoding: "utf8" }).trim();
+      if (dir) out.push(dir);
+    } catch {
+      // not macOS, or no answer: the fixed temp dirs are still denied
+    }
   }
-  const m = /^(?:\/private)?(\/var\/folders\/[^/]+\/[^/]+)/.exec(real);
-  if (m?.[1]) out.push(m[1], `/private${m[1]}`);
+  return out;
+}
+
+let cachedMacUserDirs: string[] | undefined;
+
+/**
+ * The shared temp dirs a check on macOS may not read (fourth review, S3): `/tmp` and `/private/tmp`,
+ * and the user's own `/var/folders/<x>/<y>` (its `T`, `C` and `0`, all under it), where the owner's
+ * other tools keep their temp files and caches. The check's own temp is under its own dir.
+ */
+export function macTempDenies(
+  userDirs: string[] = (cachedMacUserDirs ??= macUserDirs()),
+): string[] {
+  const out = ["/tmp", "/private/tmp"];
+  for (const dir of userDirs) {
+    let real = dir;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      // as given
+    }
+    const m = /^(?:\/private)?(\/var\/folders\/[^/]+\/[^/]+)/.exec(real);
+    if (m?.[1] && !out.includes(m[1])) out.push(m[1], `/private${m[1]}`);
+  }
   return out;
 }
 
