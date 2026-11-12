@@ -872,10 +872,34 @@ describe("the typed code's limits hold under parallel guessing (review of PR 1a)
     // ...and a fresh address still gets one and signs in.
     const w = await world();
     await browserSignIn(w);
-    // The per-caller limit is a courtesy: the eleventh in five minutes holds that caller only.
+    // The per-caller limit is a courtesy: the eleventh in a minute holds that caller only.
     const held = await post("mobile/nonce", {}, undefined, PROTOCOL, "2001:db8:0:1::77");
     expect(held.status).toBe(503);
     expect((await post("mobile/nonce", {}, undefined, PROTOCOL, "198.51.100.10")).status).toBe(200);
+  });
+
+  it("asking for a nonce writes nothing to D1, within the limit or over it", async () => {
+    // The courtesy limit is the Workers rate limiting binding (MOBILE_NONCE_LIMIT), checked at the
+    // door before the call: no counter rows, and mobile.nonce is a read, so no audit row either.
+    const rows = async () =>
+      first<{ n: number }>(
+        `SELECT (SELECT COUNT(*) FROM core_audit WHERE operation = 'mobile.nonce')
+              + (SELECT COUNT(*) FROM core_mobile_nonces) AS n`,
+      );
+    const tables = await env.DB.prepare(
+      "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'core_mobile_nonce_asks'",
+    ).all();
+    expect(tables.results).toEqual([]);
+    const before = await rows();
+    const from = "203.0.113.200";
+    const answers = [];
+    for (let i = 0; i < 12; i++) {
+      answers.push((await post("mobile/nonce", {}, undefined, PROTOCOL, from)).status);
+    }
+    expect(answers).toEqual([...Array(10).fill(200), 503, 503]);
+    const over = await post("mobile/nonce", {}, undefined, PROTOCOL, from);
+    expect(await json(over)).toMatchObject({ code: "unavailable" });
+    expect((await rows())?.n).toBe(before?.n);
   });
 
   it("a nonce the engine didn't sign, an altered one or an expired one is refused", async () => {
