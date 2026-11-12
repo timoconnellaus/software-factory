@@ -192,6 +192,21 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
       child.stdin?.write(`${line}\n`);
     });
   };
+  /**
+   * A command line of several `;`-separated commands: tmux answers each with its own block, all
+   * before any more output, so they are read together and in order with the output stream.
+   */
+  const commands = (line: string, count: number): Promise<Block[]> => {
+    if (exited || !child.stdin?.writable) {
+      return Promise.resolve(Array.from({ length: count }, () => ({ ok: false, lines: [] })));
+    }
+    const blocks = Array.from(
+      { length: count },
+      () => new Promise<Block>((resolve) => pending.push({ resolve })),
+    );
+    child.stdin?.write(`${line}\n`);
+    return Promise.all(blocks);
+  };
   const text = (block: Block) => block.lines.map((l) => new TextDecoder().decode(l));
 
   let size: TerminalSize = { cols: 80, rows: 24 };
@@ -232,12 +247,15 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
     },
     async redraw() {
       // One command line, so the screen and the cursor are read together, in order with the output.
-      const r = await command(
+      // It answers with two blocks, one per command (reading only one put the cursor at 1;1 and
+      // handed the second block to the next command).
+      const [screen, cursor] = await commands(
         `capture-pane -p -e -t ${pane} ; display-message -p -t ${pane} "#{cursor_x} #{cursor_y} #{pane_width} #{pane_height} #{cursor_flag}"`,
+        2,
       );
-      if (!r.ok) return;
-      const lines = text(r);
-      const [x, y, w, h, visible] = (lines.pop() ?? "").split(" ").map(Number);
+      if (!screen?.ok || !cursor?.ok) return;
+      const lines = text(screen);
+      const [x, y, w, h, visible] = (text(cursor)[0] ?? "").split(" ").map(Number);
       if (w && h) size = { cols: w, rows: h };
       options.onSize(size);
       options.onOutput(

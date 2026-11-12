@@ -132,6 +132,20 @@ describe.skipIf(!hasTmux)("the bridge on the real tmux", { timeout: 30_000 }, ()
     out = "";
     await bridge.redraw();
     expect(out.startsWith("\x1b[?25l\x1b[0m\x1b[H\x1b[2J")).toBe(true);
+    // The cursor goes where tmux has it, not the top left (spec 42 found it at 1;1).
+    const cursor = await tmux.call([
+      "display-message",
+      "-p",
+      "-t",
+      `=${name}:`,
+      "#{cursor_x} #{cursor_y}",
+    ]);
+    const [cx, cy] = cursor.stdout.trim().split(" ").map(Number);
+    expect(out).toContain(`\x1b[${(cy ?? 0) + 1};${(cx ?? 0) + 1}H`);
+    expect(cy).toBeGreaterThan(0);
+    // The next command still gets its own answer.
+    await bridge.resize({ cols: 91, rows: 21 });
+    expect(sizes.at(-1)).toEqual({ cols: 91, rows: 21 });
     expect(out).toContain("hello");
     expect(out).toContain("^[[A^B");
 
