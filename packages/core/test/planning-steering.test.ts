@@ -793,4 +793,137 @@ describe("the planning loop to kim's standard (spec 26)", () => {
     const read = await ok<View>("planning.get", { workItemId: item.workItemId }, w.human);
     expect(read.questions.find((x) => x.id === q)?.answerDeliveredAt).not.toBeNull();
   });
+
+  it("treats a domain however it is spelled: Security is security, everywhere (review of #71, C)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { questionIds } = await agent<{ questionIds: string[] }>("question.ask", {
+      questions: [
+        { prompt: "Who sees exports?", domain: "Security", default: "Admins" },
+        { prompt: "Keep emails?", domain: "Security & Privacy", default: "No" },
+      ],
+    });
+    const domains = await rows<{ domain: string }>(
+      "SELECT domain FROM core_questions WHERE work_item_id = ? ORDER BY number",
+      item.workItemId,
+    );
+    expect(domains.map((d) => d.domain)).toEqual(["security", "security"]);
+    const bulk = await ok<{ accepted: string[] }>(
+      "planning.acceptDefaults",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    expect(bulk.accepted).toEqual([]);
+    const desktop = await invoke(
+      deps,
+      "planning.answer",
+      { questionId: questionIds[0], answer: "Admins" },
+      { actor: w.human, origin: { surface: "desktop" } },
+    ).catch((e: OperationError) => e);
+    expect((desktop as OperationError).code).toBe("forbidden");
+    // A domain off the list is refused, so a new spelling can't dodge the check.
+    const odd = await refusal(
+      agent("question.ask", { questions: [{ prompt: "?", domain: "sekurity" }] }),
+    );
+    expect(odd.code).toBe("invalid_input");
+  });
+
+  it("lets only someone who may answer the questions hand them to the planner (review of #71, E)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    await agent("question.ask", { questions: [{ prompt: "Filename?", default: "deals.csv" }] });
+    // A plain member, neither the assignee nor an approver.
+    const memberId = uid("usr_");
+    const now = new Date().toISOString();
+    await rows(
+      "INSERT INTO core_user (id, name, email, created_at, updated_at) VALUES (?, 'Sam', ?, ?, ?)",
+      memberId,
+      `${memberId}@example.com`,
+      now,
+      now,
+    );
+    await rows(
+      "INSERT INTO core_member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, 'member', ?)",
+      uid("mem_"),
+      w.orgId,
+      memberId,
+      now,
+    );
+    const sam = { type: "human" as const, id: memberId };
+    const refused = await refusal(
+      ok("planning.finishAlone", { workItemId: item.workItemId, on: true }, sam),
+    );
+    expect(refused.code).toBe("forbidden");
+  });
+
+  it("doesn't answer in someone's name after they turned finish alone off, even racing (review of #71, F)", async () => {
+    const w = await world();
+    const { item, job, m5 } = await planning(w);
+    await ok("planning.finishAlone", { workItemId: item.workItemId, on: true }, w.human);
+    const ask = held(
+      "question.ask",
+      {
+        jobId: job.jobId,
+        fencingToken: job.lease.fencingToken,
+        questions: [{ prompt: "Separator?", default: "," }],
+      },
+      m5,
+    );
+    await ask.reached;
+    await ok("planning.finishAlone", { workItemId: item.workItemId, on: false }, w.human);
+    ask.release();
+    expect((await refusalOf(ask.result)).code).toBe("conflict");
+  });
+
+  it("answers the question the person saw, and reopens an answer when the question changes in kind (review of #71, G)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { questionIds } = await agent<{ questionIds: string[] }>("question.ask", {
+      questions: [{ prompt: "Keep logs?", kind: "yes-no", default: "Yes" }],
+    });
+    const q = questionIds[0] as string;
+    const revisionOf = async () =>
+      (await first<{ revision: number }>("SELECT revision FROM core_questions WHERE id = ?", q))
+        .revision;
+    const seen = await revisionOf();
+    // The planner rewords it after the person read it.
+    await agent("question.update", { questionId: q, patch: { prompt: "Keep logs for a year?" } });
+    const stale = await refusal(
+      ok("planning.answer", { questionId: q, answer: "Yes", questionRevision: seen }, w.human),
+    );
+    expect(stale.code).toBe("conflict");
+    await ok(
+      "planning.answer",
+      { questionId: q, answer: "Yes", questionRevision: await revisionOf() },
+      w.human,
+    );
+    // Now it becomes irreversible: the answer is reopened, for a person to give again.
+    await agent("question.update", { questionId: q, patch: { irreversible: true } });
+    const state = await first<{ status: string; answer: string | null }>(
+      "SELECT status, answer FROM core_questions WHERE id = ?",
+      q,
+    );
+    expect(state).toEqual({ status: "open", answer: null });
+    void item;
+  });
+
+  it("commits one of two interrupts that race (review of #71, H)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    await agent("planning.news", { activity: "reading the repo" });
+    const first_ = held(
+      "chat.send",
+      { workItemId: item.workItemId, text: "one", interrupt: true },
+      w.human,
+    );
+    await first_.reached;
+    await ok("chat.send", { workItemId: item.workItemId, text: "two", interrupt: true }, w.human);
+    first_.release();
+    expect((await refusalOf(first_.result)).code).toBe("conflict");
+    const steers = await rows<{ id: string }>(
+      "SELECT id FROM core_run_steers WHERE work_item_id = ? AND interrupt = 1",
+      item.workItemId,
+    );
+    expect(steers).toHaveLength(1);
+  });
 });

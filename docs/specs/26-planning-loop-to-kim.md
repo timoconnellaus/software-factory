@@ -175,4 +175,18 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
   - `planning.answer` keeps the presence proof on the desktop for security, privacy and
     irreversible questions (also `presenceDecidable`; `ctx.presence` tells the handler a proof
     came). Ordinary answers and bulk accept stay proof-free.
+- After the second review (fixes on #71):
+  - Decision domains are a closed list, normalised on the way in (`decisionDomainSchema`:
+    "Security" → `security`, "security & privacy" → `security`). One shared predicate,
+    `isSensitiveQuestion` in runner-contract, used by core and the clients, decides what a person
+    must answer themselves.
+  - Finish alone covers only questions its setter may answer (the assignee, or an approver). Only an
+    approver, or the person the open questions are assigned to, may turn it on. An ask that answers
+    in the setter's name is guarded on finish alone still being on.
+  - `planning.answer` takes `questionRevision`, and an answer to a question the planner changed
+    meanwhile is refused. `question.update` reopens an answer when the question becomes sensitive,
+    or its kind or options change.
+  - The 10 s interrupt spacing is guarded in the batch.
+  - The Rewind-menu check reads only the bottom of the screen and needs the menu's footer line.
+  - `desktopDecidable`'s comment lists the operations it covers and why.
 

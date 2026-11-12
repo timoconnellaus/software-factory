@@ -6,6 +6,7 @@
 // change is an event in the planning log.
 import { parseJson } from "@software-factory/db";
 import {
+  isSensitiveQuestion,
   type PlanningQuestion,
   planningQuestionSchema,
   questionDeleteInputSchema,
@@ -25,6 +26,7 @@ import { byJob, notifyAway, planningJob, planningJobFields } from "./planning.ts
 import { fencingToken, jobId, questionId, requireWorkItem, workItemId } from "./shared.ts";
 
 /** Questions bulk accept never covers (ADR 0042). */
+/** Questions bulk accept never covers (ADR 0042); `isSensitiveQuestion` is the check. */
 export const NEVER_BULK_ACCEPTED_DOMAINS = ["security", "privacy", "security-privacy"] as const;
 
 /** Whether bulk accept (and "finish alone") may answer a question with its default (ADR 0042). */
@@ -34,8 +36,7 @@ export function bulkAcceptable(q: {
   default?: string | null;
 }) {
   return (
-    !(NEVER_BULK_ACCEPTED_DOMAINS as readonly string[]).includes(q.domain ?? "product") &&
-    !q.irreversible &&
+    !isSensitiveQuestion({ domain: q.domain ?? "product", irreversible: q.irreversible }) &&
     q.default !== null &&
     q.default !== undefined
   );
@@ -145,6 +146,23 @@ export const questionAsk = defineOperation({
       .executeTakeFirst();
     let number = Number(counters?.n ?? 0);
     const alone: string[] = [];
+    // "Finish alone" covers only questions its setter may answer: they are the assignee, or an
+    // approver (review of #71, E). Guarded, so turning it off meanwhile isn't overtaken (F).
+    const aloneBy =
+      session?.finish_alone_by &&
+      (session.finish_alone_by === assignee || approvers.includes(session.finish_alone_by))
+        ? session.finish_alone_by
+        : null;
+    if (aloneBy && session) {
+      ctx.guardExists(
+        "finish alone is still on",
+        ctx.db
+          .selectFrom("core_planning_sessions")
+          .select("id")
+          .where("id", "=", session.id)
+          .where("finish_alone_by", "=", aloneBy),
+      );
+    }
     let position = Number(counters?.p ?? 0);
     const ids: string[] = [];
     const numbers: number[] = [];
@@ -186,22 +204,20 @@ export const questionAsk = defineOperation({
             planning_session_id: sessionId,
             // "Finish alone" (ADR 0470): a bulk-acceptable question is accepted as it is asked,
             // recorded as the answer of the person who gave the instruction.
-            ...(session?.finish_alone_by && text && bulkAcceptable({ ...q, default: text })
+            ...(aloneBy && text && bulkAcceptable({ ...q, default: text })
               ? {
                   status: "answered" as const,
                   answer: text,
                   accepted_default: 1,
                   accepted_alone: 1,
-                  answered_by: session.finish_alone_by,
+                  answered_by: aloneBy,
                   answered_at: ctx.now,
                   answer_revision: 1,
                 }
               : {}),
           }),
         );
-        if (session?.finish_alone_by && text && bulkAcceptable({ ...q, default: text })) {
-          alone.push(id);
-        }
+        if (aloneBy && text && bulkAcceptable({ ...q, default: text })) alone.push(id);
       } else {
         const q = parse(questionDraftSchema, raw, i);
         ctx.write(
@@ -274,7 +290,7 @@ async function agentQuestion(ctx: HandlerContext, id: string) {
 export const questionUpdate = defineOperation({
   name: "question.update",
   description:
-    "The planning agent edits one of its work item's questions (prompt, kind, options, default, recommendation, domain, blocking, irreversible). An answer it already has stands.",
+    "The planning agent edits one of its work item's questions (prompt, kind, options, default, recommendation, domain, blocking, irreversible). An answer it already has stands, unless the edit changes its kind or options or makes it a security, privacy or irreversible question: then it is open again.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -294,10 +310,33 @@ export const questionUpdate = defineOperation({
     });
     const text = defaults ? defaultText(defaults) : null;
     const revision = q.revision + 1;
+    // An answer stands only while it still answers the same question (review of #71, G): it is
+    // reopened when the question becomes one a person must answer themselves, or its kind or
+    // options change.
+    const domain = p.domain ?? q.domain;
+    const irreversible = p.irreversible ?? q.irreversible === 1;
+    const reopen =
+      q.status === "answered" &&
+      ((isSensitiveQuestion({ domain, irreversible }) && !isSensitiveQuestion(q)) ||
+        kind !== q.kind ||
+        JSON.stringify(options) !== q.options);
     ctx.write(
       ctx.db
         .updateTable("core_questions")
         .set({
+          ...(reopen
+            ? {
+                status: "open" as const,
+                answer: null,
+                note: null,
+                skipped: 0,
+                accepted_default: 0,
+                accepted_alone: 0,
+                answered_by: null,
+                answered_at: null,
+                answer_delivered_at: null,
+              }
+            : {}),
           kind,
           options: JSON.stringify(options),
           default_values: defaults ? JSON.stringify(defaults) : null,
@@ -316,7 +355,7 @@ export const questionUpdate = defineOperation({
         .where("revision", "=", q.revision),
     );
     ctx.guardChanged("question unchanged since read");
-    logPlanning(ctx, q.work_item_id, "question.updated", { questionId: q.id, revision });
+    logPlanning(ctx, q.work_item_id, "question.updated", { questionId: q.id, revision, reopen });
     ctx.change({ entity: "question", id: q.id, after: { revision } });
     return { questionId: q.id, revision };
   },
@@ -558,6 +597,8 @@ const answerInput = z
     note: z.string().trim().max(4_000).optional(),
     /** Skip it: the planning agent decides (spec 26). Planning questions only. */
     skipped: z.boolean().optional(),
+    /** The question's revision the person answered (review of #71, G): a newer one is a conflict. */
+    questionRevision: z.number().int().nonnegative().optional(),
   })
   .refine((v) => v.skipped || v.answer !== undefined, {
     message: "an answer is required unless the question is skipped",
@@ -587,7 +628,7 @@ async function answerQuestion(
     options.proofForSensitive &&
     ctx.origin.surface === "desktop" &&
     !ctx.presence &&
-    ((NEVER_BULK_ACCEPTED_DOMAINS as readonly string[]).includes(q.domain) || q.irreversible)
+    isSensitiveQuestion(q)
   ) {
     throw new OperationError(
       "forbidden",
@@ -599,6 +640,19 @@ async function answerQuestion(
     throw new OperationError(
       "invalid_input",
       "not a planning session's question: use question.answer",
+    );
+  }
+  if (input.questionRevision !== undefined) {
+    if (q.revision !== input.questionRevision) {
+      throw new OperationError("conflict", "the question changed since you read it: look again");
+    }
+    ctx.guardExists(
+      "the question is as the person read it",
+      ctx.db
+        .selectFrom("core_questions")
+        .select("id")
+        .where("id", "=", q.id)
+        .where("revision", "=", input.questionRevision),
     );
   }
   const revisable = q.planning_session_id !== null && q.status === "answered";
@@ -677,8 +731,15 @@ export async function acceptDefaults(
     .execute();
   const accepted: string[] = [];
   const skipped: { id: string; why: string }[] = [];
+  const approvers = options.alone ? await approverIds(ctx.db, w.org_id, ctx.scope.policy) : [];
   for (const q of open) {
-    if ((NEVER_BULK_ACCEPTED_DOMAINS as readonly string[]).includes(q.domain)) {
+    if (
+      options.alone &&
+      q.assignee_user_id !== options.alone &&
+      !approvers.includes(options.alone)
+    ) {
+      skipped.push({ id: q.id, why: "assigned to someone else" });
+    } else if (isSensitiveQuestion({ domain: q.domain, irreversible: false })) {
       skipped.push({ id: q.id, why: "security & privacy questions are answered one by one" });
     } else if (q.irreversible) {
       skipped.push({ id: q.id, why: "irreversible questions are answered one by one" });
@@ -794,6 +855,27 @@ export const planningFinishAlone = defineOperation({
     if (!session) throw new OperationError("conflict", "no open planning session");
     if (ctx.actor.type !== "human") {
       throw new OperationError("forbidden", "only a person can tell the planner to finish alone");
+    }
+    // Only someone who may answer these questions may hand them to the planner (review of #71, E):
+    // an approver, or the person they are assigned to.
+    const approvers = await approverIds(ctx.db, w.org_id, ctx.scope.policy);
+    if (!approvers.includes(ctx.actor.id)) {
+      const assignees = await ctx.db
+        .selectFrom("core_questions")
+        .select("assignee_user_id")
+        .where("work_item_id", "=", w.id)
+        .where("status", "=", "open")
+        .where("planning_session_id", "is not", null)
+        .execute();
+      const mine =
+        assignees.length > 0 && assignees.every((q) => q.assignee_user_id === ctx.actor.id);
+      const setter = session.finish_alone_by === ctx.actor.id;
+      if (!mine && !(setter && !input.on)) {
+        throw new OperationError(
+          "forbidden",
+          "only an approver, or the person these questions are assigned to, can let the planner finish alone",
+        );
+      }
     }
     const already = session.finish_alone_by !== null;
     if (already === input.on) return { on: input.on, accepted: [] };

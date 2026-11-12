@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@software-factory/core": "workspace:*",
+    "@software-factory/runner-contract": "workspace:*",
     "zod": "4.6.7"
   },
   "devDependencies": {

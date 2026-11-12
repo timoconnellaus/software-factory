@@ -60,6 +60,56 @@ export const PLANNING_WAIT_MAX_MS = 50_000;
 /** An idle session may yield only after this long idle with nobody present (ADR 0300, 0301). */
 export const PLANNING_YIELD_AFTER_MS = 5 * 60_000;
 
+/** Decision domains (ADR 0029): a closed list, so a check on one can't be dodged by its spelling. */
+export const DECISION_DOMAINS = [
+  "product",
+  "ux",
+  "architecture",
+  "data",
+  "security",
+  "privacy",
+  "operations",
+  "legal",
+] as const;
+export type DecisionDomain = (typeof DECISION_DOMAINS)[number];
+const DOMAIN_ALIASES: Record<string, DecisionDomain> = {
+  "security-privacy": "security",
+  "security & privacy": "security",
+  "security and privacy": "security",
+  infra: "operations",
+  infrastructure: "operations",
+  ops: "operations",
+  design: "ux",
+  "data & permissions": "data",
+  compliance: "legal",
+  engineering: "architecture",
+  technical: "architecture",
+};
+/** A domain as written, lower-cased and mapped to the closed list (unknown ones stay as written). */
+export function normalizeDomain(raw: string): string {
+  const d = raw.trim().toLowerCase();
+  return DOMAIN_ALIASES[d] ?? d;
+}
+/** A decision domain, normalised on the way in: "Security", "security & privacy" → "security". */
+export const decisionDomainSchema = z.preprocess(
+  (v) => (typeof v === "string" ? normalizeDomain(v) : v),
+  z.enum(DECISION_DOMAINS),
+);
+
+/**
+ * Whether a question is one a person must answer themselves (ADR 0042): security and privacy
+ * questions and irreversible ones are never bulk-accepted, never finished alone, never recorded from
+ * an edit, and keep Touch ID on the desktop. The one check the server and every client share; it
+ * normalises the domain, so old rows and odd spellings can't slip past.
+ */
+export function isSensitiveQuestion(q: {
+  domain: string | null | undefined;
+  irreversible: boolean | number | null | undefined;
+}): boolean {
+  const d = normalizeDomain(q.domain ?? "");
+  return d === "security" || d === "privacy" || !!q.irreversible;
+}
+
 const defaultValue = z.union([
   z.string().trim().min(1).max(10_000),
   z.number().finite().transform(String),
@@ -85,7 +135,7 @@ export const planningQuestionSchema = z.object({
   /** Why the default, in Markdown. */
   recommendation: z.string().max(20_000).optional(),
   /** Decision domain (ADR 0029): product, architecture, security, privacy, operations, … */
-  domain: z.string().trim().min(1).max(40).default("product"),
+  domain: decisionDomainSchema.default("product"),
   /** Whether the spec can't go to the gate without it. */
   blocking: z.boolean().default(true),
   /** Hard to undo (a migration, a public API): never bulk-accepted. */

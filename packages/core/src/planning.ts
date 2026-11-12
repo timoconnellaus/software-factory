@@ -883,6 +883,25 @@ export async function interruptPlanning(
         }
       : { interrupted: true, reason: null };
   }
+  // Check-then-insert, so guarded: two interrupts racing commit one (review of #71, H).
+  ctx.guardExists(
+    "no other interrupt is queued or just delivered",
+    ctx.db
+      .selectFrom("core_runs")
+      .select("id")
+      .where("id", "=", run.id)
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom("core_run_steers")
+              .select("id")
+              .where("run_id", "=", run.id)
+              .where("interrupt", "=", 1)
+              .where((x) => x.or([x("delivered_at", "is", null), x("delivered_at", ">", since)])),
+          ),
+        ),
+      ),
+  );
   ctx.write(
     ctx.db.insertInto("core_run_steers").values({
       id: newId("runSteer"),
