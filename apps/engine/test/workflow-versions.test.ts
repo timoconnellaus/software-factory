@@ -113,8 +113,8 @@ const V10_STEPS = [
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 11 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(11);
+  it("starts new instances on version 12 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(12);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -127,7 +127,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(11);
+    expect(row.workflow_version).toBe(12);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -150,14 +150,20 @@ describe("Workflow versions", () => {
 
   // v1–v7's rows are proven equal to the old `version >= N` switches in core's
   // workflow-features.test.ts; v11 is v10 plus the babysitter's delivery (spec 53).
-  it("v11 is v10 plus the babysitter's delivery, and is the newest version", () => {
+  it("v11 is v10 plus the babysitter's delivery, v12 adds re-verifying a new head", () => {
     for (let v = 1; v <= 10; v++) expect(has(v, "babysitter-delivery"), `v${v}`).toBe(false);
     expect([...(WORKFLOW_VERSION_FEATURES[11] ?? [])].sort()).toEqual(
       [...(WORKFLOW_VERSION_FEATURES[10] ?? []), "babysitter-delivery"].sort(),
     );
+    // v12 is v11 plus re-verifying a new head at delivery (spec 53 PR c).
+    expect([...(WORKFLOW_VERSION_FEATURES[12] ?? [])].sort()).toEqual(
+      [...(WORKFLOW_VERSION_FEATURES[11] ?? []), "reverify-on-withdrawal"].sort(),
+    );
     // A new item keeps v9's triage readiness and v10's spec critic.
-    expect(has(11, "triage-readiness")).toBe(true);
-    expect(has(11, "spec-critic")).toBe(true);
+    for (const v of [11, 12]) {
+      expect(has(v, "triage-readiness"), `v${v}`).toBe(true);
+      expect(has(v, "spec-critic"), `v${v}`).toBe(true);
+    }
     expect(Math.max(...Object.keys(WORKFLOW_VERSION_FEATURES).map(Number))).toBe(WORKFLOW_VERSION);
   });
 

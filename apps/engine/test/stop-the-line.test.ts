@@ -106,6 +106,17 @@ const queued = (workItemId: string) =>
     workItemId,
   );
 
+/** An updated head is verified again before it merges (spec 53 PR c): plays that verify job. */
+async function reverified(w: World, workItemId: string) {
+  await waitFor("sent to verify", () =>
+    first(
+      "SELECT id FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
+      workItemId,
+    ),
+  );
+  await runStage(w, workItemId, "verify", () => verifyPass);
+}
+
 describe("stop the line (spec 53)", () => {
   it("holds approved work while main is red, says so, and lands it when main is green", async () => {
     const w = await world();
@@ -146,6 +157,8 @@ describe("stop the line (spec 53)", () => {
     // Someone fixes main outside the queue; its CI is green: the line runs and A lands.
     const fixed = await github.push(w.repo, "main", undefined, ["src/fix.ts"]);
     await mainCi(w, fixed, "success");
+    // A is brought up to date with the fix and verified there before it merges (spec 53 PR c).
+    await reverified(w, a);
     await itemStatus(a, "done");
     const after = await first<{ state: string; red_since: string | null; last_green_sha: string }>(
       "SELECT state, red_since, last_green_sha FROM core_main_health WHERE project_id = ?",
@@ -178,6 +191,7 @@ describe("stop the line (spec 53)", () => {
     await github.setCiDefault(w.repo, null);
     const head = String(await github.getBranchSha(w.repo, "main"));
     await mainCi(w, head, "success");
+    await reverified(w, a);
     await itemStatus(a, "done");
   });
 
@@ -420,9 +434,17 @@ describe("stop the line (spec 53)", () => {
       invokeFrom("cli", "workItem.markRepair", { workItemId: b, repair: true }, w),
     ).rejects.toMatchObject({ code: "forbidden" });
     await ok("workItem.markRepair", { workItemId: b, repair: true }, w.human);
-    // Both approved; B's update gets pending CI so both stay queued.
-    await github.push(w.repo, "main", undefined, ["README.md"]);
-    await github.setCiDefault(w.repo, run(null, t(0), null));
+    // Both approved; their CI is pending again, so both stay queued.
+    const bHead = await first<{ head_sha: string }>(
+      "SELECT head_sha FROM core_work_items WHERE id = ?",
+      b,
+    );
+    await github.setChecks(w.repo, String(bHead?.head_sha), run(null, t(0), null));
+    const aHead = await first<{ head_sha: string }>(
+      "SELECT head_sha FROM core_work_items WHERE id = ?",
+      a,
+    );
+    await github.setChecks(w.repo, String(aHead?.head_sha), run(null, t(0), null));
     await approve(w, a);
     await approve(w, b);
     await waitFor("both queued", async () => ((await queued(a)) && (await queued(b))) || null);

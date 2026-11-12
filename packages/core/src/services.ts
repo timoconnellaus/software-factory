@@ -56,6 +56,21 @@ export interface ChangedFile {
   changes?: number;
 }
 
+/** A tree entry: the file's mode (`100644`, `100755`, `120000`, `160000`) and its blob SHA. */
+export interface TreeEntry {
+  mode: string;
+  sha: string;
+}
+/** A commit's files by path. */
+export type Tree = Record<string, TreeEntry>;
+
+export interface CommitInfo {
+  parents: string[];
+  committer: { name: string; email: string } | null;
+  /** GitHub verified the commit's signature (its own web-flow signs update-branch merges). */
+  verified: boolean;
+}
+
 /** One rule of a repository ruleset, as GitHub reports it. */
 export interface RulesetRule {
   type: string;
@@ -246,6 +261,27 @@ export interface GitHubService {
   commitParents(repo: RepoRef, sha: string): Promise<string[]>;
   /** The commit's committer date as GitHub gives it (ISO), or null when it isn't there. */
   commitTime(repo: RepoRef, sha: string): Promise<string | null>;
+  /**
+   * A commit's parents, its committer and whether GitHub verified its signature (spec 53: a merge
+   * of the default branch counts only when GitHub's update-branch made it). Null: no such commit.
+   */
+  commitInfo(repo: RepoRef, sha: string): Promise<CommitInfo | null>;
+  /**
+   * The paths that differ between `base`'s merge base with `head` and `head` (GitHub's compare,
+   * renames' old paths included), and that merge base. `complete` is false when GitHub may have left
+   * paths out (it lists at most 300 files): a caller then can't rely on it (spec 53, fail closed).
+   */
+  changedPaths(
+    repo: RepoRef,
+    base: string,
+    head: string,
+  ): Promise<{ mergeBase: string | null; paths: string[]; complete: boolean }>;
+  /**
+   * The entries (mode and blob SHA) of just these paths in the commit's tree; a path that isn't
+   * there is left out. Reads only the paths' directories, never the whole tree (second review of
+   * #105: large repositories).
+   */
+  pathEntries(repo: RepoRef, sha: string, paths: readonly string[]): Promise<Tree>;
   /**
    * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
    * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`

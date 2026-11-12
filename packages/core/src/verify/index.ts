@@ -2,6 +2,7 @@
 // auto-merge rule and the onboarding guards. Pure functions; the operations in
 // `operations/verify.ts` call GitHub and D1.
 export * from "./auto-merge.ts";
+export * from "./change-digest.ts";
 export * from "./ci.ts";
 export * from "./packet.ts";
 export * from "./proof.ts";

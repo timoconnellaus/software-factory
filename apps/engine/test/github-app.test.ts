@@ -122,6 +122,88 @@ describe("GitHub App token minting", () => {
   });
 });
 
+// Second review of #105: a change is read by its changed paths (the compare, then those paths'
+// directories over GraphQL), never by whole trees.
+describe("reading a change by its paths", () => {
+  async function appWith(respond: (request: Request) => Promise<Response>) {
+    const { pkcs8Pem } = await keyPair();
+    const seen: string[] = [];
+    const app = githubApp({
+      appId: "1",
+      appSlug: "test-app",
+      privateKey: pkcs8Pem,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith("/access_tokens")) {
+          return Response.json(
+            { token: "ghs_cp", expires_at: new Date(Date.now() + 3_600_000).toISOString() },
+            { status: 201 },
+          );
+        }
+        seen.push(`${request.method} ${new URL(request.url).pathname}`);
+        return respond(request);
+      },
+    });
+    return { app, seen };
+  }
+  const repo = { installationId: "1", owner: "o", repo: "r" };
+
+  it("lists the compare's paths (renames' old paths too) and says when it may be incomplete", async () => {
+    const files = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ filename: `f${i}.ts`, status: "modified" }));
+    let count = 2;
+    const { app } = await appWith(async () =>
+      Response.json({
+        merge_base_commit: { sha: "m".repeat(40) },
+        files:
+          count === 2
+            ? [
+                { filename: "src/new.ts", status: "renamed", previous_filename: "src/old.ts" },
+                { filename: "a.ts", status: "modified" },
+              ]
+            : files(count),
+      }),
+    );
+    expect(await app.changedPaths(repo, "main", "h".repeat(40))).toEqual({
+      mergeBase: "m".repeat(40),
+      paths: ["a.ts", "src/new.ts", "src/old.ts"],
+      complete: true,
+    });
+    count = 300; // GitHub's cap: some may be missing
+    expect((await app.changedPaths(repo, "main", "h".repeat(40))).complete).toBe(false);
+  });
+
+  it("reads only the changed paths' directories, one GraphQL query, modes in octal", async () => {
+    const sent: { body: { query: string; variables: Record<string, string> } | null } = {
+      body: null,
+    };
+    const { app, seen } = await appWith(async (request) => {
+      sent.body = (await request.json()) as typeof sent.body;
+      return Response.json({
+        data: {
+          repository: {
+            d0: {
+              entries: [
+                { name: "a.ts", mode: 33188, oid: "1".repeat(40) },
+                { name: "big.bin", mode: 33188, oid: "9".repeat(40) },
+              ],
+            },
+            d1: { entries: [{ name: "run.sh", mode: 33261, oid: "2".repeat(40) }] },
+          },
+        },
+      });
+    });
+    const sha = "c".repeat(40);
+    const got = await app.pathEntries(repo, sha, ["a.ts", "bin/run.sh", "bin/gone.ts"]);
+    expect(got).toEqual({
+      "a.ts": { mode: "100644", sha: "1".repeat(40) },
+      "bin/run.sh": { mode: "100755", sha: "2".repeat(40) },
+    });
+    expect(seen).toEqual(["POST /graphql"]);
+    expect(sent.body?.variables).toMatchObject({ e0: `${sha}:`, e1: `${sha}:bin` });
+  });
+});
+
 describe("finding the App's installation on a repo (incident 2026-11-11-bootstrap)", () => {
   const repo = ["timoconnellaus", "software-factory"] as const;
   async function appWith(respond: (url: string) => Response) {

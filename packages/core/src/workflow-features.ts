@@ -36,6 +36,12 @@ export const WORKFLOW_FEATURES = [
   "spec-critic",
   /** v11: the babysitter lands the approved merge; the item waits for `delivered-<item>` (spec 53). */
   "babysitter-delivery",
+  /**
+   * v12 (spec 53 PR c, ADR 0582): an approval the babysitter withdraws (it can't prove merging main
+   * left the change alone) sends the item back to verify the new head, without a build, then to
+   * the merge gate.
+   */
+  "reverify-on-withdrawal",
 ] as const;
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 
@@ -50,6 +56,7 @@ const v8 = [...v7, "host-checks"] as const;
 const v9 = [...v8, "triage-readiness"] as const;
 const v10 = [...v9, "spec-critic"] as const;
 const v11 = [...v10, "babysitter-delivery"] as const;
+const v12 = [...v11, "reverify-on-withdrawal"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -64,6 +71,7 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   9: new Set(v9),
   10: new Set(v10),
   11: new Set(v11),
+  12: new Set(v12),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */

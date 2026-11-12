@@ -25,3 +25,20 @@ proves how the commit was made, not that the change the person approved is the c
 ## Consequences
 - A person never re-reviews an unchanged change because `main` moved, and never misses a changed one.
 - The digest is computed by the engine from GitHub, never from a runner's report.
+
+> Amended 2026-11-12 (review of PR #105): the digest fails closed and is taken from git trees, not
+> patches. The change is every path whose mode or blob differs between the head and its merge base,
+> with both sides; identical means equal entry for entry, so a file both sides changed withdraws.
+> Unreadable or truncated means no digest, and no digest never matches. Only the update-branch
+> merge the factory asked for, made and signed by GitHub, with exactly the approved head and a
+> commit on the default branch as parents and no file that is neither side's, is accepted. A
+> withdrawal closes the approval and carries neither the packet nor `factory/verify` to the new
+> head; the item verifies the new head again (Workflow v12) before a person decides.
+
+> Amended 2026-11-13 (second review of PR #105, and the owner's answer to question 1: the change is
+> identical **and all checks pass again**): a surviving approval no longer carries the old head's
+> packet or posts `factory/verify` from it. The delivery ends `reverify`; the item verifies the new
+> head on its own (Workflow v12), and only if that passes re-enters with the same approval, which
+> `mergeQueue.enter` accepts only for a head whose change digest is the approved one. The change is
+> read by its changed paths (GitHub's compare, then those paths' entries), never whole trees, and
+> fails closed past 250 changed paths.

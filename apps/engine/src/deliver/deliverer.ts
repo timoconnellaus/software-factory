@@ -266,7 +266,7 @@ async function deliverHead(
   const id = head.work_item_id;
   const end = async (
     status: "merged" | "left",
-    delivery: "merged" | "conflict" | "failed",
+    delivery: "merged" | "conflict" | "failed" | "withdrawn" | "reverify",
     reason: string,
   ): Promise<null> => {
     const left = await call(
@@ -321,6 +321,16 @@ async function deliverHead(
     if (state === "conflict") {
       return { wait: await end("left", "conflict", String(u.output.reason ?? "conflict")) };
     }
+    // A merge of main the factory can't prove left the approved change alone: the approval no
+    // longer holds, and the item goes back to its merge gate on the new head (ADR 0582).
+    if (state === "withdrawn") {
+      return { wait: await end("left", "withdrawn", String(u.output.reason ?? "")) };
+    }
+    // The approved change, on a new head: verified on its own before the approval carries over
+    // (second review of #105). The item's Workflow verifies it and re-enters with the approval.
+    if (state === "reverify") {
+      return { wait: await end("left", "reverify", String(u.output.reason ?? "")) };
+    }
     if (state === "held") {
       // At the bound: hold it and ask a person, never rebuild approved work (spec 53 review).
       const h = await call(env, lease, "mergeQueue.hold", {
@@ -330,9 +340,9 @@ async function deliverHead(
       if (h.status !== "ok") {
         return { wait: await end("left", "failed", `the babysitter couldn't ask: ${refusal(h)}`) };
       }
-      const held = String(h.output.state);
-      if (held === "resumed") return snapshot(); // one more update, now
-      if (held === "holding" && h.output.until) {
+      const asked = String(h.output.state);
+      if (asked === "resumed") return snapshot(); // one more update, now
+      if (asked === "holding" && h.output.until) {
         return { wait: Math.max(0, Date.parse(String(h.output.until)) - clock().getTime()) };
       }
       return { wait: IDLE_RECHECK_MS }; // the answer wakes the queue
@@ -355,8 +365,10 @@ async function deliverHead(
   if ("wait" in snap) return snap.wait;
   const at = snap.at;
 
-  // A head the queue brought up to date merges only on green CI there (ADR 0330).
-  if (at !== head.approved_sha && head.merging_at === null) {
+  // The head merges only on green CI there (ADR 0330): one the queue brought up to date, and one
+  // a person approved again after a withdrawal (ADR 0582). An approved head's CI was green at
+  // verify, so this read answers at once.
+  if (head.merging_at === null) {
     const ci = await call(env, lease, "ci.read", { workItemId: id, headSha: at });
     const since = Date.parse(head.updated_at);
     const waited = clock().getTime() - (Number.isNaN(since) ? clock().getTime() : since);
@@ -397,7 +409,7 @@ async function deliverHead(
     { workItemId: id, headSha: at, touchesFactoryConfig },
     { approvalId: head.pending_action_id, idempotencyKey: `deliver:${head.id}:merge:${at}` },
   );
-  if (landed.status === "ok") return end("merged", "merged", "merged");
+  if (mergedForGood(landed)) return end("merged", "merged", "merged");
   const why = landed.status === "refused" ? landed.message : "still pending";
   // GitHub didn't merge: the mark goes, so the item can be cancelled again.
   await call(env, lease, "mergeQueue.merging", { workItemId: id, merging: false });
@@ -438,6 +450,17 @@ async function held(env: Env, lease: Lease, head: HeadRow): Promise<boolean> {
   // Unreadable: stay held (fail closed); the next recheck tries again.
   if (seen.status !== "ok") return true;
   return seen.output.redSince !== null;
+}
+
+/**
+ * When a delivery counts as merged, and its item Done (spec 53, owner question 6, not yet answered):
+ * today, when GitHub answers the merge with success. The recommendation is "when its merge commit
+ * is on the default branch"; GitHub's success means the commit is there, so they agree except for a
+ * merge GitHub reports and then loses. A different answer (say, after main's CI on the merge is
+ * green) is a change here only: return false and look again on the next pass.
+ */
+function mergedForGood(landed: Called): boolean {
+  return landed.status === "ok";
 }
 
 const refusal = (c: Called) =>

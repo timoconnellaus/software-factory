@@ -476,7 +476,10 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     ]);
   });
 
-  it("labels check results the merge queue carries to a new head as run on the old one", async () => {
+  // Spec 53 PR c (second review): the babysitter no longer carries an approved head's packet or its
+  // check results to the head a merge of main makes. That head is verified again and its checks
+  // run there (deliverer.test.ts); nothing from the old head speaks for it.
+  it("carries no check results to a new head the merge queue makes: they run there", async () => {
     const w = await world(CHECKS);
     const item = await create(w);
     await runStage(w, item.workItemId, "triage", () => triage("small"));
@@ -489,11 +492,7 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     }));
     await runStage(w, item.workItemId, "verify", () => linkedPass);
     await gateOpen(item.workItemId, "merge");
-    // main moves on, so the queue merges it into the approved head: a new SHA nothing ran on.
     await github.push(w.repo, "main", undefined, ["README.md"]);
-    await github.setCiDefault(w.repo, [
-      { name: "ci", status: "in_progress", conclusion: null, appSlug: "github-actions", url: null },
-    ]);
     await ok(
       "review.merge",
       {
@@ -503,24 +502,31 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
       },
       w.human,
     );
-    const queued = await waitFor("brought up to date", () =>
-      first<{ head_sha: string; approved_sha: string }>(
-        "SELECT head_sha, approved_sha FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued' AND head_sha != approved_sha",
+    const ended = await waitFor("sent to verify", () =>
+      first<{ head_sha: string }>(
+        "SELECT head_sha FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
         item.workItemId,
       ),
     );
-    const carried = await first<{ sections: string }>(
-      "SELECT sections FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
-      item.workItemId,
-      queued.head_sha,
-    );
-    expect(JSON.parse(String(carried?.sections)).checksRanOn).toBe(queued.approved_sha);
-    const run = await waitFor("factory/verify on the new head", () =>
-      verifyRun(w, queued.head_sha),
-    );
-    expect(String(run.output?.summary)).toMatch(
-      new RegExp(`tests: passed .* ran on ${queued.approved_sha.slice(0, 7)}, not on this commit`),
-    );
+    expect(
+      await first(
+        "SELECT id FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
+        item.workItemId,
+        ended.head_sha,
+      ),
+    ).toBeNull();
+    const verify = await runStage(w, item.workItemId, "verify", (j) => {
+      expect(j.checks?.commands.map((c) => c.name)).toEqual(["lint", "tests"]);
+      return {
+        ...linkedPass,
+        checks: [
+          { name: "lint", exitCode: 0, headSha: ended.head_sha },
+          { name: "tests", exitCode: 0, headSha: ended.head_sha },
+        ],
+      };
+    });
+    expect(verify.checks).toBeDefined();
+    await itemStatus(item.workItemId, "done");
   });
 
   it("asks a person when a check still fails after the build session's fixes, never a cold retry", async () => {

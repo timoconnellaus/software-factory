@@ -942,6 +942,11 @@ export interface CoreMergeQueueTable {
   update_asked_at: Iso | null;
   /** 0350: how many times GitHub was asked to (the babysitter bounds it, spec 53 review). */
   updates: Generated<number>;
+  /** 0352 (ADR 0582): the digest of the change that was approved; null when it can't be read. */
+  approved_digest: string | null;
+  /** 0352: the head the queue asked GitHub to update from, and main's head when it asked. */
+  update_from_sha: string | null;
+  update_base_sha: string | null;
   /** 0350 (spec 53 review): marked just before GitHub is asked to merge; a cancel then waits. */
   merging_at: Iso | null;
   /** 0350: the question asked at the update bound, while it is open or not yet read back. */

@@ -84,7 +84,9 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
   time** and adds its row; rows of other open PRs do not exist until they merge. This spec's PRs
   say v11 today (`#73`, planning and spec 52's build had claimed v8 to v10); whichever merges first
   renumbers to the next free number then. Each of (b) and (c) that changes the Workflow's steps adds
-  its own row rather than folding into v11's after v11 has merged.
+  its own row rather than folding into v11's after v11 has merged. (2026-11-13: main has v9,
+  triage readiness, and v10, the spec critic, so v11 is v10 plus `babysitter-delivery` and v12 is
+  v11 plus `reverify-on-withdrawal`; each new row keeps every feature of the one before.)
 - **The deliverer** does what `landV4` did, per repository instead of per item: pick the head, bring
   it up to date, wait for CI on the new head, merge it with `pr.merge` at the head SHA it recorded
   and the approval id, and send `delivered-<item>`.
@@ -214,6 +216,57 @@ approval is actually about: the change.
   with `autoApprove` on, the five conditions decide it as for any head.
 - The review packet is copied to a surviving head with `carriedFrom` (ADR 0330), now also recording
   the change digest it was checked against.
+- **As built (PR c), after review: it fails closed.**
+  - **The change** of a head is every path whose mode or blob SHA differs between the head and its
+    merge base with the default branch, with both sides' mode and blob, read from git trees
+    (`git/trees?recursive=1`), never from patch text. **Identical** means that set is equal entry for
+    entry: each changed file has byte-identical content and the same mode on the head, and the same
+    content and mode at the base. A merge of main that touched only files the PR didn't change
+    leaves it identical. **A file both sides changed withdraws** (its base and its merged content both
+    moved), as does a mode change, a moved line (a new blob), a binary file with other bytes, and
+    anything that can't be read in full: an error or a truncated tree has no digest, and no digest
+    never matches. Taken when the item enters delivery (`approved_digest`, migration 0352).
+  - **Only the merge the factory asked for counts.** The queue records its update-branch request
+    (`update_from_sha`, `update_base_sha`, migration 0352). A new head is accepted only when the
+    request was made from the approved head, the commit is GitHub's own (committer
+    `noreply@github.com`, signature verified), its parents are exactly the approved head and a commit
+    on the default branch, and every file in it is exactly the approved head's or that commit's, never
+    a third thing. Anything else: `moved` for an item landing itself (v4 to v7) and `withdrawn` for
+    the babysitter.
+  - **A withdrawal closes the approval** (`core_pending_actions` → `rejected`, decision `withdrawn`),
+    copies no review packet and posts no `factory/verify` to the new head, so nobody can merge it on
+    GitHub either. **Workflow v12** (provisional number; feature `reverify-on-withdrawal`) sends the
+    item back to verify the new head without a build (`verify #b: head`), then to the merge gate: the
+    person decides on a new packet. v11 instances, which have no such path, treat a withdrawal as a
+    failed delivery and go back to build.
+  - **Owner questions behind one function each:** Q1 `approvalSurvivesMergeOfMain`
+    (`packages/core/src/verify/change-digest.ts`), Q4 `mainRedAudience` (`delivery.ts`), Q6
+    `mergedForGood` (the deliverer: Done on GitHub's merge response).
+  - The deliverer reads CI before every merge, not only after an update. Re-running the criteria's
+    checks (spec 51 PR B) and re-checking `autoApprove` (ADR 0515) on the new head wait for those.
+- **After the second review (2026-11-13): a surviving approval waits for the new head's own
+  verification.** Owner's answer to question 1: it survives when the change is identical **and all
+  checks pass again**. So nothing from the old head's evidence is used on the new one: no packet is
+  copied and `factory/verify` is not posted from the old packet. The delivery ends `reverify` (a new
+  outcome); the approval stays approved but unused; the item's Workflow (v12) verifies the new head
+  without a build (the verify job runs again there; with spec 51 PR B, #73, that is where the
+  runner host re-runs the checks), and only if that passes re-enters delivery **with the same
+  approval** and no new gate. `mergeQueue.enter` takes a carried approval back only for a head whose
+  change digest is still the approved one, and the new entry keeps the old one's update count, so a
+  `main` that keeps moving still reaches the bound and asks a person rather than re-verifying for
+  ever. A head that fails its verification goes back to build like any failed verify. Cost: one
+  verify job per update of an approved delivery, instead of a second human approval.
+- **Reading a change costs its changed paths, not its trees** (second review). The digest and the
+  both-sides check read GitHub's compare (the changed paths and the merge base) and then only those
+  paths' mode and blob, from their directories, one GraphQL query per 50 directories. **Past 250
+  changed paths** (`MAX_CHANGED_PATHS`, below the compare's 300-file cap) there is no digest and the
+  approval doesn't carry over. Per update, about seven GitHub calls (update-branch, the PR, the
+  commit, the parent's compare, two compares and one or two GraphQL queries), none of them a tree.
+- **GitHub's signature on update-branch merges** (checked 2026-11-13, read-only, against a public
+  repository): a merge of `main` into a PR branch made through an App's installation token
+  (`github-actions[bot]`) is committed by `GitHub <noreply@github.com>`, signature `verified`
+  (`valid`), two parents, which is what the check requires. Not yet seen for the factory's own App:
+  the first real update-branch it makes is the check (see the PR).
 
 ### 4. The `babysit` job (ADR 0583, decision 2)
 - **A new built-in job kind** `babysit` (runner contract `JOB_STAGES`, harness prompt in

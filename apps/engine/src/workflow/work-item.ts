@@ -140,7 +140,7 @@ export type WorkItemOutcome =
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 11;
+export const WORKFLOW_VERSION = 12;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
@@ -585,97 +585,125 @@ class ItemFlow {
         return reason;
       };
 
+      // v12: an approval withdrawn at delivery (ADR 0582) sends the item back to verify the head
+      // merging main made, without a build: nothing was carried to it, so it needs its own packet
+      // and `factory/verify` before a person decides again.
+      let withdrawn: string | null = null;
+      // v12: an approval that held over a clean merge of main (`reverify`, second review of #105):
+      // used again only if the new head passes its own verification in this round.
+      let carried: string | null = null;
       for (let b = 1; ; b++) {
-        const build = await this.runJob(
-          `build #${b}`,
-          "build",
-          "implement",
-          buildPrompt(meta, {
-            criteria,
-            specPath,
-            note,
-            attempt: b,
-            ...(plan?.build ? { instructions: plan.build.instructions } : {}),
-          }),
-          {
-            criteria,
-            specPath,
-            note,
-          },
-          plan?.build ? { tier: plan.build.tier, requires: plan.build.requires } : undefined,
-        );
-        if (build.outcome === "cancelled") {
-          note = null;
-          continue; // stopped by a kill switch or a takeover: run it again, no failure counted
-        }
-        if (build.outcome !== "completed") {
-          note = await failed(
-            b,
-            `the build run ${build.outcome}: ${build.summary ?? "no summary"}`,
-            build,
-          );
-          continue;
-        }
-        const advanced = await this.act(`build #${b}: advance`, "branch.advance", {
-          workItemId: id,
-          runId: build.runId,
-        });
-        if (advanced.ok !== true) {
-          note = await failed(
-            b,
-            `the run's branch could not be accepted: ${String(advanced.reason)}`,
-            build,
-          );
-          continue;
-        }
-        const headSha = String(advanced.sha);
-
-        // v8: the factory's own checks on the pushed head (ADR 0501). The host already sent any
-        // failure back into the same session up to the retry limit; one still failing goes to a
-        // person, never a cold retry.
+        const carriedNow = carried;
+        carried = null;
+        let ran: RunResult | null = null;
+        let headSha: string;
         let checkNames: string[] = [];
-        if (has(version, "host-checks")) {
-          const checked = await this.act(`build #${b}: checks`, "checks.forHead", {
-            workItemId: id,
-            headSha,
-          });
-          checkNames = (checked.declared as string[]) ?? [];
-          // Only a check that ran and failed (or didn't run on this head) sends the build back. One
-          // the runner could not run (no isolation, the sandbox could not start) is nothing a
-          // build can fix and burns no build attempt: the item goes on to verify and the merge
-          // gate, where it shows as not run and a person decides (third review, B3).
-          const failing = (checked.failing as string[] | undefined) ?? [];
-          if (failing.length > 0) {
-            await this.askChecksFailing(meta, b, headSha, failing);
-            note = [
-              "The factory's checks failed on your last head, and a person sent it back to build:",
-              ...failing.map((x) => `- ${x}`),
-            ].join("\n");
-            await this.act(`build #${b}: checks failed`, "workItem.enterStage", {
+        const reverify = withdrawn;
+        withdrawn = null;
+        if (reverify !== null) {
+          headSha = await this.head(`verify #${b}: head`);
+          // v8+: no build ran on this head, so the verify job runs the project's checks there
+          // (`runChecks`, as for an attached PR); the reviewer is told their names.
+          if (has(version, "host-checks")) {
+            const declared = await this.act(`verify #${b}: check names`, "checks.forHead", {
               workItemId: id,
-              stage: "build",
-              closeAs: "failed",
-              reason: `checks failed on ${headSha.slice(0, 7)}`,
+              headSha,
             });
+            checkNames = (declared.declared as string[]) ?? [];
+          }
+        } else {
+          const build = await this.runJob(
+            `build #${b}`,
+            "build",
+            "implement",
+            buildPrompt(meta, {
+              criteria,
+              specPath,
+              note,
+              attempt: b,
+              ...(plan?.build ? { instructions: plan.build.instructions } : {}),
+            }),
+            {
+              criteria,
+              specPath,
+              note,
+            },
+            plan?.build ? { tier: plan.build.tier, requires: plan.build.requires } : undefined,
+          );
+          if (build.outcome === "cancelled") {
+            note = null;
+            continue; // stopped by a kill switch or a takeover: run it again, no failure counted
+          }
+          if (build.outcome !== "completed") {
+            note = await failed(
+              b,
+              `the build run ${build.outcome}: ${build.summary ?? "no summary"}`,
+              build,
+            );
             continue;
           }
-        }
-
-        if (plan) {
-          const before = await this.runSlot(meta, plan, "beforeVerify", b, {
-            criteria,
-            specPath,
-            headSha,
+          const advanced = await this.act(`build #${b}: advance`, "branch.advance", {
+            workItemId: id,
+            runId: build.runId,
           });
-          if (before.kind === "sendBack") {
-            note = await failed(b, before.note, build);
+          if (advanced.ok !== true) {
+            note = await failed(
+              b,
+              `the run's branch could not be accepted: ${String(advanced.reason)}`,
+              build,
+            );
             continue;
+          }
+          headSha = String(advanced.sha);
+          ran = build;
+
+          // v8: the factory's own checks on the pushed head (ADR 0501). The host already sent any
+          // failure back into the same session up to the retry limit; one still failing goes to a
+          // person, never a cold retry.
+          if (has(version, "host-checks")) {
+            const checked = await this.act(`build #${b}: checks`, "checks.forHead", {
+              workItemId: id,
+              headSha,
+            });
+            checkNames = (checked.declared as string[]) ?? [];
+            // Only a check that ran and failed (or didn't run on this head) sends the build back.
+            // One the runner could not run (no isolation, the sandbox could not start) is nothing a
+            // build can fix and burns no build attempt: the item goes on to verify and the merge
+            // gate, where it shows as not run and a person decides (third review, B3).
+            const failing = (checked.failing as string[] | undefined) ?? [];
+            if (failing.length > 0) {
+              await this.askChecksFailing(meta, b, headSha, failing);
+              note = [
+                "The factory's checks failed on your last head, and a person sent it back to build:",
+                ...failing.map((x) => `- ${x}`),
+              ].join("\n");
+              await this.act(`build #${b}: checks failed`, "workItem.enterStage", {
+                workItemId: id,
+                stage: "build",
+                closeAs: "failed",
+                reason: `checks failed on ${headSha.slice(0, 7)}`,
+              });
+              continue;
+            }
+          }
+
+          if (plan) {
+            const before = await this.runSlot(meta, plan, "beforeVerify", b, {
+              criteria,
+              specPath,
+              headSha,
+            });
+            if (before.kind === "sendBack") {
+              note = await failed(b, before.note, build);
+              continue;
+            }
           }
         }
 
         await this.act(`verify #${b}: enter`, "workItem.enterStage", {
           workItemId: id,
           stage: "verify",
+          ...(reverify !== null ? { closeAs: "sent_back" as const, reason: reverify } : {}),
         });
         if (has(version, "verify-packet")) {
           // Open the PR first, so CI runs on this head while the reviewer works (spec 04). It
@@ -683,7 +711,7 @@ class ItemFlow {
           await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
         }
         if (has(version, "conflicts") && (await this.unmergeable(b, headSha))) {
-          note = await conflicted(b, build);
+          note = await conflicted(b, ran);
           continue;
         }
         const verify = await this.runJob(
@@ -698,6 +726,8 @@ class ItemFlow {
           {
             criteria,
             headSha,
+            // A head no build ran on (re-verified at delivery): the host runs the checks there.
+            ...(reverify !== null && has(version, "host-checks") ? { runChecks: true } : {}),
           },
         );
         if (verify.outcome === "cancelled") {
@@ -798,6 +828,7 @@ class ItemFlow {
             headSha,
             pr.touchesFactoryConfig === true,
             version,
+            carriedNow,
           );
           if (landed.kind === "done") {
             await this.act("end: done", "workItem.finish", {
@@ -806,6 +837,15 @@ class ItemFlow {
               reason: landed.reason,
             });
             return { status: "done", workItemId: id };
+          }
+          if (landed.kind === "withdrawn") {
+            withdrawn = landed.reason;
+            continue;
+          }
+          if (landed.kind === "reverify") {
+            withdrawn = landed.reason;
+            carried = landed.approvalId;
+            continue;
           }
           if (landed.kind === "sent_back") {
             note = `Sent back at review: ${landed.note ?? ""}`;
@@ -1362,11 +1402,15 @@ class ItemFlow {
     headSha: string,
     touchesFactoryConfig: boolean,
     version = 4,
+    /** v12: an approval carried over a clean merge of main, the new head now verified. */
+    carried: string | null = null,
   ): Promise<
     | { kind: "done"; reason: string }
     | { kind: "sent_back"; note: string | null }
     | { kind: "conflict" }
     | { kind: "failed"; reason: string }
+    | { kind: "withdrawn"; reason: string }
+    | { kind: "reverify"; reason: string; approvalId: string }
   > {
     const id = this.workItemId;
     if (meta.kind === "incident") {
@@ -1406,17 +1450,32 @@ class ItemFlow {
       headSha = auto.headSha; // refused (not check-only): the normal merge gate on the current head
     }
     const input = (at: string) => ({ workItemId: id, headSha: at, touchesFactoryConfig });
-    const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
-      apply: false,
-    });
+    // v12: the head a clean merge of main made passed its own verification, and the change is the
+    // approved one (mergeQueue.enter checks the digest again): the person's approval carries over.
+    const decided =
+      carried && has(version, "reverify-on-withdrawal")
+        ? { decision: "approved" as const, pendingActionId: carried }
+        : await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
+            apply: false,
+          });
+    // v11: the approval only says this head may merge; the babysitter lands it (spec 53). v12: an
+    // approval it withdraws (ADR 0582) sends the item back to verify the new head; v11 has no
+    // such path, so a withdrawal ends its delivery as failed and it goes back, as any failure does.
+    if (has(version, "babysitter-delivery")) {
+      if (decided.decision !== "approved") return this.notApproved(decided);
+      if (!decided.pendingActionId) return { kind: "done", reason: "merged" };
+      const delivered = await this.deliverV11(b, headSha, decided.pendingActionId);
+      if (delivered.kind !== "withdrawn" && delivered.kind !== "reverify") return delivered;
+      if (!has(version, "reverify-on-withdrawal")) {
+        return { kind: "failed", reason: delivered.reason };
+      }
+      return delivered;
+    }
     if (decided.decision !== "approved") return this.notApproved(decided);
     if (!decided.pendingActionId) {
       // pr.merge ran without a gate (never for `merge` risk; a policy can't loosen it): it merged.
       return { kind: "done", reason: "merged" };
     }
-    // v11: the approval only says this head may merge; the babysitter lands it (spec 53).
-    if (has(version, "babysitter-delivery"))
-      return this.deliverV11(b, headSha, decided.pendingActionId);
     const landed = await this.landV4(b, "queue", headSha, decided.pendingActionId, (at) => ({
       op: "pr.merge",
       input: input(at),
@@ -1552,7 +1611,11 @@ class ItemFlow {
     headSha: string,
     approvalId: string,
   ): Promise<
-    { kind: "done"; reason: string } | { kind: "conflict" } | { kind: "failed"; reason: string }
+    | { kind: "done"; reason: string }
+    | { kind: "conflict" }
+    | { kind: "failed"; reason: string }
+    | { kind: "withdrawn"; reason: string }
+    | { kind: "reverify"; reason: string; approvalId: string }
   > {
     const id = this.workItemId;
     const p = `merge #${b}: deliver`;
@@ -1576,14 +1639,28 @@ class ItemFlow {
         if (read.status !== "ok") throw new Ended("failed", "the merge queue couldn't be read");
         const o = read.output;
         if (o.queued === true) continue;
-        if (o.outcome === "merged" || o.outcome === "conflict" || o.outcome === "failed") {
-          told = { outcome: o.outcome, reason: String(o.outcomeReason ?? "") };
+        if (
+          o.outcome === "merged" ||
+          o.outcome === "conflict" ||
+          o.outcome === "failed" ||
+          o.outcome === "withdrawn" ||
+          o.outcome === "reverify"
+        ) {
+          told = {
+            outcome: o.outcome,
+            reason: String(o.outcomeReason ?? ""),
+            ...(typeof o.headSha === "string" ? { headSha: o.headSha } : {}),
+          };
         } else {
           throw new Ended("failed", "the item left the merge queue");
         }
       }
       if (told.outcome === "merged") return { kind: "done", reason: "merged by the babysitter" };
       if (told.outcome === "conflict") return { kind: "conflict" };
+      if (told.outcome === "withdrawn") return { kind: "withdrawn", reason: told.reason };
+      if (told.outcome === "reverify") {
+        return { kind: "reverify", reason: told.reason, approvalId };
+      }
       return { kind: "failed", reason: told.reason };
     }
   }
