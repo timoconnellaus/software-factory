@@ -130,6 +130,11 @@ export interface HandlerContext {
   floor: FloorParse;
   /** Set when this call is the approved re-run of a pending action. */
   approval?: PendingActionRow;
+  /**
+   * The desktop sent a valid presence proof for exactly this call (ADR 0391). Lets a
+   * `desktopDecidable` operation still ask for one for some inputs (spec 26).
+   */
+  presence?: boolean;
   /** Queue a write. Writes, guards, the audit row and outbox rows commit in one D1 batch. */
   write(statement: Compilable | D1PreparedStatement): void;
   /** Abort the whole batch unless the previous write changed at least one row (ADR 0050). */
@@ -189,6 +194,19 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    * operations that grant authority (device logins, runner registration, kill switch off).
    */
   presenceDecidable?: true;
+  /**
+   * A person-only operation (browser-only) that a desktop device may also run *without* a presence
+   * proof. The CLI and MCP surfaces stay refused, so an agent holding a token can't; gates keep their
+   * presence proof. It covers (spec 26; ADR 0042, 0391 and 0470 as amended):
+   * - `planning.answer` and `planning.acceptDefaults`: answering the planner is a conversation, not a
+   *   gate (the owner's decision of 2026-11-12: "touch id approvals is overkill. We'll assume the
+   *   user's computer is secure"). Security, privacy and irreversible answers still ask for a proof
+   *   (`ctx.presence`);
+   * - `planning.finishAlone`: the standing form of that bulk accept, within the same limits;
+   * - `planning.stop`, `planning.pause`, `planning.resume` and `chat.send` with `interrupt`: steering
+   *   the planner, which changes nothing it has decided.
+   */
+  desktopDecidable?: true;
   /**
    * The gate always asks a person, whatever the autonomy policy or overrides say (a workflow's gate
    * step, ADR 0371). `deny` still refuses.

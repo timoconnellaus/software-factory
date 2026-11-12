@@ -28,6 +28,7 @@ import {
   stagePool,
   storedArtifactSchema,
 } from "@software-factory/runner-contract";
+import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId, newRunnerId } from "../ids.ts";
@@ -863,10 +864,15 @@ export const jobClaim = defineOperation({
     // A light job this runner could take but for a full light pool: ask an idle session to yield.
     let lightBlocked = false;
 
+    // Released work first: a shaping item's triage and planning jobs (ADR 0493) wait behind the
+    // jobs of work people already committed to, then oldest first.
     const queued = await ctx.db
       .selectFrom("core_jobs")
       .selectAll()
       .where("status", "=", "queued")
+      .orderBy(
+        sql`(SELECT w.status = 'shaping' FROM core_work_items w WHERE w.id = core_jobs.work_item_id)`,
+      )
       .orderBy("created_at")
       .limit(50)
       .execute();
@@ -882,7 +888,8 @@ export const jobClaim = defineOperation({
         .where("id", "=", job.project_id)
         .executeTakeFirst();
       if (!item || !project) continue;
-      if (!["running", "waiting"].includes(item.status)) continue;
+      // `shaping`: shaping stages before release runs its triage and planning jobs too (ADR 0493).
+      if (!["running", "waiting", "shaping"].includes(item.status)) continue;
       if (!room[job.pool] && (job.pool !== "light" || !room.split || lightBlocked)) continue;
       const refusal = await placementRefusal(
         ctx,

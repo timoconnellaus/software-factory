@@ -254,6 +254,18 @@ export async function steerStream(session: LocalSession, text: string): Promise<
 }
 
 /**
+ * A planning interrupt in a stream session (spec 26, ADR 0470): stop the turn in progress, then send
+ * the factory's fixed line as the next user message.
+ */
+export async function interruptStream(session: LocalSession, text: string): Promise<void> {
+  const state = session.stream;
+  if (!state) throw new Error("not a stream session");
+  if (state.takeover !== "none") throw new Error("the session was taken over in a terminal");
+  await write(state, interruptLine(`sf-${randomUUID()}`));
+  await steerStream(session, text);
+}
+
+/**
  * Stops the stream session for a person (ADR 0450): interrupt the turn, close stdin, wait for
  * Claude to exit (it saves the conversation as it goes), then kill what is left. `events()` sees
  * the exit and follows the resumed session.

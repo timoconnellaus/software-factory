@@ -508,6 +508,8 @@ export const steersResponseSchema = z.object({
       id: z.string(),
       text: z.string(),
       at: iso,
+      /** Stop the current step first (`adapter.interrupt`, ADR 0470); else type it as is. */
+      interrupt: z.boolean().optional(),
       /**
        * `takeover`: stop the stream session for a person (ADR 0450), not a message to type.
        * Optional, additive: absent is a message.
