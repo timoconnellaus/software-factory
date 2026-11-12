@@ -6,7 +6,7 @@ import { defineConfig } from "vite";
 
 const devkit = resolve(import.meta.dirname, ".hutch/devkit");
 
-/** Electrobun's view SDK lives in the Hutch devkit (ADR 0370); `pnpm devkit` fetches it. */
+/** Electrobun's view SDK lives in the Hutch devkit (ADR 0380); `pnpm devkit` fetches it. */
 async function electrobunAliases() {
   const helper = resolve(devkit, "api/config/electrobun-vite.ts");
   if (!existsSync(helper))

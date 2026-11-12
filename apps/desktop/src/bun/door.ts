@@ -1,11 +1,14 @@
-// The desktop app's client for sf-engine's client door (/client/v1, ADR 0371). Lives in the main
+// The desktop app's client for sf-engine's client door (/client/v1, ADR 0381). Lives in the main
 // process only: the token never reaches the webview.
 import type { CallResult } from "../shared/rpc.ts";
 import { inputDigest, presenceMessage } from "./digest.ts";
 
 export type Fetch = (input: string, init: RequestInit) => Promise<Response>;
-/** Signs a presence message with the device key; asking for Touch ID is the OS's job. */
-export type Signer = (message: string, reason: string) => Promise<string>;
+/**
+ * Signs a presence message with the device key. Asking for Touch ID is the OS's job, and the prompt
+ * shows the message's own summary line (ADR 0381): nothing the caller says.
+ */
+export type Signer = (message: string) => Promise<string>;
 
 export class UnauthenticatedError extends Error {}
 
@@ -67,15 +70,27 @@ export class Door {
     );
   }
 
-  /** A gate decision (ADR 0371): a one-time challenge for this op and input, signed, then the call. */
-  async decide(op: string, input: unknown, sign: Signer, reason: string): Promise<CallResult> {
+  /**
+   * A gate decision (ADR 0381): a one-time challenge for this op and input, with the engine's
+   * summary of the decision, signed (Touch ID shows the summary), then the call with the proof.
+   */
+  async decide(op: string, input: unknown, sign: Signer): Promise<CallResult> {
     const digest = await inputDigest(input);
-    const challenge = await this.call("presence.challenge", { op, inputDigest: digest });
+    const challenge = await this.call("presence.challenge", { op, input });
     if (!challenge.ok) return challenge;
-    const { challengeId, nonce } = challenge.result as { challengeId: string; nonce: string };
+    const c = challenge.result as {
+      challengeId: string;
+      nonce: string;
+      inputDigest: string;
+      summary: string;
+    };
+    // The engine digests the input it was sent; it must be the one this call sends.
+    if (c.inputDigest !== digest) {
+      return { ok: false, code: "conflict", error: "the engine digested a different input" };
+    }
     let signature: string;
     try {
-      signature = await sign(presenceMessage(nonce, op, digest), reason);
+      signature = await sign(presenceMessage(c.nonce, op, digest, c.summary));
     } catch (error) {
       return {
         ok: false,
@@ -83,6 +98,6 @@ export class Door {
         error: error instanceof Error ? error.message : "Touch ID was cancelled",
       };
     }
-    return this.call(op, input, { challengeId, nonce, signature });
+    return this.call(op, input, { challengeId: c.challengeId, nonce: c.nonce, signature });
   }
 }

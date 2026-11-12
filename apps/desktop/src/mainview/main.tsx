@@ -1,4 +1,4 @@
-// The desktop app's view (ADR 0370, spec 30 M2): a TanStack Router (hash history: views:// has no
+// The desktop app's view (ADR 0380, spec 40 M2): a TanStack Router (hash history: views:// has no
 // server for paths) + Query SPA on packages/ui. M2 has sign-in, the inbox, a work item summary and
 // the runner; the full screens move here in M3.
 import { Button } from "@software-factory/ui/components/button";
@@ -219,7 +219,7 @@ function WorkPage() {
         </button>
       )}
       <p className="text-muted-foreground text-xs">
-        The full work item, planning and review packet arrive in the next release (spec 30 M3).
+        The full work item, planning and review packet arrive in the next release (spec 40 M3).
       </p>
     </Card>
   );

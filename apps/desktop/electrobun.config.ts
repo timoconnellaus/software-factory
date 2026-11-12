@@ -5,7 +5,7 @@ export default {
     name: "Software Factory",
     identifier: "com.software-factory.desktop",
     version: "0.0.1",
-    // Sign-in callback and work-item links (ADR 0371, 0372). macOS registers the scheme once the
+    // Sign-in callback and work-item links (ADR 0381, 0372). macOS registers the scheme once the
     // .app is in /Applications.
     urlSchemes: ["sf"],
   },
@@ -19,8 +19,8 @@ export default {
     copy: {
       "dist/index.html": "views/mainview/index.html",
       "dist/assets": "views/mainview/assets",
-      // The runner child (ADR 0370): a pinned Node 24 and the bundled sf-runner. The key helper
-      // makes and uses the Secure Enclave key (ADR 0371). All three come from scripts/bundle.sh.
+      // The runner child (ADR 0380): a pinned Node 24 and the bundled sf-runner. The key helper
+      // makes and uses the Secure Enclave key (ADR 0381). All three come from scripts/bundle.sh.
       "vendor/node": "runner/node",
       "vendor/sf-runner.mjs": "runner/sf-runner.mjs",
       "vendor/sf-keys": "native/sf-keys",

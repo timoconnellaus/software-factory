@@ -1,4 +1,4 @@
-// The view's end of the RPC (ADR 0370). Everything privileged is in the main process.
+// The view's end of the RPC (ADR 0380). Everything privileged is in the main process.
 import Electrobun, { Electroview } from "electrobun/view";
 import type { AppRPC, RunnerState, Session } from "../shared/rpc.ts";
 

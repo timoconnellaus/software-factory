@@ -190,7 +190,7 @@ async function login(args: string[]) {
 async function run() {
   const config = await requireConfig();
   await mkdir(dirs.runsDir, { recursive: true, mode: 0o700 });
-  // One host per machine (ADR 0370): a second `run` (an orphan, launchd and the desktop app both)
+  // One host per machine (ADR 0380): a second `run` (an orphan, launchd and the desktop app both)
   // would fight the first over leases.
   let releaseLock: () => void;
   try {

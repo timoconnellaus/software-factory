@@ -49,31 +49,31 @@ describe("the door client", () => {
     ).rejects.toBeInstanceOf(UnauthenticatedError);
   });
 
-  it("decides a gate with a proof for exactly that op and input", async () => {
+  it("decides a gate with a proof for exactly that op and input, signing the engine's summary", async () => {
     const input = { workItemId: "wi_1", openedFullDiff: true };
+    const digest = await inputDigest(input);
+    const summary = 'Merge #1 "Fix it" into main';
     const { f, seen } = fakeDoor((_p, body) =>
       body.op === "presence.challenge"
-        ? { json: { result: { challengeId: "prc_1", nonce: "n0nce" } } }
+        ? {
+            json: {
+              result: { challengeId: "prc_1", nonce: "n0nce", inputDigest: digest, summary },
+            },
+          }
         : { json: { result: { merged: true } } },
     );
-    const signed: { message: string; reason: string }[] = [];
+    const signed: string[] = [];
     const door = new Door("https://e", () => "sfd_t", f);
-    const res = await door.decide(
-      "review.merge",
-      input,
-      async (message, reason) => {
-        signed.push({ message, reason });
-        return "c2ln";
-      },
-      "Merge #1",
-    );
-    expect(res).toEqual({ ok: true, result: { merged: true } });
-    const digest = await inputDigest(input);
-    expect(seen[0]?.body).toMatchObject({
-      op: "presence.challenge",
-      input: { op: "review.merge", inputDigest: digest },
+    const res = await door.decide("review.merge", input, async (message) => {
+      signed.push(message);
+      return "c2ln";
     });
-    expect(signed).toEqual([{ message: `n0nce\nreview.merge\n${digest}`, reason: "Merge #1" }]);
+    expect(res).toEqual({ ok: true, result: { merged: true } });
+    expect(seen[0]?.body).toEqual({
+      op: "presence.challenge",
+      input: { op: "review.merge", input },
+    });
+    expect(signed).toEqual([`n0nce\nreview.merge\n${digest}\n${summary}`]);
     expect(seen[1]?.body).toEqual({
       op: "review.merge",
       input,
@@ -81,17 +81,40 @@ describe("the door client", () => {
     });
   });
 
-  it("a cancelled Touch ID makes no decision call", async () => {
+  it("won't sign when the engine digested a different input", async () => {
     const { f, seen } = fakeDoor(() => ({
-      json: { result: { challengeId: "prc_1", nonce: "n" } },
+      json: {
+        result: { challengeId: "prc_1", nonce: "n", inputDigest: "0".repeat(64), summary: "x" },
+      },
     }));
+    let asked = false;
     const res = await new Door("https://e", () => "t", f).decide(
       "spec.approve",
       { workItemId: "wi_1" },
       async () => {
+        asked = true;
+        return "sig";
+      },
+    );
+    expect(res).toMatchObject({ ok: false, code: "conflict" });
+    expect(asked).toBe(false);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("a cancelled Touch ID makes no decision call", async () => {
+    const input = { workItemId: "wi_1" };
+    const digest = await inputDigest(input);
+    const { f, seen } = fakeDoor(() => ({
+      json: {
+        result: { challengeId: "prc_1", nonce: "n", inputDigest: digest, summary: "Approve" },
+      },
+    }));
+    const res = await new Door("https://e", () => "t", f).decide(
+      "spec.approve",
+      input,
+      async () => {
         throw new Error("Touch ID was cancelled");
       },
-      "Approve",
     );
     expect(res).toMatchObject({ ok: false, code: "cancelled" });
     expect(seen.map((s) => s.body.op)).toEqual(["presence.challenge"]);
@@ -101,7 +124,7 @@ describe("the door client", () => {
     const value = { b: [1, { d: undefined, c: "x" }], a: null };
     expect(canonicalJson(value)).toBe('{"a":null,"b":[1,{"c":"x"}]}');
     expect(await inputDigest(value)).toBe(DIGEST_VECTOR);
-    expect(presenceMessage("n", "op", "d")).toBe("n\nop\nd");
+    expect(presenceMessage("n", "op", "d", "s")).toBe("n\nop\nd\ns");
   });
 });
 

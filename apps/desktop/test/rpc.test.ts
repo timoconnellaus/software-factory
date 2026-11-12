@@ -1,4 +1,4 @@
-// The token never reaches the webview (spec 30 M2 criterion 5): no RPC type mentions one.
+// The token never reaches the webview (spec 40 M2 criterion 5): no RPC type mentions one.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 

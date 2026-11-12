@@ -1,4 +1,4 @@
-// PKCE S256 and the sign-in state (ADR 0371).
+// PKCE S256 and the sign-in state (ADR 0381).
 export function base64Url(bytes: Uint8Array): string {
   let s = "";
   for (const b of bytes) s += String.fromCharCode(b);

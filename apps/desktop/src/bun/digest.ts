@@ -1,4 +1,4 @@
-// What a presence proof is bound to (ADR 0371): the SHA-256 of the input's canonical JSON. The same
+// What a presence proof is bound to (ADR 0381): the SHA-256 of the input's canonical JSON. The same
 // rule as core's `inputDigest`; test/door.test.ts checks they agree.
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -17,5 +17,6 @@ export async function inputDigest(input: unknown): Promise<string> {
   return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export const presenceMessage = (nonce: string, op: string, digest: string) =>
-  `${nonce}\n${op}\n${digest}`;
+/** What the device key signs (ADR 0381); the last line is the summary the Touch ID prompt shows. */
+export const presenceMessage = (nonce: string, op: string, digest: string, summary: string) =>
+  `${nonce}\n${op}\n${digest}\n${summary}`;

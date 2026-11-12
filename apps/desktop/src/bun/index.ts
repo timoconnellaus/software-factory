@@ -1,4 +1,4 @@
-// The desktop app's main process (Bun; ADR 0370, spec 30 M2): the window, the menu-bar icon, the
+// The desktop app's main process (Bun; ADR 0380, spec 40 M2): the window, the menu-bar icon, the
 // RPC the view calls, the sf:// links, the inbox count (badge, notifications) and this Mac's runner.
 // The desktop token and the device key stay here; the view only ever sees results.
 import { hostname } from "node:os";
@@ -13,7 +13,7 @@ import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { Runner } from "./runner.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
-/** How often the inbox count is refreshed until the live socket (spec 30 M2b) replaces it. */
+/** How often the inbox count is refreshed until the live socket (spec 40 M2b) replaces it. */
 const INBOX_POLL_MS = 15_000;
 
 const dataDir = join(Utils.paths.appData, "com.software-factory.desktop");
@@ -115,7 +115,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
           () => door().batch(calls),
           calls.map(() => ({ ok: false as const, code: "unauthenticated", error: "signed out" })),
         ),
-      decide: ({ op, input, reason }) => {
+      decide: ({ op, input }) => {
         const key = auth.key;
         if (!key)
           return {
@@ -123,7 +123,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
             code: "unauthenticated",
             error: "sign in again: this Mac has no device key",
           };
-        return guarded(() => door().decide(op, input, (m, r) => key.sign(m, r), reason), {
+        return guarded(() => door().decide(op, input, (m) => key.sign(m)), {
           ok: false,
           code: "unauthenticated",
           error: "signed out",
@@ -281,7 +281,7 @@ async function quit() {
 Electrobun.events.on("before-quit", async () => {
   await runner.stop();
 });
-// If the launcher dies, don't linger as an orphan with a runner (ADR 0370).
+// If the launcher dies, don't linger as an orphan with a runner (ADR 0380).
 watchParent(() => void quit());
 
 refreshTray();

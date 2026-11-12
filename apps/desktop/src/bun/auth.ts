@@ -1,4 +1,4 @@
-// Signing the desktop app in (ADR 0371): a device key, PKCE, the website approval, the sf://
+// Signing the desktop app in (ADR 0381): a device key, PKCE, the website approval, the sf://
 // callback and the exchange. The token goes to the keychain and stays in the main process.
 import type { Session } from "../shared/rpc.ts";
 import { createDeviceKey, type DeviceKey, forgetDeviceKey, loadDeviceKey } from "./device-key.ts";

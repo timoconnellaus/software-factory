@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "The desktop app (ADR 0370, spec 30): the daily UI on macOS, built on Electrobun 2.x with Hutch. It supervises this Mac's sf-runner and calls operations through the client door with a desktop token.",
+  "description": "The desktop app (ADR 0380, spec 40): the daily UI on macOS, built on Electrobun 2.x with Hutch. It supervises this Mac's sf-runner and calls operations through the client door with a desktop token.",
   "scripts": {
     "devkit": "electrobun prepare",
     "typecheck": "electrobun prepare && tsc --noEmit",

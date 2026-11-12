@@ -1,4 +1,4 @@
-// One runner host per machine (ADR 0370, spec 30 M2): two hosts with the same runner identity would
+// One runner host per machine (ADR 0380, spec 40 M2): two hosts with the same runner identity would
 // fight over leases. `sf-runner run` takes a pid lock in its state directory; a second one refuses
 // to start while the first is alive. A lock left by a dead process is taken over.
 import { closeSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";

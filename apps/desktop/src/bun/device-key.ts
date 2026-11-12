@@ -1,4 +1,4 @@
-// The device key a presence proof is signed with (ADR 0371). On a signed build it lives in the
+// The device key a presence proof is signed with (ADR 0381). On a signed build it lives in the
 // Secure Enclave, made and used by the bundled `sf-keys` helper, and every signature asks for
 // Touch ID. Where that isn't possible (an unsigned dev build) the app makes a software P-256 key,
 // keeps it in the keychain and says so (`keyStorage: "software"`), so the website shows it.
@@ -16,8 +16,11 @@ export interface PublicJwk {
 export interface DeviceKey {
   storage: "secure-enclave" | "software";
   publicKey: PublicJwk;
-  /** Signs `message`; for the Secure Enclave key the OS asks for Touch ID with `reason`. */
-  sign(message: string, reason: string): Promise<string>;
+  /**
+   * Signs a presence message. For the Secure Enclave key the helper asks for Touch ID and the
+   * prompt shows the message's summary line; it takes no prompt text from here (ADR 0381).
+   */
+  sign(message: string): Promise<string>;
 }
 
 const HELPER = resolve("../Resources/app/native/sf-keys");
@@ -40,8 +43,8 @@ function enclaveKey(publicKey: PublicJwk): DeviceKey {
   return {
     storage: "secure-enclave",
     publicKey,
-    sign: (message, reason) =>
-      helper(["sign", TAG, Buffer.from(message).toString("base64"), reason]),
+    // No prompt text: the helper shows the message's own summary line (ADR 0381).
+    sign: (message) => helper(["sign", TAG, Buffer.from(message).toString("base64")]),
   };
 }
 
