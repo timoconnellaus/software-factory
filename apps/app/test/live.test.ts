@@ -53,6 +53,48 @@ function render(data: LiveView, initialView?: "transcript" | "terminal") {
   );
 }
 
+describe("an archived run that can't be read", () => {
+  const archived = (over: Partial<LiveView>) =>
+    view("run_a", [], {
+      run: { ...view("run_a", []).run!, active: false, status: "handed_back" },
+      archived: true,
+      ...over,
+    });
+
+  it("says the log is missing, never that the run was empty", () => {
+    const html = render(archived({ archive: "missing" }));
+    expect(html).toContain('data-testid="live-archive-missing"');
+    expect(html).toContain("missing from the archive");
+    expect(html).not.toContain("Nothing in the archive");
+  });
+
+  it("says the archive couldn't be read, with a way to try again", () => {
+    const html = renderToStaticMarkup(
+      createElement(LiveRunView, {
+        data: archived({ archive: "failed" }),
+        me: "u_me",
+        onSteer: async () => {},
+        onRetry: () => {},
+      }),
+    );
+    expect(html).toContain('data-testid="live-archive-failed"');
+    expect(html).toContain("Try again");
+    expect(html).not.toContain("Nothing in the archive");
+  });
+
+  it("says it is reading the archive while a page loads", () => {
+    const html = renderToStaticMarkup(
+      createElement(LiveRunView, {
+        data: archived({ archive: "read" }),
+        me: "u_me",
+        onSteer: async () => {},
+        archiveLoading: true,
+      }),
+    );
+    expect(html).toContain('data-testid="live-archive-loading"');
+  });
+});
+
 describe("the Live tab's view", () => {
   const events = [
     ev(1, "message", { role: "assistant", text: "Reading the spec." }),

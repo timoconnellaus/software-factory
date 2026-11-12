@@ -31,9 +31,13 @@ export function appFor(
 
 /**
  * Archived chunks read by run.live, kept in the isolate (they never change once written): a person
- * paging through an old run reads each chunk from R2 once. At most 16 of about 1 MB.
+ * paging through an old run reads each chunk from R2 once. Bounded by size: at most about 8 MB of
+ * text (a chunk is at most 1 MB), least recently read out first. Null when the object isn't there;
+ * an R2 failure throws, so run.live can tell "missing" from "couldn't read".
  */
+const CHUNK_CACHE_CHARS = 8_000_000;
 const chunkCache = new Map<string, string>();
+let chunkCacheChars = 0;
 async function archivedChunk(bucket: R2Bucket, key: string): Promise<string | null> {
   const hit = chunkCache.get(key);
   if (hit !== undefined) {
@@ -45,7 +49,12 @@ async function archivedChunk(bucket: R2Bucket, key: string): Promise<string | nu
   if (!object) return null;
   const text = await object.text();
   chunkCache.set(key, text);
-  if (chunkCache.size > 16) chunkCache.delete(chunkCache.keys().next().value as string);
+  chunkCacheChars += text.length;
+  for (const [old, value] of chunkCache) {
+    if (chunkCacheChars <= CHUNK_CACHE_CHARS || old === key) break;
+    chunkCache.delete(old);
+    chunkCacheChars -= value.length;
+  }
   return text;
 }
 

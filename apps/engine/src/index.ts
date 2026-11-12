@@ -16,7 +16,7 @@ import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
 import { pullQueuedWork } from "./pull.ts";
-import { archiveRunEvents, pruneExpired } from "./retention.ts";
+import { archiveRunEvents, archiveStatus, pruneExpired } from "./retention.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
@@ -57,6 +57,8 @@ export default {
     // Retention (AGENTS.md "Cloudflare cost", rule 3): every minute, a budgeted slice of the
     // oldest ended runs' events goes to R2; once an hour, expired rows go in bounded batches.
     await archiveRunEvents(env, now);
+    // Once a day: the archive's expected drain time, in core_meta and the log.
+    if (now.getUTCHours() === 0 && now.getUTCMinutes() === 43) await archiveStatus(env.DB, now);
     if (now.getUTCMinutes() === 41) await pruneExpired(env.DB, now);
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
