@@ -55,26 +55,19 @@ Branch `timoconnellaus/desktop-m4`, pushed, **no PR yet**. This file is on that 
 - **The Developer ID** is in the **M5's** login keychain. The M1 has none, and shouldn't: CI is
   the place to sign.
 
-## Running when this was handed off
-A test of commit `75503ba` on the M5, in worktree
-`~/orca/workspaces/software-factory/desktop-m4-signing-test`, in the Orca terminal titled
-"app check". It does the full Electrobun-signed and notarized canary build, launches it, and
-then has to show all of these:
-- `codesign --verify --deep --strict` still valid **after** the first launch (`verify=0`);
-- `spctl` accepting it;
-- the app's `bun` and its processes running.
+## The M5 test passed
+A full Electrobun-signed and notarized canary build of `75503ba`, built in worktree
+`~/orca/workspaces/software-factory/desktop-m4-signing-test` on the M5 and launched there:
+- `codesign --verify --deep --strict` is still valid **after** the first launch (`verify=0`).
+- `spctl` accepts it as `source=Notarized Developer ID`.
+- The app's `bun` (`Resources/main.js`) is running.
+- `artifacts/` has the update archive, `canary-macos-arm64-update-v2.json` and
+  `canary-macos-arm64-Software-Factory.zip`.
 
-It prints `END-FULL` when it's done.
-
-To read it:
-1. Get the handle from `orca worktree ps --environment m5 --json`, on the `desktop-m4-signing-test`
-   workspace.
-2. Run `orca terminal read --environment m5 --terminal <handle> --json`.
-
-The earlier failed launch was moved to the Trash from the "damaged" dialog.
+The test app was stopped afterwards. The test worktree can be removed.
 
 ## Next steps
-1. **If the M5 test passes:**
+1. **Ship M4a (the M5 test passed):**
    - Open the M4a PR and attach it: `local/cli/bin/sf attach <pr>`.
    - The owner has told us to merge desktop PRs ourselves once `ci` passes, so merge it with
      `gh pr merge --merge`. Before merging, check `ci` on the PR's **current head commit**
@@ -84,11 +77,13 @@ The earlier failed launch was moved to the Trash from the "damaged" dialog.
      `https://downloads.zerobsai.com/desktop/canary-macos-arm64-update-v2.json` and
      `…/canary-macos-arm64-Software-Factory.zip` load.
    - Tell the owner to install from the zip: unzip it and move it to `/Applications`.
-2. **If it fails:**
+2. **If the first CI release fails:**
    - Look for files changed after signing (`codesign --verify --deep --strict --verbose=4` on the
      launched app).
    - Check whether Electrobun's signing covers `Resources/app/runner/node` and
-     `Resources/app/native/sf-keys` with the JIT entitlements (`codesign -d --entitlements -`).
+     `Resources/app/native/sf-keys` with the JIT entitlements (`codesign -d --entitlements -`). The
+     M5 test showed the app runs; whether the bundled runner's Node starts under the hardened
+     runtime wasn't checked, because the M5's runner is under launchd.
 3. **M4b, the Secure Enclave key (Touch ID approvals).** Tested on the M5 with the real
    certificate:
    - A command-line `sf-keys` signed with `keychain-access-groups` and no provisioning profile is
