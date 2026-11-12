@@ -17,6 +17,7 @@ import {
   ChannelCallError,
   type ControlPlaneClient,
   canRun,
+  type ExecutedCheck,
   type Job,
   type JobState,
   RESULT_FILE,
@@ -30,6 +31,7 @@ import {
   type TokenResponse,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
+import { checkEnv, checkLoop, hasChecks, localExec } from "./checks.ts";
 import { assertPushable, type HostGit, revokeToken } from "./git.ts";
 import { type RunningRelay, startPlanningRelay } from "./planning-relay.ts";
 
@@ -290,6 +292,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let error: string | undefined;
   let headSha: string | undefined;
   let result: unknown;
+  /** The project's checks as this host ran them (ADR 0451), for the hand-back. */
+  let executed: ExecutedCheck[] = [];
   let stored: StoredArtifact[] = [];
   const notes: string[] = [];
 
@@ -498,6 +502,58 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         notes.push(`the session wrote no ${RESULT_FILE}`);
       }
 
+      // The project's checks, run here on the commit handed back, and a failure sent back into the
+      // same session (ADR 0451). See ./checks.ts.
+      if (hasChecks(job) && outcome === "completed" && !error && session) {
+        const ws = workspace;
+        const live = session;
+        const steer = adapter.steer?.bind(adapter);
+        const canSteer = !!steer && (await adapter.manifest()).capabilities.includes("steer");
+        const checked = await checkLoop({
+          checks: job.checks,
+          exec: adapter.exec
+            ? (command, s) =>
+                (adapter.exec as NonNullable<typeof adapter.exec>)(job, ws, command, s)
+            : localExec(ws.path, checkEnv()),
+          commit: async () => {
+            const merge = await git.mergeState(ws.path);
+            if (job.stage === "build" && merge.unmerged.length === 0) {
+              await git.commitLeftovers(
+                ws.path,
+                `factory: uncommitted changes left by run ${job.runNo}`,
+              );
+            }
+            return git.headSha(ws.path);
+          },
+          continueSession:
+            job.stage === "build" && canSteer && steer
+              ? async (text) => {
+                  // A fix round gets the job's session timeout again, and stops on a cancel.
+                  const round = AbortSignal.any([
+                    signal,
+                    AbortSignal.timeout(job.limits.sessionTimeoutMs),
+                  ]);
+                  await steer(live, text);
+                  let ended: SessionOutcome = "failed";
+                  for await (const event of adapter.events(job, live, round)) {
+                    await stream.push(event);
+                    if (event.type === "session.ended") ended = event.outcome;
+                  }
+                  return round.aborted ? abortedOutcome() : ended;
+                }
+              : undefined,
+          signal,
+          log: (m) => log(`${job.jobId}: ${m}`),
+        });
+        executed = checked.results;
+        notes.push(...checked.notes);
+        await stream.push({
+          type: "job.state",
+          state: "collecting",
+          detail: checked.notes.at(-1) ?? "checks ran",
+        });
+      }
+
       if (job.stage === "build" && outcome === "completed" && !error) {
         try {
           const merge = await git.mergeState(workspace.path);
@@ -570,6 +626,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
           ...(summary ? { summary: summary.slice(0, 20_000) } : {}),
           ...(headSha ? { headSha } : {}),
           ...(result !== undefined ? { result } : {}),
+          ...(executed.length ? { checks: executed } : {}),
         }),
       );
       handedBack = true;

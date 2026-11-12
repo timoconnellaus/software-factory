@@ -614,7 +614,9 @@ export function createLocalRunner(
       // conversation's file holds earlier turns: only messages from this session are sent.
       let tailing: string | null = null;
       let transcriptOffset = 0;
-      const since = session.startedAt - 5_000;
+      // A second call after a steer (the host sending a failing check back, ADR 0451) reports the
+      // turn that steer started: only what was said since it was typed.
+      const since = Math.max(session.startedAt, session.promptSentAt) - 5_000;
       /** What the agent said, not yet yielded, oldest first. */
       const said: { at: number | null; event: AdapterEvent }[] = [];
       const readSaid = async () => {
@@ -890,6 +892,9 @@ export function createLocalRunner(
     async steer(session, text) {
       const line = steerText(text);
       if (!line) return;
+      // A steer starts a turn: a later `events()` call waits for this turn's own submit and Stop,
+      // not the ones before (ADR 0451). Mid-turn it changes nothing (the turn is already submitted).
+      session.promptSentAt = Date.now();
       for (let i = 0; i < line.length; i += STEER_CHUNK) {
         await tmux.sendText(session.name, line.slice(i, i + STEER_CHUNK));
         if (i + STEER_CHUNK < line.length) await sleep(30);
