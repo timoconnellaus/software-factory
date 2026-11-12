@@ -2,6 +2,22 @@
 // planning-session-states): questions | spec | chat, the gate bar at the bottom, the session pill,
 // a full-screen toggle (F / Esc) and tabs on a phone. Live: the engine pushes a Server-Sent Event per
 // change and the tab re-reads the planning view; it also reports who has it open (presence).
+
+import { ago, errorMessage } from "@software-factory/client/format";
+import {
+  answerText,
+  blocks,
+  bulkAcceptable,
+  chipTag,
+  gateSummary,
+  initialAnswer,
+  isChanged,
+  markTags,
+  type PlanningQuestion,
+  type PlanningView,
+  questionOptions,
+  sessionPill,
+} from "@software-factory/client/planning";
 import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
@@ -25,23 +41,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { toast } from "sonner";
-import { ago, errorMessage } from "#/lib/format";
 import { op, submitKey } from "#/lib/op";
 import type { WorkItemDetail } from "#/lib/ops";
-import {
-  answerText,
-  blocks,
-  bulkAcceptable,
-  chipTag,
-  gateSummary,
-  initialAnswer,
-  isChanged,
-  markTags,
-  type PlanningQuestion,
-  type PlanningView,
-  questionOptions,
-  sessionPill,
-} from "#/lib/planning";
 import { planningQuery } from "#/lib/queries";
 import { NoteDialog, useDecide } from "./decisions.tsx";
 

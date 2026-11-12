@@ -377,7 +377,15 @@ describe("runner-local stream-json sessions", { timeout: 30_000 }, () => {
     const takeover = events.find((e) => e.type === "takeover");
     expect(takeover).toMatchObject({ type: "takeover", sessionId });
     const hint = (takeover as { hint: string }).hint;
-    expect(hint.startsWith(`cd ${ws.path} && `)).toBe(true);
+    // The run's resume script (its environment and account), then what it runs.
+    const script = join(w.runsDir, "job_1", "resume.sh");
+    expect(hint.split("\n")[0]).toBe(`sh ${script}`);
+    expect(hint.split("\n")[1]).toMatch(new RegExp(`^# runs: cd ${ws.path} && `));
+    const body = await readFile(script, "utf8");
+    expect(body).toContain(`cd ${ws.path} || exit 97`);
+    expect(body).toMatch(new RegExp(`exec .*--resume ${sessionId}\\n`));
+    expect(body).not.toContain("stream-json");
+    expect(body).not.toContain("claude.pid");
     expect(hint).toContain(`--resume ${sessionId}`);
     expect(hint).toContain("--settings");
     expect(hint).toContain("--permission-mode");

@@ -14,6 +14,7 @@ import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  accountConfigDir,
   denyPermissionLine,
   inspectLaunch,
   interruptLine,
@@ -193,6 +194,8 @@ export async function startStreamSession(
     startedAt: Date.now(),
     promptSentAt: Number.POSITIVE_INFINITY,
     mode: "stream",
+    account: workspace.account.name,
+    configDir: accountConfigDir(workspace.account),
     stream: state,
   };
   const fail = async (error: Error): Promise<never> => {

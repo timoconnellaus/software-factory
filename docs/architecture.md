@@ -95,9 +95,19 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   allowlist (ADR 0038), each run pushes its own branch under a fencing token (ADR 0035), and the
   harness runs without the owner's git or cloud credentials (ADR 0033): the runner host, not the
   harness, pushes the run branch with the job token (ADR 0250).
+  A runner set to `"isolation": "container"` runs each job's Claude in its own Docker container
+  instead (ADR 0430): a self-contained job repo with only the job's history, no home or host
+  credentials, egress only through the job's allowlist proxy, every stage `bypassPermissions`, and
+  the launch check inside the container. The host still pushes, from the job repo.
   A runner host keeps its own code on the commit `sf-engine` was deployed from (`DEPLOYED_SHA`,
   sent in each heartbeat): it updates itself when idle and rolls back an update that doesn't start
   (ADR 0360).
+  A host holds one or more **Claude accounts** (ADR 0410): a login in its own config dir or a token
+  in a 0600 file, never sent to the factory. The heartbeat reports their names and the active one;
+  the owner picks the active one with `sf-runner account use` or on Setup (`runner.account.use`,
+  delivered as `account.use` on the heartbeat response). A job launches with the account that was
+  active when its workspace was prepared, and a usage limit it hits is reported against that
+  account. Nothing switches accounts on its own.
 - **The `sf` CLI** (`local/cli`, ADR 0340) is a surface for people and their agent sessions: it
   calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
   `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses
@@ -134,12 +144,12 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
 | `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |
-| `packages/harness-claude` | The Claude Code harness: the per-run settings (permission mode and allowlist per stage, the OS sandbox, deny rules, a credential-free environment), the exact launch command and the post-launch check (ADR 0270), the run's git config, transcript and stream-json parsing |
-| `packages/runner-local` | The local runner adapter (ADR 0380): a git worktree of the machine's checkout on the run branch, the harness's launch script in a tmux session on the factory's own socket (verified before the prompt, ADR 0270), status from the harness's hook file (`status.jsonl`), what the agent says from its transcript, steers typed with `send-keys` (ADR 0400), takeover by `tmux attach`, orphan reaping; or, in stream-json mode (ADR 0450), the launch script as a child process with JSON in and out, events from the structured output, steers as JSON user messages, takeover by `claude --resume` |
+| `packages/harness-claude` | The Claude Code harness: the per-run settings (permission mode and allowlist per stage, the OS sandbox, deny rules, a credential-free environment), the exact launch command and the post-launch check (ADR 0270), the run's Claude account in the launch (ADR 0410), the run's git config, transcript and stream-json parsing |
+| `packages/runner-local` | The local runner adapter (ADR 0380): a git worktree of the machine's checkout on the run branch, the harness's launch script in a tmux session on the factory's own socket (verified before the prompt, ADR 0270), status from the harness's hook file (`status.jsonl`), what the agent says from its transcript, steers typed with `send-keys` (ADR 0400), takeover by `tmux attach`, orphan reaping. `src/container/`: a container per job (ADR 0430): the job repo, the Docker runtime, the agent image and egress proxy (`container/`), the container check. `src/stream.ts`: the stream-json session mode (ADR 0450): the launch script as a child process with JSON in and out, events from the structured output, steers as JSON user messages, takeover by `claude --resume` |
 | `packages/connector-webhook` | Inbound webhook connector, provider-neutral: signature check, delivery naming |
 | `packages/connector-github` | The GitHub App connector: App webhooks → operations |
 | `packages/config` | Shared tsconfig, Biome preset, Vitest preset |
-| `local/runner-host` | The runner host daemon `sf-runner` (Node, on a person's machine): heartbeat, claim, the job lifecycle, fetching into the machine's existing checkout (found under `runner.json` `checkouts`; its own clone only as a fallback, ADR 0260), the run-branch push with the job token (ADR 0250), the service (launchd on macOS, a systemd user service on Linux, ADR 0420), `doctor` (tmux, git, claude, checkouts, orphans; on Linux bubblewrap, socat, user systemd, linger) |
+| `local/runner-host` | The runner host daemon `sf-runner` (Node, on a person's machine): heartbeat, claim, the job lifecycle, fetching into the machine's existing checkout (found under `runner.json` `checkouts`; its own clone only as a fallback, ADR 0260), the run-branch push with the job token (ADR 0250), the service (launchd on macOS, a systemd user service on Linux, ADR 0420), `doctor` (tmux, git, claude, checkouts, orphans; on Linux bubblewrap, socat, user systemd, linger; Docker, the image and the credential on a container runner), the host's Claude accounts (`sf-runner account`, ADR 0410) |
 | `presets/` | The shipped autonomy policies, project templates and the floor (directory name kept) |
 | `evals/` | The `.factory/checks/` format, incident regression cases (`evals/regressions/`) and the suite CI runs over both; benchmarks later |
 | `spikes/` | Throwaway spikes. Not in the workspace or Biome |

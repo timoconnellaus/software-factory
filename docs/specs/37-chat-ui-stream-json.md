@@ -43,11 +43,13 @@ over in a terminal with `claude --resume`. tmux stays the default.
     permission answer; the mode and allow rules decide). A non-planning stream run gets its own
     `--session-id <uuid>`; a planning one keeps `--session-id`/`--resume` from ADR 0350.
   - `projectHarness(..., { session: "stream" })` writes that argv into the launch script and record,
-    so ADR 0270's check covers it.
+    so ADR 0270's check covers it, and writes `<runDir>/resume.sh` for a takeover (the launch
+    script's unsets and Claude account, then the interactive `claude … --resume <id>`).
   - `stream-json.ts`: `streamLineEvents` (one output line → contract events, sizes bounded),
-    `userMessageLine`, `interruptLine`, `denyPermissionLine`, and `resumeCommand` (the exact
-    interactive `claude --resume <id>` with the run's cwd, settings, mode, MCP config and model, and
-    the launch script's unsets as `env -u`).
+    `userMessageLine`, `interruptLine`, `denyPermissionLine`; `launch.ts`: `resumeCommand`
+    (`sh <runDir>/resume.sh`, then the exact `cd <worktree> && env -u … claude … --resume <id>` it
+    runs, with the run's settings, mode, MCP config and model).
+  - Not with container isolation (ADR 0430) yet: the runner host keeps a container runner in tmux.
 - **runner-local**, `stream.ts`, a session mode beside tmux (`config.session: "tmux" | "stream-json"`):
   - `startSession`: spawns `/bin/sh <launch.sh>` with piped stdio (its own process group), waits
     for the pid file and the exec, runs `verifyLaunch` (mismatch: kill, `harness-config-mismatch`),

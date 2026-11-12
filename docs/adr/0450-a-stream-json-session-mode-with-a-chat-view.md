@@ -48,8 +48,11 @@ replacement: tmux stays for people who attach.
    `run.steer`) queues a `takeover` row on the steer table (migration 0220 adds `kind`) and wakes
    the host's held steer call. The host asks the adapter to stop the session cleanly: an `interrupt`
    control request, stdin closed, the process waited for. The adapter emits a `takeover` event with
-   the exact interactive command, `cd <worktree> && env -u … claude --resume <session-id>` with the
-   run's settings, mode, setting sources and model, and the job keeps its worktree and lease. The
+   the command: `sh <runDir>/resume.sh`, a script projected with the launch (the launch script's
+   unsets and Claude account, ADR 0410, then `exec claude … --resume <session-id>` in the
+   worktree), and on a second line the exact `cd <worktree> && env -u … claude … --resume
+   <session-id>` it runs, with the run's settings, mode, setting sources and model. The job keeps
+   its worktree and lease. The
    owner runs it on the host; the projected status hook reports the resumed session, its assistant
    text keeps showing from the transcript, and quitting it (`SessionEnd`) ends the job as completed
    (the person decided), which hands back and pushes as any other (a build with no commits still
@@ -69,3 +72,6 @@ replacement: tmux stays for people who attach.
 - The runner host's process owns the stream session's stdio: a host that dies takes the session's
   stdin with it, and Claude exits after its turn; the job is reaped as any other.
 - A steer is delivered as structured input, not typed: no chunking, no paste limits.
+- Not with a container per job (ADR 0430) yet: a runner with `isolation: "container"` keeps tmux
+  and logs that it ignored `session`. Joining them means running the stream through `docker run -i`
+  and checking the process inside the container, as the tmux path does.

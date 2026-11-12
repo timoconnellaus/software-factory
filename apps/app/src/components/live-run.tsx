@@ -1,11 +1,12 @@
 // The Live tab (spec 31, ADR 0400): polls the latest run's `run.live` every 2 s while it is active
 // and sends the runner owner's messages with `run.steer`. The view is `live-run-view.tsx`.
+
+import { errorMessage } from "@software-factory/client/format";
 import { Card } from "@software-factory/ui/components/card";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { LiveRunView } from "#/components/live-run-view";
-import { errorMessage } from "#/lib/format";
 import { op, submitKey } from "#/lib/op";
 import type { WorkItemDetail } from "#/lib/ops";
 import { liveQuery } from "#/lib/queries";

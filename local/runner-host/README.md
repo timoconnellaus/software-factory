@@ -91,6 +91,92 @@ A **planning** job is a long-lived Claude session that plans one work item with 
   launch script unsets the credential variables and `CLAUDE_CODE_PLUGIN_DIRS`; the sandbox
   (ADR 0270) is what confines it. The status hook runs outside the sandbox, as every hook does: it
   only appends to the run's status file and always answers `{}`.
+- The model credential is yours and stays on this machine (ADR 0023, 0410): see Claude accounts
+  below. On `default` the launch leaves the environment as it is; on a named account it unsets
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CONFIG_DIR`, then
+  sets that account's.
+
+## Claude accounts (spec 32, ADR 0410)
+A host can run Claude with several accounts and you pick which one new jobs use. With none added,
+jobs use `default`: whatever `claude` uses on this machine, as before.
+```sh
+local/runner-host/bin/sf-runner account add work           # a login: runs claude in the account's
+                                                            # own config dir; log in, then /exit
+pbpaste | local/runner-host/bin/sf-runner account add ci --token-stdin
+                                                            # a `claude setup-token` token or an API
+                                                            # key (--oauth / --api-key if unsure)
+local/runner-host/bin/sf-runner account list                # * marks the active one
+local/runner-host/bin/sf-runner account use work            # new jobs use it; running jobs keep theirs
+local/runner-host/bin/sf-runner account remove ci           # not the active one, not one in use
+```
+- A **login** account's Claude config dir is `~/.local/share/software-factory/runner/accounts/<name>/`
+  (`CLAUDE_CONFIG_DIR` for its runs). A **token** is kept in
+  `~/.config/software-factory/accounts/<name>.token` (0600), which no run can read. The launch
+  script reads it into `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` just before starting Claude,
+  so no file the harness writes holds it. A token account gets a config dir too, seeded so Claude
+  skips its first-run screens. A token is visible to the commands Claude runs, as an
+  `ANTHROPIC_API_KEY` in the host's environment always was, so prefer login accounts.
+- The registry is `~/.config/software-factory/accounts.json`: the active name and each account's
+  kind, no secret. The service reads it for every job, so `account use` needs no restart.
+- You can also switch from the dashboard: Setup → Your runners → Claude account. That sends only the
+  name; the host switches on its next heartbeat. The heartbeat reports account names and the active
+  one, never a credential. Adding and removing accounts is only ever done here.
+- A run that hits a usage limit fails with "usage limit on Claude account …", and Setup shows it next
+  to that account until a run on it ends cleanly. Switch by hand; nothing rotates accounts for you.
+- A planning session resumed after a switch gets its conversation copied into the new account's
+  config dir, so `claude --resume` finds it.
+
+### A container per job (`"isolation": "container"`, ADR 0430, spec 33)
+Opt in per runner. The default stays the worktree and Claude's sandbox above. With it, each job's
+Claude runs in its own Docker container (Docker Desktop or OrbStack on the Mac, Docker Engine on
+Linux), and every stage runs `bypassPermissions` unless the project's policy picks another mode.
+- **The job repo.** The job runs in a new repo, not a worktree of your checkout:
+  `<data dir>/containers/sf-<jobId>/work`, with its git dir in `…/git`. The host fetches into it only
+  the start point's history and the default branch, through a temporary
+  `refs/software-factory/jobs/<jobId>` in your checkout. Your other branches and uncommitted work are
+  never in it.
+- **What the container sees.** It mounts, at the same paths as on the host:
+  - the working tree;
+  - the git dir (its `config`, `hooks`, `info` and alternates read only);
+  - the run dir, read only (only `status.jsonl` and `claude.pid` are writable);
+  - a fresh home, its temp dir and the attachments.
+
+  No host home, no keychain, no Docker socket. The root filesystem is read-only, every capability is
+  dropped, and it runs as your uid.
+- **Egress.** The container is on an internal network with no route out. Its only way out is the
+  job's proxy container. The proxy allows the stage's hosts (npm, GitHub, Cloudflare, the project's
+  `allowedDomains`), `api.anthropic.com` and `container.allowedHosts`, and answers everything else
+  403. The run's `egress-log` artifact lists each decision.
+- **The launch check** runs inside the container: `docker exec … ps` against the launch record, the
+  settings hashes, and `docker inspect` against `container.json` (image, mounts, network,
+  privileges). `doctor` runs it on running jobs.
+- **The credential.** The one secret inside is the job's Claude account's token (ADR 0410), which
+  goes in as an env var:
+  - **A token account** works: `claude setup-token | sf-runner account add <name> --token-stdin`,
+    then `sf-runner account use <name>`. An API key account works too.
+  - **A login account** doesn't. Its login is in the Keychain or its config dir, which isn't
+    mounted, so the job fails before anything is made, and `doctor` says so.
+  - **`default`** uses `runner.json` `"container": { "env": { "CLAUDE_CODE_OAUTH_TOKEN": "…" } }`
+    (or `ANTHROPIC_API_KEY`), else the same variable in sf-runner's environment.
+
+  It reaches Docker through a 0600 env file that is deleted once Claude is up.
+- **After the session.** The runner stops the containers, puts the job's git dir back (no
+  `commondir`, alternates, hooks, config changes or symlinks), and scans everything it would push
+  for the credential. Any finding fails the job without a push. Otherwise the host merges, commits
+  leftovers and pushes from the job repo exactly as before.
+- **Takeover** is unchanged: `tmux -L software-factory attach -t sf-<jobId>` attaches to Claude in
+  the container. Docker's detach keys are `ctrl-^ ctrl-_`.
+- **The image** is `packages/runner-local/container/Dockerfile` (Node 24, git, build tools,
+  corepack, Claude Code pinned), tagged `software-factory-agent:<content hash>`. The runner builds it
+  on the first job, or `sf-runner doctor --fix` does.
+- **Planning sessions** still run on the host, in a worktree with Claude's sandbox: their relay is on
+  the host's loopback (ADR 0350).
+
+Switching a runner: install Docker, then follow these steps with no jobs running.
+1. Set `"isolation": "container"` in `runner.json`, and make a token account active
+   (`claude setup-token | sf-runner account add work --token-stdin`, `sf-runner account use work`).
+2. Run `sf-runner doctor --fix`. It checks Docker and the credential, and builds the image.
+3. Run `sf-runner install`, which puts `docker` on the service's PATH and restarts the service.
 
 ## Connecting: `sf-runner login` (ADR 0056)
 From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
@@ -304,9 +390,14 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 | `maxLight` | 6 | Light jobs at once: triage, spec and planning sessions (ADR 0301). An idle planning session holds one |
 | `heartbeatMs` | 20000 | |
 | `checkouts` | set once by `login` / `doctor --fix` | Directories whose immediate git repos are your checkouts, e.g. `["~/code", "~/orca/projects"]`. A job runs as a worktree of the one whose `origin` is its repo; none → the runner's own clone |
-| `capabilities` | `hooks`, `ui-takeover`, `own-hardware`, `work-item-attachments` | No `browser`: screenshot evidence is skipped |
+| `capabilities` | `hooks`, `ui-takeover`, `own-hardware`, `work-item-attachments` (+ `container-isolation` with containers) | No `browser`: screenshot evidence is skipped |
 | `identity` | `Software Factory <software-factory@users.noreply.github.com>` | Commit author |
 | `autoUpdate` | `true` | Update the runner's checkout to the deployed commit when idle (ADR 0360); `false` reports `blocked` instead |
+| `isolation` | `sandbox` | `container`: a Docker container per job, every stage `bypassPermissions` (ADR 0430, above) |
+| `container.env` | — | The model credential for containers on the `default` account: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`. Else the same variable in sf-runner's environment. A token account's token wins; a login account can't be used in a container |
+| `container.docker` | found on PATH, Homebrew, `~/.local/bin`, Docker.app | The `docker` CLI |
+| `container.allowedHosts` | — | More egress hosts for every job on this runner (`host`, `*.host`, `host:port`) |
+| `container.cpus`, `container.memory`, `container.pids` | —, —, 4096 | Limits per job container (`memory` in Docker's syntax, `8g`) |
 | `repoUrlMap` | — | Test only: clone and push a local bare repo in place of GitHub |
 
 ## End-to-end test (local engine)
@@ -333,9 +424,10 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
-| `src/runner.ts` | Wires config → channel client + git + runner-local (the only file naming an adapter) |
+| `src/runner.ts` | Wires config → channel client + git + runner-local, or its container runner with `isolation: container` (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
-| `src/config.ts`, `src/cli.ts` | `sf-runner pair/run/status/doctor/install/uninstall` |
+| `src/accounts.ts`, `src/account-cli.ts` | Claude accounts on the host (ADR 0410): the registry, token files, config dirs, usage limits, `sf-runner account` |
+| `src/config.ts`, `src/cli.ts` | `sf-runner pair/run/status/doctor/install/uninstall/account` |
 | `src/service.ts`, `src/launchd.ts`, `src/systemd.ts` | The service by platform: launchd on macOS, a systemd user unit on Linux (ADR 0420) |
 | `src/linux.ts` | `doctor`'s Linux checks: bubblewrap, socat, a bwrap smoke run, user systemd, linger |
 | `scripts/linux-prereqs.sh`, `scripts/linux-check.sh` | Check a Linux box's packages; run the Linux-sensitive tests in a container |

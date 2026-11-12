@@ -67,6 +67,20 @@ describe("the stream-json launch (ADR 0450)", () => {
     const script = await readFile(projected.scriptPath, "utf8");
     expect(script).toContain("--input-format stream-json");
     expect(script).toContain(`--session-id ${sid}`);
+    // The takeover's script: the same unsets, interactive, resumed; no pid file.
+    const resume = projected.launch.stream?.resumeScript as string;
+    expect(resume).toBe(join(root, "run", "resume.sh"));
+    const body = await readFile(resume, "utf8");
+    expect(body).toContain("unset ");
+    expect(body).toContain(`--resume ${sid}`);
+    expect(body).not.toContain("stream-json");
+    expect(body).not.toContain("claude.pid");
+    expect(resumeCommand(projected.launch, sid).split("\n")).toEqual([
+      `sh ${resume}`,
+      expect.stringMatching(
+        new RegExp(`^# runs: cd ${join(root, "wt")} && env -u .* --resume ${sid}$`),
+      ),
+    ]);
   });
 
   it("builds the takeover command: interactive, same settings, the session resumed", () => {

@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./attachments": "./src/attachments.ts",
+    "./attachment-rules": "./src/attachment-rules.ts",
     "./testing": "./src/testing/index.ts"
   },
   "scripts": {

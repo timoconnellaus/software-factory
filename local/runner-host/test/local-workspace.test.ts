@@ -253,7 +253,7 @@ describe("a stream-json session through runJob (spec 37, ADR 0450)", { timeout: 
     expect(handed.hint).toContain(`--resume ${handed.sessionId}`);
     // The person resumes it in the worktree, commits, and quits: the projected status hook
     // reports the session.
-    const worktree = /^cd (\S+) && /.exec(handed.hint)?.[1] as string;
+    const worktree = /# runs: cd (\S+) && /.exec(handed.hint)?.[1] as string;
     expect(existsSync(worktree)).toBe(true);
     await appendFile(join(worktree, "README.md"), "by hand\n");
     git(worktree, "-c", "user.name=p", "-c", "user.email=p@x.invalid", "commit", "-qam", "by hand");

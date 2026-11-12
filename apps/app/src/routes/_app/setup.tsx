@@ -3,6 +3,9 @@
 // Nothing here asks for an id the factory can fetch (incident 2026-11-11-bootstrap): GitHub's install
 // flow brings the installation back, the repo is picked from what the App can reach, the policy
 // syncs itself, and a runner logs in with a code.
+
+import { ago } from "@software-factory/client/format";
+import { LOGIN_COMMAND, pairCommand } from "@software-factory/client/runner-pairing";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import {
@@ -19,12 +22,11 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
-import { ago } from "#/lib/format";
+import { type RunnerAccounts, RunnerAccountsView } from "#/components/runner-accounts";
 import { op, submitKey } from "#/lib/op";
 import { OpError, type SetupStatus } from "#/lib/ops";
 import { reposQuery, runnersQuery, setupStatusQuery } from "#/lib/queries";
 import { rulesetDownloadPath } from "#/lib/ruleset";
-import { LOGIN_COMMAND, pairCommand } from "#/lib/runner-pairing";
 import { useSession } from "#/lib/session";
 
 interface SetupSearch {
@@ -814,6 +816,7 @@ function Runners() {
             <span className="text-muted-foreground text-xs">
               seen {ago(r.lastSeenAt)} · {r.capacityMax} slots
             </span>
+            <RunnerAccountPicker runnerId={r.id} accounts={r.accounts} />
           </div>
         ))}
         {runners.data && list.length === 0 && (
@@ -826,6 +829,33 @@ function Runners() {
       <PairByKey />
     </Card>
   );
+}
+
+/**
+ * Which Claude account the runner's new jobs use (ADR 0410). Sends the name only; the runner's
+ * host switches on its next heartbeat. The runner's owner only (the operation checks).
+ */
+function RunnerAccountPicker({
+  runnerId,
+  accounts,
+}: {
+  runnerId: string;
+  accounts: RunnerAccounts | null;
+}) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  async function pick(name: string) {
+    setBusy(true);
+    try {
+      await op("runner.account.use", { runnerId, name }, { idempotencyKey: submitKey() });
+      await queryClient.invalidateQueries({ queryKey: ["runners"] });
+    } catch (error) {
+      toast.error(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <RunnerAccountsView accounts={accounts} busy={busy} onPick={(n) => void pick(n)} />;
 }
 
 /**

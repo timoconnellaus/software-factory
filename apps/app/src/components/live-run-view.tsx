@@ -2,6 +2,8 @@
 // agent says, the tools it calls, status changes, the messages people sent) and Terminal
 // (scrolled-off lines, then the latest screen). The runner's owner gets a message box; everyone
 // else watches read-only. Pure presentation: `live-run.tsx` polls and sends.
+
+import { capitalise, clock, errorMessage } from "@software-factory/client/format";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Input } from "@software-factory/ui/components/input";
@@ -11,7 +13,6 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { LiveChat } from "#/components/live-chat";
-import { capitalise, clock, errorMessage } from "#/lib/format";
 import { latestStatus, type TranscriptItem, terminalText, transcriptItems } from "#/lib/live";
 import type { LiveView } from "#/lib/ops";
 

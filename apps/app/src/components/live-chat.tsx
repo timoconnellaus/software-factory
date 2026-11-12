@@ -3,6 +3,8 @@
 // tokens and time, status changes, and the runner owner's messages as their bubbles. The owner
 // gets a composer and "Take over in a terminal"; everyone else watches. Pure presentation:
 // `live-run.tsx` polls and sends.
+
+import { clock, errorMessage } from "@software-factory/client/format";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,7 +30,6 @@ import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { type ChatItem, chatItems, takeoverHint, turnLine } from "#/lib/chat";
-import { clock, errorMessage } from "#/lib/format";
 import type { LiveView } from "#/lib/ops";
 
 const MARKDOWN =

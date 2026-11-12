@@ -24,6 +24,10 @@ says how Claude runs there:
     caches in the run's temp dir.
   - **The per-run git config** (an identity for commits, no helper), in a private run dir outside the worktree.
   - Runner hooks (`hooks`), but never `PreToolUse`, `PermissionRequest` or `Elicitation` ones.
+  - **`isolation: "container"`** (ADR 0430), for a runner that runs each job in its own container.
+    The container is the floor there, so Claude's sandbox is off (`enabled` and `failIfUnavailable`
+    are `false`), and every stage defaults to `bypassPermissions` (`CONTAINER_MODES`; a profile's
+    mode still wins). Everything else above is unchanged, and the launch record says `isolation`.
 - **The launch** (`launch.ts`): `claudeArgv` is the exact command,
   `claude --permission-mode <mode> --setting-sources project,local --settings <run settings> --strict-mcp-config [--model …]`,
   with no user settings, so the owner's own Claude config never applies.

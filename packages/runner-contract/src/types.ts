@@ -42,6 +42,9 @@ export const CONTRACT_VERSION = "1" as const;
  * - `chat`: sessions run as a structured two-way stream (Claude Code's stream-json, ADR 0450): the
  *   events carry tool results and turn ends, the dashboard shows the run as a chat, and the owner
  *   can take a session over in a terminal by resuming it (`run.takeover`, `adapter.takeover`).
+ * - `container-isolation`: each job's harness runs in its own container: only the job's repo
+ *   mounted, no host credentials, an egress allowlist (ADR 0430). Planning sessions still run on
+ *   the host, so a policy should require it for the other stages only.
  */
 export const CAPABILITIES = [
   "browser",
@@ -53,6 +56,7 @@ export const CAPABILITIES = [
   "work-item-attachments",
   "steer",
   "chat",
+  "container-isolation",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
