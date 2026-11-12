@@ -248,7 +248,7 @@ export interface FactoryServices {
   /** The app's public URL (`PUBLIC_BASE_URL`), for links GitHub shows (the check's details). */
   publicBaseUrl?: string;
   /**
-   * Accept presence proofs from desktop devices with a software key (ADR 0381). Off unless the
+   * Accept presence proofs from desktop devices with a software key (ADR 0391). Off unless the
    * engine runs with `DESKTOP_ALLOW_SOFTWARE_KEYS=1`, which no deployed config sets: fails closed.
    */
   allowSoftwareDeviceKeys?: boolean;

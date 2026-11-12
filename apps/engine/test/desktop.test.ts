@@ -1,4 +1,4 @@
-// The desktop app's side of the client door (ADR 0381, spec 40 M1) end to end through sf-engine's
+// The desktop app's side of the client door (ADR 0391, spec 40 M1) end to end through sf-engine's
 // /client/v1: the PKCE sign-in, desktop tokens on the `desktop` surface, presence proofs that let a
 // device decide exactly one gate, and what stays browser-only whatever the proof.
 import { env } from "cloudflare:workers";

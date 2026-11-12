@@ -87,7 +87,7 @@ export async function invoke<O = unknown>(
   return runOperation<O>(deps, op, rawInput, options);
 }
 
-/** The SHA-256 (hex) of an input's canonical JSON: what a presence proof is bound to (ADR 0381). */
+/** The SHA-256 (hex) of an input's canonical JSON: what a presence proof is bound to (ADR 0391). */
 export async function inputDigest(input: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalJson(input ?? {}));
   const hash = await crypto.subtle.digest("SHA-256", bytes);
@@ -235,7 +235,7 @@ export async function runOperation<O = unknown>(
   // 4c. Browser-only decisions (ADR 0340): a person decides gates in the app, never through a
   //     token another surface holds (the CLI, MCP), which an agent session might be using. A
   //     desktop device may make a presence-decidable one with a Touch ID proof the client door
-  //     redeemed for exactly this operation and input (ADR 0381).
+  //     redeemed for exactly this operation and input (ADR 0391).
   if (
     actor.type === "human" &&
     origin.surface !== "app" &&
