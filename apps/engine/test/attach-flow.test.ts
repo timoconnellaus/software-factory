@@ -9,6 +9,7 @@ import worker from "../src/index.ts";
 import { definitionFor, expectPhasesAsDefined, expectStagesAsDefined } from "./definition.ts";
 import {
   all,
+  build,
   first,
   gateOpen,
   github,
@@ -264,6 +265,63 @@ describe("an attached PR's Workflow (spec 05)", () => {
     // A person's PR sent back at review isn't a factory failure: no incident.
     expect(
       await all("SELECT id FROM core_incidents WHERE source_work_item_id = ?", item.workItemId),
+    ).toEqual([]);
+  });
+
+  // The factory kept verifying PRs merged or closed on GitHub outside it, and opening incidents.
+  it("ends the item Done when its PR is merged on GitHub outside the factory: runs and gates stop", async () => {
+    const w = await world();
+    const { pr, item } = await attached(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await pullRequestEvent(w, "closed", { ...pr, merged: true });
+    await itemStatus(item.workItemId, "done");
+    const row = await first<{ status_reason: string }>(
+      "SELECT status_reason FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
+    expect(row?.status_reason).toBe("the pull request was merged on GitHub, outside the factory");
+    expect(
+      await all(
+        "SELECT id FROM core_jobs WHERE work_item_id = ? AND status IN ('queued', 'claimed')",
+        item.workItemId,
+      ),
+    ).toEqual([]);
+    expect(
+      await all(
+        "SELECT id FROM core_pending_actions WHERE work_item_id = ? AND status = 'pending'",
+        item.workItemId,
+      ),
+    ).toEqual([]);
+  });
+
+  it("ends a factory item when its PR is closed on GitHub: cancelled, its merge gate closed", async () => {
+    const w = await world();
+    const created = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Closed by a person" },
+      w.human,
+    );
+    const id = created.workItemId;
+    await runStage(w, id, "triage", () => triage("small"));
+    await runStage(w, id, "build", () => build(["src/a.ts"]));
+    await runStage(w, id, "verify", () => verifyPass);
+    await gateOpen(id, "merge");
+    const row = await first<{ pr_number: number; head_sha: string; branch: string }>(
+      "SELECT pr_number, head_sha, branch FROM core_work_items WHERE id = ?",
+      id,
+    );
+    await pullRequestEvent(w, "closed", {
+      number: Number(row?.pr_number),
+      headSha: String(row?.head_sha),
+      branch: String(row?.branch),
+      merged: false,
+    });
+    await itemStatus(id, "cancelled");
+    expect(
+      await all(
+        "SELECT id FROM core_pending_actions WHERE work_item_id = ? AND status = 'pending'",
+        id,
+      ),
     ).toEqual([]);
   });
 

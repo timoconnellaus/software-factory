@@ -553,7 +553,7 @@ async function readMergeability(
 export const verifyRefresh = defineOperation({
   name: "verify.refresh",
   description:
-    "Re-evaluate `factory/verify` for one commit of a project's repo, from the newest review packet for it and CI as it stands on GitHub (ADR 0037). Called by the GitHub connector when a PR opens or gets a new push, when a check suite completes, or when someone re-runs the check. A new head with no packet yet is left without a passing check; a PR the factory didn't open fails until it is attached to a work item (spec 04, criterion 3), and its check links to the app's `/attach` page (spec 05). For an attached PR, a new push records the new head, withdraws a pending merge gate and wakes the Workflow to verify again; closing it without merging cancels its item. Wakes a Workflow waiting on CI.",
+    "Re-evaluate `factory/verify` for one commit of a project's repo, from the newest review packet for it and CI as it stands on GitHub (ADR 0037). Called by the GitHub connector when a PR opens or gets a new push, when a check suite completes, or when someone re-runs the check. A new head with no packet yet is left without a passing check; a PR the factory didn't open fails until it is attached to a work item (spec 04, criterion 3), and its check links to the app's `/attach` page (spec 05). For an attached PR, a new push records the new head, withdraws a pending merge gate and wakes the Workflow to verify again. A PR closed on GitHub ends its open item, attached or the factory's own: cancelled when closed without merging, Done when merged outside the factory (a merge the factory carried out is finished by its Workflow); its runs stop, its gates close and its Workflow ends. Wakes a Workflow waiting on CI.",
   risk: "write",
   actors: ["intake", "agent"],
   permission: "signed-in",
@@ -567,7 +567,7 @@ export const verifyRefresh = defineOperation({
     merged: z.boolean().default(false),
   }),
   output: z.object({
-    outcome: z.enum(["posted", "unattached", "ignored", "cancelled"]),
+    outcome: z.enum(["posted", "unattached", "ignored", "cancelled", "merged"]),
     workItemId: z.string().nullable(),
     status: z.string().nullable(),
     conclusion: z.string().nullable(),
@@ -592,17 +592,41 @@ export const verifyRefresh = defineOperation({
         : null;
 
     if (input.trigger === "closed") {
-      // Only an attached PR's item ends with its PR; the factory's own items end in the Workflow.
+      // A PR merged or closed on GitHub outside the factory ends its item (attached or the
+      // factory's own): its runs stop, its gates close and its Workflow ends, so nothing keeps
+      // verifying a closed PR or opening incidents for it. Merged: Done; closed: cancelled.
       const item = await byPr();
-      if (
-        item?.kind !== "attached" ||
-        input.merged ||
-        !["running", "waiting", "paused"].includes(item.status)
-      ) {
+      if (!item || !["running", "waiting", "paused"].includes(item.status)) {
         return { outcome: "ignored" as const, ...none, workItemId: item?.id ?? null };
       }
+      if (input.merged) {
+        // The factory's own merge (an approval it carried out) is finished by its Workflow.
+        const own = await ctx.db
+          .selectFrom("core_pending_actions")
+          .select("id")
+          .where("work_item_id", "=", item.id)
+          .where("kind", "=", "merge")
+          .where("status", "=", "applied")
+          .executeTakeFirst();
+        if (own) return { outcome: "ignored" as const, ...none, workItemId: item.id };
+      }
       ctx.subject({ workItemId: item.id });
-      cancelWorkItem(ctx, item, "the pull request was closed without merging");
+      const { releaseMergeQueue } = await import("./merge-queue.ts");
+      const reason = input.merged
+        ? "the pull request was merged on GitHub, outside the factory"
+        : "the pull request was closed without merging";
+      await releaseMergeQueue(ctx, item, input.merged ? "merged" : "left", reason);
+      cancelWorkItem(ctx, item, reason);
+      if (input.merged) {
+        ctx.write(
+          ctx.db
+            .updateTable("core_work_items")
+            .set({ status: "done", status_reason: reason, closed_at: ctx.now, updated_at: ctx.now })
+            .where("id", "=", item.id),
+        );
+        ctx.change({ entity: "work_item", id: item.id, after: { status: "done", reason } });
+        return { outcome: "merged" as const, ...none, workItemId: item.id };
+      }
       return { outcome: "cancelled" as const, ...none, workItemId: item.id };
     }
 
