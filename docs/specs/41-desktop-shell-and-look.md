@@ -70,7 +70,7 @@ new backend come in later slices, once that backend lands.
   has one Open terminal place. In this slice it shows what `main` has: the live run's takeover hint,
   the tmux attach command on its runner (ADR 0380), with Copy. With no live run that has a hint, the
   button isn't shown.
-  *Amended 2026-11-12 (spec 42, ADR 0500):* slice 9 is built. Open terminal shows for any live run
+  *Amended 2026-11-12 (spec 42, ADR 0530):* slice 9 is built. Open terminal shows for any live run
   and opens the session's web terminal in place; the tmux command is behind "Attach from a terminal
   instead".
 - **The plan is a document.** The Plan pane is a plain document in its pane, not a page on a canvas.

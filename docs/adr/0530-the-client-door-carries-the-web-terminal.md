@@ -1,4 +1,4 @@
-# ADR 0500: The client door carries the web terminal
+# ADR 0530: The client door carries the web terminal
 
 Status: accepted, 2026-11-12. Spec [42](../specs/42-desktop-terminal.md). Builds on
 [0440](0440-a-web-terminal-relayed-through-a-durable-object-per-job.md),

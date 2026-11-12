@@ -1,4 +1,4 @@
-// A run's web terminal for the view (spec 42, ADR 0500). The main process opens the client door's
+// A run's web terminal for the view (spec 42, ADR 0530). The main process opens the client door's
 // terminal socket with the desktop token in `Authorization` (as live.ts does: the token never reaches
 // the view or a URL) and relays it over the RPC: the view opens, sends text frames and closes by a
 // handle it chose; the main process pushes what the relay sends (binary output as base64). The relay

@@ -69,7 +69,7 @@ must stay outbound-only with no standing token, and the same relay must serve a 
    answers the call with 404 stops asking. As with ADR 0400 the engine deploys first, and a runner
    declares `terminal` only after it has updated to the engine's commit (ADR 0360).
 
-Amended 2026-11-12 (ADR 0500): the client door is a second way in for viewers. Desktop tokens attach
+Amended 2026-11-12 (ADR 0530): the client door is a second way in for viewers. Desktop tokens attach
 at `GET /client/v1/terminal/<item>/<run>`, through the same `run.terminal.attach` and relay ticket as
 sf-app's route (shared in `terminal-attach.ts`).
 

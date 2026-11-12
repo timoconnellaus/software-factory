@@ -159,7 +159,7 @@ async function token(userId: string, kind: "desktop" | "cli") {
   return { raw, deviceId };
 }
 
-/** The desktop app's way in (spec 42, ADR 0500): the client door's terminal socket. */
+/** The desktop app's way in (spec 42, ADR 0530): the client door's terminal socket. */
 const door = (workItemId: string, runId: string, bearer?: string, upgrade = true) =>
   worker.fetch(
     new Request(`${base}/client/v1/terminal/${workItemId}/${runId}`, {

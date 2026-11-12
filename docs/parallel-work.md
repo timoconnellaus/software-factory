@@ -38,7 +38,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AB | 0210–0219 | 0440–0449 | Web terminal in the dashboard (`hosts-web-terminal`): spec 35. The TerminalRelay Durable Object per job, the `terminal` held call and host socket, `run.terminal.*`, the tmux control-mode bridge, the Live tab's web terminal. Used: migration 0210; ADR 0440 | in progress |
 | AC | 0220–0229 | 0450–0459 | Chat UI on a stream-json session (`hosts-chat-ui`): spec 37. Used: migration 0220; ADR 0450 | in progress |
 | AD | 0230–0239 | 0460–0469 | The desktop shell and look (`desktop-shell`): spec 41, slice 1 of the approved UI design. The window shell, the look as `packages/ui` tokens, the existing screens restyled. Used: ADR 0460, no migrations | in progress |
-| AH | 0270–0279 | 0500–0509 | The desktop terminal (`desktop-terminal`): spec 42. Open terminal opens the session's web terminal in the desktop app through the client door. Used: ADR 0500, no migrations | in progress |
+| AK | 0300–0309 | 0530–0539 | The desktop terminal (`desktop-terminal`): spec 42. Open terminal opens the session's web terminal in the desktop app through the client door. Used: ADR 0530, no migrations | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.

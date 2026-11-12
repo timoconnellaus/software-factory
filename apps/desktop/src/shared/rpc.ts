@@ -35,7 +35,7 @@ export interface Session {
 export type CallResult = { ok: true; result: unknown } | { ok: false; code: string; error: string };
 
 /**
- * What a run's web terminal socket did (spec 42, ADR 0500), relayed by the main process: the relay's
+ * What a run's web terminal socket did (spec 42, ADR 0530), relayed by the main process: the relay's
  * JSON messages as `text`, the pane's output bytes as base64. The view chose the handle (`id`).
  */
 export type TerminalEvent =

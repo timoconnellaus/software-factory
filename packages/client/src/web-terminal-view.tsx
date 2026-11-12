@@ -1,5 +1,5 @@
 // The web terminal's view (spec 35, ADR 0440), shared by sf-app's Live tab and the desktop app
-// (spec 42, ADR 0500): the job's real tmux pane in xterm.js. The runner's owner types and the pane
+// (spec 42, ADR 0530): the job's real tmux pane in xterm.js. The runner's owner types and the pane
 // follows the view's size; everyone else watches read-only at the pane's own size. The socket comes
 // from `connect()`: sf-app opens a WebSocket to its own route, the desktop a socket over its RPC.
 // xterm.js loads in the browser only. This is packages/client's one React file: packages/ui can't

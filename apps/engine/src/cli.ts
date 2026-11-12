@@ -12,7 +12,7 @@
 //   upload's input, an attachment's output.
 // - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
 // - `terminal/<workItemId>/<runId>` (GET, WebSocket) is a run's web terminal for the desktop app
-//   (spec 42, ADR 0500): the same attach as sf-app's socket route, then the relay's viewer socket.
+//   (spec 42, ADR 0530): the same attach as sf-app's socket route, then the relay's viewer socket.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
 // MCP is meant to come through the same door.
 import {
@@ -158,7 +158,7 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * A run's web terminal through the door (spec 42, ADR 0500): desktop tokens only. Refusals are plain
+ * A run's web terminal through the door (spec 42, ADR 0530): desktop tokens only. Refusals are plain
  * door replies before any upgrade; the attach decides `type` or `watch` and is recorded with the
  * device, exactly as sf-app's route records the browser's.
  */

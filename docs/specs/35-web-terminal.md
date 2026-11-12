@@ -86,7 +86,7 @@ sandbox later.
   `tmux attach`).
 - Letting someone other than the runner's owner type, or handing typing over.
 - A web terminal in the desktop app (spec 40) or the CLI. *Amended 2026-11-12:* the desktop app's
-  came in spec 42 (ADR 0500): the client door's `terminal` socket for desktop tokens, the same attach,
+  came in spec 42 (ADR 0530): the client door's `terminal` socket for desktop tokens, the same attach,
   and this spec's client and xterm.js view moved to `packages/client` and shared. The CLI's is still
   out of scope.
 

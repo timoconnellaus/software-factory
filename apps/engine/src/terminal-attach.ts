@@ -1,6 +1,6 @@
 // Opening a run's web terminal for a person (spec 35, ADR 0440), shared by both ways in: sf-app's
 // socket route (through EngineApi.terminalAttach) and the client door's `terminal` socket for the
-// desktop app (spec 42, ADR 0500). `run.terminal.attach` as the person decides `type` or `watch` and
+// desktop app (spec 42, ADR 0530). `run.terminal.attach` as the person decides `type` or `watch` and
 // records the attach; the job's relay then mints a one-use viewer ticket bound to it.
 import {
   type Actor,

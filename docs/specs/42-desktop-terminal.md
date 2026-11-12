@@ -5,7 +5,7 @@
 [0390](../adr/0390-the-desktop-app-is-the-daily-ui.md), [0391](../adr/0391-the-client-door-desktop-devices-and-presence.md)
 (the desktop app and its client door), spec [41](41-desktop-shell-and-look.md) (Open terminal's place,
 later slice 8), [ADR 0400](../adr/0400-watch-and-steer-runs-from-the-dashboard.md) (who may type), and
-[ADR 0500](../adr/0500-the-client-door-carries-the-web-terminal.md).
+[ADR 0530](../adr/0530-the-client-door-carries-the-web-terminal.md).
 
 ## Goal
 In the desktop app, pressing **Open terminal** on a work item opens that session's live terminal

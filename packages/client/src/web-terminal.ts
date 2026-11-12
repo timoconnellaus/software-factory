@@ -1,5 +1,5 @@
 // The web terminal's client (spec 35, ADR 0440), framework-free and shared by sf-app's Live tab and
-// the desktop app (spec 42, ADR 0500): it turns the relay's frames into terminal writes and a status
+// the desktop app (spec 42, ADR 0530): it turns the relay's frames into terminal writes and a status
 // line, and sends the owner's keys and size. The relay enforces who may type; a watcher's client
 // never sends input or a size. The socket is whatever the front end has: a browser WebSocket to
 // sf-app's route, or the desktop's socket over its RPC to the main process.

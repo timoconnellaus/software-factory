@@ -1,4 +1,4 @@
-// A run's web terminal socket as the view sees it (spec 42, ADR 0500): the shared TerminalClient
+// A run's web terminal socket as the view sees it (spec 42, ADR 0530): the shared TerminalClient
 // (packages/client) reads and writes it like a browser WebSocket, but it is the main process's socket
 // on the client door, reached over the RPC. The view never sees the token or the socket's URL.
 import type { ViewerSocket } from "@software-factory/client/web-terminal";

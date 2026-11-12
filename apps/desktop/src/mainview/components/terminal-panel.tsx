@@ -1,4 +1,4 @@
-// A run's live terminal in the desktop app (spec 42, ADR 0500): the shared web terminal view
+// A run's live terminal in the desktop app (spec 42, ADR 0530): the shared web terminal view
 // (packages/client) on the main process's socket to the client door. Self-contained so the item side
 // panel can host it as it is: `TerminalPanel` fills whatever box it's given; `TerminalDock` places it
 // over the lower part of the page, resizable by its top edge, or over the whole window when expanded.

@@ -1,4 +1,4 @@
-// The desktop's web terminal (spec 42, ADR 0500): the main process's socket on the client door (the
+// The desktop's web terminal (spec 42, ADR 0530): the main process's socket on the client door (the
 // token only in its Authorization header, ids checked, a cap on open sockets, sign-out closes them),
 // the view's socket over the RPC driving the shared TerminalClient (the owner's keys go out, a
 // watcher's never do), and the button's and the fallback's rules.
