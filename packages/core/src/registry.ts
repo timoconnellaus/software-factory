@@ -48,6 +48,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   backlog.workItemLink,
   backlog.workItemUnlink,
   backlog.workItemBoard,
+  backlog.projectWorkflow,
   backlog.queuePull,
   projects.policySync,
   projects.killSwitchSet,

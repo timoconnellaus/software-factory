@@ -206,6 +206,7 @@ export const adjudicatorRequest = defineOperation({
 
 export const adjudicatorRecord = defineOperation({
   name: "adjudicator.record",
+  decidesPending: true,
   description:
     "Record the adjudicator's verdict on a gate once its job has handed back (ADR 0374). In active mode, with the record to show for it, an `approve` approves the gate (every fifth is left to a person as a check). A `defer` always leaves it to a person, and it never rejects. If its precision has dropped below the bar, the kind goes back to shadow mode.",
   risk: "write",

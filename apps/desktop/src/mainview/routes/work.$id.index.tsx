@@ -31,6 +31,13 @@ import { useState } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { Attachments } from "../components/attachments.tsx";
+import {
+  BacklogDetails,
+  isPreRelease,
+  NextStep,
+  PRE_STATE_LABEL,
+  PRE_STATES,
+} from "../components/item-backlog.tsx";
 import { OpenTerminal } from "../components/open-terminal.tsx";
 import { Planning } from "../components/planning.tsx";
 import { ReviewPacket } from "../components/review-packet.tsx";
@@ -41,6 +48,7 @@ import { ExternalLink } from "../lib/external.tsx";
 import { OpError, op } from "../lib/op.ts";
 import {
   attachmentsQuery,
+  boardsQuery,
   planningQuery,
   runnersQuery,
   timelineQuery,
@@ -55,6 +63,11 @@ export const TABS = ["overview", "plan", "runs", "review", "activity"] as const;
 export type Tab = (typeof TABS)[number];
 /** The tab names before spec 41, which links and bookmarks may still carry. */
 const OLD: Record<string, Tab> = { timeline: "activity", planning: "plan" };
+
+/** Before release an item has no runs or review yet (design ItemBacklog). */
+export const PRE_RELEASE_TABS: readonly Tab[] = ["overview", "plan", "activity"];
+export const tabsFor = (status: string): readonly Tab[] =>
+  isPreRelease(status) ? PRE_RELEASE_TABS : TABS;
 
 export function parseTab(v: unknown): Tab | undefined {
   if (typeof v !== "string") return undefined;
@@ -71,8 +84,10 @@ export const Route = createRoute({
   },
   // Everything the page renders, in one request: the item (with its spec, questions, gates, runs
   // and packet), its timeline, the runners (for runner names), and the planning view (spec 20).
-  loader: ({ context: { queryClient }, params }) =>
+  loader: ({ context: { queryClient, session }, params }) =>
     Promise.all([
+      // The org's board: what an item before release can wait for (its edit dialog).
+      queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
       queryClient.ensureQueryData(workItemQuery(params.id)),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
@@ -111,10 +126,11 @@ function WorkItemError({ error }: { error: unknown }) {
 
 function WorkItemPage() {
   const { id } = Route.useParams();
-  const { tab = "overview" } = Route.useSearch();
+  const { tab: asked = "overview" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const { data: d } = useSuspenseQuery(workItemQuery(id));
   const focus = useViewState((s) => s.focus);
+  const tab = tabsFor(d.item.status).includes(asked) ? asked : "overview";
 
   // Focus mode: the planning has the whole window (the shell hides its chrome).
   if (focus === id) return <Planning detail={d} mode="focus" />;
@@ -158,6 +174,7 @@ function Header({ detail }: { detail: WorkItemDetail }) {
   const pinned = useViewState((s) => s.pins.includes(item.id));
   const [cancel, setCancel] = useState(false);
   const active = ["running", "waiting", "paused"].includes(item.status);
+  const pre = isPreRelease(item.status);
   return (
     <header className="flex flex-wrap items-end gap-2.5">
       <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-1">
@@ -199,7 +216,7 @@ function Header({ detail }: { detail: WorkItemDetail }) {
           {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
         </Button>
         <OpenTerminal detail={detail} />
-        {active && (detail.viewer.isRequester || detail.viewer.isApprover) && (
+        {(active || pre) && (detail.viewer.isRequester || detail.viewer.isApprover) && (
           <Button
             variant="outline"
             size="md"
@@ -211,7 +228,12 @@ function Header({ detail }: { detail: WorkItemDetail }) {
           </Button>
         )}
       </div>
-      <CancelDialog open={cancel} onOpenChange={setCancel} workItemId={item.id} />
+      <CancelDialog
+        open={cancel}
+        onOpenChange={setCancel}
+        workItemId={item.id}
+        started={!pre || item.status === "shaping"}
+      />
     </header>
   );
 }
@@ -220,10 +242,13 @@ function CancelDialog({
   open,
   onOpenChange,
   workItemId,
+  started,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   workItemId: string;
+  /** Whether its Workflow runs (in the factory, or shaping): else nothing has run yet. */
+  started: boolean;
 }) {
   const refresh = useRefreshAfterDecision();
   const [busy, setBusy] = useState(false);
@@ -246,8 +271,9 @@ function CancelDialog({
         <DialogHeader>
           <DialogTitle>Cancel this work item?</DialogTitle>
           <DialogDescription>
-            Its Workflow and runs stop, its runner slot is freed and its open gates close. This
-            can't be undone.
+            {started
+              ? "Its Workflow and runs stop, its runner slot is freed and its open gates close. This can't be undone."
+              : "Nothing has run yet. It leaves the list and shows under Stopped. This can't be undone."}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -270,6 +296,7 @@ function CancelDialog({
 
 /** The stages as a strip of dots: done, now, to come, skipped (with triage's reason). */
 export function StageStrip({ detail }: { detail: WorkItemDetail }) {
+  if (isPreRelease(detail.item.status)) return <PreReleaseStrip detail={detail} />;
   const steps = stageSteps(detail);
   const waiting = detail.item.status === "waiting";
   return (
@@ -316,6 +343,49 @@ export function StageStrip({ detail }: { detail: WorkItemDetail }) {
   );
 }
 
+/**
+ * Before release: the fixed work-management states (spec 50), the one it is in now, then the
+ * workflow's stages to come. Planning shows only while it is being shaped.
+ */
+function PreReleaseStrip({ detail }: { detail: WorkItemDetail }) {
+  const status = detail.item.status;
+  const states: string[] =
+    status === "shaping" ? ["backlog", "shaping", "ready", "queued"] : [...PRE_STATES];
+  const at = states.indexOf(status);
+  const toCome = stageSteps(detail).filter((s) => s.stage !== "intake");
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-[18px] gap-y-1 rounded-[10px] bg-panel px-3.5 py-2.5 shadow-panel"
+      data-testid="stage-steps"
+    >
+      {states.map((s, i) => (
+        <span
+          key={s}
+          data-state={i < at ? "done" : i === at ? "now" : "todo"}
+          className={cn(
+            "inline-flex items-center gap-1.5",
+            i > at && "text-ink-3",
+            i === at && "font-semibold",
+          )}
+        >
+          <StatusDot status={i < at ? "done" : i === at ? "running" : "idle"} />
+          {PRE_STATE_LABEL[s]}
+        </span>
+      ))}
+      {toCome.map((s) => (
+        <span
+          key={s.stage}
+          data-state="todo"
+          className="inline-flex items-center gap-1.5 text-ink-3"
+        >
+          <StatusDot status="idle" />
+          {STAGE_LABEL[s.stage]}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function TabBar({
   detail,
   tab,
@@ -331,7 +401,7 @@ function TabBar({
   const reviewWaits = detail.gates.some((g) => g.kind === "merge" && g.status === "pending");
   return (
     <div className="flex gap-1 border-line border-b" role="tablist" data-testid="item-tabs">
-      {TABS.map((t) => (
+      {tabsFor(detail.item.status).map((t) => (
         <button
           key={t}
           type="button"
@@ -365,7 +435,7 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
   const openQuestions = detail.questions.filter((q) => q.status === "open").length;
   return (
     <div className="flex flex-wrap items-start gap-[18px]">
-      <div className="flex min-w-0 flex-[999_1_400px] flex-col gap-[18px]">
+      <div className="flex min-w-0 flex-[999_1_360px] flex-col gap-[18px]">
         {mergeGate && packet && (
           <Panel needsYou className="gap-2.5 px-3.5 py-3.5" data-testid="waiting-on-you">
             <div className="flex items-center gap-2 font-semibold text-[17px]">
@@ -423,7 +493,11 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
               ))}
             </div>
           ) : (
-            <Panel className="text-ink-muted">None yet: they come with the spec.</Panel>
+            <Panel className="text-ink-muted">
+              {isPreRelease(detail.item.status)
+                ? "None yet: they come with its plan, when it is shaped or once it is released."
+                : "None yet: they come with the spec."}
+            </Panel>
           )}
         </section>
         <Attachments
@@ -433,8 +507,17 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
         />
       </div>
       <aside className="flex min-w-[260px] flex-[1_1_272px] flex-col gap-3">
-        <Details detail={detail} />
-        <Taken detail={detail} onTab={onTab} />
+        {isPreRelease(detail.item.status) ? (
+          <>
+            <NextStep detail={detail} />
+            <BacklogDetails detail={detail} />
+          </>
+        ) : (
+          <>
+            <Details detail={detail} />
+            <Taken detail={detail} onTab={onTab} />
+          </>
+        )}
       </aside>
     </div>
   );

@@ -1063,14 +1063,6 @@ export interface CorePairCodeTriesTable {
   caller: Generated<string>;
 }
 
-/** The per-caller courtesy limit on asking for a phone nonce (migration 0310). */
-export interface CoreMobileNonceAsksTable {
-  caller: string;
-  /** Five-minute bucket: epoch ms / 300 000, floored. */
-  bucket: number;
-  n: number;
-}
-
 export interface CorePresenceChallengesTable {
   id: string;
   device_id: string;
@@ -1142,7 +1134,6 @@ export interface CoreDatabase {
   core_desktop_devices: CoreDesktopDevicesTable;
   core_presence_challenges: CorePresenceChallengesTable;
   core_mobile_nonces: CoreMobileNoncesTable;
-  core_mobile_nonce_asks: CoreMobileNonceAsksTable;
   core_pair_offers: CorePairOffersTable;
   core_pair_code_tries: CorePairCodeTriesTable;
 }
