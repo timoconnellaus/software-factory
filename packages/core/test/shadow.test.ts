@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   ATTACHED_PR,
   type ItemSnapshot,
+  KNOWN_DIFFERENCES,
   SHADOW_NOT_COMPARED,
   SHADOW_REQUIRED,
   SOFTWARE,

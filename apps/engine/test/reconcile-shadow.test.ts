@@ -14,11 +14,14 @@ import { all, first, ok, world } from "./helpers.ts";
 
 const later = () => new Date(Date.now() + SHADOW_LAG_MS + 60_000);
 
-/** An item ended as `status` with the given stage history, written directly (no Workflow run). */
+/**
+ * An item ended as `status` with the given stage history, written directly. Created in the Backlog,
+ * so no Workflow starts and writes stages of its own.
+ */
 async function ended(w: Awaited<ReturnType<typeof world>>, status: string, stages: string[]) {
   const item = await ok<{ workItemId: string }>(
     "workItem.create",
-    { state: "queued", projectId: w.projectId, title: "Shadowed" },
+    { state: "backlog", projectId: w.projectId, title: "Shadowed" },
     w.human,
   );
   const id = item.workItemId;
