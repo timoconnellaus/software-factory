@@ -13,7 +13,11 @@ import { join } from "node:path";
 
 const env = process.env.ELECTROBUN_BUILD_ENV ?? "dev";
 const artifacts = process.env.ELECTROBUN_ARTIFACT_DIR ?? "artifacts";
-if (env === "dev" || !process.env.ELECTROBUN_DEVELOPER_ID || process.env.ELECTROBUN_OS !== "macos") {
+if (
+  env === "dev" ||
+  !process.env.ELECTROBUN_DEVELOPER_ID ||
+  process.env.ELECTROBUN_OS !== "macos"
+) {
   console.log("postPackage: no download zip (dev build, or unsigned)");
 } else {
   const archive = readdirSync(artifacts).find(

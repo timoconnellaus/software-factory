@@ -129,8 +129,24 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   `apps/desktop`; the shared logic is in `packages/client`. Next: M4 (signing and updates).
   **M4a is built** (`desktop-m4`): signed, notarized canary/stable releases from
   `.github/workflows/desktop-release.yml` to `downloads.zerobsai.com/desktop` (R2 `sf-desktop-releases`),
-  and the in-app updater. Next: M4b (a Developer ID provisioning profile so `sf-keys` can hold the
-  Secure Enclave key), then M5.
+  and the in-app updater. The workflow runs in the GitHub environment `release` (only `main` and `v*`
+  tags), whose secrets are set: `MACOS_CERT_P12`/`MACOS_CERT_PASSWORD` (the Developer ID Application
+  identity only), `MACOS_SIGNING_IDENTITY`, `APPLE_TEAM_ID`, and the notarization key `ASC_KEY_P8`,
+  `ASC_KEY_ID`, `ASC_ISSUER_ID`. Electrobun signs and notarizes itself; signing from a build hook
+  breaks the seal (it rewrites `Resources/version.json` after every hook). The download zip is the
+  plain notarized app, not Electrobun's self-extracting wrapper (whose Setup window waited for a click
+  and failed when translocated). The Developer ID is in the M5's login keychain, for local signed
+  builds; CI is where releases are signed. After the first canary release, check that
+  `https://downloads.zerobsai.com/desktop/canary-macos-arm64-update-v2.json` and
+  `…/canary-macos-arm64-Software-Factory.zip` load, and that an installed canary updates to the next.
+  **On hold (2026-11-12):** M4b (the Secure Enclave key, Touch ID approvals; the owner decided it's
+  overkill, so don't ask for an App ID or provisioning profile) and M5 (the website keeps everything
+  until the desktop app has the Factory and Settings sections). Signed builds use a software key and
+  the engine refuses software keys for gate decisions (`DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in
+  production). Next: the client door's `update_required` version handshake. Traps in `apps/desktop`:
+  stage files explicitly on branches without its `.gitignore` (a `git add -A` once committed 138k
+  lines of `.hutch/` and `build/`); Electrobun's request proxy is a function, so RPC names like `call`
+  hit `Function.prototype` (use `bunRequests`, `src/mainview/request.ts`).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
