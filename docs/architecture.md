@@ -106,9 +106,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   instead (ADR 0430): a self-contained job repo with only the job's history, no home or host
   credentials, egress only through the job's allowlist proxy, every stage `bypassPermissions`, and
   the launch check inside the container. The host still pushes, from the job repo.
-  A runner host keeps its own code on the commit `sf-engine` was deployed from (`DEPLOYED_SHA`,
-  sent in each heartbeat): it updates itself when idle and rolls back an update that doesn't start
-  (ADR 0360).
+  A runner host keeps its own code on the last commit that changed runner code (`RUNNER_SHA`, which
+  the deploy computes next to `DEPLOYED_SHA`, sent in each heartbeat): it keeps claiming while an
+  update waits, updates at its first idle heartbeat (light jobs only after 30 minutes, nothing after
+  60), and rolls back an update that doesn't start (ADR 0360, 0520). Only a heartbeat whose
+  `minRunnerCompat` is above the runner's `RUNNER_COMPAT` stops its claims at once.
   A host holds one or more **Claude accounts** (ADR 0410): a login in its own config dir or a token
   in a 0600 file, never sent to the factory. The heartbeat reports their names and the active one;
   the owner picks the active one with `sf-runner account use` or on Setup (`runner.account.use`,

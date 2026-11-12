@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import type { CapabilityManifest, Job } from "@software-factory/runner-contract";
-import { CONTRACT_VERSION } from "@software-factory/runner-contract";
+import { CONTRACT_VERSION, RUNNER_COMPAT } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { FOREMAN, runEvent } from "../src/index.ts";
 import { protectedGuards } from "../src/testing/index.ts";
@@ -438,6 +438,44 @@ describe("runner versions (ADR 0360)", () => {
       expect(listed.runners.find((r) => r.id === runner.runnerId)?.version).toBeNull();
     } finally {
       delete services.deployedSha;
+    }
+  });
+
+  it("answers the last runner-relevant commit when the deploy set one, and its RUNNER_COMPAT (ADR 0520)", async () => {
+    const { w, runner, actor } = await setup();
+    services.deployedSha = sha("c");
+    services.runnerSha = sha("b");
+    try {
+      const beat = await ok<{ desiredVersion: string | null; minRunnerCompat: number }>(
+        "runner.heartbeat",
+        {
+          manifest: manifest(),
+          capacity: capacity(),
+          activeJobs: [],
+          // A runner on the deployed commit, ahead of the runner commit, reports itself current.
+          version: { ...version(sha("c")), compat: RUNNER_COMPAT },
+        },
+        actor,
+      );
+      expect(beat).toMatchObject({ desiredVersion: sha("b"), minRunnerCompat: RUNNER_COMPAT });
+      const listed = await ok<{
+        runners: { id: string; version: string | null; desiredVersion: string | null }[];
+      }>("runner.list", {}, w.human);
+      expect(listed.runners.find((r) => r.id === runner.runnerId)).toMatchObject({
+        version: sha("c"),
+        desiredVersion: sha("b"),
+      });
+      // Malformed: falls back to the deployed commit.
+      services.runnerSha = "nope";
+      const again = await ok<{ desiredVersion: string | null }>(
+        "runner.heartbeat",
+        { manifest: manifest(), capacity: capacity(), activeJobs: [] },
+        actor,
+      );
+      expect(again.desiredVersion).toBe(sha("c"));
+    } finally {
+      delete services.deployedSha;
+      delete services.runnerSha;
     }
   });
 });

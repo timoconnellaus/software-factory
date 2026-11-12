@@ -1,7 +1,8 @@
 // Wire shapes of the runner channel, as zod schemas: the engine validates every call with them and
-// the runner host builds its requests from the inferred types. Change them only with a contract
-// version bump (CONTRACT_VERSION in ./types.ts), except for optional, additive fields an older
-// runner never receives (ADR 0350: the light pool, the planning stage and the planning call).
+// the runner host builds its requests from the inferred types. Runners keep claiming on older code
+// while an update is pending (ADR 0520), so a change here follows the compatibility rule on
+// RUNNER_COMPAT in ./types.ts: optional, additive fields and growing enums only, new kinds of job
+// gated on a capability, and anything else bumps RUNNER_COMPAT in the same PR.
 import { z } from "zod";
 import { PLANNING_OPS } from "./planning.ts";
 import {
@@ -334,7 +335,9 @@ export const runnerVersionSchema = z.object({
   autoUpdate: z.boolean(),
   update: z.object({
     /**
-     * `current`: at the desired version. `waiting`: behind it, draining until its jobs finish.
+     * `current`: at the desired version or ahead of it. `waiting`: behind it, updating at the first
+     * idle heartbeat (still claiming; light jobs only once the update has waited too long, nothing
+     * once it has waited much longer or the engine needs a newer runner, ADR 0520).
      * `blocked`: behind it and can't update (local changes, auto-update off, not on main…), with
      * the reason. `updating`: applying it now. `rolled_back`: the last update didn't start
      * cleanly and was reverted, with the reason.
@@ -343,6 +346,8 @@ export const runnerVersionSchema = z.object({
     target: commitSha.nullable(),
     reason: z.string().max(500).nullable(),
   }),
+  /** The runner code's RUNNER_COMPAT (ADR 0520). Optional: older runners omit it. */
+  compat: z.number().int().min(0).optional(),
 });
 export type RunnerVersion = z.infer<typeof runnerVersionSchema>;
 
@@ -394,11 +399,17 @@ export const heartbeatResponseSchema = z.object({
   /** New lease expiry per renewed job. */
   leases: z.array(z.object({ jobId: id, expiresAt: iso })),
   /**
-   * The runner code the factory runs (ADR 0360): the commit of the default branch the engine was
-   * deployed from. A runner behind it updates itself when idle. Null or missing: unknown (a dev
-   * engine), so no update.
+   * The runner code the factory runs (ADR 0360, amended by 0520): the last commit on the default
+   * branch, at or before the deployed one, that changed runner code. A runner behind it updates
+   * itself when idle; one at it or ahead of it is current. Null or missing: unknown (a dev engine),
+   * so no update.
    */
   desiredVersion: commitSha.nullable().optional(),
+  /**
+   * The engine's RUNNER_COMPAT (ADR 0520): a runner whose own is lower claims nothing until it has
+   * updated. Optional: an older engine omits it, and then nothing forces a drain.
+   */
+  minRunnerCompat: z.number().int().min(0).optional(),
 });
 
 export const claimRequestSchema = z.object({

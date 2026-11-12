@@ -43,13 +43,42 @@ are applied once, from the first Worker (in deploy order) that sets `migrations_
   `production` it runs, in order:
   1. `node scripts/deploy/provision.ts`: create missing D1 databases, R2 buckets and queues;
   2. `node scripts/deploy/deploy.ts migrate`: `wrangler d1 migrations apply <db> --remote`;
-  3. `node scripts/deploy/deploy.ts workers`: `wrangler deploy` for each Worker.
+  3. `node scripts/deploy/deploy.ts workers`: `wrangler deploy` for each Worker. A Worker that
+     declares `DEPLOYED_SHA` in its vars gets `--var DEPLOYED_SHA:<the deployed commit>`, and one
+     that declares `RUNNER_SHA` gets `--var RUNNER_SHA:<the last commit that changed runner code>`
+     (below). Only `sf-engine` declares them.
 
-  It deploys the commit CI passed on. Deploys never overlap and are never cancelled half way. If
+  It deploys the commit CI passed on, checked out with full history (`fetch-depth: 0`). Deploys never overlap and are never cancelled half way. If
   the API token is not set, the deploy job is skipped with a notice and nothing fails.
 
 Migrations run before the new code, so a migration must work with the code already deployed
 (add columns and tables; drop them in a later release).
+
+### What runners are asked to run (ADR 0360, 0520)
+
+Runner hosts update themselves to the commit `sf-engine`'s heartbeat names as `desiredVersion`.
+That is `RUNNER_SHA`: the last commit on `main`'s first-parent line, at or before the deployed one,
+that changed runner code, so an engine-only or app-only deploy moves no runner.
+`scripts/deploy/lib.ts` works it out with git:
+- **runner code** is `local/runner-host`, `packages/runner-*`, `packages/harness-*` and their
+  workspace dependency closure (`dependencies`, `optionalDependencies` and `peerDependencies` on
+  `workspace:` versions, read from the package.json files), plus the root `package.json`,
+  `pnpm-workspace.yaml` and `.nvmrc`. Not `devDependencies`, and not `pnpm-lock.yaml` (a runner
+  installs its own commit's lockfile);
+- `git log -1 --first-parent <deployed> -- <those paths>`. In a shallow clone it gives up and
+  leaves `RUNNER_SHA` unset; the engine then answers `DEPLOYED_SHA`, which is safe (runners just
+  update more often).
+
+`node -e 'import("./scripts/deploy/lib.ts").then(m => console.log(m.runnerSha("HEAD") ?? "unknown"))'`
+prints it for a local checkout.
+
+**The engine runs ahead of runners.** A runner behind the desired commit keeps claiming on its old
+code until it is idle (with caps at 30 and 60 minutes), so every engine change must keep serving
+older runners. The rule is `RUNNER_COMPAT`'s comment in `packages/runner-contract/src/types.ts`
+(ADR 0520): optional new request fields, enums only grow, new kinds of job behind a capability, and
+anything else bumps `RUNNER_COMPAT` in the same PR, which makes every older runner stop claiming at
+its next heartbeat and update. Never bump `CONTRACT_VERSION`: the engine would refuse older runners'
+heartbeats, and they could never learn to update.
 
 ## Setting it up
 

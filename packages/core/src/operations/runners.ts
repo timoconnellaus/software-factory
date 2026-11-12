@@ -18,6 +18,7 @@ import {
   type ModelRole,
   PLANNING_YIELD_AFTER_MS,
   type Pool,
+  RUNNER_COMPAT,
   type RunnerAccounts,
   runBranch,
   runnerAccountsSchema,
@@ -40,6 +41,7 @@ import { planningRunEnded, USER_EVENTS } from "../planning.ts";
 import { policyImpact } from "../policy/impact.ts";
 import type { ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
+import { desiredRunnerVersion } from "../services.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
 import { fencingToken, jobId, repoRef, requireWorkItem, sha, workItemId } from "./shared.ts";
@@ -103,11 +105,7 @@ function accountsView(r: {
   };
 }
 
-/** The commit runners should run (ADR 0360), or null on an engine that doesn't know it. */
-const desiredVersion = (ctx: HandlerContext): string | null => {
-  const sha = ctx.services.deployedSha?.trim() ?? "";
-  return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
-};
+const desiredVersion = (ctx: HandlerContext): string | null => desiredRunnerVersion(ctx.services);
 
 async function loadRunner(ctx: HandlerContext, id: string) {
   const runner = await ctx.db
@@ -344,8 +342,10 @@ export const runnerHeartbeat = defineOperation({
       ]),
     ),
     leases: z.array(z.object({ jobId: z.string(), expiresAt: z.string() })),
-    /** The commit the runner should run (ADR 0360); null when the engine doesn't know. */
+    /** The commit the runner should run (ADR 0360, 0520); null when the engine doesn't know. */
     desiredVersion: z.string().nullable(),
+    /** The engine's RUNNER_COMPAT: a runner below it claims nothing until it updates (ADR 0520). */
+    minRunnerCompat: z.number().int(),
   }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
@@ -404,7 +404,12 @@ export const runnerHeartbeat = defineOperation({
       );
       leases.push({ jobId: held.jobId, expiresAt });
     }
-    return { commands, leases, desiredVersion: desiredVersion(ctx) };
+    return {
+      commands,
+      leases,
+      desiredVersion: desiredVersion(ctx),
+      minRunnerCompat: RUNNER_COMPAT,
+    };
   },
 });
 

@@ -253,13 +253,33 @@ export interface FactoryServices {
    */
   allowSoftwareDeviceKeys?: boolean;
   /**
-   * The default-branch commit this engine was deployed from (ADR 0360): the runner code the factory
-   * runs, sent to runners as `desiredVersion`. Unset on a dev engine.
+   * The default-branch commit this engine was deployed from (ADR 0360). Sent to runners as
+   * `desiredVersion` only when `runnerSha` is unset. Unset on a dev engine.
    */
   deployedSha?: string;
+  /**
+   * The last commit at or before `deployedSha` that changed runner code (ADR 0520), computed by the
+   * deploy: what runners are asked to run, so a deploy that changed no runner code moves no runner.
+   * Unset (an older deploy, a dev engine): `deployedSha` is used.
+   */
+  runnerSha?: string;
   /**
    * A runner's channel key (spike ADR 0100): HMAC of the runner id and key version under
    * RUNNER_CHANNEL_SECRET. Throws an `unavailable` OperationError when the secret isn't set.
    */
   runnerKey(runnerId: string, keyVersion: number): Promise<string>;
+}
+
+/**
+ * The commit runners should run (ADR 0360, 0520): the last runner-relevant commit the deploy
+ * computed, else the deployed commit, or null on an engine that knows neither.
+ */
+export function desiredRunnerVersion(
+  services: Pick<FactoryServices, "deployedSha" | "runnerSha">,
+): string | null {
+  for (const candidate of [services.runnerSha, services.deployedSha]) {
+    const sha = candidate?.trim() ?? "";
+    if (/^[0-9a-f]{40}$/.test(sha)) return sha;
+  }
+  return null;
 }
