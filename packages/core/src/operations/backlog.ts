@@ -2,6 +2,7 @@
 // ready, is released to the factory (queued), and the factory pulls queued items into the pipeline
 // by priority, respecting "waits for" links and the project's active limit. Creating an item no
 // longer starts its Workflow: the pull does (`startPipeline`).
+import { questionDraftSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -15,14 +16,17 @@ import {
 import { same } from "../policy/impact.ts";
 import { onOrgWorkflow, type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
 import {
+  generationOf,
   type NeedsInfo,
   needsInfoOf,
+  nextGeneration,
   park,
   parkIfNotReady,
   precheck,
   precheckPrompt,
   readinessHint,
   refuseIfParked,
+  TRIAGE_PARK_CAP,
 } from "../readiness.ts";
 import { activeKillSwitch, approverIds, loadPolicy } from "../scope.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
@@ -148,7 +152,10 @@ export function startPipeline(
     id: string;
     number: number;
     shaping_started_at?: string | null;
-    /** The item's Workflow instance: its id, unless it was shaped again (spec 52, Q4). */
+    /**
+     * The item's Workflow instance: its id, unless it was shaped again (spec 52, Q4) or triage
+     * parked it (spec 23: `<id>-r2`, …).
+     */
     workflow_id?: string | null;
   },
   project: Pick<ProjectRow, "id" | "org_id" | "policy_sha">,
@@ -248,7 +255,8 @@ export function startPipeline(
   );
   ctx.emit({
     kind: "workflow.create",
-    payload: { instanceId: item.id, params: { workItemId: item.id } },
+    // The item's current Workflow generation (spec 23: a triage-parked item starts a new one).
+    payload: { instanceId: item.workflow_id ?? item.id, params: { workItemId: item.id } },
   });
   ctx.change({
     entity: "work_item",
@@ -1702,6 +1710,8 @@ export async function resumeParked(
 ): Promise<"resumed" | "waiting" | "parked again" | null> {
   const marker = needsInfoOf(w.needs_info);
   if (!marker) return null;
+  // Triage parked it the most times it may: a person moves it on (release), not an answer.
+  if (marker.capped) return "waiting";
   const asked = marker.questionIds.length
     ? await ctx.db
         .selectFrom("core_questions")
@@ -1813,3 +1823,86 @@ function takeOverParked(ctx: HandlerContext, w: WorkItemRow, what: string) {
   );
   w.needs_info = null;
 }
+
+export const workItemParkForInfo = defineOperation({
+  name: "workItem.parkForInfo",
+  description:
+    "The Workflow parks a work item triage found not actionable (spec 23, ADR 0304): back in the Backlog with a needs-info marker and triage's questions to its requester. Its Workflow ends and it holds no slot. Answering them releases it again (or shapes it again, as it was heading), and triage runs again on a new Workflow with the answers in the request.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({
+    workItemId,
+    reason: z.string().min(1).max(2_000),
+    questions: z.array(questionDraftSchema).min(1).max(5),
+  }),
+  output: z.object({ status: z.string(), questionIds: z.array(z.string()) }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    // Only the item's own Workflow, in triage, parks it (review of #125): checked here and guarded
+    // in the batch, so a stale or foreign instance can't.
+    const caller = ctx.origin.workflowId;
+    if (w.stage !== "triage" || !caller || w.workflow_id !== caller) {
+      throw new OperationError(
+        "conflict",
+        "only the work item's current Workflow, in triage, can park it",
+      );
+    }
+    ctx.guardExists(
+      "the item is still in triage on this Workflow",
+      ctx.db
+        .selectFrom("core_work_items")
+        .select("id")
+        .where("id", "=", w.id)
+        .where("stage", "=", "triage")
+        .where("workflow_id", "=", caller),
+    );
+    const heading = w.shaping_started_at && !w.pulled_at ? "shaping" : "queued";
+    // At the cap a person decides, with everything asked across the cycles (review of #125).
+    const generation = generationOf(w.id, w.workflow_id);
+    const capped = generation >= TRIAGE_PARK_CAP;
+    const earlier = capped
+      ? await ctx.db
+          .selectFrom("core_questions")
+          .select("prompt")
+          .where("work_item_id", "=", w.id)
+          .where("planning_session_id", "is", null)
+          .orderBy("created_at")
+          .limit(50)
+          .execute()
+      : [];
+    const marker = park(ctx, w, {
+      heading,
+      source: "triage",
+      reason: capped
+        ? `triage parked it ${generation} times; a person decides now. ${input.reason}`
+        : input.reason,
+      missing: [],
+      prompts: input.questions,
+      ...(capped
+        ? {
+            capped: true,
+            asked: [...earlier.map((q) => q.prompt), ...input.questions.map((q) => q.prompt)],
+          }
+        : {}),
+    });
+    // A fresh start: the next release or shape begins a new Workflow generation, from intake.
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          pulled_at: null,
+          shaping_started_at: null,
+          released_at: null,
+          released_by: null,
+          stage: "intake",
+          workflow_id: nextGeneration(w.id, w.workflow_id),
+          updated_at: ctx.now,
+        })
+        .where("id", "=", w.id),
+    );
+    // Its slot is free: the next queued item may start, after this commits.
+    requestPull(ctx, w.project_id);
+    return { status: "backlog", questionIds: marker.questionIds };
+  },
+});
