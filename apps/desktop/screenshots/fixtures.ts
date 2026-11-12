@@ -89,6 +89,18 @@ const project = (id: string, orgId: string, name: string, slug: string) => ({
   name,
   slug,
   repo: { owner: "example", name: slug, defaultBranch: "main" },
+  // One repository per project, as projects have today (ADR 0490).
+  repositories: [
+    {
+      id: `repo_${slug}`,
+      projectId: id,
+      owner: "example",
+      name: slug,
+      defaultBranch: "main",
+      githubInstallationId: null,
+      connection: { status: "connected" as const, account: "example", manageUrl: null },
+    },
+  ],
   policySha: "5da8988",
   configVersion: 3,
   githubInstallationId: null,

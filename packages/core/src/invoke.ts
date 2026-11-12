@@ -170,6 +170,8 @@ export async function runOperation<O = unknown>(
     workItemId: null,
     workItem: null,
     project: null,
+    repositories: [],
+    repository: null,
     policy: null,
     policySha: null,
     policyError: null,
