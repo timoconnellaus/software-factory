@@ -5,6 +5,7 @@ import { droppedEdits, specResultSchema } from "@software-factory/runner-contrac
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
+import { keptArtifacts, kimPath } from "../kim.ts";
 import { defineOperation } from "../operation.ts";
 import { guardCurrentSpec, openSession, standingEdits } from "../planning.ts";
 import { repoRef, requireRepository, requireWorkItem, workItemId } from "./shared.ts";
@@ -123,7 +124,7 @@ export const specAccept = defineOperation({
 export const specCommit = defineOperation({
   name: "spec.commit",
   description:
-    "Commit the approved spec to docs/specs/ on the work item's branch (never main) through the GitHub App, so the build starts from it.",
+    "Commit the approved spec to docs/specs/ on the work item's branch (never main) through the GitHub App, so the build starts from it. In the same commit, the plan and every kept planning artifact land in the repo's .kim/ folder (spec 22): the plan in .kim/plans/, mockups in .kim/mockups/, designs in .kim/designs/ (a pulled file back at its path). Dropped and draft artifacts aren't committed.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -143,11 +144,18 @@ export const specCommit = defineOperation({
     const path = `docs/specs/wi-${w.number}-${w.slug}.md`;
     const content = specDocument(spec);
     const repo = await repoRef(ctx, requireRepository(ctx));
-    const { commitSha } = await ctx.services.github.commitFile(repo, {
+    // Spec 22: the plan and the kept artifacts, in the same commit as the spec.
+    const kept = await keptArtifacts(ctx, w.id);
+    const files = [
+      { path, content },
+      { path: `.kim/plans/wi-${w.number}-${w.slug}.md`, content },
+      ...kept.map((a) => ({ path: kimPath(a), content: a.content })),
+    ];
+    const unique = [...new Map(files.map((f) => [f.path, f])).values()];
+    const { commitSha } = await ctx.services.github.commitFiles(repo, {
       branch: w.branch,
-      path,
-      content,
-      message: `spec: ${w.title} (work item ${w.number})`,
+      files: unique,
+      message: `spec: ${w.title} (work item ${w.number})${kept.length ? `, with ${kept.length} kept artifact${kept.length === 1 ? "" : "s"} in .kim/` : ""}`,
     });
     ctx.write(
       ctx.db

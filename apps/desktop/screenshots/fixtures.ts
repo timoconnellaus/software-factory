@@ -1234,6 +1234,8 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             keep: false,
             controls: ["--accent"],
             size: MOCKUP_A.length,
+            designType: null,
+            pulledPath: null,
             updatedAt: ago(5),
           },
           {
@@ -1246,6 +1248,8 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             keep: false,
             controls: ["--accent"],
             size: MOCKUP_B.length,
+            designType: null,
+            pulledPath: null,
             updatedAt: ago(9),
           },
         ]

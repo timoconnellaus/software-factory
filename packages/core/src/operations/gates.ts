@@ -7,6 +7,7 @@ import type { CoreDatabase, GateDecisionKind } from "@software-factory/db";
 import type { ExpressionBuilder } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
+import { kimConflicts } from "../kim.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
 import { assertSpecGateCurrent } from "../planning.ts";
 import { backupOwnerId } from "../scope.ts";
@@ -249,7 +250,19 @@ export const specApprove = defineOperation({
   async handler(input, ctx) {
     const pa = await gateFor(ctx, input.workItemId, "spec");
     // A gate the planner no longer stands behind (a person wrote after it asked) can't be approved.
-    if (pa.status === "pending") await assertSpecGateCurrent(ctx, pa.work_item_id);
+    if (pa.status === "pending") {
+      await assertSpecGateCurrent(ctx, pa.work_item_id);
+      // Spec 22: a .kim/ file the planner pulled that changed on the default branch since isn't
+      // overwritten: nothing is committed until the planner merges it.
+      const conflicts = pa.work_item_id ? await kimConflicts(ctx, { id: pa.work_item_id }) : [];
+      if (conflicts.length) {
+        throw new OperationError(
+          "conflict",
+          `${conflicts.map((c) => c.path).join(", ")} changed on the default branch since the planner pulled ${conflicts.length === 1 ? "it" : "them"}: request changes so the planner merges ${conflicts.length === 1 ? "it" : "them"}, then approve`,
+          { paths: conflicts.map((c) => c.path) },
+        );
+      }
+    }
     return decidePending(ctx, pa, "approved", input.note ?? null);
   },
 });

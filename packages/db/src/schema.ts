@@ -969,7 +969,7 @@ export interface CorePlanningMessagesTable {
 export interface CorePlanningArtifactsTable {
   id: string;
   work_item_id: string;
-  kind: "mockup" | "diagram" | "document";
+  kind: "mockup" | "diagram" | "document" | "design";
   title: string;
   description: string | null;
   revision: Generated<number>;
@@ -978,6 +978,11 @@ export interface CorePlanningArtifactsTable {
   created_at: Iso;
   updated_at: Iso;
   deleted_at: Iso | null;
+  /** 0373 (spec 22): a design's type; null for other kinds. */
+  design_type: string | null;
+  /** 0373: the `.kim/` path it was pulled from, and the default branch's head then. */
+  pulled_path: string | null;
+  pulled_base_sha: string | null;
 }
 
 /** One revision of a planning artifact's content (spec 21). */

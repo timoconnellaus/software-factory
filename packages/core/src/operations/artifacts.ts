@@ -11,6 +11,8 @@ import {
   artifactShowInputSchema,
   artifactUpdateInputSchema,
   declaredControls,
+  designPullInputSchema,
+  designTypeOf,
 } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
@@ -20,7 +22,7 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import { logPlanning } from "../planning.ts";
 import { liveArtifact } from "../planning-visuals.ts";
 import { byJob, planningJob, planningJobFields } from "./planning.ts";
-import { requireWorkItem, workItemId } from "./shared.ts";
+import { repoRef, requireRepository, requireWorkItem, workItemId } from "./shared.ts";
 
 const bytes = (text: string) => new TextEncoder().encode(text).length;
 
@@ -90,6 +92,12 @@ export const artifactAdd = defineOperation({
         `an artifact holds at most ${ARTIFACT_MAX_BYTES} bytes`,
       );
     }
+    if ((input.kind === "design") !== (input.designType !== undefined)) {
+      throw new OperationError(
+        "invalid_input",
+        "a design names its designType (data-model, architecture, data-flow, sequence, state, api), and only a design does",
+      );
+    }
     await checkBudget(ctx, w.id, bytes(input.content), 0, true);
     const id = newId("planningArtifact");
     const controls = controlsOf(input.kind, input.content);
@@ -98,6 +106,7 @@ export const artifactAdd = defineOperation({
         id,
         work_item_id: w.id,
         kind: input.kind,
+        design_type: input.kind === "design" ? (input.designType ?? null) : null,
         title: input.title,
         description: input.description ?? null,
         revision: 1,
@@ -397,6 +406,8 @@ function pruneRevisions(ctx: HandlerContext, artifactId: string, latest: number)
     ctx.db
       .deleteFrom("core_planning_artifact_revisions")
       .where("artifact_id", "=", artifactId)
+      // Revision 0 is a pulled file's base (spec 22): it stays.
+      .where("revision", ">=", 1)
       .where("revision", "<=", latest - ARTIFACT_REVISIONS_KEPT),
   );
 }
@@ -434,3 +445,111 @@ function guardBudget(ctx: HandlerContext, workItemId: string) {
       ),
   );
 }
+
+export const designPull = defineOperation({
+  name: "design.pull",
+  description:
+    "The planning agent brings a file from the repository's .kim/ folder (designs, mockups or plans, on the default branch) in as an artifact to revise (spec 22). Its content there is kept as the base (revision 0) the app compares against; the artifact is kept, so the approved plan writes it back to the same path. Pulling a file already pulled takes the default branch's current copy as the new base (merge your changes into it) and leaves your latest revision as it is.",
+  risk: "write",
+  actors: ["runner"],
+  permission: "signed-in",
+  input: designPullInputSchema.extend(planningJobFields),
+  output: z.object({ artifactId: z.string(), revision: z.number(), changed: z.boolean() }),
+  scope: byJob,
+  async handler(input, ctx) {
+    await planningJob(ctx, input);
+    const w = requireWorkItem(ctx);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
+    const head = await ctx.services.github.getBranchSha(repo, repository.default_branch);
+    const content = head
+      ? await ctx.services.github.readFile(repo, input.path, repository.default_branch)
+      : null;
+    if (content === null) {
+      throw new OperationError("not_found", `${input.path} isn't on ${repository.default_branch}`);
+    }
+    if (bytes(content) > ARTIFACT_MAX_BYTES) {
+      throw new OperationError(
+        "invalid_input",
+        `${input.path} is over ${ARTIFACT_MAX_BYTES} bytes`,
+      );
+    }
+    const folder = input.path.split("/")[1];
+    const designType = folder === "designs" ? designTypeOf(input.path, content) : null;
+    if (folder === "designs" && !designType) {
+      throw new OperationError(
+        "invalid_input",
+        `${input.path}: a design is .dbml, .d2, .mmd or .yaml`,
+      );
+    }
+    const kind = folder === "designs" ? "design" : folder === "plans" ? "document" : "mockup";
+    const existing = await ctx.db
+      .selectFrom("core_planning_artifacts")
+      .select(["id", "revision"])
+      .where("work_item_id", "=", w.id)
+      .where("pulled_path", "=", input.path)
+      .where("deleted_at", "is", null)
+      .executeTakeFirst();
+    const base = {
+      revision: 0,
+      content,
+      size: bytes(content),
+      controls: JSON.stringify(controlsOf(kind, content)),
+      created_at: ctx.now,
+    };
+    if (existing) {
+      // A new base: the default branch's copy now. The planner's latest revision stays.
+      ctx.write(
+        ctx.db
+          .insertInto("core_planning_artifact_revisions")
+          .values({ artifact_id: existing.id, ...base })
+          .onConflict((oc) =>
+            oc.columns(["artifact_id", "revision"]).doUpdateSet({
+              content: base.content,
+              size: base.size,
+              controls: base.controls,
+              created_at: base.created_at,
+            }),
+          ),
+      );
+      ctx.write(
+        ctx.db
+          .updateTable("core_planning_artifacts")
+          .set({ pulled_base_sha: head, updated_at: ctx.now })
+          .where("id", "=", existing.id),
+      );
+      logPlanning(ctx, w.id, "artifact.updated", { artifactId: existing.id, rebased: true });
+      return { artifactId: existing.id, revision: existing.revision, changed: true };
+    }
+    await checkBudget(ctx, w.id, base.size * 2, 0, true);
+    const id = newId("planningArtifact");
+    ctx.write(
+      ctx.db.insertInto("core_planning_artifacts").values({
+        id,
+        work_item_id: w.id,
+        kind,
+        design_type: designType,
+        title: input.path.split("/").pop() ?? input.path,
+        description: `Pulled from ${input.path}`,
+        revision: 1,
+        keep: 1,
+        pulled_path: input.path,
+        pulled_base_sha: head,
+        created_by: ctx.actor.id,
+        created_at: ctx.now,
+        updated_at: ctx.now,
+      }),
+    );
+    ctx.write(
+      ctx.db.insertInto("core_planning_artifact_revisions").values({ artifact_id: id, ...base }),
+    );
+    ctx.write(
+      ctx.db
+        .insertInto("core_planning_artifact_revisions")
+        .values({ artifact_id: id, ...base, revision: 1 }),
+    );
+    guardBudget(ctx, w.id);
+    logPlanning(ctx, w.id, "artifact.added", { artifactId: id, revision: 1, pulled: input.path });
+    return { artifactId: id, revision: 1, changed: false };
+  },
+});
