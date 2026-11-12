@@ -1,11 +1,13 @@
 // The places in the app (spec 41): what a tab is called, which sidebar section a path is in, and
 // the search palette's commands. Pure, so the tests pin them.
 
-export type Section = "inbox" | "work" | "settings";
+export type Section = "inbox" | "work" | "factory" | "settings";
 
 export function sectionOf(pathname: string): Section {
   if (pathname === "/" || pathname === "") return "inbox";
   if (pathname === "/setup" || pathname === "/settings") return "settings";
+  if (pathname.startsWith("/settings/")) return "settings";
+  if (pathname === "/factory" || pathname.startsWith("/factory/")) return "factory";
   return "work";
 }
 
@@ -36,6 +38,24 @@ export function tabTitle(path: string, findItem: (id: string) => ItemRef | null)
       return "Setup";
     case "/settings":
       return "This Mac";
+    case "/settings/repositories":
+      return "Repositories";
+    case "/settings/connections":
+      return "Connections";
+    case "/settings/devices":
+      return "Devices";
+    case "/factory":
+      return "Overview";
+    case "/factory/runners":
+      return "Runners";
+    case "/factory/incidents":
+      return "Checks and incidents";
+    case "/factory/policy":
+      return "Policy";
+    case "/factory/agents":
+      return "Agents";
+    case "/factory/workflows":
+      return "Workflows";
     default:
       return "Software Factory";
   }
@@ -63,6 +83,55 @@ export const PLACE_COMMANDS: PlaceCommand[] = [
   },
   { id: "setup", label: "Setup", to: "/setup", keywords: "setup github project runner protect" },
   { id: "mac", label: "This Mac", to: "/settings", keywords: "this mac runner settings sign out" },
+  {
+    id: "repositories",
+    label: "Repositories",
+    to: "/settings/repositories",
+    keywords: "settings repositories repos github protection",
+  },
+  {
+    id: "connections",
+    label: "Connections",
+    to: "/settings/connections",
+    keywords: "settings connections github app",
+  },
+  {
+    id: "devices",
+    label: "Devices",
+    to: "/settings/devices",
+    keywords: "settings devices tokens cli revoke sign in",
+  },
+  { id: "factory", label: "Factory: overview", to: "/factory", keywords: "factory overview queue" },
+  {
+    id: "runners",
+    label: "Factory: runners",
+    to: "/factory/runners",
+    keywords: "factory runners machines version update",
+  },
+  {
+    id: "incidents",
+    label: "Factory: checks and incidents",
+    to: "/factory/incidents",
+    keywords: "factory incidents checks failures",
+  },
+  {
+    id: "policy",
+    label: "Factory: policy",
+    to: "/factory/policy",
+    keywords: "factory policy autonomy limits approvers",
+  },
+  {
+    id: "agents",
+    label: "Factory: agents",
+    to: "/factory/agents",
+    keywords: "factory agents roles models",
+  },
+  {
+    id: "workflows",
+    label: "Factory: workflows",
+    to: "/factory/workflows",
+    keywords: "factory workflows stages steps",
+  },
 ];
 
 /** Work items matching a search: by number (`12`, `#12`) or by words in the title. */

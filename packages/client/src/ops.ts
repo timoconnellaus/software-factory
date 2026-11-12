@@ -77,6 +77,14 @@ export interface OpMap {
   "desktop.denyDevice": Def<typeof operations.desktopDenyDevice>;
   "desktopDevice.list": Def<typeof operations.desktopDeviceList>;
   "desktopDevice.revoke": Def<typeof operations.desktopDeviceRevoke>;
+  "device.list": Def<typeof operations.deviceList>;
+  "device.revoke": Def<typeof operations.deviceRevoke>;
+  "device.update": Def<typeof operations.deviceUpdate>;
+  "mobile.authLookup": Def<typeof operations.mobileAuthLookup>;
+  "mobile.approveDevice": Def<typeof operations.mobileApproveDevice>;
+  "mobile.denyDevice": Def<typeof operations.mobileDenyDevice>;
+  "mobile.pairOffer": Def<typeof operations.mobilePairOffer>;
+  "mobile.pairOfferStatus": Def<typeof operations.mobilePairOfferStatus>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
   // Org workflows (spec 52 PR (b)).
   "workflow.list": Def<typeof operations.workflowList>;
@@ -89,6 +97,10 @@ export interface OpMap {
   "orgConfig.get": Def<typeof operations.orgConfigGet>;
   "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
   "stageType.list": Def<typeof operations.stageTypeList>;
+  "mergeQueue.list": Def<typeof operations.mergeQueueList>;
+  "repository.list": Def<typeof operations.repositoryList>;
+  "cliToken.list": Def<typeof operations.cliTokenList>;
+  "cliToken.revoke": Def<typeof operations.cliTokenRevoke>;
 }
 
 export type OpName = keyof OpMap;
