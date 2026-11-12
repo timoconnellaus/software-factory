@@ -22,6 +22,9 @@ export const ID_PREFIXES = {
   planningMessage: "pm",
   cliDeviceCode: "cdc",
   cliToken: "cli",
+  desktopAuthRequest: "dar",
+  desktopDevice: "dsk",
+  presenceChallenge: "prc",
   trial: "trl",
   adjudication: "adj",
 } as const;

@@ -810,6 +810,52 @@ export interface CoreCliTokensTable {
   created_at: Iso;
   expires_at: Iso;
   revoked_at: Iso | null;
+  /** `cli` (sf) or `desktop` (the desktop app, bound to `device_id`; ADR 0391). */
+  kind: Generated<"cli" | "desktop">;
+  device_id: string | null;
+}
+
+export type KeyStorage = "secure-enclave" | "software";
+
+export interface CoreDesktopAuthRequestsTable {
+  id: string;
+  code_challenge: string;
+  device_name: string;
+  /** The device's P-256 public key, as JWK JSON. */
+  public_key: string;
+  key_storage: Generated<KeyStorage>;
+  state: string;
+  status: Generated<"pending" | "approved" | "denied" | "consumed">;
+  user_id: string | null;
+  code_hash: string | null;
+  device_id: string | null;
+  created_at: Iso;
+  expires_at: Iso;
+  decided_at: Iso | null;
+  consumed_at: Iso | null;
+}
+
+export interface CoreDesktopDevicesTable {
+  id: string;
+  user_id: string;
+  name: string;
+  public_key: string;
+  key_storage: KeyStorage;
+  created_at: Iso;
+  last_seen_at: Iso | null;
+  revoked_at: Iso | null;
+}
+
+export interface CorePresenceChallengesTable {
+  id: string;
+  device_id: string;
+  op: string;
+  input_digest: string;
+  summary: string;
+  nonce_hash: string;
+  created_at: Iso;
+  expires_at: Iso;
+  consumed_at: Iso | null;
 }
 
 export interface CoreDatabase {
@@ -861,4 +907,7 @@ export interface CoreDatabase {
   core_planning_presence: CorePlanningPresenceTable;
   core_cli_device_codes: CoreCliDeviceCodesTable;
   core_cli_tokens: CoreCliTokensTable;
+  core_desktop_auth_requests: CoreDesktopAuthRequestsTable;
+  core_desktop_devices: CoreDesktopDevicesTable;
+  core_presence_challenges: CorePresenceChallengesTable;
 }

@@ -4,6 +4,7 @@ export * from "./attachments.ts";
 export * from "./cli.ts";
 export * from "./config.ts";
 export * from "./connector.ts";
+export * from "./desktop.ts";
 export * from "./devices.ts";
 export * from "./gates.ts";
 export * from "./github.ts";

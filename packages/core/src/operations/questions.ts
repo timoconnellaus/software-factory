@@ -503,6 +503,7 @@ export const questionAnswer = defineOperation({
   actors: ["human"],
   permission: "member",
   browserOnly: true,
+  presenceDecidable: true,
   input: z.object({
     questionId,
     answer: z.string().min(1).max(8_000),
@@ -539,6 +540,7 @@ export const questionAcceptDefaults = defineOperation({
   actors: ["human"],
   permission: "member",
   browserOnly: true,
+  presenceDecidable: true,
   input: z.object({ workItemId }),
   output: z.object({
     accepted: z.array(z.string()),
