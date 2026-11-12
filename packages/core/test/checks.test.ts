@@ -1,15 +1,20 @@
 // Spec 51 PR B (ADR 0501): checks the factory runs itself, and criteria proven only by them.
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
   assemblePacket,
   declaredChecks,
   executedChecks,
   FOREMAN,
+  isStaticCheck,
   parseFloor,
   parseProjectPolicy,
   policyImpact,
   proveCriteria,
+  specCheckLinks,
+  storedProof,
   summarizeCi,
+  verifyCheckOutput,
 } from "../src/index.ts";
 import { newItem, ok, POLICY, world } from "./helpers.ts";
 
@@ -52,46 +57,86 @@ describe("executed checks and proof (pure)", () => {
     );
   });
 
-  it("marks a criterion proven only by a linked check that passed, never by the reviewer's word", () => {
-    const executed = executedChecks(SHA, ["tests", "lint"], [ran("tests", 0), ran("lint", 1)]);
-    const ci = summarizeCi(
-      [
-        {
-          id: "1",
-          name: "e2e",
-          status: "completed",
-          conclusion: "success",
-          appSlug: "gh",
-          url: null,
-        },
-        {
-          id: "2",
-          name: "docs",
-          status: "completed",
-          conclusion: "skipped",
-          appSlug: "gh",
-          url: null,
-        },
-      ],
+  const ciWith = (...names: string[]) =>
+    summarizeCi(
+      names.map((name, i) => ({
+        id: String(i),
+        name,
+        status: "completed" as const,
+        conclusion: name === "docs" ? "skipped" : "success",
+        appSlug: "gh",
+        url: null,
+      })),
       "factory",
+    );
+
+  it("marks a criterion proven only by a linked behavioural check that passed, never by the reviewer's word", () => {
+    const executed = executedChecks(
+      SHA,
+      ["tests", "lint", "e2e"],
+      [ran("tests", 0), ran("lint", 0), ran("e2e", 1)],
     );
     const proof = proveCriteria(
       [
         { criterion: "A", met: true, evidence: "unit", checks: ["tests"] },
-        { criterion: "B", met: true, evidence: "e2e", checks: ["E2E"] },
+        // The reviewer can't prove anything with a CI job or a static check.
+        { criterion: "B", met: true, evidence: "ci", checks: ["ci", "lint"] },
         { criterion: "C", met: true, evidence: "I read the code" },
-        { criterion: "D", met: true, evidence: "lint", checks: ["lint", "docs"] },
+        { criterion: "D", met: true, evidence: "e2e", checks: ["e2e", "docs"] },
       ],
       executed,
-      ci,
+      ciWith("ci", "docs"),
     );
-    expect(proof.map((p) => [p.criterion, p.proven, p.provenBy, p.unproven])).toEqual([
-      ["A", true, ["tests"], []],
-      ["B", true, ["E2E"], []],
-      ["C", false, [], []],
-      ["D", false, [], ["lint", "docs"]],
+    expect(
+      proof.map((p) => [p.criterion, p.proven, p.provenBy, p.unproven, p.notCounted, p.linkedBy]),
+    ).toEqual([
+      ["A", true, ["tests"], [], [], "reviewer"],
+      ["B", false, [], [], ["ci", "lint"], "reviewer"],
+      ["C", false, [], [], [], "reviewer"],
+      ["D", false, [], ["e2e", "docs"], [], "reviewer"],
     ]);
     expect(proof[2]?.opinion).toBe("I read the code");
+  });
+
+  it("takes the links from the approved spec where it tags a criterion, and only then counts CI", () => {
+    expect(specCheckLinks("Dark mode persists [checks: tests, e2e]")).toEqual({
+      text: "Dark mode persists",
+      checks: ["tests", "e2e"],
+    });
+    expect(specCheckLinks("No tag")).toBeNull();
+    const executed = executedChecks(SHA, ["tests"], [ran("tests", 0)]);
+    const proof = proveCriteria(
+      [
+        // The reviewer links "tests", but the spec says only "e2e" (CI) proves it.
+        { criterion: "Dark mode persists", met: true, evidence: "x", checks: ["tests"] },
+        { criterion: "Untagged", met: true, evidence: "x", checks: ["tests"] },
+      ],
+      executed,
+      ciWith("e2e"),
+      { specCriteria: ["Dark mode persists [checks: e2e]", "Untagged"] },
+    );
+    expect(proof.map((p) => [p.proven, p.provenBy, p.linkedBy])).toEqual([
+      [true, ["e2e"], "spec"],
+      [true, ["tests"], "reviewer"],
+    ]);
+  });
+
+  it("marks proof weakened when the tests-intact guard found gate-file edits", () => {
+    const executed = executedChecks(SHA, ["tests"], [ran("tests", 0)]);
+    const [p] = proveCriteria(
+      [{ criterion: "A", met: true, evidence: "x", checks: ["tests"] }],
+      executed,
+      ciWith(),
+      { gateFilesChanged: true },
+    );
+    expect(p).toMatchObject({ proven: true, weakened: true });
+  });
+
+  it("knows a static check by its name or command", () => {
+    expect(isStaticCheck("lint")).toBe(true);
+    expect(isStaticCheck("quality", "pnpm typecheck")).toBe(true);
+    expect(isStaticCheck("tests", "pnpm test")).toBe(false);
+    expect(isStaticCheck("e2e", "playwright test")).toBe(false);
   });
 
   it("ignores the agent's own report of checks in the verdict", () => {
@@ -107,12 +152,88 @@ describe("executed checks and proof (pure)", () => {
       ci: { state: "success", checks: [], failing: [], pending: [] },
       files: [],
       sameModelAsImplementer: false,
+      hostChecks: true,
       declaredChecks: ["tests"],
       checksRun: [ran("tests", 1)],
     });
     expect(packet.verdict).toBe("fail");
     expect(packet.reasons).toEqual(["check tests failed on ccccccc: `pnpm tests` exited 1"]);
     expect(packet.proof[0]?.proven).toBe(false);
+  });
+
+  const reviewerFailing = {
+    summary: "",
+    criteria: [{ criterion: "A", met: true, evidence: "x" }],
+    checks: [{ name: "tests", status: "fail" as const }],
+    reviewer: { role: "review" as const, verdict: "approve" as const, notes: "" },
+    riskFlags: [],
+  };
+  const green = { state: "success" as const, checks: [], failing: [], pending: [] };
+
+  it("keeps the reviewer's failing check as a reason when the project declares no checks", () => {
+    const packet = assemblePacket({
+      headSha: SHA,
+      evidence: reviewerFailing,
+      ci: green,
+      files: [],
+      sameModelAsImplementer: false,
+      hostChecks: true,
+      declaredChecks: [],
+    });
+    expect(packet.verdict).toBe("fail");
+    expect(packet.reasons).toContain("runner check failing: tests");
+  });
+
+  it("leaves an instance from before v8 as it was: the reviewer's checks decide, no proof", () => {
+    const packet = assemblePacket({
+      headSha: SHA,
+      evidence: reviewerFailing,
+      ci: green,
+      files: [],
+      sameModelAsImplementer: false,
+      hostChecks: false,
+      declaredChecks: ["tests"],
+      checksRun: [ran("tests", 0)],
+    });
+    expect(packet.reasons).toEqual(["runner check failing: tests"]);
+    expect(packet.proof).toEqual([]);
+    expect(packet.sections.executed).toBeUndefined();
+    expect(packet.warnings.join(" ")).not.toMatch(/declares no checks/);
+  });
+
+  it("writes factory/verify's checks and proof, and labels results carried to another head", () => {
+    const packet = assemblePacket({
+      headSha: SHA,
+      evidence: {
+        ...reviewerFailing,
+        checks: [],
+        criteria: [{ criterion: "A", met: true, evidence: "x", checks: ["tests"] }],
+      },
+      ci: green,
+      files: [],
+      sameModelAsImplementer: false,
+      hostChecks: true,
+      declaredChecks: ["tests"],
+      checksRun: [ran("tests", 0)],
+    });
+    const out = verifyCheckOutput({
+      evidencePass: packet.evidencePass,
+      evidenceReasons: packet.evidenceReasons,
+      warnings: packet.warnings,
+      riskFlags: [],
+      ci: green,
+      workItem: { number: 7, title: "x" },
+      ...storedProof(packet.sections),
+    });
+    expect(out.conclusion).toBe("success");
+    expect(out.summary).toContain(
+      "### Checks run by the factory\n- tests: passed (`pnpm tests`, exit 0, 1 s)",
+    );
+    expect(out.summary).toContain("Criteria proven by an executed check: 1/1");
+    const carried = storedProof({ ...packet.sections, checksRanOn: SHA });
+    expect(carried.checkLines[0]).toMatch(
+      /ran on ccccccc, not on this commit \(carried by the merge queue\)/,
+    );
   });
 
   it("reads the checks from config: the project's, then the item's workflow's", () => {
@@ -160,6 +281,9 @@ describe("checks.forHead (ADR 0501)", () => {
   it("names the declared checks and says why a head without results doesn't pass", async () => {
     const w = await world(WITH_CHECKS);
     const item = await newItem(w);
+    await env.DB.prepare("UPDATE core_work_items SET workflow_version = 8 WHERE id = ?")
+      .bind(item.workItemId)
+      .run();
     const out = await ok<{ declared: string[]; passed: boolean; failing: string[] }>(
       "checks.forHead",
       { workItemId: item.workItemId, headSha: SHA },
@@ -170,5 +294,21 @@ describe("checks.forHead (ADR 0501)", () => {
       passed: false,
       failing: ["check lint didn't run on ccccccc", "check tests didn't run on ccccccc"],
     });
+  });
+});
+
+describe("checks.forHead before v8 (ADR 0501)", () => {
+  it("declares nothing for an instance that started before v8, so it never fails there", async () => {
+    const w = await world(WITH_CHECKS);
+    const item = await newItem(w);
+    await env.DB.prepare("UPDATE core_work_items SET workflow_version = 6 WHERE id = ?")
+      .bind(item.workItemId)
+      .run();
+    const out = await ok<{ declared: string[]; passed: boolean }>(
+      "checks.forHead",
+      { workItemId: item.workItemId, headSha: SHA },
+      FOREMAN,
+    );
+    expect(out).toMatchObject({ declared: [], passed: true });
   });
 });

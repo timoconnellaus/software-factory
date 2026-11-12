@@ -20,6 +20,7 @@ import {
   PLANNING_YIELD_AFTER_MS,
   type Pool,
   type RunnerAccounts,
+  redactSecrets,
   runBranch,
   runnerAccountsSchema,
   runnerEventSchema,
@@ -41,6 +42,7 @@ import { planningRunEnded, USER_EVENTS } from "../planning.ts";
 import { policyImpact } from "../policy/impact.ts";
 import { declaredChecks, type ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
+import { hostChecksOn } from "../verify/proof.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
 import { fencingToken, jobId, repoRef, requireWorkItem, sha, workItemId } from "./shared.ts";
@@ -739,10 +741,11 @@ async function buildJob(
  */
 function jobChecks(
   policy: ProjectPolicy | null,
-  item: Pick<WorkItemRow, "kind" | "workflow">,
+  item: Pick<WorkItemRow, "kind" | "workflow" | "workflow_version">,
   stage: string,
 ): { checks?: Job["checks"] } {
-  if (!policy) return {};
+  // An item whose Workflow started before v8 has no checks step: its jobs carry none.
+  if (!policy || !hostChecksOn(item)) return {};
   if (stage !== "build" && !(stage === "verify" && item.kind === "attached")) return {};
   const commands = declaredChecks(policy, item.workflow);
   return commands.length
@@ -1234,9 +1237,45 @@ export const runHandBack = defineOperation({
     }
     const result = input.result === undefined ? null : JSON.stringify(input.result);
     if (result && result.length > MAX_RESULT) return fail("result too large");
-    // The factory's own check results (ADR 0501), whatever the outcome: a failure is evidence too.
-    // A later round on the same SHA replaces a check's row.
-    for (const c of input.checks) {
+    // The factory's own check results (ADR 0501). They're only evidence for the run's own head: the
+    // last round must have run on it, and every earlier round on an ancestor of it (GitHub decides).
+    const checks = input.checks.map((c) => ({ ...c, logTail: redactSecrets(c.logTail) }));
+    if (checks.length > 0) {
+      const project = ctx.scope.project;
+      if (!project) throw new OperationError("not_found", "no project");
+      const repo = await repoRef(ctx, project);
+      // A build's head is the one it pushed (checked on GitHub above); a verify job's is the head
+      // the Workflow asked it to verify (its context), never what the runner says.
+      const jobRow = await ctx.db
+        .selectFrom("core_jobs")
+        .select("context")
+        .where("id", "=", run.job_id)
+        .executeTakeFirst();
+      const asked = parseJson<{ headSha?: unknown }>(jobRow?.context, {}).headSha;
+      const head =
+        run.stage === "build" ? (input.headSha ?? null) : typeof asked === "string" ? asked : null;
+      if (!head) return fail("check results without a head they ran on");
+      const last = Math.max(...checks.map((c) => c.round));
+      const off = checks.find((c) => c.round === last && c.headSha !== head);
+      if (off) {
+        return fail(
+          `check ${off.name} ran on ${off.headSha.slice(0, 7)}, not the run's head ${head.slice(0, 7)}`,
+        );
+      }
+      for (const earlier of new Set(
+        checks.filter((c) => c.headSha !== head).map((c) => c.headSha),
+      )) {
+        const rel = await ctx.services.github.compareCommits(repo, earlier, head).catch(() => null);
+        if (!rel || rel.behindBy !== 0) {
+          return fail(
+            `check results on ${earlier.slice(0, 7)}, which isn't an ancestor of ${head.slice(0, 7)}`,
+          );
+        }
+      }
+    }
+    // Whatever the outcome: a failure is evidence too. A later round on the same SHA replaces a
+    // check's row.
+    for (const c of checks) {
       const row = {
         run_id: run.id,
         command: c.command,
@@ -1254,12 +1293,12 @@ export const runHandBack = defineOperation({
           .onConflict((oc) => oc.columns(["work_item_id", "head_sha", "name"]).doUpdateSet(row)),
       );
     }
-    if (input.checks.length) {
+    if (checks.length) {
       ctx.change({
         entity: "check_results",
         id: run.id,
         after: {
-          checks: input.checks.map((c) => ({
+          checks: checks.map((c) => ({
             name: c.name,
             headSha: c.headSha,
             exitCode: c.exitCode,

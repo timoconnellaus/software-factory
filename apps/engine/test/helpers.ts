@@ -249,8 +249,9 @@ export const verifyPass = {
   },
 };
 /**
- * The reviewer finds a criterion unmet. Its own report of a failing check no longer fails the
- * verdict (ADR 0501): only the factory's checks and CI do.
+ * The reviewer finds a criterion unmet and reports a failing test. Where the project declares
+ * checks the factory's own results replace the report (ADR 0501); the unmet criterion fails it
+ * either way.
  */
 export const verifyFail = {
   result: {

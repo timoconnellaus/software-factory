@@ -3,18 +3,30 @@
 // reviewer's word alone never proves a criterion.
 import { describe, expect, it } from "vitest";
 import {
+  all,
   BALANCED,
   build,
   first,
   gateOpen,
+  github,
   itemStatus,
   ok,
   runStage,
   triage,
+  uid,
   verifyPass,
   waitFor,
   world,
 } from "./helpers.ts";
+
+type World = Awaited<ReturnType<typeof world>>;
+
+/** `factory/verify` on a SHA, with what it says. */
+const verifyRun = async (w: World, sha: string) => {
+  const state = await github.state(w.repo);
+  const run = (state.checks?.[sha] ?? []).find((c) => c.name === "factory/verify");
+  return run ? { ...run, output: state.checkOutputs?.[run.id] } : undefined;
+};
 
 const CHECKS = {
   ...BALANCED,
@@ -87,6 +99,115 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
       { name: "tests", passed: true },
     ]);
     expect(verify.stage).toBe("verify");
+    // factory/verify on the head says what the factory ran and what it proved.
+    const head = String(verify.context.headSha);
+    const run = await verifyRun(w, head);
+    expect(run).toMatchObject({ conclusion: "success" });
+    expect(String(run?.output?.summary)).toContain(
+      "### Checks run by the factory\n- lint: passed (`pnpm lint`, exit 0, 1 s)\n- tests: passed (`pnpm tests`, exit 0, 1 s)",
+    );
+    expect(String(run?.output?.summary)).toContain("Criteria proven by an executed check: 1/1");
+  });
+
+  it("refuses check results that didn't run on the run's head", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", () => ({
+      ...build(),
+      checks: [
+        { name: "lint", exitCode: 0, headSha: "d".repeat(40) },
+        { name: "tests", exitCode: 0, headSha: "d".repeat(40) },
+      ],
+    }));
+    const run = await waitFor("the build run failed", () =>
+      first<{ status: string }>(
+        "SELECT status FROM core_runs WHERE work_item_id = ? AND stage = 'build' AND status = 'failed'",
+        item.workItemId,
+      ),
+    );
+    expect(run.status).toBe("failed");
+    expect(
+      await all("SELECT name FROM core_check_results WHERE work_item_id = ?", item.workItemId),
+    ).toEqual([]);
+  });
+
+  it("runs an attached PR's checks in its verify job, on the PR's head, and proves from them", async () => {
+    const w = await world(CHECKS);
+    const branch = `tim/${uid("b")}`;
+    const pr = await github.openOutsidePull(w.repo, { branch, title: "Dark mode", body: "x" });
+    const item = await ok<{ workItemId: string }>(
+      "workItem.attachPr",
+      { projectId: w.projectId, prNumber: pr.number },
+      w.human,
+    );
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "verify", (j) => {
+      // The host runs them before the reviewer, on the PR's head; no fix rounds (no build).
+      expect(j.checks).toEqual({
+        commands: [
+          { name: "lint", run: "pnpm lint", timeoutMs: 15 * 60_000 },
+          { name: "tests", run: "pnpm test", timeoutMs: 20 * 60_000 },
+        ],
+        fixRounds: 0,
+      });
+      // The reviewer is told the names, to link criteria to.
+      expect(j.harness.prompt).toMatch(/`lint`, `tests`/);
+      return {
+        ...linkedPass,
+        checks: [
+          { name: "lint", exitCode: 0, headSha: pr.headSha },
+          { name: "tests", exitCode: 0, headSha: pr.headSha },
+        ],
+      };
+    });
+    await gateOpen(item.workItemId, "merge");
+    const packet = await first<{ verdict: string; sections: string }>(
+      "SELECT verdict, sections FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
+      item.workItemId,
+      pr.headSha,
+    );
+    expect(packet?.verdict).toBe("pass");
+    expect(JSON.parse(String(packet?.sections)).proof).toMatchObject([
+      { proven: true, provenBy: ["tests"], linkedBy: "reviewer" },
+    ]);
+  });
+
+  it("labels check results the merge queue carries to a new head as run on the old one", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", () => ({
+      ...build(),
+      checks: [
+        { name: "lint", exitCode: 0 },
+        { name: "tests", exitCode: 0 },
+      ],
+    }));
+    await runStage(w, item.workItemId, "verify", () => linkedPass);
+    await gateOpen(item.workItemId, "merge");
+    // main moves on, so the queue merges it into the approved head: a new SHA nothing ran on.
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.setCiDefault(w.repo, [
+      { name: "ci", status: "in_progress", conclusion: null, appSlug: "github-actions", url: null },
+    ]);
+    await ok("review.merge", { workItemId: item.workItemId, openedFullDiff: true }, w.human);
+    const queued = await waitFor("brought up to date", () =>
+      first<{ head_sha: string; approved_sha: string }>(
+        "SELECT head_sha, approved_sha FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued' AND head_sha != approved_sha",
+        item.workItemId,
+      ),
+    );
+    const carried = await first<{ sections: string }>(
+      "SELECT sections FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
+      item.workItemId,
+      queued.head_sha,
+    );
+    expect(JSON.parse(String(carried?.sections)).checksRanOn).toBe(queued.approved_sha);
+    const run = await waitFor("factory/verify on the new head", () => verifyRun(w, queued.head_sha));
+    expect(String(run.output?.summary)).toMatch(
+      new RegExp(`tests: passed .* ran on ${queued.approved_sha.slice(0, 7)}, not on this commit`),
+    );
   });
 
   it("asks a person when a check still fails after the build session's fixes, never a cold retry", async () => {

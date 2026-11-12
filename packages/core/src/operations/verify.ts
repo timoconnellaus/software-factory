@@ -22,7 +22,7 @@ import {
   storedTestFindings,
   verifyCheckOutput,
 } from "../verify/packet.ts";
-import { checkLines, executedChecks } from "../verify/proof.ts";
+import { executedChecks, hostChecksOn } from "../verify/proof.ts";
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
 import { requireQueueHead } from "./merge-queue.ts";
@@ -191,7 +191,19 @@ export const reviewPacketRecord = defineOperation({
       .where("work_item_id", "=", w.id)
       .where("head_sha", "=", input.headSha)
       .execute();
-    const declared = declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name);
+    const hostChecks = hostChecksOn(w);
+    const declared = hostChecks
+      ? declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name)
+      : [];
+    // The approved spec's criteria: the links to checks a person approved (ADR 0501).
+    const spec = await ctx.db
+      .selectFrom("core_specs")
+      .select("acceptance_criteria")
+      .where("work_item_id", "=", w.id)
+      .where("status", "=", "approved")
+      .orderBy("version", "desc")
+      .executeTakeFirst();
+    const specCriteria = spec ? strings(parseJson(spec.acceptance_criteria)) : null;
     const sameModel =
       (input.reviewer?.sameModelAsImplementer ?? false) ||
       reviewerMatchesImplementer(ctx.scope.policy?.modelRoles ?? {});
@@ -208,6 +220,8 @@ export const reviewPacketRecord = defineOperation({
       files,
       sameModelAsImplementer: sameModel,
       runnerVerdict: input.verdict,
+      hostChecks,
+      specCriteria,
       declaredChecks: declared,
       checksRun: ran.map((r) => ({
         name: r.name,
@@ -269,11 +283,7 @@ export const reviewPacketRecord = defineOperation({
         workItem: w,
         testFindings: testFindingLines(packet.testsIntact.findings, packet.testsIntact.total),
         testFindingsTotal: packet.testsIntact.total,
-        checkLines: checkLines(packet.executed),
-        proven: {
-          proven: packet.proof.filter((p) => p.proven).length,
-          total: packet.proof.length,
-        },
+        ...storedProof(packet.sections),
       }),
     });
     return {
@@ -354,7 +364,10 @@ export const checksForHead = defineOperation({
       .where("work_item_id", "=", w.id)
       .where("head_sha", "=", input.headSha)
       .execute();
-    const declared = declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name);
+    // An instance from before v8 has no host checks: nothing declared, so nothing fails here.
+    const declared = hostChecksOn(w)
+      ? declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name)
+      : [];
     const executed = executedChecks(
       input.headSha,
       declared,
@@ -714,9 +727,17 @@ export async function carryReviewPacket(
     .orderBy("created_at", "desc")
     .executeTakeFirst();
   if (!from) return { packetId: null };
+  const previous = parseObject(from.sections);
   const sections: Record<string, unknown> = {
-    ...parseObject(from.sections),
+    ...previous,
     carriedFrom: args.fromSha,
+    // The factory's checks ran on the commit they ran on, not this one (ADR 0501): say so.
+    ...(previous.executed
+      ? {
+          checksRanOn:
+            typeof previous.checksRanOn === "string" ? previous.checksRanOn : args.fromSha,
+        }
+      : {}),
   };
   const id = newId("reviewPacket");
   ctx.write(

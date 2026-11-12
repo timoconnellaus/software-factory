@@ -46,6 +46,14 @@ export interface PacketInput {
   declaredChecks?: readonly string[] | undefined;
   /** What the runner host ran on this SHA (core_check_results). */
   checksRun?: readonly CheckRun[] | undefined;
+  /**
+   * Whether the item runs the factory's own checks (Workflow v8+, ADR 0501). False for an instance
+   * that started earlier: its verdict stays as it was (the agent's failing checks fail it), with no
+   * executed checks or proof.
+   */
+  hostChecks?: boolean | undefined;
+  /** The approved spec's acceptance criteria, for the links a person approved (ADR 0501). */
+  specCriteria?: readonly string[] | null | undefined;
 }
 
 export interface AssembledPacket {
@@ -88,9 +96,21 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   if (input.files === null) missing.push("the diff couldn't be read from GitHub");
 
   for (const c of evidence.criteria) if (!c.met) reasons.push(`unmet: ${c.criterion}`);
-  // The factory's own checks on this SHA decide; the agent's report of checks never does.
-  const executed = executedChecks(input.headSha, input.declaredChecks ?? [], input.checksRun ?? []);
+  // The factory's own checks on this SHA decide (ADR 0501). The agent's report of checks decides
+  // only where the factory has none: an older instance, or a project that declares no checks, so
+  // a reviewer's failing test still fails verify.
+  const hostChecks = input.hostChecks ?? false;
+  const executed = executedChecks(
+    input.headSha,
+    hostChecks ? (input.declaredChecks ?? []) : [],
+    hostChecks ? (input.checksRun ?? []) : [],
+  );
   reasons.push(...executed.reasons);
+  if (executed.declared.length === 0) {
+    for (const c of evidence.checks) {
+      if (c.status === "fail") reasons.push(`runner check failing: ${c.name}`);
+    }
+  }
   if (evidence.reviewer?.verdict === "request_changes") {
     reasons.push("the reviewer requested changes");
   }
@@ -113,12 +133,11 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
     warnings.push("the runner reported green, but CI on GitHub isn't: CI decides (spec 04)");
   }
 
-  if (executed.declared.length === 0) {
+  if (hostChecks && executed.declared.length === 0) {
     warnings.push(
-      "the project declares no checks, so the factory ran none itself: only CI backs this verdict (ADR 0501)",
+      "the project declares no checks, so the factory ran none itself: only CI and the reviewer's report back this verdict (ADR 0501)",
     );
   }
-  const proof = proveCriteria(evidence.criteria, executed, ci);
   const risk = input.files ? riskFlags(input.files) : [];
   const intact: TestsIntact = input.files
     ? testsIntact(input.headSha, input.files)
@@ -136,6 +155,12 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
         ],
         total: 1,
       };
+  const proof = hostChecks
+    ? proveCriteria(evidence.criteria, executed, ci, {
+        specCriteria: input.specCriteria,
+        gateFilesChanged: intact.findings.some((f) => f.kind === "gate-file"),
+      })
+    : [];
   const verdict = evidencePass && ci.state === "success" ? "pass" : "fail";
   const evidenceReasons = [...missing.map((m) => `incomplete: ${m}`), ...reasons];
   const allReasons = [...ciReasons, ...evidenceReasons];
@@ -153,9 +178,17 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
     proof,
     sections: {
       testsIntact: intact,
-      executed,
-      proof,
-      proven: { proven: proof.filter((p) => p.proven).length, total: proof.length },
+      ...(hostChecks
+        ? {
+            executed,
+            proof,
+            proven: {
+              proven: proof.filter((p) => p.proven).length,
+              total: proof.length,
+              weakened: proof.some((p) => p.weakened),
+            },
+          }
+        : {}),
       verdict: { verdict, reasons: verdict === "pass" ? [] : allReasons, warnings },
       ci: { state: ci.state, checks: ci.checks },
       changed: input.files
@@ -184,7 +217,7 @@ export function verifyCheckOutput(args: {
   /** The factory's own checks on this SHA, one line each (ADR 0501). */
   checkLines?: string[];
   /** How many criteria an executed check proves. */
-  proven?: { proven: number; total: number } | null;
+  proven?: { proven: number; total: number; weakened?: boolean } | null;
 }): {
   status: "in_progress" | "completed";
   conclusion?: "success" | "failure";
@@ -211,7 +244,7 @@ export function verifyCheckOutput(args: {
     ...list("Checks run by the factory", args.checkLines ?? []),
     ...(args.proven
       ? [
-          `Criteria proven by an executed check or CI: ${args.proven.proven}/${args.proven.total}`,
+          `Criteria proven by an executed check: ${args.proven.proven}/${args.proven.total}${args.proven.weakened ? " (weakened: the tests-intact guard found gate-file edits on this commit)" : ""}`,
           "",
         ]
       : []),
@@ -262,21 +295,33 @@ export function storedTestFindings(sections: Record<string, unknown>): {
   return { testFindings: testFindingLines(t.findings, total), testFindingsTotal: total };
 }
 
-/** The check lines and proven count stored in a packet's sections (for `verifyCheckOutput`). */
+/**
+ * The check lines and proven count stored in a packet's sections (for `verifyCheckOutput`). A
+ * packet the merge queue carried to a new head (`checksRanOn`) says where its checks ran: they
+ * didn't run on the commit the check run is posted on (ADR 0501).
+ */
 export function storedProof(sections: Record<string, unknown>): {
   checkLines: string[];
-  proven: { proven: number; total: number } | null;
+  proven: { proven: number; total: number; weakened?: boolean } | null;
 } {
   const e = sections.executed as Partial<ExecutedChecks> | undefined;
-  const p = sections.proven as { proven?: unknown; total?: unknown } | undefined;
+  const p = sections.proven as
+    | { proven?: unknown; total?: unknown; weakened?: unknown }
+    | undefined;
+  const ranOn = typeof sections.checksRanOn === "string" ? sections.checksRanOn : null;
+  const lines =
+    Array.isArray(e?.declared) && Array.isArray(e?.results)
+      ? checkLines({ declared: e.declared, results: e.results })
+      : [];
   return {
-    checkLines:
-      Array.isArray(e?.declared) && Array.isArray(e?.results)
-        ? checkLines({ declared: e.declared, results: e.results })
-        : [],
+    checkLines: ranOn
+      ? lines.map(
+          (l) => `${l} — ran on ${short(ranOn)}, not on this commit (carried by the merge queue)`,
+        )
+      : lines,
     proven:
       typeof p?.proven === "number" && typeof p.total === "number"
-        ? { proven: p.proven, total: p.total }
+        ? { proven: p.proven, total: p.total, ...(p.weakened === true ? { weakened: true } : {}) }
         : null,
   };
 }

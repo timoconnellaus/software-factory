@@ -89,14 +89,15 @@ export type WorkItemOutcome =
  *   back to build, or ask), a gate step through `workflow.gate` (always a person).
  */
 /**
- * - v7 (spec 51, ADR 0501): the runner host runs the project's checks after the build session and
+ * - v7 is PR #79's (spec 50 part C); on this branch it runs as v6 did.
+ * - v8 (spec 51, ADR 0501): the runner host runs the project's checks after the build session and
  *   sends failures back into the same session. After `build #b: advance`, `build #b: checks` reads
  *   the results on the pushed head; any declared check still failing there asks a person
  *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. The reviewer
  *   is told the checks' names to link criteria to.
  */
-export const WORKFLOW_VERSION = 7;
-/** v7: the answers when the factory's checks still fail after the session's fixes. */
+export const WORKFLOW_VERSION = 8;
+/** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
@@ -316,6 +317,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(6);
       case 7:
         return flow.runV1(7);
+      case 8:
+        return flow.runV1(8);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -335,7 +338,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       const meta = await this.meta();
@@ -528,11 +531,11 @@ class ItemFlow {
         }
         const headSha = String(advanced.sha);
 
-        // v7: the factory's own checks on the pushed head (ADR 0501). The host already sent any
+        // v8: the factory's own checks on the pushed head (ADR 0501). The host already sent any
         // failure back into the same session up to the retry limit; one still failing goes to a
         // person, never a cold retry.
         let checkNames: string[] = [];
-        if (version >= 7) {
+        if (version >= 8) {
           const checked = await this.act(`build #${b}: checks`, "checks.forHead", {
             workItemId: id,
             headSha,
@@ -584,7 +587,7 @@ class ItemFlow {
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha, checks: version >= 7 ? checkNames : null }),
+          verifyPrompt(meta, { criteria, headSha, checks: version >= 8 ? checkNames : null }),
           {
             criteria,
             headSha,
@@ -809,11 +812,21 @@ class ItemFlow {
         }
         // The PR is already open: pr.open returns it (and whether it touches `.factory/`).
         const pr = await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id });
+        // v8: the verify job runs the project's checks on the PR's head before the reviewer (ADR
+        // 0501); the reviewer is told their names, to link criteria to. Before v8: as it was.
+        let checkNames: string[] | null = null;
+        if (version >= 8) {
+          const declared = await this.act(`verify #${b}: check names`, "checks.forHead", {
+            workItemId: id,
+            headSha,
+          });
+          checkNames = (declared.declared as string[]) ?? [];
+        }
         const verify = await this.runJob(
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha, checks: [] }),
+          verifyPrompt(meta, { criteria, headSha, checks: checkNames }),
           { criteria, headSha },
         );
         if (verify.outcome === "cancelled") {
@@ -1415,7 +1428,7 @@ class ItemFlow {
   }
 
   /**
-   * v7: the factory's checks still fail on the build's head after the session's own fixes (ADR
+   * v8: the factory's checks still fail on the build's head after the session's own fixes (ADR
    * 0501). A person decides: build again (with the failure as the note) or stop the item.
    */
   async askChecksFailing(meta: Meta, b: number, headSha: string, failing: string[]) {
