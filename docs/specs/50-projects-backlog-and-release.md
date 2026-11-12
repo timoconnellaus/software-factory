@@ -1,8 +1,8 @@
 # Spec 50: Projects, repositories, backlog and release (the work model)
 
-Read first: ADRs [0440](../adr/0440-a-project-is-not-a-repository.md),
-[0441](../adr/0441-work-starts-in-a-backlog-and-is-released.md) and
-[0442](../adr/0442-a-project-runs-one-workflow.md); spec [09](09-factory-config-in-the-app.md) M2
+Read first: ADRs [0490](../adr/0490-a-project-is-not-a-repository.md),
+[0491](../adr/0491-work-starts-in-a-backlog-and-is-released.md) and
+[0492](../adr/0492-a-project-runs-one-workflow.md); spec [09](09-factory-config-in-the-app.md) M2
 (workflows, ADR [0371](../adr/0371-workflows-are-presets-over-typed-slots.md)); ADRs
 [0040](../adr/0040-web-push-and-wip-backpressure.md) (WIP backpressure),
 [0370](../adr/0370-factory-config-lives-in-the-app.md) (config versions),
@@ -39,7 +39,7 @@ factory.
 ## Part A: projects and repositories (PR A)
 Nothing changes for a user.
 
-- **Migration 0210** (`0210_repositories.sql`):
+- **Migration 0260** (`0260_repositories.sql`):
   - `core_repositories`: `id` (`repo_…`), `org_id`, `project_id`, `owner`, `name`,
     `default_branch`, `github_installation_id`, `installation_record_id`, `github_repo_id`,
     `policy_pr_url`, `created_at`, `created_by`; unique `(owner, name)` (a GitHub repository belongs
@@ -98,7 +98,7 @@ Nothing changes for a user.
   through the API only, and the spec's tests cover it.
 
 ## Part B: backlog, ready, queued (PR B)
-- **Migration 0211** (`0211_backlog.sql`):
+- **Migration 0261** (`0261_backlog.sql`):
   - `core_work_items.status` gains `backlog`, `ready`, `queued` and `planning` (the CHECK is
     rebuilt, as in 0080; `planning` is used from part C). `stage` stays `intake` until the item is pulled.
   - New columns: `priority` (0 urgent, 1 high, 2 normal, 3 low; default 2), `rank` (REAL, the
@@ -161,7 +161,7 @@ Nothing changes for a user.
     `workItem.finish` and `workItem.cancel`; and from the engine's minute cron for every project
     with queued items (the "waits for" item may be in another project).
   - `wipLimit` keeps its meaning (ADR 0040): builds wait while that many items wait at gates.
-- **The workflow comes from the project** (ADR 0442). The config gains `workflow` (a workflow name
+- **The workflow comes from the project** (ADR 0492). The config gains `workflow` (a workflow name
   or null). An item records its project's `workflow` when it is pulled. Triage no longer picks: its `workflow` field is ignored and the Workflow's
   `workflow: options` step returns none. `workItem.setWorkflow` is refused (`conflict`, "an item
   follows its project's workflow"). Changing `workflow` in config compares the gate steps of the
@@ -186,7 +186,7 @@ spec gate, or no plan needed) → `queued` (released) → build → verify → m
 `done`.
 
 What it changes:
-- **`planning` is a status** (added to the CHECK by migration 0211 already, so part C needs no table
+- **`planning` is a status** (added to the CHECK by migration 0261 already, so part C needs no table
   rebuild). Items in it are not active: they don't count against `activeLimit`, and their jobs run on
   the light pool (ADR 0301) as planning does today. No commitment to build.
 - **When the Workflow instance starts.** Either when planning starts (`workItem.plan { workItemId }`,
@@ -228,7 +228,7 @@ chosen by projects; it changes ADR 0370's per-project config versions and the lo
 it gets its own spec and ADR).
 
 ## Acceptance criteria
-1. Migration 0210 on a database with projects gives each exactly one repository with the same
+1. Migration 0260 on a database with projects gives each exactly one repository with the same
    owner, name, default branch, installation and repo id, and each work item that repository; no
    project id changes and every project's config version is unchanged (test against real D1).
 2. Every existing flow behaves as before for a one-repository project: Setup, New work, attach,

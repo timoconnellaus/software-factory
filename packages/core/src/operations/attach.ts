@@ -113,7 +113,7 @@ export const workItemAttachPr = defineOperation({
   permission: "member",
   input: z.object({
     projectId,
-    /** Needed only when the project has several repositories (ADR 0440). */
+    /** Needed only when the project has several repositories (ADR 0490). */
     repositoryId: repositoryId.optional(),
     prNumber: z.number().int().positive(),
   }),

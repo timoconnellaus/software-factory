@@ -89,7 +89,7 @@ export const workItemCreate = defineOperation({
   input: z
     .object({
       projectId,
-      /** The repository it uses (ADR 0440): needed only when the project has several. */
+      /** The repository it uses (ADR 0490): needed only when the project has several. */
       repositoryId: repositoryId.optional(),
       /** Defaults to the first line of the body. */
       title: z.string().trim().min(1).max(200).optional(),
@@ -118,7 +118,7 @@ export const workItemCreate = defineOperation({
         `project ${project.name} has no valid config (${ctx.scope.policyError}); agents can't work on it`,
       );
     }
-    // Creating an item starts its pipeline, which builds code: it needs a repository (ADR 0440).
+    // Creating an item starts its pipeline, which builds code: it needs a repository (ADR 0490).
     const repository = requireRepository(ctx);
     const requester = ctx.actor.type === "human" ? ctx.actor.id : input.requesterUserId;
     if (!requester) throw new OperationError("invalid_input", "intake must name the requester");

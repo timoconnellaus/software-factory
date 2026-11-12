@@ -450,7 +450,7 @@ export const policyResync = defineOperation({
   permission: "admin",
   input: z.object({
     projectId,
-    /** The repository to import from (ADR 0440); needed only when the project has several. */
+    /** The repository to import from (ADR 0490); needed only when the project has several. */
     repositoryId: repositoryId.optional(),
   }),
   output: z.object({
@@ -526,7 +526,7 @@ export const setupStatus = defineOperation({
     const projects: (ProjectView & { protection: ProtectionView | null })[] = [];
     for (const [i, view] of views.entries()) {
       const row = rows[i] as ProjectRow;
-      // Protection is still checked on the project's first repository (ADR 0440).
+      // Protection is still checked on the project's first repository (ADR 0490).
       const repository = firstRepos.find((r) => r.project_id === row.id);
       const protection =
         view.connection.status === "connected" && repository

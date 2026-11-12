@@ -1,4 +1,4 @@
-# ADR 0440: A project is not a repository
+# ADR 0490: A project is not a repository
 
 Status: accepted, 2026-11-12. Spec [50](../specs/50-projects-backlog-and-release.md) part A. Amends
 [ADR 0055](0055-github-installations-are-org-records.md) and the **Project** entry in `CONTEXT.md`;
@@ -16,14 +16,14 @@ CLI command and the desktop app.
 1. **A repository is its own record.** `core_repositories` holds what was the repo half of a project:
    owner, name, default branch, installation, GitHub repo id, the template-policy PR. A repository
    belongs to one project; a GitHub repository is in at most one project.
-2. **Project ids stay.** Migration 0210 keeps each existing `core_projects` row as the project and
+2. **Project ids stay.** Migration 0260 keeps each existing `core_projects` row as the project and
    moves its repo columns to one backfilled repository (`repo_` + the project id's hex). This is the
    least disruptive direction: no `project_id` anywhere changes, so work items, config versions,
    URLs and the clients keep working. (The alternative, keeping the rows as repositories and creating
    new projects, would re-point every `project_id`.)
 3. **A project has zero or more repositories.** A workflow uses one when a stage needs code. A
    project with none is valid (Marketing); its items can be captured and shaped, and release is
-   refused only when the item's workflow needs a repository (ADR 0441).
+   refused only when the item's workflow needs a repository (ADR 0491).
 4. **A work item uses one repository**, chosen at creation (the project's only one by default, else
    named) and changeable until it is pulled. After that its branch, PR, runs and merge-queue entry
    belong to that repository. An attached PR and an incident take the repository they are about.

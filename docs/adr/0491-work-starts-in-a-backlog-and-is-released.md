@@ -1,4 +1,4 @@
-# ADR 0441: Work starts in a backlog and is released to the factory
+# ADR 0491: Work starts in a backlog and is released to the factory
 
 Status: accepted, 2026-11-12. Spec [50](../specs/50-projects-backlog-and-release.md) part B. Amends
 [ADR 0006](0006-work-item-workflows.md) (a Workflow per work item, now from its pull, not its

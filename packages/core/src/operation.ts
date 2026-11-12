@@ -76,7 +76,7 @@ export interface Scope {
   workItemId: string | null;
   workItem: WorkItemRow | null;
   project: ProjectRow | null;
-  /** The project's repositories, oldest first (ADR 0440). Empty without a project. */
+  /** The project's repositories, oldest first (ADR 0490). Empty without a project. */
   repositories: RepositoryRow[];
   /**
    * The repository the call is about: the work item's; else the input's `repositoryId`; else the
@@ -98,7 +98,7 @@ export interface Scope {
 export interface ScopeRef {
   workItemId?: string | null;
   projectId?: string | null;
-  /** A repository of the project (ADR 0440); names the project too when `projectId` is absent. */
+  /** A repository of the project (ADR 0490); names the project too when `projectId` is absent. */
   repositoryId?: string | null;
   orgId?: string | null;
   jobId?: string | null;

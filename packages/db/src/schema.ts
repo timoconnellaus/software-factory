@@ -118,7 +118,7 @@ export interface CoreProjectsTable {
 }
 
 /**
- * 0210 (ADR 0440): a GitHub repository of a project. A project has zero or more; a work item uses
+ * 0260 (ADR 0490): a GitHub repository of a project. A project has zero or more; a work item uses
  * one. The repo columns moved here from core_projects.
  */
 export interface CoreRepositoriesTable {
@@ -271,7 +271,7 @@ export interface CoreWorkItemsTable {
   created_at: Iso;
   updated_at: Iso;
   closed_at: Iso | null;
-  /** 0210 (ADR 0440): the repository it uses; null when none is chosen yet. */
+  /** 0260 (ADR 0490): the repository it uses; null when none is chosen yet. */
   repository_id: string | null;
 }
 
@@ -599,6 +599,17 @@ export interface CoreRunSteersTable {
   delivered_at: Iso | null;
 }
 
+/** A person opening a run's web terminal (spec 35, ADR 0440). */
+export interface CoreRunTerminalAttachesTable {
+  id: string;
+  run_id: string;
+  work_item_id: string;
+  user_id: string;
+  mode: "type" | "watch";
+  opened_at: Iso;
+  closed_at: Iso | null;
+}
+
 export interface CoreArtifactsTable {
   id: string;
   run_id: string;
@@ -923,6 +934,7 @@ export interface CoreDatabase {
   core_runs: CoreRunsTable;
   core_run_events: CoreRunEventsTable;
   core_run_steers: CoreRunSteersTable;
+  core_run_terminal_attaches: CoreRunTerminalAttachesTable;
   core_artifacts: CoreArtifactsTable;
   core_leases: CoreLeasesTable;
   core_channel_requests: CoreChannelRequestsTable;

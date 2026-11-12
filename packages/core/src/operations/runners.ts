@@ -693,7 +693,7 @@ async function buildJob(
   leaseExpiresAt: string,
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
-  // The item's repository (ADR 0440): it was fixed when the item was pulled.
+  // The item's repository (ADR 0490): it was fixed when the item was pulled.
   const repository = item.repository_id
     ? await ctx.db
         .selectFrom("core_repositories")

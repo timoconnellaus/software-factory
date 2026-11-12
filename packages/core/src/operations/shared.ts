@@ -34,7 +34,7 @@ export function requireProject(ctx: HandlerContext): ProjectRow {
 }
 
 /**
- * The repository the call is about (ADR 0440): the work item's, the one named by `repositoryId`, or
+ * The repository the call is about (ADR 0490): the work item's, the one named by `repositoryId`, or
  * the project's only one. Refuses with the reason when there is none, or several and none named.
  */
 export function requireRepository(ctx: HandlerContext): RepositoryRow {
@@ -100,7 +100,7 @@ export function itemBranch(number: number, slug: string): string {
 
 export interface NewWorkItem {
   project: ProjectRow;
-  /** The repository it uses (ADR 0440); null when none is chosen yet. */
+  /** The repository it uses (ADR 0490); null when none is chosen yet. */
   repositoryId: string | null;
   title: string;
   body: string;

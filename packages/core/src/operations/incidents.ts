@@ -34,7 +34,7 @@ export async function openIncident(
           : "needs a factory fix";
   const fix = createWorkItem(ctx, {
     project,
-    // The incident's fix goes to the same repository as the item it is about (ADR 0440).
+    // The incident's fix goes to the same repository as the item it is about (ADR 0490).
     repositoryId: w.repository_id,
     title: `Factory incident: #${w.number} ${what}`,
     body: [

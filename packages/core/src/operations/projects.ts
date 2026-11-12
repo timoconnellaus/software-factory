@@ -1,4 +1,4 @@
-// Projects, their repositories (ADR 0440), their factory config (versions in the app, ADR 0370)
+// Projects, their repositories (ADR 0490), their factory config (versions in the app, ADR 0370)
 // and kill switches.
 import type { Db } from "@software-factory/db";
 import { sql } from "kysely";
@@ -34,7 +34,7 @@ const policyView = z.object({
   prUrl: z.string().nullable(),
 });
 
-/** A repository of a project (ADR 0440) with its connection to GitHub. */
+/** A repository of a project (ADR 0490) with its connection to GitHub. */
 export const repositoryView = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -53,7 +53,7 @@ export const projectView = z.object({
   factoryId: z.string(),
   name: z.string(),
   slug: z.string(),
-  /** The project's first repository; null when it has none (ADR 0440). */
+  /** The project's first repository; null when it has none (ADR 0490). */
   repo: z.object({ owner: z.string(), name: z.string(), defaultBranch: z.string() }).nullable(),
   /** Every repository of the project, oldest first. */
   repositories: z.array(repositoryView),
@@ -210,7 +210,7 @@ const noInstallation = (reason: string) =>
  * the default branch's head when it has a valid one (source `import`), else the template policy
  * with the person adding the project as approver. No PR: config lives in the app. Also the "import
  * from repo" path (policy.resync), which refuses when the repo has no file to import. Config is per
- * project, so with several repositories the caller names the one to read (ADR 0440).
+ * project, so with several repositories the caller names the one to read (ADR 0490).
  */
 export async function syncPolicyFromGitHub(
   ctx: HandlerContext,
@@ -316,7 +316,7 @@ async function ensureFactory(ctx: HandlerContext, orgId: string): Promise<string
 }
 
 /**
- * Checks a GitHub repository can become one of the org's repositories (ADR 0055, 0440): the
+ * Checks a GitHub repository can become one of the org's repositories (ADR 0055, 0490): the
  * installation record is the org's and active, GitHub reaches the repo through it now, and it isn't
  * already a repository anywhere. Returns the record and GitHub's repo.
  */
@@ -402,7 +402,7 @@ function insertRepository(
 export const projectCreate = defineOperation({
   name: "project.create",
   description:
-    "Add a project (ADR 0440). With `installationRecordId` and `repoId` (pick them from github.repos; ADR 0055) the project gets that GitHub repository as its first one: refused, saving nothing, when the installation isn't the org's, isn't active, or can't reach the repo, and its `.factory/policy.json` is imported from the default branch when valid. Without them the project has no repository (a Marketing project, say) and starts from the template config. Needs an org owner or admin.",
+    "Add a project (ADR 0490). With `installationRecordId` and `repoId` (pick them from github.repos; ADR 0055) the project gets that GitHub repository as its first one: refused, saving nothing, when the installation isn't the org's, isn't active, or can't reach the repo, and its `.factory/policy.json` is imported from the default branch when valid. Without them the project has no repository (a Marketing project, say) and starts from the template config. Needs an org owner or admin.",
   risk: "write",
   actors: ["human"],
   permission: "admin",
@@ -519,7 +519,7 @@ export const projectCreate = defineOperation({
 export const repositoryAdd = defineOperation({
   name: "repository.add",
   description:
-    "Add a GitHub repository to a project (ADR 0440): pick it from github.repos. The same checks as project.create (the org's installation, active, reaching the repo, not already a repository anywhere). The project's config is unchanged: it is per project. Needs an org owner or admin.",
+    "Add a GitHub repository to a project (ADR 0490): pick it from github.repos. The same checks as project.create (the org's installation, active, reaching the repo, not already a repository anywhere). The project's config is unchanged: it is per project. Needs an org owner or admin.",
   risk: "write",
   actors: ["human"],
   permission: "admin",
@@ -574,7 +574,7 @@ export const repositoryAdd = defineOperation({
 export const repositoryList = defineOperation({
   name: "repository.list",
   description:
-    "The repositories in an org (ADR 0440), or of one project, with their connection to GitHub.",
+    "The repositories in an org (ADR 0490), or of one project, with their connection to GitHub.",
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
@@ -707,7 +707,7 @@ async function applyRepositoryFix(
 export const repositoryUpdate = defineOperation({
   name: "repository.update",
   description:
-    "Admin fix for a repository's connection to GitHub (ADR 0440; not part of onboarding, which never asks for ids): set its GitHub App installation id (or `detectInstallation: true` to look it up as the App), and/or its default branch. Needs an org owner or admin. Refuses with the reason when detection finds no installation.",
+    "Admin fix for a repository's connection to GitHub (ADR 0490; not part of onboarding, which never asks for ids): set its GitHub App installation id (or `detectInstallation: true` to look it up as the App), and/or its default branch. Needs an org owner or admin. Refuses with the reason when detection finds no installation.",
   risk: "write",
   actors: ["human"],
   permission: "admin",
@@ -729,7 +729,7 @@ export const repositoryUpdate = defineOperation({
 export const projectUpdate = defineOperation({
   name: "project.update",
   description:
-    "Admin fix for a project's connection to GitHub (not part of onboarding, which never asks for ids): set its repository's GitHub App installation id (or `detectInstallation: true` to look it up as the App), and/or its default branch. The project's only repository, or the one named by `repositoryId` (repository.update is the same per repository, ADR 0440). Needs an org owner or admin. Changing the default branch keeps the project's config (it lives in the app, ADR 0370). Refuses with the reason when detection finds no installation.",
+    "Admin fix for a project's connection to GitHub (not part of onboarding, which never asks for ids): set its repository's GitHub App installation id (or `detectInstallation: true` to look it up as the App), and/or its default branch. The project's only repository, or the one named by `repositoryId` (repository.update is the same per repository, ADR 0490). Needs an org owner or admin. Changing the default branch keeps the project's config (it lives in the app, ADR 0370). Refuses with the reason when detection finds no installation.",
   risk: "write",
   actors: ["human"],
   permission: "admin",
