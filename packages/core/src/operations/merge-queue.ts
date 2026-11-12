@@ -13,6 +13,7 @@ import {
   defineOperation,
   type HandlerContext,
   type ProjectRow,
+  type RepositoryRow,
   type WorkItemRow,
 } from "../operation.ts";
 import type { RepoRef } from "../services.ts";
@@ -22,6 +23,7 @@ import {
   projectId,
   repoRef,
   requireProject,
+  requireRepository,
   requireWorkItem,
   sha,
   workItemId,
@@ -41,34 +43,55 @@ interface QueueRow {
   enqueued_at: string;
   number: number;
   title: string;
+  repository_id: string | null;
 }
 
-/** The project's open entries, head first, as one query (for `readBatch`). An entry whose work item ended is skipped. */
-export function queuedEntriesQuery(ctx: HandlerContext, project: string) {
-  return ctx.db
-    .selectFrom("core_merge_queue as q")
-    .innerJoin("core_work_items as w", "w.id", "q.work_item_id")
-    .select([
-      "q.id",
-      "q.work_item_id",
-      "q.workflow_id",
-      "q.pending_action_id",
-      "q.approved_sha",
-      "q.head_sha",
-      "q.enqueued_at",
-      "w.number",
-      "w.title",
-    ])
-    .where("q.project_id", "=", project)
-    .where("q.status", "=", "queued")
-    .where("w.status", "in", [...OPEN_ITEM])
-    .orderBy("q.enqueued_at", "asc")
-    .orderBy("q.id", "asc");
+/**
+ * The project's open entries, head first, as one query (for `readBatch`). An entry whose work item
+ * ended is skipped. With `repositoryId`, only that repository's queue (ADR 0490).
+ */
+export function queuedEntriesQuery(
+  ctx: HandlerContext,
+  project: string,
+  repositoryId?: string | null,
+) {
+  return (
+    ctx.db
+      .selectFrom("core_merge_queue as q")
+      .innerJoin("core_work_items as w", "w.id", "q.work_item_id")
+      .select([
+        "q.id",
+        "q.work_item_id",
+        "q.workflow_id",
+        "q.pending_action_id",
+        "q.approved_sha",
+        "q.head_sha",
+        "q.enqueued_at",
+        "w.number",
+        "w.title",
+        "w.repository_id",
+      ])
+      .where("q.project_id", "=", project)
+      // One queue per repository (ADR 0490): an item lands on its own repository's default branch.
+      // An item with no repository recorded (code from before 0260) shares its project's queue: a
+      // project has one repository until per-repository protection lands.
+      .$if(typeof repositoryId === "string", (q) =>
+        q.where("w.repository_id", "=", repositoryId ?? ""),
+      )
+      .where("q.status", "=", "queued")
+      .where("w.status", "in", [...OPEN_ITEM])
+      .orderBy("q.enqueued_at", "asc")
+      .orderBy("q.id", "asc")
+  );
 }
 
 /** The project's open entries, head first. */
-export async function queuedEntries(ctx: HandlerContext, project: string): Promise<QueueRow[]> {
-  return queuedEntriesQuery(ctx, project).execute();
+export async function queuedEntries(
+  ctx: HandlerContext,
+  project: string,
+  repositoryId?: string | null,
+): Promise<QueueRow[]> {
+  return queuedEntriesQuery(ctx, project, repositoryId).execute();
 }
 
 /** The work item's open entry, if it has one. */
@@ -89,7 +112,7 @@ async function openEntry(ctx: HandlerContext, item: string) {
  */
 export async function releaseMergeQueue(
   ctx: HandlerContext,
-  item: Pick<WorkItemRow, "id" | "project_id">,
+  item: Pick<WorkItemRow, "id" | "project_id" | "repository_id">,
   status: Exclude<MergeQueueStatus, "queued">,
   reason: string,
 ): Promise<boolean> {
@@ -108,7 +131,9 @@ export async function releaseMergeQueue(
     before: { status: "queued" },
     after: { status, reason },
   });
-  const next = (await queuedEntries(ctx, item.project_id)).find((e) => e.work_item_id !== item.id);
+  const next = (await queuedEntries(ctx, item.project_id, item.repository_id)).find(
+    (e) => e.work_item_id !== item.id,
+  );
   if (next?.workflow_id) {
     ctx.emit({
       kind: "workflow.event",
@@ -134,7 +159,7 @@ export async function requireQueueHead(
 ): Promise<void> {
   const entry = await openEntry(ctx, item.id);
   if (!entry) return;
-  const head = (await queuedEntries(ctx, item.project_id))[0];
+  const head = (await queuedEntries(ctx, item.project_id, item.repository_id))[0];
   if (head?.work_item_id !== item.id) {
     throw new OperationError(
       "conflict",
@@ -164,7 +189,7 @@ async function positionOf(
   ctx: HandlerContext,
   item: WorkItemRow,
 ): Promise<z.infer<typeof position>> {
-  const entries = await queuedEntries(ctx, item.project_id);
+  const entries = await queuedEntries(ctx, item.project_id, item.repository_id);
   const i = entries.findIndex((e) => e.work_item_id === item.id);
   if (i < 0) {
     return { queued: false, entryId: null, position: null, head: false, ahead: [], headSha: null };
@@ -217,7 +242,7 @@ export const mergeQueueEnter = defineOperation({
         after: { status: "queued", headSha: input.headSha },
       });
       // The position read below runs before this write commits: count this entry at the back.
-      const entries = await queuedEntries(ctx, w.project_id);
+      const entries = await queuedEntries(ctx, w.project_id, w.repository_id);
       return {
         queued: true,
         entryId: id,
@@ -261,6 +286,8 @@ export const mergeQueueList = defineOperation({
         title: z.string(),
         headSha: z.string(),
         enqueuedAt: z.string(),
+        /** The repository it lands in: the queue is per repository (ADR 0490). */
+        repositoryId: z.string().nullable(),
       }),
     ),
   }),
@@ -273,6 +300,7 @@ export const mergeQueueList = defineOperation({
         title: e.title,
         headSha: e.head_sha,
         enqueuedAt: e.enqueued_at,
+        repositoryId: e.repository_id,
       })),
     };
   },
@@ -296,27 +324,28 @@ export const mergeQueueUpdate = defineOperation({
     const project = requireProject(ctx);
     const entry = await openEntry(ctx, w.id);
     if (!entry) throw new OperationError("conflict", "not in the merge queue");
-    const head = (await queuedEntries(ctx, w.project_id))[0];
+    const head = (await queuedEntries(ctx, w.project_id, w.repository_id))[0];
     if (head?.work_item_id !== w.id) {
       throw new OperationError("conflict", "only the head of the merge queue is updated");
     }
     if (!w.pr_number) throw new OperationError("conflict", "no pull request");
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const github = ctx.services.github;
     const at = entry.head_sha;
     const pr = await github.pullRequestMergeability(repo, w.pr_number);
     const prHead = pr.headSha ?? at;
 
     if (prHead !== at)
-      return acceptUpdate(ctx, { w, project, repo, entryId: entry.id, at, prHead });
+      return acceptUpdate(ctx, { w, project, repository, repo, entryId: entry.id, at, prHead });
 
-    const behind = (await github.compareCommits(repo, project.default_branch, at)).behindBy;
+    const behind = (await github.compareCommits(repo, repository.default_branch, at)).behindBy;
     if (behind === 0) return { state: "current" as const, headSha: at, reason: null };
     if (pr.mergeable === false) {
       return {
         state: "conflict" as const,
         headSha: at,
-        reason: `${project.default_branch} can't merge into the branch cleanly`,
+        reason: `${repository.default_branch} can't merge into the branch cleanly`,
       };
     }
     const asked = await github.updatePullRequestBranch(repo, {
@@ -327,13 +356,21 @@ export const mergeQueueUpdate = defineOperation({
       // GitHub makes the merge commit asynchronously; it is often there already.
       const after = (await github.pullRequestMergeability(repo, w.pr_number)).headSha;
       if (after && after !== at) {
-        return acceptUpdate(ctx, { w, project, repo, entryId: entry.id, at, prHead: after });
+        return acceptUpdate(ctx, {
+          w,
+          project,
+          repository,
+          repo,
+          entryId: entry.id,
+          at,
+          prHead: after,
+        });
       }
       ctx.change({
         entity: "work_item",
         id: w.id,
         after: {
-          mergeQueue: `asked GitHub to merge ${project.default_branch} in (${behind} behind)`,
+          mergeQueue: `asked GitHub to merge ${repository.default_branch} in (${behind} behind)`,
         },
       });
       return { state: "updating" as const, headSha: at, reason: null };
@@ -352,13 +389,14 @@ async function acceptUpdate(
   args: {
     w: WorkItemRow;
     project: ProjectRow;
+    repository: RepositoryRow;
     repo: RepoRef;
     entryId: string;
     at: string;
     prHead: string;
   },
 ) {
-  const { w, project, repo, at, prHead } = args;
+  const { w, project, repository, repo, at, prHead } = args;
   const github = ctx.services.github;
   // The head moved. Accept it only as GitHub's update-branch merge: first parent the head the
   // queue had, second parent a commit already on the default branch. Anything else is a push
@@ -369,12 +407,12 @@ async function acceptUpdate(
     parents.length === 2 &&
     parents[0] === at &&
     merged !== undefined &&
-    (await github.compareCommits(repo, project.default_branch, merged)).aheadBy === 0;
+    (await github.compareCommits(repo, repository.default_branch, merged)).aheadBy === 0;
   if (!clean) {
     return {
       state: "moved" as const,
       headSha: prHead,
-      reason: `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${project.default_branch} into ${at.slice(0, 7)}`,
+      reason: `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${repository.default_branch} into ${at.slice(0, 7)}`,
     };
   }
   ctx.write(
@@ -394,7 +432,7 @@ async function acceptUpdate(
     entity: "work_item",
     id: w.id,
     before: { sha: at },
-    after: { sha: prHead, by: `merge queue: ${project.default_branch} merged in` },
+    after: { sha: prHead, by: `merge queue: ${repository.default_branch} merged in` },
   });
   await carryReviewPacket(ctx, { item: w, project, repo, fromSha: at, toSha: prHead });
   return { state: "updated" as const, headSha: prHead, reason: null };

@@ -174,7 +174,7 @@ describe("App installations", () => {
   it("points matching projects at the installation, and clears it on removal", async () => {
     const w = await world();
     await env.DB.prepare(
-      "UPDATE core_projects SET github_installation_id = NULL, installation_record_id = NULL WHERE id = ?",
+      "UPDATE core_repositories SET github_installation_id = NULL, installation_record_id = NULL WHERE project_id = ?",
     )
       .bind(w.projectId)
       .run();
@@ -190,7 +190,7 @@ describe("App installations", () => {
     );
     expect(added.projects).toBe(1);
     const row = await first<{ github_installation_id: string }>(
-      "SELECT github_installation_id FROM core_projects WHERE id = ?",
+      "SELECT github_installation_id FROM core_repositories WHERE project_id = ?",
       w.projectId,
     );
     expect(row.github_installation_id).toBe("777");
@@ -203,7 +203,7 @@ describe("App installations", () => {
     expect(
       (
         await first<{ id: string | null }>(
-          "SELECT github_installation_id AS id FROM core_projects WHERE id = ?",
+          "SELECT github_installation_id AS id FROM core_repositories WHERE project_id = ?",
           w.projectId,
         )
       ).id,
@@ -216,7 +216,7 @@ describe("App installations", () => {
     expect(
       (
         await first<{ id: string | null }>(
-          "SELECT github_installation_id AS id FROM core_projects WHERE id = ?",
+          "SELECT github_installation_id AS id FROM core_repositories WHERE project_id = ?",
           w.projectId,
         )
       ).id,
