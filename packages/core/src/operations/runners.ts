@@ -1218,8 +1218,12 @@ export const runReportEvents = defineOperation({
       if (type === "log") {
         const line = { seq, at, ...payload };
         const size = JSON.stringify(line).length;
-        // D1 refuses a row over 2 MB: a batch row stops at about 1 MB (a line is at most 64 KB).
-        if (bytes + size > LOG_ROW_BYTES_MAX) {
+        // A batch row stops at LOG_ROW_BYTES_MAX or LOG_ROW_LINES_MAX, so a read of a page of rows
+        // stays small (a single line may be up to 64 KB on its own).
+        if (
+          lines.length > 0 &&
+          (bytes + size > LOG_ROW_BYTES_MAX || lines.length >= LOG_ROW_LINES_MAX)
+        ) {
           flushLines();
           bytes = 0;
         }
@@ -1272,8 +1276,13 @@ export const runReportEvents = defineOperation({
   },
 });
 
-/** A stored batch of log lines stays under this many bytes of JSON (D1's row limit is 2 MB). */
-export const LOG_ROW_BYTES_MAX = 1_000_000;
+/**
+ * A stored batch of log lines holds at most this many bytes of JSON and this many lines (one line
+ * over the byte cap is a row of its own): run.live reads rows a page at a time, so a page stays
+ * well inside a Worker's memory.
+ */
+export const LOG_ROW_BYTES_MAX = 64_000;
+export const LOG_ROW_LINES_MAX = 200;
 
 export const runAddArtifact = defineOperation({
   name: "run.addArtifact",

@@ -54,6 +54,59 @@ function expandRows(
   return out;
 }
 
+/** Stored rows read per query: a row is at most ~64 KB, so a page is at most ~1.3 MB. */
+const LIVE_PAGE_ROWS = 20;
+
+/**
+ * A run's events for run.live, read from D1 a page of rows at a time until the answer has
+ * LIVE_EVENTS_MAX events or LIVE_BYTES_MAX bytes: bounded by lines and bytes, not by rows (a row
+ * may hold a batch of up to 200 lines). Newest first for a first read, else after the cursor.
+ */
+async function liveRows(
+  ctx: HandlerContext,
+  runIdValue: string,
+  afterSeq: number | undefined,
+): Promise<{ seq: number; at: string; type: string; payload: string }[]> {
+  const out: { seq: number; at: string; type: string; payload: string }[] = [];
+  let bytes = 0;
+  const full = () => out.length >= LIVE_EVENTS_MAX || bytes >= LIVE_BYTES_MAX;
+  if (afterSeq === undefined) {
+    let below: number | null = null;
+    while (!full()) {
+      let q = ctx.db
+        .selectFrom("core_run_events")
+        .select(["seq", "last_seq", "at", "type", "payload"])
+        .where("run_id", "=", runIdValue);
+      if (below !== null) q = q.where("seq", "<", below);
+      const page = await q.orderBy("seq", "desc").limit(LIVE_PAGE_ROWS).execute();
+      for (const row of page) bytes += row.payload.length;
+      below = page.at(-1)?.seq ?? null;
+      out.unshift(...expandRows(page.reverse()));
+      if (page.length < LIVE_PAGE_ROWS) break;
+    }
+    return out.slice(-LIVE_EVENTS_MAX);
+  }
+  // A batch row starts at most a batch before the lines it holds: the seq bound keeps the read on
+  // the primary key, the coalesce catches a batch straddling the cursor.
+  let from = afterSeq - RUN_EVENTS_BATCH_MAX;
+  while (!full()) {
+    const page = await ctx.db
+      .selectFrom("core_run_events")
+      .select(["seq", "last_seq", "at", "type", "payload"])
+      .where("run_id", "=", runIdValue)
+      .where("seq", ">", from)
+      .where(sql<boolean>`coalesce(last_seq, seq) > ${afterSeq}`)
+      .orderBy("seq", "asc")
+      .limit(LIVE_PAGE_ROWS)
+      .execute();
+    for (const row of page) bytes += row.payload.length;
+    out.push(...expandRows(page).filter((e) => e.seq > afterSeq));
+    if (page.length < LIVE_PAGE_ROWS) break;
+    from = page.at(-1)?.seq ?? from;
+  }
+  return out.slice(0, LIVE_EVENTS_MAX);
+}
+
 function withinBudget<T extends { payload: string }>(rows: T[], keep: "newest" | "oldest"): T[] {
   let total = 0;
   const ordered = keep === "newest" ? [...rows].reverse() : rows;
@@ -317,31 +370,7 @@ export const runLive = defineOperation({
     }
     const afterSeq = input.afterSeq;
     const [rows, steers, mode] = await Promise.all([
-      afterSeq === undefined
-        ? ctx.db
-            .selectFrom("core_run_events")
-            .select(["seq", "last_seq", "at", "type", "payload"])
-            .where("run_id", "=", run.id)
-            .orderBy("seq", "desc")
-            .limit(LIVE_EVENTS_MAX)
-            .execute()
-            .then((rows) => expandRows(rows.reverse()).slice(-LIVE_EVENTS_MAX))
-        : ctx.db
-            .selectFrom("core_run_events")
-            .select(["seq", "last_seq", "at", "type", "payload"])
-            .where("run_id", "=", run.id)
-            // A batch row starts at most a batch before the lines it holds: the seq bound keeps
-            // the read on the primary key, the coalesce catches a batch straddling the cursor.
-            .where("seq", ">", afterSeq - RUN_EVENTS_BATCH_MAX)
-            .where(sql<boolean>`coalesce(last_seq, seq) > ${afterSeq}`)
-            .orderBy("seq", "asc")
-            .limit(LIVE_EVENTS_MAX)
-            .execute()
-            .then((rows) =>
-              expandRows(rows)
-                .filter((e) => e.seq > afterSeq)
-                .slice(0, LIVE_EVENTS_MAX),
-            ),
+      liveRows(ctx, run.id, afterSeq),
       ctx.db
         .selectFrom("core_run_steers")
         .leftJoin("core_user", "core_user.id", "core_run_steers.author_user_id")
