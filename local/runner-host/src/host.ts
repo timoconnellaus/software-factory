@@ -45,6 +45,12 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
   checkSandbox?: RunJobOptions<W, S>["checkSandbox"];
   /** Where the jobs' check trees go (the runner's `paths().checksDir`, which harnesses deny). */
   checksDir?: string;
+  /**
+   * Whether this host really has a check exec for a job without the adapter's own (ADR 0501): the
+   * check container answers, or the OS sandbox's start-up trial passes. The host declares `checks`
+   * only then, or when the adapter has an `exec` of its own. Absent: when `checkSandbox` is set.
+   */
+  checksAvailable?: () => Promise<boolean>;
   /** Tidies up after a crash: jobs this adapter still holds that the host isn't running. */
   reapOrphans?: (running: Set<string>) => Promise<string[]>;
   /**
@@ -172,8 +178,15 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private async turn(): Promise<void> {
     const every = this.options.heartbeatMs ?? 20_000;
     try {
-      // The host runs the project's checks itself (ADR 0501): it declares `checks` for any adapter.
-      const manifest = hostManifest(await this.options.adapter.manifest());
+      // The host runs the project's checks itself (ADR 0501): it declares `checks` only where a
+      // check can really run here (the adapter's exec, the check container, a passing trial).
+      const manifest = hostManifest(
+        await this.options.adapter.manifest(),
+        !!this.options.adapter.exec ||
+          (this.options.checksAvailable
+            ? await this.options.checksAvailable().catch(() => false)
+            : !!this.options.checkSandbox),
+      );
       const capacity = await this.capacity();
       const selfUpdate = this.options.selfUpdate;
       // A registry that can't be read is reported as nothing rather than failing the heartbeat.

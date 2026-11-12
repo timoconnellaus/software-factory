@@ -1243,6 +1243,33 @@ describe("runJob with checks (ADR 0501)", () => {
     expect(git(repo.bare, "ls-tree", "-r", "--name-only", j.branch)).toContain("fixed.txt");
   });
 
+  it("sends a failing check on a stream-json session to a person, never into a fix round it can't take", async () => {
+    const j = job({
+      checks: { commands: [{ name: "tests", run: "false", timeoutMs: 5_000 }], fixRounds: 2 },
+    });
+    const { cloud, adapter, run } = await setup(j, async (wt) => {
+      await writeFile(join(wt, "README.md"), "# scratch\nchanged\n");
+      return [{ type: "session.ended" as const, outcome: "completed" as const }];
+    });
+    const start = adapter.startSession.bind(adapter);
+    adapter.startSession = async (...args) => ({ ...(await start(...args)), mode: "stream" });
+    let continued = 0;
+    const cont = adapter.continueSession?.bind(adapter);
+    adapter.continueSession = (...args) => {
+      continued++;
+      if (!cont) throw new Error("no continueSession");
+      return cont(...args);
+    };
+    const report = await run();
+    expect(continued).toBe(0);
+    expect(adapter.steered).toHaveLength(0);
+    // The build hands back with the failure for a person: no attempt burned on a throw.
+    expect(report.outcome, `${report.error}`).toBe("completed");
+    const handback = handbackOf(cloud, j);
+    expect(handback.checks).toMatchObject([{ name: "tests", exitCode: 1, round: 0 }]);
+    expect(handback.summary).toMatch(/can't be continued on this runner/);
+  });
+
   it("fails closed without an isolated exec: reported not run, no fix round, the build still hands back", async () => {
     const j = job({
       checks: { commands: [{ name: "tests", run: "true", timeoutMs: 5_000 }], fixRounds: 2 },

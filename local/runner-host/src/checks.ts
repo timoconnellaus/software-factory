@@ -256,12 +256,14 @@ export async function carryTree(src: string, dest: string): Promise<void> {
 
 /**
  * The adapter's manifest with what this host adds itself: `checks` (ADR 0501), since the host, not
- * the adapter, runs them (reporting "not run" where it has no isolated exec).
+ * the adapter, runs them, but only when `canRun` (a check exec really exists here: the adapter's
+ * own, the check container, or an OS sandbox whose trial passed). A runner that can't run checks
+ * (a sprite runner, a Mac with no container runtime and no opt-in, a Linux host whose sandbox can't
+ * start) never declares it, so the cloud places no job that carries checks there.
  */
-export function hostManifest(manifest: CapabilityManifest): CapabilityManifest {
-  return manifest.capabilities.includes("checks")
-    ? manifest
-    : { ...manifest, capabilities: [...manifest.capabilities, "checks"] };
+export function hostManifest(manifest: CapabilityManifest, canRun = true): CapabilityManifest {
+  const without = manifest.capabilities.filter((c) => c !== "checks");
+  return { ...manifest, capabilities: canRun ? [...without, "checks"] : without };
 }
 
 /** Whether a job carries checks for the host to run. */

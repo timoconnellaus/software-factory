@@ -73,6 +73,7 @@ import { readLiveJobs } from "./live-jobs.ts";
 import { findOnPath, parsePairingInput, serviceNode } from "./pairing.ts";
 import {
   buildRunner,
+  checkReadiness,
   containerDirs,
   dockerBin,
   hostDirs,
@@ -494,6 +495,18 @@ async function doctor(args: string[]) {
     return relevant.some((f) => !f.fixable) ? "fixed what can be fixed here" : "fixed";
   });
   const configured = await loadConfig(dirs.configFile).catch(() => null);
+  if (configured) {
+    // ADR 0501: where the project's checks run here, and why; the host declares `checks` only when
+    // they can. A runner that can't is still a runner (jobs without checks), so this only warns.
+    const r = await checkReadiness(configured, dirs).catch((err) => ({
+      mode: "none" as const,
+      why: err instanceof Error ? err.message : String(err),
+      ok: false,
+    }));
+    console.log(
+      `${r.ok ? "✓" : "!"} project checks: ${r.mode === "none" ? "not run here" : r.mode}: ${r.why}`,
+    );
+  }
   if (configured?.isolation === "container") {
     // ADR 0430: a container per job.
     const { runtime } = containerDirs(configured, dirs);

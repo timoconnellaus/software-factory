@@ -443,8 +443,10 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       exportTree: (sha, dir) => git.exportTree(ws.path, sha, dir, `${root}.index`),
       root,
       guard: (when) => guard(ws, when),
+      // Not for a stream-json session: the adapter can't take a fix round there yet, and a throw
+      // would end the round as failed. Undefined sends a failing check straight to a person.
       continueSession:
-        next && live
+        next && live && live.mode !== "stream"
           ? async (text) => {
               // A fix round gets the job's session timeout again, and stops on a cancel. A
               // session that can't take the turn is a failed round, never a failed hand-back.

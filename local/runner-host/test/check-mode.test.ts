@@ -6,7 +6,9 @@ import type { ContainerRuntime } from "@software-factory/runner-local";
 import { describe, expect, it } from "vitest";
 import { checkModeReport, localChecks, NO_MAC_CONTAINER } from "../src/check-mode.ts";
 import { macTempDenies } from "../src/check-sandbox.ts";
-import { runChecks } from "../src/checks.ts";
+import { hostManifest, runChecks } from "../src/checks.ts";
+import { configSchema, paths } from "../src/config.ts";
+import { checkReadiness } from "../src/runner.ts";
 
 const never = new AbortController().signal;
 const job = {
@@ -133,5 +135,23 @@ describe("where a sandbox runner's checks run (ADR 0501, fourth review)", () => 
       "/private/var/folders/ab/cd1234",
     ]);
     expect(macTempDenies("/private/var/folders/ab/cd1234/T")).toContain("/var/folders/ab/cd1234");
+  });
+  it("declares `checks` only where a check can really run here", () => {
+    const m = { contractVersion: 1, capabilities: ["git-push"] } as unknown as Parameters<
+      typeof hostManifest
+    >[0];
+    expect(hostManifest(m).capabilities).toContain("checks");
+    expect(hostManifest(m, false).capabilities).not.toContain("checks");
+    // An adapter that claims it, on a host that can't: not declared.
+    const claims = { ...m, capabilities: ["git-push", "checks"] } as typeof m;
+    expect(hostManifest(claims, false).capabilities).toEqual(["git-push"]);
+  });
+
+  it("says a sprite runner runs no checks here, and a container runner checks in containers", async () => {
+    const base = configSchema.parse({ runnerId: "r_abcdef12", key: "k".repeat(32) });
+    const sprites = await checkReadiness({ ...base, isolation: "sprites" }, paths());
+    expect(sprites).toMatchObject({ mode: "none", ok: false });
+    const containers = await checkReadiness({ ...base, isolation: "container" }, paths());
+    expect(containers).toMatchObject({ mode: "container", ok: true });
   });
 });
