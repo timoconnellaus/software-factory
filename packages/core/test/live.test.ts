@@ -311,3 +311,258 @@ describe("watching and steering a run", () => {
     ).toHaveLength(1);
   });
 });
+
+describe("a stream session's chat and takeover (spec 37, ADR 0450)", () => {
+  const started = (jobId: string, seq: number, mode?: "terminal" | "stream") => ({
+    jobId,
+    seq,
+    at: at(),
+    type: "session.started" as const,
+    sessionRef: "s",
+    ...(mode ? { mode } : {}),
+  });
+
+  it("stores the richer stream events and says the run's mode", async () => {
+    const { w, actor, item, job } = await running(["hooks", "steer", "chat"]);
+    type Live = {
+      run: { id: string; mode: string | null; takeover: { hint: string } | null };
+      events: { type: string; data: Record<string, unknown> }[];
+      takeover: { allowed: boolean; reason: string | null; requested: boolean };
+    };
+    const before = await ok<Live>("run.live", { workItemId: item.workItemId }, w.human);
+    expect(before.run.mode).toBeNull();
+    expect(before.takeover.allowed).toBe(false);
+    await ok(
+      "run.reportEvents",
+      {
+        jobId: job.jobId,
+        fencingToken: job.lease.fencingToken,
+        events: [
+          started(job.jobId, 1, "stream"),
+          { jobId: job.jobId, seq: 2, at: at(), type: "tool", name: "Bash", input: "{}", id: "tu_1" },
+          {
+            jobId: job.jobId,
+            seq: 3,
+            at: at(),
+            type: "tool.result",
+            toolId: "tu_1",
+            output: "ok",
+            isError: false,
+          },
+          {
+            jobId: job.jobId,
+            seq: 4,
+            at: at(),
+            type: "turn",
+            outcome: "success",
+            durationMs: 1000,
+            usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+          },
+        ],
+      },
+      actor,
+    );
+    const view = await ok<Live>("run.live", { workItemId: item.workItemId }, w.human);
+    expect(view.run.mode).toBe("stream");
+    expect(view.events.map((e) => e.type)).toEqual([
+      "session.started",
+      "tool",
+      "tool.result",
+      "turn",
+    ]);
+    expect(view.events[2]?.data).toEqual({ toolId: "tu_1", output: "ok", isError: false });
+    expect(view.takeover).toEqual({ allowed: true, reason: null, requested: false });
+    // Oversized fields are refused on the wire.
+    expect(
+      (
+        await refusal(
+          ok(
+            "run.reportEvents",
+            {
+              jobId: job.jobId,
+              fencingToken: job.lease.fencingToken,
+              events: [
+                {
+                  jobId: job.jobId,
+                  seq: 5,
+                  at: at(),
+                  type: "tool.result",
+                  toolId: "tu_1",
+                  output: "x".repeat(5_000),
+                },
+              ],
+            },
+            actor,
+          ),
+        )
+      ).code,
+    ).toBe("invalid_input");
+
+    // The host reports the handover: the resume command becomes the run's takeover.
+    await ok(
+      "run.reportEvents",
+      {
+        jobId: job.jobId,
+        fencingToken: job.lease.fencingToken,
+        events: [
+          {
+            jobId: job.jobId,
+            seq: 6,
+            at: at(),
+            type: "takeover",
+            sessionId: "sid-1",
+            hint: "cd /w && claude --resume sid-1",
+          },
+        ],
+      },
+      actor,
+    );
+    const handed = await ok<Live>("run.live", { workItemId: item.workItemId }, w.human);
+    expect(handed.run.takeover).toEqual({
+      label: "Resume in a terminal",
+      hint: "cd /w && claude --resume sid-1",
+    });
+  });
+
+  it("lets only the runner's owner take a stream session over, once, and hands it to the host", async () => {
+    const { w, actor, item, job } = await running(["hooks", "steer", "chat"]);
+    await ok(
+      "run.reportEvents",
+      {
+        jobId: job.jobId,
+        fencingToken: job.lease.fencingToken,
+        events: [started(job.jobId, 1, "stream")],
+      },
+      actor,
+    );
+    const live = await ok<{ run: { id: string } }>(
+      "run.live",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    const runId = live.run.id;
+    const watcher = await member(w.orgId);
+    expect(
+      (await refusal(ok("run.takeover", { workItemId: item.workItemId, runId }, watcher))).code,
+    ).toBe("forbidden");
+    const watched = await ok<{ takeover: { allowed: boolean; reason: string } }>(
+      "run.live",
+      { workItemId: item.workItemId },
+      watcher,
+    );
+    expect(watched.takeover.allowed).toBe(false);
+    expect(watched.takeover.reason).toMatch(/runner's owner/);
+
+    const before = delivered.length;
+    const asked = await ok<{ requestId: string; status: string }>(
+      "run.takeover",
+      { workItemId: item.workItemId, runId },
+      w.human,
+    );
+    expect(asked.status).toBe("queued");
+    expect(delivered.slice(before).flat().length).toBeGreaterThan(0);
+    const audit = await first<{ actor_id: string }>(
+      "SELECT actor_id FROM core_audit WHERE operation = 'run.takeover' AND outcome = 'ok' AND work_item_id = ?",
+      item.workItemId,
+    );
+    expect(audit?.actor_id).toBe(w.userId);
+    // Once per run.
+    expect(
+      (await refusal(ok("run.takeover", { workItemId: item.workItemId, runId }, w.human))).code,
+    ).toBe("conflict");
+
+    type Taken = { steers: { id: string; text: string; kind: string }[] };
+    const taken = await ok<Taken>(
+      "run.takeSteers",
+      { jobId: job.jobId, fencingToken: job.lease.fencingToken },
+      actor,
+    );
+    expect(taken.steers).toEqual([
+      expect.objectContaining({ id: asked.requestId, text: "", kind: "takeover" }),
+    ]);
+    const view = await ok<{
+      steers: { kind: string; status: string }[];
+      takeover: { allowed: boolean; requested: boolean };
+    }>("run.live", { workItemId: item.workItemId }, w.human);
+    expect(view.steers).toEqual([expect.objectContaining({ kind: "takeover", status: "delivered" })]);
+    expect(view.takeover).toMatchObject({ allowed: false, requested: true });
+  });
+
+  it("refuses a takeover for a terminal run, a runner without chat and an ended run", async () => {
+    const tmux = await running(["hooks", "steer", "chat"]);
+    await ok(
+      "run.reportEvents",
+      {
+        jobId: tmux.job.jobId,
+        fencingToken: tmux.job.lease.fencingToken,
+        events: [started(tmux.job.jobId, 1)],
+      },
+      tmux.actor,
+    );
+    const tmuxLive = await ok<{ run: { id: string; mode: string } }>(
+      "run.live",
+      { workItemId: tmux.item.workItemId },
+      tmux.w.human,
+    );
+    expect(tmuxLive.run.mode).toBe("terminal");
+    expect(
+      (
+        await refusal(
+          ok(
+            "run.takeover",
+            { workItemId: tmux.item.workItemId, runId: tmuxLive.run.id },
+            tmux.w.human,
+          ),
+        )
+      ).code,
+    ).toBe("unavailable");
+
+    const noChat = await running(["hooks", "steer"]);
+    await ok(
+      "run.reportEvents",
+      {
+        jobId: noChat.job.jobId,
+        fencingToken: noChat.job.lease.fencingToken,
+        events: [started(noChat.job.jobId, 1, "stream")],
+      },
+      noChat.actor,
+    );
+    const noChatLive = await ok<{ run: { id: string } }>(
+      "run.live",
+      { workItemId: noChat.item.workItemId },
+      noChat.w.human,
+    );
+    expect(
+      (
+        await refusal(
+          ok(
+            "run.takeover",
+            { workItemId: noChat.item.workItemId, runId: noChatLive.run.id },
+            noChat.w.human,
+          ),
+        )
+      ).code,
+    ).toBe("unavailable");
+
+    await ok(
+      "run.release",
+      {
+        jobId: noChat.job.jobId,
+        fencingToken: noChat.job.lease.fencingToken,
+        finalState: "failed",
+      },
+      noChat.actor,
+    );
+    expect(
+      (
+        await refusal(
+          ok(
+            "run.takeover",
+            { workItemId: noChat.item.workItemId, runId: noChatLive.run.id },
+            noChat.w.human,
+          ),
+        )
+      ).code,
+    ).toBe("conflict");
+  });
+});

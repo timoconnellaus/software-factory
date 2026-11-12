@@ -155,6 +155,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   live.runLive,
   live.runSteer,
   live.runTakeSteers,
+  live.runTakeover,
   runners.runAddArtifact,
   runners.runHandBack,
   runners.runRelease,

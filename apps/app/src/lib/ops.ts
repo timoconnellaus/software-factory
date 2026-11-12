@@ -35,6 +35,7 @@ export interface OpMap {
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;
+  "run.takeover": Def<typeof operations.runTakeover>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;
@@ -100,6 +101,7 @@ export const APP_OPERATIONS = [
   "chat.send",
   "run.live",
   "run.steer",
+  "run.takeover",
   "project.create",
   "project.list",
   "project.update",
