@@ -1,6 +1,7 @@
 // Writes a run's harness files: the settings (into the run dir, passed with `--settings`, and the
 // same bytes into the worktree's `.claude/settings.local.json`), the git config and empty tool dirs
 // into the run's private directory, the run's temp dir, and the launch script and record (ADR 0270).
+import { randomUUID } from "node:crypto";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -69,6 +70,11 @@ export async function projectHarness(
      * conversation started or resumed. `nodeBin` runs them (default: this process's Node).
      */
     planning?: { relay: PlanningRelay; nodeBin?: string };
+    /**
+     * `stream`: launch a two-way stream-json session (ADR 0450) instead of the TUI. A non-planning
+     * run gets its own conversation id (`--session-id`), so it can be resumed in a terminal.
+     */
+    session?: "terminal" | "stream";
   },
 ): Promise<ProjectedHarness> {
   const runTmp = options.runTmp ?? join(await realpath(tmpdir()), "software-factory", job.jobId);
@@ -91,7 +97,14 @@ export async function projectHarness(
   if (job.stage === "planning" && !planning) {
     throw new Error(`planning job ${job.jobId} needs its planning session and relay`);
   }
-  const { statusHook: _statusHook, planning: _planning, ...settingsOptions } = options;
+  const {
+    statusHook: _statusHook,
+    planning: _planning,
+    session: _session,
+    ...settingsOptions
+  } = options;
+  const streamSessionId =
+    options.session === "stream" ? (planning?.launch.sessionRef ?? randomUUID()) : null;
   const settings = runSettings(job, {
     ...settingsOptions,
     ...(statusFile ? { statusHook: statusHookCommand(node, statusScript, statusFile) } : {}),
@@ -130,11 +143,14 @@ export async function projectHarness(
       ...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
       ...(options.profile ? { profile: options.profile } : {}),
       ...(planning ? { planning: planning.launch } : {}),
+      ...(streamSessionId ? { stream: { sessionId: streamSessionId } } : {}),
     }),
     settingsHash: sha256(text),
     settingsPaths: [paths.runSettings, paths.localSettings],
     pidFile: paths.pidFile,
     worktree: options.worktree,
+    unset: launchUnsets(settings.env),
+    ...(streamSessionId ? { stream: { sessionId: streamSessionId } } : {}),
   };
   await rm(paths.pidFile, { force: true });
   if (statusFile) {
@@ -142,7 +158,7 @@ export async function projectHarness(
     await writeFile(statusScript, statusHookSource(), { mode: 0o600 });
   }
   await writeFile(paths.record, `${JSON.stringify(launch, null, 2)}\n`, { mode: 0o600 });
-  await writeFile(paths.script, launchScript(launch, launchUnsets(settings.env)), { mode: 0o700 });
+  await writeFile(paths.script, launchScript(launch, launch.unset ?? []), { mode: 0o700 });
   return {
     settingsPath: paths.runSettings,
     localSettingsPath: paths.localSettings,

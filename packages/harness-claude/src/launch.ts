@@ -42,7 +42,30 @@ export interface LaunchRecord {
   settingsPaths: string[];
   pidFile: string;
   worktree: string;
+  /**
+   * A stream-json session (ADR 0450): its conversation id, for `claude --resume`. Absent for a
+   * terminal (TUI) session.
+   */
+  stream?: { sessionId: string };
+  /** The variables the launch script unsets (for the takeover command, ADR 0450). */
+  unset?: string[];
 }
+
+/**
+ * The flags that make a run a two-way stream-json session (ADR 0450): print mode, JSON lines in
+ * and out, and no permission prompts (anything that would prompt is denied; the mode and allow
+ * rules decide the rest, so nothing waits on an answer no one gives).
+ */
+export const STREAM_FLAGS = [
+  "-p",
+  "--input-format",
+  "stream-json",
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--permission-prompts",
+  "none",
+] as const;
 
 /** The exact argv for a run's Claude. */
 export function claudeArgv(
@@ -53,9 +76,15 @@ export function claudeArgv(
     profile?: HarnessProfile;
     /** A planning session (ADR 0350): its MCP server, and the conversation to start or resume. */
     planning?: PlanningLaunch;
+    /**
+     * A stream-json session (ADR 0450). A non-planning one starts its own conversation with
+     * `sessionId`; a planning one keeps the planning session's.
+     */
+    stream?: { sessionId?: string };
   },
 ): string[] {
   const planning = options.planning;
+  const stream = options.stream;
   return [
     options.claudeBin ?? "claude",
     "--permission-mode",
@@ -73,8 +102,51 @@ export function claudeArgv(
           planning.sessionRef,
         ]
       : []),
+    ...(stream && !planning && stream.sessionId ? ["--session-id", stream.sessionId] : []),
     ...(job.harness.model ? ["--model", job.harness.model] : []),
+    ...(stream ? STREAM_FLAGS : []),
   ];
+}
+
+/**
+ * The interactive command that resumes a stream session's conversation in a terminal (ADR 0450):
+ * the launch's argv without the stream flags and without its own `--session-id`/`--resume`, then
+ * `--resume <sessionId>`. The same settings, setting sources, permission mode, MCP config and model
+ * as the run.
+ */
+export function resumeArgv(record: Pick<LaunchRecord, "argv">, sessionId: string): string[] {
+  const out: string[] = [];
+  const argv = record.argv;
+  const withValue = new Set([
+    "--session-id",
+    "--resume",
+    "--input-format",
+    "--output-format",
+    "--permission-prompts",
+  ]);
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] as string;
+    if (withValue.has(a)) {
+      i++;
+      continue;
+    }
+    if (a === "-p" || a === "--verbose") continue;
+    out.push(a);
+  }
+  return [...out, "--resume", sessionId];
+}
+
+/**
+ * `resumeArgv` as one shell line, run in the worktree with the launch script's variables unset:
+ * `cd <worktree> && env -u … claude … --resume <id>`.
+ */
+export function resumeCommand(
+  record: Pick<LaunchRecord, "argv" | "worktree" | "unset">,
+  sessionId: string,
+): string {
+  const unset = (record.unset ?? []).flatMap((k) => ["-u", k]);
+  const words = [...(unset.length ? ["env", ...unset] : []), ...resumeArgv(record, sessionId)];
+  return `cd ${shellQuote(record.worktree)} && ${words.map(shellQuote).join(" ")}`;
 }
 
 /** Quotes one word for `/bin/sh`. */

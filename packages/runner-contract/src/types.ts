@@ -39,6 +39,9 @@ export const CONTRACT_VERSION = "1" as const;
  *   without it still runs every job; its agent just sees no attachments.
  * - `steer`: a person can send a message into the live session from the dashboard (ADR 0400). The
  *   host keeps the channel's `steer` call open while the session runs and calls `adapter.steer`.
+ * - `chat`: sessions run as a structured two-way stream (Claude Code's stream-json, ADR 0450): the
+ *   events carry tool results and turn ends, the dashboard shows the run as a chat, and the owner
+ *   can take a session over in a terminal by resuming it (`run.takeover`, `adapter.takeover`).
  */
 export const CAPABILITIES = [
   "browser",
@@ -49,6 +52,7 @@ export const CAPABILITIES = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "chat",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -132,6 +136,13 @@ export interface WorkspaceHandle {
   baseSha: string;
 }
 
+/**
+ * How a session runs (ADR 0450): `terminal`, an interactive TUI in a terminal (tmux); `stream`, a
+ * structured two-way stream (stream-json) the dashboard shows as a chat.
+ */
+export const SESSION_MODES = ["terminal", "stream"] as const;
+export type SessionMode = (typeof SESSION_MODES)[number];
+
 /** What an adapter returns from startSession. */
 export interface SessionHandle {
   jobId: string;
@@ -139,6 +150,16 @@ export interface SessionHandle {
   sessionRef: string;
   /** How a person can attach, when the runner declares `ui-takeover`. Shown as-is in the UI. */
   takeover?: { label: string; hint: string };
+  /** How the session runs (ADR 0450). Absent: a terminal. */
+  mode?: SessionMode;
+}
+
+/** Token counts for one turn of a stream session (ADR 0450): counts only, never cost or keys. */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 export type JobState =
@@ -155,13 +176,32 @@ export type SessionOutcome = "completed" | "failed" | "timed_out" | "cancelled";
 
 /** Events the adapter yields while a session runs. The host stamps them with seq + time. */
 export type AdapterEvent =
-  | { type: "session.started"; sessionRef: string; takeover?: SessionHandle["takeover"] }
+  | {
+      type: "session.started";
+      sessionRef: string;
+      takeover?: SessionHandle["takeover"];
+      mode?: SessionMode;
+    }
   | { type: "agent.status"; status: AgentStatus; message?: string }
   /** `screen`: the visible screen, as opposed to lines that scrolled off (ADR 0400). */
   | { type: "log"; stream: "terminal" | "stdout" | "stderr"; text: string; screen?: boolean }
   /** What the agent said (assistant) or was told (user), as the transcript has it (ADR 0400). */
   | { type: "message"; role: "assistant" | "user"; text: string }
-  | { type: "tool"; name: string; input?: string }
+  /** `id` pairs a stream session's tool call with its `tool.result` (ADR 0450). */
+  | { type: "tool"; name: string; input?: string; id?: string }
+  /** A tool call's result, from a stream session (ADR 0450). Output ≤ TOOL_OUTPUT_MAX. */
+  | { type: "tool.result"; toolId: string; output: string; isError?: boolean }
+  /** One turn of a stream session ended (ADR 0450). */
+  | {
+      type: "turn";
+      outcome: "success" | "error";
+      durationMs?: number;
+      turns?: number;
+      usage?: TurnUsage;
+      error?: string;
+    }
+  /** A stream session stopped so a person can resume it in a terminal (ADR 0450). */
+  | { type: "takeover"; sessionId: string; hint: string }
   | { type: "session.ended"; outcome: SessionOutcome; summary?: string };
 
 /**
@@ -209,6 +249,12 @@ export interface RunnerAdapter<
    * sanitised and one line (`steerText`). Declare the `steer` capability to get steers.
    */
   steer?(session: S, text: string): Promise<void>;
+  /**
+   * Optional, with the `chat` capability (ADR 0450): stop the live stream session cleanly so a
+   * person can resume it in a terminal. `events()` then yields a `takeover` event with the command
+   * and follows the resumed session until it ends; the job keeps its workspace meanwhile.
+   */
+  takeover?(session: S): Promise<void>;
 }
 
 /**
