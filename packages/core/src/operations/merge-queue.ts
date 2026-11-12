@@ -19,7 +19,7 @@ import {
 } from "../operation.ts";
 import type { RepoRef } from "../services.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
-import { askOne } from "./questions.ts";
+import { askOne } from "./ask.ts";
 import {
   pendingActionId,
   projectId,
