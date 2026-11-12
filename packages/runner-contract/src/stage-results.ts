@@ -37,7 +37,10 @@ export const triageResultSchema = z.object({
   readiness: z.enum(["ready", "needs_answers", "not_actionable"]).default("ready"),
   readinessReason: z.string().max(2_000).optional(),
   /** The questions for needs_answers or not_actionable: to the requester, at most five. */
-  questions: z.array(z.lazy(() => questionDraftSchema)).max(5).default([]),
+  questions: z
+    .array(z.lazy(() => questionDraftSchema))
+    .max(5)
+    .default([]),
 });
 
 /**
