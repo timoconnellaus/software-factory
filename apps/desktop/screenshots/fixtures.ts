@@ -1604,9 +1604,10 @@ export const ANSWERS: Answers = {
           runnerKind: "local",
           harnesses: ["claude-code"],
           capabilities: ["checks"],
-          // What the runner's doctor says (ADR 0501, fifth review): OrbStack stopped on this Mac.
+          // What the runner's doctor says (ADR 0501, fifth review): neither Docker Desktop nor OrbStack
+          // answers on this Mac.
           checksNote:
-            "not run here: this Mac runner has no container runtime (OrbStack is not answering): start it, or set checks.weakerMacSandbox",
+            "not run here: this Mac runner has no container runtime: no container runtime is answering (Docker Desktop or OrbStack); start it, or set checks.weakerMacSandbox",
         },
         capacityMax: 2,
         light: { max: 6, inUse: 2 },

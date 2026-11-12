@@ -23,7 +23,7 @@ const edit = async (wt: string) => {
   return [{ type: "session.ended" as const, outcome: "completed" as const }];
 };
 
-/** OrbStack stopped: the runtime doesn't answer. */
+/** No container runtime (Docker Desktop or OrbStack) answers. */
 const dead = {
   version: async () => {
     throw new Error("the Docker server isn't reachable: Cannot connect");
@@ -62,7 +62,7 @@ describe("declaring `checks` (fifth review)", () => {
     const manifest = cloud.heartbeats[0]?.manifest;
     expect(manifest?.capabilities).toContain("checks");
     expect(manifest?.checksNote).toBe(
-      "not run here: this Mac runner has no container runtime (OrbStack is not answering): start it, or set checks.weakerMacSandbox",
+      "not run here: this Mac runner has no container runtime: no container runtime is answering (Docker Desktop or OrbStack); start it, or set checks.weakerMacSandbox",
     );
     const handback = cloud.handbacks.get(j.jobId) as {
       outcome: string;
