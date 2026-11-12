@@ -188,6 +188,61 @@ export async function readTranscript(path: string): Promise<TranscriptSummary> {
   return parseTranscript(await readFile(path, "utf8"));
 }
 
+/** One thing the agent said, from its transcript (ADR 0400). */
+export interface TranscriptMessage {
+  role: "assistant";
+  text: string;
+  /** ms since the epoch, when the transcript has a timestamp. */
+  at: number | null;
+}
+
+/** The assistant texts in transcript lines, in order. Tool calls and results are left out. */
+export function transcriptMessages(jsonl: string): TranscriptMessage[] {
+  const out: TranscriptMessage[] = [];
+  for (const line of jsonl.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: TranscriptLine;
+    try {
+      entry = JSON.parse(line) as TranscriptLine;
+    } catch {
+      continue;
+    }
+    if (entry.type !== "assistant") continue;
+    const content = entry.message?.content;
+    const at = entry.timestamp ? Date.parse(entry.timestamp) : Number.NaN;
+    const texts =
+      typeof content === "string"
+        ? [content]
+        : (content ?? []).filter((p) => p.type === "text").map((p) => p.text ?? "");
+    for (const text of texts) {
+      if (text.trim()) {
+        out.push({ role: "assistant", text: text.trim(), at: Number.isFinite(at) ? at : null });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Reads a live transcript from a byte offset (ADR 0400): the assistant texts in the complete lines
+ * after it, and the offset to read from next. A trailing partial line is left for the next read; a
+ * file that shrank (a new transcript at the same path) is read from the start.
+ */
+export async function readTranscriptFrom(
+  path: string,
+  offset: number,
+): Promise<{ messages: TranscriptMessage[]; offset: number }> {
+  const buf = await readFile(path).catch(() => null);
+  if (!buf) return { messages: [], offset };
+  const from = buf.length < offset ? 0 : offset;
+  const end = buf.lastIndexOf(0x0a);
+  if (end < from) return { messages: [], offset: from };
+  return {
+    messages: transcriptMessages(buf.subarray(from, end + 1).toString("utf8")),
+    offset: end + 1,
+  };
+}
+
 /**
  * One stream-json line from headless `claude -p --output-format stream-json --verbose` (used by
  * runner-local) → contract events.

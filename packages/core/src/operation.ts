@@ -43,6 +43,11 @@ export type OutboxMessage =
    * pushes to open Planning tabs and wakes the agent's wait.
    */
   | { kind: "planning.changed"; payload: { workItemId: string } }
+  /**
+   * A person steered a run (spec 31, ADR 0400): sf-engine wakes the work item's hub, so the runner
+   * host's held steer call answers at once.
+   */
+  | { kind: "run.steered"; payload: { workItemId: string } }
   /** A notification for a person (web push in spec 15). `url` is the deep link. */
   | {
       kind: "notify";

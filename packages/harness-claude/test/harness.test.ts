@@ -23,6 +23,7 @@ import {
   psCommand,
   readLaunchRecord,
   readStatusFrom,
+  readTranscriptFrom,
   runSettings,
   SETTINGS_FILE,
   STATUS_FILE,
@@ -597,6 +598,29 @@ describe("transcripts", () => {
     expect(await findTranscript(cwd, { configDirs: [root], since: Date.now() + 60_000 })).toBe(
       null,
     );
+  });
+
+  it("reads a live transcript's assistant texts from an offset, leaving a partial line (ADR 0400)", async () => {
+    const root = await temp("sf-h-live-");
+    const path = join(root, "t.jsonl");
+    await writeFile(path, `${lines}\n{"type":"assistant","message":{"content":[{"type":"te`);
+    const firstRead = await readTranscriptFrom(path, 0);
+    expect(firstRead.messages.map((m) => m.text)).toEqual(["All done."]);
+    // The partial line is left for the next read.
+    await writeFile(
+      path,
+      `${lines}\n${JSON.stringify({ type: "assistant", timestamp: "2026-11-12T00:00:00Z", message: { content: [{ type: "text", text: "Now the tests." }] } })}\n`,
+    );
+    const next = await readTranscriptFrom(path, firstRead.offset);
+    expect(next.messages).toEqual([
+      { role: "assistant", text: "Now the tests.", at: Date.parse("2026-11-12T00:00:00Z") },
+    ]);
+    expect((await readTranscriptFrom(path, next.offset)).messages).toEqual([]);
+    // A missing file reads as nothing yet.
+    expect(await readTranscriptFrom(join(root, "none.jsonl"), 0)).toEqual({
+      messages: [],
+      offset: 0,
+    });
   });
 
   it("maps stream-json to contract events", () => {

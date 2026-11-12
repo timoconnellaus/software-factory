@@ -1,5 +1,5 @@
 // The PlanningHub (spec 20, ADR 0350): one Durable Object per work item that knows when its
-// planning changed. The outbox delivers each `planning.changed` here; the hub pushes a line to every
+// planning changed (and, since ADR 0400, wakes the runner host's held steer call). The outbox delivers each `planning.changed` here; the hub pushes a line to every
 // open Planning tab's Server-Sent-Events stream (the app re-reads `planning.get`) and wakes the
 // planning agent's held `planning.wait`. It keeps no state worth saving: a hub that restarts starts
 // a new sequence, and every reader re-reads D1, so nothing is lost but a wake-up the next change or
@@ -27,6 +27,17 @@ export class PlanningHub extends DurableObject<Env> {
     for (const wake of [...this.waiters]) wake();
     this.waiters.clear();
     await this.send(`event: changed\ndata: ${JSON.stringify({ seq: this.seq })}\n\n`);
+    return this.seq;
+  }
+
+  /**
+   * Wake every waiter without telling the open views (ADR 0400): a run's steer, which the runner
+   * host's held steer call waits for on the same hub. Waiters re-read D1 and wait again.
+   */
+  async wake(): Promise<number> {
+    this.seq++;
+    for (const wake of [...this.waiters]) wake();
+    this.waiters.clear();
     return this.seq;
   }
 
