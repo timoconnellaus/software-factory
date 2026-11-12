@@ -33,13 +33,15 @@ import {
   projectId,
   repoName,
   repoRef,
+  repositoryForRepo,
   requireProject,
+  requireRepository,
   requireWorkItem,
   sha,
   workItemId,
 } from "./shared.ts";
 
-export { projectForRepo, repoName };
+export { projectForRepo, repoName, repositoryForRepo };
 
 async function readCi(ctx: HandlerContext, repo: RepoRef, headSha: string): Promise<CiSummary> {
   const gh = ctx.services.github;
@@ -70,6 +72,8 @@ export async function postVerify(
     };
   },
 ): Promise<{ checkRunId: string | null; error: string | null }> {
+  // The repository the head is in (ADR 0490): the call's, from its work item or its webhook.
+  const repositoryId = ctx.scope.repository?.id ?? null;
   const existing = await ctx.db
     .selectFrom("core_verify_checks")
     .selectAll()
@@ -108,6 +112,7 @@ export async function postVerify(
     title: args.output.title,
     review_packet_id: args.packetId ?? existing?.review_packet_id ?? null,
     updated_at: ctx.now,
+    repository_id: repositoryId ?? existing?.repository_id ?? null,
   };
   ctx.write(
     ctx.db
@@ -176,11 +181,16 @@ export const reviewPacketRecord = defineOperation({
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const ci = await readCi(ctx, repo, input.headSha);
     let files: ChangedFile[] | null = null;
     try {
-      files = await ctx.services.github.compareFiles(repo, project.default_branch, input.headSha);
+      files = await ctx.services.github.compareFiles(
+        repo,
+        repository.default_branch,
+        input.headSha,
+      );
     } catch {
       files = null; // the packet is then incomplete, so it fails
     }
@@ -324,7 +334,7 @@ export const ciRead = defineOperation({
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const repo = await repoRef(ctx, requireProject(ctx));
+    const repo = await repoRef(ctx, requireRepository(ctx));
     const ci = await readCi(ctx, repo, input.headSha);
     return { ...ci, ...(await readMergeability(ctx, repo, w.pr_number, input.headSha)) };
   },
@@ -433,17 +443,19 @@ export const verifyRefresh = defineOperation({
     conclusion: z.string().nullable(),
     ciState: z.string().nullable(),
   }),
-  scope: async (input, db) => ({ projectId: await projectForRepo(db, input.repo) }),
+  scope: async (input, db) => repositoryForRepo(db, input.repo),
   async handler(input, ctx) {
     const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const none = { workItemId: null, status: null, conclusion: null, ciState: null };
     const byPr = async () =>
       input.prNumber
         ? ((await ctx.db
             .selectFrom("core_work_items")
             .selectAll()
-            .where("project_id", "=", project.id)
+            // A PR number is per repository (ADR 0490): B#5 is not A#5.
+            .where("repository_id", "=", repository.id)
             .where("pr_number", "=", input.prNumber)
             .orderBy("updated_at", "desc")
             .executeTakeFirst()) ?? null)
@@ -468,13 +480,16 @@ export const verifyRefresh = defineOperation({
       .selectFrom("core_verify_checks")
       .select(["status", "work_item_id"])
       .where("project_id", "=", project.id)
+      .where((eb) =>
+        eb.or([eb("repository_id", "=", repository.id), eb("repository_id", "is", null)]),
+      )
       .where("head_sha", "=", input.headSha)
       .executeTakeFirst();
     let item =
       (await ctx.db
         .selectFrom("core_work_items")
         .selectAll()
-        .where("project_id", "=", project.id)
+        .where("repository_id", "=", repository.id)
         .where("head_sha", "=", input.headSha)
         .orderBy("updated_at", "desc")
         .executeTakeFirst()) ?? null;
@@ -511,7 +526,7 @@ export const verifyRefresh = defineOperation({
         item: null,
         ...(prNumber
           ? {
-              detailsPath: `/attach?repo=${encodeURIComponent(`${project.repo_owner}/${project.repo_name}`)}&pr=${prNumber}`,
+              detailsPath: `/attach?repo=${encodeURIComponent(`${repository.owner}/${repository.name}`)}&pr=${prNumber}`,
             }
           : {}),
         prNumber,
@@ -804,11 +819,11 @@ export const prAutoMerge = defineOperation({
       throw new OperationError("conflict", "the branch moved since the review packet was made");
     }
     await requireQueueHead(ctx, w, input.headSha);
-    const project = requireProject(ctx);
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const files = await ctx.services.github.compareFiles(
       repo,
-      project.default_branch,
+      repository.default_branch,
       input.headSha,
     );
     const diff = checkOnlyDiff(files);
@@ -860,7 +875,7 @@ export const projectCheckGitHub = defineOperation({
   input: z.object({ projectId }),
   output: z.object({ ok: z.boolean(), problems: z.array(z.string()) }),
   async handler(_input, ctx) {
-    const { verdict } = await inspectProtection(ctx, requireProject(ctx));
+    const { verdict } = await inspectProtection(ctx, requireProject(ctx), requireRepository(ctx));
     return { ok: verdict.ok, problems: verdict.problems };
   },
 });

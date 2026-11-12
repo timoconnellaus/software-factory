@@ -44,7 +44,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 - **Onboarding** never asks for an id the factory can fetch (ADR 0055, 0056): Connect GitHub goes
   through GitHub's install flow back to sf-app's `/integrations/github/setup`
   (`github.connectInstallation` verifies the single-use state and the installation as the App), a
-  project is picked from the repos an installation reaches (`github.repos`, `project.create`), its
+  project is picked from the repos an installation reaches (`github.repos`, `project.create`; a
+  project is not a repository: it has zero or more in `core_repositories`, added with
+  `repository.add`, and a work item uses one, ADR 0490), its
   first config version is imported from the repo's `.factory/policy.json` or created from the
   template, and a runner connects by device login
   (`/runner/v1/device/*`, approved at `/runners/connect`). `setup.status` is the Setup checklist.

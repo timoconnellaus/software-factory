@@ -45,7 +45,16 @@ import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { hostChecksOn } from "../verify/proof.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
-import { fencingToken, jobId, repoRef, requireWorkItem, sha, workItemId } from "./shared.ts";
+import {
+  fencingToken,
+  itemRepository,
+  jobId,
+  repoRef,
+  requireRepository,
+  requireWorkItem,
+  sha,
+  workItemId,
+} from "./shared.ts";
 import { RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./work-items.ts";
 
 /** How long a lease lasts without a heartbeat (open question in ADR 0021; ADR 0052 picks this). */
@@ -479,10 +488,24 @@ export async function placementRefusal(
     harness: string;
     pinnedRunnerId?: string | null;
   },
-  item: Pick<WorkItemRow, "id" | "org_id" | "project_id" | "requester_user_id">,
+  item: Pick<WorkItemRow, "id" | "org_id" | "project_id" | "requester_user_id"> & {
+    repository_id?: string | null;
+  },
   project: Pick<ProjectRow, "id" | "factory_id" | "policy_sha">,
 ): Promise<{ reason: string; wip?: true; waitReason?: string } | null> {
   if (!manifest) return { reason: "runner has not reported a manifest" };
+  // Checked before anything is claimed (ADR 0490): an item with no repository waits, with the
+  // reason, and never blocks the jobs behind it.
+  if (
+    "repository_id" in item &&
+    !(await itemRepository(ctx.db, {
+      repository_id: item.repository_id ?? null,
+      project_id: item.project_id,
+    }))
+  ) {
+    const reason = "the work item has no repository: choose one of its project's";
+    return { reason, waitReason: reason };
+  }
   // A planning resume goes back to its session's runner (ADR 0300), and only a runner with a light
   // pool takes planning at all (ADR 0301).
   if (job.pinnedRunnerId && job.pinnedRunnerId !== runner.id) {
@@ -688,6 +711,11 @@ async function buildJob(
   leaseExpiresAt: string,
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
+  // The item's repository (ADR 0490); placementRefusal already checked there is one.
+  const repository = await itemRepository(ctx.db, item);
+  if (!repository) {
+    throw new OperationError("conflict", `work item #${item.number} has no repository`);
+  }
   // The harness stays at least as narrow as the version the item started under (ADR 0370 §5).
   const pinned =
     item.policy_sha && item.policy_sha !== project.policy_sha
@@ -710,11 +738,11 @@ async function buildJob(
     stage: job.stage as Job["stage"],
     workItem: { id: item.id, number: item.number, title: item.title },
     repo: {
-      url: `https://github.com/${project.repo_owner}/${project.repo_name}.git`,
-      owner: project.repo_owner,
-      name: project.repo_name,
+      url: `https://github.com/${repository.owner}/${repository.name}.git`,
+      owner: repository.owner,
+      name: repository.name,
       baseRef: item.branch,
-      defaultBranch: project.default_branch,
+      defaultBranch: repository.default_branch,
     },
     branch: run.branch,
     harness: {
@@ -1013,9 +1041,8 @@ export const runIssueToken = defineOperation({
   async handler(input, ctx) {
     const run = await loadRun(ctx, input.jobId);
     if (!isActive(run.status)) throw new OperationError("conflict", `run is ${run.status}`);
-    const project = ctx.scope.project;
-    if (!project) throw new OperationError("not_found", "no project");
-    const repo = await repoRef(ctx, project);
+    const repository = requireRepository(ctx);
+    const repo = await repoRef(ctx, repository);
     const minted = await ctx.services.github.mintRepoToken(repo);
     return {
       token: minted.token,
@@ -1225,10 +1252,8 @@ export const runHandBack = defineOperation({
     }
     if (input.outcome === "completed" && run.stage === "build") {
       if (!input.headSha) return fail("a build hand-back needs the pushed head SHA");
-      const project = ctx.scope.project;
-      if (!project) throw new OperationError("not_found", "no project");
       const pushed = await ctx.services.github.getBranchSha(
-        await repoRef(ctx, project),
+        await repoRef(ctx, requireRepository(ctx)),
         run.branch,
       );
       if (pushed !== input.headSha) {
