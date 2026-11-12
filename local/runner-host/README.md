@@ -44,10 +44,54 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    call is a `tool` event, a permission or idle notification is `waiting_input` (15 min, then the
    run fails), and `Stop` after the prompt ends the session.
 5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
-6. **Build only:** it commits any leftovers, then pushes `HEAD` to the run branch, and only there,
-   with a *fresh* job token. It never forces.
-7. It uploads artifacts: the diff, the terminal screen, check output from Claude's transcript, and a summary.
-8. It hands back `{ branch, headSha, result }`, releases the workspace, revokes the tokens and calls `release`.
+6. **The project's checks** (ADR 0501, `src/checks.ts`), when the job carries them: after a build
+   session's turn, it commits the leftovers and runs each check on a **clean copy of that commit**
+   (a throwaway index and `checkout-index`: no ignored files, no git dir), through the adapter's
+   `exec` (a container job: a check container with no network or credential), else under the OS
+   sandbox with the harness's floor (`src/check-sandbox.ts`: srt's `SandboxManager` through
+   `src/check-sandbox-child.mjs`, with the harness's deny lists, a temporary HOME and the job's
+   network allowlist; the settings never touch disk, the command's own exit decides and a signal
+   death fails, and after every check its process group and anything left with a cwd under its root
+   are killed). The trees live in the runner's checks dir (`~/.local/share/software-factory/runner/
+   checks`), which every agent's sandbox denies. With neither, or for a job with no container on a
+   container runner, or where the sandbox can't start, it runs nothing and reports the check
+   **not run** (never failed, never a fix round). On a container runner the check container has no
+   network: declare the install check as `pnpm install --offline --frozen-lockfile`, which installs
+   from a copy of the job's pnpm store made for that check. Each check runs in a dir of its own
+   (`r<round>-<i>/`: its tree, HOME, temp and pnpm store): the first on the export, each later one
+   on a copy of the tree the one before left, made after it was killed. So declare the install
+   first, and don't install again in later checks. **On a Mac** (`src/check-mode.ts`) a `sandbox`
+   runner runs each check in a fresh check container when OrbStack or Docker Desktop answers: its
+   own loopback (a test that starts a server works), its own egress proxy with the job's allowlist,
+   its own pnpm store, and every process gone with it. With no container runtime, checks are not
+   run, unless runner.json sets `"checks": { "weakerMacSandbox": true }`: then the macOS OS sandbox
+   below, which can't stop a process a check leaves from outliving it, and the merge gate says the
+   checks ran in the weaker sandbox. `sf-runner doctor` says which. A check container gets 2 CPUs and
+   4 GB of memory (`/tmp` a 1 GB tmpfs within it), and a tree past 10 GB isn't carried to the next
+   check (measured every 15 s while a check runs: one that grows past it is stopped); runner.json
+   `checks` sets `cpus`, `memoryGb`, `tmpGb` and `maxTreeGb`. A check that fails on the memory
+   limit (the Docker daemon's OOMKilled) or the disk bound (measured by the host) is a failed check
+   that says so: "the check hit the runner's memory limit (4 GB). The code under check may be the
+   cause; raise the limit in the runner's config or fix the code". It goes to a person, not to a fix
+   round (see "Sizing a check" below). Nothing the check prints is read as a limit. At most
+   `checks.maxConcurrent` (default 1) checks run at once, each counted as a heavy job, and a check
+   waits while the load backoff has stopped heavy work. Check containers, proxies and networks a
+   runner that died mid-check left are reaped at start-up and on the periodic sweep. Under the OS sandbox a check reads none of the
+   owner's home but the toolchain on its PATH, reaches no loopback but the sandbox's proxy (on macOS,
+   not even a server it starts itself), and fetches through the proxy (`NODE_USE_ENV_PROXY`, so
+   Node ≥ 24.5); srt's sockets go in `~/.local/share/software-factory/runner/s`. Before a job's
+   checks the host runs `sandboxTrial()`: where the sandbox can't start (Ubuntu's AppArmor
+   restriction on unprivileged user namespaces left on) every check is not run, with the reason. The host declares the `checks` capability, so only it gets jobs that
+   carry checks. A failure is typed into the same session (the command, exit code and log tail,
+   one steer) and the fix checked again, up to `fixRounds`. Before any host git after the session,
+   a check or a fix round, the git config and the adapter's `checkWorkspace` are checked again. An
+   attached PR's verify job runs them once, on the PR's head, before its reviewer session. The
+   results, with secrets redacted, go on the hand-back.
+7. **Build only:** it commits any leftovers (unless checks ran: then it pushes exactly the last
+   checked commit and never commits after it), then pushes to the run branch, and only there, with
+   a *fresh* job token. It never forces.
+8. It uploads artifacts: the diff, the terminal screen, check output from Claude's transcript, and a summary.
+9. It hands back `{ branch, headSha, result, checks }`, releases the workspace, revokes the tokens and calls `release`.
 
 A `409 fenced|killed`, or a cancel command, stops the session at once: no push and no hand-back.
 
@@ -112,6 +156,52 @@ A **planning** job is a long-lived Claude session that plans one work item with 
   below. On `default` the launch leaves the environment as it is; on a named account it unsets
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CONFIG_DIR`, then
   sets that account's.
+
+## Containers from before runner labels
+
+A runner reaps only the containers and networks that carry its own `software-factory.runner` label,
+so ones made before that label existed are reaped by none. Remove them once by hand, with every
+runner on that Docker daemon stopped (`sf-runner uninstall`, or stop the service) so none of them
+is live:
+
+```sh
+docker ps -a --filter label=software-factory.job \
+  --format '{{.Names}} {{.Label "software-factory.runner"}}' |
+  awk 'NF == 1 { print $1 }' | while read -r c; do docker rm -f "$c"; done
+docker network ls --filter label=software-factory.job \
+  --format '{{.Name}} {{.Label "software-factory.runner"}}' |
+  awk 'NF == 1 { print $1 }' | while read -r n; do docker network rm "$n"; done
+```
+
+Each lists only factory containers (or networks) with no runner label and removes them; run each
+listing (up to the `awk`) alone first to see what would go.
+
+## Sizing a check
+
+A project's checks (`checks` in `.factory/policy.json`) run within the runner's check limits: by
+default 2 CPUs, 4 GB of memory with `/tmp` a 1 GB tmpfs inside it, 4,096 processes, and 10 GB of
+disk for the check's own dir. A check killed for memory, or whose dir grows past the disk bound,
+fails with the limit named, and a person decides whether to raise the limit or have the code fixed
+(the code under check may be what used it); no fix round is spent on it. Running out of processes or
+`/tmp` is an ordinary failure, with the error in its log. Size each check to fit, with room to spare:
+
+- **Memory is the usual one.** A test runner that starts a worker per CPU sees the machine's CPUs,
+  not the container's 2, and each worker can take hundreds of MB to a GB or more (workerd, a
+  TypeScript program, a browser). Cap the workers: for a Turborepo, `turbo run test
+  --concurrency=1` (or 2); for Vitest, `--maxWorkers=2` or `VITEST_MAX_WORKERS=2` in the
+  environment; for Jest, `--maxWorkers=2`. Inside the container a runner sees all the host's cores. Count about 1.5 GB per
+  worker for a workerd or TypeScript-heavy suite, and keep the total under the limit with the
+  tmpfs's 1 GB inside it.
+- **`/tmp` is memory too.** A test that writes big fixtures to `/tmp` spends the check's memory;
+  write them under the tree instead.
+- **Processes.** 4,096 is plenty unless a test forks without bound; a `fork: Resource temporarily
+  unavailable` is that limit.
+- **Disk.** Install once, first, as a check of its own (each later check gets a copy of its tree);
+  a build that writes gigabytes of artefacts should clean up after itself.
+- **Time.** `timeoutMinutes` (at most 60) is per check; a timeout is a failure the agent sees.
+
+If a check needs more, the runner's owner raises the limit in runner.json `checks` (`cpus`,
+`memoryGb`, `tmpGb`, `maxTreeGb`); a project can't.
 
 ## Claude accounts (spec 32, ADR 0410)
 A host can run Claude with several accounts and you pick which one new jobs use. With none added,
@@ -519,6 +609,8 @@ cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver h
 |---|---|
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
+| `src/checks.ts` | The project's checks (ADR 0501): clean trees, the git guards, failures back into the same session |
+| `src/check-sandbox.ts` | The OS sandbox a local check runs in (`srt` with the harness's floor), or none: checks not run |
 | `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
 | `src/runner.ts` | Wires config → channel client + git + runner-local, its container runner with `isolation: container`, or its sprites runner with `isolation: sprites` (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |

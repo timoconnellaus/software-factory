@@ -13,6 +13,7 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
+  FactoryIcon,
   InboxIcon,
   LayoutGridIcon,
   LogOutIcon,
@@ -22,7 +23,14 @@ import {
 import { bun } from "../bridge.ts";
 import { sectionOf } from "../lib/places.ts";
 import { inboxQuery, projectsQuery, workListsQuery } from "../lib/queries.ts";
-import { orgInitial, orgOfProject, orgsWaiting, scopeInbox, waitingCount } from "../lib/scope.ts";
+import {
+  orgInitial,
+  orgOfProject,
+  orgScope,
+  orgsWaiting,
+  scopeInbox,
+  waitingCount,
+} from "../lib/scope.ts";
 import { useSession } from "../lib/session.ts";
 import { chooseOrg, updateViewState, useViewState } from "../lib/view-state.ts";
 
@@ -30,10 +38,7 @@ import { chooseOrg, updateViewState, useViewState } from "../lib/view-state.ts";
 export function useOrgScope(): string | null {
   const session = useSession();
   const chosen = useViewState((s) => s.orgId);
-  if (chosen === undefined) return session.personalOrgId;
-  // An org you've since left: show All rather than nothing.
-  if (chosen !== null && !session.orgs.some((o) => o.id === chosen)) return null;
-  return chosen;
+  return orgScope(session, chosen);
 }
 
 /** The inbox as the chosen org sees it, and the org-of-project lookup. */
@@ -187,6 +192,9 @@ export function Sidebar() {
       <SideLink to="/work" active={section === "work"} icon={<SquareCheckIcon />}>
         Work
       </SideLink>
+      <SideLink to="/factory" active={section === "factory"} icon={<FactoryIcon />}>
+        Factory
+      </SideLink>
       {pinned.length > 0 && (
         <>
           <div className="px-2 pt-4 pb-1 font-medium text-[11px] text-ink-muted">Pinned</div>
@@ -236,7 +244,7 @@ function SideLink({
   icon,
   children,
 }: {
-  to: "/" | "/work" | "/settings";
+  to: "/" | "/work" | "/factory" | "/settings";
   active: boolean;
   icon: React.ReactNode;
   children: React.ReactNode;

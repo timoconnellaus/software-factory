@@ -15,7 +15,7 @@ import {
   toStatement,
 } from "@software-factory/db";
 import type { Compilable } from "kysely";
-import type { Actor, Origin } from "./actors.ts";
+import { type Actor, type DeviceSurface, isDeviceSurface, type Origin } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import { newId } from "./ids.ts";
 import type {
@@ -26,7 +26,13 @@ import type {
   PendingActionRow,
   Scope,
 } from "./operation.ts";
-import { type Decision, decide, parseFloor, type RiskClass, strictest } from "./policy/gate.ts";
+import {
+  type Decision,
+  type FloorParse,
+  operationGate,
+  parseFloor,
+  type RiskClass,
+} from "./policy/gate.ts";
 import { getOperation } from "./registry.ts";
 import {
   activeKillSwitch,
@@ -109,10 +115,51 @@ export function canonicalJson(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
 }
 
+/**
+ * Whether a device surface's presence proof may decide `op` at all (ADR 0391, 0541), and for this
+ * input when one is given: an input the phone refuses (`mobileRefuses`) takes no proof there.
+ */
+export function presenceSurfaceAllowed(
+  op: AnyOperation,
+  surface: DeviceSurface,
+  input?: unknown,
+): boolean {
+  if (surface === "mobile" && phoneRefuses(op, input)) return false;
+  const surfaces = op.presenceSurfaces ?? (op.presenceDecidable ? ["desktop", "mobile"] : []);
+  return surfaces.includes(surface);
+}
+
+/** Whether the phone may not decide this input of `op` at all (`mobileRefuses`). */
+export function phoneRefuses(op: AnyOperation, input: unknown): boolean {
+  return (
+    !!op.mobileRefuses &&
+    input !== null &&
+    typeof input === "object" &&
+    op.mobileRefuses(input as Record<string, unknown>)
+  );
+}
+
 async function presenceAllows(op: AnyOperation, origin: Origin, rawInput: unknown) {
-  if (origin.surface !== "desktop" || !op.presenceDecidable || !origin.presence) return false;
+  if (!isDeviceSurface(origin.surface) || !origin.presence) return false;
+  if (!presenceSurfaceAllowed(op, origin.surface, rawInput)) return false;
   if (origin.presence.op !== op.name) return false;
   return origin.presence.inputDigest === (await inputDigest(rawInput));
+}
+
+/**
+ * Whether a person on this device surface may run a browser-only operation with one tap, without a
+ * presence proof (ADR 0470 and 0541 decision 5; replaces the bare `desktopDecidable` check). On the
+ * desktop: `desktopDecidable`. On the phone: that, or `mobileDecidable` (for this input).
+ */
+export function deviceDecidable(
+  op: AnyOperation,
+  surface: DeviceSurface,
+  input: Record<string, unknown>,
+): boolean {
+  if (surface === "mobile" && phoneRefuses(op, input)) return false;
+  if (op.desktopDecidable) return true;
+  if (surface !== "mobile" || !op.mobileDecidable) return false;
+  return op.mobileDecidable === true || op.mobileDecidable(input);
 }
 
 export async function runOperation<O = unknown>(
@@ -162,7 +209,10 @@ export async function runOperation<O = unknown>(
   const input = parsed.data as Record<string, unknown>;
   let risk: RiskClass = op.risk;
   const floor = parseFloor(deps.floor);
-  const redactedInput = op.redact?.input ? op.redact.input(input) : input;
+  const redacted = op.redact?.input ? op.redact.input(input) : input;
+  // A runner's input is machine chatter (manifests, event batches already kept in core_run_events):
+  // the audit keeps its digest and the ids a reader follows, not the body (ADR 0590).
+  const redactedInput = actor.type === "runner" ? await auditDigest(redacted) : redacted;
 
   let scope: Scope = {
     orgId: null,
@@ -173,6 +223,7 @@ export async function runOperation<O = unknown>(
     repositories: [],
     repository: null,
     policy: null,
+    rawPolicy: null,
     policySha: null,
     policyError: null,
     pinnedPolicy: null,
@@ -206,7 +257,11 @@ export async function runOperation<O = unknown>(
     const { role, ...resolved } = await resolveScope(
       db,
       op.scope ? await op.scope(input, db) : defaultScopeRef(input),
-      { d1, userId: actor.type === "human" ? actor.id : null },
+      {
+        d1,
+        userId: actor.type === "human" ? actor.id : null,
+        skipOrgWorkflow: op.skipsOrgWorkflow === true,
+      },
     );
     scope = resolved;
     knownRole = role;
@@ -241,15 +296,16 @@ export async function runOperation<O = unknown>(
 
   // 4c. Browser-only decisions (ADR 0340): a person decides gates in the app, never through a
   //     token another surface holds (the CLI, MCP), which an agent session might be using. A
-  //     desktop device may make a presence-decidable one with a Touch ID proof the client door
-  //     redeemed for exactly this operation and input (ADR 0391).
+  //     desktop or phone may make a presence-decidable one with a Touch ID or fingerprint proof the
+  //     client door redeemed for exactly this operation and input (ADR 0391, 0541), and a
+  //     device-decidable one with one tap (ADR 0470, 0541).
   if (
     actor.type === "human" &&
     origin.surface !== "app" &&
     origin.surface !== "test" &&
     op.browserOnly &&
     (op.browserOnly === true || op.browserOnly(input)) &&
-    !(origin.surface === "desktop" && op.desktopDecidable) &&
+    !(isDeviceSurface(origin.surface) && deviceDecidable(op, origin.surface, input)) &&
     !(await presenceAllows(op, origin, rawInput))
   ) {
     return refuse(
@@ -283,7 +339,10 @@ export async function runOperation<O = unknown>(
   //    project (runner registration, the claim loop) are judged under Cautious + the floor, and so
   //    are calls that bring the policy in (`bootstrapsPolicy`).
   const scoped = scope.project !== null && !op.bootstrapsPolicy;
-  const current = decide({
+  // A work item stays at least as strict as the config version it started under (ADR 0370 §5), and
+  // an `alwaysReview` operation always asks a person (ADR 0371): `operationGate` does both.
+  const gate = operationGate({
+    op,
     actor: actor.type,
     risk,
     policy: scoped
@@ -293,32 +352,14 @@ export async function runOperation<O = unknown>(
       : { autonomyPolicy: "cautious", overrides: {} },
     ...(scope.policyError ? { policyError: scope.policyError } : {}),
     floor,
-  });
-  // A work item stays at least as strict as the config version it started under (ADR 0370 §5):
-  // tightening reaches running work, loosening never does.
-  const pinned =
-    scoped && scope.policy && scope.pinnedPolicy
-      ? decide({
-          actor: actor.type,
-          risk,
-          policy: {
+    pinnedPolicy:
+      scoped && scope.policy && scope.pinnedPolicy
+        ? {
             autonomyPolicy: scope.pinnedPolicy.autonomyPolicy,
             overrides: scope.pinnedPolicy.overrides,
-          },
-          floor,
-        })
-      : null;
-  let gate =
-    pinned && strictest(pinned.decision, current.decision) !== current.decision
-      ? {
-          decision: pinned.decision,
-          reason: `${pinned.reason} (the version this item started under)`,
-        }
-      : current;
-  // A workflow's gate step is enforced in code, never loosened by policy (ADR 0371).
-  if (op.alwaysReview && gate.decision === "allow") {
-    gate = { decision: "review", reason: `${op.name} always asks a person` };
-  }
+          }
+        : null,
+  });
 
   // An approved re-run must match its pending action. `deny` still refuses it.
   let approval: PendingActionRow | undefined;
@@ -380,7 +421,10 @@ export async function runOperation<O = unknown>(
 
   // 8. Permission (humans).
   try {
-    await checkPermission(db, actor, op.permission, scope, knownRole);
+    const permission = op.permissionOf
+      ? await op.permissionOf(input, { scope, db })
+      : op.permission;
+    await checkPermission(db, actor, permission, scope, knownRole);
   } catch (error) {
     if (error instanceof OperationError && op.concealAs) {
       // Audited as the forbidden call it is; answered as if there were nothing there.
@@ -416,6 +460,7 @@ export async function runOperation<O = unknown>(
       now,
       reason: gate.reason,
       audit,
+      floor,
     }) as Promise<InvokeResult<O>>;
   }
 
@@ -423,11 +468,9 @@ export async function runOperation<O = unknown>(
   const statements: D1PreparedStatement[] = [];
   const messages: OutboxMessage[] = [];
   const changes: Change[] = [];
+  let changed = false;
   let subject: Partial<Scope> = { ...scope };
-  const presence =
-    origin.surface === "desktop" && op.desktopDecidable
-      ? await presenceAllows(op, origin, rawInput)
-      : false;
+  const presence = origin.presence ? await presenceAllows(op, origin, rawInput) : false;
   const ctx: HandlerContext = {
     db,
     d1,
@@ -438,8 +481,25 @@ export async function runOperation<O = unknown>(
     services: deps.services,
     scope,
     floor,
-    write: (statement) =>
-      statements.push(isPrepared(statement) ? statement : toStatement(d1, statement)),
+    write: (statement) => {
+      const prepared = isPrepared(statement) ? statement : toStatement(d1, statement);
+      if (
+        setsPendingStatus(isPrepared(statement) ? preparedSql(statement) : statement.compile().sql)
+      ) {
+        throw new Error(
+          `${op.name} writes a pending action's status with write(): use writePendingStatus`,
+        );
+      }
+      statements.push(prepared);
+    },
+    writePendingStatus: (how, statement) => {
+      if (how === "decide" && !op.decidesPending) {
+        throw new Error(
+          `${op.name} decides a pending action but doesn't declare decidesPending in the registry`,
+        );
+      }
+      statements.push(isPrepared(statement) ? statement : toStatement(d1, statement));
+    },
     guardChanged: (guardName) => statements.push(guardChanged(d1, `${op.name}:${guardName}`)),
     guardExists: (guardName, query: Compilable) => {
       const { sql, parameters } = query.compile();
@@ -451,6 +511,9 @@ export async function runOperation<O = unknown>(
     },
     emit: (message) => messages.push(message),
     change: (c) => changes.push(c),
+    changed: () => {
+      changed = true;
+    },
     subject: (ref) => {
       subject = {
         ...subject,
@@ -480,9 +543,39 @@ export async function runOperation<O = unknown>(
   }
 
   // 11. One batch: writes + guards + fence + approval consumed + audit + outbox. All or nothing.
-  const auditId = newId("audit");
+  //     A changes-only operation that changed nothing writes no audit row (ADR 0590).
+  const audited =
+    !op.audit?.changesOnly ||
+    idempotencyKey !== undefined ||
+    approval !== undefined ||
+    changed ||
+    changes.length > 0 ||
+    messages.length > 0 ||
+    op.audit.changed?.(output) === true;
+  const auditId = audited ? newId("audit") : null;
+  // Nothing to write and nothing to audit: no batch at all. Its fence and device guards only
+  // protect writes, and each guard costs an insert and a delete (rows written).
+  if (!auditId && statements.length === 0 && messages.length === 0) {
+    return { status: "ok", output: output as O, auditId: null };
+  }
   const outboxIds = messages.map(() => newId("outbox"));
+  // A desktop's or phone's call holds only while the device does: removing it while a decision is
+  // on its way refuses the decision, in the same batch that would apply it (review of spec 60 PR
+  // 1a). First, so it reads the device as it was before this call's own writes.
+  const deviceGuard =
+    actor.type === "human" && isDeviceSurface(origin.surface) && origin.deviceId
+      ? origin.deviceId
+      : null;
   const batch = [
+    ...(deviceGuard
+      ? [
+          d1
+            .prepare(
+              "INSERT INTO core_batch_guard (name, ok) SELECT 'device', EXISTS (SELECT 1 FROM core_desktop_devices WHERE id = ? AND revoked_at IS NULL)",
+            )
+            .bind(deviceGuard),
+        ]
+      : []),
     ...statements,
     ...(fence
       ? [
@@ -503,17 +596,23 @@ export async function runOperation<O = unknown>(
           guardChanged(d1, "approval used once"),
         ]
       : []),
-    audit(
-      {
-        decision: gate.decision,
-        outcome: "ok",
-        reason: approval ? `approved (${approval.id}) by ${approval.decided_by}` : gate.reason,
-        result: op.redact?.output ? op.redact.output(output) : output,
-        diff: changes,
-        auditId,
-      },
-      subject,
-    ),
+    ...(auditId
+      ? [
+          audit(
+            {
+              decision: gate.decision,
+              outcome: "ok",
+              reason: approval
+                ? `approved (${approval.id}) by ${approval.decided_by}`
+                : gate.reason,
+              result: op.redact?.output ? op.redact.output(output) : output,
+              diff: changes,
+              auditId,
+            },
+            subject,
+          ),
+        ]
+      : []),
     ...messages.map((message, i) => outboxStatement(d1, now, outboxIds[i] as string, message)),
     clearGuards(d1),
   ];
@@ -534,6 +633,18 @@ export async function runOperation<O = unknown>(
       },
       subject,
     ).run();
+    if (guard && deviceGuard) {
+      const device = await db
+        .selectFrom("core_desktop_devices")
+        .select("revoked_at")
+        .where("id", "=", deviceGuard)
+        .executeTakeFirst();
+      if (!device || device.revoked_at) {
+        throw new OperationError("forbidden", "this device was removed: nothing was changed", {
+          deviceRemoved: true,
+        });
+      }
+    }
     if (guard || unique) {
       throw new OperationError("conflict", `${op.name}: the state changed underneath this call`);
     }
@@ -565,6 +676,7 @@ async function openPendingAction(
     now: string;
     reason: string;
     audit: (fields: AuditFields, subject?: Partial<Scope>) => D1PreparedStatement;
+    floor: FloorParse;
   },
 ): Promise<InvokeResult> {
   const { op, risk, scope, actor, origin, now, reason, audit } = args;
@@ -574,7 +686,13 @@ async function openPendingAction(
   const outboxId = newId("outbox");
   const kind = op.gateKind ?? "approval";
   // The requester decides when they are an approver; otherwise the first approver.
-  const approvers = scope.orgId ? await approverIds(db, scope.orgId, scope.policy) : [];
+  const orgAdmin = op.decidedByOrgAdmin
+    ? await op.decidedByOrgAdmin(args.input, { scope, floor: args.floor, db })
+    : false;
+  // An org admin decides a loosening of the project's org workflow: the org's owners and admins.
+  const approvers = scope.orgId
+    ? await approverIds(db, scope.orgId, orgAdmin ? null : scope.policy)
+    : [];
   const requester = scope.workItem?.requester_user_id;
   // A gate step may name who decides (ADR 0371); they must be one of the project's approvers.
   const named = op.assignee?.(args.input) ?? null;
@@ -610,8 +728,8 @@ async function openPendingAction(
     d1
       .prepare(
         `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, workflow_id, kind, operation, risk,
-           actor_type, actor_id, input, reason, assignee_user_id, timeout_at, policy_sha, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           actor_type, actor_id, input, reason, assignee_user_id, timeout_at, policy_sha, created_at, decider)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         pendingActionId,
@@ -630,6 +748,7 @@ async function openPendingAction(
         timeoutAt,
         scope.policySha,
         now,
+        orgAdmin ? "org-admin" : null,
       ),
     ...(scope.workItemId
       ? [
@@ -727,6 +846,28 @@ export function outboxStatement(
     );
 }
 
+/**
+ * Whether a statement sets a pending action's `status` (ADR 0541 amendment, third review): an
+ * UPDATE of core_pending_actions whose SET clause names `status`. Its WHERE clause may.
+ */
+export function setsPendingStatus(sql: string): boolean {
+  const update =
+    /^\s*update\s+(?:or\s+\w+\s+)?"?core_pending_actions"?\s+set\s+([\s\S]*?)(?:\swhere\s[\s\S]*)?$/i.exec(
+      sql,
+    );
+  return !!update && /(?:^|[\s,(])"?status"?\s*=/i.test(update[1] ?? "");
+}
+
+/**
+ * A prepared statement's SQL. workerd's D1PreparedStatement keeps it as `statement`; anything
+ * without one is treated as unreadable, which `write()` refuses rather than lets through.
+ */
+function preparedSql(statement: D1PreparedStatement): string {
+  const sql = (statement as D1PreparedStatement & { statement?: unknown }).statement;
+  if (typeof sql !== "string") throw new Error("a prepared statement without its SQL");
+  return sql;
+}
+
 function isPrepared(value: Compilable | D1PreparedStatement): value is D1PreparedStatement {
   return typeof (value as D1PreparedStatement).bind === "function";
 }
@@ -751,4 +892,23 @@ function refusalCode(outcome: Outcome) {
     default:
       return "denied" as const;
   }
+}
+
+/** The fields of a runner's input the audit keeps beside the digest: what a reader follows. */
+const DIGEST_KEEPS = ["jobId", "fencingToken", "claimId", "workItemId"] as const;
+
+/** What the audit keeps of a runner's input (ADR 0590): its digest and size, and the ids a reader follows. */
+export async function auditDigest(input: unknown): Promise<Record<string, unknown>> {
+  const kept: Record<string, unknown> = {};
+  if (input && typeof input === "object") {
+    for (const k of DIGEST_KEEPS) {
+      const v = (input as Record<string, unknown>)[k];
+      if (v !== undefined) kept[k] = v;
+    }
+  }
+  return {
+    sha256: await inputDigest(input),
+    bytes: new TextEncoder().encode(canonicalJson(input ?? {})).length,
+    ...kept,
+  };
 }

@@ -84,7 +84,13 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // deliver it, it would hold a slot for ever. Fail it, visibly, instead.
       if (!found || FINISHED.has(found.status)) {
         if (message.payload.type.startsWith("release-")) {
-          await failDeadRelease(env, message.payload.instanceId, found?.status ?? "missing");
+          // The item is named by the event (`release-<item>`): its instance may be a later one,
+          // after it was shaped again (spec 52, Q4).
+          await failDeadRelease(
+            env,
+            message.payload.type.slice("release-".length),
+            found?.status ?? "missing",
+          );
         }
         return;
       }
@@ -127,6 +133,10 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // The runner host's held steer call waits on the work item's hub (ADR 0400). A wake, not a
       // change: open Planning tabs don't re-read.
       await planningHub(env, message.payload.workItemId).wake();
+      return;
+    case "device.revoked":
+      // A revoked device's live socket closes now, not when it next calls (ADR 0541).
+      await clientHub(env, message.payload.userId).closeDevice(message.payload.deviceId);
       return;
     case "notify":
       // To the person's open desktop apps (spec 40 M2b). Web push arrives with spec 15; the inbox

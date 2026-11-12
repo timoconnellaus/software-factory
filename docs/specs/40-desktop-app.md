@@ -232,8 +232,36 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
   (the seal covers `version.json`; an old signed build sold as 9.9.9 is refused); `codesign`/`spctl` accepting a staged `….app.prepared-<hash>` copy of a real signed
   build, and refusing it with a wrong Team ID or one changed file, was checked on the M5
   (2026-11-12).
+- **The version handshake** ([ADR 0393](../adr/0393-the-client-door-version-handshake.md)): the app
+  sends `x-sf-client-protocol` (`DOOR_PROTOCOL`, `src/bun/protocol.ts`) on every door request and
+  the live socket. Below sf-engine's `DESKTOP_MIN_PROTOCOL` (empty: serve every build) a desktop
+  sign-in or token gets 426 `update_required`. The check is one gate at the top of the door's
+  handler, so every route and socket gets it (spec 42's terminal socket too; its WebSocket client
+  must send the protocol headers). A floor above the newest protocol the engine knows is ignored,
+  not enforced. The app checks for an update (at most every 10 minutes) and the view shows an
+  **Update required** screen instead of everything else: *Restart to update* when a verified update
+  is staged (waiting for the runner's jobs, or naming what restarting now cancels), otherwise the
+  download link and *Try again*. Recovery from a wrong floor is on the engine (ADR 0393). Tested in
+  `apps/engine/test/desktop.test.ts` and `apps/desktop/test` (`update-required.test.ts`,
+  `live.test.ts`).
+  - The live socket: the WebSocket API hides a refused upgrade's status, so a socket that closes
+    without ever opening asks the same URL over plain HTTPS once; a 426 `update_required` there
+    shows the screen and stops reconnecting (*Try again* starts it again). Any other failure
+    reconnects with backoff as before.
+  - The terminal socket (spec 42) does the same: it sends the protocol headers on its upgrade, and
+    one that never opened asks the door why; `update_required` closes it with *Update required*
+    and shows the screen (`terminal.test.ts`).
+  - *Restart to update* first asks the runner to stop claiming and shows **Waiting for the
+    runner** (the menu, and the screen with a countdown) until it answers, for at most 30 s
+    (`DRAIN_TIMEOUT_MS`, `restart-update.ts`). A runner that doesn't answer in time isn't stopped:
+    the app says so and updates once it is idle (or *Restart anyway*). Terminals close with the
+    live socket before the restart, and on quit.
+  - A floor can't outrun the builds: each release writes `<channel>-macos-arm64-protocol.json`
+    (the live build's version and `DOOR_PROTOCOL`) after its manifests, and
+    `scripts/deploy/desktop-floor.ts`, in CI and before the deploy, refuses a
+    `DESKTOP_MIN_PROTOCOL` above the protocol of the newest build on any channel that has
+    published, failing closed (no protocol file for the live version, an unreadable bucket).
 - **Not yet:**
-  - The `update_required` version handshake.
   - **M4b, the Secure Enclave key:** its own section below. Until it ships, signed builds sign in
     with a software key, `DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in production, and gate decisions
     are made on the website. (2026-11-12, tested on the M5: no keychain restriction protects the

@@ -2,9 +2,11 @@
 // triage (and planning when the size needs it) while the item is unreleased and not active, waits
 // at `release: wait`, and goes on to delivery when it is released and pulled.
 import { env } from "cloudflare:workers";
+import { SOFTWARE } from "@software-factory/core/stages";
 import type { Job } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { pullQueuedWork } from "../src/pull.ts";
+import { definitionFor, expectPhasesAsDefined, expectStagesAsDefined } from "./definition.ts";
 import {
   BALANCED,
   build,
@@ -106,11 +108,8 @@ describe("shaping before release (ADR 0493)", () => {
   });
 
   it("shapes a medium item through interview planning and the spec gate, then delivers it on release", async () => {
-    const w = await world({
-      ...BALANCED,
-      workflow: "Ship",
-      workflows: [{ name: "Ship", slots: {} }],
-    });
+    const policy = { ...BALANCED, workflow: "Ship", workflows: [{ name: "Ship", slots: {} }] };
+    const w = await world(policy);
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
       { projectId: w.projectId, title: "Add CSV export" },
@@ -183,6 +182,12 @@ describe("shaping before release (ADR 0493)", () => {
       return build();
     });
     expect(built.stage).toBe("build");
+    // The compiled definition (spec 52 PR (a)): spec runs for a medium item, and exactly its
+    // shaping stages ran before release.
+    const { def } = definitionFor(policy, "change");
+    // The test stops once build has run: the stages up to build, exactly.
+    await expectStagesAsDefined(item.workItemId, def, "medium", { until: "build" });
+    await expectPhasesAsDefined(item.workItemId, def, "medium");
     expect(
       await first<{ n: number }>(
         "SELECT count(*) AS n FROM core_jobs WHERE work_item_id = ? AND stage = 'triage'",
@@ -231,5 +236,64 @@ describe("shaping before release (ADR 0493)", () => {
       item.workItemId,
     );
     expect(row?.status_reason).toMatch(/shaping Workflow had terminated/);
+  });
+});
+
+describe("a shaped item whose workflow's shaping changed (spec 52, Q4)", () => {
+  it("is flagged at release; shaped again, a new Workflow instance shapes it under the current version", async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship" });
+    const ship = (requiredFrom: string) => ({
+      ...SOFTWARE,
+      id: "wf_ship",
+      name: "Ship",
+      stages: SOFTWARE.stages.map((s) =>
+        s.id === "spec" ? { ...s, settings: { requiredFrom } } : s,
+      ),
+    });
+    await ok(
+      "workflow.save",
+      { orgId: w.orgId, baseVersion: 0, workflow: ship("medium") },
+      w.human,
+    );
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Reshape me" },
+      w.human,
+    );
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await itemStatus(item.workItemId, "ready");
+
+    // The org now wants a spec from small: the shaping stages changed. Release flags it.
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 1, workflow: ship("small") }, w.human);
+    const flagged = await ok<{ status: string; releaseFlag?: unknown }>(
+      "workItem.release",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    expect(flagged).toMatchObject({ status: "ready", releaseFlag: expect.any(Object) });
+
+    // Shape it again: a new instance runs the current workflow's shaping stages.
+    const again = await ok<{ status: string }>(
+      "workItem.releaseChoice",
+      { workItemId: item.workItemId, choice: "reshape" },
+      w.human,
+    );
+    expect(again.status).toBe("shaping");
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    // Under the current version a small item now needs a spec: its shaping goes on to planning,
+    // which it skipped the first time.
+    await waitFor("a planning job for the reshaped item", () =>
+      first(
+        "SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'planning'",
+        item.workItemId,
+      ),
+    );
+    const row = await first<{ workflow_id: string; status: string; org_config_version: number }>(
+      "SELECT workflow_id, status, org_config_version FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
+    expect(row).toMatchObject({ status: "shaping", org_config_version: 2 });
+    expect(row?.workflow_id).not.toBe(item.workItemId);
   });
 });

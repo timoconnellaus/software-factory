@@ -21,16 +21,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@software-factory/ui/components/dialog";
+import { Kbd } from "@software-factory/ui/components/kbd";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
-import { PinIcon, PinOffIcon } from "lucide-react";
-import { useState } from "react";
+import { Maximize2Icon, PinIcon, PinOffIcon, XIcon } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { Attachments } from "../components/attachments.tsx";
+import {
+  BacklogDetails,
+  isPreRelease,
+  NextStep,
+  PRE_STATE_LABEL,
+  PRE_STATES,
+} from "../components/item-backlog.tsx";
 import { OpenTerminal } from "../components/open-terminal.tsx";
 import { Planning } from "../components/planning.tsx";
 import { ReviewPacket } from "../components/review-packet.tsx";
@@ -39,15 +47,26 @@ import { Chip, PageArea, Panel, SectionTitle } from "../components/shell-list.ts
 import { Timeline } from "../components/timeline.tsx";
 import { ExternalLink } from "../lib/external.tsx";
 import { OpError, op } from "../lib/op.ts";
+import { closeTerminal } from "../lib/open-terminals.ts";
+import {
+  PANEL_FULL_BELOW,
+  PANEL_MIN,
+  panelWidth,
+  rememberWidth,
+  storedWidth,
+} from "../lib/panel.ts";
 import {
   attachmentsQuery,
+  boardsQuery,
   planningQuery,
   runnersQuery,
   timelineQuery,
   useRefreshAfterDecision,
+  workflowQuery,
   workItemQuery,
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
+import { isTypingTarget } from "../lib/shortcuts.ts";
 import { togglePin, updateViewState, useViewState } from "../lib/view-state.ts";
 import { workLayout } from "./_work.tsx";
 
@@ -55,6 +74,11 @@ export const TABS = ["overview", "plan", "runs", "review", "activity"] as const;
 export type Tab = (typeof TABS)[number];
 /** The tab names before spec 41, which links and bookmarks may still carry. */
 const OLD: Record<string, Tab> = { timeline: "activity", planning: "plan" };
+
+/** Before release an item has no runs or review yet (design ItemBacklog). */
+export const PRE_RELEASE_TABS: readonly Tab[] = ["overview", "plan", "activity"];
+export const tabsFor = (status: string): readonly Tab[] =>
+  isPreRelease(status) ? PRE_RELEASE_TABS : TABS;
 
 export function parseTab(v: unknown): Tab | undefined {
   if (typeof v !== "string") return undefined;
@@ -71,9 +95,16 @@ export const Route = createRoute({
   },
   // Everything the page renders, in one request: the item (with its spec, questions, gates, runs
   // and packet), its timeline, the runners (for runner names), and the planning view (spec 20).
-  loader: ({ context: { queryClient }, params }) =>
+  loader: ({ context: { queryClient, session }, params }) =>
     Promise.all([
-      queryClient.ensureQueryData(workItemQuery(params.id)),
+      // The org's board: what an item before release can wait for (its edit dialog).
+      queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
+      // Then its project's workflow, whose name the Details panel shows (spec 52 PR (d)).
+      queryClient
+        .ensureQueryData(workItemQuery(params.id))
+        .then((d) =>
+          queryClient.ensureQueryData(workflowQuery(d.item.projectId)).catch(() => null),
+        ),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
       queryClient.ensureQueryData(attachmentsQuery(params.id)).catch(() => null),
@@ -111,57 +142,320 @@ function WorkItemError({ error }: { error: unknown }) {
 
 function WorkItemPage() {
   const { id } = Route.useParams();
-  const { tab = "overview" } = Route.useSearch();
+  const { tab: asked = "overview" } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const { data: d } = useSuspenseQuery(workItemQuery(id));
   const focus = useViewState((s) => s.focus);
+  const tab = asked;
 
   // Focus mode: the planning has the whole window (the shell hides its chrome).
   if (focus === id) return <Planning detail={d} mode="focus" />;
 
   const go = (t: Tab) => navigate({ search: { tab: t }, replace: true });
+  return <ItemView detail={d} tab={tab} onTab={go} />;
+}
+
+/** The side panel's own controls (spec 41 slice 7): back to full size, and close. */
+export interface PanelControls {
+  onExpand: () => void;
+  onClose: () => void;
+}
+
+/**
+ * A work item: its header, stage strip, tabs and the open tab. The page renders it full size; the
+ * Work board renders the same view in its side panel (`panel`), with Expand and Close in the header.
+ */
+export function ItemView({
+  detail: d,
+  tab: asked,
+  onTab,
+  panel,
+}: {
+  detail: WorkItemDetail;
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  panel?: PanelControls;
+}) {
+  const tab = tabsFor(d.item.status).includes(asked) ? asked : "overview";
+  const scroller = useRef<HTMLDivElement>(null);
+  // Expanded from the side panel: the page opens where the panel was scrolled to.
+  useLayoutEffect(() => {
+    if (panel || carried?.id !== d.item.id) return;
+    if (scroller.current) scroller.current.scrollTop = carried.top;
+    carried = null;
+  }, [panel, d.item.id]);
   const head = (
-    <div className="flex flex-col gap-3 px-[22px] pt-[18px]">
-      <Header detail={d} />
+    <div className={cn("flex flex-col gap-3 pt-[18px]", panel ? "px-[18px]" : "px-[22px]")}>
+      <Header detail={d} inPanel={!!panel} />
       <StageStrip detail={d} />
-      <TabBar detail={d} tab={tab} onTab={go} />
+      <TabBar detail={d} tab={tab} onTab={onTab} />
     </div>
   );
+  // In the panel the view is the panel's content, not the page: one main landmark (the list's).
+  const Body = panel ? "div" : "main";
 
   if (tab === "plan") {
     return (
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-page" data-testid="page">
+      <Body
+        className="flex min-h-0 min-w-0 flex-1 flex-col bg-page"
+        data-testid={panel ? "panel-body" : "page"}
+      >
         {head}
         <div className="flex min-h-0 flex-1 flex-col">
           <Planning detail={d} mode="docked" />
         </div>
-      </main>
+      </Body>
     );
   }
   return (
-    <main className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-page" data-testid="page">
+    <Body
+      ref={scroller}
+      className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-page"
+      data-testid={panel ? "panel-body" : "page"}
+    >
       {head}
-      <div className="flex flex-col gap-4 px-[22px] pt-4 pb-7">
-        {tab === "overview" && <Overview detail={d} onTab={go} />}
+      <div className={cn("flex flex-col gap-4 pt-4 pb-7", panel ? "px-[18px]" : "px-[22px]")}>
+        {tab === "overview" && <Overview detail={d} onTab={onTab} />}
         {tab === "runs" && <Runs detail={d} />}
         {tab === "review" && <ReviewPacket detail={d} />}
         {tab === "activity" && <Activity detail={d} />}
       </div>
-    </main>
+    </Body>
   );
 }
 
-function Header({ detail }: { detail: WorkItemDetail }) {
+/** Where the panel was scrolled when it expanded, for the page to open there. */
+let carried: { id: string; top: number } | null = null;
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * The item side panel (spec 41 slice 7, design WorkActivePanel, README "The item side panel"): the
+ * same view as the page, beside the Work list, which stays readable. A complementary region named
+ * by the item; it opens at once with its skeleton and loads inside. Opening moves focus into it,
+ * Tab stays inside it (and its terminal) while it is open, and the list returns focus to the card
+ * when it closes. Esc closes it and ⌘↵ expands it to the page, neither while typing in a field, a
+ * dialog is open, or the terminal has the keyboard (the terminal dock takes Esc first). Its left
+ * edge drags to resize; the width is remembered. Closing it, or showing another item, closes its
+ * terminal and so releases the socket; expanding keeps the tab, the scroll and the terminal.
+ */
+export function ItemPanel({
+  id,
+  tab,
+  onTab,
+  onClose,
+  onExpand,
+}: {
+  id: string;
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  onClose: () => void;
+  onExpand: () => void;
+}) {
+  const item = useQuery(workItemQuery(id));
+  const projects = useProjects();
+  const aside = useRef<HTMLElement>(null);
+  const [wanted, setWanted] = useState(storedWidth);
+  const [room, setRoom] = useState({ page: 1000, list: 0 });
+  const expanding = useRef(false);
+  const expand = () => {
+    expanding.current = true;
+    const body = aside.current?.querySelector<HTMLElement>("[data-testid=panel-body]");
+    carried = { id, top: body?.scrollTop ?? 0 };
+    onExpand();
+  };
+  // Focus mode (F, or Focus on the Plan tab) gives planning the whole window: from the panel, the
+  // page opens first and focus applies there.
+  const focus = useViewState((s) => s.focus);
+  const keys = useRef({ onClose, expand });
+  keys.current = { onClose, expand };
+  useEffect(() => {
+    if (focus === id) keys.current.expand();
+  }, [focus, id]);
+  // Opening moves focus into the panel. Closing it, or showing another item (the list remounts the
+  // panel per item), closes this item's terminal: its socket is released. Expanding keeps it.
+  useEffect(() => {
+    aside.current?.focus({ preventScroll: true });
+    return () => {
+      if (!expanding.current) closeTerminal(id);
+    };
+  }, [id]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (document.querySelector("[role=dialog], [data-radix-popper-content-wrapper]")) return;
+      if (isTypingTarget(e.target as Element | null)) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        keys.current.onClose();
+      } else if (e.key === "Enter" && e.metaKey) {
+        e.preventDefault();
+        keys.current.expand();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // The room it has: the page area it sits over, and the list beside it.
+  useEffect(() => {
+    const host = aside.current?.parentElement;
+    if (!host) return;
+    const measure = () =>
+      setRoom({
+        page: host.clientWidth,
+        list: document.querySelector<HTMLElement>("[data-nested-list]")?.offsetWidth ?? 0,
+      });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+  const full = room.page < PANEL_FULL_BELOW;
+  const width = panelWidth(wanted, room.page, room.list);
+
+  /** Tab and Shift-Tab cycle inside the panel and its terminal while it is open. */
+  const trapTab = (e: React.KeyboardEvent) => {
+    if (e.key !== "Tab" || !aside.current) return;
+    const dock = document.querySelector<HTMLElement>("[data-testid=terminal-dock]");
+    const all = [
+      ...aside.current.querySelectorAll<HTMLElement>(FOCUSABLE),
+      ...(dock ? dock.querySelectorAll<HTMLElement>(FOCUSABLE) : []),
+    ].filter((el) => el.offsetParent !== null);
+    const first = all[0];
+    const last = all.at(-1);
+    if (!first || !last) return;
+    const at = document.activeElement;
+    if (e.shiftKey && (at === first || at === aside.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && at === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const right = aside.current?.getBoundingClientRect().right ?? window.innerWidth;
+    let next = wanted;
+    const move = (m: PointerEvent) => {
+      next = Math.round(right - m.clientX);
+      setWanted(next);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      remember(panelWidth(next, room.page, room.list));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const remember = (w: number) => {
+    setWanted(w);
+    rememberWidth(w);
+  };
+  const title = item.data ? `#${item.data.item.number} ${item.data.item.title}` : "Work item";
+  const project = projects.data?.find((p) => p.id === item.data?.item.projectId);
+
+  return (
+    <aside
+      ref={aside}
+      aria-label={title}
+      tabIndex={-1}
+      onKeyDown={trapTab}
+      className="absolute inset-y-2 right-2 z-30 flex flex-col overflow-hidden rounded-xl bg-page shadow-[0_0_0_1px_var(--line),0_16px_48px_rgba(0,0,0,0.18)] outline-none"
+      style={{ width: full ? "calc(100% - 16px)" : width }}
+      data-testid="item-panel"
+      data-terminal-host=""
+      data-width={full ? "full" : width}
+    >
+      {!full && (
+        // biome-ignore lint/a11y/useSemanticElements: a draggable splitter has no native element.
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the panel"
+          aria-valuenow={width}
+          aria-valuemin={PANEL_MIN}
+          aria-valuemax={Math.floor((room.page + room.list) / 2)}
+          tabIndex={0}
+          onPointerDown={startResize}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft") remember(panelWidth(width + 40, room.page, room.list));
+            if (e.key === "ArrowRight") remember(panelWidth(width - 40, room.page, room.list));
+          }}
+          className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-line focus-visible:bg-ring/40 focus-visible:outline-none"
+          data-testid="panel-resize"
+        />
+      )}
+      <div className="flex h-11 flex-none items-center gap-2 border-line-soft border-b px-3.5">
+        <span className="min-w-0 truncate text-ink-3 text-xs" data-testid="panel-crumbs">
+          {project?.name ?? "Project"} <span className="text-ink-muted">›</span>{" "}
+          <span className="font-mono">{item.data ? `#${item.data.item.number}` : ""}</span>
+        </span>
+        <span className="flex-1" />
+        <Button
+          variant="ghost"
+          size="md"
+          title="Open it full size (⌘↵)"
+          onClick={expand}
+          data-testid="panel-expand"
+        >
+          <Maximize2Icon />
+          Expand
+          <Kbd className="ml-0.5">⌘↵</Kbd>
+        </Button>
+        <span aria-hidden className="mx-0.5 h-4 w-px bg-line" />
+        <Button
+          variant="ghost"
+          size="icon-md"
+          aria-label="Close the panel (Esc)"
+          title="Close (Esc)"
+          onClick={onClose}
+          data-testid="panel-close"
+        >
+          <XIcon />
+        </Button>
+      </div>
+      {item.data ? (
+        <ItemView
+          detail={item.data}
+          tab={tab}
+          onTab={onTab}
+          panel={{ onClose, onExpand: expand }}
+        />
+      ) : item.error ? (
+        <div className="flex flex-col gap-2 p-5">
+          <p className="m-0 text-ink-3">{errorMessage(item.error)}</p>
+          <Button variant="outline" size="md" className="w-fit" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 p-5" data-testid="panel-loading">
+          <Skeleton className="h-6 w-60" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-48 w-full" />
+        </div>
+      )}
+    </aside>
+  );
+}
+
+/** The item's title and actions. In the side panel its bar has the crumbs and Close already. */
+function Header({ detail, inPanel = false }: { detail: WorkItemDetail; inPanel?: boolean }) {
   const { item } = detail;
   const projects = useProjects();
   const project = projects.data?.find((p) => p.id === item.projectId);
   const pinned = useViewState((s) => s.pins.includes(item.id));
   const [cancel, setCancel] = useState(false);
   const active = ["running", "waiting", "paused"].includes(item.status);
+  const pre = isPreRelease(item.status);
   return (
     <header className="flex flex-wrap items-end gap-2.5">
       <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-1">
-        <div className="text-ink-3 text-xs" data-testid="crumbs">
+        <div className={cn("text-ink-3 text-xs", inPanel && "sr-only")} data-testid="crumbs">
           <Link to="/work" className="underline">
             Work
           </Link>{" "}
@@ -199,7 +493,7 @@ function Header({ detail }: { detail: WorkItemDetail }) {
           {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
         </Button>
         <OpenTerminal detail={detail} />
-        {active && (detail.viewer.isRequester || detail.viewer.isApprover) && (
+        {(active || pre) && (detail.viewer.isRequester || detail.viewer.isApprover) && (
           <Button
             variant="outline"
             size="md"
@@ -211,7 +505,12 @@ function Header({ detail }: { detail: WorkItemDetail }) {
           </Button>
         )}
       </div>
-      <CancelDialog open={cancel} onOpenChange={setCancel} workItemId={item.id} />
+      <CancelDialog
+        open={cancel}
+        onOpenChange={setCancel}
+        workItemId={item.id}
+        started={!pre || item.status === "shaping"}
+      />
     </header>
   );
 }
@@ -220,10 +519,13 @@ function CancelDialog({
   open,
   onOpenChange,
   workItemId,
+  started,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   workItemId: string;
+  /** Whether its Workflow runs (in the factory, or shaping): else nothing has run yet. */
+  started: boolean;
 }) {
   const refresh = useRefreshAfterDecision();
   const [busy, setBusy] = useState(false);
@@ -246,8 +548,9 @@ function CancelDialog({
         <DialogHeader>
           <DialogTitle>Cancel this work item?</DialogTitle>
           <DialogDescription>
-            Its Workflow and runs stop, its runner slot is freed and its open gates close. This
-            can't be undone.
+            {started
+              ? "Its Workflow and runs stop, its runner slot is freed and its open gates close. This can't be undone."
+              : "Nothing has run yet. It leaves the list and shows under Stopped. This can't be undone."}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -270,6 +573,7 @@ function CancelDialog({
 
 /** The stages as a strip of dots: done, now, to come, skipped (with triage's reason). */
 export function StageStrip({ detail }: { detail: WorkItemDetail }) {
+  if (isPreRelease(detail.item.status)) return <PreReleaseStrip detail={detail} />;
   const steps = stageSteps(detail);
   const waiting = detail.item.status === "waiting";
   return (
@@ -316,6 +620,49 @@ export function StageStrip({ detail }: { detail: WorkItemDetail }) {
   );
 }
 
+/**
+ * Before release: the fixed work-management states (spec 50), the one it is in now, then the
+ * workflow's stages to come. Planning shows only while it is being shaped.
+ */
+function PreReleaseStrip({ detail }: { detail: WorkItemDetail }) {
+  const status = detail.item.status;
+  const states: string[] =
+    status === "shaping" ? ["backlog", "shaping", "ready", "queued"] : [...PRE_STATES];
+  const at = states.indexOf(status);
+  const toCome = stageSteps(detail).filter((s) => s.stage !== "intake");
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-[18px] gap-y-1 rounded-[10px] bg-panel px-3.5 py-2.5 shadow-panel"
+      data-testid="stage-steps"
+    >
+      {states.map((s, i) => (
+        <span
+          key={s}
+          data-state={i < at ? "done" : i === at ? "now" : "todo"}
+          className={cn(
+            "inline-flex items-center gap-1.5",
+            i > at && "text-ink-3",
+            i === at && "font-semibold",
+          )}
+        >
+          <StatusDot status={i < at ? "done" : i === at ? "running" : "idle"} />
+          {PRE_STATE_LABEL[s]}
+        </span>
+      ))}
+      {toCome.map((s) => (
+        <span
+          key={s.stage}
+          data-state="todo"
+          className="inline-flex items-center gap-1.5 text-ink-3"
+        >
+          <StatusDot status="idle" />
+          {STAGE_LABEL[s.stage]}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function TabBar({
   detail,
   tab,
@@ -331,7 +678,7 @@ function TabBar({
   const reviewWaits = detail.gates.some((g) => g.kind === "merge" && g.status === "pending");
   return (
     <div className="flex gap-1 border-line border-b" role="tablist" data-testid="item-tabs">
-      {TABS.map((t) => (
+      {tabsFor(detail.item.status).map((t) => (
         <button
           key={t}
           type="button"
@@ -365,7 +712,7 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
   const openQuestions = detail.questions.filter((q) => q.status === "open").length;
   return (
     <div className="flex flex-wrap items-start gap-[18px]">
-      <div className="flex min-w-0 flex-[999_1_400px] flex-col gap-[18px]">
+      <div className="flex min-w-0 flex-[999_1_360px] flex-col gap-[18px]">
         {mergeGate && packet && (
           <Panel needsYou className="gap-2.5 px-3.5 py-3.5" data-testid="waiting-on-you">
             <div className="flex items-center gap-2 font-semibold text-[17px]">
@@ -423,7 +770,11 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
               ))}
             </div>
           ) : (
-            <Panel className="text-ink-muted">None yet: they come with the spec.</Panel>
+            <Panel className="text-ink-muted">
+              {isPreRelease(detail.item.status)
+                ? "None yet: they come with its plan, when it is shaped or once it is released."
+                : "None yet: they come with the spec."}
+            </Panel>
           )}
         </section>
         <Attachments
@@ -433,8 +784,17 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
         />
       </div>
       <aside className="flex min-w-[260px] flex-[1_1_272px] flex-col gap-3">
-        <Details detail={detail} />
-        <Taken detail={detail} onTab={onTab} />
+        {isPreRelease(detail.item.status) ? (
+          <>
+            <NextStep detail={detail} />
+            <BacklogDetails detail={detail} />
+          </>
+        ) : (
+          <>
+            <Details detail={detail} />
+            <Taken detail={detail} onTab={onTab} />
+          </>
+        )}
       </aside>
     </div>
   );
@@ -489,6 +849,14 @@ function Details({ detail }: { detail: WorkItemDetail }) {
         )}
         <Row label="Started">{ago(item.createdAt)}</Row>
         {item.statusReason && <Row label="Now">{item.statusReason}</Row>}
+        {item.readinessHint && (
+          // The readiness pre-check's hint (spec 23): advice for the person, never a block.
+          <Row label="Readiness">
+            <span className="text-muted-foreground" data-testid="readiness-hint">
+              {item.readinessHint}
+            </span>
+          </Row>
+        )}
       </Rows>
     </Panel>
   );
@@ -521,9 +889,14 @@ function Taken({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) => v
  */
 function WorkflowLine({ detail }: { detail: WorkItemDetail }) {
   const { item } = detail;
+  // The item pins the workflow by what the config names (an org workflow's id, `wf_…`); people
+  // read its name, which `project.workflow` gives as its label.
+  const project = useQuery(workflowQuery(item.projectId));
+  const named = project.data?.workflow;
+  const label = named && item.workflow === named.name ? named.label : item.workflow;
   return (
     <span data-testid="work-item-workflow">
-      {item.workflow ?? "The skeleton alone"}
+      {label ?? "The skeleton alone"}
       {item.workflowReason && (
         <span className="mt-0.5 block text-ink-3 text-xs">{item.workflowReason}</span>
       )}

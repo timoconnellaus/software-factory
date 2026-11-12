@@ -148,7 +148,7 @@ export const adjudicatorRequest = defineOperation({
     if (existing) return { adjudicationId: existing.id, reason: "already asked" };
     const item = await ctx.db
       .selectFrom("core_work_items")
-      .select(["number", "title", "body", "current_spec_id"])
+      .select(["number", "title", "body", "current_spec_id", "status"])
       .where("id", "=", pa.work_item_id)
       .executeTakeFirstOrThrow();
     let detail: string;
@@ -181,6 +181,8 @@ export const adjudicatorRequest = defineOperation({
         session_timeout_ms: 30 * 60_000,
         created_at: ctx.now,
         pool: "heavy",
+        // Shaping work is claimed after released work (ADR 0493, migration 0363).
+        shaping: item.status === "shaping" ? 1 : 0,
       }),
     );
     ctx.write(
@@ -206,6 +208,7 @@ export const adjudicatorRequest = defineOperation({
 
 export const adjudicatorRecord = defineOperation({
   name: "adjudicator.record",
+  decidesPending: true,
   description:
     "Record the adjudicator's verdict on a gate once its job has handed back (ADR 0374). In active mode, with the record to show for it, an `approve` approves the gate (every fifth is left to a person as a check). A `defer` always leaves it to a person, and it never rejects. If its precision has dropped below the bar, the kind goes back to shadow mode.",
   risk: "write",

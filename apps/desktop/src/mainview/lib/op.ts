@@ -54,12 +54,19 @@ export type ReadOpName =
   | "workItem.attachment.list"
   | "workItem.attachment.get"
   | "planning.get"
+  | "artifact.get"
   | "project.list"
   | "github.repos"
   | "setup.status"
   | "runner.list"
   | "protection.ruleset"
-  | "desktopDevice.list";
+  | "desktopDevice.list"
+  | "workItem.board"
+  | "config.get"
+  | "project.workflow"
+  | "mergeQueue.list"
+  | "repository.list"
+  | "cliToken.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

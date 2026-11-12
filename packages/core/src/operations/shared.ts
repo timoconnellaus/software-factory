@@ -37,6 +37,17 @@ export const STAGE_PHASE: Record<(typeof STAGES)[number], "shaping" | "delivery"
   done: "delivery",
 };
 
+/** Each stage's name as people read it (the built-in workflow's; ADR 0493's stages). */
+export const STAGE_LABEL: Record<(typeof STAGES)[number], string> = {
+  intake: "Intake",
+  triage: "Triage",
+  spec: "Spec",
+  build: "Build",
+  verify: "Verify",
+  merge: "Merge",
+  done: "Done",
+};
+
 export function requireWorkItem(ctx: HandlerContext): WorkItemRow {
   const item = ctx.scope.workItem;
   if (!item) throw new OperationError("not_found", "no such work item");
@@ -297,7 +308,8 @@ export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: stri
       }))
       .where("work_item_id", "=", w.id),
   );
-  ctx.write(
+  ctx.writePendingStatus(
+    "close",
     ctx.db
       .updateTable("core_pending_actions")
       .set({
@@ -354,3 +366,12 @@ export async function projectForRepo(
 ): Promise<string> {
   return (await repositoryForRepo(db, repo)).projectId;
 }
+
+/**
+ * A run's events and steers move to the archive (R2) this many days after it ended (sf-engine's
+ * retention.ts); run.live reads a run that ended longer ago than this from the archive as well.
+ */
+export const RUN_ARCHIVE_AFTER_DAYS = 30;
+
+/** The most events one run.reportEvents call takes, so the most log lines one stored row holds. */
+export const RUN_EVENTS_BATCH_MAX = 500;

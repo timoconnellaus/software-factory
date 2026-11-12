@@ -65,3 +65,8 @@ temporary SHAs, a change to ADR 0037's verify-per-head-SHA model.
   hits the same limit. Granting `workflows` is a separate decision.
 - GitHub's merge queue can become an alternative backend for org-owned repos. The Workflow only
   sees `enter`, `position`, `update` and `leave`.
+
+**Amended 2026-11-12** (spec [53](../specs/53-the-babysitter-delivers-approved-work.md), proposed):
+the queue becomes the babysitter's delivery table. From Workflow v11 an item no longer lands itself:
+the per-repository deliverer updates and merges the head (ADR 0580), and §3's carry-over also requires
+an unchanged change digest and checks passing again on the new head (ADR 0582).

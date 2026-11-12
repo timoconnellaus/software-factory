@@ -123,7 +123,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.
-- **Desktop app** (`desktop-app`, block W, spec [40](specs/40-desktop-app.md), ADRs 0390–0392): a macOS app
+- **Desktop app** (`desktop-app`, block W, spec [40](specs/40-desktop-app.md), ADRs 0390–0393): a macOS app
   on Electrobun that is the daily UI and supervises the runner; the website shrinks to auth. The spike
   (`spikes/electrobun`, #44) showed a Keychain token can't prove a person, so gate decisions from the
   desktop need a Secure Enclave presence proof (ADR 0391, amends 0340). Five milestones: M1 the client
@@ -163,7 +163,11 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   the engine refuses software keys for gate decisions (`DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in
   production). Why it stays empty: tested on the M5, no keychain restriction protects the desktop
   token or the software key from a local agent, because the app's `bun` runs any script under the
-  app's signature. So gate decisions are not available from a signed desktop build until M4b ships. Next: the client door's `update_required` version handshake. Traps in `apps/desktop`:
+  app's signature. So gate decisions are not available from a signed desktop build until M4b ships.
+  **The version handshake is built** (`desktop-handshake`, PR #81, ADR 0393): the app sends
+  `x-sf-client-protocol`; below sf-engine's `DESKTOP_MIN_PROTOCOL` the door answers 426
+  `update_required` and the app checks for an update. Bump `DOOR_PROTOCOL` when the app needs
+  something new from the door; raise the floor only when old builds must stop. Traps in `apps/desktop`:
   stage files explicitly on branches without its `.gitignore` (a `git add -A` once committed 138k
   lines of `.hutch/` and `build/`); Electrobun's request proxy is a function, so RPC names like `call`
   hit `Function.prototype` (use `bunRequests`, `src/mainview/request.ts`).

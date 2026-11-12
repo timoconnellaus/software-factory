@@ -4,11 +4,17 @@
 // handle it chose; the main process pushes what the relay sends (binary output as base64). The relay
 // decides who may type (ADR 0440); nothing here changes that.
 //
+// Every socket carries the protocol headers (ADR 0393). An upgrade the door refuses never opens, and
+// the WebSocket API hides why, so a socket that closes without opening asks the same URL over plain
+// HTTP once (live.ts's refusedAsTooOld): a 426 `update_required` closes it as UPDATE_REQUIRED and
+// tells the app, which shows its "Update required" screen.
+//
 // Output is coalesced: a socket's bytes gather for one frame (OUTPUT_FLUSH_MS) and go to the view as
 // one event, so a busy pane is a few dozen RPC messages a second, not one per relay frame. What waits
 // is bounded (OUTPUT_PENDING_MAX): past it the socket closes with "the view fell behind" and the view
 // offers Reconnect, which attaches afresh and redraws. Nothing grows without limit here.
 import type { TerminalEvent } from "../shared/rpc.ts";
+import { refusedAsTooOld } from "./live.ts";
 import { PROTOCOL_HEADERS } from "./protocol.ts";
 
 /** The most terminals open at once from this app. */
@@ -22,6 +28,14 @@ export const OUTPUT_FLUSH_MS = 16;
 export const OUTPUT_PENDING_MAX = 1 << 20;
 /** The close code and reason when the view can't keep up (1013: try again later). */
 export const FELL_BEHIND = { code: 1013, reason: "the view fell behind: reconnect to redraw" };
+/**
+ * The close a refused upgrade gets when the door said this build is too old (426 `update_required`,
+ * ADR 0393), as the live socket does: the view says "Update required", and the app looks for one.
+ */
+export const UPDATE_REQUIRED = {
+  code: 4426,
+  reason: "Update required: update the app (menu bar, Restart to update), then reopen the terminal",
+};
 
 const ITEM = /^wi_[0-9a-f]{32}$/;
 const RUN = /^run_[0-9a-f]{32}$/;
@@ -76,6 +90,12 @@ export class Terminals {
     private readonly emit: (event: TerminalEvent) => void,
     private readonly socket: SocketFactory = bunSocket,
     private readonly schedule: Scheduler = frame,
+    private readonly hooks: {
+      /** The door refused this build as too old (ADR 0393). */
+      updateRequired?: () => void;
+      /** Asks why an upgrade was refused (tests pass a fake). */
+      fetch?: typeof fetch;
+    } = {},
   ) {}
 
   get count(): number {
@@ -95,13 +115,16 @@ export class Terminals {
     }
     const token = this.token();
     if (!token) return { ok: false, error: "Sign in to open the terminal." };
-    const ws = this.socket(terminalSocketUrl(this.engineUrl, p.workItemId, p.runId), {
-      authorization: `Bearer ${token}`,
-      ...PROTOCOL_HEADERS,
-    });
+    const url = terminalSocketUrl(this.engineUrl, p.workItemId, p.runId);
+    const headers = { authorization: `Bearer ${token}`, ...PROTOCOL_HEADERS };
+    const ws = this.socket(url, headers);
     ws.binaryType = "arraybuffer";
     this.open_.set(p.id, ws);
-    ws.addEventListener("open", () => this.emit({ id: p.id, kind: "open" }));
+    let opened = false;
+    ws.addEventListener("open", () => {
+      opened = true;
+      this.emit({ id: p.id, kind: "open" });
+    });
     ws.addEventListener("message", (e) => {
       if (this.open_.get(p.id) !== ws) return;
       if (typeof e.data === "string") {
@@ -116,8 +139,23 @@ export class Terminals {
     ws.addEventListener("close", (e) => {
       if (this.open_.get(p.id) !== ws) return;
       this.flushOne(p.id);
-      this.open_.delete(p.id);
-      this.emit({ id: p.id, kind: "close", code: e.code, reason: e.reason });
+      if (opened) {
+        this.open_.delete(p.id);
+        this.emit({ id: p.id, kind: "close", code: e.code, reason: e.reason });
+        return;
+      }
+      // Never opened: was the upgrade refused because this build is too old? The handle stays
+      // taken while the door is asked, so a close from the view meanwhile still wins.
+      void refusedAsTooOld(url, headers, this.hooks.fetch).then((tooOld) => {
+        if (this.open_.get(p.id) !== ws) return;
+        this.open_.delete(p.id);
+        if (tooOld) {
+          this.emit({ id: p.id, kind: "close", ...UPDATE_REQUIRED });
+          this.hooks.updateRequired?.();
+        } else {
+          this.emit({ id: p.id, kind: "close", code: e.code, reason: e.reason });
+        }
+      });
     });
     ws.addEventListener("error", () => {
       try {

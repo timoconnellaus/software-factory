@@ -13,6 +13,7 @@ import {
   TERMINAL_SOCKETS_MAX,
   Terminals,
   terminalSocketUrl,
+  UPDATE_REQUIRED,
 } from "../src/bun/terminal.ts";
 import {
   closesDock,
@@ -75,10 +76,17 @@ function frames() {
   };
 }
 
-function mainProcess(token: string | null = "sfd_secret") {
+/** The door's plain-HTTP answer to "why was the upgrade refused?" (none by default). */
+type Door = (url: string, headers: Record<string, string>) => Response;
+const notTooOld: Door = () =>
+  Response.json({ error: "expected a WebSocket upgrade", code: "invalid_input" }, { status: 426 });
+
+function mainProcess(token: string | null = "sfd_secret", door: Door = notTooOld) {
   const events: TerminalEvent[] = [];
   const sockets: FakeSocket[] = [];
   const timer = frames();
+  const asked: { url: string; headers: Record<string, string> }[] = [];
+  let updateRequired = 0;
   const terminals = new Terminals(
     "https://sf-engine.example",
     () => token,
@@ -89,9 +97,29 @@ function mainProcess(token: string | null = "sfd_secret") {
       return s;
     },
     timer.schedule,
+    {
+      updateRequired: () => updateRequired++,
+      fetch: (async (url: string, init?: { headers?: Record<string, string> }) => {
+        const headers = init?.headers ?? {};
+        asked.push({ url, headers });
+        return door(url, headers);
+      }) as unknown as typeof fetch,
+    },
   );
-  return { terminals, events, sockets, timer };
+  return {
+    terminals,
+    events,
+    sockets,
+    timer,
+    asked,
+    get updateRequired() {
+      return updateRequired;
+    },
+  };
 }
+
+/** Lets the door's answer (a promise) land. */
+const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe("the main process's terminal sockets", () => {
   it("opens the door's terminal socket with the token in Authorization, never in the URL", () => {
@@ -184,6 +212,75 @@ describe("the main process's terminal sockets", () => {
     expect(terminal.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(
       /\b(token|authorization|bearer|ticket)\b/i,
     );
+  });
+});
+
+describe("a terminal the door refuses as too old (ADR 0393)", () => {
+  const tooOld: Door = () =>
+    Response.json({ error: "too old", code: "update_required", minProtocol: 2 }, { status: 426 });
+
+  it("closes with Update required and tells the app, as the live socket does", async () => {
+    const main = mainProcess("sfd_secret", tooOld);
+    main.terminals.open({ id: "view-0001", workItemId: ITEM, runId: RUN });
+    // The upgrade is refused: the socket closes without ever opening.
+    main.sockets[0]?.fire("close", { code: 1006, reason: "" });
+    await settle();
+    // The same URL over plain HTTP, with the same protocol headers.
+    expect(main.asked).toEqual([
+      {
+        url: `https://sf-engine.example/client/v1/terminal/${ITEM}/${RUN}`,
+        headers: {
+          authorization: "Bearer sfd_secret",
+          "x-sf-client": "desktop",
+          "x-sf-client-protocol": "1",
+        },
+      },
+    ]);
+    expect(main.events).toEqual([{ id: "view-0001", kind: "close", ...UPDATE_REQUIRED }]);
+    expect(main.updateRequired).toBe(1);
+    expect(main.terminals.count).toBe(0);
+
+    // The view shows it as the shared client shows any reason.
+    const status: TerminalStatus[] = [];
+    const rpc: TerminalRpc = {
+      open: async () => ({ ok: true, error: null }),
+      send: async () => ({ ok: true }),
+      close: async () => ({ ok: true }),
+      subscribe: (l) => {
+        queueMicrotask(() => l({ id: "view-0002", kind: "close", ...UPDATE_REQUIRED }));
+        return () => {};
+      },
+    };
+    const term = { write: () => {}, resize: () => {} };
+    new TerminalClient(new RpcTerminalSocket(rpc, ITEM, RUN, "view-0002"), term, (s) =>
+      status.push(s),
+    );
+    await settle();
+    expect(status.at(-1)?.message).toMatch(/^Closed: Update required/);
+  });
+
+  it("passes any other refusal through as it came, and doesn't ask after an open", async () => {
+    const main = mainProcess();
+    main.terminals.open({ id: "view-0001", workItemId: ITEM, runId: RUN });
+    main.sockets[0]?.fire("close", { code: 1006, reason: "" });
+    await settle();
+    expect(main.events).toEqual([{ id: "view-0001", kind: "close", code: 1006, reason: "" }]);
+    expect(main.updateRequired).toBe(0);
+
+    main.terminals.open({ id: "view-0002", workItemId: ITEM, runId: RUN });
+    main.sockets[1]?.fire("open");
+    main.sockets[1]?.fire("close", { code: 1000, reason: "the session ended" });
+    expect(main.asked).toHaveLength(1);
+  });
+
+  it("lets the view's own close win while the door is asked", async () => {
+    const main = mainProcess("sfd_secret", tooOld);
+    main.terminals.open({ id: "view-0001", workItemId: ITEM, runId: RUN });
+    main.sockets[0]?.fire("close", { code: 1006, reason: "" });
+    main.terminals.close({ id: "view-0001" });
+    await settle();
+    expect(main.events).toEqual([{ id: "view-0001", kind: "close", code: 1000, reason: "" }]);
+    expect(main.updateRequired).toBe(0);
   });
 });
 

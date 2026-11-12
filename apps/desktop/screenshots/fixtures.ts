@@ -3,6 +3,46 @@
 // (docs/design/factory-ui) so the build and the design can be compared side by side. Never shipped:
 // the app's own bridge talks to the main process.
 import type { OpInput, OpName, OpOutput } from "@software-factory/client/ops";
+import { planBlocks } from "@software-factory/client/planning";
+
+/**
+ * `?fixture=notrun`: the runner could not run the checks (the sandbox could not start), so the item
+ * went on to the merge gate with them shown as not run (ADR 0501, third review).
+ */
+let seenNotRun = false;
+const notRunFixture = () => {
+  const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
+  seenNotRun ||= where.includes("fixture=notrun");
+  return seenNotRun;
+};
+const NOT_RUN_REASON = "this Mac runner has no container runtime";
+/** The proof when the checks weren't run: nothing proven, the spec's links left unproven. */
+const notProven = <T extends { provenBy: string[]; unproven: string[] }>(proof: T[]): T[] =>
+  proof.map((p) => ({
+    ...p,
+    proven: false,
+    provenBy: [],
+    unproven: [...p.unproven, ...p.provenBy],
+  }));
+const NOT_RUN_EXECUTED = {
+  declared: ["lint", "tests"],
+  results: ["lint", "tests"].map((name) => ({
+    name,
+    command: `pnpm ${name === "tests" ? "test" : name}`,
+    exitCode: null,
+    timedOut: false,
+    durationMs: 0,
+    logTail: `not run: ${NOT_RUN_REASON}`,
+    round: 0,
+    notRun: NOT_RUN_REASON,
+    passed: false,
+  })),
+  extra: [],
+  notRun: [
+    { name: "lint", reason: NOT_RUN_REASON },
+    { name: "tests", reason: NOT_RUN_REASON },
+  ],
+};
 
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
@@ -12,6 +52,7 @@ const PERSONAL = "org_personal";
 const CLIENT = "org_client";
 const FACTORY = "prj_factory";
 const CRM = "prj_crm";
+const SITE = "prj_site";
 const RUNNER = "rnr_m5";
 
 type Summary = OpOutput<"workItem.list">["items"][number];
@@ -43,9 +84,34 @@ function item(
     prUrl: null,
     createdAt: ago(60 * 26),
     updatedAt: ago(n),
+    priority: "normal",
+    repositoryId: "repo_software-factory",
+    releasedAt: ago(60 * 26),
     ...extra,
   };
 }
+
+/** Work before release (spec 50): captured in the backlog, shaped to ready, or queued. */
+function pre(
+  n: number,
+  title: string,
+  status: "backlog" | "ready" | "queued" | "shaping",
+  extra: Partial<Summary> = {},
+): Summary {
+  return item(n, title, "intake", status, {
+    size: null,
+    releasedAt: status === "queued" ? ago(50) : null,
+    ...extra,
+  });
+}
+
+/** #16 was shaped, and its workflow's shaping stages changed before release (spec 52, Q4). */
+const RELEASE_FLAG_16 = {
+  reason:
+    "#16 was shaped under org config v3; its workflow's shaping stages changed in v5. Shape it again under the current workflow, or accept the shaping already done and deliver it under the current workflow.",
+  shapedUnder: 3,
+  current: 5,
+};
 
 export const ITEMS: Summary[] = [
   item(13, "Guard the tests in verify", "merge", "waiting", {
@@ -74,13 +140,164 @@ export const ITEMS: Summary[] = [
   }),
   item(4, "Make the event log useful", "done", "done", { updatedAt: ago(60 * 40) }),
   item(1, "Attachments on work items", "done", "done", { updatedAt: ago(60 * 60) }),
+  item(7, "Rename the runner pairing command", "build", "cancelled", {
+    statusReason: "by you, from the app",
+    updatedAt: ago(60 * 70),
+  }),
+  item(6, "Retry verify when CI is late", "verify", "failed", {
+    statusReason: "verify failed three times",
+    updatedAt: ago(60 * 90),
+  }),
   item(3, "Import contacts from a CSV", "build", "running", {
     projectId: CRM,
     orgId: CLIENT,
+    repositoryId: "repo_crm",
     statusReason: "Builder",
     updatedAt: ago(22),
   }),
+  // The backlog and ready (spec 50, design WorkBacklog/WorkReady), in pull order per state.
+  pre(22, "Test the comment parser against every comment form", "backlog", {
+    priority: "high",
+    size: "small",
+    createdAt: ago(120),
+  }),
+  pre(21, "Show cost per work item on the Done list", "backlog", {
+    priority: "high",
+    size: "medium",
+    createdAt: ago(60 * 24),
+  }),
+  // No repository chosen: releasing it is refused (the behaviour tests' refused release).
+  pre(20, "Runner offline alert has no link to the runner", "backlog", {
+    createdAt: ago(60 * 48),
+    repositoryId: null,
+  }),
+  pre(17, "Dark mode for the review packet", "backlog", {
+    priority: "low",
+    size: "small",
+    createdAt: ago(60 * 120),
+  }),
+  pre(15, "Let a question be assigned to another member", "backlog", {
+    priority: "low",
+    size: "large",
+    createdAt: ago(60 * 144),
+  }),
+  pre(16, "Record usage for every run", "ready", {
+    priority: "high",
+    size: "medium",
+    createdAt: ago(60 * 72),
+  }),
+  pre(14, "Weekly regression run", "ready", {
+    priority: "high",
+    size: "small",
+    createdAt: ago(60 * 96),
+  }),
+  pre(28, "Show the plan's age at release", "queued", { size: "small", createdAt: ago(60 * 30) }),
+  pre(2, "Rewrite the pricing page intro", "ready", {
+    id: "wi_site_2",
+    projectId: SITE,
+    repositoryId: null,
+    size: "small",
+    createdAt: ago(60 * 50),
+  }),
+  pre(5, "Import contacts from a vCard", "backlog", {
+    id: "wi_crm_5",
+    projectId: CRM,
+    orgId: CLIENT,
+    repositoryId: "repo_crm",
+    size: "large",
+    createdAt: ago(60 * 70),
+  }),
 ];
+
+/** "Waits for" links (spec 50): #21 waits for #16; #14 for #26, still in verify. */
+const LINKS: [string, string][] = [
+  ["wi_21", "wi_16"],
+  ["wi_14", "wi_26"],
+];
+
+/**
+ * The Factory section's items (spec 41, slice 5): incidents are work items of kind incident, one
+ * item is in the merge queue and a released one waits for a slot. `workItem.list` serves them with
+ * ITEMS; the shell's tests pin ITEMS alone.
+ */
+export const FACTORY_ITEMS: Summary[] = [
+  item(40, "Factory incident: #8 had a run that failed", "merge", "waiting", {
+    kind: "incident",
+    source: "incident",
+    statusReason: "Packet ready",
+    prUrl: "https://github.com/example/software-factory/pull/47",
+    createdAt: ago(60 * 22),
+    updatedAt: ago(50),
+  }),
+  item(41, "Factory incident: #4 was sent back at review", "done", "done", {
+    kind: "incident",
+    source: "incident",
+    prUrl: "https://github.com/example/software-factory/pull/44",
+    createdAt: ago(60 * 50),
+    updatedAt: ago(60 * 45),
+  }),
+  item(42, "Keep the runner count fresh", "merge", "running", {
+    statusReason: "Merge queue: CI on the merged head",
+    updatedAt: ago(12),
+  }),
+  item(43, "Show the budget in the status bar", "intake", "queued", {
+    releasedAt: ago(25),
+    updatedAt: ago(25),
+  }),
+];
+
+/** The Factory project's config (spec 41, slice 5): a version as `config.get` returns it. */
+export const POLICY_DOC = {
+  version: 1,
+  autonomyPolicy: "balanced",
+  spec: { requiredFrom: "medium" },
+  wipLimit: 3,
+  retryLimit: 2,
+  approvers: ["owner"],
+  agents: [
+    {
+      name: "Builder",
+      role: "implement",
+      tier: "standard",
+      instructions:
+        "Work one task at a time and commit when its checks pass.\nWrite the failing test before the fix.\nNever edit, skip or delete an existing test to make a check pass.\nIf a criterion cannot be proven by a check, say so in your notes.",
+      requires: [],
+    },
+    {
+      name: "Spec critic",
+      role: "review",
+      tier: "light",
+      instructions: "Challenge the spec before a person approves it.\nName what isn't testable.",
+      requires: [],
+    },
+  ],
+  workflows: [
+    {
+      name: "Software",
+      description: "Code changes: a spec, a build, verify and review.",
+      slots: {
+        afterSpec: [{ id: "critic", kind: "work", name: "Spec critic", agent: "Spec critic" }],
+        beforeVerify: [],
+        afterVerify: [
+          {
+            id: "ui-check",
+            kind: "gate",
+            name: "Browser walk-through",
+            when: { domain: "ui" },
+          },
+        ],
+      },
+      core: { build: "Builder" },
+    },
+    {
+      name: "Docs",
+      description: "Writing only: no build, a person reads it.",
+      slots: { afterSpec: [], beforeVerify: [], afterVerify: [] },
+      core: {},
+    },
+  ],
+  workflow: "Software",
+};
 
 const project = (id: string, orgId: string, name: string, slug: string) => ({
   id,
@@ -110,6 +327,13 @@ const project = (id: string, orgId: string, name: string, slug: string) => ({
 
 const PROJECTS = [
   project(FACTORY, PERSONAL, "Factory", "software-factory"),
+  // A project with no repository yet (ADR 0490): its work can be captured, not released.
+  {
+    ...project(SITE, PERSONAL, "Website", "website"),
+    repo: null,
+    repositories: [],
+    connection: { status: "missing" as const, account: null, manageUrl: null },
+  },
   project(CRM, CLIENT, "CRM", "crm"),
 ];
 
@@ -152,7 +376,9 @@ const INBOX: OpOutput<"inbox.list"> = {
       irreversible: false,
     },
   ],
-  running: ITEMS.filter((i) => ["running", "waiting", "paused"].includes(i.status)),
+  running: [...ITEMS, ...FACTORY_ITEMS].filter((i) =>
+    ["running", "waiting", "paused"].includes(i.status),
+  ),
   runners: [
     {
       id: RUNNER,
@@ -169,6 +395,16 @@ const INBOX: OpOutput<"inbox.list"> = {
   ],
   planning: [],
   wipHolds: [],
+  releaseFlags: [
+    {
+      workItemId: "wi_16",
+      projectId: FACTORY,
+      number: 16,
+      title: "Record usage for every run",
+      ...RELEASE_FLAG_16,
+      choices: ["reshape", "accept"],
+    },
+  ],
   protection: [
     {
       projectId: FACTORY,
@@ -198,7 +434,139 @@ const CRITERIA = [
   "A flagged change always goes to a person",
 ];
 
+const PRE = ["backlog", "shaping", "ready", "queued"];
+const ACTIVE_STATES = ["running", "waiting", "paused"];
+const PRIORITY_ORDER = ["urgent", "high", "normal", "low"];
+
+function link(id: string) {
+  const w = ITEMS.find((i) => i.id === id) as Summary;
+  return { id: w.id, number: w.number, title: w.title, status: w.status, projectId: w.projectId };
+}
+
+/** `workItem.board` over the fixtures: the states asked for, in pull order, and counts per state. */
+function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
+  const states = input.states ?? [...PRE, ...ACTIVE_STATES];
+  const inOrg = ITEMS.filter(
+    (i) => i.orgId === input.orgId && (!input.projectId || i.projectId === input.projectId),
+  );
+  const items = inOrg
+    .filter((i) => (states as string[]).includes(i.status))
+    .sort(
+      (a, b) =>
+        PRIORITY_ORDER.indexOf(a.priority ?? "normal") -
+          PRIORITY_ORDER.indexOf(b.priority ?? "normal") ||
+        Date.parse(a.createdAt) - Date.parse(b.createdAt),
+    )
+    .map((i) => {
+      const waitsFor = LINKS.filter(([from]) => from === i.id).map(([, to]) => link(to));
+      return {
+        id: i.id,
+        projectId: i.projectId,
+        number: i.number,
+        title: i.title,
+        kind: i.kind,
+        status: i.status,
+        statusReason: i.statusReason,
+        stage: i.stage,
+        // The item's phase (core's itemPhase): shaping before release, delivery from release on.
+        phase: (["backlog", "shaping", "ready"].includes(i.status) ? "shaping" : "delivery") as
+          | "shaping"
+          | "delivery",
+        priority: i.priority ?? "normal",
+        rank: Date.parse(i.createdAt) / 1000,
+        size: i.size,
+        repositoryId: i.repositoryId ?? null,
+        requesterUserId: i.requesterUserId,
+        releasedAt: i.releasedAt ?? null,
+        createdAt: i.createdAt,
+        updatedAt: i.updatedAt,
+        waitsFor,
+        ...(i.id === "wi_16" ? { releaseFlag: RELEASE_FLAG_16 } : {}),
+        blockedBy: waitsFor.filter((w) => w.status !== "done"),
+      };
+    });
+  const counts = new Map<string, { projectId: string; status: string; n: number }>();
+  for (const i of inOrg) {
+    const key = `${i.projectId}:${i.status}`;
+    const c = counts.get(key) ?? { projectId: i.projectId, status: i.status, n: 0 };
+    c.n++;
+    counts.set(key, c);
+  }
+  return { items, counts: [...counts.values()] };
+}
+
+const STAGES_IN_ORDER = [
+  ["triage", "Triage", "shaping"],
+  ["spec", "Spec", "shaping"],
+  ["build", "Build", "delivery"],
+  ["verify", "Verify", "delivery"],
+  ["merge", "Merge", "delivery"],
+] as const;
+
+/**
+ * `project.workflow`: Factory runs an org workflow, Website runs the built-in one, CRM defines
+ * workflows and names none (it fails closed: work is captured, never released).
+ */
+function workflowOf(projectId: string): OpOutput<"project.workflow"> {
+  const stages = STAGES_IN_ORDER.map(([stage, label, phase]) => ({ stage, label, phase }));
+  if (projectId === CRM) {
+    return {
+      projectId,
+      workflow: null,
+      unavailable: "the project defines workflows but names none for its items",
+      stages,
+    };
+  }
+  const workflow =
+    projectId === FACTORY
+      ? // On an org workflow (spec 52 PR (d)): named by its id, read by its name.
+        { name: "wf_ship_it", label: "Ship it", description: "", builtIn: false }
+      : {
+          name: "software",
+          label: "Software (built in)",
+          description: "Triage, spec, build, verify and merge",
+          builtIn: true,
+        };
+  return { projectId, workflow, unavailable: null, stages };
+}
+
+/** A work item: before release it has no stages, runs, spec or gates yet (spec 50). */
 function detail(id: string): OpOutput<"workItem.get"> {
+  const d = pipelineDetail(id);
+  const links = {
+    releasedBy: d.item.releasedAt ? ME : null,
+    shaping: null,
+    waitsFor: LINKS.filter(([from]) => from === id).map(([, to]) => link(to)),
+    waitedOnBy: LINKS.filter(([, to]) => to === id).map(([from]) => link(from)),
+  };
+  if (!PRE.includes(d.item.status)) return { ...d, ...links };
+  return {
+    ...d,
+    ...links,
+    item: {
+      ...d.item,
+      body:
+        id === "wi_21"
+          ? "The Done list shows tokens. I want to see what each item cost in dollars too, so I can tell which kinds of work are expensive."
+          : d.item.body,
+      specRequired: null,
+      specDecisionReason: null,
+      readinessHint: null,
+      needsInfo: null,
+      domains: [],
+      workflow: null,
+      workflowReason: null,
+    },
+    stages: [],
+    spec: null,
+    questions: [],
+    gates: [],
+    runs: [],
+    reviewPacket: null,
+  };
+}
+
+function pipelineDetail(id: string): OpOutput<"workItem.get"> {
   const base = ITEMS.find((i) => i.id === id) ?? (ITEMS[0] as Summary);
   const n = base.number;
   const atMerge = base.stage === "merge";
@@ -226,14 +594,16 @@ function detail(id: string): OpOutput<"workItem.get"> {
           : `${base.title}.`,
       specRequired: true,
       specDecisionReason: "Medium: touches verify and the review packet",
+      readinessHint: null,
+      needsInfo: null,
       domains: ["verify"],
       headSha: atMerge ? "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f" : null,
       prNumber: atMerge ? 51 : null,
       policySha: "5da8988",
-      workflow: "software",
+      workflow: "wf_ship_it",
       workflowReason: "the project's default",
     },
-    workflows: [{ name: "software", description: "Plan, build, verify, review" }],
+    workflows: [{ name: "wf_ship_it", description: "Ship it" }],
     stages,
     spec: {
       id: `spec_${n}`,
@@ -381,6 +751,82 @@ function detail(id: string): OpOutput<"workItem.get"> {
               total: 0,
             },
             runner: { verdict: "pass", checks: PACKET_CHECKS },
+            // Spec 51 PR B (Workflow v8, ADR 0501): the checks the runner host ran itself on the
+            // head, and each criterion's proof. Only the approved spec's links prove a criterion.
+            executed: notRunFixture()
+              ? NOT_RUN_EXECUTED
+              : {
+                  declared: ["lint", "tests"],
+                  results: [
+                    {
+                      name: "lint",
+                      command: "pnpm lint",
+                      exitCode: 0,
+                      timedOut: false,
+                      durationMs: 14_000,
+                      logTail: "",
+                      round: 0,
+                      passed: true,
+                    },
+                    {
+                      name: "tests",
+                      command: "pnpm test",
+                      exitCode: 0,
+                      timedOut: false,
+                      durationMs: 52_000,
+                      logTail: "",
+                      round: 1,
+                      passed: true,
+                    },
+                  ],
+                  extra: [],
+                },
+            proof: (notRunFixture() ? notProven : <T>(p: T) => p)([
+              {
+                criterion: CRITERIA[0],
+                proven: true,
+                provenBy: ["tests"],
+                unproven: [],
+                notCounted: [],
+                linkedBy: "spec",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "guard.test.ts › flags removed and skipped tests",
+              },
+              {
+                criterion: CRITERIA[1],
+                proven: true,
+                provenBy: ["tests"],
+                unproven: [],
+                notCounted: [],
+                linkedBy: "spec",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "guard.test.ts › flags biome-ignore and ts-expect-error",
+              },
+              {
+                criterion: CRITERIA[2],
+                proven: false,
+                provenBy: [],
+                unproven: [],
+                notCounted: ["tests"],
+                linkedBy: "reviewer",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "packet.test.ts › includes guard findings",
+              },
+              {
+                criterion: CRITERIA[3],
+                proven: false,
+                provenBy: [],
+                unproven: [],
+                notCounted: [],
+                linkedBy: "reviewer",
+                weakened: false,
+                reviewerMet: true,
+                opinion: "review.ts › the merge gate reads the guard's findings (read, no test)",
+              },
+            ]),
             evidencePass: true,
             evidenceReasons: [],
           },
@@ -477,10 +923,60 @@ const SETUP: OpOutput<"setup.status"> = {
       manageUrl: "https://github.com/settings/installations",
     },
   ],
-  projects: [{ ...(PROJECTS[0] as (typeof PROJECTS)[number]), protection: null }],
+  // The check's real result while the ruleset isn't imported (the protect step above).
+  projects: [
+    {
+      ...(PROJECTS[0] as (typeof PROJECTS)[number]),
+      protection: {
+        state: "red",
+        branch: "main",
+        problems: ["`factory/verify` is not a required check on main"],
+        warnings: [],
+        files: [],
+        rulesetsUrl: "https://github.com/example/software-factory/settings/rules",
+        viewerIsRepoAdmin: true,
+        adminMessage: "",
+      },
+    },
+  ],
   missingEvents: [],
   runners: { total: 1, online: 1 },
 };
+
+/**
+ * Rows of core_cli_tokens as the engine has them: each desktop app's token (kind "desktop", made by
+ * `desktop.authExchange`) beside a CLI token. `cliToken.list` answers only the CLI ones.
+ */
+export const TOKENS: (OpOutput<"cliToken.list">["tokens"][number] & { kind: "cli" | "desktop" })[] =
+  [
+    {
+      id: "clt_desktop_m5",
+      name: "M5",
+      kind: "desktop",
+      scope: "write",
+      createdAt: ago(60 * 24 * 9),
+      expiresAt: new Date(now + 21 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+    {
+      id: "clt_desktop_mini",
+      name: "Mac mini",
+      kind: "desktop",
+      scope: "write",
+      createdAt: ago(60 * 24 * 20),
+      expiresAt: new Date(now + 10 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+    {
+      id: "clt_1",
+      name: "M5 terminal",
+      kind: "cli",
+      scope: "write",
+      createdAt: ago(60 * 24 * 4),
+      expiresAt: new Date(now + 26 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+  ];
 
 type PlanningQ = OpOutput<"planning.get">["questions"][number];
 
@@ -504,6 +1000,15 @@ function question(n: number, prompt: string, extra: Partial<PlanningQ>): Plannin
     note: null,
     acceptedDefault: false,
     acceptedAlone: false,
+    answeredViaEdit: null,
+    artifactId: null,
+    optionArtifacts: null,
+    optionValues: null,
+    control: null,
+    unit: null,
+    min: null,
+    max: null,
+    step: null,
     skipped: false,
     answerDeliveredAt: ago(29),
     answeredBy: ME,
@@ -527,6 +1032,19 @@ const alone = () => {
   return seenAlone;
 };
 
+/** `?fixture=dropped`: an edit the plan no longer keeps (second review of #85 screenshot). */
+let seenDropped = false;
+const dropped = () => {
+  seenDropped ||= (globalThis.location?.hash ?? "").includes("fixture=dropped");
+  return seenDropped;
+};
+
+/** The blocks an edit wrote, by section, as the server stores them. */
+const wrote = (after: string) =>
+  planBlocks(PLAN_MD)
+    .filter((b) => planBlocks(after).some((a) => a.text === b.text))
+    .map(({ section, parent, text }) => ({ section, parent, text }));
+
 function kept(n: number, prompt: string, answer: string, options: string[]): PlanningQ {
   return question(n, prompt, {
     options,
@@ -540,6 +1058,38 @@ function kept(n: number, prompt: string, answer: string, options: string[]): Pla
   });
 }
 
+/** Spec 21: the two mockups question 7 chooses between (design PlanFocusMockup). */
+const MOCKUP_STYLE = `<style>
+:root { --accent: #2563eb; }
+body { margin: 0; font: 15px/1.4 -apple-system, system-ui, sans-serif; color: #1c1c1e; background: #f1f1ef; }
+.app { display: grid; grid-template-columns: 220px 1fr; min-height: 800px; }
+nav { background: #fff; border-right: 1px solid #e3e3e0; padding: 24px 16px; }
+nav div { height: 10px; border-radius: 5px; background: #e3e3e0; margin: 14px 0; width: 70%; }
+nav div.on { background: #1c1c1e; width: 50%; }
+main { padding: 40px 48px; }
+h1 { font-size: 26px; margin: 0 0 20px; }
+.row { display: flex; align-items: center; justify-content: space-between; background: #fff; border: 1px solid #e3e3e0; border-radius: 12px; padding: 18px 20px; margin-bottom: 12px; font-size: 17px; }
+.row.on { border: 2px solid var(--accent); }
+.row small { display: block; color: #6e6e73; font-size: 14px; }
+.ok { color: #17603a; } .link { color: var(--accent); }
+.switch { width: 52px; height: 30px; border-radius: 15px; background: var(--accent); position: relative; }
+.switch::after { content: ""; position: absolute; right: 4px; top: 4px; width: 22px; height: 22px; border-radius: 11px; background: #fff; }
+</style>`;
+const MOCKUP_A = `<!doctype html><html><head>${MOCKUP_STYLE}</head><body><div class="app">
+<nav><div></div><div class="on"></div><div></div><div></div></nav>
+<main><h1 data-name="page title">Connections</h1>
+<div class="row" data-name="github row">GitHub <span class="ok">Connected</span></div>
+<div class="row on" data-name="import setting"><span>Take work from issues<small>Label factory</small></span><span class="switch" data-name="import switch"></span></div>
+<div class="row" data-name="open issues">14 open issues <span class="link">Review</span></div>
+</main></div></body></html>`;
+const MOCKUP_B = `<!doctype html><html><head>${MOCKUP_STYLE}</head><body><div class="app">
+<nav><div></div><div></div><div class="on"></div><div></div></nav>
+<main><h1 data-name="page title">Factory · project</h1>
+<div class="row" data-name="workflow row">Workflow <span>Software</span></div>
+<div class="row" data-name="repositories row">Repositories <span>1</span></div>
+<div class="row on" data-name="import setting"><span>Take work from issues<small>Its own label and authors</small></span><span class="switch" data-name="import switch"></span></div>
+</main></div></body></html>`;
+
 const PLAN_MD = `# Take work from GitHub issues
 
 ## Goal
@@ -548,9 +1098,20 @@ A labelled GitHub issue from a trusted author becomes a work item in the backlog
 ## Scope
 - The GitHub App webhook takes \`issues\` events for connected repositories [repo]
 - Only issues with the \`factory\` label come in [Q1]
+  - the label name is set on the GitHub connection
+  - relabelling an open issue brings it in
 - Authors must be org members or collaborators; anything else is ignored and logged [Q2]
-- New items land in the inbox of the project that owns the repository [Q3]
+- New items land in the Backlog of the project that owns the repository [Q3]
 - The issue gets one comment with a link to the item, and is closed when the item merges [Q4]
+
+  The comment is posted by the App, never with a person's token.
+
+## Webhook filter
+\`\`\`yaml
+on:
+  issues:
+    types: [opened, labeled]
+\`\`\`
 
 ## Out of scope
 - Issues from repositories that are not connected, pull request comments [request]
@@ -578,6 +1139,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
           paused: false,
           pausedBy: null,
           canInterrupt: true,
+          shownArtifactId: null,
           finishAlone: alone() ? { by: ME, byName: "You", at: ago(6) } : null,
           focusedQuestionId: "pq_6",
           runner: { id: RUNNER, name: "M5", online: true, lastSeenAt: ago(0) },
@@ -596,11 +1158,13 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             "Anyone",
           ]),
           question(3, "Where do they land?", {
-            options: ["The org inbox", "The project's inbox"],
+            options: ["The org inbox", "The project's inbox", "Backlog"],
             defaultValues: ["The org inbox"],
             defaultAnswer: "The org inbox",
             recommendation: "The org inbox",
-            answer: "The project's inbox",
+            answer: "Backlog",
+            // Spec 27: recorded by the planner from the person's edit of the plan.
+            answeredViaEdit: "pe_1",
           }),
           kept(4, "What goes back to the issue?", "A link, then closed on merge", [
             "A link, then closed on merge",
@@ -625,6 +1189,20 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             recommendation: "Show a notice on the item, change nothing",
             recommendationReason:
               "A released item has an approved plan. Changing it silently would break what you approved, and sending it back would stall a build for a typo fix.",
+          }),
+          // Spec 21: a choice between two mockups (design PlanFocusMockup).
+          question(7, "Where does the import setting live?", {
+            status: "open",
+            answer: null,
+            answeredBy: null,
+            answeredAt: null,
+            options: ["GitHub connection", "On each project"],
+            defaultValues: ["GitHub connection"],
+            defaultAnswer: "GitHub connection",
+            recommendation: "GitHub connection",
+            recommendationReason:
+              "The label and the trusted authors belong to the connection. A project only chooses whether to take issues from its repositories.",
+            optionArtifacts: { "GitHub connection": "art_a", "On each project": "art_b" },
           }),
         ]
       : [],
@@ -654,6 +1232,8 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             replyTo: null,
             kind: "chat",
             deliveredAt: ago(20),
+            anchor: null,
+            pin: null,
             createdAt: ago(20),
           },
           {
@@ -666,8 +1246,201 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             replyTo: null,
             kind: "chat",
             deliveredAt: ago(12),
+            anchor: null,
+            pin: null,
             createdAt: ago(12),
           },
+          {
+            id: "m4",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Show the label name here.",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(6),
+            anchor: null,
+            // Spec 21: a comment pinned to the switch in mockup A.
+            pin: {
+              artifactId: "art_a",
+              element: "import switch",
+              selector: null,
+              x: 1040,
+              y: 214,
+              fx: 0.5,
+              fy: 0.5,
+              width: 1280,
+            },
+            createdAt: ago(6),
+          },
+          {
+            id: "m5",
+            author: "agent",
+            authorId: "planner",
+            authorName: "Planner",
+            text: "Done: the switch now reads “Take work labelled factory” (revision 2).",
+            questionId: null,
+            // Spec 21: the planner's reply to the pinned comment.
+            replyTo: "m4",
+            kind: "chat",
+            deliveredAt: ago(5),
+            anchor: null,
+            pin: null,
+            createdAt: ago(5),
+          },
+          {
+            id: "m3",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Does a bot account count as a collaborator here?",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(3),
+            pin: null,
+            // Spec 27: a comment on a line of the plan.
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 10,
+              lineEnd: 10,
+              quote:
+                "- Authors must be org members or collaborators; anything else is ignored and logged [Q2]",
+            },
+            createdAt: ago(3),
+          },
+          {
+            id: "m6",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Does this cover a label renamed on GitHub?",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(2),
+
+            pin: null,
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 8,
+              lineEnd: 8,
+              quote: "  - the label name is set on the GitHub connection",
+            },
+            createdAt: ago(2),
+          },
+          {
+            id: "m7",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Add edited too, so a label added later counts.",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: ago(1),
+
+            pin: null,
+            anchor: {
+              specId: "spec_wi_12",
+              lineStart: 17,
+              lineEnd: 21,
+              quote: "```yaml\non:\n  issues:\n    types: [opened, labeled]\n```",
+            },
+            createdAt: ago(1),
+          },
+        ]
+      : [],
+    artifacts: live
+      ? [
+          {
+            id: "art_a",
+            kind: "mockup",
+            title: "A: GitHub connection",
+            description:
+              "One switch for the org. The label and trusted authors are set once, next to the thing they belong to.",
+            revision: 2,
+            keep: false,
+            controls: ["--accent"],
+            size: MOCKUP_A.length,
+            updatedAt: ago(5),
+          },
+          {
+            id: "art_b",
+            kind: "mockup",
+            title: "B: On each project",
+            description:
+              "Each project turns it on and sets its own label. More control, and more places to keep in step.",
+            revision: 1,
+            keep: false,
+            controls: ["--accent"],
+            size: MOCKUP_B.length,
+            updatedAt: ago(9),
+          },
+        ]
+      : [],
+    // Spec 27: the person's edit of the Q3 line, which the planner kept.
+    edits: live
+      ? [
+          {
+            id: "pe_1",
+            specId: "spec_wi_12",
+            lineStart: 11,
+            lineEnd: 11,
+            before: "- New items land in the inbox of the project that owns the repository [Q3]",
+            after: "- New items land in the Backlog of the project that owns the repository [Q3]",
+            authorId: ME,
+            authorName: "You",
+            createdAt: ago(4),
+            kept: true,
+            whyNotKept: null,
+            mentions: [],
+            blocks: wrote(
+              "- New items land in the Backlog of the project that owns the repository [Q3]",
+            ),
+          },
+          {
+            id: "pe_2",
+            specId: "spec_wi_12",
+            lineStart: 9,
+            lineEnd: 9,
+            before: "  - relabelling brings it in",
+            after: "  - relabelling an open issue brings it in",
+            authorId: ME,
+            authorName: "You",
+            createdAt: ago(3),
+            kept: true,
+            whyNotKept: null,
+            mentions: [],
+            blocks: wrote("  - relabelling an open issue brings it in"),
+          },
+          // Second review of #85: an edit the plan no longer keeps holds the gate until released.
+          ...(dropped()
+            ? [
+                {
+                  id: "pe_3",
+                  specId: "spec_wi_12",
+                  lineStart: 12,
+                  lineEnd: 12,
+                  before: "",
+                  after: "- A closed issue is reopened when its item fails",
+                  authorId: "u_ana",
+                  authorName: "Ana",
+                  createdAt: ago(2),
+                  kept: false,
+                  whyNotKept: "the plan doesn't have its words as written, in their place",
+                  mentions: ["- Reopening issues the factory closed is out of scope"],
+                  blocks: [
+                    {
+                      section: "Take work from GitHub issues › Scope",
+                      parent: "",
+                      text: "- A closed issue is reopened when its item fails",
+                    },
+                  ],
+                },
+              ]
+            : []),
         ]
       : [],
     present: live ? [{ userId: ME, name: "You" }] : [],
@@ -707,6 +1480,32 @@ function liveView(): OpOutput<"run.live"> {
 
 type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
 
+/** A refusal in the server's shape: the fake door answers `{ ok: false, code, error }`. */
+export class Refusal extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Writes the behaviour tests (screenshots/behave.mjs) make. Nothing changes: each answers as the
+ * server would, and the fake door records the call. Releasing #20 is refused as core refuses an
+ * item with no repository.
+ */
+const released = (input: { workItemId: string }) => {
+  const i = ITEMS.find((x) => x.id === input.workItemId);
+  if (i && !i.repositoryId) {
+    throw new Refusal(
+      "conflict",
+      `work item #${i.number} needs a repository: choose one of the project's 1 (workItem.update)`,
+    );
+  }
+  return { status: "queued", blockedBy: [] };
+};
+
 export const ANSWERS: Answers = {
   "org.list": () => ({
     userId: ME,
@@ -718,12 +1517,23 @@ export const ANSWERS: Answers = {
   "project.list": (input) => ({ projects: PROJECTS.filter((p) => p.orgId === input.orgId) }),
   "inbox.list": () => INBOX,
   "workItem.list": (input) => ({
-    items: ITEMS.filter((i) => !input.orgId || i.orgId === input.orgId),
+    items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
   }),
   "workItem.get": (input) => detail(input.workItemId),
+  "workItem.board": (input) => board(input),
+  "project.workflow": (input) => workflowOf(input.projectId),
   "workItem.timeline": () => TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),
+  "artifact.get": (input) => ({
+    artifactId: input.artifactId,
+    kind: "mockup",
+    title: input.artifactId === "art_a" ? "A: GitHub connection" : "B: On each project",
+    revision: input.artifactId === "art_a" ? 2 : 1,
+    latest: input.artifactId === "art_a" ? 2 : 1,
+    content: input.artifactId === "art_a" ? MOCKUP_A : MOCKUP_B,
+    controls: ["--accent"],
+  }),
   "run.live": () => liveView(),
   "runner.list": () => ({
     runners: [
@@ -732,7 +1542,15 @@ export const ANSWERS: Answers = {
         name: "M5",
         ownerUserId: ME,
         keyVersion: 1,
-        manifest: null,
+        manifest: {
+          contractVersion: "1",
+          runnerKind: "local",
+          harnesses: ["claude-code"],
+          capabilities: ["checks"],
+          // What the runner's doctor says (ADR 0501, fifth review): OrbStack stopped on this Mac.
+          checksNote:
+            "not run here: this Mac runner has no container runtime (OrbStack is not answering): start it, or set checks.weakerMacSandbox",
+        },
         capacityMax: 2,
         light: { max: 6, inUse: 2 },
         accepting: true,
@@ -742,9 +1560,97 @@ export const ANSWERS: Answers = {
         desiredVersion: "5da8988",
         autoUpdate: true,
         update: null,
-        accounts: null,
+        accounts: { names: ["work", "personal"], active: "work", requested: null, limits: [] },
       },
     ],
+  }),
+  "config.get": (input) => ({
+    projectId: input.projectId,
+    current: {
+      version: 12,
+      sha: "5da8988",
+      source: "app",
+      note: "Two agents and the Software workflow",
+      createdBy: "owner",
+      createdAt: ago(60 * 24 * 3),
+      valid: true,
+      impact: "neutral",
+      policy: POLICY_DOC,
+    },
+    error: null,
+    history: [],
+    pending:
+      input.projectId === FACTORY
+        ? [
+            {
+              pendingActionId: "pa_cfg_1",
+              operation: "config.save",
+              note: "Retries per item, 2 to 3",
+              by: "owner",
+              createdAt: ago(30),
+              baseVersion: 12,
+            },
+          ]
+        : [],
+  }),
+  "desktopDevice.list": () => ({
+    devices: [
+      {
+        id: "dev_m5",
+        name: "M5",
+        platform: "macos" as const,
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 9),
+        lastSeenAt: ago(0),
+        revokedAt: null,
+        decides: true,
+        attestation: null,
+        current: true,
+      },
+      {
+        id: "dsk_mini",
+        name: "Mac mini",
+        platform: "macos" as const,
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 20),
+        lastSeenAt: ago(60 * 24 * 2),
+        revokedAt: null,
+        decides: true,
+        attestation: null,
+        current: false,
+      },
+      {
+        id: "dsk_old",
+        name: "Old laptop",
+        platform: "macos" as const,
+        keyStorage: "software",
+        createdAt: ago(60 * 24 * 60),
+        lastSeenAt: ago(60 * 24 * 40),
+        revokedAt: ago(60 * 24 * 30),
+        decides: true,
+        attestation: null,
+        current: false,
+      },
+    ],
+  }),
+  // The door lists only kind "cli" (a desktop's token is its device's), as the engine does.
+  "cliToken.list": () => ({
+    tokens: TOKENS.filter((t) => t.kind === "cli").map(({ kind: _, ...t }) => t),
+  }),
+  "mergeQueue.list": (input) => ({
+    entries:
+      input.projectId === FACTORY
+        ? [
+            {
+              workItemId: "wi_42",
+              number: 42,
+              title: "Keep the runner count fresh",
+              headSha: "9c41e07d2b",
+              enqueuedAt: ago(12),
+              repositoryId: "repo_software-factory",
+            },
+          ]
+        : [],
   }),
   "setup.status": () => SETUP,
   "workItem.previewRouting": () => ({
@@ -756,4 +1662,14 @@ export const ANSWERS: Answers = {
     waitReason: null,
   }),
   "github.openPullRequests": () => ({ pulls: [] }),
+  "workItem.release": released,
+  "workItem.move": () => ({ status: "ready" }),
+  "workItem.update": (input) => ({ workItemId: input.workItemId }) as never,
+  "workItem.create": (input) =>
+    ({
+      workItemId: "wi_99",
+      number: 99,
+      status: input.state ?? "backlog",
+      outcome: "created",
+    }) as never,
 };

@@ -8,10 +8,23 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext, type ProjectRow } from "../operation.ts";
 import type { FloorParse } from "../policy/gate.ts";
-import { type ImpactClass, policyImpact } from "../policy/impact.ts";
-import { POLICY_PATH, type ProjectPolicy, parseProjectPolicy } from "../policy/project-policy.ts";
+import { type ImpactClass, type PolicyImpact, policyImpact, same } from "../policy/impact.ts";
+import {
+  isOrgWorkflowId,
+  onOrgWorkflow,
+  POLICY_PATH,
+  type ProjectPolicy,
+  parseProjectPolicy,
+} from "../policy/project-policy.ts";
+import { overrideApprovals } from "../scope.ts";
+import {
+  configImpact,
+  normaliseOverrides,
+  resolveProjectWorkflow,
+} from "../stages/project-workflow.ts";
 import { requireAdjudicatorEarned } from "./adjudicator.ts";
 import { projectId, requireProject } from "./shared.ts";
+import { currentOrgConfig } from "./workflows.ts";
 
 /** The config operations whose loosening saves wait for an approver. */
 export const CONFIG_WRITES = ["config.save", "config.rollback"] as const;
@@ -43,13 +56,18 @@ export async function writeVersion(
     ref?: string;
     /** Who the version is by, when not the caller (an approved proposal is its proposer's). */
     createdBy?: string;
+    /** The project's highest version when the caller already read it (a write for many projects). */
+    latest?: number | null;
   },
 ): Promise<{ version: number; sha: string }> {
-  const latest = await ctx.db
-    .selectFrom("core_project_policies")
-    .select(sql<number | null>`max(version)`.as("v"))
-    .where("project_id", "=", project.id)
-    .executeTakeFirst();
+  const latest =
+    input.latest !== undefined
+      ? { v: input.latest }
+      : await ctx.db
+          .selectFrom("core_project_policies")
+          .select(sql<number | null>`max(version)`.as("v"))
+          .where("project_id", "=", project.id)
+          .executeTakeFirst();
   const version = (latest?.v ?? 0) + 1;
   const key = versionKey(version);
   const expect = project.policy_sha;
@@ -112,19 +130,206 @@ const impactView = z.object({
  * self-modify. A draft the handler will refuse anyway (invalid, or edited from a stale version)
  * is `write`, so it's refused at once instead of waiting at the gate.
  */
-function saveRisk(
+async function saveRisk(
   draft: unknown,
   baseVersion: number,
-  at: { scope: { policy: ProjectPolicy | null; project: ProjectRow | null }; floor: FloorParse },
+  at: {
+    db: Db;
+    scope: { rawPolicy: ProjectPolicy | null; project: ProjectRow | null };
+    floor: FloorParse;
+  },
 ) {
   const parsed = parseProjectPolicy(JSON.stringify(draft));
   if (!parsed.ok) return "write" as const;
   if (!at.scope.project || (versionOf(at.scope.project.policy_sha) ?? 0) !== baseVersion) {
     return "write" as const;
   }
-  return policyImpact(at.scope.policy, parsed.policy, at.floor).class === "loosens"
-    ? ("self-modify" as const)
-    : ("write" as const);
+  const orgId = at.scope.project.org_id;
+  if (newOrgShapedName(at.scope.rawPolicy, parsed.policy)) return "write" as const;
+  if (onOrgWorkflow(parsed.policy)) {
+    // A workflow the org doesn't have, or overrides that don't apply: the handler refuses it.
+    const resolved = resolveProjectWorkflow(
+      parsed.policy,
+      (await currentOrgConfig(at.db, orgId)).config,
+      { kind: "requested" },
+    );
+    if (resolved && !resolved.ok) return "write" as const;
+  }
+  const impact = await impactOf(
+    at.db,
+    at.scope.project,
+    at.scope.rawPolicy,
+    parsed.policy,
+    at.floor,
+  );
+  return impact.class === "loosens" ? ("self-modify" as const) : ("write" as const);
+}
+
+/**
+ * Whether a save loosens the project's org workflow (an override looser than the org's value, or a
+ * switch onto or between org workflows that drops something): an org admin decides it, not the
+ * project's approvers (spec 52, Q6; the owner's answer).
+ */
+export async function orgAdminDecidesSave(
+  draft: unknown,
+  at: {
+    db: Db;
+    scope: { rawPolicy: ProjectPolicy | null; project: ProjectRow | null };
+    floor: FloorParse;
+  },
+): Promise<boolean> {
+  const parsed = parseProjectPolicy(JSON.stringify(draft));
+  if (!parsed.ok || !at.scope.project) return false;
+  const before = at.scope.rawPolicy;
+  if (!onOrgWorkflow(parsed.policy) && !onOrgWorkflow(before)) return false;
+  const impact = await impactOf(at.db, at.scope.project, before, parsed.policy, at.floor);
+  return impact.changes.some(
+    (c) => c.class === "loosens" && (c.path === "workflow" || c.path.startsWith("workflow.")),
+  );
+}
+
+/**
+ * A slot workflow the draft adds under a name shaped like an org workflow id (`wf_…`). Names like
+ * that are reserved for org workflows from spec 52 PR (d) on; a slot workflow that already had one
+ * keeps it, so existing configs are untouched.
+ */
+function newOrgShapedName(before: ProjectPolicy | null, after: ProjectPolicy): string | null {
+  const had = new Set((before?.workflows ?? []).map((w) => w.name.toLowerCase()));
+  return (
+    after.workflows.find((w) => isOrgWorkflowId(w.name) && !had.has(w.name.toLowerCase()))?.name ??
+    null
+  );
+}
+
+function requireName(before: ProjectPolicy | null, after: ProjectPolicy) {
+  const name = newOrgShapedName(before, after);
+  if (name)
+    throw new OperationError(
+      "invalid_input",
+      `a workflow can't be called "${name}": names like that are org workflow ids`,
+    );
+}
+
+/**
+ * How `after` changes the saved config: `policyImpact`, with a change of org workflow or of its
+ * overrides classified against the org's current workflow (spec 52 PR (d)). Compares the documents
+ * as saved, never the resolved ones.
+ */
+async function impactOf(
+  db: Db,
+  project: { id: string; org_id: string },
+  before: ProjectPolicy | null,
+  after: ProjectPolicy,
+  floor: FloorParse,
+): Promise<PolicyImpact> {
+  const impact = policyImpact(before, after, floor);
+  if (!before || !(onOrgWorkflow(before) || onOrgWorkflow(after))) return impact;
+  const { version, config } = await currentOrgConfig(db, project.org_id);
+  // What `before` runs now: its looser overrides only where approved for this org version.
+  const approvals = onOrgWorkflow(before) ? await overrideApprovals(db, project.id, version) : {};
+  return configImpact(impact, before, after, config, approvals);
+}
+
+/** A project on an org workflow must name one it can run, with overrides that apply. */
+async function requireOrgWorkflow(db: Db, orgId: string, policy: ProjectPolicy) {
+  if (!onOrgWorkflow(policy)) return;
+  const resolved = resolveProjectWorkflow(policy, (await currentOrgConfig(db, orgId)).config, {
+    kind: "requested",
+  });
+  if (resolved && !resolved.ok)
+    throw new OperationError("invalid_input", `the config isn't valid: ${resolved.error}`, {
+      error: resolved.error,
+    });
+}
+
+/**
+ * The document a version stores (spec 52, fourth review): on an org workflow, only the overrides
+ * that differ from the org's value (`normaliseOverrides`), with the looser ones listed (each applies
+ * once an org admin approves it for this org version). A document's own `workflowOverrideApprovals`
+ * is never kept: approvals are the factory's record (`core_override_approvals`). A config not on an
+ * org workflow is stored as written, less that field.
+ */
+async function storedDocument(
+  db: Db,
+  orgId: string,
+  doc: Record<string, unknown>,
+  policy: ProjectPolicy,
+): Promise<{
+  doc: Record<string, unknown>;
+  looser: { stageId: string; key: string; value: unknown }[];
+  orgVersion: number;
+}> {
+  const { workflowOverrideApprovals: _drop, ...rest } = doc;
+  if (!onOrgWorkflow(policy)) return { doc: rest, looser: [], orgVersion: 0 };
+  const { version, config } = await currentOrgConfig(db, orgId);
+  const n = normaliseOverrides(policy, config);
+  return {
+    doc: { ...rest, workflowOverrides: n.workflowOverrides },
+    looser: n.looser,
+    orgVersion: version,
+  };
+}
+
+/** Whether `after`'s override `l` was already in `before`, on the same workflow, with that value. */
+function kept(
+  before: ProjectPolicy | null,
+  after: ProjectPolicy,
+  l: { stageId: string; key: string; value: unknown },
+): boolean {
+  if (!before || !onOrgWorkflow(before) || before.workflow !== after.workflow) return false;
+  const was = before.workflowOverrides[l.stageId];
+  return !!was && Object.hasOwn(was, l.key) && same(was[l.key], l.value);
+}
+
+/**
+ * Records an org admin's approval of a project's looser overrides for one org version: the only
+ * writer of `core_override_approvals` besides the factory's carry to an unchanged next version.
+ */
+function approveOverrides(
+  ctx: HandlerContext,
+  project: { id: string; org_id: string },
+  stored: { looser: { stageId: string; key: string; value: unknown }[]; orgVersion: number },
+) {
+  for (const l of stored.looser)
+    ctx.write(
+      ctx.db
+        .insertInto("core_override_approvals")
+        .values({
+          project_id: project.id,
+          org_id: project.org_id,
+          org_version: stored.orgVersion,
+          stage_id: l.stageId,
+          setting: l.key,
+          value: JSON.stringify(l.value),
+          approved_by: ctx.actor.id,
+          approved_at: ctx.now,
+        })
+        .onConflict((oc) =>
+          oc.columns(["project_id", "org_version", "stage_id", "setting"]).doUpdateSet({
+            value: JSON.stringify(l.value),
+            approved_by: ctx.actor.id,
+            approved_at: ctx.now,
+          }),
+        ),
+    );
+}
+
+/** Refuses when the org's config has a version newer than `since` (an ISO time). */
+async function requireOrgUnchangedSince(db: Db, orgId: string, since: string) {
+  // A point read: the org's row, and its current config version by primary key.
+  const row = await db
+    .selectFrom("core_organization as o")
+    .innerJoin("core_org_configs as c", (j) =>
+      j.onRef("c.org_id", "=", "o.id").onRef("c.version", "=", "o.config_version"),
+    )
+    .select(["c.version", "c.created_at"])
+    .where("o.id", "=", orgId)
+    .executeTakeFirst();
+  if (row && row.created_at > since)
+    throw new OperationError(
+      "conflict",
+      `the org's workflows changed (v${row.version}) after this was asked: save it again so it is judged against them`,
+    );
 }
 
 /** A stored version's document, or null when there's no such valid version. */
@@ -334,10 +539,26 @@ export const configPreview = defineOperation({
   async handler(input, ctx) {
     const project = requireProject(ctx);
     const parsed = parseProjectPolicy(JSON.stringify(input.policy));
+    let error = parsed.ok ? null : parsed.error;
+    if (parsed.ok) {
+      const name = newOrgShapedName(ctx.scope.rawPolicy, parsed.policy);
+      if (name)
+        error = `a workflow can't be called "${name}": names like that are org workflow ids`;
+    }
+    if (parsed.ok && !error && onOrgWorkflow(parsed.policy)) {
+      const resolved = resolveProjectWorkflow(
+        parsed.policy,
+        (await currentOrgConfig(ctx.db, project.org_id)).config,
+        { kind: "requested" },
+      );
+      if (resolved && !resolved.ok) error = resolved.error;
+    }
     return {
-      valid: parsed.ok,
-      error: parsed.ok ? null : parsed.error,
-      impact: parsed.ok ? policyImpact(ctx.scope.policy, parsed.policy, ctx.floor) : null,
+      valid: error === null,
+      error,
+      impact: parsed.ok
+        ? await impactOf(ctx.db, project, ctx.scope.rawPolicy, parsed.policy, ctx.floor)
+        : null,
       currentVersion: versionOf(project.policy_sha) ?? 0,
     };
   },
@@ -349,6 +570,7 @@ export const configSave = defineOperation({
     "Save a new version of a project's factory config (ADR 0370). Name the version you edited from (`baseVersion`; 0 if there is none): a stale base is refused as a conflict. An invalid document is refused and nothing is written. A save that loosens the current version (a looser autonomy policy, an added approver, a hidden review section, a wider harness…) is self-modify: it becomes a pending action an approver decides, judged under the current version. Other saves apply at once, for new work and as a tightening of running work. Any org member may save.",
   risk: "write",
   riskOf: (input, at) => saveRisk(input.policy, input.baseVersion, at),
+  decidedByOrgAdmin: (input, at) => orgAdminDecidesSave(input.policy, at),
   actors: ["human"],
   permission: "member",
   input: z.object({
@@ -364,10 +586,13 @@ export const configSave = defineOperation({
     const project = requireProject(ctx);
     const policy = validate(input.policy);
     requireBase(project, input.baseVersion);
+    requireName(ctx.scope.rawPolicy, policy);
+    await requireOrgWorkflow(ctx.db, project.org_id, policy);
     await requireAdjudicatorEarned(ctx, policy);
-    const impact = policyImpact(ctx.scope.policy, policy, ctx.floor);
+    const impact = await impactOf(ctx.db, project, ctx.scope.rawPolicy, policy, ctx.floor);
+    const stored = await storedDocument(ctx.db, project.org_id, input.policy, policy);
     const written = await writeVersion(ctx, project, {
-      raw: formatPolicy(input.policy),
+      raw: formatPolicy(stored.doc),
       valid: true,
       error: null,
       source: input.source,
@@ -389,6 +614,12 @@ export const configRollback = defineOperation({
     // A missing version is refused by the handler.
     return target ? saveRisk(target.policy, input.baseVersion, at) : "write";
   },
+  async decidedByOrgAdmin(input, at) {
+    const target = at.scope.project
+      ? await storedVersion(at.db, at.scope.project.id, input.toVersion)
+      : null;
+    return target ? orgAdminDecidesSave(target.policy, at) : false;
+  },
   actors: ["human"],
   permission: "member",
   input: z.object({
@@ -403,9 +634,20 @@ export const configRollback = defineOperation({
     const target = await storedVersion(ctx.db, project.id, input.toVersion);
     if (!target) throw new OperationError("not_found", `no valid version ${input.toVersion}`);
     requireBase(project, input.baseVersion);
-    const impact = policyImpact(ctx.scope.policy, target.policy, ctx.floor);
+    await requireOrgWorkflow(ctx.db, project.org_id, target.policy);
+    const impact = await impactOf(ctx.db, project, ctx.scope.rawPolicy, target.policy, ctx.floor);
+    const restored = formatPolicy(
+      (
+        await storedDocument(
+          ctx.db,
+          project.org_id,
+          JSON.parse(target.raw) as Record<string, unknown>,
+          target.policy,
+        )
+      ).doc,
+    );
     const written = await writeVersion(ctx, project, {
-      raw: target.raw,
+      raw: restored,
       valid: true,
       error: null,
       source: "rollback",
@@ -449,7 +691,14 @@ export const configExport = defineOperation({
  */
 export async function applyApprovedConfig(
   ctx: HandlerContext,
-  pa: { id: string; operation: string; input: string; actor_id: string },
+  pa: {
+    id: string;
+    operation: string;
+    input: string;
+    actor_id: string;
+    created_at: string;
+    decider: string | null;
+  },
 ): Promise<{ version: number; sha: string }> {
   const project = requireProject(ctx);
   const input = JSON.parse(pa.input) as {
@@ -468,15 +717,39 @@ export async function applyApprovedConfig(
   if (rollback && !restored) {
     throw new OperationError("not_found", `no valid version ${input.toVersion}`);
   }
+  const policy = restored?.policy ?? validate(input.policy);
+  let raw = restored?.raw ?? formatPolicy(input.policy);
+  if (onOrgWorkflow(policy)) {
+    // The approval was of a loosening against the org's workflow as it was when it was asked: if the
+    // org has saved since, what was approved may not be what would apply, so it's asked again.
+    await requireOrgUnchangedSince(ctx.db, project.org_id, pa.created_at);
+    await requireOrgWorkflow(ctx.db, project.org_id, policy);
+    const stored = await storedDocument(
+      ctx.db,
+      project.org_id,
+      JSON.parse(raw) as Record<string, unknown>,
+      policy,
+    );
+    raw = formatPolicy(stored.doc);
+    // An org admin approved it: the looser overrides this change itself brings or changes apply,
+    // for this org version only. Never one it merely keeps, nor any a project approver decided: a
+    // kept looser override still takes the stricter value until an org admin approves it.
+    if (pa.decider === "org-admin")
+      approveOverrides(ctx, project, {
+        orgVersion: stored.orgVersion,
+        looser: stored.looser.filter((l) => !kept(ctx.scope.rawPolicy, policy, l)),
+      });
+  }
   const written = await writeVersion(ctx, project, {
-    raw: restored?.raw ?? formatPolicy(input.policy),
+    raw,
     valid: true,
     error: null,
     source: rollback ? "rollback" : (input.source ?? "app"),
     note: input.note || (rollback ? `Rolled back to v${input.toVersion}` : null),
     createdBy: pa.actor_id,
   });
-  ctx.write(
+  ctx.writePendingStatus(
+    "apply",
     ctx.db.updateTable("core_pending_actions").set({ status: "applied" }).where("id", "=", pa.id),
   );
   return written;

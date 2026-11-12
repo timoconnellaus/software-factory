@@ -3,6 +3,8 @@
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
 import * as adjudicator from "./operations/adjudicator.ts";
+import * as adopt from "./operations/adopt.ts";
+import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
 import * as backlog from "./operations/backlog.ts";
@@ -10,6 +12,7 @@ import * as cli from "./operations/cli.ts";
 import * as config from "./operations/config.ts";
 import * as connector from "./operations/connector.ts";
 import * as desktop from "./operations/desktop.ts";
+import * as device from "./operations/device.ts";
 import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
 import * as github from "./operations/github.ts";
@@ -17,16 +20,19 @@ import * as improve from "./operations/improve.ts";
 import * as incidents from "./operations/incidents.ts";
 import * as live from "./operations/live.ts";
 import * as mergeQueue from "./operations/merge-queue.ts";
+import * as mobile from "./operations/mobile.ts";
 import * as onboarding from "./operations/onboarding.ts";
 import * as planning from "./operations/planning.ts";
 import * as projects from "./operations/projects.ts";
 import * as protection from "./operations/protection.ts";
 import * as questions from "./operations/questions.ts";
+import * as reconcile from "./operations/reconcile.ts";
 import * as runners from "./operations/runners.ts";
 import * as specs from "./operations/specs.ts";
 import * as terminal from "./operations/terminal.ts";
 import * as verify from "./operations/verify.ts";
 import * as workItems from "./operations/work-items.ts";
+import * as workflows from "./operations/workflows.ts";
 
 export const OPERATIONS: readonly AnyOperation[] = [
   projects.projectCreate,
@@ -38,6 +44,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   projects.repositoryUpdate,
   backlog.workItemRelease,
   backlog.workItemShape,
+  backlog.workItemReleaseChoice,
   backlog.workItemShaped,
   backlog.workItemMove,
   backlog.workItemUpdate,
@@ -45,6 +52,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   backlog.workItemLink,
   backlog.workItemUnlink,
   backlog.workItemBoard,
+  backlog.projectWorkflow,
   backlog.queuePull,
   projects.policySync,
   projects.killSwitchSet,
@@ -95,6 +103,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   questions.planningAnswer,
   questions.planningAcceptDefaults,
   questions.planningFinishAlone,
+  questions.questionAnswerFromEdit,
   questions.questionEscalate,
   questions.questionUpdate,
   questions.questionDelete,
@@ -108,6 +117,14 @@ export const OPERATIONS: readonly AnyOperation[] = [
   planning.chatReply,
   planning.planningNews,
   planning.planningPeek,
+  planning.specEdit,
+  artifacts.artifactAdd,
+  artifacts.artifactUpdate,
+  artifacts.artifactDelete,
+  artifacts.artifactShow,
+  artifacts.artifactGet,
+  artifacts.artifactRead,
+  planning.specReleaseEdit,
   planning.planningWait,
   planning.planningYield,
   planning.planningReady,
@@ -138,6 +155,18 @@ export const OPERATIONS: readonly AnyOperation[] = [
   desktop.desktopDeviceRevoke,
   desktop.presenceChallenge,
   desktop.presenceRedeem,
+  device.deviceList,
+  device.deviceRevoke,
+  device.deviceUpdate,
+  mobile.mobileNonce,
+  mobile.mobileAuthStart,
+  mobile.mobileAuthLookup,
+  mobile.mobileApproveDevice,
+  mobile.mobileDenyDevice,
+  mobile.mobileAuthExchange,
+  mobile.mobilePairOffer,
+  mobile.mobilePairOfferStatus,
+  mobile.mobileRenew,
   gates.specApprove,
   gates.specRequestChanges,
   gates.reviewMerge,
@@ -154,6 +183,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   mergeQueue.mergeQueueLeave,
   verify.reviewPacketRecord,
   verify.ciRead,
+  verify.checksForHead,
   verify.verifyRefresh,
   verify.prAutoMerge,
   verify.projectCheckGitHub,
@@ -177,6 +207,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.runReportEvents,
   live.runLive,
   live.runSteer,
+  live.runReportArchiveMissing,
   live.runTakeSteers,
   live.runTakeover,
   terminal.runTerminalAttach,
@@ -190,6 +221,19 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.leaseHeartbeat,
   runners.leaseRelease,
   runners.workItemPreviewRouting,
+  workflows.workflowList,
+  workflows.workflowGet,
+  workflows.workflowPreview,
+  workflows.workflowSave,
+  workflows.workflowCreateFromTemplate,
+  workflows.workflowArchive,
+  workflows.agentSave,
+  workflows.orgConfigGet,
+  workflows.orgConfigRollback,
+  adopt.orgConfigAdoptProjectWorkflows,
+  workflows.stageTypeList,
+  reconcile.reconcileReport,
+  reconcile.reconcileStreak,
 ];
 
 const byName = new Map<string, AnyOperation>();

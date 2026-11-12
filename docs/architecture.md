@@ -13,11 +13,13 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   (`sf-engine.zerobsai.com/runner/v1/*`). Both bind one D1 database, `software-factory`: work items,
   questions, gates, runs, leases, audit journal, outbox and Better Auth, all `core_*` tables
   (`packages/db/migrations`, ADR 0050). `sf-engine` also binds one private R2 bucket,
-  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes.
+  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes. Tables that only grow are
+  pruned by the minute cron in bounded batches (`apps/engine/src/retention.ts`, AGENTS.md "Cloudflare cost").
 - **Operations** (ADR 0003, 0004) are the only way to change state. Every call goes through
   `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, from
   its current config version, and no looser than the version a work item started under), fencing
   token, permission, handler, then one D1 batch with the audit row and outbox rows (ADR 0035, 0370).
+  A changes-only operation that changed nothing commits no batch and writes no audit row (ADR 0590).
 - **Workflows** own the gates, one per work item; the **foreman** picks a route within them, and
   its decisions are listed as binding or advisory (ADR 0005, 0006). Gates block in v1 and a waiting
   item holds no runner slot.
@@ -25,8 +27,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 - **Planning** is a live agent session on a runner (ADR 0300): the planning agent works through
   operations over the runner channel (a projected planning MCP server), and kim-style hooks
   (`PostToolUse`, `UserPromptSubmit`, `Stop`) bring answers and chat back from the planning log. It
-  holds a light slot (ADR 0301). Mockups render on a sandboxed origin; kept artifacts land in `.kim/`
-  with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
+  holds a light slot (ADR 0301). Mockups are kept in D1 by revision and render in sandboxed frames
+  with an opaque origin (ADR 0472); kept artifacts land in `.kim/` with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
   channel path, `/runner/v1/jobs/:id/planning`, scoped by the job and fenced by its lease; the
   runner host relays them for the harness, so the runner key never leaves it. Every change is a row
   in the **planning log** (`core_planning_events`, its id the agent's cursor) and a
@@ -66,7 +68,34 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   `policyImpact` classifies each change. A loosening save is `self-modify` and is applied when an
   approver approves it. Workflows (ADR 0371) fill the skeleton's three slots, and Workflow v6 runs
   their steps (`workflow.gate`, `workflow.record`). Agents (ADR 0372) carry a role and tier that
-  the runner's claim resolves to a model.
+  the runner's claim resolves to a model. Spec 52 is replacing slots with **stage types**:
+  `@software-factory/core/stages` holds the registry (`STAGE_TYPES`), the `WorkflowDefinition`
+  schema, `validateWorkflow` (the S- and F-rules) and the built-in Software, Incident and Attached PR
+  workflows; `compileProjectWorkflow` expresses a project's slot workflow as a stage list. Nothing at
+  run time reads them yet (build plan PR (a)). An **org config** (`core_org_configs`, migration 0280)
+  holds the org's workflows and agents as versions, edited through `workflow.*`, `agent.save` and
+  `orgConfig.*`; a loosening save is `self-modify` for an org admin (the classifier is an
+  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one. A
+  project may name an org workflow by id (`workflow: "wf_…"`) with
+  `workflowOverrides` of the few settings each type lists as `overridable` (spec 52 PR (d)); until
+  the switch-over, today's Workflow runs it through `effectivePolicy` (the scope's `policy`; config
+  operations read `rawPolicy`), under the org config version the item pinned
+  (`core_work_items.org_config_version`, migration 0282). Overrides apply as the stricter of the
+  org's value and the project's, unless an org admin approved that looser value for that org
+  version (`core_override_approvals`, written only by the approve path; carried to a new version only
+  where the org left the value unchanged). The parsed org
+  config is cached per isolate by (org, version). The **reconciler** (ADR 0511) is
+  `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**, off the Workflow's
+  path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
+  its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each
+  stage history through the reconciler and writes one verdict row per item (`core_reconcile_items`,
+  migration 0281; `reconcile.report`). An item on an org workflow is compared with the org workflow
+  it pinned (its `org_config_version`), resolved with the project's overrides as the engine ran it. It drives nothing. It compares stage order and skips only;
+  everything else (jobs, gates, send-back targets, retries, slot steps, ends other than Done) counts
+  as a divergence, and `reconcile.streak` says "comparison incomplete" and what is missing until it
+  is compared. Known differences are reported by name and count as divergences until settled: the
+  merge queue's moved head (`queue-head-moved`, settled with spec 53's babysitter). The
+  switch-over is its own PR once 20 ended items in a row agree.
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`
@@ -76,14 +105,24 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 - **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
   a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
   0231). The packet's **tests-intact** guard reads GitHub's diff for weakened tests, suppressions
-  and gate-file edits; its findings go to a person and block the check-only auto-merge, never the
-  verdict (ADR 0500). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
+  and gate-file edits; its findings go to a person and block an auto-approved merge, never the
+  verdict (ADR 0500, 0515). The runner host runs the project's declared **checks** itself on the head
+  SHA after a build (through the adapter's `exec`), sends a failure back into the same session, and
+  hands back the results; the verdict uses them, not the agent's report, and a criterion is
+  **Proven** only by a check that passed (Workflow v8, ADR 0501). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
-  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
+  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). Designed, not built (spec 53, ADRs 0580–0585): from Workflow v11 an approval only says the
+  head may merge, and the **babysitter** delivers it: a per-repository reconcile pass in the engine
+  (no model) orders, updates and merges approved PRs and holds them while `main` is red, and starts a
+  `babysit` job on a runner only for judgement (a conflict, a failed check, a red `main`). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
-  auto-merge where policy opts in (ADR 0230).
+  auto-merge where policy opts in (ADR 0230, as built today). Accepted, not built: ADR 0230 is
+  superseded by **dark factory mode** (ADR 0515, spec 52 PR (e)): an `autoApprove` setting on the
+  workflow's merge gate, off by default and turned on only by a person, under which the merge gate
+  is *approved* with no person when every condition holds in code (never for paths in the built-in
+  self-modify list); landing the approved merge stays with the merge queue.
 - **Attached PRs** (ADR 0290, spec 05): a PR opened outside the factory fails `factory/verify` with
   a link to sf-app's `/attach`. `workItem.attachPr` gives it a work item of kind `attached`, whose
   Workflow takes its own path (`runAttached`, chosen by kind): triage, spec and build skipped, the
@@ -142,13 +181,23 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
   `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses
   off the app, so no token (the CLI's, MCP's) can approve anything.
-- **The desktop app** (`apps/desktop`, ADRs 0390–0392 and 0460, specs 40 and 41) is the daily UI on macOS (Electrobun), a window shell of sections with nested lists drawn from `packages/ui`'s desktop tokens: it
+- **The desktop app** (`apps/desktop`, ADRs 0390–0393 and 0460, specs 40 and 41) is the daily UI on macOS (Electrobun), a window shell of sections with nested lists drawn from `packages/ui`'s desktop tokens: it
   supervises this Mac's `sf-runner` and calls operations through the same door (`/client/v1`) with a
   desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates
   only with a per-call presence proof (Touch ID) the door verifies; nothing else on the Mac can make
   one. The website (`sf-app`) shrinks to sign-in, device approval, Connect GitHub and the `/open/*`
   trampoline. A `ClientHub` Durable Object per person holds the app's live socket
-  (`/client/v1/live`); the outbox's `notify` messages are pushed through it.
+  (`/client/v1/live`); the outbox's `notify` messages are pushed through it. The door refuses
+  desktop builds below `DESKTOP_MIN_PROTOCOL` with 426 `update_required` (ADR 0393).
+- **The phone app** (`apps/mobile`, Flutter, ADRs 0540–0543, spec 60) comes through the same door
+  with a `mobile` token on the `mobile` surface. Its device key is an Android Keystore key bound to
+  a fingerprint for every use; `sf-engine` checks the key's attestation at sign-in
+  (`packages/core/src/attestation/`: the chain to Google's pinned roots, the revocation list, the
+  challenge, our package and signing certificate, the boot state). It pairs by the website's
+  `/mobile/connect` or a pairing offer's QR code from Settings → Devices, and decides with the same
+  presence proofs as the desktop; which operations take a proof and which are one tap on each device
+  is `deviceDecidable()` in `invoke()`. The website serves `/.well-known/assetlinks.json` for its App
+  Links.
 - **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
   without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
   0037). A session's PR that never joined is attached afterwards (ADR 0290).

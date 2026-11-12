@@ -41,10 +41,14 @@ export interface OpMap {
   "planning.pause": Def<typeof operations.planningPause>;
   "planning.resume": Def<typeof operations.planningResume>;
   "planning.finishAlone": Def<typeof operations.planningFinishAlone>;
+  "spec.edit": Def<typeof operations.specEdit>;
+  "artifact.get": Def<typeof operations.artifactGet>;
+  "spec.releaseEdit": Def<typeof operations.specReleaseEdit>;
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;
   "run.takeover": Def<typeof operations.runTakeover>;
+  "run.reportArchiveMissing": Def<typeof operations.runReportArchiveMissing>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;
@@ -77,7 +81,43 @@ export interface OpMap {
   "desktop.denyDevice": Def<typeof operations.desktopDenyDevice>;
   "desktopDevice.list": Def<typeof operations.desktopDeviceList>;
   "desktopDevice.revoke": Def<typeof operations.desktopDeviceRevoke>;
+  "device.list": Def<typeof operations.deviceList>;
+  "device.revoke": Def<typeof operations.deviceRevoke>;
+  "device.update": Def<typeof operations.deviceUpdate>;
+  "mobile.authLookup": Def<typeof operations.mobileAuthLookup>;
+  "mobile.approveDevice": Def<typeof operations.mobileApproveDevice>;
+  "mobile.denyDevice": Def<typeof operations.mobileDenyDevice>;
+  "mobile.pairOffer": Def<typeof operations.mobilePairOffer>;
+  "mobile.pairOfferStatus": Def<typeof operations.mobilePairOfferStatus>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
+  // Org workflows (spec 52 PR (b)).
+  "workflow.list": Def<typeof operations.workflowList>;
+  "workflow.get": Def<typeof operations.workflowGet>;
+  "workflow.preview": Def<typeof operations.workflowPreview>;
+  "workflow.save": Def<typeof operations.workflowSave>;
+  "workflow.createFromTemplate": Def<typeof operations.workflowCreateFromTemplate>;
+  "workflow.archive": Def<typeof operations.workflowArchive>;
+  "agent.save": Def<typeof operations.agentSave>;
+  "orgConfig.get": Def<typeof operations.orgConfigGet>;
+  "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
+  "stageType.list": Def<typeof operations.stageTypeList>;
+  // The reconciler in shadow (spec 52 PR (c)).
+  "reconcile.report": Def<typeof operations.reconcileReport>;
+  "reconcile.streak": Def<typeof operations.reconcileStreak>;
+  // The work model (spec 50): the backlog, ready and release.
+  "workItem.board": Def<typeof operations.workItemBoard>;
+  "workItem.update": Def<typeof operations.workItemUpdate>;
+  "workItem.move": Def<typeof operations.workItemMove>;
+  "workItem.release": Def<typeof operations.workItemRelease>;
+  "workItem.releaseChoice": Def<typeof operations.workItemReleaseChoice>;
+  "workItem.reorder": Def<typeof operations.workItemReorder>;
+  "workItem.link": Def<typeof operations.workItemLink>;
+  "workItem.unlink": Def<typeof operations.workItemUnlink>;
+  "project.workflow": Def<typeof operations.projectWorkflow>;
+  "mergeQueue.list": Def<typeof operations.mergeQueueList>;
+  "repository.list": Def<typeof operations.repositoryList>;
+  "cliToken.list": Def<typeof operations.cliTokenList>;
+  "cliToken.revoke": Def<typeof operations.cliTokenRevoke>;
 }
 
 export type OpName = keyof OpMap;
@@ -110,3 +150,5 @@ export type ConfigView = OpOutput<"config.get">;
 export type LiveView = OpOutput<"run.live">;
 export type LiveEvent = LiveView["events"][number];
 export type LiveSteer = LiveView["steers"][number];
+export type BoardItem = OpOutput<"workItem.board">["items"][number];
+export type ProjectWorkflow = OpOutput<"project.workflow">;

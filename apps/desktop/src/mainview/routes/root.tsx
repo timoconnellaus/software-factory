@@ -8,7 +8,8 @@ import { createRootRouteWithContext, Outlet, useRouter } from "@tanstack/react-r
 import { useEffect, useState } from "react";
 import type { Session } from "../../shared/rpc.ts";
 import { bun, onInbox, onNavigate } from "../bridge.ts";
-import { useDesktopSession } from "../lib/desktop-session.ts";
+import { UpdateRequired } from "../components/update-required.tsx";
+import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
 
 export const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Root,
@@ -31,6 +32,7 @@ function Root() {
   const router = useRouter();
   const client = useQueryClient();
   const session = useDesktopSession();
+  const update = useUpdateStatus();
   useEffect(
     () =>
       onNavigate((path) => {
@@ -39,11 +41,13 @@ function Root() {
       }),
     [router, client],
   );
-  // The main process's inbox count changes on a live push or a poll: refresh what shows gates.
+  // The main process's inbox count changes on a live push or a poll: refresh what shows gates,
+  // and the Work lists and board, which the same events move (a gate opened, an item shaped).
   useEffect(
     () =>
       onInbox(() => {
         void client.invalidateQueries({ queryKey: ["inbox"] });
+        void client.invalidateQueries({ queryKey: ["work"] });
       }),
     [client],
   );
@@ -51,10 +55,24 @@ function Root() {
   const signedIn = session?.signedIn ?? false;
   useEffect(() => {
     void signedIn;
-    client.removeQueries({ predicate: (q) => q.queryKey[0] !== "session" });
+    // The update status is the app's, not the account's: it survives (ADR 0393).
+    client.removeQueries({
+      predicate: (q) => q.queryKey[0] !== "session" && q.queryKey[0] !== "update",
+    });
     void router.invalidate();
   }, [signedIn, client, router]);
   if (!session) return null;
+  // The door refused this build (ADR 0393): only updating helps, signed in or not.
+  if (update?.required)
+    return (
+      <UpdateRequired
+        status={update}
+        act={async (action) => {
+          client.setQueryData(["update"], await bun.updateAction({ action }));
+          if (action === "retry") void client.invalidateQueries();
+        }}
+      />
+    );
   return (
     <>
       {session.signedIn ? <Outlet /> : <SignIn session={session} />}

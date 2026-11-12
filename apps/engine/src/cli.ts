@@ -10,10 +10,19 @@
 // - `batch` runs up to 20 `read`-risk calls in parallel (the desktop app's page loads).
 // - Bytes travel as `{ "$bytes": "<base64>" }` in `call` and `batch` (wire-bytes.ts): an attachment
 //   upload's input, an attachment's output.
+// - `mobile/nonce`, `mobile/start` and `mobile/exchange` are the phone app's unsigned sign-in (as
+//   MOBILE_DEVICE_ACTOR, ADR 0541); a `mobile` token's calls run on the `mobile` surface, and a
+//   phone below MOBILE_MIN_PROTOCOL gets 426 (mobile.ts).
 // - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
 // - `terminal/<workItemId>/<runId>` (GET, WebSocket) is a run's web terminal for the desktop app
 //   (spec 42, ADR 0530): the same attach as sf-app's socket route, then the relay's viewer socket.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
+// - The version handshake (spec 40 M4, ADR 0393): the desktop app sends `x-sf-client-protocol`. A
+//   desktop sign-in or a desktop token's request below DESKTOP_MIN_PROTOCOL gets 426
+//   `update_required`, and the app updates. No header is protocol 0 (builds before the handshake).
+//   It is checked once, in `versionGate` at the top of `handleCli`, so every route and socket a
+//   desktop token can reach gets it, including routes added later. A client opening a WebSocket
+//   must send the protocol headers on the upgrade request too.
 // MCP is meant to come through the same door.
 import {
   type Actor,
@@ -27,11 +36,21 @@ import {
   type Origin,
   resolveCliToken,
   resolveDesktopToken,
+  resolveMobileToken,
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
 import { STATUS } from "./channel.ts";
-import { clientHub } from "./client-hub.ts";
+import { clientHub, DEVICE_HEADER } from "./client-hub.ts";
 import { invokeDeps } from "./deps.ts";
+import {
+  MOBILE_DEVICE_ACTOR,
+  mobileCaller,
+  mobileNonceLimit,
+  mobileSignInConflict,
+  mobileSignInRoute,
+  mobileTooOld,
+  mobileUpdateRequired,
+} from "./mobile.ts";
 import { attachTerminal, openViewerSocket } from "./terminal-attach.ts";
 import { decodeBytes, encodeBytes } from "./wire-bytes.ts";
 
@@ -54,16 +73,76 @@ const unauthenticated = () =>
     401,
   );
 
-/** Who a bearer token is: a CLI token (with its scope) or a desktop device's token. */
+/** The header the desktop app names its door protocol in (ADR 0393). */
+export const CLIENT_PROTOCOL_HEADER = "x-sf-client-protocol";
+
+/**
+ * The newest desktop door protocol this engine knows (apps/desktop's DOOR_PROTOCOL; bump them
+ * together). A DESKTOP_MIN_PROTOCOL above it is a mistake that would refuse every build, sign-in
+ * included, so it is ignored (and logged) instead of enforced.
+ */
+export const DESKTOP_PROTOCOL_LATEST = 1;
+
+/** The floor to enforce, or null (unset, 0, malformed or above DESKTOP_PROTOCOL_LATEST). */
+export function desktopMinProtocol(env: Pick<Env, "DESKTOP_MIN_PROTOCOL">): number | null {
+  const raw = env.DESKTOP_MIN_PROTOCOL ?? "";
+  if (!/^\d{1,6}$/.test(raw) || Number(raw) <= 0) return null;
+  const min = Number(raw);
+  if (min > DESKTOP_PROTOCOL_LATEST) {
+    console.error(
+      `DESKTOP_MIN_PROTOCOL=${min} is above the newest desktop protocol (${DESKTOP_PROTOCOL_LATEST}); not enforced`,
+    );
+    return null;
+  }
+  return min;
+}
+
+/** The desktop build speaks a door protocol older than the engine still serves (ADR 0393). */
+export function desktopTooOld(request: Request, env: Pick<Env, "DESKTOP_MIN_PROTOCOL">): boolean {
+  const min = desktopMinProtocol(env);
+  if (min === null) return false;
+  const sent = request.headers.get(CLIENT_PROTOCOL_HEADER) ?? "";
+  const protocol = /^\d{1,6}$/.test(sent) ? Number(sent) : 0;
+  return protocol < min;
+}
+
+const updateRequired = (env: Pick<Env, "DESKTOP_MIN_PROTOCOL">) =>
+  reply(
+    {
+      error:
+        "This version of the Software Factory app is too old for the factory. Update it: menu bar, Restart to update (or download it again).",
+      code: "update_required",
+      minProtocol: desktopMinProtocol(env),
+    },
+    426,
+  );
+
+/**
+ * The version handshake for every door route and socket, in one place (ADR 0393): a desktop
+ * sign-in, or any request with a desktop token, below the floor gets 426 `update_required`. CLI
+ * tokens and unauthenticated requests pass through to the route, which answers as usual. Costs
+ * nothing while no floor is set; with one, the token lookup is shared with the route's own.
+ */
+async function versionGate(request: Request, env: Env, path: string): Promise<Response | null> {
+  if (!desktopTooOld(request, env)) return null;
+  const desktop =
+    path.startsWith("desktop/") || (await authenticate(request, env))?.kind === "desktop";
+  return desktop ? updateRequired(env) : null;
+}
+
+/** Who a bearer token is: a CLI token (with its scope), or a desktop's or a phone's device token. */
 type Caller =
   | { kind: "cli"; userId: string; scope: "read" | "write" }
-  | { kind: "desktop"; userId: string; deviceId: string; tokenId: string };
+  | { kind: "desktop" | "mobile"; userId: string; deviceId: string; tokenId: string };
 
 export async function handleCli(request: Request, env: Env): Promise<Response> {
   const pathname = new URL(request.url).pathname;
   const path = pathname.slice(
     pathname.startsWith(CLIENT_PREFIX) ? CLIENT_PREFIX.length : CLI_PREFIX.length,
   );
+  if (mobileTooOld(request, path)) return mobileUpdateRequired();
+  const tooOld = await versionGate(request, env, path);
+  if (tooOld) return tooOld;
   if (path === "ops" && request.method === "GET") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
@@ -77,7 +156,11 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
     }
-    return clientHub(env, who.userId).fetch(request);
+    // The hub tags a device's socket with its id, so revoking the device closes it (ADR 0541).
+    const headers = new Headers(request.headers);
+    headers.delete(DEVICE_HEADER);
+    if (who.kind !== "cli") headers.set(DEVICE_HEADER, who.deviceId);
+    return clientHub(env, who.userId).fetch(new Request(request, { headers }));
   }
   const terminal = TERMINAL_ROUTE.exec(path);
   if (terminal?.[1] && terminal[2] && request.method === "GET") {
@@ -104,6 +187,30 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (path === "desktop/start" || path === "desktop/exchange") {
     const op = path === "desktop/start" ? "desktop.authStart" : "desktop.authExchange";
     return respond(() => run(env, op, body, DESKTOP_DEVICE_ACTOR, { surface: "desktop" }), true);
+  }
+  const phoneSignIn = mobileSignInRoute(path);
+  if (phoneSignIn) {
+    return respond(async () => {
+      const caller = await mobileCaller(request, env);
+      // The nonce's courtesy limit, at the edge: an over-limit caller never reaches D1.
+      if (phoneSignIn === "mobile.nonce") await mobileNonceLimit(env, caller);
+      let r: Awaited<ReturnType<typeof run>>;
+      try {
+        r = await run(env, phoneSignIn, body, MOBILE_DEVICE_ACTOR, { surface: "mobile", caller });
+      } catch (error) {
+        throw mobileSignInConflict(phoneSignIn, error);
+      }
+      // A refusal after the nonce was found commits (the nonce spent, a typed code counted), then
+      // is answered as an error.
+      const out = r.pending
+        ? null
+        : (r.output as { status?: string; code?: string; error?: string });
+      if (out?.status === "refused") {
+        const code = out.code === "denied" || out.code === "unavailable" ? out.code : "forbidden";
+        throw new OperationError(code, out.error ?? "refused", out);
+      }
+      return r;
+    }, true);
   }
   if (path === "call") {
     const who = await authenticate(request, env);
@@ -193,7 +300,19 @@ async function openTerminal(
   return openViewerSocket(env, attached.jobId, attached.path);
 }
 
-async function authenticate(request: Request, env: Env): Promise<Caller | null> {
+/** One token lookup per request: the version gate and the route share it. */
+const callers = new WeakMap<Request, Promise<Caller | null>>();
+
+function authenticate(request: Request, env: Env): Promise<Caller | null> {
+  let caller = callers.get(request);
+  if (!caller) {
+    caller = lookUpCaller(request, env);
+    callers.set(request, caller);
+  }
+  return caller;
+}
+
+async function lookUpCaller(request: Request, env: Env): Promise<Caller | null> {
   const header = request.headers.get("authorization") ?? "";
   const match = /^Bearer\s+(\S+)$/i.exec(header);
   const token = match?.[1];
@@ -208,6 +327,10 @@ async function authenticate(request: Request, env: Env): Promise<Caller | null> 
       deviceId: desktop.device_id,
       tokenId: desktop.id,
     };
+  }
+  const phone = await resolveMobileToken(db, token, now);
+  if (phone) {
+    return { kind: "mobile", userId: phone.user_id, deviceId: phone.device_id, tokenId: phone.id };
   }
   const cli = await resolveCliToken(db, token, now);
   if (cli) return { kind: "cli", userId: cli.user_id, scope: cli.scope };
@@ -236,7 +359,8 @@ async function callAs(
     }
     return run(env, name, decodeBytes(input), actor, { surface: "cli" }, idempotencyKey);
   }
-  const origin: Origin = { surface: "desktop", deviceId: who.deviceId };
+  // The token's kind sets the surface; nothing in the request does (ADR 0391, 0541).
+  const origin: Origin = { surface: who.kind, deviceId: who.deviceId };
   if (presence !== undefined) {
     const proof = (presence && typeof presence === "object" ? presence : {}) as Record<
       string,

@@ -2,7 +2,7 @@
 // channel in sf-engine maps each signed call to one of these operations with actor
 // `{ type: "runner", id: <runner id> }`.
 
-import { json, parseJson } from "@software-factory/db";
+import { type CoreJobsTable, json, parseJson } from "@software-factory/db";
 import {
   accountNameSchema,
   type artifactSchema,
@@ -13,6 +13,7 @@ import {
   capabilityManifestSchema,
   capacityPausedSchema,
   capacitySchema,
+  executedCheckSchema,
   JOB_STAGES,
   type Job,
   MODEL_ROLES,
@@ -21,6 +22,7 @@ import {
   type Pool,
   RUNNER_COMPAT,
   type RunnerAccounts,
+  redactSecrets,
   runBranch,
   runnerAccountsSchema,
   runnerEventSchema,
@@ -28,7 +30,7 @@ import {
   stagePool,
   storedArtifactSchema,
 } from "@software-factory/runner-contract";
-import { sql } from "kysely";
+import { type Selectable, sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId, newRunnerId } from "../ids.ts";
@@ -41,15 +43,17 @@ import {
 } from "../operation.ts";
 import { planningRunEnded, USER_EVENTS } from "../planning.ts";
 import { policyImpact } from "../policy/impact.ts";
-import type { ProjectPolicy } from "../policy/project-policy.ts";
+import { declaredChecks, type ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
+import { hostChecksOn } from "../verify/proof.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
 import {
   fencingToken,
   itemRepository,
   jobId,
+  RUN_EVENTS_BATCH_MAX,
   repoRef,
   requireRepository,
   requireWorkItem,
@@ -246,6 +250,12 @@ function reportRunnerState(
     accounts?: RunnerAccounts | undefined;
     /** Only the heartbeat carries it; a claim leaves the stored value alone. */
     compat?: number | null;
+    /** A heartbeat's signed time: the update applies only when it is newer than the last one. */
+    signedAt?: number | undefined;
+    /** Signed no later than the last accepted heartbeat: report nothing, write nothing. */
+    stale?: boolean;
+    /** A claim signed in the same second as the heartbeat before it still reports (claims only). */
+    sameSecond?: boolean;
   },
 ): { pendingAccount: string | null } {
   // The owner's pick is done once the runner reports it active, and moot once the runner reports
@@ -255,6 +265,31 @@ function reportRunnerState(
     requested !== null &&
     report.accounts !== undefined &&
     (report.accounts.active === requested || !report.accounts.names.includes(requested));
+  if (report.stale) return { pendingAccount: requested !== null && !settled ? requested : null };
+  // A heartbeat or claim is audited when it changes what a person looks for after an incident
+  // (ADR 0590): whether the runner takes work (accepting, paused, rate limit), its code (version,
+  // update state, compat), its manifest or accounts, or the owner's account pick settling. Capacity
+  // in use and last seen change on every beat and are not audited.
+  const paused = report.capacity.paused ? json(report.capacity.paused) : null;
+  if (
+    settled ||
+    runner.accepting !== (report.capacity.accepting ? 1 : 0) ||
+    pauseKey(runnerPaused(runner)) !== pauseKey(report.capacity.paused ?? null) ||
+    runner.capacity_max !== report.capacity.max ||
+    runner.light_max !== (report.capacity.light?.max ?? null) ||
+    json(report.manifest) !== runner.manifest ||
+    (report.rateLimitedUntil !== undefined &&
+      report.rateLimitedUntil !== runner.rate_limited_until) ||
+    (report.version !== undefined &&
+      (report.version.sha !== runner.version ||
+        (report.version.autoUpdate ? 1 : 0) !== runner.auto_update ||
+        report.version.update.state !== runner.update_state ||
+        report.version.update.target !== runner.update_target)) ||
+    (report.accounts !== undefined && json(report.accounts) !== runner.accounts) ||
+    (report.compat !== undefined && report.compat !== runner.compat)
+  ) {
+    ctx.changed();
+  }
   ctx.write(
     ctx.db
       .updateTable("core_runners")
@@ -265,7 +300,7 @@ function reportRunnerState(
         light_max: report.capacity.light?.max ?? null,
         light_in_use: report.capacity.light?.inUse ?? 0,
         accepting: report.capacity.accepting ? 1 : 0,
-        paused: report.capacity.paused ? json(report.capacity.paused) : null,
+        paused,
         ...(report.rateLimitedUntil !== undefined
           ? { rate_limited_until: report.rateLimitedUntil }
           : {}),
@@ -282,9 +317,21 @@ function reportRunnerState(
         ...(report.accounts ? { accounts: json(report.accounts) } : {}),
         ...(report.compat !== undefined ? { compat: report.compat } : {}),
         ...(settled ? { account_requested: null, account_requested_at: null } : {}),
+        ...(report.signedAt !== undefined ? { last_signed_at: report.signedAt } : {}),
       })
-      .where("id", "=", runner.id),
+      .where("id", "=", runner.id)
+      .$if(report.signedAt !== undefined, (q) =>
+        q.where((eb) =>
+          eb.or([
+            eb("last_signed_at", "is", null),
+            eb("last_signed_at", report.sameSecond ? "<=" : "<", report.signedAt ?? 0),
+          ]),
+        ),
+      ),
   );
+  // No batch guard (it would cost an insert and a delete per beat, and a failed one would cost the
+  // beat's lease renewals): a stale heartbeat never gets here, and this condition only keeps the
+  // newer of two racing heartbeats' runner state.
   return { pendingAccount: requested !== null && !settled ? requested : null };
 }
 
@@ -337,6 +384,8 @@ export const runnerHeartbeat = defineOperation({
   description:
     "A runner host reports its manifest, capacity, rate limit and the jobs it holds. Each held job's lease is renewed if its fencing token is current; jobs the cloud has stopped (cancelled, taken over, kill switch) come back as cancel commands.",
   risk: "write",
+  // Every 20 s per runner: audited only when it sends a command (ADR 0590).
+  audit: { changesOnly: true, changed: (out) => out.commands.length > 0 },
   actors: ["runner"],
   permission: "signed-in",
   input: z.object({
@@ -366,14 +415,28 @@ export const runnerHeartbeat = defineOperation({
   }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
+    // A heartbeat isn't stored by the channel, so a captured one could be replayed within the
+    // signing window. One signed no later than the last accepted (a replay, `sf-runner doctor`'s
+    // beat in the same second as the service's, a clock put back) doesn't change the runner's
+    // reported state, which only a newer heartbeat may. It still renews its leases below, fenced as
+    // always: the guard must never cost a running job its lease.
+    const signedAt = ctx.origin.signedAt;
+    const stale =
+      signedAt !== undefined && runner.last_signed_at !== null && signedAt <= runner.last_signed_at;
     const { pendingAccount } = reportRunnerState(ctx, runner, {
       ...input,
       compat: input.compat ?? null,
+      signedAt,
+      stale,
     });
     // The runner claims nothing until an update it is waiting for (ADR 0520): free its light pool
     // by asking an idle planning session (nobody there, nothing undelivered) to yield, as a full
     // pool would. Its resume is pinned to this runner and placed once it has updated.
-    if (input.version?.update.state === "waiting" && input.version.update.claims === "none") {
+    if (
+      !stale &&
+      input.version?.update.state === "waiting" &&
+      input.version.update.claims === "none"
+    ) {
       await requestYield(ctx, runner.id);
     }
     const commands: (
@@ -466,9 +529,17 @@ export const jobEnqueue = defineOperation({
   output: z.object({ jobId: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const requires = [
+    const requires: Capability[] = [
       ...new Set([...(ctx.scope.policy?.requires[input.stage] ?? []), ...input.agentRequires]),
     ];
+    // A job that will carry the project's checks goes only to a runner that runs them (ADR 0501,
+    // the compatibility rule of ADR 0520): an older one would hand back with none.
+    if (
+      jobChecks(ctx.scope.policy ?? null, w, input.stage).checks &&
+      !requires.includes("checks")
+    ) {
+      requires.push("checks");
+    }
     const id = newId("job");
     ctx.write(
       ctx.db.insertInto("core_jobs").values({
@@ -484,6 +555,8 @@ export const jobEnqueue = defineOperation({
         session_timeout_ms: input.sessionTimeoutMs,
         created_at: ctx.now,
         pool: stagePool(input.stage),
+        // Shaping work is claimed after released work (ADR 0493, migration 0363).
+        shaping: w.status === "shaping" ? 1 : 0,
         tier: input.tier === "standard" ? null : input.tier,
       }),
     );
@@ -495,6 +568,54 @@ export const jobEnqueue = defineOperation({
     return { jobId: id };
   },
 });
+
+/** The wait reason of a build that carries checks when no online runner declares `checks`. */
+export const NO_CHECKS_RUNNER = "no runner that can run this project's checks is online";
+
+/**
+ * Whether any online runner declares `checks` (fifth review). Reads core_runners, which is sized by
+ * configuration (a handful of rows), only when a claim is refused for missing `checks`.
+ */
+async function checksRunnerOnline(ctx: Pick<HandlerContext, "db" | "now">): Promise<boolean> {
+  const since = new Date(Date.parse(ctx.now) - RUNNER_OFFLINE_MS).toISOString();
+  const rows = await ctx.db
+    .selectFrom("core_runners")
+    .select("manifest")
+    .where("revoked_at", "is", null)
+    .where("last_seen_at", ">=", since)
+    .limit(100)
+    .execute();
+  return rows.some((r) =>
+    (parseJson<CapabilityManifest | null>(r.manifest, null)?.capabilities ?? []).includes("checks"),
+  );
+}
+
+/**
+ * What job.claim's candidate query already read for a job (AGENTS.md "Cloudflare cost", rule 8):
+ * placementRefusal uses these instead of a query each, and memoises the per-project reads (policy,
+ * WIP count, protection) across the claim's candidates. The checks and their order are unchanged.
+ */
+export interface PlacementFacts {
+  /** Whether itemRepository would find the item's repository. */
+  hasRepository: boolean;
+  /** The runner is the requester's, or shared into the item's org, factory or project. */
+  shared: boolean;
+  /** A kill switch is on for the item's org or project. */
+  killed: boolean;
+  lease: { holder_kind: string | null; expires_at: string | null } | null;
+  /** Per-claim memo of the per-project reads. */
+  memo: Map<string, Promise<unknown>>;
+}
+
+const memoised = <T>(facts: PlacementFacts | undefined, key: string, read: () => Promise<T>) => {
+  if (!facts) return read();
+  let hit = facts.memo.get(key) as Promise<T> | undefined;
+  if (!hit) {
+    hit = read();
+    facts.memo.set(key, hit);
+  }
+  return hit;
+};
 
 /** Why a runner may not take a job on this work item now, or null if it may (ADR 0015, 0038, 0040). */
 export async function placementRefusal(
@@ -511,16 +632,19 @@ export async function placementRefusal(
     repository_id?: string | null;
   },
   project: Pick<ProjectRow, "id" | "factory_id" | "policy_sha">,
+  facts?: PlacementFacts,
 ): Promise<{ reason: string; wip?: true; waitReason?: string } | null> {
   if (!manifest) return { reason: "runner has not reported a manifest" };
   // Checked before anything is claimed (ADR 0490): an item with no repository waits, with the
   // reason, and never blocks the jobs behind it.
   if (
     "repository_id" in item &&
-    !(await itemRepository(ctx.db, {
-      repository_id: item.repository_id ?? null,
-      project_id: item.project_id,
-    }))
+    !(facts
+      ? facts.hasRepository
+      : await itemRepository(ctx.db, {
+          repository_id: item.repository_id ?? null,
+          project_id: item.project_id,
+        }))
   ) {
     const reason = "the work item has no repository: choose one of its project's";
     return { reason, waitReason: reason };
@@ -542,8 +666,30 @@ export async function placementRefusal(
     harness: { id: job.harness } as Job["harness"],
     requires: job.requires,
   });
-  if (!fit.ok) return { reason: fit.reason };
-  if (runner.owner_user_id !== item.requester_user_id) {
+  if (!fit.ok) {
+    // Fifth review (ADR 0501): a build that carries checks waits on a runner that declares
+    // `checks`. When none online does, the job says why rather than nothing.
+    if (
+      job.requires.includes("checks") &&
+      !manifest.capabilities.includes("checks") &&
+      canRun(
+        { ...manifest, capabilities: [...manifest.capabilities, "checks"] },
+        {
+          harness: { id: job.harness } as Job["harness"],
+          requires: job.requires,
+        },
+      ).ok &&
+      // Once per claim, not per candidate (rule 8).
+      !(await memoised(facts, "checksRunnerOnline", () => checksRunnerOnline(ctx)))
+    ) {
+      return { reason: fit.reason, waitReason: NO_CHECKS_RUNNER };
+    }
+    return { reason: fit.reason };
+  }
+  if (facts && !facts.shared) {
+    return { reason: "runner is not the requester's and is not shared into this project" };
+  }
+  if (!facts && runner.owner_user_id !== item.requester_user_id) {
     const share = await ctx.db
       .selectFrom("core_runner_shares")
       .select("runner_id")
@@ -559,23 +705,32 @@ export async function placementRefusal(
     if (!share)
       return { reason: "runner is not the requester's and is not shared into this project" };
   }
-  if (await activeKillSwitch(ctx.db, item.org_id, item.project_id))
+  if (facts ? facts.killed : await activeKillSwitch(ctx.db, item.org_id, item.project_id))
     return { reason: "kill switch" };
-  const { policy } = await loadPolicy(ctx.db, project);
+  const { policy } = await memoised(facts, `policy:${project.id}`, () =>
+    loadPolicy(ctx.db, project),
+  );
   if (!policy) return { reason: "project has no valid policy" };
-  if (job.stage === "build" && (await atWipLimit(ctx, project.id, policy))) {
+  if (
+    job.stage === "build" &&
+    (await memoised(facts, `wip:${project.id}`, () => atWipLimit(ctx, project.id, policy)))
+  ) {
     return { reason: WIP_WAIT_REASON, wip: true };
   }
   if (job.stage === "build") {
     // ADR 0280: a policy may hold builds while the default branch's protection is red.
-    const held = await protectionBlocksBuild(ctx, project.id, policy.protection.onRed);
+    const held = await memoised(facts, `protection:${project.id}`, () =>
+      protectionBlocksBuild(ctx, project.id, policy.protection.onRed),
+    );
     if (held) return { reason: held, waitReason: held };
   }
-  const lease = await ctx.db
-    .selectFrom("core_leases")
-    .select(["holder_kind", "expires_at"])
-    .where("work_item_id", "=", item.id)
-    .executeTakeFirst();
+  const lease = facts
+    ? facts.lease
+    : await ctx.db
+        .selectFrom("core_leases")
+        .select(["holder_kind", "expires_at"])
+        .where("work_item_id", "=", item.id)
+        .executeTakeFirst();
   if (
     lease?.holder_kind &&
     lease.expires_at &&
@@ -584,6 +739,136 @@ export async function placementRefusal(
     return { reason: `held by a ${lease.holder_kind}` };
   }
   return null;
+}
+
+type JobRow = Selectable<CoreJobsTable>;
+
+/** A queued job as job.claim's one query reads it: the job, and what placement needs to know. */
+interface ClaimCandidate {
+  candidate: JobRow;
+  item: Pick<
+    WorkItemRow,
+    "id" | "org_id" | "project_id" | "requester_user_id" | "repository_id" | "status" | "branch"
+  >;
+  project: Pick<ProjectRow, "id" | "factory_id" | "policy_sha">;
+  facts: Omit<PlacementFacts, "memo">;
+  fencingToken: number | null;
+}
+
+/**
+ * job.claim's candidates (AGENTS.md "Cloudflare cost", rule 8): the first 50 queued jobs in claim
+ * order, joined to their item, project and lease, with itemRepository's answer, the runner's
+ * owner-or-share and the kill switch worked out in SQL. Jobs in a pool with no room, on an item
+ * not running, waiting or shaping, or (with the item's repository found) that the runner may not
+ * take for its owner, a share or a kill switch are left out: placementRefusal refused those
+ * without a write. One query for the whole claim instead of 4 to 8 per queued job.
+ */
+async function claimCandidates(
+  ctx: Pick<HandlerContext, "db">,
+  runner: Pick<RunnerRow, "id" | "owner_user_id">,
+  pools: readonly ("heavy" | "light")[],
+): Promise<ClaimCandidate[]> {
+  if (pools.length === 0) return [];
+  type Row = JobRow & {
+    item_org_id: string;
+    item_project_id: string;
+    item_requester_user_id: string;
+    item_repository_id: string | null;
+    item_status: WorkItemRow["status"];
+    item_branch: string;
+    project_factory_id: string;
+    project_policy_sha: string | null;
+    lease_holder_kind: string | null;
+    lease_expires_at: string | null;
+    lease_fencing_token: number | null;
+    has_repository: number;
+    shared: number;
+    killed: number;
+  };
+  const { rows } = await sql<Row>`
+    WITH q AS (
+      -- INDEXED BY: without it the planner may pick core_jobs_status_idx and sort the whole queue.
+      SELECT j.* FROM core_jobs j INDEXED BY core_jobs_queue_idx WHERE j.status = 'queued'
+      ORDER BY j.shaping, j.created_at LIMIT 50
+    ),
+    c AS (
+      SELECT q.*,
+        w.org_id AS item_org_id, w.project_id AS item_project_id,
+        w.requester_user_id AS item_requester_user_id, w.repository_id AS item_repository_id,
+        w.status AS item_status, w.branch AS item_branch,
+        p.factory_id AS project_factory_id, p.policy_sha AS project_policy_sha,
+        l.holder_kind AS lease_holder_kind, l.expires_at AS lease_expires_at,
+        l.fencing_token AS lease_fencing_token,
+        CASE WHEN w.repository_id IS NOT NULL
+          THEN EXISTS (SELECT 1 FROM core_repositories r WHERE r.id = w.repository_id)
+          ELSE (SELECT count(*) FROM (
+                  SELECT 1 FROM core_repositories r WHERE r.project_id = w.project_id LIMIT 2)) = 1
+        END AS has_repository,
+        (w.requester_user_id = ${runner.owner_user_id} OR EXISTS (
+          SELECT 1 FROM core_runner_shares s WHERE s.runner_id = ${runner.id} AND (
+            (s.scope = 'org' AND s.scope_id = w.org_id)
+            OR (s.scope = 'factory' AND s.scope_id = p.factory_id)
+            OR (s.scope = 'project' AND s.scope_id = p.id)))) AS shared,
+        EXISTS (
+          SELECT 1 FROM core_kill_switches k WHERE k.is_on = 1 AND (
+            (k.scope = 'org' AND k.scope_id = w.org_id)
+            OR (k.scope = 'project' AND k.scope_id = w.project_id))) AS killed
+      FROM q
+      JOIN core_work_items w ON w.id = q.work_item_id
+      JOIN core_projects p ON p.id = q.project_id
+      LEFT JOIN core_leases l ON l.work_item_id = q.work_item_id
+      WHERE q.pool IN (${sql.join(pools)})
+        AND w.status IN ('running', 'waiting', 'shaping')
+    )
+    SELECT * FROM c
+    WHERE has_repository = 0 OR (shared AND NOT killed)
+    ORDER BY shaping, created_at`.execute(ctx.db);
+  return rows.map((r) => {
+    const {
+      item_org_id,
+      item_project_id,
+      item_requester_user_id,
+      item_repository_id,
+      item_status,
+      item_branch,
+      project_factory_id,
+      project_policy_sha,
+      lease_holder_kind,
+      lease_expires_at,
+      lease_fencing_token,
+      has_repository,
+      shared,
+      killed,
+      ...candidate
+    } = r;
+    return {
+      candidate: candidate as JobRow,
+      item: {
+        id: candidate.work_item_id,
+        org_id: item_org_id,
+        project_id: item_project_id,
+        requester_user_id: item_requester_user_id,
+        repository_id: item_repository_id,
+        status: item_status,
+        branch: item_branch,
+      },
+      project: {
+        id: candidate.project_id,
+        factory_id: project_factory_id,
+        policy_sha: project_policy_sha,
+      },
+      facts: {
+        hasRepository: has_repository === 1,
+        shared: shared === 1,
+        killed: killed === 1,
+        lease:
+          lease_holder_kind === null && lease_expires_at === null && lease_fencing_token === null
+            ? null
+            : { holder_kind: lease_holder_kind, expires_at: lease_expires_at },
+      },
+      fencingToken: lease_fencing_token,
+    };
+  });
 }
 
 /** A project is at its WIP limit when that many items wait at human gates (ADR 0040). */
@@ -653,6 +938,11 @@ async function freePools(
 }
 
 /** The pause a runner last reported (ADR 0552), or null. */
+/** A pause as audited: why and which pools, not the load figures that change every beat. */
+function pauseKey(p: z.infer<typeof capacityPausedSchema> | null | undefined): string | null {
+  return p ? JSON.stringify({ reason: p.reason, pools: [...p.pools].sort() }) : null;
+}
+
 function runnerPaused(
   runner: Pick<RunnerRow, "paused">,
 ): z.infer<typeof capacityPausedSchema> | null {
@@ -667,7 +957,7 @@ function runnerPaused(
  * yields while the pool has room: this is only called when it hasn't.
  */
 export async function requestYield(
-  ctx: Pick<HandlerContext, "db" | "now" | "write">,
+  ctx: Pick<HandlerContext, "db" | "now" | "write" | "changed">,
   runnerId: string,
 ): Promise<string | null> {
   const before = new Date(Date.parse(ctx.now) - PLANNING_YIELD_AFTER_MS).toISOString();
@@ -729,6 +1019,8 @@ export async function requestYield(
       at: ctx.now,
     }),
   );
+  // Asking a session to yield is a change a person may look for (ADR 0590).
+  ctx.changed();
   return candidate.id;
 }
 
@@ -749,6 +1041,8 @@ async function buildJob(
   item: WorkItemRow,
   project: ProjectRow,
   leaseExpiresAt: string,
+  /** The claiming runner's capabilities: checks go only to one that declares `checks`. */
+  runnerCaps: readonly string[],
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
   // The item's repository (ADR 0490); placementRefusal already checked there is one.
@@ -797,8 +1091,28 @@ async function buildJob(
     ...(job.stage === "planning" && planning ? { planning } : {}),
     requires: parseJson<Capability[]>(job.requires, []),
     limits: { sessionTimeoutMs: job.session_timeout_ms },
+    ...(runnerCaps.includes("checks") ? jobChecks(policy, item, job.stage) : {}),
     lease: { fencingToken: run.fencing_token, expiresAt: leaseExpiresAt },
   };
+}
+
+/**
+ * The checks the host runs for this job (ADR 0501), from the project's config version, never the
+ * run's branch: after every build, and before an attached PR's review (it has no build). A factory
+ * item's verify uses the build's results for the same head.
+ */
+function jobChecks(
+  policy: ProjectPolicy | null,
+  item: Pick<WorkItemRow, "kind" | "workflow" | "workflow_version">,
+  stage: string,
+): { checks?: Job["checks"] } {
+  // An item whose Workflow started before v8 has no checks step: its jobs carry none.
+  if (!policy || !hostChecksOn(item)) return {};
+  if (stage !== "build" && !(stage === "verify" && item.kind === "attached")) return {};
+  const commands = declaredChecks(policy, item.workflow);
+  return commands.length
+    ? { checks: { commands, fixRounds: stage === "build" ? policy.retryLimit : 0 } }
+    : {};
 }
 
 export const jobClaim = defineOperation({
@@ -806,6 +1120,9 @@ export const jobClaim = defineOperation({
   description:
     "A runner host asks for its next job (pull, spike ADR 0100). The scheduler gives the oldest queued job this runner may take: capabilities and harness covered, the requester's own runner or one shared into the project, a free slot, not rate-limited, no kill switch, the project under its WIP limit for builds, the item not leased to someone else. Claiming takes the work item's lease with a new fencing token and creates the run and its branch name. The same claimId returns the same job.",
   risk: "write",
+  // Every 20 s per runner: audited when it claims a job (ctx.change), not when empty or when a
+  // retried claimId gets the job it already had (ADR 0590).
+  audit: { changesOnly: true },
   actors: ["runner"],
   permission: "signed-in",
   input: z.object({
@@ -816,7 +1133,7 @@ export const jobClaim = defineOperation({
   output: z.object({ job: z.custom<Job>().nullable() }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
-    reportRunnerState(ctx, runner, input);
+    const signedAt = ctx.origin.signedAt;
     const current = {
       ...runner,
       accepting: input.capacity.accepting ? 1 : 0,
@@ -852,8 +1169,31 @@ export const jobClaim = defineOperation({
         .select("expires_at")
         .where("work_item_id", "=", item.id)
         .executeTakeFirst();
-      return { job: await buildJob(ctx, prior, run, item, project, lease?.expires_at ?? ctx.now) };
+      return {
+        job: await buildJob(
+          ctx,
+          prior,
+          run,
+          item,
+          project,
+          lease?.expires_at ?? ctx.now,
+          input.manifest.capabilities,
+        ),
+      };
     }
+
+    // The claim isn't stored by the channel, so an old empty one could be replayed within the
+    // signing window and run the scheduler again for a runner that has moved on. One signed before
+    // the runner's last accepted heartbeat or claim gets an empty answer and writes nothing. (A
+    // retried claimId gets its job above, whenever it was signed.)
+    if (
+      signedAt !== undefined &&
+      runner.last_signed_at !== null &&
+      signedAt < runner.last_signed_at
+    ) {
+      return { job: null };
+    }
+    reportRunnerState(ctx, runner, { ...input, signedAt, sameSecond: true });
 
     // Code older than the engine's compatibility level gets nothing (ADR 0520), whatever the runner
     // decides itself: one from before RUNNER_COMPAT, or one that can't update, may still claim.
@@ -864,30 +1204,21 @@ export const jobClaim = defineOperation({
     // A light job this runner could take but for a full light pool: ask an idle session to yield.
     let lightBlocked = false;
 
-    // Released work first: a shaping item's triage and planning jobs (ADR 0493) wait behind the
-    // jobs of work people already committed to, then oldest first.
-    const queued = await ctx.db
-      .selectFrom("core_jobs")
-      .selectAll()
-      .where("status", "=", "queued")
-      .orderBy(
-        sql`(SELECT w.status = 'shaping' FROM core_work_items w WHERE w.id = core_jobs.work_item_id)`,
-      )
-      .orderBy("created_at")
-      .limit(50)
-      .execute();
-    for (const job of queued) {
-      const item = await ctx.db
-        .selectFrom("core_work_items")
-        .selectAll()
-        .where("id", "=", job.work_item_id)
-        .executeTakeFirst();
-      const project = await ctx.db
-        .selectFrom("core_projects")
-        .selectAll()
-        .where("id", "=", job.project_id)
-        .executeTakeFirst();
-      if (!item || !project) continue;
+    // The first 50 queued jobs, released work first: a shaping item's triage and planning jobs
+    // (ADR 0493) wait behind the jobs of work people already committed to, then oldest first. One
+    // query (AGENTS.md "Cloudflare cost", rule 8) reads each job with its item, project and lease,
+    // and whether the item has its repository, and drops in SQL the jobs this runner could never
+    // take now: a pool with no room, an item not running, waiting or shaping, and (unless the item
+    // lacks its repository, whose wait reason is still recorded) a runner neither the requester's
+    // nor shared in, or a kill switch. What it drops was refused before without a write, so the
+    // claim does exactly what it did, in a few queries instead of several per queued job.
+    const pools = (["heavy", "light"] as const).filter(
+      (p) => room[p] || (p === "light" && room.split),
+    );
+    const queued = await claimCandidates(ctx, runner, pools);
+    const facts = { memo: new Map<string, Promise<unknown>>() };
+    for (const row of queued) {
+      const { candidate: job, item, project } = row;
       // `shaping`: shaping stages before release runs its triage and planning jobs too (ADR 0493).
       if (!["running", "waiting", "shaping"].includes(item.status)) continue;
       if (!room[job.pool] && (job.pool !== "light" || !room.split || lightBlocked)) continue;
@@ -903,10 +1234,13 @@ export const jobClaim = defineOperation({
         },
         item,
         project,
+        { ...facts, ...row.facts },
       );
       if (refusal) {
         const waitReason = refusal.wip ? WIP_WAIT_REASON : (refusal.waitReason ?? null);
         if (waitReason && job.wait_reason !== waitReason) {
+          // Why a job waits is what a person looks for when it doesn't start (ADR 0590).
+          ctx.changed();
           ctx.write(
             ctx.db
               .updateTable("core_jobs")
@@ -921,12 +1255,7 @@ export const jobClaim = defineOperation({
         continue;
       }
 
-      const lease = await ctx.db
-        .selectFrom("core_leases")
-        .select("fencing_token")
-        .where("work_item_id", "=", item.id)
-        .executeTakeFirst();
-      const previous = lease?.fencing_token ?? 0;
+      const previous = row.fencingToken ?? 0;
       const token = previous + 1;
       const lastRun = await ctx.db
         .selectFrom("core_runs")
@@ -1022,14 +1351,28 @@ export const jobClaim = defineOperation({
         id: runId,
         after: { jobId: job.id, runner: runner.id, branch, fencingToken: token },
       });
+      // The claimed item's and project's full rows, for the job the runner gets: this job only.
+      const [itemRow, projectRow] = await Promise.all([
+        ctx.db
+          .selectFrom("core_work_items")
+          .selectAll()
+          .where("id", "=", item.id)
+          .executeTakeFirstOrThrow(),
+        ctx.db
+          .selectFrom("core_projects")
+          .selectAll()
+          .where("id", "=", project.id)
+          .executeTakeFirstOrThrow(),
+      ]);
       return {
         job: await buildJob(
           ctx,
           job,
           { id: runId, run_no: runNo, branch, fencing_token: token },
-          item,
-          project,
+          itemRow,
+          projectRow,
           expiresAt,
+          input.manifest.capabilities,
         ),
       };
     }
@@ -1091,16 +1434,71 @@ export const runReportEvents = defineOperation({
   actors: ["runner"],
   permission: "signed-in",
   fenced: true,
-  input: z.object({ jobId, fencingToken, events: z.array(runnerEventSchema).max(500) }),
+  // Every 3 s while a run logs: the events are kept in core_run_events, so the audit records only
+  // a batch that moves the run (a state, a session start, a takeover), ADR 0590.
+  audit: { changesOnly: true },
+  input: z.object({
+    jobId,
+    fencingToken,
+    events: z.array(runnerEventSchema).max(RUN_EVENTS_BATCH_MAX),
+  }),
   output: z.object({ accepted: z.number() }),
   async handler(input, ctx) {
     const run = await loadRun(ctx, input.jobId);
+    // A run of consecutive log lines is one row (AGENTS.md "Cloudflare cost": rows written are the
+    // cost), keyed by its first line's seq, so a retried batch is still a no-op; every other event
+    // is a row of its own, as the reads by type need.
+    const rows: {
+      seq: number;
+      last_seq: number | null;
+      at: string;
+      type: string;
+      payload: string;
+    }[] = [];
+    let lines: Record<string, unknown>[] = [];
+    const flushLines = () => {
+      const first = lines[0];
+      const last = lines.at(-1);
+      if (first && last) {
+        rows.push({
+          seq: first.seq as number,
+          last_seq: last.seq as number,
+          at: first.at as string,
+          type: "log",
+          payload: JSON.stringify({ lines }),
+        });
+      }
+      lines = [];
+    };
+    let bytes = 0;
     for (const e of input.events) {
       const { jobId: _job, seq, at, type, ...payload } = e;
+      if (type === "log") {
+        const line = { seq, at, ...payload };
+        const size = JSON.stringify(line).length;
+        // A batch row stops at LOG_ROW_BYTES_MAX or LOG_ROW_LINES_MAX, so a read of a page of rows
+        // stays small (a single line may be up to 64 KB on its own).
+        if (
+          lines.length > 0 &&
+          (bytes + size > LOG_ROW_BYTES_MAX || lines.length >= LOG_ROW_LINES_MAX)
+        ) {
+          flushLines();
+          bytes = 0;
+        }
+        lines.push(line);
+        bytes += size;
+        continue;
+      }
+      bytes = 0;
+      flushLines();
+      rows.push({ seq, last_seq: null, at, type, payload: JSON.stringify(payload) });
+    }
+    flushLines();
+    for (const row of rows) {
       ctx.write(
         ctx.db
           .insertInto("core_run_events")
-          .values({ run_id: run.id, seq, at, type, payload: JSON.stringify(payload) })
+          .values({ run_id: run.id, ...row })
           .onConflict((oc) => oc.columns(["run_id", "seq"]).doNothing()),
       );
     }
@@ -1119,6 +1517,7 @@ export const runReportEvents = defineOperation({
         : started?.type === "session.started" && started.takeover
           ? started.takeover
           : null;
+    if (mapped || started || handed) ctx.changed();
     if (isActive(run.status)) {
       ctx.write(
         ctx.db
@@ -1126,6 +1525,13 @@ export const runReportEvents = defineOperation({
           .set({
             last_event_at: ctx.now,
             ...(mapped ? { status: mapped } : {}),
+            // Kept on the run, so it outlives the event once archived (run.live's chat view).
+            ...(started?.type === "session.started"
+              ? {
+                  session_mode:
+                    started.mode === "stream" ? ("stream" as const) : ("terminal" as const),
+                }
+              : {}),
             ...(takeover ? { takeover: json(takeover) } : {}),
           })
           .where("id", "=", run.id),
@@ -1134,6 +1540,14 @@ export const runReportEvents = defineOperation({
     return { accepted: input.events.length };
   },
 });
+
+/**
+ * A stored batch of log lines holds at most this many bytes of JSON and this many lines (one line
+ * over the byte cap is a row of its own): run.live reads rows a page at a time, so a page stays
+ * well inside a Worker's memory.
+ */
+export const LOG_ROW_BYTES_MAX = 64_000;
+export const LOG_ROW_LINES_MAX = 200;
 
 export const runAddArtifact = defineOperation({
   name: "run.addArtifact",
@@ -1242,10 +1656,13 @@ export function finishRun(
   });
 }
 
+/** How long a work item keeps a check result (ADR 0501): enough for its verify and merge. */
+const CHECK_RESULTS_DAYS = 30;
+
 export const runHandBack = defineOperation({
   name: "run.handBack",
   description:
-    "A run hands back: its outcome, summary, artifacts, the branch it pushed and its head, and the stage's structured result. The branch must be the run's own branch, and for a build the pushed head is checked on GitHub; otherwise the run fails. The Workflow continues with the result.",
+    "A run hands back: its outcome, summary, artifacts, the branch it pushed and its head, the stage's structured result, and the project's checks as the runner host ran them (stored against the SHA each ran on, ADR 0501). The branch must be the run's own branch, and for a build the pushed head is checked on GitHub; otherwise the run fails. The Workflow continues with the result.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -1259,6 +1676,8 @@ export const runHandBack = defineOperation({
     branch: z.string(),
     headSha: sha.optional(),
     result: z.unknown().optional(),
+    /** The job's checks as the host ran them (ADR 0501); each is stored against its own SHA. */
+    checks: z.array(executedCheckSchema).max(60).default([]),
   }),
   output: z.object({ accepted: z.boolean(), reason: z.string().nullable() }),
   async handler(input, ctx) {
@@ -1290,6 +1709,124 @@ export const runHandBack = defineOperation({
     }
     const result = input.result === undefined ? null : JSON.stringify(input.result);
     if (result && result.length > MAX_RESULT) return fail("result too large");
+    // The factory's own check results (ADR 0501). They're only evidence for the run's own head: a
+    // completed run's last round must have run on it, and a result on any other SHA is kept only when
+    // that SHA is an ancestor of the head (GitHub decides). One that isn't (a fix round amended or
+    // rebased, so the commit was never pushed) is dropped, never a reason to fail the run. A run that
+    // failed keeps its own reason: its results are stored where they can be placed, or dropped.
+    let checks = input.checks.map((c) => ({ ...c, logTail: redactSecrets(c.logTail) }));
+    const dropped: string[] = [];
+    // Only the checks this job was given (third review, 5): a result under any other name is
+    // refused, never stored where a criterion could link to it.
+    const declaredNames = new Set(
+      declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => c.name.toLowerCase()),
+    );
+    const undeclared = checks.filter((c) => !declaredNames.has(c.name.toLowerCase()));
+    if (undeclared.length > 0) {
+      dropped.push(
+        ...undeclared.map((c) => `${c.name}@${c.headSha.slice(0, 7)} (not a declared check)`),
+      );
+      checks = checks.filter((c) => declaredNames.has(c.name.toLowerCase()));
+    }
+    if (checks.length > 0) {
+      const repo = await repoRef(ctx, requireRepository(ctx));
+      // A build's head is the one it pushed (checked on GitHub above); a verify job's is the head
+      // the Workflow asked it to verify (its context), never what the runner says.
+      const jobRow = await ctx.db
+        .selectFrom("core_jobs")
+        .select("context")
+        .where("id", "=", run.job_id)
+        .executeTakeFirst();
+      const asked = parseJson<{ headSha?: unknown }>(jobRow?.context, {}).headSha;
+      const head =
+        run.stage === "build" ? (input.headSha ?? null) : typeof asked === "string" ? asked : null;
+      const completed = input.outcome === "completed";
+      if (!head) {
+        // No head to place them on (a failed build that pushed nothing): nothing is stored.
+        dropped.push(...checks.map((c) => `${c.name}@${c.headSha.slice(0, 7)}`));
+        checks = [];
+      } else {
+        const last = Math.max(...checks.map((c) => c.round));
+        const off = checks.find((c) => c.round === last && c.headSha !== head);
+        if (off && completed) {
+          return fail(
+            `check ${off.name} ran on ${off.headSha.slice(0, 7)}, not the run's head ${head.slice(0, 7)}`,
+          );
+        }
+        const placed = new Set([head]);
+        for (const other of new Set(
+          checks.filter((c) => c.headSha !== head).map((c) => c.headSha),
+        )) {
+          const rel = await ctx.services.github.compareCommits(repo, other, head).catch(() => null);
+          if (rel?.behindBy === 0) placed.add(other);
+        }
+        dropped.push(
+          ...checks
+            .filter((c) => !placed.has(c.headSha))
+            .map((c) => `${c.name}@${c.headSha.slice(0, 7)}`),
+        );
+        checks = checks.filter((c) => placed.has(c.headSha));
+      }
+    }
+    // Whatever the outcome: a failure is evidence too. A later round on the same SHA replaces a
+    // check's row.
+    for (const c of checks) {
+      const row = {
+        run_id: run.id,
+        command: c.command,
+        exit_code: c.exitCode,
+        timed_out: c.timedOut ? 1 : 0,
+        duration_ms: c.durationMs,
+        log_tail: c.logTail,
+        round: c.round,
+        created_at: ctx.now,
+        // Not run (third review, B3): stored as such, never as a failure or a pass.
+        not_run: c.notRun ?? null,
+        // Where it ran (fourth review): the gate names the weaker sandbox.
+        isolation: c.notRun ? null : (c.isolation ?? null),
+      };
+      ctx.write(
+        ctx.db
+          .insertInto("core_check_results")
+          .values({ work_item_id: w.id, head_sha: c.headSha, name: c.name, ...row })
+          .onConflict((oc) => oc.columns(["work_item_id", "head_sha", "name"]).doUpdateSet(row)),
+      );
+    }
+    // Pruning (Cloudflare cost rule): results of heads the item replaced more than
+    // CHECK_RESULTS_DAYS ago go when it hands back again (on the primary key's prefix); never the
+    // item's current head, the merge gate's evidence. Finished items: the hourly prune
+    // (`pruneCheckResults`, apps/engine).
+    if (checks.length) {
+      const cutoff = new Date(Date.parse(ctx.now) - CHECK_RESULTS_DAYS * 86_400_000).toISOString();
+      const keep = [
+        ...new Set([...checks.map((c) => c.headSha), ...(w.head_sha ? [w.head_sha] : [])]),
+      ];
+      ctx.write(
+        ctx.db
+          .deleteFrom("core_check_results")
+          .where("work_item_id", "=", w.id)
+          .where("created_at", "<", cutoff)
+          .where("head_sha", "not in", keep),
+      );
+    }
+    if (checks.length || dropped.length) {
+      ctx.change({
+        entity: "check_results",
+        id: run.id,
+        after: {
+          // Results on a commit that isn't on the head's history: not stored (ADR 0501).
+          ...(dropped.length ? { dropped } : {}),
+          checks: checks.map((c) => ({
+            name: c.name,
+            headSha: c.headSha,
+            exitCode: c.exitCode,
+            timedOut: c.timedOut,
+            round: c.round,
+            ...(c.notRun ? { notRun: c.notRun } : {}),
+          })),
+        },
+      });
+    }
     const ok = input.outcome === "completed";
     finishRun(ctx, run, w.workflow_id, ok ? "handed_back" : "failed", input.outcome, {
       summary: input.summary ?? null,

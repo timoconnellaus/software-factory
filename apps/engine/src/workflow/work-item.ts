@@ -21,6 +21,7 @@ import {
   DEFAULT_BUILDER,
   FOREMAN,
   type GateEventPayload,
+  has,
   invoke,
   isOperationError,
   mergeQueueEvent,
@@ -28,9 +29,11 @@ import {
   parseProjectPolicy,
   type RunEventPayload,
   releaseEvent,
+  resolveOrgWorkflow,
   runEvent,
   SLOTS,
 } from "@software-factory/core";
+import { createDb } from "@software-factory/db";
 import {
   type JobStage,
   type ModelRole,
@@ -98,8 +101,17 @@ export type WorkItemOutcome =
  *   and waits for `release-<item>` (`release: wait #k`, re-checking on each timeout), which the pull
  *   sends when a person released it and there is room. Delivery (the workflow's slots, build,
  *   verify, the merge gate) follows.
+ * - v8 (spec 51, ADR 0501): the runner host runs the project's checks after the build session and
+ *   sends failures back into the same session. After `build #b: advance`, `build #b: checks` reads
+ *   the results on the pushed head; any declared check still failing there asks a person
+ *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. A check the
+ *   runner could not run is not a failure: the item goes on to verify and the merge gate, which say
+ *   so and leave the criteria it would prove Not proven. The reviewer is told the checks' names.
  */
-export const WORKFLOW_VERSION = 7;
+export const WORKFLOW_VERSION = 8;
+/** v8: the answers when the factory's checks still fail after the session's fixes. */
+export const CHECKS_BUILD_AGAIN = "Build again with the failure";
+export const CHECKS_STOP = "Stop this work item";
 /** How long a shaped item waits for its release before it re-reads whether it was released. */
 export const RELEASE_WAIT = "12 hours";
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
@@ -319,6 +331,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(6);
       case 7:
         return flow.runV1(7);
+      case 8:
+        return flow.runV1(8);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -338,7 +352,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       let meta = await this.meta();
@@ -351,7 +365,7 @@ class ItemFlow {
 
       // Triage: the foreman sizes the item on a runner; code decides the spec gate from policy.
       // v6: it also picks one of the project's workflows (ADR 0371).
-      const options = version >= 6 ? await this.workflowOptions() : [];
+      const options = has(version, "workflow-plan") ? await this.workflowOptions() : [];
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
@@ -374,8 +388,8 @@ class ItemFlow {
         let note: string | null = null;
         let answers: { prompt: string; answer: string }[] = [];
         // v5: the planning session (spec 20) instead of v1–v4's spec rounds below.
-        if (version >= 5) criteria = await this.planningStage(meta);
-        for (let k = 1; version < 5; k++) {
+        if (has(version, "planning-spec")) criteria = await this.planningStage(meta);
+        for (let k = 1; !has(version, "planning-spec"); k++) {
           const mayAsk = k <= QUESTION_ROUNDS;
           const specRun = await this.runWithRetries(
             meta,
@@ -426,10 +440,11 @@ class ItemFlow {
       }
       // v7: the shaping stages are done. Unreleased work waits here for its release (ADR 0493),
       // and delivery re-reads the item and its config as pinned at the pull.
-      if (version >= 7 && (await this.waitForRelease())) meta = await this.refreshMeta();
+      if (has(version, "release-wait") && (await this.waitForRelease()))
+        meta = await this.refreshMeta();
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
-      const plan = version >= 6 ? await this.workflowPlan() : null;
+      const plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
       let slotNote: string | null = null;
       if (plan) {
         const after = await this.runSlot(meta, plan, "afterSpec", 0, {
@@ -534,6 +549,37 @@ class ItemFlow {
         }
         const headSha = String(advanced.sha);
 
+        // v8: the factory's own checks on the pushed head (ADR 0501). The host already sent any
+        // failure back into the same session up to the retry limit; one still failing goes to a
+        // person, never a cold retry.
+        let checkNames: string[] = [];
+        if (has(version, "host-checks")) {
+          const checked = await this.act(`build #${b}: checks`, "checks.forHead", {
+            workItemId: id,
+            headSha,
+          });
+          checkNames = (checked.declared as string[]) ?? [];
+          // Only a check that ran and failed (or didn't run on this head) sends the build back. One
+          // the runner could not run (no isolation, the sandbox could not start) is nothing a
+          // build can fix and burns no build attempt: the item goes on to verify and the merge
+          // gate, where it shows as not run and a person decides (third review, B3).
+          const failing = (checked.failing as string[] | undefined) ?? [];
+          if (failing.length > 0) {
+            await this.askChecksFailing(meta, b, headSha, failing);
+            note = [
+              "The factory's checks failed on your last head, and a person sent it back to build:",
+              ...failing.map((x) => `- ${x}`),
+            ].join("\n");
+            await this.act(`build #${b}: checks failed`, "workItem.enterStage", {
+              workItemId: id,
+              stage: "build",
+              closeAs: "failed",
+              reason: `checks failed on ${headSha.slice(0, 7)}`,
+            });
+            continue;
+          }
+        }
+
         if (plan) {
           const before = await this.runSlot(meta, plan, "beforeVerify", b, {
             criteria,
@@ -550,12 +596,12 @@ class ItemFlow {
           workItemId: id,
           stage: "verify",
         });
-        if (version >= 2) {
+        if (has(version, "verify-packet")) {
           // Open the PR first, so CI runs on this head while the reviewer works (spec 04). It
           // carries a factory/verify that isn't passing until the packet below says so.
           await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
         }
-        if (version >= 3 && (await this.unmergeable(b, headSha))) {
+        if (has(version, "conflicts") && (await this.unmergeable(b, headSha))) {
           note = await conflicted(b, build);
           continue;
         }
@@ -563,7 +609,11 @@ class ItemFlow {
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha }),
+          verifyPrompt(meta, {
+            criteria,
+            headSha,
+            checks: has(version, "host-checks") ? checkNames : null,
+          }),
           {
             criteria,
             headSha,
@@ -591,9 +641,9 @@ class ItemFlow {
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        if (version >= 2) {
+        if (has(version, "verify-packet")) {
           let ci = await this.waitForCi(b, headSha, version);
-          for (let k = 1; version >= 3 && ci === "missing"; k++) {
+          for (let k = 1; has(version, "conflicts") && ci === "missing"; k++) {
             // No CI at all is a setup problem the builder can't fix: ask a person (ADR 0320).
             await this.askNoCi(meta, b, k, headSha);
             ci = await this.waitForCi(b, headSha, version, k + 1);
@@ -615,8 +665,8 @@ class ItemFlow {
           riskFlags: r.riskFlags,
         });
         // v2: the packet's verdict (green CI on the head SHA + a complete packet) decides.
-        const passed = version >= 2 ? packet.verdict === "pass" : runnerPassed;
-        if (!passed && version >= 2) {
+        const passed = has(version, "verify-packet") ? packet.verdict === "pass" : runnerPassed;
+        if (!passed && has(version, "verify-packet")) {
           const reasons = Array.isArray(packet.reasons) ? (packet.reasons as string[]) : [];
           note = await failed(
             b,
@@ -660,7 +710,7 @@ class ItemFlow {
           workItemId: id,
           stage: "merge",
         });
-        if (version >= 4) {
+        if (has(version, "merge-queue")) {
           const landed = await this.mergeV4(meta, b, headSha, pr.touchesFactoryConfig === true);
           if (landed.kind === "done") {
             await this.act("end: done", "workItem.finish", {
@@ -687,7 +737,7 @@ class ItemFlow {
           continue;
         }
         let decided: Awaited<ReturnType<ItemFlow["gate"]>> | null = null;
-        if (version >= 2 && meta.kind === "incident") {
+        if (has(version, "verify-packet") && meta.kind === "incident") {
           // A check-only incident fix may merge without a person, if the project opted in and the
           // rule holds (ADR 0230). Refused: the normal merge gate below.
           const autoName = `merge #${b}: auto-merge`;
@@ -788,11 +838,21 @@ class ItemFlow {
         }
         // The PR is already open: pr.open returns it (and whether it touches `.factory/`).
         const pr = await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id });
+        // v8: the verify job runs the project's checks on the PR's head before the reviewer (ADR
+        // 0501); the reviewer is told their names, to link criteria to. Before v8: as it was.
+        let checkNames: string[] | null = null;
+        if (has(version, "host-checks")) {
+          const declared = await this.act(`verify #${b}: check names`, "checks.forHead", {
+            workItemId: id,
+            headSha,
+          });
+          checkNames = (declared.declared as string[]) ?? [];
+        }
         const verify = await this.runJob(
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha }),
+          verifyPrompt(meta, { criteria, headSha, checks: checkNames }),
           { criteria, headSha },
         );
         if (verify.outcome === "cancelled") {
@@ -1165,7 +1225,7 @@ class ItemFlow {
         headSha,
       });
       if (ci.status !== "ok") return "unreadable"; // the packet records why and fails
-      if (version >= 3 && ci.output.mergeable === false) return "conflict";
+      if (has(version, "conflicts") && ci.output.mergeable === false) return "conflict";
       const state = String(ci.output.state);
       if (state === "success" || state === "failure") return state;
       if (state === "missing" && i >= CI_MISSING_ROUNDS) return "missing";
@@ -1411,6 +1471,45 @@ class ItemFlow {
   }
 
   /**
+   * v8: the factory's checks still fail on the build's head after the session's own fixes (ADR
+   * 0501). A person decides: build again (with the failure as the note) or stop the item.
+   */
+  async askChecksFailing(meta: Meta, b: number, headSha: string, failing: string[]) {
+    const name = `build #${b}: checks failing`;
+    const asked = await this.act(`${name}: ask`, "question.ask", {
+      workItemId: this.workItemId,
+      questions: [
+        {
+          domain: "engineering",
+          prompt: `The project's checks still fail on ${headSha.slice(0, 7)}, the head of work item #${meta.number}'s build, after the build session tried to fix them. Build again, or stop the item?`,
+          context: [
+            "The runner host ran the checks itself and sent each failure back into the same build session, up to the project's retry limit. What still fails:",
+            ...failing.map((x) => `- ${x}`),
+            "The full log tails are in the run's check results.",
+          ].join("\n"),
+          options: [CHECKS_BUILD_AGAIN, CHECKS_STOP],
+          defaultAnswer: CHECKS_STOP,
+          recommendation: CHECKS_BUILD_AGAIN,
+          recommendationReason:
+            "A new build session starts from the branch as it is, with the failure as its note.",
+          blocking: true,
+        },
+      ],
+    });
+    await this.waitForAnswers(meta, name);
+    const questionId = (asked.questionIds as string[])[0];
+    const answer = await this.step.do(`${name}: answer`, async () => {
+      const row = await this.env.DB.prepare("SELECT answer FROM core_questions WHERE id = ?")
+        .bind(questionId)
+        .first<{ answer: string | null }>();
+      return row?.answer ?? CHECKS_STOP;
+    });
+    if (answer === CHECKS_STOP) {
+      throw new Ended("failed", `stopped: the checks fail on ${headSha.slice(0, 7)}`);
+    }
+  }
+
+  /**
    * v3: no CI has reported on the head at all. That's the repo's setup (Actions off, a run waiting
    * for approval, no workflow on `pull_request`), not the build, so a person is asked to fix it and
    * re-check, or to stop the item; no build retry is spent (ADR 0320).
@@ -1639,19 +1738,36 @@ class ItemFlow {
     return JSON.parse(text) as WorkflowPlan;
   }
 
-  /** The config version the item was created under (ADR 0370 §5), parsed; null if there is none. */
+  /**
+   * The config version the item was created under (ADR 0370 §5), parsed; null if there is none. On
+   * an org workflow (spec 52 PR (d)), resolved under the org config version the item pinned.
+   */
   private async pinnedPolicy() {
     const row = await this.env.DB.prepare(
-      `SELECT p.raw FROM core_work_items w
+      `SELECT p.raw, w.org_id, w.project_id, w.org_config_version FROM core_work_items w
        JOIN core_project_policies p ON p.project_id = w.project_id
          AND p.sha = COALESCE(w.policy_sha, (SELECT policy_sha FROM core_projects WHERE id = w.project_id))
        WHERE w.id = ?`,
     )
       .bind(this.workItemId)
-      .first<{ raw: string }>();
+      .first<{
+        raw: string;
+        org_id: string;
+        project_id: string;
+        org_config_version: number | null;
+      }>();
     if (!row) return null;
     const parsed = parseProjectPolicy(row.raw);
-    return parsed.ok ? parsed.policy : null;
+    if (!parsed.ok) return null;
+    return (
+      await resolveOrgWorkflow(
+        createDb(this.env.DB),
+        row.org_id,
+        parsed.policy,
+        row.org_config_version,
+        row.project_id,
+      )
+    ).policy;
   }
 
   /**
