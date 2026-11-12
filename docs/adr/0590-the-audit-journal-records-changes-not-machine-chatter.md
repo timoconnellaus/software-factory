@@ -126,30 +126,38 @@ These are a few hundred rows a day for a small team.
 scheduler, foreman and intake calls with `outcome = ok` and `decision = allow`. After this ADR,
 that is about 20–40 rows per job (claim, tokens, state changes, artifacts, hand-back, release),
 which is an estimate, not a measurement.
-- **Every row gets a sequence and a link.** `core_audit` has a TEXT primary key, so its `rowid` is
-  not stable (VACUUM may renumber it), and a gap in it proves nothing. Instead:
-  - two columns are assigned at insert, in `invoke()`'s batch: `seq`, an INTEGER from a one-row
-    counter that the same batch increments, so it has no gaps; and `prev_hash`, the SHA-256 of the
-    previous row's canonical JSON, read in the same batch;
-  - every row then names the one before it. A missing, altered or reordered row breaks the chain
-    and leaves a hole in `seq`, before archiving as well as after;
-  - D1 has no interactive transactions, so the read and the increment go in the batch with a
-    guard, as ADR 0050's guarded writes do;
-  - the cost is one extra row written per audit row, for the counter.
-- **The archive:** one object per day, `audit/YYYY/MM/DD.ndjson`. Its rows are in `seq` order, each
-  the full row as stored, including `seq` and `prev_hash`.
-- **The record of it:** a new table, `core_audit_archives (day, r2_key, first_seq, last_seq, rows,
-  sha256, prev_sha256, archived_at)`. It is kept in D1 forever and is one row a day.
-  - `sha256` is the object's digest.
-  - `prev_sha256` is the previous day's digest.
+- **Nothing is added to the hot write path.** Every audited operation writes its row exactly as
+  today: no counter row, no hash read before the batch, no new index. The chain is built at
+  archive time by the archiver, the one writer that touches old rows.
+  - Rows are ordered by `(at, id)`. `rowid` is not used: `core_audit` has a TEXT primary key, so
+    VACUUM may renumber `rowid`, and a gap in it proves nothing.
+  - Until a row is archived, the append-only triggers are what make it complete: nothing can delete
+    or change a row.
+- **The archive:** one object per day, `audit/YYYY/MM/DD.ndjson`, holding that day's archivable
+  rows in `(at, id)` order, each the full row as stored. The archiver computes in the Worker:
+  - each row's `hash = SHA-256(prev_hash ‖ canonical JSON of the row)`, starting from the previous
+    day's root;
+  - the day's **root**, the last row's hash.
+
+  It writes the root into the object's metadata and into D1.
+- **The record of it:** a new table, `core_audit_archives (day, r2_key, first_at, first_id,
+  last_at, last_id, rows, root, prev_root, archived_at)`. It is kept in D1 forever and is one row a
+  day.
 - **How it stays verifiable:**
-  - Recompute the day's digest from R2 and compare it with D1.
-  - Check that the day's `seq` run is complete, and that each row's `prev_hash` matches the row
-    before, across days and between the rows kept in D1 and those archived.
-  - R2 objects are written once and never overwritten.
-  - The cron archives and verifies one day per tick, in batches of a few hundred rows.
+  - Re-hash a day's object from the previous day's root. The result must equal the `root` in D1
+    and the object's metadata.
+  - A missing, altered, added or reordered row changes the root. A missing day breaks the
+    `prev_root` link.
+  - R2 objects are written once and never overwritten. The cron archives and verifies one day per
+    tick, in batches of a few hundred rows.
+- **The cost:**
+  - **Nothing per audited operation.**
+  - Per archived day: one D1 row (plus its primary key, so 2 rows written) and one R2 put.
+  - Per archived audit row: its delete, once. That is about 4 rows written: the table, its two
+    unique autoindexes (the `id` primary key and `idempotency_key`) and `core_audit_item_idx`.
 - **The trigger:** the no-delete trigger is replaced by one that refuses a DELETE unless an
-  archive row covers the row's `seq`, and the row matches the "archived" class above. UPDATE stays
+  archive row's `(first_at, first_id)` to `(last_at, last_id)` range covers the row, and the row
+  matches the "archived" class above. UPDATE stays
   refused. The table stays append-only for everything kept forever.
 
 **Size against the 10 GB cap.** Rough, per day:

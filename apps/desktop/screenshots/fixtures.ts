@@ -92,6 +92,14 @@ export const ITEMS: Summary[] = [
   }),
   item(4, "Make the event log useful", "done", "done", { updatedAt: ago(60 * 40) }),
   item(1, "Attachments on work items", "done", "done", { updatedAt: ago(60 * 60) }),
+  item(7, "Rename the runner pairing command", "build", "cancelled", {
+    statusReason: "by you, from the app",
+    updatedAt: ago(60 * 70),
+  }),
+  item(6, "Retry verify when CI is late", "verify", "failed", {
+    statusReason: "verify failed three times",
+    updatedAt: ago(60 * 90),
+  }),
   item(3, "Import contacts from a CSV", "build", "running", {
     projectId: CRM,
     orgId: CLIENT,
@@ -402,7 +410,8 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         status: i.status,
         statusReason: i.statusReason,
         stage: i.stage,
-        phase: (["intake", "triage", "spec"].includes(i.stage) ? "shaping" : "delivery") as
+        // The item's phase (core's itemPhase): shaping before release, delivery from release on.
+        phase: (["backlog", "shaping", "ready"].includes(i.status) ? "shaping" : "delivery") as
           | "shaping"
           | "delivery",
         priority: i.priority ?? "normal",
@@ -428,13 +437,11 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
 }
 
 const STAGES_IN_ORDER = [
-  ["intake", "Intake", "shaping"],
   ["triage", "Triage", "shaping"],
   ["spec", "Spec", "shaping"],
   ["build", "Build", "delivery"],
   ["verify", "Verify", "delivery"],
   ["merge", "Merge", "delivery"],
-  ["done", "Done", "delivery"],
 ] as const;
 
 /**

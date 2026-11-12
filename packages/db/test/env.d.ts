@@ -6,6 +6,8 @@ declare global {
       DB: D1Database;
       /** An empty database a test migrates step by step (backfill tests). */
       UPGRADE_DB: D1Database;
+      /** An empty database a test migrates out of order (late blocks after everything else). */
+      ORDER_DB: D1Database;
       TEST_MIGRATIONS: D1Migration[];
     }
   }
