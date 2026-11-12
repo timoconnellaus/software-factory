@@ -16,7 +16,7 @@ and what in `.factory/` or the specs would have caught it. The first four are fi
 | 7 | Work item #1's PR conflicted with `main` from the start, so GitHub ran no CI; verify read "no CI" as a build failure and the retries couldn't fix it | `missing-check` (spec gap) | ADR 0320: branches merge the default branch before build, a conflict is its own state, missing CI asks a person (Workflow v3); then the merge queue (ADR 0330) |
 | 8 | Every job since #24 ran on the tail of its prompt: typed into the Claude terminal, a multi-kilobyte prompt arrived truncated | `runner` (prompt transport) | The prompt goes in `.factory-prompt.md` in the worktree; the terminal gets one short pointer line; `runner-sends-the-prompt-as-a-file` check |
 | 9 | Updating the M5's runner by hand cancelled #4's build, and the restarted service had no Orca on its `PATH` | `runner` (no update path) | ADR 0360: runners update themselves to the deployed commit when idle, with rollback; `install` adds Orca's bin directory and retries the bootstrap |
-| 11 | Under load, tmux stopped answering; runner-local read that as "session gone", handed jobs back, failed to kill them and left their Claude running; new jobs failed at `kill-session`; attached-PR run branches leaked | `runner` (failure read as absence; no check that a stop worked) | Spec 43, ADRs 0530–0532: only tmux's own "can't find session" means gone; jobs are stopped from the process table (TERM, then KILL, then checked); claiming backs off under load; run branches are marked |
+| 11 | Under load, tmux stopped answering; runner-local read that as "session gone", handed jobs back, failed to kill them and left their Claude running; new jobs failed at `kill-session`; attached-PR run branches leaked | `runner` (failure read as absence; no check that a stop worked) | Spec 43, ADRs 0550–0552: only tmux's own "can't find session" means gone; jobs are stopped from the process table (TERM, then KILL, then checked); claiming backs off under load; run branches are marked |
 
 ## 1. A project couldn't be fixed after creation
 **What happened.** The installation lookup failed (incident 2), Setup showed a toast that disappeared, and
@@ -376,7 +376,7 @@ the adapter shipped. That's spec 30's criteria 1–2, which this incident is how
 - **Ownership guessed from a name.** Run-branch cleanup decided ownership by branch name.
 
 **Fix (spec 43).**
-- **Only tmux's own answers mean gone** (ADR 0530): "can't find session|window|pane", "no server
+- **Only tmux's own answers mean gone** (ADR 0550): "can't find session|window|pane", "no server
   running on", and "error connecting to … (No such file or directory)". Everything else retries
   with backoff and then reports tmux unavailable. While it's unavailable the job keeps running and
   says so, and it ends only when `ps` confirms its Claude is gone.
@@ -384,10 +384,10 @@ the adapter shipped. That's spec 30's criteria 1–2, which this incident is how
   job's processes by the settings path on Claude's command line. They signal its group (TERM, then
   KILL) and check that nothing is left. If something is, the job isn't reported released, the host
   logs it and doctor shows it.
-- **Claiming backs off under load** (ADR 0532): heavy jobs stop above 1.5× the core count, light
+- **Claiming backs off under load** (ADR 0552): heavy jobs stop above 1.5× the core count, light
   ones above 2.0×, with hysteresis. The heartbeat says why, and the health line reads "runner busy:
   load".
-- **Run branches carry a marker** (ADR 0531), and release, prepare, the reaper and doctor act on
+- **Run branches carry a marker** (ADR 0551), and release, prepare, the reaper and doctor act on
   the marker, never on the name.
 - **The control-mode tests skip inside factory jobs**, and the production bridge avoids
   `control_discard` with `pause-after` (ADR 0440 note).

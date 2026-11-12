@@ -1,4 +1,4 @@
-// incident #11 (2026-11-12) (spec 43, ADRs 0530, 0531): a tmux that times out or fails is not "the
+// incident #11 (2026-11-12) (spec 43, ADRs 0550, 0551): a tmux that times out or fails is not "the
 // session is gone"; a job's processes are stopped from the process table (TERM, then KILL) and
 // checked gone before it's released; and the run branches the factory creates are its own to
 // delete, whatever their names, never an owner's. Over a scripted tmux and real git; the process
@@ -480,7 +480,7 @@ describe("a job's processes on the real process table", { timeout: 30_000 }, () 
   });
 });
 
-describe("run branches are the factory's own, whatever their names (ADR 0531)", {
+describe("run branches are the factory's own, whatever their names (ADR 0551)", {
   timeout: 30_000,
 }, () => {
   const attached = (k = 1) => job({ branch: `timoconnellaus/desktop-terminal-run-${k}`, runNo: k });

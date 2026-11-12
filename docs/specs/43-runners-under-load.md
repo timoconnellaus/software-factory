@@ -1,9 +1,9 @@
 # Spec 43: runners under load: no orphans, tmux errors aren't "gone", back off claiming
 
 Read first: [incident #11](../incidents/2026-11-11-bootstrap.md#11-under-load-tmux-stopped-answering-and-jobs-left-claude-running)
-(M5, 2026-11-12), ADRs [0530](../adr/0530-a-job-is-stopped-from-the-process-table.md),
-[0531](../adr/0531-run-branches-are-marked-not-guessed-from-their-names.md),
-[0532](../adr/0532-runners-back-off-claiming-under-load.md), [0380](../adr/0380-runner-local-tmux-and-hook-status.md)
+(M5, 2026-11-12), ADRs [0550](../adr/0550-a-job-is-stopped-from-the-process-table.md),
+[0551](../adr/0551-run-branches-are-marked-not-guessed-from-their-names.md),
+[0552](../adr/0552-runners-back-off-claiming-under-load.md), [0380](../adr/0380-runner-local-tmux-and-hook-status.md)
 (tmux on `-L software-factory`), [0270](../adr/0270-the-factory-launches-the-harness-and-verifies-it.md)
 (the launch script and its pid file) and [0440](../adr/0440-a-web-terminal-relayed-through-a-durable-object-per-job.md)
 (the control-mode bridge); the code in `packages/runner-local` and `local/runner-host`.
@@ -16,7 +16,7 @@ leaves its Claude running after release, and the runner stops taking new work be
 overloaded.
 
 ## Scope
-1. **No orphans** (ADR 0530).
+1. **No orphans** (ADR 0550).
    - The job's live harness is every process whose command line has the run's settings path
      (`<runDir>/claude-settings.json`). It's read from `ps`, never guessed from a pid file.
    - Release, a failed start, a re-run of the same job and the reaper stop that process's group
@@ -27,7 +27,7 @@ overloaded.
      released: it logs it, its lease lapses, and `sf-runner doctor` shows the process
      (`orphan-process`). The adapter retries the stop on every capacity read and counts the survivor
      as in use.
-2. **A failed or timed-out tmux command is not "session gone"** (ADR 0530).
+2. **A failed or timed-out tmux command is not "session gone"** (ADR 0550).
    - Only tmux's own answers mean gone: "can't find session|window|pane", "no server running on",
      and "error connecting to … (No such file or directory)". The wording is the same in 3.3 through
      3.6a.
@@ -42,16 +42,16 @@ overloaded.
      `paused: { reason: "tmux" }`. It is never "0 in use".
    - **Start, steer, collect and release.** A start tolerates a silent tmux until its deadline. Steer
      errors stay steer errors. Collect already tolerated it. Release is covered by item 1.
-3. **Back off claiming under load** (ADR 0532).
+3. **Back off claiming under load** (ADR 0552).
    - The thresholds are on the 1-minute load average, as a multiple of the CPU count. Heavy jobs
      stop above 1.5×. Light jobs stop too above 2.0×. Each resumes below its stop × 0.8.
    - It's on by default. Set it in `runner.json` as
      `load: { enabled, heavyStop, lightStop, resumeFactor }`.
    - The heartbeat carries `capacity.paused: { reason: "load", pools, load1, cores }`. Both pools
      paused also means `accepting: false`.
-   - The scheduler gives a paused pool nothing (`core_runners.paused`, migration 0300).
+   - The scheduler gives a paused pool nothing (`core_runners.paused`, migration 0320).
    - The runner health line says "runner busy: load 19.3 on 10 cores, no new heavy jobs".
-4. **Run branches are the factory's own, whatever their name** (ADR 0531).
+4. **Run branches are the factory's own, whatever their name** (ADR 0551).
    - When `prepareWorkspace` creates `job.branch`, it marks it with
      `refs/software-factory/run-branches/<branch>`. That covers attached PRs'
      `<pr-branch>-run-<k>` too.
@@ -62,8 +62,12 @@ overloaded.
      (`orphan-branch`). They also sweep the configured checkouts, not only the ones the job
      worktrees hang off. An unmarked branch is never touched.
    - Container job repos are their own clones, deleted whole, so they don't leak. Their temporary
-     fetch ref is deleted in a `finally`. Sprites (#74, not on main) is out of scope; check it when
-     it lands.
+     fetch ref is deleted in a `finally`. Sprites job repos (ADR 0480) are made the same way, so
+     they don't leak either.
+   - **Sprites and no orphans.** A sprite's Claude runs in the sprite, so its stop is the sprite's
+     destroy. A sprite this run asked for that can't be destroyed now makes release throw
+     `ReleaseIncomplete`, like a host process that survives, so the host doesn't report the job
+     released. Before, the host only skipped the `released` state.
 5. **A steer typed mid-turn** (tmux).
    - Claude queues the message, and its turn runs after the current turn's Stop. So a non-planning
      tmux job doesn't end at a Stop while a steer is still owed. A steer is owed when it was typed

@@ -1,4 +1,4 @@
-# ADR 0532: Runners back off claiming under load, heavy first, and say why
+# ADR 0552: Runners back off claiming under load, heavy first, and say why
 
 Status: accepted, 2026-11-12. Spec [43](../specs/43-runners-under-load.md). Amends
 [0301](0301-runner-capacity-has-heavy-and-light-pools.md).
@@ -27,9 +27,9 @@ limits were slot counts. A slot count can't tell a quiet machine from one that's
   `load: { enabled, heavyStop, lightStop, resumeFactor }` (`lightStop ≥ heavyStop`).
 - **Said on the wire.** The capacity on every heartbeat and claim carries
   `paused: { reason: "load" | "tmux", pools, load1?, cores?, detail? }`. With both pools paused,
-  `accepting` is false too. `tmux` is the adapter's pause when its tmux doesn't answer (ADR 0530).
+  `accepting` is false too. `tmux` is the adapter's pause when its tmux doesn't answer (ADR 0550).
   - The scheduler's free-pool check gives a paused pool nothing.
-  - The engine stores the pause (`core_runners.paused`, migration 0300).
+  - The engine stores the pause (`core_runners.paused`, migration 0320).
   - The inbox's runner health line reads "runner busy: load 19.3 on 10 cores, no new heavy jobs".
 
 ## Consequences

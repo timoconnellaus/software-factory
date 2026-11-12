@@ -63,15 +63,15 @@ relay enforces it).
 Capacity has two pools: heavy (build, verify; `maxConcurrent`) and light (triage, spec, planning;
 `maxLight`, default 6). The heartbeat and claim report both, and the host claims while either has
 room; the cloud picks a job for a pool with a free slot. Under load the host pauses pools, heavy
-first (`load` below, ADR 0532); a paused pool gets nothing, and so does every pool while the
-factory's tmux isn't answering (ADR 0530).
+first (`load` below, ADR 0552); a paused pool gets nothing, and so does every pool while the
+factory's tmux isn't answering (ADR 0550).
 
-A job is stopped from the process table (ADR 0530): release finds its Claude by the settings path on
+A job is stopped from the process table (ADR 0550): release finds its Claude by the settings path on
 its command line, signals its process group (TERM, then KILL) and checks nothing is left, whether
 or not tmux answered. If something is left, the job is **not** reported released (the log says "NOT
 released") and `sf-runner doctor` shows the process (`orphan-process`; `--fix` stops it). Run
 branches the runner created carry a marker ref (`refs/software-factory/run-branches/<branch>`, ADR
-0531); doctor and the reaper sweep marked ones no worktree has checked out (`orphan-branch`).
+0551); doctor and the reaper sweep marked ones no worktree has checked out (`orphan-branch`).
 
 A **planning** job is a long-lived Claude session that plans one work item with people (ADR 0300):
 - The host serves it a **relay** on `127.0.0.1` (`src/planning-relay.ts`) with a per-job bearer
@@ -483,7 +483,7 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 | `checkouts` | set once by `login` / `doctor --fix` | Directories whose immediate git repos are your checkouts, e.g. `["~/code", "~/orca/projects"]`. A job runs as a worktree of the one whose `origin` is its repo; none → the runner's own clone |
 | `capabilities` | `hooks`, `ui-takeover`, `own-hardware`, `work-item-attachments` (+ `container-isolation` with containers) | No `browser`: screenshot evidence is skipped |
 | `identity` | `Software Factory <software-factory@users.noreply.github.com>` | Commit author |
-| `load` | `{ "enabled": true, "heavyStop": 1.5, "lightStop": 2.0, "resumeFactor": 0.8 }` | Back off claiming under load (ADR 0532): above `heavyStop` × cores (1-minute load average) no new heavy jobs, above `lightStop` × cores none at all; each resumes below its stop × `resumeFactor`. The heartbeat says why (`capacity.paused`), the health line reads "runner busy: load". `"enabled": false` turns it off |
+| `load` | `{ "enabled": true, "heavyStop": 1.5, "lightStop": 2.0, "resumeFactor": 0.8 }` | Back off claiming under load (ADR 0552): above `heavyStop` × cores (1-minute load average) no new heavy jobs, above `lightStop` × cores none at all; each resumes below its stop × `resumeFactor`. The heartbeat says why (`capacity.paused`), the health line reads "runner busy: load". `"enabled": false` turns it off |
 | `autoUpdate` | `true` | Update the runner's checkout to the deployed commit when idle (ADR 0360); `false` reports `blocked` instead |
 | `isolation` | `sandbox` | `container`: a Docker container per job, every stage `bypassPermissions` (ADR 0430, above); `sprites`: a fresh sprite per job on your Sprites account (ADR 0480, above) |
 | `container.env` | — | The model credential for containers on the `default` account: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`. Else the same variable in sf-runner's environment. A token account's token wins; a login account can't be used in a container |

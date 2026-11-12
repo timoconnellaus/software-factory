@@ -43,7 +43,7 @@ export const configSchema = z.object({
    */
   autoUpdate: z.boolean().default(true),
   /**
-   * Back off claiming under load (ADR 0532), as multiples of the CPU count: heavy jobs stop when
+   * Back off claiming under load (ADR 0552), as multiples of the CPU count: heavy jobs stop when
    * the 1-minute load average passes `heavyStop` (1.5), light ones too past `lightStop` (2.0), and
    * each resumes below its stop × `resumeFactor` (0.8). On by default; `enabled: false` turns it off.
    */

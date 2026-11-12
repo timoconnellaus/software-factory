@@ -44,7 +44,7 @@ export interface JobReport {
   handedBack: boolean;
   fenced: boolean;
   error?: string;
-  /** Release couldn't confirm the job's processes stopped (ADR 0530): not reported released. */
+  /** Release couldn't confirm the job's processes stopped (ADR 0550): not reported released. */
   processesAlive?: boolean;
 }
 
@@ -665,7 +665,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     await adapter.release(job, workspace, session).catch((err) => {
       releaseFailed = true;
       error = `${error ? `${error}; ` : ""}release: ${err instanceof Error ? err.message : err}`;
-      // The job's processes may still be running (ADR 0530): it is never reported released.
+      // The job's processes may still be running (ADR 0550): it is never reported released.
       if (isReleaseIncomplete(err)) processesAlive = true;
     });
     for (const token of tokens) await revokeToken(token, options.fetch);

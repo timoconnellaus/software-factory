@@ -1,4 +1,4 @@
-# ADR 0530: A job is stopped from the process table, and a slow tmux is not a gone session
+# ADR 0550: A job is stopped from the process table, and a slow tmux is not a gone session
 
 Status: accepted, 2026-11-12. Spec [43](../specs/43-runners-under-load.md). Incident
 [#11](../incidents/2026-11-11-bootstrap.md#11-under-load-tmux-stopped-answering-and-jobs-left-claude-running).
@@ -47,13 +47,14 @@ and nothing checked that it had worked.
    keeps reading the hook file. It ends only when `ps` shows no Claude for it, and unknown counts
    as alive. A session that's gone while Claude still runs waits `goneGraceMs`, then fails, and
    release stops Claude. Capacity with a silent tmux counts the sessions the adapter started and
-   pauses claims (`paused.reason: "tmux"`, ADR 0532).
+   pauses claims (`paused.reason: "tmux"`, ADR 0552).
 
 ## Consequences
 - An overloaded host keeps its jobs running instead of shedding them as failures, and can't leave
   a Claude behind without someone hearing about it.
 - Container jobs (ADR 0430) aren't stopped this way: their processes aren't the host's to see. The
-  container's removal stops them, as before.
+  container's removal stops them, as before. Nor are Sprites jobs (ADR 0480): the sprite's destroy
+  is their stop, and a sprite that can't be destroyed makes release throw `ReleaseIncomplete` too.
 - A descendant that `setsid`s and then re-parents before release starts is not found. That is a
   daemon the agent started on purpose. The sandbox already limits what it can reach, and the next
   doctor run doesn't see it either, since it carries no settings path. That's a known limit.

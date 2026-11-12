@@ -114,7 +114,7 @@ export interface LocalWorkspace extends WorkspaceHandle {
   /** More checks before the prompt (a container job's own configuration, ADR 0430). */
   launchChecks?: () => Promise<string[]>;
   /**
-   * This workspace created `branch` in the checkout (ADR 0531): release deletes exactly that
+   * This workspace created `branch` in the checkout (ADR 0551): release deletes exactly that
    * branch, whatever its name, when no worktree has it checked out.
    */
   createdBranch?: boolean;
@@ -143,7 +143,7 @@ export interface LocalSession extends SessionHandle {
   configDir: string;
   /**
    * The run's settings path (`<runDir>/claude-settings.json`), on its Claude's command line for as
-   * long as it runs: how the runner finds, stops and checks its processes on the host (ADR 0530).
+   * long as it runs: how the runner finds, stops and checks its processes on the host (ADR 0550).
    * Absent when they aren't the host's to see (a container job, ADR 0430).
    */
   settingsPath?: string;
@@ -217,7 +217,7 @@ export interface LocalRunnerConfig {
   exec?: Exec;
   /** The tmux executable and socket (tests use their own socket). */
   tmux?: Omit<TmuxOptions, "exec">;
-  /** How the host's processes are read and signalled (default `ps` and `kill`; ADR 0530). */
+  /** How the host's processes are read and signalled (default `ps` and `kill`; ADR 0550). */
   procs?: Procs;
   /** How long a job's processes get after TERM, and after KILL, when it is stopped. */
   stop?: StopOptions;
@@ -396,7 +396,7 @@ export function createLocalRunner(
     (workspace && !workspace.readCommand ? join(workspace.runDir, RUN_SETTINGS_FILE) : undefined);
 
   /**
-   * Jobs whose processes survived their release (ADR 0530): tried again on every capacity read and
+   * Jobs whose processes survived their release (ADR 0550): tried again on every capacity read and
    * counted as in use until they're gone.
    */
   const survivors = new Map<string, string>();
@@ -454,7 +454,7 @@ export function createLocalRunner(
     if (workspace) {
       await attempt("remove worktree", () => removeWorktree(workspace.checkout, workspace.path));
       // The local branch always goes: the pushed run branch (or the diff artifact) is the record.
-      // Only the branch this workspace created (ADR 0531), or a factory run branch from before the
+      // Only the branch this workspace created (ADR 0551), or a factory run branch from before the
       // marker, and only when no worktree has it checked out: the checkout may be the owner's own.
       await attempt("delete branch", async () => {
         if (!workspace.createdBranch && !isRunBranch(workspace.branch)) return;
@@ -530,13 +530,13 @@ export function createLocalRunner(
         config.attachmentsDir ?? join(dirname(config.runsDir), "attachments"),
         job.jobId,
       );
-      // A crashed run of this same job may have left its Claude running (ADR 0530): stop it first.
+      // A crashed run of this same job may have left its Claude running (ADR 0550): stop it first.
       await stopHarness(procs, join(runDir, RUN_SETTINGS_FILE), config.stop);
       // A worktree left by a crashed run of this same job goes first.
       if (await exists(path)) await removeWorktree(checkout, path);
       // So does a local copy of the run branch: `job.branch` is this run's alone (ADR 0035, one
       // branch per run), whatever its name (an attached PR's runs are `<pr-branch>-run-<k>`), so a
-      // copy no worktree has checked out is stale (ADR 0531). Checked out anywhere: refuse.
+      // copy no worktree has checked out is stale (ADR 0551). Checked out anywhere: refuse.
       const holder = (await checkedOutBranches(checkout, exec)).get(job.branch);
       if (holder) {
         throw new Error(

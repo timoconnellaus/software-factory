@@ -1071,7 +1071,7 @@ export const inboxList = defineOperation({
         rateLimitedUntil: z.string().nullable(),
         lastSeenAt: z.string().nullable(),
         /**
-         * Why it takes nothing new in some pools for now (ADR 0532): its load (with the numbers)
+         * Why it takes nothing new in some pools for now (ADR 0552): its load (with the numbers)
          * or its tmux. Null when it takes work everywhere, or is offline.
          */
         paused: capacityPausedSchema.nullable(),

@@ -1,4 +1,4 @@
-// The local run branches runner-local creates in a checkout (spec 43, ADR 0531). A job's branch is
+// The local run branches runner-local creates in a checkout (spec 43, ADR 0551). A job's branch is
 // the run's own (ADR 0035: one branch per run), but its name isn't always `factory/…`: an attached
 // PR's runs use `<pr-branch>-run-<k>`. So the adapter doesn't guess from the name: when it creates
 // a job's branch it records a marker ref, `refs/software-factory/run-branches/<branch>`, in the

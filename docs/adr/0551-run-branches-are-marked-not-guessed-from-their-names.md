@@ -1,4 +1,4 @@
-# ADR 0531: Run branches are marked, not guessed from their names
+# ADR 0551: Run branches are marked, not guessed from their names
 
 Status: accepted, 2026-11-12. Spec [43](../specs/43-runners-under-load.md). Amends
 [0380](0380-runner-local-tmux-and-hook-status.md) and [0260](0260-runners-attach-to-the-existing-checkout.md).
@@ -32,5 +32,6 @@ that it would never touch an owner's branch. Runs for an attached PR (ADR 0290) 
 - The markers keep the branches' start commits reachable until they're swept. That's harmless, and
   the sweep removes them.
 - Container job repos (ADR 0430) are their own clones, deleted whole, and their temporary fetch ref
-  in the checkout is deleted in a `finally`. They don't have this leak. Sprites (#74) gets the same
-  check when it lands.
+  in the checkout is deleted in a `finally`. They don't have this leak. Neither do Sprites jobs (ADR
+  0480): their job repo is made the same way (`createJobRepo`), in the job dir, which release
+  removes whole.

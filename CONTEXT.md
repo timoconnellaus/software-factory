@@ -319,7 +319,7 @@ Owner-only by default; the owner shares it through an explicit allowlist of orgs
 projects (ADR 0038). It can report "rate-limited until T". Its capacity has two pools (ADR 0301):
 **heavy** slots for build and verify, and **light** slots for planning and triage. Example: the local
 runner on the Mac mini, 2 heavy and 6 light. Under load it **pauses** pools (heavy first, then light;
-ADR 0532) and says why on its heartbeat (`capacity.paused`, "runner busy: load").
+ADR 0552) and says why on its heartbeat (`capacity.paused`, "runner busy: load").
 _Avoid_: worker (a Cloudflare Worker), agent, executor, host (the runner host is the daemon)
 
 **Runner adapter**

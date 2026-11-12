@@ -1,4 +1,4 @@
-// Spec 43 (ADRs 0530, 0532): the host backs off claiming under load, heavy first, with hysteresis,
+// Spec 43 (ADRs 0550, 0552): the host backs off claiming under load, heavy first, with hysteresis,
 // and says why on the heartbeat; a job whose processes may still be running is never released.
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";

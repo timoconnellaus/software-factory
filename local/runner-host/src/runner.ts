@@ -126,7 +126,7 @@ export function buildRunner(
     fetch?: typeof fetch;
     log?: (m: string) => void;
     local?: Partial<LocalRunnerConfig>;
-    /** The load average and CPU count (tests inject them; ADR 0532). */
+    /** The load average and CPU count (tests inject them; ADR 0552). */
     loadReading?: () => LoadReading;
     /** Container isolation's overrides (tests: a scripted runtime, a credential). */
     container?: Partial<ContainerOptions>;
@@ -268,7 +268,7 @@ export function buildRunner(
           ...hostDirs(dirs, exec),
           ...(options.local?.tmux ? { tmux: options.local.tmux } : {}),
           ...(options.local?.procs ? { procs: options.local.procs } : {}),
-          // Marked run branches left by crashed jobs, in the owner's checkouts too (ADR 0531).
+          // Marked run branches left by crashed jobs, in the owner's checkouts too (ADR 0551).
           checkouts: {
             dirs: checkoutDirs(config),
             exclude: [dirs.reposDir, dirs.worktreesDir],
@@ -280,7 +280,7 @@ export function buildRunner(
       return [...new Set([...reaped, ...local])];
     },
     liveJobsFile: liveJobsFile(dirs),
-    // Claim nothing heavy, then nothing at all, while the machine is overloaded (ADR 0532).
+    // Claim nothing heavy, then nothing at all, while the machine is overloaded (ADR 0552).
     load: new LoadGate(
       loadPolicySchema.parse(config.load ?? {}),
       options.loadReading ?? hostLoad,

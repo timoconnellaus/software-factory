@@ -1,4 +1,4 @@
-// Back off claiming under load (spec 43, ADR 0532; incident #11 (2026-11-12)). On a shared machine
+// Back off claiming under load (spec 43, ADR 0552; incident #11 (2026-11-12)). On a shared machine
 // the factory's own sessions are not the only load: when the 1-minute load average passes a
 // multiple of the CPU count, the host stops claiming heavy jobs (build, verify) first, then light
 // ones (triage, spec, planning), and resumes each below a lower threshold (hysteresis), so a load

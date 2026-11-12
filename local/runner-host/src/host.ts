@@ -72,7 +72,7 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
     use(name: string): Promise<void>;
   };
   /**
-   * Back off claiming under load (ADR 0532): which pools take nothing new for now (`LoadGate`).
+   * Back off claiming under load (ADR 0552): which pools take nothing new for now (`LoadGate`).
    * Reported on the heartbeat as `capacity.paused`.
    */
   load?: { check(): CapacityPaused | null };
@@ -307,7 +307,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     const inUse = Math.max(heavyInUse, (reported?.inUse ?? 0) - lightInUse);
     const open = Math.min(this.options.maxConcurrent, reported?.max ?? this.options.maxConcurrent);
     const max = this.heavyClosed ? Math.min(open, inUse) : open;
-    // The adapter's own pause (its tmux not answering) first, else the load's (ADR 0532).
+    // The adapter's own pause (its tmux not answering) first, else the load's (ADR 0552).
     const paused = reported?.paused ?? this.options.load?.check() ?? undefined;
     return {
       max,

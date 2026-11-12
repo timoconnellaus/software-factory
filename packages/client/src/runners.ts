@@ -27,7 +27,7 @@ export function runnerLabel(r: Runner): string {
   const slots = r.light
     ? `heavy ${r.inUse}/${r.max} · light ${r.light.inUse}/${r.light.max}`
     : `${r.inUse}/${r.max}`;
-  // Paused for its load or its tmux (ADR 0532): "runner busy: load 19.3 on 10 cores, no new jobs".
+  // Paused for its load or its tmux (ADR 0552): "runner busy: load 19.3 on 10 cores, no new jobs".
   const p = r.state === "offline" || r.state === "rate-limited" ? null : r.paused;
   if (p) {
     const why =

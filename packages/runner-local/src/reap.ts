@@ -1,6 +1,6 @@
 // After a host crash, and for `sf-runner doctor`: the job sessions (`sf-*` on the factory's tmux
 // socket), job processes (a Claude whose command line names `<runsDir>/<jobId>/claude-settings.json`,
-// ADR 0530), job worktrees (`<worktreesDir>/sf-*`) and marked run branches (ADR 0531) whose job the
+// ADR 0550), job worktrees (`<worktreesDir>/sf-*`) and marked run branches (ADR 0551) whose job the
 // host no longer runs. Reaping kills those sessions, stops those processes (TERM, then KILL), removes
 // those worktrees from their checkouts (and their local run branches, run dirs and attachments) and
 // deletes those branches. The cloud fails those runs on its own once their leases lapse (ADR 0035).
@@ -107,7 +107,7 @@ async function removeJobWorktree(dirs: LocalHostDirs, w: JobWorktree): Promise<v
   await rm(w.path, { recursive: true, force: true });
   if (w.checkout) {
     await exec("git", ["worktree", "prune"], { cwd: w.checkout });
-    // Only a branch the factory marked as its own (ADR 0531), or a factory run branch.
+    // Only a branch the factory marked as its own (ADR 0551), or a factory run branch.
     if (
       w.branch &&
       (isRunBranch(w.branch) || (await isMarkedRunBranch(w.checkout, w.branch, exec)))

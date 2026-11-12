@@ -274,7 +274,7 @@ export interface RunnerAdapter<
   /**
    * Frees everything prepareWorkspace/startSession made for this job (its worktree and branch).
    * Never the checkout or its registration, which outlive the job. Must be safe to call twice.
-   * Throws `ReleaseIncomplete` when it can't confirm the job's processes stopped (ADR 0530): the
+   * Throws `ReleaseIncomplete` when it can't confirm the job's processes stopped (ADR 0550): the
    * host then doesn't report the job released.
    */
   release(job: Job, workspace: W | undefined, session: S | undefined): Promise<void>;
@@ -385,7 +385,7 @@ export function isFactoryBranch(branch: string): boolean {
 }
 
 /**
- * A release that couldn't confirm the job's processes stopped (ADR 0530): the agent may still be
+ * A release that couldn't confirm the job's processes stopped (ADR 0550): the agent may still be
  * running on the host. The host doesn't report the job released (its lease lapses instead), logs
  * it, and `sf-runner doctor` shows the process.
  */

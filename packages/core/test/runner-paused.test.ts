@@ -1,4 +1,4 @@
-// Spec 43 (ADR 0532): a pool the runner paused for its load gets nothing new, and the inbox says why.
+// Spec 43 (ADR 0552): a pool the runner paused for its load gets nothing new, and the inbox says why.
 import type { CapabilityManifest, CapacityPaused, Job } from "@software-factory/runner-contract";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
@@ -29,7 +29,7 @@ const claim = (actor: Actor, paused?: CapacityPaused) =>
     actor,
   ).then((r) => r.job);
 
-describe("a runner paused for load (ADR 0532)", () => {
+describe("a runner paused for load (ADR 0552)", () => {
   it("gets no heavy job while heavy is paused, still gets light work, and the inbox says why", async () => {
     const w = await world();
     const r = await ok<{ runnerId: string }>("runner.register", { name: "M5" }, w.human);

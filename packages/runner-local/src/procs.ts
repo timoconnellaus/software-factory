@@ -1,4 +1,4 @@
-// Stopping a job's processes for certain (spec 43, ADR 0530; incident #11 (2026-11-12)). A job's
+// Stopping a job's processes for certain (spec 43, ADR 0550; incident #11 (2026-11-12)). A job's
 // Claude runs the harness's launch script, which `exec`s Claude with `--settings
 // <runDir>/claude-settings.json`: that path is on Claude's command line for as long as it runs,
 // and no other process's. So the job's live harness is "every process whose command line contains

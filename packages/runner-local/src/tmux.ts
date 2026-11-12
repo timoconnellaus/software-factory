@@ -4,7 +4,7 @@
 // A job's session is `sf-<jobId>`; targets use tmux's exact-match form (`=name`) so `sf-job_1`
 // never matches `sf-job_10`.
 //
-// A failed or timed-out tmux command is not "the session is gone" (ADR 0530, incident 2026-11-12
+// A failed or timed-out tmux command is not "the session is gone" (ADR 0550, incident 2026-11-12
 // #1): only tmux's own "can't find session" and "no server" answers mean gone. Anything else is
 // retried with backoff and jitter, then reported as `TmuxUnavailable`.
 import { setTimeout as sleep } from "node:timers/promises";

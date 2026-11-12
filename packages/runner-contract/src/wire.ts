@@ -69,9 +69,9 @@ export const capacitySchema = z.object({
     .object({ max: z.number().int().min(0).max(64), inUse: z.number().int().min(0) })
     .optional(),
   /**
-   * Why the runner takes nothing new in some pools for now (ADR 0532), when it doesn't: `load`, the
+   * Why the runner takes nothing new in some pools for now (ADR 0552), when it doesn't: `load`, the
    * host's 1-minute load average is past its threshold for those pools (heavy stops first, then
-   * light), with the numbers; `tmux`, the factory's tmux server isn't answering (ADR 0530). The
+   * light), with the numbers; `tmux`, the factory's tmux server isn't answering (ADR 0550). The
    * scheduler gives a paused pool nothing; with both pools paused `accepting` is false too.
    */
   paused: capacityPausedSchema.optional(),

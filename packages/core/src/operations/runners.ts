@@ -632,7 +632,7 @@ async function freePools(
   if (!runner.accepting) return null;
   if (runner.rate_limited_until && Date.parse(runner.rate_limited_until) > nowMs) return null;
   const active = await activeRunsByPool(ctx, runner.id);
-  // A pool the runner paused (ADR 0532: its load, or its tmux) gets nothing new.
+  // A pool the runner paused (ADR 0552: its load, or its tmux) gets nothing new.
   const paused = (reported ? reported.paused : runnerPaused(runner))?.pools ?? [];
   if (runner.light_max === null) {
     const any =
@@ -651,7 +651,7 @@ async function freePools(
   };
 }
 
-/** The pause a runner last reported (ADR 0532), or null. */
+/** The pause a runner last reported (ADR 0552), or null. */
 function runnerPaused(
   runner: Pick<RunnerRow, "paused">,
 ): z.infer<typeof capacityPausedSchema> | null {
