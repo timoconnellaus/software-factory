@@ -1,0 +1,61 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{background:#f1f1ef;color:#1c1c1e;font:15px/1.4 'Geist',system-ui,sans-serif;display:flex;flex-direction:column;min-height:100vh}
+.mono{font-family:'Geist Mono',ui-monospace,monospace;font-size:12px;color:#6e6e73}
+.muted{color:#6e6e73;font-size:13px}
+.bar{display:flex;align-items:center;gap:10px;padding:14px 16px 8px}
+.bar h1{margin:0;font-size:22px;font-weight:600;letter-spacing:-.02em;flex:1}
+.chips{display:flex;gap:6px;padding:0 16px 10px;overflow-x:auto}
+.chip{flex:none;padding:6px 12px;border-radius:999px;background:#fff;box-shadow:0 0 0 1px #e3e3e0;font-size:13px;font-weight:500;white-space:nowrap}
+.chip.on{background:#1c1c1e;color:#fafafa;box-shadow:none}
+.list{flex:1;padding:2px 12px 12px;display:flex;flex-direction:column;gap:8px;overflow:auto}
+.sec{padding:10px 4px 2px;font-size:12px;font-weight:500;color:#6e6e73}
+.card{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:14px;background:#fff;box-shadow:0 0 0 1px #e3e3e0,0 1px 2px rgba(0,0,0,.04);text-decoration:none;color:inherit}
+.card.need{box-shadow:0 0 0 1.5px #f0b541,0 1px 2px rgba(0,0,0,.04)}
+.row{display:flex;align-items:center;gap:8px}
+.t{font-weight:600;line-height:1.3}
+.badge{font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.a{background:#fdecc8;color:#7a4a00}.b{background:#e3edfd;color:#1d4ed8}.g{background:#e4f4e8;color:#17603a}.z{background:#ececea;color:#3a3a3e}
+.dot{width:8px;height:8px;border-radius:999px;display:inline-block;flex:none}
+.btn{flex:1;height:44px;border-radius:11px;border:0;font:inherit;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.p{background:#1c1c1e;color:#fafafa}.o{background:#fff;box-shadow:0 0 0 1px #e3e3e0;color:#1c1c1e}
+.tabs{flex:none;display:flex;align-items:center;justify-content:space-around;height:64px;padding:0 8px 6px;background:#fff;box-shadow:0 -1px 0 #e3e3e0}
+.tab{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;font-weight:500;color:#6e6e73;min-width:64px;position:relative}
+.tab.on{color:#1c1c1e}
+.tab i{font-style:normal;width:22px;height:22px;display:block}
+.cnt{position:absolute;top:-4px;right:12px;min-width:17px;height:17px;border-radius:999px;background:#f59e0b;color:#fff;font-size:10.5px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.fab{width:56px;height:56px;border-radius:18px;background:#1c1c1e;color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 20px rgba(0,0,0,.22)}
+.seg{display:flex;margin:0 16px 10px;padding:3px;border-radius:11px;background:#e7e7e4}
+.seg span{flex:1;text-align:center;padding:7px 0;border-radius:8px;font-size:13px;font-weight:500;color:#55555a}
+.seg .on{background:#fff;color:#1c1c1e;box-shadow:0 0 0 1px #e3e3e0}
+svg{display:block}
+</style><style>
+.top{display:flex;align-items:center;gap:10px;padding:12px 14px 6px}
+.top .tt{flex:1;min-width:0}.top .tt b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ptabs{display:flex;gap:4px;margin:4px 14px 8px;padding:3px;border-radius:11px;background:#e7e7e4}
+.ptabs span{flex:1;text-align:center;padding:7px 0;border-radius:8px;font-size:13px;font-weight:500;color:#55555a}
+.ptabs .on{background:#fff;color:#1c1c1e;box-shadow:0 0 0 1px #e3e3e0}
+.opt{display:flex;align-items:center;gap:10px;min-height:46px;padding:8px 12px;border-radius:11px;box-shadow:0 0 0 1px #e3e3e0;background:#fff}
+.opt.on{box-shadow:0 0 0 1.5px #2563eb;background:#f3f7ff}
+.radio{width:16px;height:16px;border-radius:999px;box-shadow:inset 0 0 0 1.5px #c4c4c0;flex:none}.on .radio{box-shadow:inset 0 0 0 5px #2563eb}
+.why{padding:2px 0 2px 10px;border-left:2px solid #f0b541;color:#55555a;font-size:13.5px;line-height:1.45}
+.done{display:flex;gap:10px;padding:10px 12px;border-radius:12px;background:#e9e9e6}
+.tick{width:18px;height:18px;border-radius:999px;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px;font-size:11px}
+.gate{flex:none;display:flex;gap:8px;padding:10px 12px 14px;background:#fff;box-shadow:0 -1px 0 #e3e3e0}
+.doc{flex:1;overflow:auto;background:#fff;padding:14px 18px 18px;display:flex;flex-direction:column;gap:6px}
+.doc h2{margin:0 0 4px;font-size:19px;letter-spacing:-.02em}.h{margin-top:10px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#6e6e73}
+.li{display:flex;gap:8px;padding:3px 8px;margin:0 -8px;border-radius:7px;line-height:1.45}.li i{font-style:normal;color:#a3a3a0}
+.src{font-family:'Geist Mono',monospace;font-size:10.5px;padding:0 5px;border-radius:4px;background:#ececea;color:#55555a;margin-left:4px;white-space:nowrap}
+.kb{flex:none;background:#d7d9de;padding:8px 6px 14px;display:flex;flex-direction:column;gap:6px}.kb div{display:flex;gap:5px;justify-content:center}.kb span{flex:1;max-width:34px;height:38px;border-radius:6px;background:#fff;box-shadow:0 1px 0 #9a9ca1}
+</style></head><body><div style="flex:1;background:rgba(28,28,30,.35)"></div>
+<div data-name="capture sheet" style="background:#fff;border-radius:22px 22px 0 0;padding:10px 16px 18px;display:flex;flex-direction:column;gap:12px;box-shadow:0 -10px 30px rgba(0,0,0,.18)">
+<div style="width:40px;height:4px;border-radius:999px;background:#d6d6d2;align-self:center"></div>
+<div class="row"><b style="font-size:17px;flex:1">New idea</b><span class="muted">Goes to the backlog. Nothing starts.</span></div>
+<div data-name="title field" style="font-size:17px;font-weight:600;line-height:1.35">Show the plan's age when I release an old item|</div>
+<div data-name="notes field" style="color:#55555a;min-height:54px">If the plan was written more than a week ago, warn me before it builds.</div>
+<div class="row" data-name="attachment" style="gap:8px"><span style="width:54px;height:54px;border-radius:10px;background:#e7e7e4;box-shadow:0 0 0 1px #e3e3e0"></span><span class="muted">1 screenshot</span></div>
+<div class="row" style="gap:6px;flex-wrap:wrap"><span class="chip on" data-name="project chip">Factory</span><span class="chip">CRM</span><span class="chip">Website</span><span class="chip" data-name="priority chip">P2</span></div>
+<div class="row" style="gap:8px"><button class="btn o" data-name="voice button" style="flex:none;width:52px">🎙</button><button class="btn o" data-name="photo button" style="flex:none;width:52px">📷</button><button class="btn p" data-name="add button">Add to backlog</button></div>
+</div></body></html>

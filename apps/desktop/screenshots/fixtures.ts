@@ -357,6 +357,13 @@ function detail(id: string): OpOutput<"workItem.get"> {
               ],
             },
             risk: [],
+            // The tests-intact guard (ADR 0500): this PR only adds tests, so nothing to flag.
+            testsIntact: {
+              headSha: "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f",
+              intact: true,
+              findings: [],
+              total: 0,
+            },
             runner: { verdict: "pass", checks: PACKET_CHECKS },
             evidencePass: true,
             evidenceReasons: [],

@@ -39,6 +39,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AC | 0220–0229 | 0450–0459 | Chat UI on a stream-json session (`hosts-chat-ui`): spec 37. Used: migration 0220; ADR 0450 | in progress |
 | AD | 0230–0239 | 0460–0469 | The desktop shell and look (`desktop-shell`): spec 41, slice 1 of the approved UI design. The window shell, the look as `packages/ui` tokens, the existing screens restyled. Used: ADR 0460, no migrations | in progress |
 | AE | 0240–0249 | 0470–0479 | Planning to kim's standard (`planning`): the [audit against kim](reviews/2026-11-12-planning-against-kim.md), spec 20's fixes, then specs 21, 23, 22, 24 | in progress |
+| AH | 0270–0279 | 0500–0509 | Verify from the factory's own evidence (`verify-evidence`): spec 51. PR A, the tests-intact guard (ADR 0500, no migrations); PR B, checks run by the runner host, proven criteria (ADR 0501, migration 0270). | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
