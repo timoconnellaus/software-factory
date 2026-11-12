@@ -3,6 +3,12 @@
 import { resolveModel } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import {
+  definitionFor,
+  expectSendBacksAsDefined,
+  expectSlotStepsAsDefined,
+  expectStagesAsDefined,
+} from "./definition.ts";
+import {
   all,
   BALANCED,
   build,
@@ -116,6 +122,12 @@ describe("workflows (spec 09 M2)", () => {
     await ok("review.merge", { workItemId: item.workItemId, openedFullDiff: false }, w.human);
     await itemStatus(item.workItemId, "done");
 
+    // The slot steps ran as the compiled definition's slot stages say, and the agent check's
+    // send-back went to its builder (spec 52 PR (a)).
+    const { def, policy } = definitionFor({ ...POLICY, workflow: "Ship a feature" }, "change");
+    expect(await expectSlotStepsAsDefined(item.workItemId, def, policy, "small", [])).toBe(2);
+    await expectStagesAsDefined(item.workItemId, def, "small");
+    await expectSendBacksAsDefined(item.workItemId, def);
     const recorded = await all<{ result: string }>(
       "SELECT result FROM core_audit WHERE work_item_id = ? AND operation = 'workflow.record' ORDER BY at, rowid",
       item.workItemId,

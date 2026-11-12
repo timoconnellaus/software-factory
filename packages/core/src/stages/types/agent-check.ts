@@ -34,6 +34,8 @@ export const agentCheck: StageType<typeof settings> = {
   gate: () => null,
   needsPerson: false,
   reversibility: "internal",
+  // Its named agent judges the work: changing the agent, or the agent's instructions, loosens.
+  judges: "agent",
   steps: () => [{ id: "check", kind: "agent" }],
   // Reads and reports pass, send back (to what it checks) or ask (a person decides, workflow.gate).
   next: (ctx) => {

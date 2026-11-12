@@ -582,7 +582,7 @@ check passed and every criterion is proven by a check that ran, tests are intact
 approved and has earned it on this project, the change is inside the size and path limits, and its
 risk is low (no migrations, auth, billing or policy files). Turning it on is a loosening an org admin
 approves; on an incident, a revert or red CI after its merge it puts a **hold** on that project
-(not on the shared workflow), which a person lifts. Changes to the
+(not on the shared workflow), which an org admin lifts (a loosening, approved by an org admin). Changes to the
 factory itself always need a person.
 _Avoid_: auto-merge (that was ADR 0230's narrow exception), YOLO mode
 

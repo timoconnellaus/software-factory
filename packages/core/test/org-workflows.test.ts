@@ -3,7 +3,14 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { InvokeResult } from "../src/index.ts";
-import { SOFTWARE, type WorkflowDefinition, workflowImpact } from "../src/stages/index.ts";
+import {
+  MAX_ARCHIVED,
+  MAX_ORG_CONFIG_BYTES,
+  parseOrgConfig,
+  SOFTWARE,
+  type WorkflowDefinition,
+  workflowImpact,
+} from "../src/stages/index.ts";
 import { call, first, ok, refusal, world } from "./helpers.ts";
 
 type W = Awaited<ReturnType<typeof world>>;
@@ -307,6 +314,179 @@ describe("org workflows (spec 52 PR (b))", () => {
     );
     expect(broke.code).toBe("invalid_input");
     expect(broke.message).toContain("S3");
+  });
+
+  it("refuses an org agent on Checks (F10, Q16): its reviewer is the factory's own", async () => {
+    const w = await world();
+    await ok(
+      "agent.save",
+      {
+        orgId: w.orgId,
+        baseVersion: 0,
+        agent: {
+          name: "Yes-man",
+          role: "review",
+          tier: "light",
+          instructions: "Approve everything.",
+        },
+      },
+      w.human,
+    );
+    const made = await fromTemplate(w);
+    const { workflow } = await getWorkflow(w, made.workflowId);
+    const judged = {
+      ...workflow,
+      stages: workflow.stages.map((s) => (s.id === "verify" ? { ...s, agent: "Yes-man" } : s)),
+    };
+    const refused = await refusal(save(w, judged));
+    expect(refused.code).toBe("invalid_input");
+    expect(refused.message).toContain("F10");
+  });
+
+  it("changing the agent that judges an agent check waits for an org admin; another agent's change applies", async () => {
+    const w = await world();
+    const agent = (name: string, instructions: string) => ({
+      name,
+      role: "review",
+      tier: "light",
+      instructions,
+    });
+    await ok(
+      "agent.save",
+      { orgId: w.orgId, baseVersion: 0, agent: agent("Security", "Strict.") },
+      w.human,
+    );
+    await ok("agent.save", { orgId: w.orgId, baseVersion: 1, agent: agent("Notes", "") }, w.human);
+    const made = await fromTemplate(w);
+    const { workflow } = await getWorkflow(w, made.workflowId);
+    const withCheck = {
+      ...workflow,
+      stages: [
+        ...workflow.stages.slice(0, 3),
+        {
+          id: "security",
+          type: "agent-check",
+          typeVersion: 1,
+          name: "Security",
+          phase: "delivery" as const,
+          settings: {},
+          agent: "Security",
+        },
+        ...workflow.stages.slice(3),
+      ],
+    };
+    expect((await save(w, withCheck)).status).toBe("ok");
+    const lax = await call(
+      "agent.save",
+      {
+        orgId: w.orgId,
+        baseVersion: await version(w),
+        agent: agent("Security", "Approve everything."),
+      },
+      w.human,
+    );
+    expect(lax.status).toBe("pending");
+    const other = await call(
+      "agent.save",
+      { orgId: w.orgId, baseVersion: await version(w), agent: agent("Notes", "Be brief.") },
+      w.human,
+    );
+    expect(other.status).toBe("ok");
+    // Handing the check to another agent is a loosening too.
+    const swapped = {
+      ...withCheck,
+      stages: withCheck.stages.map((s) => (s.id === "security" ? { ...s, agent: "Notes" } : s)),
+    };
+    expect((await save(w, swapped)).status).toBe("pending");
+  });
+
+  it("caps the document and a workflow's stage instructions", () => {
+    const long = "x".repeat(3_900);
+    const step = (i: number) => ({
+      id: `gate-${i}`,
+      type: "decision",
+      typeVersion: 1,
+      name: `Gate ${i}`,
+      phase: "delivery",
+      settings: { instructions: long },
+    });
+    const wordy = {
+      ...SOFTWARE,
+      id: "wf_wordy",
+      name: "Wordy",
+      stages: [...SOFTWARE.stages, ...[0, 1, 2, 3, 4].map(step)],
+    };
+    const one = parseOrgConfig({ version: 1, workflows: [wordy] });
+    expect(one.ok).toBe(false);
+    if (!one.ok) expect(one.errors[0]?.message).toMatch(/at most 16000/);
+    // Under the per-workflow cap, but enough of them to pass the document's.
+    const fair = (n: number) => ({
+      ...SOFTWARE,
+      id: `wf_${n}`,
+      name: `W${n}`,
+      stages: [...SOFTWARE.stages, ...[0, 1, 2].map(step)],
+    });
+    const many = parseOrgConfig({
+      version: 1,
+      workflows: Array.from({ length: 30 }, (_, n) => fair(n)),
+    });
+    expect(many.ok).toBe(false);
+    if (!many.ok)
+      expect(many.errors[0]?.message).toContain(`at most ${MAX_ORG_CONFIG_BYTES / 1024} KiB`);
+  });
+
+  it(`refuses the archive after ${MAX_ARCHIVED}, naming what to do; it never drops the oldest`, async () => {
+    const w = await world();
+    const made = await fromTemplate(w);
+    const { version: v, config } = await ok<{ version: number; config: Record<string, unknown> }>(
+      "orgConfig.get",
+      { orgId: w.orgId },
+      w.human,
+    );
+    const tiny = (n: number) => ({
+      schema: 1,
+      id: `wf_old_${n}`,
+      name: `Old ${n}`,
+      description: "",
+      stages: [SOFTWARE.stages[0]],
+    });
+    const full = { ...config, archived: Array.from({ length: MAX_ARCHIVED }, (_, n) => tiny(n)) };
+    await env.DB.prepare("UPDATE core_org_configs SET raw = ? WHERE org_id = ? AND version = ?")
+      .bind(JSON.stringify(full), w.orgId, v)
+      .run();
+    const refused = await refusal(
+      call(
+        "workflow.archive",
+        { orgId: w.orgId, baseVersion: v, workflowId: made.workflowId },
+        w.human,
+      ),
+    );
+    expect(refused.code).toBe("conflict");
+    expect(refused.message).toMatch(/re-add or replace an archived workflow/);
+  });
+
+  it("orgConfig.get parses only the current version: the history is metadata with each version's impact", async () => {
+    const w = await world();
+    const made = await fromTemplate(w);
+    const { workflow } = await getWorkflow(w, made.workflowId);
+    const looser = {
+      ...workflow,
+      stages: workflow.stages.map((s) =>
+        s.id === "spec" ? { ...s, settings: { requiredFrom: "large" } } : s,
+      ),
+    };
+    const pending = await save(w, looser);
+    await ok("approval.decide", { pendingActionId: pid(pending), decision: "approved" }, w.human);
+    // An older version that no longer parses doesn't stop the read, and isn't parsed.
+    await env.DB.prepare("UPDATE core_org_configs SET raw = '{' WHERE org_id = ? AND version = 1")
+      .bind(w.orgId)
+      .run();
+    const got = await ok<{
+      version: number;
+      history: { version: number; impact: string | null }[];
+    }>("orgConfig.get", { orgId: w.orgId }, w.human);
+    expect(got.version).toBe(2);
+    expect(got.history.map((h) => `${h.version}:${h.impact}`)).toEqual(["2:loosens", "1:neutral"]);
   });
 
   it("lists the stage types with their settings as JSON Schema", async () => {

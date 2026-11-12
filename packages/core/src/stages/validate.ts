@@ -28,7 +28,8 @@ export type WorkflowRule =
   | "F6"
   | "F7"
   | "F8"
-  | "F9";
+  | "F9"
+  | "F10";
 
 export interface WorkflowError {
   rule: WorkflowRule;
@@ -119,6 +120,17 @@ export function validateWorkflow(input: unknown, opts: ValidateOptions): Workflo
       if (needsOwnAgent) err("S3", inst.id, `${inst.name} hands to an agent: name one`);
       continue;
     }
+    // F10: a stage whose judge is the factory's own reviewer takes no org agent. An org agent's
+    // instructions ("approve everything") would reach the judge; org text reaches it only as an
+    // addition to its built-in skills, which a person approves (Q16).
+    if (type.judges === "code") {
+      err(
+        "F10",
+        inst.id,
+        `${inst.name} is judged by the factory's own reviewer: it takes no org agent (Q16)`,
+      );
+      continue;
+    }
     if (req.roles.length === 0) {
       err("S3", inst.id, `${inst.name} is a ${type.name} stage, which hands to no agent`);
       continue;
@@ -182,7 +194,7 @@ export function validateWorkflow(input: unknown, opts: ValidateOptions): Workflo
       err("F6", inst.id, `${inst.name} acts irreversibly without an action a person must review`);
       return;
     }
-    if (gate?.mode !== "required" || gate.on !== action.on)
+    if (gate?.mode !== "required" || gate.on !== action.on || !gate.alwaysReview)
       err(
         "F6",
         inst.id,

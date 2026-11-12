@@ -59,6 +59,8 @@ export const publish: StageType<typeof settings> = {
     risk: "merge",
     // `autoApprove` (ADR 0515) is added with dark factory mode, build plan PR (e).
     delegable: [],
+    // `merge` is in ALWAYS_REVIEW (ADR 0008); `autoApprove` decides only under ADR 0515's conditions.
+    alwaysReview: true,
   }),
   needsPerson: true,
   reversibility: "irreversible",

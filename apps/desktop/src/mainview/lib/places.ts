@@ -17,8 +17,15 @@ export interface ItemRef {
   status: string;
 }
 
-/** A tab's title. A work item is "#12 Its title" once the app has it loaded, else "Work item". */
-export function tabTitle(path: string, findItem: (id: string) => ItemRef | null): string {
+/**
+ * A tab's title. A work item is "#12 Its title" once the app has it loaded, else "Work item"; a
+ * project's page is the project's name once loaded, else "Project".
+ */
+export function tabTitle(
+  path: string,
+  findItem: (id: string) => ItemRef | null,
+  findProject: (id: string) => string | null = () => null,
+): string {
   const pathname = path.split("?")[0] ?? "/";
   const item = /^\/work\/([^/]+)(\/review)?$/.exec(pathname);
   if (item?.[1]) {
@@ -28,8 +35,15 @@ export function tabTitle(path: string, findItem: (id: string) => ItemRef | null)
   switch (pathname) {
     case "/":
       return "Inbox";
-    case "/work":
-      return "Work";
+    case "/work": {
+      const q = new URLSearchParams(path.split("?")[1] ?? "");
+      const view = q.get("view");
+      const project = q.get("project");
+      // A project's board is the project's, as its header says.
+      if (project && view === "active") return findProject(project) ?? "Project";
+      if (view && view in WORK_VIEW_TITLE) return WORK_VIEW_TITLE[view] as string;
+      return project ? (findProject(project) ?? "Project") : "In the factory";
+    }
     case "/new":
       return "New item";
     case "/attach":
@@ -61,6 +75,15 @@ export function tabTitle(path: string, findItem: (id: string) => ItemRef | null)
   }
 }
 
+/** The Work section's views as tab titles (lib/work-board.ts's VIEW_LABEL). */
+const WORK_VIEW_TITLE: Record<string, string> = {
+  backlog: "Backlog",
+  planning: "Planning",
+  ready: "Ready",
+  active: "In the factory",
+  done: "Done",
+};
+
 export interface PlaceCommand {
   id: string;
   label: string;
@@ -73,6 +96,20 @@ export interface PlaceCommand {
 export const PLACE_COMMANDS: PlaceCommand[] = [
   { id: "inbox", label: "Inbox", to: "/", keywords: "inbox gates waiting decisions" },
   { id: "new", label: "New item", to: "/new", keywords: "new work item create send" },
+  {
+    id: "backlog",
+    label: "Work: backlog",
+    to: "/work",
+    search: { view: "backlog" },
+    keywords: "work backlog captured later ideas",
+  },
+  {
+    id: "ready",
+    label: "Work: ready",
+    to: "/work",
+    search: { view: "ready" },
+    keywords: "work ready release shaped",
+  },
   { id: "work", label: "Work: in the factory", to: "/work", keywords: "work running active" },
   {
     id: "done",
@@ -158,11 +195,21 @@ export function matchItems<T extends { number: number; title: string }>(
     .slice(0, limit);
 }
 
-/**
- * Where a work item opens from a card or a list row: its page today. Spec 41's item side panel (a
- * later slice, design WorkActivePanel) opens a running item in a panel over the board instead, so
- * every card and row opens through this, and that slice changes it here.
- */
+/** A work item's own page (links from outside the Work lists: the inbox, details, crumbs). */
 export function openItem(id: string) {
   return { to: "/work/$id", params: { id } } as const;
+}
+
+/**
+ * Where a work item opens from a card on a board or a row in a Work list (spec 41 slice 7, design
+ * WorkActivePanel): the side panel over the list, in the URL as `?item=`, so back and forward open
+ * and close it. The list's own search (view, project, layout) is kept.
+ */
+export function peekItem(id: string) {
+  return {
+    to: "/work",
+    search: (prev: Record<string, unknown>) => ({ ...prev, item: id, itemTab: undefined }),
+    // The panel returns focus here when it closes.
+    "data-peek": id,
+  } as const;
 }

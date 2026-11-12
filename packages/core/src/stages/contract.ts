@@ -76,6 +76,12 @@ export interface GateSpec {
   risk: RiskClass;
   /** Who besides a person may decide it once earned or set (ADR 0374, 0515). Code, not settings. */
   delegable: readonly ("adjudicator" | "autoApprove")[];
+  /**
+   * A person decides it whatever the autonomy policy and overrides say (a workflow's decision step,
+   * ADR 0371; merge and deploy, ADR 0008). The gate's `risk` alone would let "agents may plan" pass a
+   * decision step, so `stageGateDecision()` and the reconciler read this, never the risk alone.
+   */
+  alwaysReview: boolean;
 }
 
 export interface StageRequirements {
@@ -141,6 +147,13 @@ export interface StageType<S extends z.ZodType = z.ZodType> {
   /** The one exception to F3: a shaping stage that needs no person. Only `triage` (Q1). */
   shapingWithoutPerson?: true;
   reversibility: Reversibility;
+  /**
+   * The stage judges the work (its verdict passes or sends back): `code` when the judge is the
+   * factory's own reviewer, whose prompt and skills are code's and take no org agent (F10, Q16: org
+   * skills reach it only as additions, a policy change); `agent` when a named agent judges, so
+   * changing that agent or its instructions is a loosening.
+   */
+  judges?: "code" | "agent";
   /** For `irreversible` types: the outside action, its risk in `ALWAYS_REVIEW` (F6). */
   action?: (settings: z.infer<S>) => { operation: string; risk: RiskClass; on: ArtifactKind };
   /** The steps it runs for an item. Pure. */

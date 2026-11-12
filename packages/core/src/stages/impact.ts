@@ -25,6 +25,16 @@ function parse(type: AnyStageType, settings: unknown): unknown | null {
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Whether a stage does anything outside the factory: an irreversible action (merge, publish, deploy)
+ * or a reversible outward write (opening a PR, a preview deploy). Adding one is an action gained.
+ */
+export function actsOutside(type: AnyStageType, settings: unknown): boolean {
+  if (type.reversibility !== "internal") return true;
+  const parsed = parse(type, settings);
+  return parsed === null || type.action?.(parsed) !== undefined;
+}
+
 const loosens = (path: string, summary: string): ImpactChange => ({
   path,
   class: "loosens",
@@ -98,11 +108,19 @@ function stageImpact(before: StageInstance, after: StageInstance): ImpactChange[
   if (before.phase !== after.phase)
     out.push(loosens(`${at}.phase`, `${after.name} moves from ${before.phase} to ${after.phase}.`));
   if (before.agent !== after.agent)
-    out.push({
-      path: `${at}.agent`,
-      class: "neutral",
-      summary: `${after.name} hands to ${after.agent ?? "its built-in agent"}.`,
-    });
+    out.push(
+      type.judges
+        ? // Who judges the work is policy (Q16): a different judge may pass what the old one sent back.
+          loosens(
+            `${at}.agent`,
+            `${after.name} is judged by ${after.agent ?? "its built-in agent"}.`,
+          )
+        : {
+            path: `${at}.agent`,
+            class: "neutral",
+            summary: `${after.name} hands to ${after.agent ?? "its built-in agent"}.`,
+          },
+    );
   if (before.name !== after.name)
     out.push({
       path: `${at}.name`,
@@ -137,9 +155,18 @@ export function workflowImpact(
       continue;
     }
     // An added check or gate that runs for every item only adds to what is seen. Anything else
-    // added (work that produces something, a conditional check) is not on the allow-list.
+    // added (work that produces something, a conditional check) is not on the allow-list. An added
+    // stage that acts outside the factory (a merge, a publish, a deploy, a PR it opens) is an action
+    // gained, never a tightening, even though it has a gate: a workflow that never merged now does.
     const type = stageType(s.type);
-    if (type && guards(type, s.settings) && !s.when && parse(type, s.settings) !== null)
+    if (type && actsOutside(type, s.settings))
+      changes.push(
+        loosens(
+          `stages.${s.id}`,
+          `Adds ${s.name}, which acts outside the factory (${type.reversibility}).`,
+        ),
+      );
+    else if (type && guards(type, s.settings) && !s.when && parse(type, s.settings) !== null)
       changes.push({
         path: `stages.${s.id}`,
         class: "tightens",

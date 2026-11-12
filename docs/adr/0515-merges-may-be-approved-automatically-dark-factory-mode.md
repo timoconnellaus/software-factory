@@ -47,8 +47,8 @@ just a config option. Nothing special."
    5. **The item's risk is low**: no changed path matches the **risk paths**, and the item is not a
       change to the factory itself (rule 5).
    **It only approves.** What happens after an approval (landing the merge, keeping main green,
-   following the deploy) belongs to the babysitter that merges approved work (its own spec, block
-   AP, ADRs 0580–0589, working title "the Deliver stage"), and is the same whether the approval came
+   following the deploy) belongs to the babysitter that merges approved work ([spec 53](../specs/53-the-babysitter-delivers-approved-work.md),
+   ADRs 0580–0589), and is the same whether the approval came
    from a person or from this setting. This ADR specifies no merge mechanics.
    Anything else, or any error reading a fact, goes to a person exactly as today. Every verdict,
    approve or not, is journaled with each condition's result, and the merge gate's card shows which
@@ -77,6 +77,19 @@ just a config option. Nothing special."
    save (policy, autonomy, the floor, a workflow or its stages, agents, skills on the judge), and any
    merge whose diff touches a path in `SELF_MODIFY_PATHS` (rule 4, built in, never removable). The adjudicator still never decides
    `self-modify`.
+   **A revert is no way round the five conditions.** These five conditions are the only route by
+   which the `auto-approve` actor decides a merge gate, with one exception: an engine-made revert of
+   a landing that broke `main` (spec 53, `revertVerdict()`). That exception holds only when **all**
+   of these hold, each in code:
+   - the workflow's own revert switch is on (`revertWithoutPerson`, a setting of the workflow's
+     Deliver stage, **off by default, per workflow**, never per project; working answer, owner to
+     confirm). It is separate from `autoApprove`: having one on never turns on the other. Turning it
+     on is a loosening, so it is a `self-modify` save an org admin makes and approves (rule 2);
+   - `revertVerdict()`'s own conditions hold (spec 53); and
+   - the revert's diff touches **no** path in `SELF_MODIFY_PATHS`. A revert of a change to the
+     factory's own policy code is itself a change to the factory (rule 5), so it always goes to a
+     person, whatever either switch says.
+   Anything else about a revert's merge gate goes to a person like any merge.
 6. **Merge and deploy.** It covers merges now, and deploys once the workflow has a deploy stage with
    a health check after it (spec 52's later build). Until then only merges are auto-approved. It does
    not cover other outside actions (`publish` to a social connector): those always go to a person.

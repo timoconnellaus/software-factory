@@ -156,6 +156,46 @@ describe("the cases a review found classified neutral", () => {
   });
 });
 
+describe("an action gained is a loosening (second review)", () => {
+  const MERGE: StageInstance = {
+    id: "merge-2",
+    type: "publish",
+    typeVersion: 1,
+    name: "Merge again",
+    phase: "delivery",
+    settings: {},
+  };
+  it("adding a merge to a workflow that never merged loosens, though the merge has a gate", () => {
+    const noMerge = withStages(SOFTWARE, (s) => s.filter((x) => x.id !== "merge"));
+    const impact = workflowImpact(noMerge, SOFTWARE);
+    expect(impact.class).toBe("loosens");
+    expect(impact.changes.find((c) => c.path === "stages.merge")?.summary).toMatch(
+      /acts outside the factory/,
+    );
+  });
+  it("a second merge stage in the tighten-only Attached PR built-in loosens", () => {
+    const twice = withStages(ATTACHED_PR, (s) => [...s, MERGE]);
+    expect(workflowImpact(ATTACHED_PR, twice).class).toBe("loosens");
+  });
+  it("adding a check that opens a pull request writes outside the factory: loosens", () => {
+    const CHECKS: StageInstance = { ...MERGE, id: "checks-2", type: "checks", name: "Checks 2" };
+    expect(
+      workflowImpact(
+        SOFTWARE,
+        withStages(SOFTWARE, (s) => [...s, CHECKS]),
+      ).class,
+    ).toBe("loosens");
+  });
+  it("an added internal gate still tightens", () => {
+    expect(
+      workflowImpact(
+        SOFTWARE,
+        withStages(SOFTWARE, (s) => [...s, SECURITY]),
+      ).class,
+    ).toBe("tightens");
+  });
+});
+
 describe("the save path", () => {
   async function version(w: W) {
     return (await ok<{ version: number }>("workflow.list", { orgId: w.orgId }, w.human)).version;
@@ -311,12 +351,15 @@ function holds(when: Condition | undefined, size: Size, domains: string[]): bool
 interface Seen {
   facts: Set<string>;
   deciders: Map<string, Decider>;
+  /** What the definition does outside the factory: each outward stage's action and connectors. */
+  actions: Set<string>;
 }
 
 /** Every gate, check, approver set, evidence item, section and order a definition gives an item. */
 function seen(def: WorkflowDefinition, size: Size, domains: string[]): Seen {
   const facts = new Set<string>();
   const deciders = new Map<string, Decider>();
+  const actions = new Set<string>();
   const running: { id: string; guard: boolean }[] = [];
   for (const s of def.stages) {
     const type = stageType(s.type);
@@ -325,6 +368,11 @@ function seen(def: WorkflowDefinition, size: Size, domains: string[]): Seen {
     // biome-ignore lint/suspicious/noExplicitAny: each type's settings, read by key below.
     const st: any = parsed.success ? parsed.data : type.settings.parse({});
     if (!holds(s.when, size, domains)) continue;
+    if (type.reversibility !== "internal") {
+      const act = type.action?.(st);
+      actions.add(`${type.reversibility}:${s.id}:${act ? `${act.operation}:${act.risk}` : "-"}`);
+      for (const c of type.requires(st).connectors) actions.add(`connector:${s.id}:${c}`);
+    }
     let guard = false;
     const gate = type.gate(st);
     if (type.id === "triage") facts.add("sized");
@@ -363,7 +411,12 @@ function seen(def: WorkflowDefinition, size: Size, domains: string[]): Seen {
       const b = running[j] as { id: string; guard: boolean };
       if (a.guard || b.guard) facts.add(`order:${a.id}<${b.id}`);
     }
-  return { facts, deciders };
+  return { facts, deciders, actions };
+}
+
+/** Every outward or irreversible action `after` takes that `before` didn't: an action gained. */
+function gained(before: Seen, after: Seen): string[] {
+  return [...after.actions].filter((a) => !before.actions.has(a)).map((a) => `gained:${a}`);
 }
 
 function lost(before: Seen, after: Seen): string[] {
@@ -523,7 +576,9 @@ describe("the classifier is an allow-list: what it calls neutral or tightening k
       accepted++;
       for (const size of SIZES)
         for (const domains of DOMAINS) {
-          const missing = lost(seen(before, size, domains), seen(after, size, domains));
+          const b = seen(before, size, domains);
+          const a = seen(after, size, domains);
+          const missing = [...lost(b, a), ...gained(b, a)];
           expect(
             missing,
             `edit ${i} (${impact.class}) at ${size} ${domains.join(",")}: ${JSON.stringify(after.stages)}`,
