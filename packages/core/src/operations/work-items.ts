@@ -41,9 +41,9 @@ import {
 
 export const SIZES = ["small", "medium", "large"] as const;
 export const ITEM_STATUSES = [
-  // Before the pipeline (ADR 0491); `planning` is spec 50 part C's.
+  // Before release (ADR 0491); `shaping` is spec 50 part C's.
   "backlog",
-  "planning",
+  "shaping",
   "ready",
   "queued",
   "running",

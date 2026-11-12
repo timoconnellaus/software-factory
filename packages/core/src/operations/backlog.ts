@@ -18,8 +18,8 @@ import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
 import { projectId, repositoryId, requireProject, requireWorkItem, workItemId } from "./shared.ts";
 
-/** States before the pipeline: no Workflow instance exists in them. `planning` is part C's. */
-export const PRE_PIPELINE = ["backlog", "planning", "ready", "queued"] as const;
+/** States before release: no Workflow instance exists in them, except `shaping` (part C). */
+export const PRE_PIPELINE = ["backlog", "shaping", "ready", "queued"] as const;
 /** The states a person can put an item in before the pipeline (`workItem.create`, `workItem.move`). */
 export const INTAKE_STATES = ["backlog", "ready", "queued"] as const;
 export type IntakeState = (typeof INTAKE_STATES)[number];

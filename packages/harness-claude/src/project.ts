@@ -1,7 +1,7 @@
 // Writes a run's harness files: the settings (into the run dir, passed with `--settings`, and the
 // same bytes into the worktree's `.claude/settings.local.json`), the git config and empty tool dirs
 // into the run's private directory, the run's temp dir, and the launch script and record (ADR 0270).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -85,7 +85,15 @@ export async function projectHarness(
     account?: HarnessAccount;
   },
 ): Promise<ProjectedHarness> {
-  const runTmp = options.runTmp ?? join(await realpath(tmpdir()), "software-factory", job.jobId);
+  // One per run dir, not per job id: two runners (or two tests) with the same job id must not share
+  // a temp dir, where one's release deleted the other's files (CI flake on stream.test.ts).
+  const runTmp =
+    options.runTmp ??
+    join(
+      await realpath(tmpdir()),
+      "software-factory",
+      `${job.jobId}-${createHash("sha256").update(options.runDir).digest("hex").slice(0, 8)}`,
+    );
   await mkdir(options.runDir, { recursive: true, mode: 0o700 });
   const statusFile = options.statusHook ? join(options.runDir, STATUS_FILE) : undefined;
   const statusScript = join(options.runDir, STATUS_HOOK_SCRIPT);
