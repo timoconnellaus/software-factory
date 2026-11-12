@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import type { StageType } from "../contract.ts";
+import { jobStep } from "../reconcile.ts";
 
 const settings = z
   .object({
@@ -37,6 +38,9 @@ export const triage: StageType<typeof settings> = {
   shapingWithoutPerson: true,
   reversibility: "internal",
   steps: () => [{ id: "triage", kind: "agent", role: "triage" }],
+  // Sizes the item; retried like a build (the Workflow's runWithRetries).
+  next: (ctx) =>
+    jobStep(ctx, "triage", ctx.item.retryLimit) ?? { kind: "complete", stageId: ctx.entry.stageId },
   impact: (before, after, stageId) => {
     const out: ImpactChange[] = [];
     for (const key of ["mayAsk", "readiness"] as const) {
