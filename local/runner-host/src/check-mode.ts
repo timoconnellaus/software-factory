@@ -29,6 +29,8 @@ export interface CheckModeOptions {
   sandbox: ((job: Job, dirs: CheckDirs) => Exec) | null;
   /** The container check exec (default: runner-local's, over `runtime`). */
   container?: ((job: Job, dirs: { root: string; dir: string }) => Exec) | null;
+  /** The check container's limits (runner.json `checks`; default runner-local's `CHECK_LIMITS`). */
+  limits?: { cpus: number; memory: string; tmpSize: string };
 }
 
 /** How long a container runtime that answered is trusted before it is asked again. */
@@ -86,7 +88,7 @@ export function localChecks(
   const container =
     options.container ??
     (runtime
-      ? (localCheckContainer({ runtime }) as (
+      ? (localCheckContainer({ runtime, ...(options.limits ?? {}) }) as (
           job: Job,
           dirs: { root: string; dir: string },
         ) => Exec)

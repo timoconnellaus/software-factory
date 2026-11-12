@@ -278,6 +278,13 @@ export interface RunJobOptions<W extends WorkspaceHandle, S extends SessionHandl
    * harness's protectPaths (read and write denied).
    */
   checksDir?: string;
+  /**
+   * Waits for a check's slot on this runner (fifth review: a check counts against the capacity and
+   * waits on the load backoff) and returns its release. Absent: checks run when they come.
+   */
+  checkSlot?: (signal: AbortSignal) => Promise<() => void>;
+  /** The disk bound for a check's tree carried to the next check (runner.json `checks.maxTreeGb`). */
+  maxTreeBytes?: number;
 }
 
 /**
@@ -418,18 +425,29 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     const caps: readonly string[] = (await adapter.manifest()).capabilities;
     const remote = caps.includes("container-isolation") || caps.includes("cloud-sandbox");
     const sandbox = remote ? null : options.checkSandbox;
+    const slot = options.checkSlot;
+    const slotted = (e: Exec): Exec =>
+      slot
+        ? async (command, s) => {
+            const release = await slot(s);
+            try {
+              return await e(command, s);
+            } finally {
+              release();
+            }
+          }
+        : e;
     const exec = adapterExec
-      ? (dir: string): Exec =>
-          (command, s) =>
-            adapterExec(job, ws, { ...command, dir }, s)
+      ? (dir: string): Exec => slotted((command, s) => adapterExec(job, ws, { ...command, dir }, s))
       : sandbox
         ? // The check's own dir is its tree's parent (./checks.ts): `<root>/r<round>-<i>`.
-          (dir: string) => sandbox(job, { root: dirname(dir), dir })
+          (dir: string) => slotted(sandbox(job, { root: dirname(dir), dir }))
         : null;
     const next = job.stage === "build" ? adapter.continueSession?.bind(adapter) : undefined;
     return checkLoop({
       checks,
       exec,
+      ...(options.maxTreeBytes ? { maxTreeBytes: options.maxTreeBytes } : {}),
       commit: async () => {
         if (job.stage === "build") {
           await git.commitLeftovers(

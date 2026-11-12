@@ -32,6 +32,9 @@ import {
   egressAllowlist,
   HarnessConfigMismatch,
   hostAllowed,
+  JOB_LABEL,
+  ROLE_LABEL,
+  reapCheckContainers,
   reapContainers,
   scanForSecrets,
 } from "../src/index.ts";
@@ -624,6 +627,52 @@ describe("reaping container jobs", () => {
     expect(w.docker.networks.size).toBe(0);
     expect(existsSync(join(w.containersDir, "sf-job_1"))).toBe(false);
     expect(existsSync(join(w.runsDir, "job_1"))).toBe(false);
+  });
+});
+
+describe("reaping a sandbox runner's check containers (fifth review)", () => {
+  it("removes check and egress containers and check networks of jobs not running, and nothing else", async () => {
+    const docker = scriptedDocker({ base: scriptedTmux().exec });
+    const runtime = dockerRuntime({ exec: docker.exec });
+    const label = (jobId: string, role: string) => ({ [JOB_LABEL]: jobId, [ROLE_LABEL]: role });
+    const spec = (name: string, labels: Record<string, string>) => ({
+      name,
+      image: "img",
+      user: "1000:1000",
+      workdir: "/",
+      entrypoint: "/bin/sh",
+      command: [],
+      env: {},
+      mounts: [],
+      tmpfs: {},
+      network: "none",
+      labels,
+      pidsLimit: 1,
+      interactive: false,
+    });
+    await runtime.createNetwork("sf-chk-0123456789ab-net", {
+      internal: true,
+      labels: label("job_dead", "check"),
+    });
+    await runtime.createNetwork("sf-chk-ba9876543210-net", {
+      internal: true,
+      labels: { [JOB_LABEL]: "job_old" }, // before the role label: known by its name
+    });
+    await runtime.createNetwork("sf-job_live", {
+      internal: true,
+      labels: label("job_live", "check"),
+    });
+    await runtime.start(spec("sf-chk-0123456789ab", label("job_dead", "check")));
+    await runtime.start(spec("sf-chk-0123456789ab-egress", label("job_dead", "egress")));
+    await runtime.start(spec("sf-chk-live", label("job_live", "check")));
+    await runtime.start(spec("sf-agent", label("job_dead", "agent")));
+    await runtime.start(spec("unlabelled", {}));
+    expect((await reapCheckContainers(runtime, new Set(["job_live"]))).sort()).toEqual([
+      "job_dead",
+      "job_old",
+    ]);
+    expect([...docker.containers.keys()].sort()).toEqual(["sf-agent", "sf-chk-live", "unlabelled"]);
+    expect([...docker.networks.keys()]).toEqual(["sf-job_live"]);
   });
 });
 

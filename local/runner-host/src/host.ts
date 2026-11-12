@@ -3,6 +3,7 @@
 // commands that come back (cancel, drain, account.use: ADR 0410), and claims jobs while it has
 // room. Each job runs concurrently through `runJob`, which also takes the dashboard's steers for its
 // session on a held channel call (ADR 0400). Nothing here knows which runner adapter it drives.
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   type CapacityPaused,
   ChannelCallError,
@@ -45,6 +46,17 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
   checkSandbox?: RunJobOptions<W, S>["checkSandbox"];
   /** Where the jobs' check trees go (the runner's `paths().checksDir`, which harnesses deny). */
   checksDir?: string;
+  /**
+   * At most this many of the project's checks run at once on this runner (fifth review; default 1).
+   * Each counts as a heavy job while it runs, and one waits to start while the load backoff has
+   * stopped heavy work (for up to `checkLoadWaitMs`, default 10 min, then it runs anyway).
+   */
+  maxChecks?: number;
+  checkLoadWaitMs?: number;
+  /** How often a waiting check looks again (default 5 s; tests shorten it). */
+  checkPollMs?: number;
+  /** The disk bound for a check's tree carried to the next check (runner.json `checks.maxTreeGb`). */
+  maxTreeBytes?: number;
   /** Tidies up after a crash: jobs this adapter still holds that the host isn't running. */
   reapOrphans?: (running: Set<string>) => Promise<string[]>;
   /**
@@ -96,6 +108,8 @@ interface Running {
 
 export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private readonly running = new Map<string, Running>();
+  /** The project's checks running now, across jobs (fifth review). */
+  private checksRunning = 0;
   private draining = false;
   private stopped = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -306,6 +320,37 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   }
 
   /**
+   * A slot for one check (fifth review): waits while `maxChecks` are running, and while the load
+   * backoff has stopped heavy work (up to `checkLoadWaitMs`, then it runs anyway, so a check can't
+   * wait forever on load the factory doesn't cause). Returns the release.
+   */
+  private async checkSlot(jobId: string, signal: AbortSignal): Promise<() => void> {
+    const max = this.options.maxChecks ?? 1;
+    const loadUntil = Date.now() + (this.options.checkLoadWaitMs ?? 10 * 60_000);
+    let said = "";
+    for (;;) {
+      signal.throwIfAborted();
+      const full = this.checksRunning >= max;
+      const loaded =
+        !full &&
+        Date.now() < loadUntil &&
+        (this.options.load?.check()?.pools.includes("heavy") ?? false);
+      if (!full && !loaded) break;
+      const why = full ? `${this.checksRunning} check(s) running` : "the machine is overloaded";
+      if (why !== said) this.log(`${jobId}: a check waits to start (${why})`);
+      said = why;
+      await sleep(this.options.checkPollMs ?? 5_000, undefined, { signal });
+    }
+    this.checksRunning++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.checksRunning--;
+    };
+  }
+
+  /**
    * Both pools (ADR 0301): `max`/`inUse` are the heavy pool, `light` the light one. While a pending
    * update takes light jobs only (ADR 0520), the heavy pool reports full, so the engine sends none.
    */
@@ -313,7 +358,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     const reported = await this.options.adapter.capacity().catch(() => null);
     const running = [...this.running.values()];
     const lightInUse = running.filter((r) => stagePool(r.job.stage) === "light").length;
-    const heavyInUse = running.length - lightInUse;
+    // A running check is heavy work of its own (2 CPUs, 4 GB by default): it counts as a heavy job.
+    const heavyInUse = running.length - lightInUse + this.checksRunning;
     // The adapter may see workspaces the host doesn't run (a crashed run): count them as heavy.
     const inUse = Math.max(heavyInUse, (reported?.inUse ?? 0) - lightInUse);
     const open = Math.min(this.options.maxConcurrent, reported?.max ?? this.options.maxConcurrent);
@@ -361,6 +407,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
       ...(this.options.checkSandbox ? { checkSandbox: this.options.checkSandbox } : {}),
       ...(this.options.checksDir ? { checksDir: this.options.checksDir } : {}),
+      checkSlot: (signal) => this.checkSlot(job.jobId, signal),
+      ...(this.options.maxTreeBytes ? { maxTreeBytes: this.options.maxTreeBytes } : {}),
     })
       .then((report) => {
         this.log(

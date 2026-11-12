@@ -1057,6 +1057,35 @@ describe("the host's checks (ADR 0501)", () => {
     expect(await readdir(root)).toEqual([]);
   });
 
+  it("doesn't carry a tree past the runner's disk bound: the next check is not run, and no fix round", async () => {
+    const root = await scratch();
+    const ran: string[] = [];
+    const out = await checkLoop({
+      ...loopBase(root),
+      checks: {
+        commands: [
+          { name: "install", run: "install", timeoutMs: 1_000 },
+          { name: "tests", run: "tests", timeoutMs: 1_000 },
+        ],
+        fixRounds: 2,
+      },
+      maxTreeBytes: 10 * 1024 ** 3,
+      treeBytes: async () => 12 * 1024 ** 3,
+      exec: () => async (c) => {
+        ran.push(c.run);
+        return { exitCode: 0, timedOut: false, output: "" };
+      },
+      commit: async () => SHA,
+      continueSession: async () => {
+        throw new Error("a tree over the bound must never go to a fix round");
+      },
+    });
+    expect(ran).toEqual(["install"]);
+    expect(out.final[1]).toMatchObject({ name: "tests", exitCode: null });
+    expect(out.final[1]?.notRun).toMatch(/12\.0 GB, over this runner's bound of 10\.0 GB/);
+    expect(await readdir(root)).toEqual([]);
+  });
+
   it("stops on a tripped guard", async () => {
     const root = await scratch();
     await expect(
