@@ -449,8 +449,9 @@ export const projectCreate = defineOperation({
     );
     let slug = slugify(name);
     for (let i = 2; slugs.has(slug); i++) slug = `${slugify(name)}-${i}`;
+    const id = newId("project");
     const row: ProjectRow = {
-      id: newId("project"),
+      id,
       org_id: input.orgId,
       factory_id: factoryId,
       name,
@@ -459,6 +460,10 @@ export const projectCreate = defineOperation({
       next_number: 1,
       created_at: ctx.now,
       created_by: ctx.actor.id,
+      // The deprecated mirror for code deployed before 0260 (unique: a project with no repository
+      // writes its own id). Nothing reads it; a later migration drops it.
+      repo_owner: found?.repo.owner ?? "",
+      repo_name: found?.repo.name ?? id,
     };
     ctx.write(ctx.db.insertInto("core_projects").values(row));
     ctx.change({ entity: "project", id: row.id, after: { name } });

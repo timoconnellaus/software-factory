@@ -254,6 +254,21 @@ async function checkAndRecord(ctx: HandlerContext, trigger: string) {
   const project = requireProject(ctx);
   const repository = requireRepository(ctx);
   const { state, verdict } = await inspectProtection(ctx, project, repository);
+  // The verdict is still kept per project (ADR 0490): only the project's first repository records
+  // it, so a second repository's check never overwrites it. Per-repository protection is the
+  // spec 50 follow-up; until then the others are checked and shown, not recorded.
+  if (repository.id !== ctx.scope.repositories[0]?.id) {
+    return {
+      state,
+      previous: null,
+      drifted: false,
+      problems: verdict.problems,
+      warnings: [
+        ...verdict.warnings,
+        "not recorded: protection is tracked on the project's first repository only (spec 50)",
+      ],
+    };
+  }
   const { previous, drifted } = await record(ctx, project, repository, state, verdict, trigger);
   return { state, previous, drifted, problems: verdict.problems, warnings: verdict.warnings };
 }

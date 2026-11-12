@@ -354,7 +354,8 @@ async function linkProjects(
       .selectAll()
       .where("id", "=", p.project_id)
       .executeTakeFirst();
-    if (project && !project.policy_sha) {
+    // Once per project: two of its repositories in one batch would write the same version.
+    if (project && !project.policy_sha && !linked.includes(project.id)) {
       await syncPolicyFromGitHub(ctx, project, p, {
         installationId: record.installation_id,
         owner: p.owner,

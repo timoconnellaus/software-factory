@@ -127,6 +127,8 @@ export const pushObserve = defineOperation({
           .selectFrom("core_work_items")
           .selectAll()
           .where("project_id", "=", project.id)
+          // The branch is in this repository: an item of another of the project's isn't it.
+          .where("repository_id", "=", requireRepository(ctx).id)
           .where("number", "=", number)
           .executeTakeFirst()) ?? null)
       : null;

@@ -434,7 +434,7 @@ export const workItemGet = defineOperation({
           .orderBy("created_at", "desc")
           .limit(1),
         // Where the item stands in the merge queue (ADR 0330); empty outside the merge stage.
-        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : ""),
+        queuedEntriesQuery(ctx, w.stage === "merge" ? w.project_id : "", w.repository_id),
       ]),
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
