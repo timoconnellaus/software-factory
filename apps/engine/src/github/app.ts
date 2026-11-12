@@ -404,6 +404,47 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       if (r.status !== 200) fail(`commit ${sha}`, r);
       return (r.json as { committer?: { date?: string } }).committer?.date ?? null;
     },
+    async commitInfo(repo, sha) {
+      const r = await api(repo, "GET", `/git/commits/${encodeURIComponent(sha)}`);
+      if (r.status === 404) return null;
+      if (r.status !== 200) fail(`commit ${sha}`, r);
+      const c = r.json as {
+        parents?: { sha: string }[];
+        committer?: { name?: string; email?: string } | null;
+        verification?: { verified?: boolean } | null;
+      };
+      return {
+        parents: (c.parents ?? []).map((p) => p.sha),
+        committer: c.committer
+          ? { name: String(c.committer.name ?? ""), email: String(c.committer.email ?? "") }
+          : null,
+        verified: c.verification?.verified === true,
+      };
+    },
+    async treeEntries(repo, sha) {
+      const r = await api(repo, "GET", `/git/trees/${encodeURIComponent(sha)}?recursive=1`);
+      if (r.status !== 200) fail(`tree ${sha}`, r);
+      const body = r.json as {
+        truncated?: boolean;
+        tree?: { path: string; mode: string; type: string; sha: string }[];
+      };
+      const entries: Record<string, { mode: string; sha: string }> = {};
+      // Files, symlinks and submodules; directories are implied by the paths.
+      for (const e of body.tree ?? []) {
+        if (e.type !== "tree") entries[e.path] = { mode: e.mode, sha: e.sha };
+      }
+      return { truncated: body.truncated === true, entries };
+    },
+    async mergeBase(repo, base, head) {
+      const r = await api(
+        repo,
+        "GET",
+        `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`,
+      );
+      if (r.status === 404) return null;
+      if (r.status !== 200) fail(`compare ${base}...${head}`, r);
+      return (r.json as { merge_base_commit?: { sha?: string } }).merge_base_commit?.sha ?? null;
+    },
     async updatePullRequestBranch(repo, { number, expectedHeadSha }) {
       const r = await api(repo, "PUT", `/pulls/${number}/update-branch`, {
         expected_head_sha: expectedHeadSha,

@@ -89,8 +89,8 @@ const V11_STEPS = ["{p}: enqueue", "{p}: wait #{i}", "{p}: read #{i}", "merge #{
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 11 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(11);
+  it("starts new instances on version 12 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(12);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -103,7 +103,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(11);
+    expect(row.workflow_version).toBe(12);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -127,7 +127,10 @@ describe("Workflow versions", () => {
   // Before the table, v1–v7 switched each feature on at a version number and kept it for every later
   // one. Their rows must reproduce exactly that (spec 53, Workflow versions).
   it("v1–v7's rows of the feature table are today's `version >= N` switches, exactly", () => {
-    const since: Record<Exclude<WorkflowFeature, "babysitter-delivery">, number> = {
+    const since: Record<
+      Exclude<WorkflowFeature, "babysitter-delivery" | "reverify-on-withdrawal">,
+      number
+    > = {
       "ci-verify": 2,
       "conflict-state": 3,
       "merge-queue": 4,
@@ -146,6 +149,10 @@ describe("Workflow versions", () => {
     // v11 is v7 plus the babysitter's delivery; v8–v10 have no row and run nothing.
     expect([...(WORKFLOW_FEATURES[11] ?? [])].sort()).toEqual(
       [...(WORKFLOW_FEATURES[7] ?? []), "babysitter-delivery"].sort(),
+    );
+    // v12 is v11 plus re-verifying after a withdrawn approval (spec 53 PR c).
+    expect([...(WORKFLOW_FEATURES[12] ?? [])].sort()).toEqual(
+      [...(WORKFLOW_FEATURES[11] ?? []), "reverify-on-withdrawal"].sort(),
     );
     for (const v of [8, 9, 10]) expect(Object.hasOwn(WORKFLOW_FEATURES, v)).toBe(false);
     expect(Math.max(...Object.keys(WORKFLOW_FEATURES).map(Number))).toBe(WORKFLOW_VERSION);

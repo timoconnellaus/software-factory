@@ -131,11 +131,11 @@ export type WorkflowFeature =
   /** v11: the babysitter lands the approved merge; the item waits for `delivered-<item>`. */
   | "babysitter-delivery"
   /**
-   * v12 (spec 53 PR c, ADR 0582): an approval the babysitter withdraws (merging main changed the
-   * change) comes back to the merge gate on the new head (`merge #b: gate again #k`, then
-   * `merge #b: deliver #k`).
+   * v12 (spec 53 PR c, ADR 0582): an approval the babysitter withdraws (it can't prove merging main
+   * left the change alone) sends the item back to verify the new head, without a build
+   * (`verify #b: head`), then to the merge gate.
    */
-  | "approval-regate";
+  | "reverify-on-withdrawal";
 
 export const WORKFLOW_FEATURES: Readonly<Record<number, readonly WorkflowFeature[]>> = {
   1: [],
@@ -169,7 +169,7 @@ export const WORKFLOW_FEATURES: Readonly<Record<number, readonly WorkflowFeature
     "workflow-slots",
     "release-wait",
     "babysitter-delivery",
-    "approval-regate",
+    "reverify-on-withdrawal",
   ],
 };
 
@@ -561,66 +561,80 @@ class ItemFlow {
         return reason;
       };
 
+      // v12: an approval withdrawn at delivery (ADR 0582) sends the item back to verify the head
+      // merging main made, without a build: nothing was carried to it, so it needs its own packet
+      // and `factory/verify` before a person decides again.
+      let withdrawn: string | null = null;
       for (let b = 1; ; b++) {
-        const build = await this.runJob(
-          `build #${b}`,
-          "build",
-          "implement",
-          buildPrompt(meta, {
-            criteria,
-            specPath,
-            note,
-            attempt: b,
-            ...(plan?.build ? { instructions: plan.build.instructions } : {}),
-          }),
-          {
-            criteria,
-            specPath,
-            note,
-          },
-          plan?.build ? { tier: plan.build.tier, requires: plan.build.requires } : undefined,
-        );
-        if (build.outcome === "cancelled") {
-          note = null;
-          continue; // stopped by a kill switch or a takeover: run it again, no failure counted
-        }
-        if (build.outcome !== "completed") {
-          note = await failed(
-            b,
-            `the build run ${build.outcome}: ${build.summary ?? "no summary"}`,
-            build,
+        let ran: RunResult | null = null;
+        let headSha: string;
+        const reverify = withdrawn;
+        withdrawn = null;
+        if (reverify !== null) {
+          headSha = await this.head(`verify #${b}: head`);
+        } else {
+          const build = await this.runJob(
+            `build #${b}`,
+            "build",
+            "implement",
+            buildPrompt(meta, {
+              criteria,
+              specPath,
+              note,
+              attempt: b,
+              ...(plan?.build ? { instructions: plan.build.instructions } : {}),
+            }),
+            {
+              criteria,
+              specPath,
+              note,
+            },
+            plan?.build ? { tier: plan.build.tier, requires: plan.build.requires } : undefined,
           );
-          continue;
-        }
-        const advanced = await this.act(`build #${b}: advance`, "branch.advance", {
-          workItemId: id,
-          runId: build.runId,
-        });
-        if (advanced.ok !== true) {
-          note = await failed(
-            b,
-            `the run's branch could not be accepted: ${String(advanced.reason)}`,
-            build,
-          );
-          continue;
-        }
-        const headSha = String(advanced.sha);
-
-        if (plan) {
-          const before = await this.runSlot(meta, plan, "beforeVerify", b, {
-            criteria,
-            specPath,
-            headSha,
-          });
-          if (before.kind === "sendBack") {
-            note = await failed(b, before.note, build);
+          if (build.outcome === "cancelled") {
+            note = null;
+            continue; // stopped by a kill switch or a takeover: run it again, no failure counted
+          }
+          if (build.outcome !== "completed") {
+            note = await failed(
+              b,
+              `the build run ${build.outcome}: ${build.summary ?? "no summary"}`,
+              build,
+            );
             continue;
+          }
+          const advanced = await this.act(`build #${b}: advance`, "branch.advance", {
+            workItemId: id,
+            runId: build.runId,
+          });
+          if (advanced.ok !== true) {
+            note = await failed(
+              b,
+              `the run's branch could not be accepted: ${String(advanced.reason)}`,
+              build,
+            );
+            continue;
+          }
+          headSha = String(advanced.sha);
+          ran = build;
+
+          if (plan) {
+            const before = await this.runSlot(meta, plan, "beforeVerify", b, {
+              criteria,
+              specPath,
+              headSha,
+            });
+            if (before.kind === "sendBack") {
+              note = await failed(b, before.note, build);
+              continue;
+            }
           }
         }
 
         await this.act(`verify #${b}: enter`, "workItem.enterStage", {
           workItemId: id,
           stage: "verify",
+          ...(reverify !== null ? { closeAs: "sent_back" as const, reason: reverify } : {}),
         });
         if (has(version, "ci-verify")) {
           // Open the PR first, so CI runs on this head while the reviewer works (spec 04). It
@@ -628,7 +642,7 @@ class ItemFlow {
           await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
         }
         if (has(version, "conflict-state") && (await this.unmergeable(b, headSha))) {
-          note = await conflicted(b, build);
+          note = await conflicted(b, ran);
           continue;
         }
         const verify = await this.runJob(
@@ -747,6 +761,10 @@ class ItemFlow {
               reason: landed.reason,
             });
             return { status: "done", workItemId: id };
+          }
+          if (landed.kind === "withdrawn") {
+            withdrawn = landed.reason;
+            continue;
           }
           if (landed.kind === "sent_back") {
             note = `Sent back at review: ${landed.note ?? ""}`;
@@ -1295,6 +1313,7 @@ class ItemFlow {
     | { kind: "sent_back"; note: string | null }
     | { kind: "conflict" }
     | { kind: "failed"; reason: string }
+    | { kind: "withdrawn"; reason: string }
   > {
     const id = this.workItemId;
     if (meta.kind === "incident") {
@@ -1334,28 +1353,21 @@ class ItemFlow {
       headSha = auto.headSha; // refused (not check-only): the normal merge gate on the current head
     }
     const input = (at: string) => ({ workItemId: id, headSha: at, touchesFactoryConfig });
-    let decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
+    const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
       apply: false,
     });
     // v11: the approval only says this head may merge; the babysitter lands it (spec 53). v12: an
-    // approval it withdraws (merging main changed the change, ADR 0582) comes back to the gate on
-    // the new head, and a person decides again. v11 has no second gate: a withdrawal ends its
-    // delivery as failed and the item goes back, as any failed delivery does.
-    for (let k = 2; has(version, "babysitter-delivery"); k++) {
+    // approval it withdraws (ADR 0582) sends the item back to verify the new head; v11 has no
+    // such path, so a withdrawal ends its delivery as failed and it goes back, as any failure does.
+    if (has(version, "babysitter-delivery")) {
       if (decided.decision !== "approved") return this.notApproved(decided);
       if (!decided.pendingActionId) return { kind: "done", reason: "merged" };
-      const delivered = await this.deliverV11(b, headSha, decided.pendingActionId, k - 1);
+      const delivered = await this.deliverV11(b, headSha, decided.pendingActionId);
       if (delivered.kind !== "withdrawn") return delivered;
-      if (!has(version, "approval-regate")) {
-        return {
-          kind: "failed",
-          reason: "the approval was withdrawn: merging main changed the change",
-        };
+      if (!has(version, "reverify-on-withdrawal")) {
+        return { kind: "failed", reason: delivered.reason };
       }
-      headSha = delivered.headSha;
-      decided = await this.gate(meta, `merge #${b}: gate again #${k}`, "pr.merge", input(headSha), {
-        apply: false,
-      });
+      return delivered;
     }
     if (decided.decision !== "approved") return this.notApproved(decided);
     if (!decided.pendingActionId) {
@@ -1496,15 +1508,14 @@ class ItemFlow {
     b: number,
     headSha: string,
     approvalId: string,
-    k = 1,
   ): Promise<
     | { kind: "done"; reason: string }
     | { kind: "conflict" }
     | { kind: "failed"; reason: string }
-    | { kind: "withdrawn"; headSha: string }
+    | { kind: "withdrawn"; reason: string }
   > {
     const id = this.workItemId;
-    const p = `merge #${b}: deliver${k === 1 ? "" : ` #${k}`}`;
+    const p = `merge #${b}: deliver`;
     await this.act(`${p}: enqueue`, "mergeQueue.enter", {
       workItemId: id,
       headSha,
@@ -1542,10 +1553,7 @@ class ItemFlow {
       }
       if (told.outcome === "merged") return { kind: "done", reason: "merged by the babysitter" };
       if (told.outcome === "conflict") return { kind: "conflict" };
-      if (told.outcome === "withdrawn") {
-        if (!told.headSha) throw new Ended("failed", "the withdrawn head couldn't be read");
-        return { kind: "withdrawn", headSha: told.headSha };
-      }
+      if (told.outcome === "withdrawn") return { kind: "withdrawn", reason: told.reason };
       return { kind: "failed", reason: told.reason };
     }
   }

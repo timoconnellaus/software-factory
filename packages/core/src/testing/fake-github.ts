@@ -16,7 +16,14 @@ import { PROTECTION_EVENTS } from "../verify/protection.ts";
 
 type Touch =
   | string
-  | { path: string; status: ChangedFile["status"]; previousPath?: string; patch?: string };
+  | {
+      path: string;
+      status: ChangedFile["status"];
+      previousPath?: string;
+      patch?: string;
+      /** The file's mode after this commit (default `100644`). */
+      mode?: string;
+    };
 
 interface RepoState {
   refs: Record<string, string>;
@@ -47,6 +54,12 @@ interface RepoState {
   merged?: Record<string, string>;
   /** When each commit was made (ISO), for `commitTime`; increasing in the order they were made. */
   times?: Record<string, string>;
+  /** Commits GitHub itself made and signed (update-branch merges), for `commitInfo`. */
+  byGitHub?: Record<string, true>;
+  /** A commit's tree as a test set it (a crafted merge), instead of the one its history gives. */
+  trees?: Record<string, Record<string, { mode: string; sha: string }>>;
+  /** Trees GitHub truncates (`treeEntries`). */
+  truncatedTrees?: Record<string, true>;
   tokens: number;
 }
 
@@ -104,6 +117,22 @@ export interface FakeGitHub extends GitHubService {
   setMergeable(repo: RepoRef, number: number, mergeable: boolean | null): Promise<void>;
   /** GitHub refuses the PR's next merge with this reason (once). */
   refuseNextMerge(repo: RepoRef, number: number, reason: string): Promise<void>;
+  /**
+   * Makes a merge commit on `branch` merging `mergedIn` in, as a person (or, with `byGitHub`, as
+   * GitHub signing it) could: by default with the tree a clean merge gives, or with `tree`'s files
+   * set or removed on top (a crafted merge). Returns the new head.
+   */
+  craftMerge(
+    repo: RepoRef,
+    branch: string,
+    mergedIn: string,
+    opts?: {
+      byGitHub?: boolean;
+      tree?: { set?: Record<string, { mode: string; sha: string }>; remove?: string[] };
+    },
+  ): Promise<string>;
+  /** GitHub truncates this commit's tree listing (a very large tree). */
+  truncateTree(repo: RepoRef, at: string): Promise<void>;
   /** Sets a person's role on the repo (null: not a collaborator). */
   setPermission(repo: RepoRef, login: string, permission: string | null): Promise<void>;
   /** What `GET /app` reports (default: every event the factory needs). */
@@ -243,8 +272,69 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
     if (!head || !base) return null;
     const next = await commit(state, head, `update-${number}`);
     state.merged = { ...(state.merged ?? {}), [next]: base };
+    state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
     state.refs[pull.head] = next;
     return next;
+  };
+  type Entry = { mode: string; sha: string };
+  const sameEntry = (a: Entry | undefined, b: Entry | undefined) =>
+    a?.mode === b?.mode && a?.sha === b?.sha;
+  /** The merge base of two commits: their latest common ancestor (by the commits' times). */
+  const mergeBaseOf = (state: RepoState, x: string, y: string): string | null => {
+    const ys = reachable(state, y);
+    let best: string | null = null;
+    for (const c of reachable(state, x)) {
+      if (!ys.has(c)) continue;
+      if (best === null || (state.times?.[c] ?? "") > (state.times?.[best] ?? "")) best = c;
+    }
+    return best;
+  };
+  /**
+   * A commit's tree, from its history: each pushed path gets a blob of its own at the commit that
+   * touched it; a merge takes, per path, the side that changed it from the merge base, and a new
+   * blob when both did (what a clean three-way merge makes of a file both sides changed).
+   */
+  const treeAt = (
+    state: RepoState,
+    at: string,
+    cache = new Map<string, Record<string, Entry>>(),
+  ): Record<string, Entry> => {
+    const set = state.trees?.[at];
+    if (set) return set;
+    const known = cache.get(at);
+    if (known) return known;
+    const p0 = state.parents[at];
+    const p1 = state.merged?.[at];
+    let tree: Record<string, Entry>;
+    if (p0 && p1) {
+      const a = treeAt(state, p0, cache);
+      const m = treeAt(state, p1, cache);
+      const baseSha = mergeBaseOf(state, p0, p1);
+      const base = baseSha ? treeAt(state, baseSha, cache) : {};
+      tree = {};
+      for (const path of new Set([...Object.keys(a), ...Object.keys(m), ...Object.keys(base)])) {
+        const [ea, em, eb] = [a[path], m[path], base[path]];
+        const pick = sameEntry(ea, eb)
+          ? em
+          : sameEntry(em, eb) || sameEntry(ea, em)
+            ? ea
+            : { mode: ea?.mode ?? em?.mode ?? "100644", sha: `${at}:merged:${path}` };
+        if (pick) tree[path] = pick;
+      }
+    } else {
+      tree = { ...(p0 ? treeAt(state, p0, cache) : {}) };
+    }
+    for (const t of state.touched?.[at] ?? []) {
+      const path = touchPath(t);
+      if (typeof t !== "string" && t.status === "removed") {
+        delete tree[path];
+        continue;
+      }
+      if (typeof t !== "string" && t.previousPath) delete tree[t.previousPath];
+      tree[path] = { mode: (typeof t !== "string" && t.mode) || "100644", sha: `${at}:${path}` };
+    }
+    cache.set(at, tree);
+    return tree;
   };
   const commit = async (state: RepoState, parent: string | null, salt: string) => {
     const next = await sha(`${parent}:${salt}:${crypto.randomUUID()}`);
@@ -423,6 +513,50 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         aheadBy: [...h].filter((c) => !b.has(c)).length,
         behindBy: [...b].filter((c) => !h.has(c)).length,
       };
+    },
+    async commitInfo(r, at) {
+      const state = await load(r);
+      if (!(at in state.parents)) return null;
+      const first = state.parents[at];
+      const second = state.merged?.[at];
+      const github = state.byGitHub?.[at] === true;
+      return {
+        parents: [...(first ? [first] : []), ...(second ? [second] : [])],
+        committer: github
+          ? { name: "GitHub", email: "noreply@github.com" }
+          : { name: "A Person", email: "person@example.com" },
+        verified: github,
+      };
+    },
+    async treeEntries(r, at) {
+      const state = await load(r);
+      const sha = state.refs[at] ?? at;
+      return { truncated: state.truncatedTrees?.[sha] === true, entries: treeAt(state, sha) };
+    },
+    async mergeBase(r, base, head) {
+      const state = await load(r);
+      return mergeBaseOf(state, state.refs[base] ?? base, state.refs[head] ?? head);
+    },
+    async craftMerge(r, branch, mergedIn, opts = {}) {
+      const state = await load(r);
+      const head = state.refs[branch];
+      if (!head) throw new Error(`no branch ${branch}`);
+      const next = await commit(state, head, `crafted-${branch}`);
+      state.merged = { ...(state.merged ?? {}), [next]: state.refs[mergedIn] ?? mergedIn };
+      if (opts.byGitHub) state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
+      if (opts.tree) {
+        const tree = { ...treeAt(state, next), ...opts.tree.set };
+        for (const p of opts.tree.remove ?? []) delete tree[p];
+        state.trees = { ...(state.trees ?? {}), [next]: tree };
+      }
+      state.refs[branch] = next;
+      await save(r, state);
+      return next;
+    },
+    async truncateTree(r, at) {
+      const state = await load(r);
+      state.truncatedTrees = { ...(state.truncatedTrees ?? {}), [state.refs[at] ?? at]: true };
+      await save(r, state);
     },
     async commitTime(r, at) {
       return (await load(r)).times?.[at] ?? null;

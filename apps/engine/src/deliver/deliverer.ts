@@ -362,7 +362,7 @@ async function deliverHead(
     { workItemId: id, headSha: at, touchesFactoryConfig },
     { approvalId: head.pending_action_id, idempotencyKey: `deliver:${head.id}:merge:${at}` },
   );
-  if (landed.status === "ok") return end("merged", "merged", "merged");
+  if (mergedForGood(landed)) return end("merged", "merged", "merged");
   const why = landed.status === "refused" ? landed.message : "still pending";
   // GitHub refused the merge itself (the default branch moved since the snapshot): never retried as
   // is. Re-snapshot: a moved default branch updates the head again (bounded) and CI runs there; a
@@ -398,6 +398,17 @@ async function held(env: Env, lease: Lease, head: HeadRow): Promise<boolean> {
   // Unreadable: stay held (fail closed); the next recheck tries again.
   if (seen.status !== "ok") return true;
   return seen.output.redSince !== null;
+}
+
+/**
+ * When a delivery counts as merged, and its item Done (spec 53, owner question 6, not yet answered):
+ * today, when GitHub answers the merge with success. The recommendation is "when its merge commit
+ * is on the default branch"; GitHub's success means the commit is there, so they agree except for a
+ * merge GitHub reports and then loses. A different answer (say, after main's CI on the merge is
+ * green) is a change here only: return false and look again on the next pass.
+ */
+function mergedForGood(landed: Called): boolean {
+  return landed.status === "ok";
 }
 
 const refusal = (c: Called) =>

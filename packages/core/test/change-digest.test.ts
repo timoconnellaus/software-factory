@@ -1,43 +1,72 @@
-// The change an approval is about (spec 53, ADR 0582): unchanged by a clean merge of the default
-// branch (which moves hunks and context), changed by anything that adds or removes other lines.
+// The change an approval is about (spec 53, ADR 0582), from git trees: identical only when every
+// changed file has the same mode and blob on both sides; anything else (and anything unreadable,
+// see the deliverer tests) withdraws the approval.
 import { describe, expect, it } from "vitest";
-import { changeDigest } from "../src/verify/change-digest.ts";
+import type { Tree } from "../src/services.ts";
+import {
+  approvalSurvivesMergeOfMain,
+  changeDigest,
+  onlyEitherSide,
+} from "../src/verify/change-digest.ts";
 
-const file = (patch: string | undefined, path = "src/a.ts") => ({
-  path,
-  status: "modified" as const,
-  ...(patch === undefined ? {} : { patch }),
-});
+const f = (sha: string, mode = "100644") => ({ mode, sha });
 
 describe("the change digest", () => {
-  it("ignores hunk positions and context lines, and file order", async () => {
-    const before = await changeDigest([
-      file("@@ -1,3 +1,4 @@\n ctx one\n+added\n-removed\n ctx two"),
-      file("@@ -9 +9 @@\n+b", "src/b.ts"),
-    ]);
-    const after = await changeDigest([
-      file("@@ -40 +41 @@\n+b", "src/b.ts"),
-      file("@@ -20,3 +21,4 @@\n other context\n+added\n-removed\n moved"),
-    ]);
-    expect(before).toMatch(/^[0-9a-f]{64}$/);
-    expect(after).toBe(before);
+  const base: Tree = { "src/auth.ts": f("auth0"), "src/api.ts": f("api0"), "README.md": f("r0") };
+  const head: Tree = { ...base, "src/api.ts": f("api1"), "src/new.bin": f("bin1") };
+
+  it("is the same when the default branch changed only files the PR didn't", async () => {
+    const mainMoved = { ...base, "README.md": f("r1") };
+    const merged = { ...head, "README.md": f("r1") };
+    expect(await changeDigest(mainMoved, merged)).toBe(await changeDigest(base, head));
   });
 
-  it("changes when a line added or removed changes, or a file joins", async () => {
-    const base = await changeDigest([file("@@ -1 +1 @@\n+added")]);
-    expect(await changeDigest([file("@@ -1 +1 @@\n+added too")])).not.toBe(base);
-    expect(
-      await changeDigest([file("@@ -1 +1 @@\n+added"), file("@@ -1 +1 @@\n+x", "src/c.ts")]),
-    ).not.toBe(base);
+  it("differs when a line moves to another place in a file (a different blob)", async () => {
+    // Removing requireAdmin() from another function is the same removed line, but a new blob.
+    const moved = { ...head, "src/api.ts": f("api1-elsewhere") };
+    expect(await changeDigest(base, moved)).not.toBe(await changeDigest(base, head));
   });
 
-  it("can't be read when GitHub left a patch out", async () => {
-    expect(await changeDigest([file(undefined)])).toBeNull();
-    // A pure rename has no lines to compare and still has a digest.
-    expect(
-      await changeDigest([
-        { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed", changes: 0 },
-      ]),
-    ).toMatch(/^[0-9a-f]{64}$/);
+  it("differs on a mode change, and hashes binary files by blob", async () => {
+    const exec = { ...head, "src/new.bin": f("bin1", "100755") };
+    expect(await changeDigest(base, exec)).not.toBe(await changeDigest(base, head));
+    const otherBinary = { ...head, "src/new.bin": f("bin2") };
+    expect(await changeDigest(base, otherBinary)).not.toBe(await changeDigest(base, head));
+  });
+
+  it("differs when both sides changed a file (its base and its head content moved)", async () => {
+    const mainMoved = { ...base, "src/api.ts": f("api-main") };
+    const merged = { ...head, "src/api.ts": f("api-both") };
+    expect(await changeDigest(mainMoved, merged)).not.toBe(await changeDigest(base, head));
+  });
+
+  it("finds a third thing in a merge: a file that is neither side's", () => {
+    const main = { ...base, "README.md": f("r1") };
+    const clean = { ...head, "README.md": f("r1") };
+    expect(onlyEitherSide(head, main, clean)).toEqual([]);
+    expect(onlyEitherSide(head, main, { ...clean, "src/auth.ts": f("auth-edited") })).toEqual([
+      "src/auth.ts",
+    ]);
+    expect(onlyEitherSide(head, main, { ...clean, "src/extra.ts": f("x") })).toEqual([
+      "src/extra.ts",
+    ]);
+  });
+
+  it("owner question 1: survives only when everything is proven, and fails closed", () => {
+    const ok = {
+      requestedByFactory: true,
+      madeByGitHub: true,
+      thirdThings: [] as string[],
+      approvedDigest: "d",
+      digestNow: "d",
+    };
+    expect(approvalSurvivesMergeOfMain(ok)).toBe(true);
+    expect(approvalSurvivesMergeOfMain({ ...ok, requestedByFactory: false })).toBe(false);
+    expect(approvalSurvivesMergeOfMain({ ...ok, madeByGitHub: false })).toBe(false);
+    expect(approvalSurvivesMergeOfMain({ ...ok, thirdThings: null })).toBe(false);
+    expect(approvalSurvivesMergeOfMain({ ...ok, thirdThings: ["a"] })).toBe(false);
+    expect(approvalSurvivesMergeOfMain({ ...ok, approvedDigest: null })).toBe(false);
+    expect(approvalSurvivesMergeOfMain({ ...ok, digestNow: null })).toBe(false);
+    expect(approvalSurvivesMergeOfMain({ ...ok, digestNow: "e" })).toBe(false);
   });
 });

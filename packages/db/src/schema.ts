@@ -816,6 +816,9 @@ export interface CoreMergeQueueTable {
   updates: Generated<number>;
   /** 0352 (ADR 0582): the digest of the change that was approved; null when it can't be read. */
   approved_digest: string | null;
+  /** 0352: the head the queue asked GitHub to update from, and main's head when it asked. */
+  update_from_sha: string | null;
+  update_base_sha: string | null;
 }
 
 export type MergeQueueDriver = "workflow" | "babysitter";

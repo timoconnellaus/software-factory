@@ -56,6 +56,21 @@ export interface ChangedFile {
   changes?: number;
 }
 
+/** A tree entry: the file's mode (`100644`, `100755`, `120000`, `160000`) and its blob SHA. */
+export interface TreeEntry {
+  mode: string;
+  sha: string;
+}
+/** A commit's files by path. */
+export type Tree = Record<string, TreeEntry>;
+
+export interface CommitInfo {
+  parents: string[];
+  committer: { name: string; email: string } | null;
+  /** GitHub verified the commit's signature (its own web-flow signs update-branch merges). */
+  verified: boolean;
+}
+
 /** One rule of a repository ruleset, as GitHub reports it. */
 export interface RulesetRule {
   type: string;
@@ -235,6 +250,18 @@ export interface GitHubService {
   commitParents(repo: RepoRef, sha: string): Promise<string[]>;
   /** The commit's committer date as GitHub gives it (ISO), or null when it isn't there. */
   commitTime(repo: RepoRef, sha: string): Promise<string | null>;
+  /**
+   * A commit's parents, its committer and whether GitHub verified its signature (spec 53: a merge
+   * of the default branch counts only when GitHub's update-branch made it). Null: no such commit.
+   */
+  commitInfo(repo: RepoRef, sha: string): Promise<CommitInfo | null>;
+  /**
+   * Every file in the commit's tree, by path, with its mode and blob SHA (`git/trees?recursive=1`).
+   * `truncated`: GitHub left entries out (a very large tree), so the caller can't rely on it.
+   */
+  treeEntries(repo: RepoRef, sha: string): Promise<{ truncated: boolean; entries: Tree }>;
+  /** The merge base of `base` and `head` as GitHub's compare gives it, or null. */
+  mergeBase(repo: RepoRef, base: string, head: string): Promise<string | null>;
   /**
    * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
    * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`

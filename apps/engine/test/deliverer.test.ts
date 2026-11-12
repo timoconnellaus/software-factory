@@ -331,13 +331,58 @@ describe("the babysitter's deliverer (v11)", () => {
 });
 
 describe("the approval across a merge of main (ADR 0582)", () => {
-  const patched = (path: string) => [
-    { path, status: "added" as const, patch: `@@ -0,0 +1 @@\n+export const x = "${path}";` },
-  ];
+  const files = (...paths: string[]) => paths;
+
+  async function ids(a: string) {
+    const row = await first<{ project_id: string; repository_id: string; pr_number: number }>(
+      "SELECT project_id, repository_id, pr_number FROM core_work_items WHERE id = ?",
+      a,
+    );
+    return {
+      projectId: String(row?.project_id),
+      repositoryId: String(row?.repository_id),
+      pr: Number(row?.pr_number),
+    };
+  }
+  const withdrawnEntry = (a: string) =>
+    waitFor("withdrawn", () =>
+      first<{
+        head_sha: string;
+        approved_sha: string;
+        pending_action_id: string;
+        end_reason: string;
+      }>(
+        "SELECT head_sha, approved_sha, pending_action_id, end_reason FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'withdrawn'",
+        a,
+      ),
+    );
+  /** What a withdrawal must leave: the approval closed, nothing carried, nothing merged. */
+  async function expectWithdrawn(w: World, a: string) {
+    const ended = await withdrawnEntry(a);
+    expect(ended.head_sha).not.toBe(ended.approved_sha);
+    const approval = await first<{ status: string; decision: string }>(
+      "SELECT status, decision FROM core_pending_actions WHERE id = ?",
+      ended.pending_action_id,
+    );
+    expect(approval).toEqual({ status: "rejected", decision: "withdrawn" });
+    // No packet and no passing factory/verify on the new head: nobody can merge it on GitHub.
+    const packet = await first(
+      "SELECT id FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
+      a,
+      ended.head_sha,
+    );
+    expect(packet).toBeNull();
+    const checks = await github.listCheckRuns(w.repo, ended.head_sha);
+    expect(checks.some((c) => c.name === "factory/verify" && c.conclusion === "success")).toBe(
+      false,
+    );
+    expect(await merges(a)).toHaveLength(0);
+    return ended;
+  }
 
   it("survives a clean merge that leaves the change as approved", async () => {
     const w = await world();
-    const a = await toMergeGateWith(w, "Same change", patched("src/a.ts"));
+    const a = await toMergeGateWith(w, "Same change", files("src/a.ts"));
     await github.push(w.repo, "main", undefined, ["README.md"]);
     await approve(w, a);
     await itemStatus(a, "done");
@@ -354,54 +399,120 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     expect(JSON.parse(String(packet?.sections)).changeDigest).toMatchObject({ changed: false });
   });
 
-  it("is withdrawn when the change differs, and a person decides again on the new head", async () => {
+  // Review of #105 (1): the same lines in a different file version hashed the same; a file both
+  // sides changed now withdraws, and the item verifies the new head before a person decides again.
+  it("is withdrawn when main changed a file the PR changed; the item verifies the new head again", async () => {
     const w = await world();
-    const a = await toMergeGateWith(w, "Changed change", patched("src/a.ts"));
-    await github.push(w.repo, "main", undefined, ["README.md"]);
-    // Hold the update until the approved digest is replaced: as if merging main in had changed the
-    // lines the PR adds (the fake's merges never do).
-    await github.deferUpdates(w.repo, true);
+    const a = await toMergeGateWith(w, "Both sides", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
     await approve(w, a);
-    await waitFor("A queued", () =>
-      first("SELECT 1 AS q FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued'", a),
-    );
-    await env.DB.prepare(
-      "UPDATE core_merge_queue SET approved_digest = ? WHERE work_item_id = ? AND status = 'queued'",
-    )
-      .bind("0".repeat(64), a)
-      .run();
-    await github.deferUpdates(w.repo, false);
-    const pr = await first<{ pr_number: number }>(
-      "SELECT pr_number FROM core_work_items WHERE id = ?",
-      a,
-    );
-    await github.completeUpdate(w.repo, Number(pr?.pr_number));
-    // The deliverer sees the update on its next look; the cron's look, done here directly.
-    const row = await first<{ project_id: string; repository_id: string | null }>(
-      "SELECT project_id, repository_id FROM core_work_items WHERE id = ?",
-      a,
-    );
-    await deliverRepository(env, String(row?.project_id), row?.repository_id ?? null);
-
-    const ended = await waitFor("withdrawn", () =>
-      first<{ outcome: string; head_sha: string; approved_sha: string }>(
-        "SELECT outcome, head_sha, approved_sha FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'withdrawn'",
-        a,
-      ),
-    );
-    expect(ended.head_sha).not.toBe(ended.approved_sha);
-    // Back at the merge gate, on the new head, with nothing merged.
-    await waitFor("a new merge gate", () =>
-      first(
-        "SELECT 1 AS g FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND status = 'pending' AND json_extract(input, '$.headSha') = ?",
-        a,
-        ended.head_sha,
-      ),
-    );
-    expect(await merges(a)).toHaveLength(0);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/src\/a\.ts|not the one approved/);
+    // v12: back to verify on the new head (no build), then the merge gate, then it lands.
+    await runStage(w, a, "verify", (job) => {
+      expect(job.harness.prompt).toContain(ended.head_sha);
+      return verifyPass;
+    });
+    await gateOpen(a, "merge");
     await approve(w, a);
     await itemStatus(a, "done");
     expect(await merges(a)).toHaveLength(1);
+  });
+
+  // Review of #105 (1): fail closed. A tree GitHub truncates has no digest, and no digest never
+  // matches.
+  it("is withdrawn when the approved change couldn't be read in full", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Too big to read", files("src/a.ts"));
+    const head = await first<{ head_sha: string }>(
+      "SELECT head_sha FROM core_work_items WHERE id = ?",
+      a,
+    );
+    await github.truncateTree(w.repo, String(head?.head_sha));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await approve(w, a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/couldn't be read in full/);
+  });
+
+  // Review of #105 (2): only the merge the factory asked GitHub for counts.
+  it("withdraws a merge commit a person made, even with the right parents", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Crafted merge", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await waitFor("update asked", () =>
+      first(
+        "SELECT 1 AS q FROM core_merge_queue WHERE work_item_id = ? AND update_from_sha IS NOT NULL",
+        a,
+      ),
+    );
+    // Someone pushes their own merge of main (parents: the approved head, main), sneaking in an edit.
+    const branch = await first<{ branch: string }>(
+      "SELECT branch FROM core_work_items WHERE id = ?",
+      a,
+    );
+    await github.craftMerge(w.repo, String(branch?.branch), "main", {
+      tree: { set: { "src/auth.ts": { mode: "100644", sha: "no-require-admin" } } },
+    });
+    const at = await ids(a);
+    await deliverRepository(env, at.projectId, at.repositoryId);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/isn't GitHub's update-branch merge/);
+  });
+
+  it("withdraws a GitHub-made merge that holds a third thing (a mode change)", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Third thing", files("src/a.ts"));
+    // The queue asks GitHub for the update; a signed merge appears that changes the PR's file.
+    const branch = await first<{ branch: string }>(
+      "SELECT branch FROM core_work_items WHERE id = ?",
+      a,
+    );
+    await github.setCiDefault(w.repo, CI(null));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await waitFor("update asked", () =>
+      first(
+        "SELECT 1 AS q FROM core_merge_queue WHERE work_item_id = ? AND update_from_sha IS NOT NULL",
+        a,
+      ),
+    );
+    await github.craftMerge(w.repo, String(branch?.branch), "main", {
+      byGitHub: true,
+      tree: { set: { "src/a.ts": { mode: "100755", sha: "a-made-executable" } } },
+    });
+    const at = await ids(a);
+    await deliverRepository(env, at.projectId, at.repositoryId);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/beyond a merge of its two sides \(src\/a\.ts\)/);
+    await github.setCiDefault(w.repo, null);
+  });
+
+  it("withdraws a merge the factory never asked for", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Unasked", files("src/a.ts"));
+    await github.setCiDefault(w.repo, CI(null));
+    await github.deferUpdates(w.repo, true);
+    // Main hasn't moved, so the queue asks for no update; just before the merge, main moves and a
+    // signed merge of it appears on the branch with no request recorded.
+    const at = await ids(a);
+    const branch = await first<{ branch: string }>(
+      "SELECT branch FROM core_work_items WHERE id = ?",
+      a,
+    );
+    deliverTestSeams.beforeLand = async () => {
+      deliverTestSeams.beforeLand = null;
+      await github.push(w.repo, "main", undefined, ["README.md"]);
+      await github.craftMerge(w.repo, String(branch?.branch), "main", { byGitHub: true });
+      await github.refuseNextMerge(w.repo, at.pr, "Head branch was modified");
+    };
+    await approve(w, a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/didn't ask for this merge/);
+    await github.setCiDefault(w.repo, null);
   });
 });
 

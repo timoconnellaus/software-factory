@@ -5,8 +5,13 @@
 // approved head) and merged; nothing else lands while its CI runs. A conflict, or red CI after the
 // update, takes the item out of the queue and back to build. pr.merge and pr.autoMerge refuse a
 // queued item that isn't the head, or a head the queue didn't bring there.
-import type { DeliveryOutcome, MergeQueueDriver, MergeQueueStatus } from "@software-factory/db";
-import { sql } from "kysely";
+import type {
+  CoreDatabase,
+  DeliveryOutcome,
+  MergeQueueDriver,
+  MergeQueueStatus,
+} from "@software-factory/db";
+import { type Selectable, sql } from "kysely";
 import { z } from "zod";
 import { BABYSITTER } from "../actors.ts";
 import { OperationError } from "../errors.ts";
@@ -19,7 +24,11 @@ import {
   type WorkItemRow,
 } from "../operation.ts";
 import type { RepoRef } from "../services.ts";
-import { changeDigest } from "../verify/change-digest.ts";
+import {
+  approvalSurvivesMergeOfMain,
+  changeDigest,
+  onlyEitherSide,
+} from "../verify/change-digest.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
 import { lineStopped } from "./delivery.ts";
 import {
@@ -501,8 +510,8 @@ export const mergeQueueUpdate = defineOperation({
         project,
         repository,
         repo,
-        entryId: entry.id,
-        approvedDigest: entry.approved_digest,
+        entry,
+        requestedFrom: entry.update_from_sha,
         at,
         prHead,
       });
@@ -523,6 +532,7 @@ export const mergeQueueUpdate = defineOperation({
         reason: `${repository.default_branch} moved again after ${entry.updates} updates of this branch`,
       };
     }
+    const mainHead = await github.getBranchSha(repo, repository.default_branch);
     const asked = await github.updatePullRequestBranch(repo, {
       number: w.pr_number,
       expectedHeadSha: at,
@@ -532,7 +542,14 @@ export const mergeQueueUpdate = defineOperation({
       ctx.write(
         ctx.db
           .updateTable("core_merge_queue")
-          .set((eb) => ({ update_asked_at: ctx.now, updates: eb("updates", "+", 1) }))
+          .set((eb) => ({
+            update_asked_at: ctx.now,
+            updates: eb("updates", "+", 1),
+            // The request, so only the merge it asked for is accepted (spec 53 review): the head
+            // GitHub merges into, and the default branch's head when asked.
+            update_from_sha: at,
+            update_base_sha: mainHead,
+          }))
           .where("id", "=", entry.id),
       );
       // GitHub makes the merge commit asynchronously; it is often there already.
@@ -543,8 +560,8 @@ export const mergeQueueUpdate = defineOperation({
           project,
           repository,
           repo,
-          entryId: entry.id,
-          approvedDigest: entry.approved_digest,
+          entry,
+          requestedFrom: at,
           at,
           prHead: after,
         });
@@ -563,9 +580,17 @@ export const mergeQueueUpdate = defineOperation({
 });
 
 /**
- * The head moved after the queue asked GitHub to update it. Accepted only as GitHub's
- * update-branch merge: first parent the head the queue had, second parent a commit already on the
- * default branch. Anything else is a push the queue didn't make.
+ * The head moved after the queue asked GitHub to update it. Accepted only as the merge the factory
+ * asked for (spec 53 review): GitHub's update-branch merge (made and signed by GitHub) of the
+ * default branch into the head the request was made from, with exactly those two parents and the
+ * second on the default branch. Anything else is a push the queue didn't make: `moved` for an item
+ * that lands itself (v4–v7, ADR 0330), and for the babysitter `withdrawn`.
+ *
+ * For the babysitter the approval is about the change (ADR 0582, owner question 1 as recommended):
+ * it carries over only when the merge holds nothing but its two parents' files and the change is
+ * identical (`approvalSurvivesMergeOfMain`). Any doubt withdraws it: the approval is closed, the
+ * review packet is not carried and `factory/verify` is not posted on the new head, so nobody can
+ * merge it on GitHub either; the item verifies the new head again (Workflow v12).
  */
 async function acceptUpdate(
   ctx: HandlerContext,
@@ -574,41 +599,60 @@ async function acceptUpdate(
     project: ProjectRow;
     repository: RepositoryRow;
     repo: RepoRef;
-    entryId: string;
-    approvedDigest: string | null;
+    entry: Selectable<CoreDatabase["core_merge_queue"]>;
+    /** The head the factory asked GitHub to update from (null: it never asked). */
+    requestedFrom: string | null;
     at: string;
     prHead: string;
   },
 ) {
-  const { w, project, repository, repo, at, prHead } = args;
+  const { w, project, repository, repo, entry, at, prHead } = args;
   const github = ctx.services.github;
-  // The head moved. Accept it only as GitHub's update-branch merge: first parent the head the
-  // queue had, second parent a commit already on the default branch. Anything else is a push
-  // the queue didn't make.
-  const parents = await github.commitParents(repo, prHead);
-  const merged = parents[1];
-  const clean =
-    parents.length === 2 &&
-    parents[0] === at &&
+  const info = await github.commitInfo(repo, prHead).catch(() => null);
+  const merged = info?.parents[1];
+  const requestedByFactory = args.requestedFrom === at;
+  const madeByGitHub =
+    info?.verified === true &&
+    info.committer?.email === "noreply@github.com" &&
+    info.parents.length === 2 &&
+    info.parents[0] === at &&
     merged !== undefined &&
     (await github.compareCommits(repo, repository.default_branch, merged)).aheadBy === 0;
-  if (!clean) {
+  const babysitter = entry.driver === "babysitter";
+  if (!babysitter && !(requestedByFactory && madeByGitHub)) {
     return {
       state: "moved" as const,
       headSha: prHead,
       reason: `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${repository.default_branch} into ${at.slice(0, 7)}`,
     };
   }
-  // The approval is about the change (ADR 0582): a clean merge keeps it only while the PR's diff
-  // against the default branch is the same as the one approved. No digest (an older entry, or a
-  // patch GitHub left out): the parent rule above decides alone, as ADR 0330 did.
-  const now = args.approvedDigest ? await digestOf(ctx, prHead, repository, repo) : null;
-  const changed = now !== null && now !== args.approvedDigest;
+  let thirdThings: string[] | null = null;
+  let digestNow: string | null = null;
+  if (babysitter && requestedByFactory && madeByGitHub && merged) {
+    const trees = await Promise.all([
+      github.treeEntries(repo, at),
+      github.treeEntries(repo, merged),
+      github.treeEntries(repo, prHead),
+    ]).catch(() => null);
+    thirdThings = trees?.every((t) => !t.truncated)
+      ? onlyEitherSide(trees[0].entries, trees[1].entries, trees[2].entries)
+      : null;
+    digestNow = await digestOf(ctx, prHead, repository, repo);
+  }
+  const survives =
+    !babysitter ||
+    approvalSurvivesMergeOfMain({
+      requestedByFactory,
+      madeByGitHub,
+      thirdThings,
+      approvedDigest: entry.approved_digest,
+      digestNow,
+    });
   ctx.write(
     ctx.db
       .updateTable("core_merge_queue")
       .set({ head_sha: prHead, updated_at: ctx.now })
-      .where("id", "=", args.entryId)
+      .where("id", "=", entry.id)
       .where("head_sha", "=", at),
   );
   ctx.write(
@@ -623,27 +667,57 @@ async function acceptUpdate(
     before: { sha: at },
     after: { sha: prHead, by: `merge queue: ${repository.default_branch} merged in` },
   });
+  if (!survives) {
+    const why = !requestedByFactory
+      ? "the factory didn't ask for this merge"
+      : !madeByGitHub
+        ? "it isn't GitHub's update-branch merge of the default branch into the approved head"
+        : thirdThings === null
+          ? "its files couldn't be read in full"
+          : thirdThings.length > 0
+            ? `it changed files beyond a merge of its two sides (${thirdThings.slice(0, 5).join(", ")}${thirdThings.length > 5 ? ", …" : ""})`
+            : entry.approved_digest === null || digestNow === null
+              ? "the approved change couldn't be read in full"
+              : `the PR's change against ${repository.default_branch} is not the one approved`;
+    // The approval no longer holds: closed, so nothing can carry it out (ADR 0582).
+    if (entry.pending_action_id) {
+      ctx.writePendingStatus(
+        "close",
+        ctx.db
+          .updateTable("core_pending_actions")
+          .set({
+            status: "rejected",
+            decision: "withdrawn",
+            decided_at: ctx.now,
+            note: `withdrawn: ${why}`,
+          })
+          .where("id", "=", entry.pending_action_id)
+          .where("status", "=", "approved"),
+      );
+    }
+    return {
+      state: "withdrawn" as const,
+      headSha: prHead,
+      reason: `the approval was withdrawn when ${repository.default_branch} was merged in: ${why}`,
+    };
+  }
   await carryReviewPacket(ctx, {
     item: w,
     project,
     repo,
     fromSha: at,
     toSha: prHead,
-    extra: args.approvedDigest
-      ? { changeDigest: { approved: args.approvedDigest, now, changed } }
+    extra: babysitter
+      ? { changeDigest: { approved: entry.approved_digest, now: digestNow, changed: false } }
       : undefined,
   });
-  if (changed) {
-    return {
-      state: "withdrawn" as const,
-      headSha: prHead,
-      reason: `merging ${repository.default_branch} in changed the approved change: its diff against ${repository.default_branch} is not the one approved`,
-    };
-  }
   return { state: "updated" as const, headSha: prHead, reason: null };
 }
 
-/** The change digest of `headSha` against the default branch, or null when it can't be read. */
+/**
+ * The change digest of `headSha` (its tree against its merge base with the default branch), or
+ * null when it can't be read in full (an error, a truncated tree): never a partial digest.
+ */
 async function digestOf(
   ctx: HandlerContext,
   headSha: string,
@@ -652,9 +726,15 @@ async function digestOf(
 ): Promise<string | null> {
   try {
     const ref = repo ?? (await repoRef(ctx, repository));
-    return await changeDigest(
-      await ctx.services.github.compareFiles(ref, repository.default_branch, headSha),
-    );
+    const github = ctx.services.github;
+    const base = await github.mergeBase(ref, repository.default_branch, headSha);
+    if (!base) return null;
+    const [b, h] = await Promise.all([
+      github.treeEntries(ref, base),
+      github.treeEntries(ref, headSha),
+    ]);
+    if (b.truncated || h.truncated) return null;
+    return await changeDigest(b.entries, h.entries);
   } catch {
     return null;
   }

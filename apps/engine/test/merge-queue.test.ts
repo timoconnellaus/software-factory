@@ -95,7 +95,7 @@ const entry = (workItemId: string, where = "") =>
     workItemId,
   );
 
-describe.each([7, WORKFLOW_VERSION])("the merge queue (v%i)", (version) => {
+describe.each([7, 11, WORKFLOW_VERSION])("the merge queue (v%i)", (version) => {
   // v7: new instances replay as v7 (their recorded version), landing themselves with landV4.
   let introspector: Awaited<ReturnType<typeof introspectWorkflow>> | null = null;
   beforeEach(async () => {
@@ -209,6 +209,14 @@ describe.each([7, WORKFLOW_VERSION])("the merge queue (v%i)", (version) => {
     // A goes back to build with what to do, without a spent retry (retryLimit 1, and it lands).
     await runStage(w, a.id, "build", async (job) => {
       expect(job.harness.prompt).toMatch(/can't merge into `main`/);
+      // The build merges main in and resolves the conflict, as the runner host has it do.
+      const row = await first<{ branch: string }>(
+        "SELECT branch FROM core_work_items WHERE id = ?",
+        a.id,
+      );
+      await github.craftMerge(w.repo, String(row?.branch), "main", {
+        tree: { set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } } },
+      });
       await github.setMergeable(w.repo, a.pr, true);
       return build(["src/a-merged.ts"]);
     });
