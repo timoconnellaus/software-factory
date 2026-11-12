@@ -8,6 +8,7 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { endPlanningSessions } from "../planning.ts";
 import { specRequired } from "../policy/project-policy.ts";
 import { approverIds } from "../scope.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
@@ -800,6 +801,8 @@ export const workItemFinish = defineOperation({
     const w = requireWorkItem(ctx);
     if (!["running", "waiting", "paused"].includes(w.status)) return { status: w.status };
     setItemStatus(ctx, w.id, ["running", "waiting", "paused"], input.status, input.reason);
+    // Its planning session, if it ended mid-planning, gives its slot back (spec 20).
+    endPlanningSessions(ctx, w.id, `${input.status}: ${input.reason}`);
     // An item that ends in the queue (a Workflow giving up, or done without the queue's merge)
     // stops holding it; the next head is woken (ADR 0330).
     await releaseMergeQueue(
@@ -906,6 +909,17 @@ export const inboxList = defineOperation({
         light: z.object({ inUse: z.number(), max: z.number() }).nullable(),
         rateLimitedUntil: z.string().nullable(),
         lastSeenAt: z.string().nullable(),
+        /**
+         * Its code against the deployed commit (ADR 0360): null when it's current or doesn't
+         * report a version. `behind`: updating on its own (`waiting`/`updating`); `blocked` and
+         * `rolled_back` need a person, with the reason.
+         */
+        update: z
+          .object({
+            state: z.enum(["behind", "blocked", "rolled_back"]),
+            reason: z.string().nullable(),
+          })
+          .nullable(),
       }),
     ),
     /** "Planning is ready" (spec 20): open planning sessions with a first draft, and what's open. */
@@ -1088,6 +1102,7 @@ export const inboxList = defineOperation({
         light: r.light_max === null ? null : { inUse: lightActive, max: r.light_max },
         rateLimitedUntil: limited ? r.rate_limited_until : null,
         lastSeenAt: r.last_seen_at,
+        update: runnerUpdate(r, ctx.services.deployedSha),
       };
     });
 
@@ -1166,4 +1181,17 @@ function queuePosition(
 ): { position: number; ahead: number[] } | null {
   const i = queue.findIndex((e) => e.work_item_id === item);
   return i < 0 ? null : { position: i + 1, ahead: queue.slice(0, i).map((e) => e.number) };
+}
+
+/** How a runner's code stands against the deployed commit, for the inbox's health line (ADR 0360). */
+function runnerUpdate(
+  r: { version: string | null; update_state: string | null; update_reason: string | null },
+  deployedSha: string | undefined,
+): { state: "behind" | "blocked" | "rolled_back"; reason: string | null } | null {
+  if (r.update_state === "blocked" || r.update_state === "rolled_back") {
+    return { state: r.update_state, reason: r.update_reason };
+  }
+  const desired = /^[0-9a-f]{40}$/.test(deployedSha ?? "") ? deployedSha : null;
+  if (!r.version || !desired || r.version === desired) return null;
+  return { state: "behind", reason: null };
 }

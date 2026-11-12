@@ -279,6 +279,8 @@ outbound over the signed channel, loads runner adapters, fetches into the checko
 already has for each repo (its own clone only when there is none, ADR 0260), and is the only thing
 that pushes: the run branch, with the job token (ADR 0250). Before a build it merges the project's
 default branch into the run branch, leaving any conflict for the session to resolve (ADR 0320).
+It keeps its own code on the commit the engine was deployed from, updating itself when idle
+(ADR 0360).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
 **Capability**

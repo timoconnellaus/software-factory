@@ -61,6 +61,9 @@
     // The global floor (ADR 0008): JSON, actor|"*" → risk|"*" → "allow"|"review"|"deny". It can only
     // tighten; anything malformed denies every call. Empty = no floor.
     "FACTORY_FLOOR": "",
+    // The default-branch commit this engine was deployed from (ADR 0360): the deploy sets it with
+    // `--var DEPLOYED_SHA:<sha>`, and runners update themselves to it. Empty: a dev engine (no updates).
+    "DEPLOYED_SHA": "",
     // "1" swaps the GitHub App for an in-D1 fake (tests and local dev only).
     "GITHUB_FAKE": ""
   }

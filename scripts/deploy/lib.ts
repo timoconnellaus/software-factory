@@ -16,6 +16,7 @@ const WORKSPACE_GLOBS = ["apps", "packages", "local"];
 /** The parts of a wrangler config the deploy scripts read. Everything else is passed through. */
 export interface WranglerConfig {
   name: string;
+  vars?: Record<string, unknown>;
   d1_databases?: { binding: string; database_name?: string; migrations_dir?: string }[];
   kv_namespaces?: { binding: string; id?: string }[];
   r2_buckets?: { binding: string; bucket_name?: string }[];
@@ -181,4 +182,15 @@ export function wrangler(
     if (!opts.allowFailure) throw error;
     return { ok: false, stdout: "" };
   }
+}
+
+/**
+ * Extra `wrangler deploy` arguments for a Worker: a Worker that declares `DEPLOYED_SHA` in its vars
+ * gets the commit being deployed (ADR 0360: sf-engine tells runners which code to run). Anything
+ * that isn't a full commit SHA is left out, so a dev deploy keeps the empty default.
+ */
+export function deployArgs(config: WranglerConfig, sha: string | null): string[] {
+  if (!config.vars || !("DEPLOYED_SHA" in config.vars)) return [];
+  if (!sha || !/^[0-9a-f]{40}$/.test(sha)) return [];
+  return ["--var", `DEPLOYED_SHA:${sha}`];
 }

@@ -31,10 +31,17 @@ ALTER TABLE core_runners ADD COLUMN light_in_use INTEGER NOT NULL DEFAULT 0;
 
 -- Jobs gain the `planning` stage, a pool, and a runner they are pinned to (a planning resume goes
 -- back to its session's runner). SQLite can't alter a CHECK, so core_jobs is rebuilt with the same
--- columns, indexes and data; core_runs follows it by name (D1's documented rebuild pattern).
+-- columns, indexes and data. core_runs references core_jobs by name, so the rows are held in a
+-- plain copy, core_jobs is dropped and created again under its own name, and the rows go back into
+-- it: re-inserting into the referenced table is what clears the deferred violations the drop left
+-- (copying into a differently named table and renaming it, the first version of this migration,
+-- doesn't, and failed on a database with runs in it).
 PRAGMA defer_foreign_keys = on;
 
-CREATE TABLE core_jobs_0120 (
+CREATE TABLE core_jobs_0120_copy AS SELECT * FROM core_jobs;
+DROP TABLE core_jobs;
+
+CREATE TABLE core_jobs (
   id TEXT PRIMARY KEY NOT NULL,
   work_item_id TEXT NOT NULL REFERENCES core_work_items (id),
   project_id TEXT NOT NULL,
@@ -64,7 +71,7 @@ CREATE TABLE core_jobs_0120 (
   pinned_runner_id TEXT,
   planning_session_id TEXT
 );
-INSERT INTO core_jobs_0120 (
+INSERT INTO core_jobs (
   id, work_item_id, project_id, org_id, stage, role, harness, requires, prompt, context,
   session_timeout_ms, status, wait_reason, runner_id, claim_id, run_id, created_at, claimed_at,
   finished_at, pool
@@ -73,9 +80,8 @@ SELECT
   id, work_item_id, project_id, org_id, stage, role, harness, requires, prompt, context,
   session_timeout_ms, status, wait_reason, runner_id, claim_id, run_id, created_at, claimed_at,
   finished_at, CASE WHEN stage IN ('triage', 'spec') THEN 'light' ELSE 'heavy' END
-FROM core_jobs;
-DROP TABLE core_jobs;
-ALTER TABLE core_jobs_0120 RENAME TO core_jobs;
+FROM core_jobs_0120_copy;
+DROP TABLE core_jobs_0120_copy;
 CREATE INDEX core_jobs_status_idx ON core_jobs (status, created_at);
 CREATE INDEX core_jobs_item_idx ON core_jobs (work_item_id);
 CREATE UNIQUE INDEX core_jobs_claim_idx ON core_jobs (runner_id, claim_id);

@@ -74,6 +74,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   allowlist (ADR 0038), each run pushes its own branch under a fencing token (ADR 0035), and the
   harness runs without the owner's git or cloud credentials (ADR 0033): the runner host, not the
   harness, pushes the run branch with the job token (ADR 0250).
+  A runner host keeps its own code on the commit `sf-engine` was deployed from (`DEPLOYED_SHA`,
+  sent in each heartbeat): it updates itself when idle and rolls back an update that doesn't start
+  (ADR 0360).
 - **The `sf` CLI** (`local/cli`, ADR 0340) is a surface for people and their agent sessions: it
   calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
   `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses
@@ -95,8 +98,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 ## Repository layout
 | Path | What |
 | --- | --- |
-| `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning, review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). Pinned next to D1; loaders fetch a page's reads in one batched request (ADR 0241). MCP later |
+| `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning (layout A: questions | spec | chat with the gate bar, full screen, phone tabs; live from `/api/work/<id>/planning/live`, spec 20), review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). Pinned next to D1; loaders fetch a page's reads in one batched request (ADR 0241). MCP later |
 | `packages/ui` | shadcn/ui components and the factory theme (zinc, Geist, status dots) |
+| `packages/timeline` | A work item's event log in words: `describeEntry` turns an audit entry into a label, detail, note, actor and dot. Pure, no dependencies; the dashboard's timeline and `sf timeline` both use it (spec wi-4) |
 | `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC |
 | `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, `.factory/policy.json` schema, model roles, Workflow event names, verify logic (`verify/`: CI, packet assembly, risk flags, the check-only rule, onboarding), incident classes (`incidents/`), a fake GitHub for tests (`/testing`) |
 | `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |

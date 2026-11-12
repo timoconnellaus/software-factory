@@ -15,20 +15,29 @@ const xml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 /**
- * The service definition. `PATH` is captured at install time so the service finds the same
- * `node`, `orca`, `claude` and `git` as the shell that installed it; nothing else from that shell's
- * environment is carried over (no tokens, no SSH agent).
+ * The service definition. launchd runs the `sh` wrapper `bin/sf-runner-service` (ADR 0360), which
+ * checks the self-update record and then starts `src/cli.ts run` on the pinned Node. `PATH` is
+ * captured at install time (plus Orca's bin directory, incident #9) so the service finds the same
+ * `node`, `pnpm`, `orca`, `claude` and `git` as the shell that installed it; nothing else from that
+ * shell's environment is carried over (no tokens, no SSH agent).
  */
 export function plist(input: {
   node: string;
-  cli: string;
+  /** `local/runner-host/bin/sf-runner-service` in the runner's checkout. */
+  wrapper: string;
   workingDirectory: string;
   path: string;
   home: string;
   logFile: string;
+  stateDir: string;
   configFile?: string;
 }): string {
-  const env: Record<string, string> = { PATH: input.path, HOME: input.home };
+  const env: Record<string, string> = {
+    PATH: input.path,
+    HOME: input.home,
+    SF_RUNNER_NODE: input.node,
+    SF_RUNNER_STATE_DIR: input.stateDir,
+  };
   if (input.configFile) env.SF_RUNNER_CONFIG = input.configFile;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -38,11 +47,8 @@ export function plist(input: {
   <string>${LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${xml(input.node)}</string>
-    <string>--experimental-transform-types</string>
-    <string>--no-warnings</string>
-    <string>${xml(input.cli)}</string>
-    <string>run</string>
+    <string>/bin/sh</string>
+    <string>${xml(input.wrapper)}</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${xml(input.workingDirectory)}</string>
@@ -54,7 +60,7 @@ ${Object.entries(env)
   </dict>
   <key>RunAtLoad</key>
   <true/>
-  <!-- Restart after a crash, but not after a clean exit (e.g. not paired yet). -->
+  <!-- Restart after a crash or a self-update (exit 75), but not after a clean exit (not paired). -->
   <key>KeepAlive</key>
   <dict>
     <key>SuccessfulExit</key>
@@ -75,12 +81,32 @@ ${Object.entries(env)
 
 const domain = () => `gui/${process.getuid?.() ?? 501}`;
 
-export async function install(exec: Exec, file: string, contents: string): Promise<void> {
+/**
+ * Replaces the service. `bootstrap` straight after `bootout` can fail with `5: Input/output error`
+ * while launchd is still tearing the old one down (ADR 0360), so it is retried a few times.
+ */
+export async function install(
+  exec: Exec,
+  file: string,
+  contents: string,
+  options: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<void> {
+  const attempts = options.attempts ?? 5;
+  const delayMs = options.delayMs ?? 1_000;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   await mkdir(join(file, ".."), { recursive: true });
   await exec("launchctl", ["bootout", `${domain()}/${LABEL}`]);
   await writeFile(file, contents);
-  const result = await exec("launchctl", ["bootstrap", domain(), file]);
-  if (result.code !== 0) throw new Error(`launchctl bootstrap: ${result.stderr.trim()}`);
+  let result = await exec("launchctl", ["bootstrap", domain(), file]);
+  for (let i = 1; i < attempts && result.code !== 0; i++) {
+    await sleep(delayMs * i);
+    result = await exec("launchctl", ["bootstrap", domain(), file]);
+  }
+  if (result.code !== 0) {
+    throw new Error(
+      `launchctl bootstrap failed ${attempts} times: ${(result.stderr || result.stdout).trim()}`,
+    );
+  }
 }
 
 export async function uninstall(exec: Exec, file: string): Promise<void> {

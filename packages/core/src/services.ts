@@ -248,6 +248,11 @@ export interface FactoryServices {
   /** The app's public URL (`PUBLIC_BASE_URL`), for links GitHub shows (the check's details). */
   publicBaseUrl?: string;
   /**
+   * The default-branch commit this engine was deployed from (ADR 0360): the runner code the factory
+   * runs, sent to runners as `desiredVersion`. Unset on a dev engine.
+   */
+  deployedSha?: string;
+  /**
    * A runner's channel key (spike ADR 0100): HMAC of the runner id and key version under
    * RUNNER_CHANNEL_SECRET. Throws an `unavailable` OperationError when the secret isn't set.
    */

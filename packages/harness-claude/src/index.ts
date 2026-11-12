@@ -8,6 +8,10 @@ import { claudeArgv } from "./launch.ts";
 
 export * from "./attachments.ts";
 export * from "./launch.ts";
+export * from "./planning/hooks.ts";
+export * from "./planning/mcp.ts";
+export * from "./planning/project.ts";
+export * from "./planning/relay.ts";
 export * from "./project.ts";
 export * from "./settings.ts";
 export * from "./transcript.ts";

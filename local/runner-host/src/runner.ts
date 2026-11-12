@@ -16,6 +16,7 @@ import {
 import type { Paths, RunnerConfig } from "./config.ts";
 import { hostGit } from "./git.ts";
 import { RunnerHost } from "./host.ts";
+import type { SelfUpdate } from "./self-update.ts";
 
 /** Where a running host records its live jobs (read by `status` and `doctor`). */
 export const liveJobsFile = (dirs: Paths) => join(dirs.stateDir, "live-jobs.json");
@@ -28,6 +29,9 @@ export function buildRunner(
     fetch?: typeof fetch;
     log?: (m: string) => void;
     orca?: Partial<OrcaRunnerConfig>;
+    /** The runner's self-update (ADR 0360), and what to do once it has updated. */
+    selfUpdate?: SelfUpdate;
+    onUpdated?: () => void;
   } = {},
 ) {
   const exec = options.exec ?? nodeExec;
@@ -66,6 +70,7 @@ export function buildRunner(
     cp,
     git,
     maxConcurrent: config.maxConcurrent,
+    maxLight: config.maxLight,
     heartbeatMs: config.heartbeatMs,
     reapOrphans: (running) => reapOrphanWorktrees(orcaOptions, running),
     // Retire clones an earlier runner registered next to the owner's own checkout (ADR 0260). It
@@ -85,6 +90,8 @@ export function buildRunner(
     },
     liveJobsFile: liveJobsFile(dirs),
     log,
+    ...(options.selfUpdate ? { selfUpdate: options.selfUpdate } : {}),
+    ...(options.onUpdated ? { onUpdated: options.onUpdated } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
   });
   return { host, cp, git, adapter };

@@ -238,4 +238,100 @@ describe("views", () => {
       "2.  #12  Second  2222222  queued 10m ago",
     ]);
   });
+
+  it("sf timeline prints the dashboard's wording, one line per entry, and --json as returned", async () => {
+    const home = await scratchHome();
+    await loggedIn(home);
+    const at = (m: number) => `2026-11-12T10:${String(m).padStart(2, "0")}:00.000Z`;
+    const base = {
+      actorType: "agent",
+      actorId: "foreman",
+      decision: "n/a",
+      outcome: "ok",
+      reason: "autonomy policy balanced",
+      pendingActionId: null,
+      result: null,
+    };
+    const entries = [
+      {
+        ...base,
+        id: "aud_1",
+        at: at(0),
+        operation: "workItem.create",
+        actorType: "human",
+        actorId: "usr_1",
+        reason: "human",
+        result: { outcome: "created" },
+      },
+      {
+        ...base,
+        id: "aud_2",
+        at: at(1),
+        operation: "workItem.triage",
+        result: { size: "small", reason: "One component" },
+      },
+      {
+        ...base,
+        id: "aud_3",
+        at: at(2),
+        operation: "pr.open",
+        actorType: "runner",
+        actorId: "rnr_1",
+        result: { prNumber: 42 },
+      },
+      {
+        ...base,
+        id: "aud_4",
+        at: at(3),
+        operation: "pr.merge",
+        decision: "review",
+        outcome: "review",
+        reason: "merge needs a person",
+        pendingActionId: "pa_1",
+      },
+      {
+        ...base,
+        id: "aud_5",
+        at: at(4),
+        operation: "review.merge",
+        actorType: "human",
+        actorId: "usr_1",
+        decision: "allow",
+        reason: "human",
+        pendingActionId: "pa_1",
+      },
+      {
+        ...base,
+        id: "aud_6",
+        at: at(5),
+        operation: "pr.merge",
+        outcome: "failed",
+        reason: "head moved",
+      },
+      { ...base, id: "aud_7", at: at(6), operation: "pr.merge" },
+      { ...base, id: "aud_8", at: at(7), operation: "thing.unknown", result: "anything" },
+    ];
+    const e = engine({ "workItem.timeline": () => ({ entries }) });
+
+    const r = await sf(["timeline", wi(3)], { home, fetch: e.fetch });
+    expect(r.code).toBe(0);
+    expect(r.out).toEqual([
+      "2026-11-12 10:00:00  Work item created                  a person",
+      "2026-11-12 10:01:00  Triage                             foreman       Sized small. One component",
+      "2026-11-12 10:02:00  PR opened                          runner rnr_1  PR #42",
+      "2026-11-12 10:03:00  Gate opened: Merge needs a person  foreman       merge needs a person",
+      "2026-11-12 10:04:00  Merge approved                     a person",
+      "2026-11-12 10:05:00  Merge                              foreman       failed · head moved",
+      "2026-11-12 10:06:00  Merged                             foreman",
+      "2026-11-12 10:07:00  thing.unknown                      foreman",
+    ]);
+    // No raw operation names for known operations, and no actor type prefixes.
+    for (const op of ["workItem.", "pr.", "review.", "human:", "agent:"]) {
+      expect(r.stdout).not.toContain(op);
+    }
+
+    const json = await sf(["timeline", wi(3), "--json"], { home, fetch: e.fetch });
+    expect(json.code).toBe(0);
+    expect(json.stdout).toBe(JSON.stringify({ entries }, null, 2));
+  });
 });
