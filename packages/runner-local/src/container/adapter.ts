@@ -61,6 +61,7 @@ import {
   jobDirs,
   PROXY_ALIAS,
   proxySpec,
+  RUNNER_LABEL,
   secretsFile,
 } from "./spec.ts";
 
@@ -126,6 +127,8 @@ export interface ContainerOptions {
   bin?: string;
   /** Job dirs (`<containersDir>/sf-<jobId>/`) and the credential's env files. */
   containersDir: string;
+  /** This runner's id, on every container and network it starts: it reaps only its own. */
+  runnerId?: string;
   /**
    * The credential for a job, from the Claude account it took when its workspace was prepared
    * (default: `credentialForAccount` with no fallback).
@@ -445,6 +448,7 @@ export function createContainerRunner(
           }),
           network: names.network,
           jobId: job.jobId,
+          ...(options.runnerId ? { runnerId: options.runnerId } : {}),
           envFile: secretsFile(root, name),
           ...(options.pidsLimit ? { pidsLimit: options.pidsLimit } : {}),
           ...(options.cpus ? { cpus: options.cpus } : {}),
@@ -454,6 +458,7 @@ export function createContainerRunner(
           name: names.proxy,
           image: image.id,
           jobId: job.jobId,
+          ...(options.runnerId ? { runnerId: options.runnerId } : {}),
           allow,
           ...(options.proxyAddHosts ? { addHosts: options.proxyAddHosts } : {}),
           ...(options.proxyPrivateOk ? { privateOk: options.proxyPrivateOk } : {}),
@@ -536,7 +541,10 @@ export function createContainerRunner(
       try {
         await runtime.createNetwork(names.network, {
           internal: true,
-          labels: { [JOB_LABEL]: job.jobId },
+          labels: {
+            [JOB_LABEL]: job.jobId,
+            ...(options.runnerId ? { [RUNNER_LABEL]: options.runnerId } : {}),
+          },
         });
         await runtime.start(proxy);
         await runtime.connect(names.network, proxy.name, PROXY_ALIAS);

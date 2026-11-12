@@ -58,6 +58,13 @@ export const executedCheckSchema = z.object({
    */
   notRun: z.string().max(300).optional(),
   /**
+   * Set when the check failed on one of the runner's own limits, as the host saw it from outside
+   * (ADR 0501, amended 2026-11-13): "the check hit the runner's memory limit (4 GB). The code under
+   * check may be the cause; …". A failed check like any other (never a pass, never "not run"); the
+   * host only skips its fix round, so a person decides. Optional and additive.
+   */
+  limit: z.string().max(300).optional(),
+  /**
    * Where it ran (ADR 0501, fourth review): a check container (`container`), the OS sandbox of a
    * Linux runner (`sandbox`), or the weaker OS sandbox of a Mac runner whose owner opted in
    * (`weaker-sandbox`: a process a check leaves can outlive it). The merge gate says so for the

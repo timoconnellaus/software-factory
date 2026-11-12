@@ -1,11 +1,12 @@
 // Where a `sandbox` runner's checks run (ADR 0501, fourth review): Linux on the OS sandbox; a Mac in
 // a check container when a runtime answers, else not run, unless its owner opted in to the weaker
 // macOS sandbox. Fakes only: the real container path is runner-local's integration test.
+import { realpathSync } from "node:fs";
 import type { ExecResult, Job } from "@software-factory/runner-contract";
 import type { ContainerRuntime } from "@software-factory/runner-local";
 import { describe, expect, it } from "vitest";
 import { checkModeReport, localChecks, NO_MAC_CONTAINER_LINE } from "../src/check-mode.ts";
-import { macTempDenies } from "../src/check-sandbox.ts";
+import { macTempDenies, macUserDirs } from "../src/check-sandbox.ts";
 import { hostManifest, runChecks } from "../src/checks.ts";
 import { configSchema, paths } from "../src/config.ts";
 import { checkLine, checkReadiness } from "../src/runner.ts";
@@ -128,14 +129,34 @@ describe("where a sandbox runner's checks run (ADR 0501, fourth review)", () => 
   });
 
   it("denies a Mac check the shared temp dirs and the user's /var/folders", () => {
-    expect(macTempDenies("/var/folders/ab/cd1234/T/")).toEqual([
+    expect(macTempDenies(["/var/folders/ab/cd1234/T/"])).toEqual([
       "/tmp",
       "/private/tmp",
       "/var/folders/ab/cd1234",
       "/private/var/folders/ab/cd1234",
     ]);
-    expect(macTempDenies("/private/var/folders/ab/cd1234/T")).toContain("/var/folders/ab/cd1234");
+    expect(macTempDenies(["/private/var/folders/ab/cd1234/T"])).toContain("/var/folders/ab/cd1234");
+    expect(
+      macTempDenies(["/var/folders/ab/cd1234/T/", "/var/folders/ab/cd1234/C/"]).filter((d) =>
+        d.includes("cd1234"),
+      ),
+    ).toEqual(["/var/folders/ab/cd1234", "/private/var/folders/ab/cd1234"]);
   });
+
+  it.runIf(process.platform === "darwin")(
+    "finds the user's /var/folders from the system, not TMPDIR (the launchd job sets none)",
+    () => {
+      // As the runner's launchd job runs it: PATH and HOME, no TMPDIR.
+      const dirs = macUserDirs({ PATH: "/usr/bin:/bin", HOME: process.env.HOME });
+      expect(dirs).toHaveLength(2);
+      const denied = macTempDenies(dirs);
+      const real = realpathSync(dirs[0] as string);
+      const parent = /^(?:\/private)?(\/var\/folders\/[^/]+\/[^/]+)/.exec(real)?.[1];
+      expect(parent).toBeDefined();
+      expect(denied).toContain(parent);
+      expect(denied).toContain(`/private${parent}`);
+    },
+  );
   it("declares `checks` when told to, with the one line on where they run", () => {
     const m = { contractVersion: 1, capabilities: ["git-push"] } as unknown as Parameters<
       typeof hostManifest

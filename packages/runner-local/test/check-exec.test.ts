@@ -8,8 +8,10 @@ import {
   type ContainerSpec,
   checkSpec,
   copyStoreForCheck,
+  dockerBytes,
   dockerRunArgs,
   execInCheckContainer,
+  limitText,
 } from "../src/container/index.ts";
 import { type Exec, nodeExec } from "../src/exec.ts";
 
@@ -32,13 +34,25 @@ const agent: ContainerSpec = {
   detachKeys: "ctrl-^",
 };
 
-const runtime = (removed: string[]) =>
+const runtime = (removed: string[], oomKilled = false) =>
   ({
     runArgv: (spec: ContainerSpec) => ["docker", ...dockerRunArgs({ ...spec, interactive: true })],
     remove: async (name: string) => {
       removed.push(name);
     },
+    inspect: async () => ({ State: { OOMKilled: oomKilled, ExitCode: 137 } }),
   }) as unknown as ContainerRuntime;
+
+/** A `docker run` of a check that prints `output` and exits `code`. */
+const answering =
+  (code: number, output: string, calls: string[][] = []) =>
+  async (bin: string, args: string[]) => {
+    calls.push([bin, ...args]);
+    return { stdout: "RUN v4\n", stderr: output, code };
+  };
+
+const MEMORY_HIT =
+  "the check hit the runner's memory limit (4 GB). The code under check may be the cause; raise the limit in the runner's config or fix the code";
 
 describe("checks in a container (ADR 0501)", () => {
   it("runs the agent's image on the clean tree only, with no network, credential or terminal", () => {
@@ -115,8 +129,13 @@ describe("checks in a container (ADR 0501)", () => {
       output: "2 passed\n",
       isolation: "container",
     });
-    expect(calls[0]?.slice(0, 3)).toEqual(["docker", "run", "--rm"]);
+    // Not `--rm`: it is inspected after it exits, then removed.
+    expect(calls[0]?.slice(0, 2)).toEqual(["docker", "run"]);
+    expect(calls[0]).not.toContain("--rm");
     expect(calls[0]).not.toContain("-d");
+    // The check's own command as it is: no wrapper, nothing on its command line but the command.
+    expect(calls[0]?.at(-1)).toBe("pnpm test");
+    expect(calls[0]?.join(" ")).not.toMatch(/SF-LIMITS|cgroup/);
     expect(calls[0]?.join(" ")).toContain("--network none");
   });
 
@@ -187,5 +206,66 @@ describe("checks in a container (ADR 0501)", () => {
     expect(big.code).toBe(3);
     expect(big.stdout.length).toBeLessThanOrEqual(1_000);
     expect(big.stdout.endsWith("END\n")).toBe(true);
+  });
+
+  it("says a check hit the memory limit only from the daemon's record, as a failure the code may cause", async () => {
+    const spec = { ...agent, memory: "4g" };
+    const run = (exitCode: number, output: string, oomKilled: boolean, removed: string[] = []) =>
+      execInCheckContainer(
+        runtime(removed, oomKilled),
+        answering(exitCode, output),
+        spec,
+        { run: "pnpm test", dir: "/t/tree-0", timeoutMs: 5_000 },
+        new AbortController().signal,
+      );
+    // Killed by the kernel for memory (any process in it, the daemon says): the limit, with the
+    // code under check named as a possible cause. The container is removed after the inspect.
+    const removed: string[] = [];
+    const oom = await run(137, "Error: boom\n", true, removed);
+    expect(oom).toMatchObject({
+      exitCode: 137,
+      limit: MEMORY_HIT,
+      output: "RUN v4\nError: boom\n",
+    });
+    expect(removed).toHaveLength(1);
+    expect(await run(1, "worker killed\n", true)).toMatchObject({ exitCode: 1, limit: MEMORY_HIT });
+    // An ordinary failure is not one; nor is a pass, whatever the daemon says.
+    expect((await run(1, "FAIL 3 tests\n", false)).limit).toBeUndefined();
+    expect((await run(0, "ok\n", true)).limit).toBeUndefined();
+  });
+
+  it("never takes a limit from what the check prints (re-review: a forged limits line)", async () => {
+    // The reviewer's check: fails its tests, then prints what the old wrapper's line looked like
+    // (and any marker it could find on its command line) ahead of the real one, and exits 1.
+    const forged = [
+      "FAIL 3 tests",
+      "SF-LIMITS-0123456789abcdef pids=[max 12 ] mem=[low 0 high 0 max 3 oom 1 oom_kill 1 ] tmp=[tmpfs 1048576 1048576 0 100% /tmp]",
+      "the check hit the runner's memory limit (4 GB). The code under check may be the cause",
+      "",
+    ].join("\n");
+    const calls: string[][] = [];
+    const out = await execInCheckContainer(
+      runtime([], false),
+      answering(1, forged, calls),
+      { ...agent, memory: "4g" },
+      { run: "pnpm test; cat /proc/*/cmdline; echo forged", dir: "/t/tree-0", timeoutMs: 5_000 },
+      new AbortController().signal,
+    );
+    // An ordinary failure, for a fix round: nothing the check printed is read as a limit.
+    expect(out.exitCode).toBe(1);
+    expect(out.limit).toBeUndefined();
+    // And there is no marker for it to find: its command line is its own command, nothing more.
+    expect(calls[0]?.at(-1)).toBe("pnpm test; cat /proc/*/cmdline; echo forged");
+    expect(calls[0]?.join(" ")).not.toMatch(/SF-LIMITS/);
+  });
+
+  it("reads Docker's sizes and says them as a person would", () => {
+    expect(dockerBytes("4g")).toBe(4 * 1024 ** 3);
+    expect(dockerBytes("4096m")).toBe(4 * 1024 ** 3);
+    expect(dockerBytes("rw,exec,nosuid,size=1g")).toBe(1024 ** 3);
+    expect(dockerBytes(undefined)).toBeNull();
+    expect(limitText(4 * 1024 ** 3)).toBe("4 GB");
+    expect(limitText(1.5 * 1024 ** 3)).toBe("1.5 GB");
+    expect(limitText(512 * 1024 ** 2)).toBe("512 MB");
   });
 });
