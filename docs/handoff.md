@@ -58,6 +58,11 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #28 | Attach an outside PR ([spec 05](specs/05-attach-a-pull-request.md), [ADR 0290](adr/0290-an-outside-pr-is-attached-and-verified.md)): `workItem.attachPr` gives a local session's or a person's PR a work item of kind `attached` (migration 0080); the Workflow's `runAttached` (kind-gated, no version bump) triages it, skips spec and build, verifies the PR's own head and opens the merge gate, never pushing to its branch; a push re-verifies and withdraws a pending merge, closing the PR cancels the item; the unattached `factory/verify` links to sf-app's `/attach`, and New work lists open unattached PRs. Merged with `factory/verify` red as the **last** bootstrap exception (it can't attach itself); every PR after it is attached instead. Merged with `factory/verify` red, the last bootstrap exception: it is what lets outside PRs pass `factory/verify` (the default-branch ruleset was switched off for #30 and #28, then back on) |
 
 ## In flight
+- **Factory config in the app** (block R, spec 08): config moves from `.factory/policy.json` to
+  versions in the app (ADR 0350), workflows fill typed slots (0351), agents are harness-neutral
+  (0352), the factory trials its own practice changes (0353) and an adjudicator earns approvals
+  (0354). Plan `.kim/plans/2026-11-11-manage-factory-settings-in-the-ui.md`, mockups
+  `.kim/mockups/project-settings.html` and `project-stages.html`. Building M1 first.
 - **Planning design** (`planning-process`, block I): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`. Next build: spec 20 (M1, the loop).

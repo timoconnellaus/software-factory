@@ -79,6 +79,11 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0305](0305-planning-artifacts-and-the-kim-folder.md) | Planning artifacts are stored in the factory and kept in `.kim/`; mockups render on a sandboxed origin |
 | [0306](0306-verify-checks-drift-from-the-spec.md) | Verify checks drift from the approved spec |
 | [0310](0310-work-item-attachments.md) | Work item attachments: bytes in R2, uploads through an operation, safe serving, runs read them over the job channel |
+| [0350](0350-factory-config-lives-in-the-app.md) | Factory config lives in the app as versions; validated before save, loosening is self-modify, export/import `.factory/` (supersedes 0009, 0036) |
+| [0351](0351-workflows-are-presets-over-typed-slots.md) | Workflows are presets over three typed slots in a fixed skeleton (Workflow v5); work steps advisory, gate steps enforced |
+| [0352](0352-agents-are-harness-neutral.md) | Agents are harness-neutral (role + tier, instructions, abstract permissions); the runner resolves the model |
+| [0353](0353-the-factory-improves-its-own-practice.md) | The factory improves its own practice as trials with auto-rollback; policy stays with people |
+| [0354](0354-the-adjudicator-earns-approval-in-shadow-mode.md) | The adjudicator earns gate approvals in shadow mode (≥95% precision), never rejects, never merge/deploy/self-modify |
 | [0340](0340-a-cli-for-people-gates-stay-in-the-browser.md) | A CLI for people: device login, read/write tokens, `/cli/v1` on sf-engine; gate decisions are browser-only, enforced in `invoke()` |
 | [0330](0330-the-factory-runs-its-own-merge-queue.md) | The factory runs its own merge queue per project: approved merges land one at a time, the head is updated by GitHub's update-branch and the approval carries over a clean update (Workflow v4) |
 | [0320](0320-factory-branches-stay-mergeable.md) | Factory branches merge the default branch before a build; a PR that can't merge goes back to build, and CI that never reports asks a person (Workflow v3) |

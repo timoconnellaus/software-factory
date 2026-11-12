@@ -21,3 +21,5 @@ Models change monthly. Code and config that name model ids rot. Borrowed from Re
 > the only source file allowed to name a model (a guard test enforces it); a project overrides it in
 > `.factory/policy.json` `modelRoles` ([ADR 0054](0054-factory-policy-file.md)). Jobs name the role and
 > carry the resolved model for the harness.
+
+> Amended 2026-11-12 ([ADR 0352](0352-agents-are-harness-neutral.md), spec 08 M2): the open question is answered. Roles get a tier (`standard` | `light`). Defaults stay in `model-roles.ts`; the project states preferences in its config version; a runner owner's caps win. The run records the model it actually used.

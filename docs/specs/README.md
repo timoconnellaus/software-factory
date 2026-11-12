@@ -24,6 +24,7 @@ and the factory's own planning stage writes specs in this same format.
 | [04](04-verify-and-pr.md) | Verify, holdout tests, review packet, PR through the GitHub connector, `factory/verify` check | 02, 03 |
 | [05](05-attach-a-pull-request.md) | Attach an outside PR (a local session's or a person's) to a work item: verify on its head, the merge gate, `/attach` | 04 |
 | [06](06-merge-queue.md) | The merge queue: approved merges land one at a time per project (Workflow v4) | 04 |
+| [08](08-factory-config-in-the-app.md) | Factory config in the app (versions, Settings), workflows and agents (v5), run usage and the improver, the adjudicator — four milestones | 01, 04, 06 |
 | [07](07-cli.md) | The `sf` CLI: see and act on work from a terminal; gate decisions stay in the browser | 01 |
 | [10](10-r1-sign-in-and-org-switcher.md) | R1: sign-in and the org & account switcher | 01 |
 | [11](11-r1-new-work.md) | R1: New work | 02, 10 |

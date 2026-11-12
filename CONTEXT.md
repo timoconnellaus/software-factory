@@ -300,9 +300,45 @@ _Avoid_: runner (the CRM's name for this Worker), backend
 **Autonomy policy**
 How much a project's agents may do without a person: the gate check's answer for each actor × risk
 class, the spec threshold, timeouts, WIP limit. Shipped ones are Cautious, Balanced and Autonomous
-in the global factory repo; a project's `.factory/` picks one and can override it. Read only from
-the default branch (ADR 0036).
+in code; a project's config version picks one and can override it (ADR 0350).
 _Avoid_: preset (old name), mode, level, profile
+
+**Config version**
+One saved state of a project's config (policy, agents, workflows), kept as a row in D1 and written
+only through `config.*` operations. A work item records the version it started under (ADR 0350).
+Exported and imported as a `.factory/` bundle.
+_Avoid_: policy file, settings PR, policy SHA (the old name)
+
+**Impact summary**
+The server's classification of a config change as loosening, tightening or neutral
+(`policyImpact`). A loosening save is `self-modify` and waits for an approver.
+
+**Workflow** (of a project)
+A named preset that fills the fixed skeleton's three slots (after spec, before verify, after verify)
+with steps. Triage picks one per work item. Workflows only add steps (ADR 0351).
+_Avoid_: pipeline (the skeleton), stage list
+
+**Step**
+One entry in a workflow slot: a **work** step hands to an agent and is advisory; a **gate** step
+hands to a person and is enforced.
+
+**Agent** (config)
+A harness-neutral profile: model role and tier, instructions, abstract permissions, capabilities.
+The runner that takes the job resolves the model (ADR 0352).
+_Avoid_: droid, persona, bot
+
+**Practice change / policy change**
+A practice change alters *how* work is done (instructions, tiers, advisory steps); the factory may
+apply it itself as a **trial**. A policy change alters *what's allowed* and always goes to a person
+(ADR 0353).
+
+**Trial**
+A practice change applied to the next N items of one workflow, then promoted or rolled back on
+outcomes (verify pass rate, send-backs, gate edits), then cost and time.
+
+**Adjudicator**
+An agent that records the gate decision it would make in shadow mode, and approves a gate kind only
+after earning ≥95% precision; never rejects, never merge, deploy or self-modify (ADR 0354).
 
 **Project template**
 A shipped bundle of repo practice (`AGENTS.md`, `CONTEXT.md`, ADRs, specs, …) installed into a
