@@ -14,7 +14,7 @@ const notRunFixture = () => {
   seenNotRun ||= where.includes("fixture=notrun");
   return seenNotRun;
 };
-const NOT_RUN_REASON = "the sandbox could not start: bwrap: setting up uid map: Permission denied";
+const NOT_RUN_REASON = "this Mac runner has no container runtime";
 /** The proof when the checks weren't run: nothing proven, the spec's links left unproven. */
 const notProven = <T extends { provenBy: string[]; unproven: string[] }>(proof: T[]): T[] =>
   proof.map((p) => ({

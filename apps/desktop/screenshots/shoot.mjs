@@ -64,6 +64,13 @@ export const SCREENS = [
     design: "ItemReview.html",
     scrollTo: '[data-testid="factory-checks"]',
   },
+  // Fourth review: the decision when checks were not run (merge only without them, recorded).
+  {
+    name: "item-review-not-run-decision",
+    path: "/work/wi_13?tab=review&fixture=notrun",
+    design: "ItemReview.html",
+    scrollTo: '[data-testid="decision"]',
+  },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
   { name: "new-item", path: "/new", design: "WorkNew.html" },
   { name: "setup", path: "/setup", design: "Setup.html" },
