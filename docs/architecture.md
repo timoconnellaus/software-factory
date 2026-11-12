@@ -83,9 +83,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
   and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
-  auto-merge where policy opts in (ADR 0230, to be superseded by **dark factory mode**, ADR 0515: an
-  `autoApprove` setting on the merge gate, off by default and turned on only by a person, under which
-  any change merges with no person when every condition holds in code; spec 52 PR (e)).
+  auto-merge where policy opts in (ADR 0230, as built today). Accepted, not built: ADR 0230 is
+  superseded by **dark factory mode** (ADR 0515, spec 52 PR (e)): an `autoApprove` setting on the
+  workflow's merge gate, off by default and turned on only by a person, under which the merge gate
+  is *approved* with no person when every condition holds in code (never for paths in the built-in
+  self-modify list); landing the approved merge stays with the merge queue.
 - **Attached PRs** (ADR 0290, spec 05): a PR opened outside the factory fails `factory/verify` with
   a link to sf-app's `/attach`. `workItem.attachPr` gives it a work item of kind `attached`, whose
   Workflow takes its own path (`runAttached`, chosen by kind): triage, spec and build skipped, the

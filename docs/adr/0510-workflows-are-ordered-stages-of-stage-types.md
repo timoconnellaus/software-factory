@@ -47,7 +47,8 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
   operations and `invoke()`.
 - The foreman (ADR 0005) picks routes within the pinned stage list instead of within a fixed skeleton.
 - Spec 50's `STAGES` and `JOB_STAGES` stop being the list of stages; a stage type maps to a job kind.
-- The open questions in spec 52 are the owner's to answer before the build.
+- Spec 52's open questions were answered by the owner on 2026-11-12 (the note below and the spec's
+  Decisions table); the build follows the spec's build plan.
 
 > Amended 2026-11-12 (the owner's answers to spec 52's questions; the spec records each):
 > - **Triage is a shaping stage** (Q1), the one shaping stage type that needs no person (`needsPerson: false`, allowed in shaping by its type's `shapingWithoutPerson`). Software's triage and planning are both shaping, as ADR 0493 already runs them.

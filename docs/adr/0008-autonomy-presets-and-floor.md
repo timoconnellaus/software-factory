@@ -10,6 +10,8 @@ client repo cannot. Borrowed from Relationship OS's Cautious, Balanced and Auton
 - Each project picks a **preset** in its `.factory/` config and may override it.
 - The global factory config sets a **floor** that can only tighten what a project allows.
 - Merge, deploy and self-modify are `alwaysReview`: they always go to an approver, whatever the preset.
+  (Since amended: merge and deploy may be decided by dark factory mode's `auto-approve` actor; see the
+  ADR 0515 note below. Self-modify still always goes to a person.)
 - A malformed or missing policy fails closed.
 - Loosening policy is a human-only operation. Agents cannot configure policy.
 
