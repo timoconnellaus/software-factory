@@ -110,9 +110,10 @@ describe("archiveRunEvents", () => {
     const { w, workItemId, runId } = await claimedRun();
     // Ended 31 days ago, with 5 events and a steer.
     await env.DB.batch([
-      env.DB.prepare(
-        "UPDATE core_runs SET status = 'handed_back', ended_at = ? WHERE id = ?",
-      ).bind(iso(31 * DAY), runId),
+      env.DB.prepare("UPDATE core_runs SET status = 'handed_back', ended_at = ? WHERE id = ?").bind(
+        iso(31 * DAY),
+        runId,
+      ),
       ...[1, 2, 3, 4, 5].map((seq) =>
         env.DB.prepare(
           "INSERT INTO core_run_events (run_id, seq, at, type, payload) VALUES (?, ?, ?, 'log', ?)",

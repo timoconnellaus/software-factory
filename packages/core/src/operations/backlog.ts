@@ -22,7 +22,9 @@ import {
   repositoryId,
   requireProject,
   requireWorkItem,
+  STAGE_LABEL,
   STAGE_PHASE,
+  STAGES,
   workItemId,
 } from "./shared.ts";
 
@@ -1115,6 +1117,80 @@ export const workItemBoard = defineOperation({
       }),
       counts: counts.map((r) => ({ projectId: r.project_id, status: r.status, n: Number(r.n) })),
     };
+  },
+});
+
+/** The engine's built-in workflow, which a project runs when its config defines none (ADR 0492). */
+export const BUILT_IN_WORKFLOW = { name: "software", label: "Software (built in)" } as const;
+
+export const projectWorkflow = defineOperation({
+  name: "project.workflow",
+  description:
+    "The workflow a project's items follow (ADR 0492) and its stages in order, each with its label and phase (ADR 0493: shaping before release, delivery after). `workflow` is the one the project's config names, the built-in Software workflow when the config defines none, or null when the project can't release work (no valid config, or workflows defined and none named), with the reason. Today every workflow runs the built-in engine's stages.",
+  risk: "read",
+  actors: ["human", "agent"],
+  permission: "member",
+  input: z.object({ projectId }),
+  output: z.object({
+    projectId: z.string(),
+    workflow: z
+      .object({
+        name: z.string(),
+        label: z.string(),
+        description: z.string(),
+        builtIn: z.boolean(),
+      })
+      .nullable(),
+    /** Why the project can't release work, when `workflow` is null. */
+    unavailable: z.string().nullable(),
+    stages: z.array(
+      z.object({
+        stage: z.string(),
+        label: z.string(),
+        phase: z.enum(["shaping", "delivery"]),
+      }),
+    ),
+  }),
+  async handler(_input, ctx) {
+    const project = requireProject(ctx);
+    const policy = ctx.scope.policy;
+    const stages = STAGES.map((stage) => ({
+      stage,
+      label: STAGE_LABEL[stage],
+      phase: STAGE_PHASE[stage],
+    }));
+    if (!policy) {
+      return {
+        projectId: project.id,
+        workflow: null,
+        unavailable: `the project has no valid config (${ctx.scope.policyError ?? "unknown"})`,
+        stages,
+      };
+    }
+    if (workflowUnchosen(policy)) {
+      return {
+        projectId: project.id,
+        workflow: null,
+        unavailable: "the project defines workflows but names none for its items",
+        stages,
+      };
+    }
+    const named = policy.workflow
+      ? policy.workflows.find((w) => w.name.toLowerCase() === policy.workflow?.toLowerCase())
+      : undefined;
+    const workflow = named
+      ? {
+          name: named.name,
+          label: named.name[0]?.toUpperCase() + named.name.slice(1),
+          description: named.description,
+          builtIn: false,
+        }
+      : {
+          ...BUILT_IN_WORKFLOW,
+          description: "Triage, spec, build, verify and merge",
+          builtIn: true,
+        };
+    return { projectId: project.id, workflow, unavailable: null, stages };
   },
 });
 

@@ -2,7 +2,7 @@
 
 Status: accepted for the journal's writes, 2026-11-12. Retention is **proposed**: the owner decides
 (the question is at the end). Block AQ, the Cloudflare cost work
-([AGENTS.md, "Cloudflare cost"](../../AGENTS.md#cloudflare-cost), rule 3). Amends ADR 0050 (one
+([AGENTS.md, "Cloudflare cost"](../../AGENTS.md#cloudflare-cost), rule 12). Amends ADR 0004, 0011 and 0050 (one
 batch, one audit row per call).
 
 ## Context

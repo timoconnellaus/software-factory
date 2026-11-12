@@ -2,7 +2,13 @@
 // path through the real code against the migrated schema, and fails if any statement it ran plans a
 // SCAN of a growing table. To guard another path, add a scenario to HOT_PATHS.
 import { env } from "cloudflare:workers";
-import { invoke } from "@software-factory/core";
+import {
+  invoke,
+  r2AttachmentBlobs,
+  recentOutcomes,
+  sweepStrayAttachmentBlobs,
+} from "@software-factory/core";
+import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
@@ -117,6 +123,28 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     run: (e) => as(e, "workItem.list", { projectId: w.projectId }, w.human),
   },
   {
+    name: "workItem.list by project and status",
+    run: (e) =>
+      as(e, "workItem.list", { projectId: w.projectId, status: ["queued", "running"] }, w.human),
+  },
+  {
+    // The improver's history of finished items (improve.scan, config.trial.resolve).
+    name: "recentOutcomes",
+    run: (e) => recentOutcomes(createDb(e.DB), w.projectId, { limit: 10 }),
+  },
+  {
+    // The hourly stray-blob sweep with a blob to check (an empty bucket runs no D1 query).
+    name: "the attachment sweep",
+    run: async (e) => {
+      await env.ATTACHMENTS.put(`${w.orgId}/plans/att_plan`, new Uint8Array([1]));
+      return sweepStrayAttachmentBlobs(
+        e.DB,
+        r2AttachmentBlobs(env.ATTACHMENTS),
+        new Date(Date.now() + 2 * 3_600_000),
+      );
+    },
+  },
+  {
     name: "the hourly prunes (retention)",
     run: (e) => pruneExpired(e.DB, new Date()),
   },
@@ -163,6 +191,24 @@ describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
     expect(await growingScans(env.DB, seen)).toEqual([
       expect.objectContaining({ table: "core_audit", detail: "SCAN a" }),
     ]);
+  });
+
+  it("a status-filtered list reads only that status's rows (no walk of every item)", async () => {
+    const seen: Recorded[] = [];
+    await as(
+      recordingEnv(env, seen),
+      "workItem.list",
+      { projectId: w.projectId, status: ["queued"] },
+      w.human,
+    );
+    const list = seen.find(
+      (r) => /from "core_work_items"/.test(r.sql) && /"status" in/.test(r.sql),
+    );
+    if (!list) throw new Error("the list query didn't run");
+    const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${list.sql}`)
+      .bind(...list.params)
+      .all<{ detail: string }>();
+    expect(results.map((r) => r.detail).join("\n")).toMatch(/USING INDEX \w+ \(status=\?/);
   });
 
   for (const path of HOT_PATHS) {

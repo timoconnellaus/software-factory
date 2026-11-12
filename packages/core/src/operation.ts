@@ -118,6 +118,9 @@ export interface Change {
   after?: Record<string, unknown> | null;
 }
 
+/** Why a handler writes a pending action's status (`HandlerContext.writePendingStatus`). */
+export type PendingStatusWrite = "decide" | "close" | "apply";
+
 export interface HandlerContext {
   /** Typed reads. Writes go through `write()`: they commit in one batch after the handler. */
   db: Db;
@@ -137,8 +140,18 @@ export interface HandlerContext {
    * `desktopDecidable` or `mobileDecidable` operation still ask for one for some inputs (spec 26).
    */
   presence?: boolean;
-  /** Queue a write. Writes, guards, the audit row and outbox rows commit in one D1 batch. */
+  /**
+   * Queue a write. Writes, guards, the audit row and outbox rows commit in one D1 batch. It refuses
+   * a write to a pending action's `status`: that goes through `writePendingStatus`.
+   */
   write(statement: Compilable | D1PreparedStatement): void;
+  /**
+   * Queue the one kind of write `write` refuses: a pending action's `status` (ADR 0541 amendment,
+   * 2026-11-12, third review). `decide` is `decidePending`'s, and only an operation that declares
+   * `decidesPending` may make it; `close` withdraws or cancels one without deciding it (a take-back,
+   * a moved head, a cancelled item); `apply` marks an approved one carried out.
+   */
+  writePendingStatus(how: PendingStatusWrite, statement: Compilable | D1PreparedStatement): void;
   /** Abort the whole batch unless the previous write changed at least one row (ADR 0050). */
   guardChanged(name: string): void;
   /** Abort the whole batch unless `query` returns a row when the batch runs. */
@@ -232,6 +245,14 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    */
   mobileDecidable?: true | ((input: z.output<I>) => boolean);
   /**
+   * The operation decides a pending action (approves, rejects or sends one back), through
+   * `decidePending` (gates.ts), which checks who may decide what: the phone may not decide a config
+   * change or anything self-modify (ADR 0541). `decidePending` refuses an operation that doesn't
+   * declare this, and a test runs every operation that does from the phone. Withdrawing,
+   * cancelling and applying aren't deciding (`HandlerContext.writePendingStatus`).
+   */
+  decidesPending?: true;
+  /**
    * The gate always asks a person, whatever the autonomy policy or overrides say (a workflow's gate
    * step, ADR 0371). `deny` still refuses.
    */
@@ -250,7 +271,7 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
   scope?: (input: z.output<I>, db: Db) => Promise<ScopeRef>;
   /**
    * Machine-frequency operations (a heartbeat, an empty claim, a held wait, presence; ADR 0590,
-   * AGENTS.md "Cloudflare cost" rule 3) write no audit row unless the call changed state: the handler
+   * AGENTS.md "Cloudflare cost" rule 12) write no audit row unless the call changed state: the handler
    * called `ctx.change` or `ctx.changed`, queued an outbox message, or `changed(output)` is true.
    * Refusals and failures are always audited, and so is a call with an idempotency key.
    */

@@ -86,8 +86,11 @@ async function channel(e: Env) {
     runnerId: w.runner.runnerId,
     key: await runnerChannelKey("test-channel-secret", w.runner.runnerId, 1),
     fetch: async (input, init) => worker.fetch(new Request(input, init), e),
+    // A second further on each call: heartbeats signed in the same second are refused as replays.
+    now: () => new Date(Date.now() + ++tick * 1000),
   });
 }
+let tick = 0;
 
 /** One cycle of each source, as the clients run it. */
 const CYCLES: { name: string; seconds: number; run: (e: Env) => Promise<unknown> }[] = [

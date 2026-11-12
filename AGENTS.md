@@ -50,26 +50,29 @@ a database stops taking writes at 10 GB. A Durable Object is billed for every se
 Each rule is checkable in review; the query-plan guard
 (`apps/engine/test/query-plans.test.ts`) checks rule 1 for every path registered in it.
 1. A query on a poll, heartbeat, cron, held-wait or socket path has its `EXPLAIN QUERY PLAN`
-   checked against the migrated schema: no SCAN of a growing table. Register new hot paths in the
-   guard's `HOT_PATHS`.
+   checked against the migrated schema: no SCAN of a growing table, and no temp B-tree sort in a
+   query that reads one unless the guard's `SORT_ALLOWED` says why the sorted rows are few. Register
+   new hot paths in the guard's `HOT_PATHS`.
 2. Cron and polled queries filter on the leading columns of an index, and that index covers their
    `ORDER BY`. A growing table's query has a LIMIT; no `COUNT(*)` or `OFFSET` paging on one.
-3. Machine-frequency operations (heartbeat, presence, held waits, an empty claim) write no audit
-   row unless state changed. Audit `input` keeps only what the decision needs.
-4. Every new table states its retention and gets a bounded prune in the cron, or an ADR says why
+3. Every new table states its retention and gets a bounded prune in the cron, or an ADR says why
    it is kept.
-5. Every index names, in its migration, the query that reads it. Drop an index nothing reads.
-6. A Durable Object never holds a request, `setTimeout` or `setInterval` to wait. Use hibernatable
+4. Every index names, in its migration, the query that reads it. Drop an index nothing reads.
+5. A Durable Object never holds a request, `setTimeout` or `setInterval` to wait. Use hibernatable
    WebSockets (`acceptWebSocket`) or alarms, and stop re-arming an alarm when there is nothing to do.
-7. Every Durable Object that accepts sockets sets `setWebSocketAutoResponse` for its ping.
-8. One cron tick or request makes at most about 200 D1 queries (the cap is 1,000). Check rows in
+6. Every Durable Object that accepts sockets sets `setWebSocketAutoResponse` for its ping.
+7. One cron tick or request makes at most about 200 D1 queries (the cap is 1,000). Check rows in
    batches with `json_each(?)`, and carry a cursor between ticks for anything unbounded.
-9. No D1 query inside a loop over another query's rows unless the loop is bounded to 10 or fewer;
+8. No D1 query inside a loop over another query's rows unless the loop is bounded to 10 or fewer;
    join instead.
-10. The channel's idempotency store is only for calls that aren't naturally idempotent.
-11. Expensive clients (the GitHub App, imported keys) are built once per isolate, not per call.
-12. Each wrangler config sets `observability.head_sampling_rate` and `limits.cpu_ms`, with the
+9. The channel's idempotency store is only for calls that aren't naturally idempotent, and a call
+   left out of it must be harmless to replay (the heartbeat refuses an older signed time).
+10. Expensive clients (the GitHub App, imported keys) are built once per isolate, not per call.
+11. Each wrangler config sets `observability.head_sampling_rate` and `limits.cpu_ms`, with the
     reason for the value beside it.
+12. Machine-frequency operations (heartbeat, presence, held waits, an empty claim, log batches)
+    write no audit row unless state changed (`audit: { changesOnly }`, ADR 0590). A runner's audit
+    `input` is its digest, not the body.
 
 ## Tooling
 

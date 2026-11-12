@@ -60,8 +60,10 @@ export type ReadOpName =
   | "runner.list"
   | "protection.ruleset"
   | "desktopDevice.list"
-  | "mergeQueue.list"
+  | "workItem.board"
   | "config.get"
+  | "project.workflow"
+  | "mergeQueue.list"
   | "repository.list"
   | "cliToken.list";
 

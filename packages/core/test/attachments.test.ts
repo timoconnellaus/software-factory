@@ -371,6 +371,35 @@ describe("work item attachments", () => {
     expect(deleted).toEqual(keys);
   });
 
+  it("starts the sweep over when R2 refuses the saved cursor, and deletes a page in one call", async () => {
+    await env.DB.prepare(
+      "INSERT INTO core_meta (key, value) VALUES (?, 'stale') ON CONFLICT (key) DO UPDATE SET value = 'stale'",
+    )
+      .bind(SWEEP_CURSOR_KEY)
+      .run();
+    const calls: string[][] = [];
+    const store = {
+      put: async () => {},
+      get: async () => null,
+      delete: async () => {
+        throw new Error("one at a time");
+      },
+      deleteMany: async (keys: string[]) => {
+        calls.push(keys);
+      },
+      list: async ({ cursor }: { cursor?: string }) => {
+        if (cursor) throw new Error("invalid cursor");
+        return {
+          keys: ["s-1", "s-2", "s-3"].map((key) => ({ key, uploaded: new Date(0) })),
+          cursor: null,
+        };
+      },
+    };
+    const swept = await sweepStrayAttachmentBlobs(env.DB, store, new Date(), 1000, 2);
+    expect(swept).toEqual({ removed: ["s-1", "s-2", "s-3"], cursor: null });
+    expect(calls).toEqual([["s-1", "s-2", "s-3"]]);
+  });
+
   it("serves with a server-chosen type, nosniff, a sandboxing CSP, and inline only for images", () => {
     const png = attachmentResponseHeaders({
       contentType: "image/png",
