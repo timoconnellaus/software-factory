@@ -19,8 +19,12 @@ revert of the wrong change costs a working feature and proves nothing.
 4. **It merges without a person only when** the workflow's Deliver stage has `revertWithoutPerson` on
    (off by default; turning it on is a loosening and a `self-modify` save) and `revertVerdict()`
    holds in code: it is the engine's unchanged revert of a suspect; the episode is 30 minutes old with
-   no other repair; and CI on the revert's head is green on every check red on `main`. The decision
-   is made by ADR 0515's `auto-approve` actor. Otherwise a person decides it, told on the phone.
+   no other repair; CI on the revert's head is green on every check red on `main`; and it touches
+   none of the built-in self-modify paths (ADR 0036): a revert there is a self-change, which always
+   needs a person. The switch is the revert's own: an item's `autoApprove` (ADR 0515's five
+   conditions) never approves a revert, and `revertWithoutPerson` approves nothing else. The
+   decision is made by ADR 0515's `auto-approve` actor. Otherwise a person decides it, told on the
+   phone.
 5. After a revert: a comment on the original PR, a linked backlog item "Reland: <title>", and, if the
    culprit was auto-approved, the project's `autoApproveHold` (ADR 0515 §7).
 

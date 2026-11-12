@@ -218,14 +218,18 @@ approval is actually about: the change.
   agent-written code, titled `Revert "<original title>"`. It is a `repair` item.
 - **It merges on its own approval only when the workflow says so** (decision 2): the Deliver
   stage's `revertWithoutPerson` setting, off by default; turning it on is a loosening only a person
-  makes (ADR 0370, 0515 §2). The `auto-approve` actor (ADR 0515) decides the revert's merge gate
-  only when, in code (`revertVerdict()`):
+  makes (ADR 0370, 0515 §2). This is the revert's **own** switch, separate from `autoApprove`: an
+  item's `autoApprove` (ADR 0515's five conditions) never approves a revert, and this switch approves
+  nothing else, so it is not a second route around ADR 0515. The `auto-approve` actor (ADR 0515)
+  decides the revert's merge gate only when, in code (`revertVerdict()`):
   1. the setting is on;
   2. the PR is the engine's revert of a landing in the open episode's suspects, unchanged (its
      change digest is the inverse of the culprit's);
   3. the episode is at least 30 minutes old and no other repair for it is open or merged;
   4. CI on the revert's head is green on every check that is red on `main`'s head, which proves the
-     revert repairs `main` rather than trusting the attribution.
+     revert repairs `main` rather than trusting the attribution;
+  5. the revert touches none of the built-in self-modify paths (`.factory/` and the rest of ADR 0036's
+     list): reverting one is a self-change, and a self-change always needs a person.
   Otherwise the revert's merge gate goes to a person like any merge, and the phone is told.
 - **After a revert**: a comment on the original PR with the failure and what to reland, and a new
   backlog item "Reland: <title>" linked to the original (not released). A revert of an auto-approved
@@ -342,7 +346,8 @@ Small PRs, deterministic part first. Block **AP**: migrations 0350–0359 (0350 
 8. (d) A merge GitHub refuses is never retried as is: the deliverer re-snapshots, and three
    refusals with nothing changed ask a person.
 9. (e) A revert merges with no person only when `revertWithoutPerson` is on and `revertVerdict()`'s
-   four conditions hold; turning the setting on is a loosening.
+   five conditions hold; turning the setting on is a loosening; a revert touching a self-modify
+   path always goes to a person, and `autoApprove` never approves a revert.
 10. Nothing in the babysitter pushes to the default branch, and no `babysit` job can merge.
 
 ## Questions for the owner (each with a recommendation)
@@ -352,8 +357,9 @@ Small PRs, deterministic part first. Block **AP**: migrations 0350–0359 (0350 
    to the person.
 2. **The one thing it may merge on its own.** Recommended: an engine-made revert of the attributed
    culprit, after 30 minutes red, only when the workflow's Deliver stage has `revertWithoutPerson` on
-   (off by default) and the revert's own CI proves it repairs `main` (§5). Alternative: every revert
-   goes to a person, with a phone push.
+   (off by default; its own switch, never `autoApprove`), the revert's own CI proves it repairs
+   `main`, and it touches no self-modify path (§5). Working answer until the owner decides: off by
+   default. Alternative: every revert goes to a person, with a phone push.
 3. **Recording flakes.** Recommended: a known-flake list (`core_flakes`) per repository, and a
    backlog item to fix a check once it flakes three times in 14 days. Alternative: a backlog item for
    every first flake.

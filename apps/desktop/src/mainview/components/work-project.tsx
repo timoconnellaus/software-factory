@@ -6,7 +6,7 @@ import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { itemsIn } from "../lib/backlog.ts";
-import { openItem } from "../lib/places.ts";
+import { peekItem } from "../lib/places.ts";
 import { boardsQuery, configQuery, workflowQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { laneLabel, viewCounts, viewOf, waitingOn } from "../lib/work-board.ts";
@@ -138,7 +138,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
                     return (
                       <tr key={i.id} className="border-line-soft border-t first:border-t-0">
                         <td className="px-3.5 py-2.5">
-                          <Link {...openItem(i.id)} className="font-medium hover:underline">
+                          <Link {...peekItem(i.id)} className="font-medium hover:underline">
                             <span className="mr-1.5 font-mono font-normal text-[12px] text-ink-muted">
                               #{i.number}
                             </span>

@@ -12,12 +12,12 @@ import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { ToggleGroup, ToggleGroupItem } from "@software-factory/ui/components/toggle-group";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { itemsIn, PRIORITY_SHORT, type Priority } from "../lib/backlog.ts";
 import { ExternalLink } from "../lib/external.tsx";
-import { openItem } from "../lib/places.ts";
+import { peekItem } from "../lib/places.ts";
 import { boardsQuery, workflowQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import {
@@ -87,6 +87,11 @@ function CutNote({ cut }: { cut: { shown: number; of: number } | null }) {
       Showing {cut.shown} of {cut.of}: the board reads at most 500, in priority order
     </span>
   );
+}
+
+/** The item open in the side panel (`?item=`), so its card and row show as current. */
+function useOpenItem(): string | undefined {
+  return useRouterState({ select: (s) => (s.location.search as { item?: string }).item });
 }
 
 /** "14 min", "3 h": how long since it last changed. */
@@ -294,6 +299,7 @@ export function ProjectBoard({
 }
 
 function BoardCard({ item, needsYou }: { item: ActiveItem; needsYou: Set<string> }) {
+  const open = useOpenItem() === item.id;
   const state =
     item.status === "queued"
       ? { label: "Queued", tone: "neutral" as const, needsYou: false }
@@ -301,11 +307,13 @@ function BoardCard({ item, needsYou }: { item: ActiveItem; needsYou: Set<string>
   const who = waitingOn(item, needsYou);
   return (
     <Link
-      {...openItem(item.id)}
+      {...peekItem(item.id)}
       className={cn(
         "flex flex-col gap-1.5 rounded-lg bg-panel px-2.5 py-2 shadow-panel hover:brightness-[0.99]",
         state.needsYou && "shadow-needs-you",
+        open && "ring-2 ring-ink/50",
       )}
+      aria-current={open ? "true" : undefined}
       data-testid={`card-${item.id}`}
     >
       <div className="flex items-center gap-2">
@@ -344,6 +352,7 @@ function ActiveTable({
 }) {
   const projects = useProjects();
   const name = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? "project";
+  const openId = useOpenItem();
   const th = "whitespace-nowrap py-2.5 pr-3 text-left font-medium text-ink-muted text-xs";
   return (
     <div className="@container overflow-hidden rounded-[10px] bg-panel shadow-panel">
@@ -363,11 +372,15 @@ function ActiveTable({
             return (
               <tr
                 key={i.id}
-                className="border-line-soft border-t first:border-t-0 hover:bg-page"
+                className={cn(
+                  "border-line-soft border-t first:border-t-0 hover:bg-page",
+                  openId === i.id && "bg-selected hover:bg-selected",
+                )}
+                aria-current={openId === i.id ? "true" : undefined}
                 data-testid={`row-${i.id}`}
               >
                 <td className="py-2.5 pr-3 pl-3.5">
-                  <Link {...openItem(i.id)} className="font-medium hover:underline">
+                  <Link {...peekItem(i.id)} className="font-medium hover:underline">
                     <span className="mr-1.5 font-mono font-normal text-[12px] text-ink-muted">
                       #{i.number}
                     </span>
@@ -564,6 +577,7 @@ function PhaseCard({
   column: PhaseColumn;
 }) {
   const projects = useProjects();
+  const open = useOpenItem() === item.id;
   const project = projects.data?.find((p) => p.id === item.projectId)?.name ?? "project";
   const line =
     column === "done"
@@ -576,11 +590,13 @@ function PhaseCard({
           };
   return (
     <Link
-      {...openItem(item.id)}
+      {...peekItem(item.id)}
       className={cn(
         "flex flex-col gap-1 rounded-lg bg-panel px-2.5 py-2 shadow-panel hover:brightness-[0.99]",
         needsYou.has(item.id) && "shadow-needs-you",
+        open && "ring-2 ring-ink/50",
       )}
+      aria-current={open ? "true" : undefined}
       data-testid={`card-${item.id}`}
     >
       <div className="flex items-center gap-2 text-ink-muted text-xs">
@@ -653,7 +669,7 @@ export function DoneList({
                     data-testid={`row-${i.id}`}
                   >
                     <td className="py-2.5 pr-3 pl-3.5">
-                      <Link {...openItem(i.id)} className="font-medium hover:underline">
+                      <Link {...peekItem(i.id)} className="font-medium hover:underline">
                         <span className="mr-1.5 font-mono font-normal text-[12px] text-ink-muted">
                           #{i.number}
                         </span>
