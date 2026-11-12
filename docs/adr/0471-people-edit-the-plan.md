@@ -55,3 +55,9 @@ content is compared exactly. An edit the resulting plan would read differently (
 a lost list marker) is refused. A person's later edit retires any earlier one it overrides,
 including a deletion whose text it brings back, and every standing edit can be released from under
 the plan. An answer recorded from an edit must be words the person wrote in it.
+
+## Amendment, 2026-11-12 (third review of #85)
+An edit keeps only the blocks it changed, by section and parent item, and keeps out what it removed
+(no block of that section may say it again). A heading rename carries the edits beneath it; an edit
+whose section is deleted stays listed as not kept with the reason until a person releases it. An
+answer recorded from an edit must be the span it changed, or an option it names without negation.

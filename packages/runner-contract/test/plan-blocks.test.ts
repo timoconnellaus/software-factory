@@ -2,7 +2,15 @@
 // fences; edits kept by section and count; and edits refused when the plan would read them
 // differently from how the person wrote them.
 import { describe, expect, it } from "vitest";
-import { droppedEdits, type EditFootprint, editFootprint, planBlocks } from "../src/plan-blocks.ts";
+import {
+  droppedEdits,
+  type EditFootprint,
+  editFootprint,
+  planBlocks,
+  renameSections,
+  sectionRenames,
+  whyNotKept,
+} from "../src/plan-blocks.ts";
 
 const shape = (md: string) =>
   planBlocks(md).map((b) => [b.kind, b.text, b.lineStart, b.lineEnd, b.indent]);
@@ -98,7 +106,9 @@ describe("edits kept by section and count", () => {
 
   it("keeps a deletion of one of two identical lines (case b), and drops it when the copy comes back", () => {
     const del = edit(PLAN, 4, 4, "");
-    expect(del.footprint.gone).toEqual([{ section: "Plan › Requirements", text: "- TBD", max: 1 }]);
+    expect(del.footprint.gone).toEqual([
+      { section: "Plan › Requirements", parent: "", text: "- TBD", max: 1 },
+    ]);
     expect(droppedEdits(del.result, [del])).toEqual([]);
     expect(droppedEdits(PLAN, [del])).toEqual([del]);
   });
@@ -127,5 +137,88 @@ describe("edits kept by section and count", () => {
     expect(
       droppedEdits(e.result.replace("  nested: 2", "nested: 2"), [{ footprint: f }]),
     ).toHaveLength(1);
+  });
+});
+
+describe("third review of #85", () => {
+  const edit = (md: string, start: number, end: number, after: string) => {
+    const r = editFootprint(md, start, end, after);
+    if (!r.ok) throw new Error(r.reason);
+    return { id: `${start}:${after}`, result: r.result, footprint: r.footprint };
+  };
+
+  it("reads a CRLF plan as an LF one (4)", () => {
+    const lf = "# Plan\n## Scope\n```\nx\n```\n- a";
+    expect(planBlocks(lf.replace(/\n/g, "\r\n"))).toEqual(planBlocks(lf));
+  });
+
+  it("makes a setext heading a section, and tells repeated headings apart (5, 7)", () => {
+    const md = "Plan\n====\n\nNotes\n-----\n- a\n\n## Notes\n- b";
+    expect(planBlocks(md).map((b) => [b.kind, b.section])).toEqual([
+      ["heading", ""],
+      ["heading", "Plan"],
+      ["item", "Plan › Notes"],
+      ["heading", "Plan"],
+      ["item", "Plan › Notes (2)"],
+    ]);
+  });
+
+  it("knows a nested block's parent item, and numbers an ordered list in order (5, 7)", () => {
+    const md = "1. one\n1. two\n   - inner\n1. three\n\n   para in three";
+    expect(planBlocks(md).map((b) => [b.text, b.parent, b.ordinal])).toEqual([
+      ["1. one", "", 1],
+      ["1. two", "", 2],
+      ["- inner", "1. two", null],
+      ["1. three", "", 3],
+      ["para in three", "1. three", null],
+    ]);
+  });
+
+  it("drops an edit whose line moved to another duplicate section or under another parent (5)", () => {
+    const md = "## Notes\n- a\n\n## Notes\n- b\n- x\n  - kept";
+    const e = edit(md, 1, 1, "- mine");
+    expect(droppedEdits(e.result, [e])).toEqual([]);
+    const otherNotes = e.result.replace("- mine\n", "").replace("- b", "- b\n- mine");
+    expect(droppedEdits(otherNotes, [e])).toEqual([e]);
+    const n = edit(md, 6, 6, "  - nested mine");
+    const demoted = n.result.replace("- x\n  - nested mine", "- x\n- b2\n  - nested mine");
+    expect(droppedEdits(demoted, [n])).toEqual([n]);
+  });
+
+  it("takes as the person's only the blocks that changed (6)", () => {
+    const e = edit("## Scope\n- a\n- b", 1, 2, "- a\n- b\n- c");
+    expect(e.footprint).toEqual({
+      blocks: [{ section: "Scope", parent: "", text: "- c" }],
+      gone: [],
+    });
+  });
+
+  it("keeps a replaced line out, even inside a longer one (2)", () => {
+    const e = edit("## Stack\n- Use MySQL", 1, 1, "- Use Postgres");
+    expect(e.footprint.gone).toEqual([
+      { section: "Stack", parent: "", text: "- Use MySQL", max: 0 },
+    ]);
+    const back = `${e.result}\n- Use MySQL instead (Postgres rejected)`;
+    expect(droppedEdits(back, [e])).toEqual([e]);
+    expect(whyNotKept(back, e.footprint)).toContain("Use MySQL");
+  });
+
+  it("maps sections a heading rename moves, and says when a section is gone (3)", () => {
+    const md = "## Scope\n### Later\n- a\n## Out";
+    const renamed = md.replace("## Scope", "## In scope");
+    expect([...sectionRenames(md, renamed)]).toEqual([
+      ["Scope", "In scope"],
+      ["Scope › Later", "In scope › Later"],
+    ]);
+    const e = edit(md, 2, 2, "- mine");
+    expect(renameSections(e.footprint, sectionRenames(md, renamed)).blocks).toEqual([
+      { section: "In scope › Later", parent: "", text: "- mine" },
+    ]);
+    expect(whyNotKept("## Out\n- mine", e.footprint)).toContain("no longer in the plan");
+  });
+
+  it("accepts an edit of a fence inside a 10. item (7)", () => {
+    const md = "10. ten\n\n    ```\n    x\n    ```";
+    expect(editFootprint(md, 2, 4, "    ```\n    y\n    ```").ok).toBe(true);
   });
 });

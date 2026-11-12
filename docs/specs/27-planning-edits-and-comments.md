@@ -130,6 +130,28 @@ on them), and sf-app's tab.
   - Race tests prove each guard: the refused call's audit row must say a guard caught it, not the
     version's `UNIQUE`. Edit against approval and against `planning.ready` both ways, and two
     edits at once.
+- After the third review (#85):
+  - **An answer from an edit is what the edit changed**: the whole changed span of the tagged
+    line, as written, or one of the question's options named in that span with no negation ("not",
+    "instead", "rather", "except", …). "TBD" → "not Postgres, use SQLite" can't be recorded as
+    "Postgres". The answered row shows the edit's words beside the answer as the planner's reading,
+    and a click corrects it.
+  - **A replacement remembers what it removed**: no more blocks of that section may say the removed
+    words (even inside a longer line) than the edit left.
+  - **Headings.** Renaming a heading carries the edits beneath it to the new section. Deleting a
+    section leaves its edits standing, listed as not kept with the reason ("its section … is no
+    longer in the plan"), never dropped silently; only edits the new one overrides (it removed what
+    they wrote, or wrote back what they removed) are retired. Repeated headings are told apart
+    ("Notes", "Notes (2)"), a setext heading is a section, and a nested block knows its parent item,
+    which is part of what an edit keeps.
+  - **Only what changed is the person's**: an untouched neighbour inside the edited lines stays the
+    planner's.
+  - CRLF plans parse as LF. An edit is compared with its own lines dedented, so a fence inside a
+    `10.` item edits cleanly.
+  - Rendering: ordered items show their number in the list, reference links resolve across blocks
+    (a definition-only block shows its source), loose lists keep their spacing; the comment count
+    and controls sit in a gutter inside the block; the edits list renders its Markdown and says why
+    an edit isn't kept.
   - Screenshots: `docs/screenshots/planning/blocks-*.png` (nested lists, a fence, kept edits and a
     comment on each) and `edits-dropped-*.png` (the edits list with one not kept, and Release).
 - Deferred: resolving comments, editing the structured lists (acceptance criteria, assumptions,

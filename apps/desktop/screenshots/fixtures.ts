@@ -548,7 +548,7 @@ const dropped = () => {
 const wrote = (after: string) =>
   planBlocks(PLAN_MD)
     .filter((b) => planBlocks(after).some((a) => a.text === b.text))
-    .map(({ section, text }) => ({ section, text }));
+    .map(({ section, parent, text }) => ({ section, parent, text }));
 
 function kept(n: number, prompt: string, answer: string, options: string[]): PlanningQ {
   return question(n, prompt, {
@@ -899,6 +899,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             authorName: "You",
             createdAt: ago(4),
             kept: true,
+            whyNotKept: null,
             blocks: wrote(
               "- New items land in the Backlog of the project that owns the repository [Q3]",
             ),
@@ -914,6 +915,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             authorName: "You",
             createdAt: ago(3),
             kept: true,
+            whyNotKept: null,
             blocks: wrote("  - relabelling an open issue brings it in"),
           },
           // Second review of #85: an edit the plan no longer keeps holds the gate until released.
@@ -930,9 +932,11 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
                   authorName: "Ana",
                   createdAt: ago(2),
                   kept: false,
+                  whyNotKept: "the plan doesn't have its words as written, in their place",
                   blocks: [
                     {
                       section: "Take work from GitHub issues › Scope",
+                      parent: "",
                       text: "- A closed issue is reopened when its item fails",
                     },
                   ],

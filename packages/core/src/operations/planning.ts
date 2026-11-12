@@ -6,6 +6,7 @@ import { json, parseJson } from "@software-factory/db";
 import {
   chatReplyInputSchema,
   droppedEdits,
+  type EditFootprint,
   editFootprint,
   PLANNING_INTERRUPT_LINES,
   pinSchema,
@@ -13,7 +14,10 @@ import {
   planningPeekInputSchema,
   planningReadyInputSchema,
   planningWaitInputSchema,
+  renameSections,
+  sectionRenames,
   specReviseInputSchema,
+  whyNotKept,
 } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -462,7 +466,7 @@ export const specRevise = defineOperation({
     if (dropped.length) {
       throw new OperationError(
         "conflict",
-        `a person edited the plan, and this revision doesn't keep their wording: ${await describeEdits(ctx, dropped)}. Keep each word for word in its section, as many times as they wrote it, or ask them in the chat.`,
+        `a person edited the plan, and this revision doesn't keep their wording: ${await describeEdits(ctx, dropped, input.specMd)}. Keep each word for word in its section, as many times as they wrote it, or ask them in the chat.`,
         { editIds: dropped.map((e) => e.id) },
       );
     }
@@ -865,7 +869,7 @@ export const planningReady = defineOperation({
     if (notKept.length) {
       throw new OperationError(
         "conflict",
-        `the plan doesn't keep these edits word for word: ${await describeEdits(ctx, notKept)}. Restore them with spec_revise, or ask the person in the chat to release the edit (they can, under the plan)`,
+        `the plan doesn't keep these edits word for word: ${await describeEdits(ctx, notKept, spec?.body_md ?? "")}. Restore them with spec_revise, or ask the person in the chat to release the edit (they can, under the plan)`,
         { editIds: notKept.map((e) => e.id) },
       );
     }
@@ -1326,13 +1330,38 @@ export const specEdit = defineOperation({
         .where("current_spec_id", "=", input.specId),
     );
     ctx.guardChanged("the plan is still the version edited");
-    // A person's later word stands (review of #85, round 2): an earlier edit this one no longer keeps
-    // (it rewrote that edit's lines, or brought back what it deleted) is retired, not left to hold
-    // the planner. The new edit is taken first, so it keeps the copies it wrote.
+    // A heading the person renamed carries the edits beneath it along (third review of #85).
+    const renames = sectionRenames(spec.body_md, body);
+    const standing = (await standingEdits(ctx, w.id)).map((e) => ({
+      ...e,
+      moved: renames.size > 0,
+      footprint: renameSections(e.footprint, renames),
+    }));
+    for (const e of standing.filter((x) => x.moved)) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_spec_edits")
+          .set({ footprint: JSON.stringify(e.footprint) })
+          .where("id", "=", e.id)
+          .where("replaced_by", "is", null),
+      );
+    }
+    // A person's later word stands: an earlier edit this one overrides (it removed a block that edit
+    // wrote, or wrote back what that edit removed) is retired. Any other edit the plan stops keeping
+    // stays, listed as not kept with the reason, until a person releases it: never dropped silently.
     const mine = { id: editId, footprint: planned.footprint };
-    const covered = droppedEdits(body, [mine, ...(await standingEdits(ctx, w.id))]).filter(
-      (e) => e.id !== editId,
-    );
+    const key = (k: { section: string; parent?: string; text: string }) =>
+      `${k.section}␟${k.parent ?? ""}␟${k.text}`;
+    const removedKeys = new Set(planned.footprint.gone.map(key));
+    const covered = droppedEdits(body, [mine, ...standing])
+      .filter((e) => e.id !== editId)
+      .filter(
+        (e) =>
+          e.footprint.blocks.some((b) => removedKeys.has(key(b))) ||
+          e.footprint.gone.some(
+            (g) => droppedEdits(body, [{ footprint: { blocks: [], gone: [g] } }]).length > 0,
+          ),
+      );
     if (covered.length) {
       ctx.write(
         ctx.db
@@ -1568,8 +1597,10 @@ export const planningGet = defineOperation({
         createdAt: z.string(),
         /** Whether the current plan keeps it word for word (shown at the gate when it doesn't). */
         kept: z.boolean(),
-        /** The blocks it wrote, by section: the plan's blocks that show as this person's. */
-        blocks: z.array(z.object({ section: z.string(), text: z.string() })),
+        /** Why the plan doesn't keep it (its section is gone, what it removed is back…). */
+        whyNotKept: z.string().nullable(),
+        /** The blocks it wrote, by section and parent: the plan's blocks that show as this person's. */
+        blocks: z.array(z.object({ section: z.string(), parent: z.string(), text: z.string() })),
       }),
     ),
     present: z.array(z.object({ userId: z.string(), name: z.string() })),
@@ -1795,7 +1826,8 @@ export const planningGet = defineOperation({
       })),
       edits: edits.map((e) => ({
         kept: !notKept.has(e.id),
-        blocks: e.footprint.blocks,
+        whyNotKept: current && notKept.has(e.id) ? whyNotKept(current.body_md, e.footprint) : null,
+        blocks: e.footprint.blocks.map((b) => ({ ...b, parent: b.parent ?? "" })),
         id: e.id,
         specId: e.spec_id,
         lineStart: e.line_start,
@@ -1818,8 +1850,9 @@ async function describeEdits(
     after: string;
     before: string;
     author_id: string;
-    footprint: { blocks: { section: string }[]; gone: { section: string }[] };
+    footprint: EditFootprint;
   }[],
+  md: string,
 ): Promise<string> {
   const ids = [...new Set(edits.map((e) => e.author_id))];
   const names = new Map<string, string>();
@@ -1835,7 +1868,7 @@ async function describeEdits(
       const what = e.after.trim()
         ? JSON.stringify(e.after.trim())
         : `removing ${JSON.stringify(e.before.trim())}`;
-      return `${what}${section ? ` (in ${section})` : ""} by ${names.get(e.author_id) ?? e.author_id}`;
+      return `${what}${section ? ` (in ${section})` : ""} by ${names.get(e.author_id) ?? e.author_id}: ${whyNotKept(md, e.footprint)}`;
     })
     .join("; ");
 }

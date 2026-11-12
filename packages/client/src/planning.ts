@@ -174,6 +174,7 @@ export {
   editWrote,
   foldSpace,
   frameSize,
+  normalizeLines,
   type PlanBlock,
   planBlocks,
 } from "@software-factory/runner-contract";

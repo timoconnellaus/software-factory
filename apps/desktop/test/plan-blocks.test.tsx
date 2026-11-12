@@ -97,4 +97,24 @@ describe("the plan, block by block", () => {
     expect(orphanedComments(v, PLAN).map((m) => m.id)).toEqual(["old"]);
     expect(quoteText(stale.anchor?.quote ?? "")).not.toBe(parts[1]?.text);
   });
+
+  it("numbers an ordered list in order and resolves a reference link defined in another block (third review of #85, 7)", () => {
+    const md = "1. one\n1. two [docs]\n1. three\n\n[docs]: https://example.com/docs";
+    const html = renderToStaticMarkup(
+      <PlanBody
+        view={view([])}
+        bodyMd={md}
+        specId="s"
+        previous={null}
+        components={{}}
+        workItemId="wi"
+        me="u"
+        onComment={() => {}}
+      />,
+    );
+    expect(html).toContain('start="2"');
+    expect(html).toContain('start="3"');
+    expect(html).toContain('href="https://example.com/docs"');
+    expect(html).toContain('data-testid="plan-block-definitions"');
+  });
 });
