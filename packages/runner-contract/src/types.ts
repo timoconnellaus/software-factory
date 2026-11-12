@@ -159,7 +159,7 @@ export interface SessionHandle {
   sessionRef: string;
   /** How a person can attach, when the runner declares `ui-takeover`. Shown as-is in the UI. */
   takeover?: { label: string; hint: string };
-  /** How the session runs (ADR 0500). Absent: a terminal. */
+  /** How the session runs (ADR 0450). Absent: a terminal. */
   mode?: SessionMode;
 }
 
@@ -196,11 +196,11 @@ export type AdapterEvent =
   | { type: "log"; stream: "terminal" | "stdout" | "stderr"; text: string; screen?: boolean }
   /** What the agent said (assistant) or was told (user), as the transcript has it (ADR 0400). */
   | { type: "message"; role: "assistant" | "user"; text: string }
-  /** `id` pairs a stream session's tool call with its `tool.result` (ADR 0500). */
+  /** `id` pairs a stream session's tool call with its `tool.result` (ADR 0450). */
   | { type: "tool"; name: string; input?: string; id?: string }
-  /** A tool call's result, from a stream session (ADR 0500). Output ≤ TOOL_OUTPUT_MAX. */
+  /** A tool call's result, from a stream session (ADR 0450). Output ≤ TOOL_OUTPUT_MAX. */
   | { type: "tool.result"; toolId: string; output: string; isError?: boolean }
-  /** One turn of a stream session ended (ADR 0500). */
+  /** One turn of a stream session ended (ADR 0450). */
   | {
       type: "turn";
       outcome: "success" | "error";
@@ -209,7 +209,7 @@ export type AdapterEvent =
       usage?: TurnUsage;
       error?: string;
     }
-  /** A stream session stopped so a person can resume it in a terminal (ADR 0500). */
+  /** A stream session stopped so a person can resume it in a terminal (ADR 0450). */
   | { type: "takeover"; sessionId: string; hint: string }
   | { type: "session.ended"; outcome: SessionOutcome; summary?: string };
 
