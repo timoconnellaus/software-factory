@@ -49,6 +49,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AM | 0320–0329 | 0550–0559 | Runners under load (`runner-tmux-robust`): spec 43, incident #11. No orphans, tmux errors aren't "gone", back off claiming under load, marked run branches. Used: migration 0320; ADRs 0550–0552 | in review |
 | AJ | 0290–0299 | 0520–0529 | Runner updates without draining on every deploy (`runner-update-no-drain`): spec 38 (keep claiming while an update is pending, the caps, `minRunnerCompat`, `RUNNER_SHA` from the deploy) and spec 39 (re-adopting live jobs after a restart, spec only). Used: migration 0290 (`core_runners.compat`); ADR 0520 | in review |
 | AP | 0350–0359 | 0580–0589 | The babysitter (`babysitter`): spec 53. Approval separated from delivery, stop the line on red main, approval across a clean merge of main, the `babysit` job, red-main repair. ADRs 0580–0585; Workflow v11 (provisional: next free at merge); migrations 0350 delivery, 0351 main health, 0352 approved change, 0353 flakes | in progress |
+| AR | 0370–0379 | 0600–0609 | Planning to kim's standard, continued (`planning`, block AE ran out above the 0261 rebuild of `core_work_items`): spec 23's parked items (`core_work_items.needs_info`) and what follows. Used: migration 0370 | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.

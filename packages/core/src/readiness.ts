@@ -1,6 +1,8 @@
-// The readiness pre-check and parking (spec 23, ADR 0304 as amended by 0474). Deterministic, no
-// model: before an item is marked ready, released or sent to shaping, its request must state an
-// outcome and at least one thing someone could check, or have a parent item. One that doesn't is
+// The readiness pre-check and parking (spec 23, ADR 0304 as amended 2026-11-12). Deterministic, no
+// model: before an item is marked ready, released or sent to shaping, its request should state an
+// outcome and at least one thing someone could check, or have a parent item. A person doing so is
+// their judgement that it's clear enough: they get the result as a hint they may ignore, and triage
+// asks what's needed. An item no person released (intake, an autopilot, an agent) that fails is
 // parked: it stays in the Backlog (no Workflow, no slot) with a "needs info" marker saying who it
 // waits on, why, and the open questions, which are asked of that person (their Inbox). Answering
 // them, or editing the request, re-runs the check; when it passes the item goes on to where it was
@@ -180,6 +182,8 @@ export function parkIfNotReady(
   w: Parkable & { body: string; parent_work_item_id: string | null; kind?: string },
   heading: Heading,
 ): NeedsInfo | null {
+  // A person's release is their judgement (ADR 0304 as amended): only what no person released parks.
+  if (ctx.actor.type === "human") return null;
   // An incident or an attached PR has its own path (spec 07, ADR 0080): the check is for requests.
   if (w.kind && w.kind !== "change") return null;
   const checked = precheck({ title: w.title, body: w.body, parentId: w.parent_work_item_id });
@@ -207,4 +211,23 @@ export function refuseIfParked(w: { number: number; needs_info: string | null },
       `work item #${w.number} needs info (${marker.reason}): answer its questions or edit the request, and it ${what} by itself`,
     );
   }
+}
+
+/**
+ * The pre-check's result as a hint for a person (ADR 0304 as amended): null when the request reads
+ * clear, else a sentence they may ignore. Shown on the item and in the release response.
+ */
+export function readinessHint(w: {
+  title: string;
+  body: string;
+  parent_work_item_id: string | null;
+  kind?: string;
+}): string | null {
+  if (w.kind && w.kind !== "change") return null;
+  const checked = precheck({ title: w.title, body: w.body, parentId: w.parent_work_item_id });
+  if (checked.ok) return null;
+  const what = checked.missing
+    .map((m) => (m === "outcome" ? "no stated outcome" : "no checkable statement"))
+    .join(", ");
+  return `This may be too thin to build without questions: ${what}. Triage will ask what it needs.`;
 }

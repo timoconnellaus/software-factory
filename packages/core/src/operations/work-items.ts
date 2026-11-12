@@ -10,7 +10,7 @@ import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { endPlanningSessions } from "../planning.ts";
 import { specRequired } from "../policy/project-policy.ts";
-import { parkIfNotReady } from "../readiness.ts";
+import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
@@ -163,6 +163,8 @@ export const workItemCreate = defineOperation({
     outcome: z.enum(["created", "attached", "duplicate"]),
     /** Where a created item is now: `running` when the pull started it at once. */
     status: z.string().optional(),
+    /** The readiness pre-check's hint for the person who released it (spec 23): ignorable. */
+    hint: z.string().optional(),
     /** Set when the readiness pre-check parked it in the Backlog (spec 23). */
     needsInfo: z.object({ waitingOn: z.string(), reason: z.string() }).optional(),
   }),
@@ -303,6 +305,17 @@ export const workItemCreate = defineOperation({
       branch: created.branch,
       outcome: "created" as const,
       status: parked ? "backlog" : input.state,
+      ...(!parked && input.state !== "backlog" && ctx.actor.type === "human"
+        ? (() => {
+            const hint = readinessHint({
+              title,
+              body: input.body,
+              parent_work_item_id: null,
+              kind: "change",
+            });
+            return hint ? { hint } : {};
+          })()
+        : {}),
       ...(parked ? { needsInfo: { waitingOn: parked.waitingOn, reason: parked.reason } } : {}),
     };
   },
@@ -361,6 +374,18 @@ export const workItemGet = defineOperation({
       body: z.string(),
       specRequired: z.boolean().nullable(),
       specDecisionReason: z.string().nullable(),
+      /** The readiness pre-check's hint while it hasn't started (spec 23): ignorable. */
+      readinessHint: z.string().nullable(),
+      /** Set while parked in the Backlog for a requester's answers (spec 23). */
+      needsInfo: z
+        .object({
+          waitingOn: z.string(),
+          reason: z.string(),
+          source: z.string(),
+          questionIds: z.array(z.string()),
+          heading: z.string(),
+        })
+        .nullable(),
       domains: z.array(z.string()),
       headSha: z.string().nullable(),
       prNumber: z.number().nullable(),
@@ -559,6 +584,19 @@ export const workItemGet = defineOperation({
         body: w.body,
         specRequired: w.spec_required === null ? null : w.spec_required === 1,
         specDecisionReason: w.spec_decision_reason,
+        readinessHint: ["backlog", "ready"].includes(w.status) ? readinessHint(w) : null,
+        needsInfo: (() => {
+          const m = needsInfoOf(w.needs_info);
+          return m
+            ? {
+                waitingOn: m.waitingOn,
+                reason: m.reason,
+                source: m.source,
+                questionIds: m.questionIds,
+                heading: m.heading,
+              }
+            : null;
+        })(),
         domains: parseJson<string[]>(w.domains, []),
         headSha: w.head_sha,
         prNumber: w.pr_number,

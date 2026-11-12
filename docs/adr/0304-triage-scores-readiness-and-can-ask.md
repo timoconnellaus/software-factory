@@ -26,3 +26,20 @@ guesses, which the research marks as the largest loss.
 ## Consequences
 - Amends [ADR 0013](0013-triage-sizes-the-spec-gate.md) and [ADR 0005](0005-hybrid-coordinator.md) (a new row in the foreman's decisions).
 - Built in [spec 23](../specs/23-triage-questions-and-critic.md).
+
+## Amendment, 2026-11-12 (spec 23 part A, the owner via the coordinator)
+- **The pre-check parks only what no person released**: intake (issues, connectors), autopilot output,
+  and anything an agent files or releases. A person who marks an item ready, releases it or sends it
+  to shaping has judged it clear enough. The check never parks it; they see its result as a hint they
+  can ignore (in the release response and on the item), and the question round is left to triage,
+  whose job it is. Why: a word-count heuristic that parks a person's "Fix the typo in the README
+  header" is the check being wrong, not the request. It is the same for every project; there is no
+  setting.
+- **Parking is the Backlog with a needs-info marker, not a status.** The universal states stay
+  Backlog, the release (Ready → Queued) and Done (ADR 0491, 0493). A parked item sits in the Backlog
+  with `core_work_items.needs_info`: who it waits on (the requester), why, the questions asked of
+  them (their Inbox), and where it was heading. It holds no Workflow and no slot. Answering (or
+  editing the request) re-runs the check with the answers appended to the request; passing, the
+  item goes on to Ready, Queued or shaping as it was heading, so nobody releases it twice. A person
+  may move a parked item on by hand; that withdraws its questions.
+

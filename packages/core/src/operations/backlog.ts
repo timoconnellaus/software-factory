@@ -20,6 +20,7 @@ import {
   parkIfNotReady,
   precheck,
   precheckPrompt,
+  readinessHint,
   refuseIfParked,
 } from "../readiness.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
@@ -507,6 +508,8 @@ const startedOutput = z.object({
   needsInfo: z
     .object({ waitingOn: z.string(), reason: z.string(), questionIds: z.array(z.string()) })
     .optional(),
+  /** The readiness pre-check's hint for the person who released it (spec 23): ignorable. */
+  hint: z.string().optional(),
   /** What it waits for that isn't done; empty when nothing holds it. */
   blockedBy: z.array(
     z.object({ id: z.string(), number: z.number(), title: z.string(), status: z.string() }),
@@ -526,11 +529,12 @@ export const workItemRelease = defineOperation({
     const w = requireWorkItem(ctx);
     const refused = releaseRefusal(ctx, w);
     if (refused) throw refused;
-    refuseIfParked(w, "is released");
+    takeOverParked(ctx, w, "is released");
     // The readiness pre-check (spec 23): an unclear request is parked, not released.
     const parked = w.shaping_started_at ? null : parkIfNotReady(ctx, w, "queued");
     if (parked) return parkedOutput(parked);
-    return releaseNow(ctx, w);
+    const hint = w.shaping_started_at ? null : readinessHint(w);
+    return { ...(await releaseNow(ctx, w)), ...(hint ? { hint } : {}) };
   },
 });
 
@@ -589,6 +593,8 @@ export const workItemShape = defineOperation({
   input: z.object({ workItemId }),
   output: z.object({
     status: z.string(),
+    /** The readiness pre-check's hint for the person (spec 23): ignorable. */
+    hint: z.string().optional(),
     needsInfo: z
       .object({ waitingOn: z.string(), reason: z.string(), questionIds: z.array(z.string()) })
       .optional(),
@@ -601,13 +607,14 @@ export const workItemShape = defineOperation({
     // Shaping has the same preconditions as release, except who may (only a person, for now).
     const refused = releaseRefusal(ctx, w);
     if (refused) throw refused;
-    refuseIfParked(w, "goes to shaping");
+    takeOverParked(ctx, w, "goes to shaping");
     const parked = parkIfNotReady(ctx, w, "shaping");
     if (parked) {
       const { blockedBy: _b, ...out } = parkedOutput(parked);
       return out;
     }
-    return shapeNow(ctx, w);
+    const hint = readinessHint(w);
+    return { ...(await shapeNow(ctx, w)), ...(hint ? { hint } : {}) };
   },
 });
 
@@ -767,7 +774,7 @@ export const workItemMove = defineOperation({
     }
     if (w.status === input.to) return { status: w.status };
     if (input.to === "ready") {
-      refuseIfParked(w, "moves to Ready");
+      takeOverParked(ctx, w, "moves to Ready");
       // Marking it ready says it's clear enough to build (spec 23): the pre-check runs.
       if (w.status === "backlog" && parkIfNotReady(ctx, w, "ready")) return { status: "backlog" };
     }
@@ -1389,4 +1396,31 @@ export async function resumeParked(
     await shapeNow(ctx, next);
   }
   return "resumed";
+}
+
+/**
+ * A parked item moved on by hand (spec 23): a person's call is their judgement, so the marker is
+ * cleared and its open questions withdrawn; an agent is refused (answer the questions or edit the
+ * request, and it goes on by itself).
+ */
+function takeOverParked(ctx: HandlerContext, w: WorkItemRow, what: string) {
+  const marker = needsInfoOf(w.needs_info);
+  if (!marker) return;
+  if (ctx.actor.type !== "human") refuseIfParked(w, what);
+  if (marker.questionIds.length) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_questions")
+        .set({ status: "withdrawn", note: "a person moved the item on" })
+        .where("id", "in", marker.questionIds)
+        .where("status", "=", "open"),
+    );
+  }
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({ needs_info: null, status_reason: null, updated_at: ctx.now })
+      .where("id", "=", w.id),
+  );
+  w.needs_info = null;
 }
