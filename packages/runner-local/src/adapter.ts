@@ -1333,6 +1333,10 @@ export function createLocalRunner(
       if (session.stream) {
         throw new Error("a stream-json session can't take a fix round yet");
       }
+      // Between turns (after `session.ended`), so this text starts a turn of its own: the next
+      // `events()` call waits for its submit and Stop, not the ones before (ADR 0501). A steer typed
+      // mid-turn is #87's `steeredAt`, which this leaves alone.
+      if (steerText(text)) session.promptSentAt = Date.now();
       await this.steer?.(session, text);
       yield* this.events(job, session, signal);
     },
@@ -1343,9 +1347,6 @@ export function createLocalRunner(
      */
     async steer(session, text) {
       if (session.stream) return steerStream(session, text);
-      // A steer starts a turn: a later `events()` call waits for this turn's own submit and Stop,
-      // not the ones before (ADR 0501). Mid-turn it changes nothing (the turn is already submitted).
-      if (steerText(text)) session.promptSentAt = Date.now();
       await typeLine(session.name, text, session);
     },
     // Spec 26, ADR 0470: stop the current step, then submit the factory's fixed line as a steer.
