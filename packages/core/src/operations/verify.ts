@@ -36,7 +36,7 @@ import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../w
 import { requireQueueHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
-  cancelWorkItem,
+  endWorkItem,
   projectForRepo,
   projectId,
   repoName,
@@ -553,7 +553,7 @@ async function readMergeability(
 export const verifyRefresh = defineOperation({
   name: "verify.refresh",
   description:
-    "Re-evaluate `factory/verify` for one commit of a project's repo, from the newest review packet for it and CI as it stands on GitHub (ADR 0037). Called by the GitHub connector when a PR opens or gets a new push, when a check suite completes, or when someone re-runs the check. A new head with no packet yet is left without a passing check; a PR the factory didn't open fails until it is attached to a work item (spec 04, criterion 3), and its check links to the app's `/attach` page (spec 05). For an attached PR, a new push records the new head, withdraws a pending merge gate and wakes the Workflow to verify again; closing it without merging cancels its item. Wakes a Workflow waiting on CI.",
+    "Re-evaluate `factory/verify` for one commit of a project's repo, from the newest review packet for it and CI as it stands on GitHub (ADR 0037). Called by the GitHub connector when a PR opens or gets a new push, when a check suite completes, or when someone re-runs the check. A new head with no packet yet is left without a passing check; a PR the factory didn't open fails until it is attached to a work item (spec 04, criterion 3), and its check links to the app's `/attach` page (spec 05). For an attached PR, a new push records the new head, withdraws a pending merge gate and wakes the Workflow to verify again. A PR closed on GitHub ends its open item, attached or the factory's own: cancelled when closed without merging, Done when merged outside the factory (a merge the factory carried out is finished by its Workflow); its runs stop, its gates close and its Workflow ends. Wakes a Workflow waiting on CI.",
   risk: "write",
   actors: ["intake", "agent"],
   permission: "signed-in",
@@ -565,9 +565,13 @@ export const verifyRefresh = defineOperation({
     trigger: z.enum(["pull_request", "ci", "rerequested", "closed"]),
     /** With `closed`: whether the PR was merged. */
     merged: z.boolean().default(false),
+    /** With a merge: who merged it on GitHub (the webhook's `merged_by` login). */
+    mergedBy: z.string().max(200).nullable().default(null),
+    /** With a merge: whether `merged_by` is the factory's own App (`<slug>[bot]`). */
+    mergedByApp: z.boolean().default(false),
   }),
   output: z.object({
-    outcome: z.enum(["posted", "unattached", "ignored", "cancelled"]),
+    outcome: z.enum(["posted", "unattached", "ignored", "cancelled", "merged"]),
     workItemId: z.string().nullable(),
     status: z.string().nullable(),
     conclusion: z.string().nullable(),
@@ -592,17 +596,34 @@ export const verifyRefresh = defineOperation({
         : null;
 
     if (input.trigger === "closed") {
-      // Only an attached PR's item ends with its PR; the factory's own items end in the Workflow.
+      // A PR merged or closed on GitHub outside the factory ends its item (attached or the
+      // factory's own): its runs stop, its gates close and its Workflow ends, so nothing keeps
+      // verifying a closed PR or opening incidents for it. Merged: Done; closed: cancelled.
       const item = await byPr();
-      if (
-        item?.kind !== "attached" ||
-        input.merged ||
-        !["running", "waiting", "paused"].includes(item.status)
-      ) {
+      if (!item || !["running", "waiting", "paused"].includes(item.status)) {
         return { outcome: "ignored" as const, ...none, workItemId: item?.id ?? null };
       }
+      if (input.merged && (input.mergedByApp || (await factoryMerging(ctx, item, input.headSha)))) {
+        // The factory's own merge: its Workflow finishes the item. GitHub's `closed` webhook can
+        // arrive before pr.merge's batch commits, so an applied approval alone isn't enough.
+        return { outcome: "ignored" as const, ...none, workItemId: item.id };
+      }
       ctx.subject({ workItemId: item.id });
-      cancelWorkItem(ctx, item, "the pull request was closed without merging");
+      const { releaseMergeQueue } = await import("./merge-queue.ts");
+      const by = input.mergedBy ?? "someone";
+      const reason = input.merged
+        ? `merged outside the factory by ${by}`
+        : "the pull request was closed without merging";
+      await releaseMergeQueue(ctx, item, input.merged ? "merged" : "left", reason);
+      endWorkItem(ctx, item, reason, input.merged ? "done" : "cancelled");
+      if (input.merged) {
+        ctx.change({
+          entity: "work_item",
+          id: item.id,
+          after: { mergedOutside: true, mergedBy: input.mergedBy },
+        });
+        return { outcome: "merged" as const, ...none, workItemId: item.id };
+      }
       return { outcome: "cancelled" as const, ...none, workItemId: item.id };
     }
 
@@ -1034,4 +1055,33 @@ function parseObject(text: string | null): Record<string, unknown> {
 }
 function strings(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+/**
+ * Whether the factory itself is merging this item's PR at `headSha`: a merge approval for that
+ * head that a person approved (pr.merge may still be running, its batch uncommitted) or that has
+ * been applied. A webhook's `merged_by` is the surer sign; this covers a missing one.
+ */
+async function factoryMerging(
+  ctx: HandlerContext,
+  item: { id: string },
+  headSha: string,
+): Promise<boolean> {
+  // An item has a handful of merge approvals (one per verify round); read by core_pending_actions'
+  // work-item index.
+  const approvals = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select("input")
+    .where("work_item_id", "=", item.id)
+    .where("kind", "=", "merge")
+    .where("status", "in", ["approved", "applied"])
+    .limit(20)
+    .execute();
+  return approvals.some((a) => {
+    try {
+      return (JSON.parse(a.input) as { headSha?: unknown }).headSha === headSha;
+    } catch {
+      return false;
+    }
+  });
 }
