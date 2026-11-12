@@ -69,10 +69,11 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    checks ran in the weaker sandbox. `sf-runner doctor` says which. A check container gets 2 CPUs and
    4 GB of memory (`/tmp` a 1 GB tmpfs within it), and a tree past 10 GB isn't carried to the next
    check (measured every 15 s while a check runs: one that grows past it is stopped); runner.json
-   `checks` sets `cpus`, `memoryGb`, `tmpGb` and `maxTreeGb`. A check stopped by one of these
-   limits (killed for memory, out of processes, a full `/tmp`, past the disk bound) is reported
-   "failed: the check ran out of memory (limit 4 GB)" and the like, and goes to a person, never to
-   a fix round the agent can't win (see "Sizing a check" below). At most
+   `checks` sets `cpus`, `memoryGb`, `tmpGb` and `maxTreeGb`. A check that fails on the memory
+   limit (the Docker daemon's OOMKilled) or the disk bound (measured by the host) is a failed check
+   that says so: "the check hit the runner's memory limit (4 GB). The code under check may be the
+   cause; raise the limit in the runner's config or fix the code". It goes to a person, not to a fix
+   round (see "Sizing a check" below). Nothing the check prints is read as a limit. At most
    `checks.maxConcurrent` (default 1) checks run at once, each counted as a heavy job, and a check
    waits while the load backoff has stopped heavy work. Check containers, proxies and networks a
    runner that died mid-check left are reaped at start-up and on the periodic sweep. Under the OS sandbox a check reads none of the
@@ -156,18 +157,39 @@ A **planning** job is a long-lived Claude session that plans one work item with 
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CONFIG_DIR`, then
   sets that account's.
 
+## Containers from before runner labels
+
+A runner reaps only the containers and networks that carry its own `software-factory.runner` label,
+so ones made before that label existed are reaped by none. Remove them once by hand, with every
+runner on that Docker daemon stopped (`sf-runner uninstall`, or stop the service) so none of them
+is live:
+
+```sh
+docker ps -a --filter label=software-factory.job \
+  --format '{{.Names}} {{.Label "software-factory.runner"}}' |
+  awk 'NF == 1 { print $1 }' | while read -r c; do docker rm -f "$c"; done
+docker network ls --filter label=software-factory.job \
+  --format '{{.Name}} {{.Label "software-factory.runner"}}' |
+  awk 'NF == 1 { print $1 }' | while read -r n; do docker network rm "$n"; done
+```
+
+Each lists only factory containers (or networks) with no runner label and removes them; run each
+listing (up to the `awk`) alone first to see what would go.
+
 ## Sizing a check
 
 A project's checks (`checks` in `.factory/policy.json`) run within the runner's check limits: by
 default 2 CPUs, 4 GB of memory with `/tmp` a 1 GB tmpfs inside it, 4,096 processes, and 10 GB of
-disk for the check's own dir. A check that hits one fails on it, with the limit named, and a person
-decides: no fix round is spent, because nothing the agent changes in the code under check would win
-it. Size each check to fit, with room to spare:
+disk for the check's own dir. A check killed for memory, or whose dir grows past the disk bound,
+fails with the limit named, and a person decides whether to raise the limit or have the code fixed
+(the code under check may be what used it); no fix round is spent on it. Running out of processes or
+`/tmp` is an ordinary failure, with the error in its log. Size each check to fit, with room to spare:
 
 - **Memory is the usual one.** A test runner that starts a worker per CPU sees the machine's CPUs,
   not the container's 2, and each worker can take hundreds of MB to a GB or more (workerd, a
   TypeScript program, a browser). Cap the workers: for a Turborepo, `turbo run test
-  --concurrency=2`; for Vitest, `--maxWorkers=2`; for Jest, `--maxWorkers=2`. Count about 1.5 GB per
+  --concurrency=1` (or 2); for Vitest, `--maxWorkers=2` or `VITEST_MAX_WORKERS=2` in the
+  environment; for Jest, `--maxWorkers=2`. Inside the container a runner sees all the host's cores. Count about 1.5 GB per
   worker for a workerd or TypeScript-heavy suite, and keep the total under the limit with the
   tmpfs's 1 GB inside it.
 - **`/tmp` is memory too.** A test that writes big fixtures to `/tmp` spends the check's memory;
@@ -179,8 +201,7 @@ it. Size each check to fit, with room to spare:
 - **Time.** `timeoutMinutes` (at most 60) is per check; a timeout is a failure the agent sees.
 
 If a check needs more, the runner's owner raises the limit in runner.json `checks` (`cpus`,
-`memoryGb`, `tmpGb`, `maxTreeGb`); a project can't. This repository declares
-`pnpm turbo run test --concurrency=2` for that reason.
+`memoryGb`, `tmpGb`, `maxTreeGb`); a project can't.
 
 ## Claude accounts (spec 32, ADR 0410)
 A host can run Claude with several accounts and you pick which one new jobs use. With none added,

@@ -321,16 +321,23 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 
 > **Amended 2026-11-13 (follow-ups to the fifth review).**
 >
-> 1. **A runner limit is a failure a person decides, not a fix round.** A check stopped by one of the
->    runner's own limits is reported in `notRun` with the reason prefixed `failed: ` (runner-contract's
->    `RUNNER_LIMIT`): "failed: the check ran out of memory (limit 4 GB)", "… ran out of processes
->    (limit 4096 processes)", "… filled its /tmp (limit 1 GB)", "… ran out of disk (limit 10.0 GB …)".
->    So it is never a pass and never goes to a fix round (no attempt is burned on something the agent
->    can't win), and the gate says it failed on that limit rather than "not run". The check container
->    runs without `--rm` so `docker inspect` can say `OOMKilled`; a few lines of shell after the
->    check's own shell report the cgroup's `oom_kill` and `pids.events` max counts and /tmp's free
->    space (a check could forge that line, which only sends its own failure to a person). The disk
->    bound is measured every 15 s while a check runs (its whole dir), and a check past it is stopped.
+> 1. **A runner limit is a failure a person decides, not a fix round.** A check that fails on one
+>    of the runner's own limits is a *failed* check (`limit` on the executed check, additive), never
+>    "not run": the code under check may be what used the memory or the disk. It gets no fix round
+>    (the agent can't raise a limit) and goes to a person through the ordinary checks-failing path,
+>    not the merge-without-checks one meant for checks that never ran. Its log tail ends with "the
+>    check hit the runner's memory limit (4 GB). The code under check may be the cause; raise the
+>    limit in the runner's config or fix the code". A limit hit is read only from outside the check:
+>    the memory limit from the Docker daemon's record (`docker inspect` State.OOMKilled, which is set
+>    when any process in the container was OOM-killed: seen on Docker 29), the disk bound from the
+>    host's own measure of the check's dir, every 15 s while it runs. The check container runs
+>    without `--rm` so it can be inspected. *Re-review:* the first version also read the cgroup's
+>    `pids.events` and `memory.events` and /tmp's free space from a line a wrapper printed after the
+>    check's shell; the check could read the line's marker from `/proc/*/cmdline` and print a forged
+>    line first, turning its own test failure into a "limit". That wrapper is gone. The pids limit and
+>    a full /tmp are only visible from inside the container (its cgroup goes when it exits, and Docker
+>    Desktop's host can't read it), so they are ordinary failures again, whose log shows the `fork`
+>    or `No space left on device` error, and they get a fix round.
 > 2. **A runner reaps only its own.** Every container and network carries `software-factory.runner`
 >    with the runner's id beside the job label, and both reapers match on it: two runners on one
 >    Docker daemon never remove each other's. One without the label (from before) is reaped by none.

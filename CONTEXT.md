@@ -233,9 +233,11 @@ _Avoid_: PR summary, report
 A command the project declares in its config (`checks`, plus any its workflow adds) that the
 **runner host** runs itself on a clean copy of the head SHA after a build (an attached PR: before its
 review), under the job's isolation: a check container, or the host's OS sandbox with the harness's
-floor. With neither it reports the check **not run**, which fails (ADR 0501). A check stopped by a
-runner limit (its memory, processes, /tmp or disk) is reported failed on that limit, with the limit
-named, and goes to a person like a check not run, never to a fix round. Its exit code,
+floor. With neither it reports the check **not run**, which fails (ADR 0501). A check that fails on a
+runner limit (its memory, as the Docker daemon recorded it, or its disk, as the host measured it;
+never from anything the check prints) is a failed check with the limit named: the code under check
+may be the cause, so it is no "not run", but a fix round can't raise the limit, so a person decides.
+Its exit code,
 duration and redacted log tail are stored against that SHA; the verdict needs every declared check
 to pass there (from Workflow v8). A failure goes back into the same build session first, then to a
 person. Only a non-static check proves a criterion.

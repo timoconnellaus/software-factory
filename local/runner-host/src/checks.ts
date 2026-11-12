@@ -32,12 +32,10 @@ import {
   checkPassed,
   type ExecResult,
   type ExecutedCheck,
-  hitRunnerLimit,
   type Job,
   type JobChecks,
   logTail,
   NO_ISOLATION,
-  RUNNER_LIMIT,
   redactSecrets,
   type SessionOutcome,
 } from "@software-factory/runner-contract";
@@ -80,21 +78,22 @@ export async function runChecks(
         };
       }
     }
-    // A runner limit it hit (memory, processes, /tmp, disk) goes to a person like a check not
-    // run, said as the failure it is: never to a fix round the agent can't win.
-    const notRun = (result.limit ? `${RUNNER_LIMIT}${result.limit}` : result.notRun)?.slice(0, 300);
+    const notRun = result.notRun?.slice(0, 300);
+    // A runner limit it hit (memory, disk), as the host saw it from outside: a failure like any
+    // other, with the limit said after the check's own output (so the tail always keeps it).
+    const limit = notRun ? undefined : result.limit?.slice(0, 300);
     out.push({
       name: c.name,
       command: c.run,
-      exitCode: notRun && !result.limit ? null : result.exitCode,
+      exitCode: notRun ? null : result.exitCode,
       timedOut: notRun ? false : result.timedOut,
       durationMs: Date.now() - started,
       logTail: logTail(
         redactSecrets(
-          result.limit
-            ? `${notRun}\n${result.output}`.trim()
-            : notRun
-              ? `not run: ${notRun}\n${result.output}`.trim()
+          notRun
+            ? `not run: ${notRun}\n${result.output}`.trim()
+            : limit
+              ? `${result.output.trimEnd()}\n${limit}`.trim()
               : result.output,
           secrets,
         ),
@@ -102,6 +101,7 @@ export async function runChecks(
       headSha,
       round,
       ...(notRun ? { notRun } : result.isolation ? { isolation: result.isolation } : {}),
+      ...(limit ? { limit } : {}),
     });
   }
   return out;
@@ -246,7 +246,7 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
     const summary = `checks on ${head.slice(0, 7)}${round ? ` (fix round ${round})` : ""}: ${ran
       .map(
         (c) =>
-          `${c.name} ${checkPassed(c) ? "passed" : hitRunnerLimit(c.notRun) ? c.notRun : c.notRun ? "not run" : "failed"}`,
+          `${c.name} ${checkPassed(c) ? "passed" : c.notRun ? "not run" : c.limit ? `failed: ${c.limit}` : "failed"}`,
       )
       .join(", ")}`;
     notes.push(summary);
@@ -255,12 +255,15 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
     if (failed.length === 0 || signal.aborted) return end;
     // Nothing a session can fix: a check that was not run (no isolation here, no container, a
     // sandbox that couldn't start) goes to a person, never to a fix round it can't win.
-    if (failed.some((c) => hitRunnerLimit(c.notRun))) {
-      notes.push("a check hit a runner limit, which no fix round can win: a person decides");
-      return end;
-    }
     if (failed.some((c) => c.notRun)) {
       notes.push("a check was not run on this runner: a person decides");
+      return end;
+    }
+    // A check that failed on a runner limit (seen from outside it: never from its output) failed,
+    // and the code under check may be why; but a fix round can't raise the limit, so a person
+    // decides: raise it in the runner's config, or have the code fixed.
+    if (failed.some((c) => c.limit)) {
+      notes.push("a check failed on a runner limit: a person decides, not a fix round");
       return end;
     }
     if (round >= checks.fixRounds) {
@@ -289,8 +292,8 @@ export const TREE_WATCH_MS = 15_000;
 
 /**
  * The disk bound while a check runs (fifth review follow-up): its dir (tree, home, temp, store) is
- * measured every `everyMs`, and a check whose dir grows past `bound` is stopped and reported as the
- * runner limit it hit, so a person decides, never a fix round. Without it a check could fill the
+ * measured every `everyMs` by the host, and a check whose dir grows past `bound` is stopped and
+ * reported failed on that limit, so a person decides, never a fix round. Without it a check could fill the
  * runner's disk before the bound was measured on the copy to the next check. No bound: as is.
  */
 export function boundWhileRunning(
@@ -329,7 +332,7 @@ export function boundWhileRunning(
         ...r,
         exitCode: null,
         timedOut: false,
-        limit: `the check ran out of disk (limit ${gb(bound)} GB, runner.json checks.maxTreeGb): its files reached ${gb(over)} GB while it ran`,
+        limit: `the check hit the runner's disk limit (${gb(bound)} GB, runner.json checks.maxTreeGb; its files reached ${gb(over)} GB). The code under check may be the cause; raise the limit in the runner's config or fix the code`,
       };
     } finally {
       clearInterval(timer);

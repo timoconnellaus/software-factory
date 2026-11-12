@@ -4,7 +4,6 @@
 // a criterion to checks and argue it is met, but its word alone leaves it Not proven.
 //
 // Pure functions; `reviewPacket.record` reads the results from D1 and CI from GitHub.
-import { hitRunnerLimit, RUNNER_LIMIT } from "@software-factory/runner-contract";
 import { has } from "../workflow-features.ts";
 import type { CiSummary } from "./ci.ts";
 
@@ -117,10 +116,7 @@ export function executedChecks(
 export function notRunTitle(notRun: ExecutedChecks["notRun"]): string {
   const reasons = [...new Set(notRun.map((n) => n.reason))];
   const n = notRun.length;
-  // Every one hit a runner limit (its memory, processes, /tmp, disk): they ran, and failed on it.
-  const title = notRun.every((c) => hitRunnerLimit(c.reason))
-    ? `${n} declared check${n === 1 ? "" : "s"} hit a runner limit: ${reasons.map((r) => r.slice(RUNNER_LIMIT.length)).join("; ")}`
-    : `${n} declared check${n === 1 ? "" : "s"} could not be run on this runner: ${reasons.join("; ")}`;
+  const title = `${n} declared check${n === 1 ? "" : "s"} could not be run on this runner: ${reasons.join("; ")}`;
   // A check run's title is short on GitHub; the summary says the rest.
   return title.length > 200 ? `${title.slice(0, 199)}…` : title;
 }
@@ -141,10 +137,9 @@ export function weakerLines(weaker: readonly string[]): string[] {
 export function notRunLines(notRun: ExecutedChecks["notRun"]): string[] {
   const byReason = new Map<string, string[]>();
   for (const n of notRun) byReason.set(n.reason, [...(byReason.get(n.reason) ?? []), n.name]);
-  return [...byReason].map(([reason, names]) =>
-    hitRunnerLimit(reason)
-      ? `these checks were stopped by a runner limit, not by the code under check: ${reason.slice(RUNNER_LIMIT.length)} (${names.join(", ")}). No fix round was spent on it: a person decides (raise the limit, or split the check).`
-      : `these checks could not be run on this runner: ${reason} (${names.join(", ")}). They are not passed and prove nothing: a person decides.`,
+  return [...byReason].map(
+    ([reason, names]) =>
+      `these checks could not be run on this runner: ${reason} (${names.join(", ")}). They are not passed and prove nothing: a person decides.`,
   );
 }
 
@@ -322,7 +317,6 @@ export function checkLines(executed: Pick<ExecutedChecks, "declared" | "results"
   return executed.declared.map((name, i) => {
     const r = executed.results[i];
     if (!r) return `${name}: didn't run on this commit`;
-    if (r.notRun && hitRunnerLimit(r.notRun)) return `${name}: ${r.notRun}`;
     if (r.notRun) return `${name}: not run (${r.notRun})`;
     const how = r.timedOut ? "timed out" : `exit ${r.exitCode ?? "signal"}`;
     const where = r.isolation === "weaker-sandbox" ? ", in the weaker sandbox" : "";

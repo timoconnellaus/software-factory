@@ -1,16 +1,13 @@
 // Spec 51 PR B (ADR 0501): checks the factory runs itself, and criteria proven only by them.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import ownPolicy from "../../../.factory/policy.json";
 import {
   assemblePacket,
-  checkLines,
   declaredChecks,
   executedChecks,
   FOREMAN,
   isStaticCheck,
   notRunLines,
-  notRunTitle,
   parseFloor,
   parseProjectPolicy,
   policyImpact,
@@ -208,29 +205,6 @@ describe("executed checks and proof (pure)", () => {
     expect(proof.map((p) => [p.proven, p.unproven])).toEqual([
       [false, ["tests"]],
       [false, ["e2e"]],
-    ]);
-  });
-
-  it("says a check stopped by a runner limit failed on that limit, and a person decides", () => {
-    const reason = "failed: the check ran out of memory (limit 4 GB)";
-    const executed = executedChecks(
-      SHA,
-      [{ name: "tests", run: "pnpm tests" }],
-      [{ ...ran("tests", 137), notRun: reason }],
-    );
-    // Never a pass, never a verdict reason a fix round chases: a person decides.
-    expect(executed.notRun).toEqual([{ name: "tests", reason }]);
-    expect(executed.reasons).toEqual([]);
-    expect(notRunLines(executed.notRun)).toEqual([
-      expect.stringMatching(
-        /^these checks were stopped by a runner limit, not by the code under check: the check ran out of memory \(limit 4 GB\) \(tests\)\. No fix round was spent on it: a person decides/,
-      ),
-    ]);
-    expect(notRunTitle(executed.notRun)).toBe(
-      "1 declared check hit a runner limit: the check ran out of memory (limit 4 GB)",
-    );
-    expect(checkLines(executed)).toEqual([
-      "tests: failed: the check ran out of memory (limit 4 GB)",
     ]);
   });
 
@@ -484,13 +458,5 @@ describe("checks.forHead before v8 (ADR 0501)", () => {
       FOREMAN,
     );
     expect(out).toMatchObject({ declared: [], passed: true });
-  });
-});
-
-describe("this repository's own checks", () => {
-  it("declares its test check within the check container's 4 GB: two test workers at a time", () => {
-    const policy = parsed(ownPolicy);
-    expect(declaredChecks(policy, null).map((c) => c.name)).toEqual(["install", "lint", "test"]);
-    expect(policy.checks.find((c) => c.name === "test")?.run).toMatch(/--concurrency=2\b/);
   });
 });

@@ -58,6 +58,13 @@ export const executedCheckSchema = z.object({
    */
   notRun: z.string().max(300).optional(),
   /**
+   * Set when the check failed on one of the runner's own limits, as the host saw it from outside
+   * (ADR 0501, amended 2026-11-13): "the check hit the runner's memory limit (4 GB). The code under
+   * check may be the cause; …". A failed check like any other (never a pass, never "not run"); the
+   * host only skips its fix round, so a person decides. Optional and additive.
+   */
+  limit: z.string().max(300).optional(),
+  /**
    * Where it ran (ADR 0501, fourth review): a check container (`container`), the OS sandbox of a
    * Linux runner (`sandbox`), or the weaker OS sandbox of a Mac runner whose owner opted in
    * (`weaker-sandbox`: a process a check leaves can outlive it). The merge gate says so for the
@@ -81,18 +88,6 @@ export const NOT_RUN_NO_ISOLATION = "not run: no isolated exec on this runner";
 
 /** The `notRun` reason for a runner with no isolated exec. */
 export const NO_ISOLATION = NOT_RUN_NO_ISOLATION.slice("not run: ".length);
-
-/**
- * How a check stopped by a runner limit is reported (its memory, processes, /tmp or disk): in
- * `notRun`, so it is never a pass and never goes to a fix round, with this prefix so the gate says
- * "failed: the check ran out of memory (limit 4 GB)" rather than "not run". Additive: an older
- * reader shows it as a check not run, which is also never a pass.
- */
-export const RUNNER_LIMIT = "failed: ";
-
-/** Whether a `notRun` reason is a runner limit the check hit (`RUNNER_LIMIT`), not a check not run. */
-export const hitRunnerLimit = (notRun: string | null | undefined): boolean =>
-  !!notRun?.startsWith(RUNNER_LIMIT);
 
 /** Token shapes a log tail may carry (a test that dumps its env), each with what replaces it. */
 const SECRET_SHAPES: readonly [RegExp, string][] = [

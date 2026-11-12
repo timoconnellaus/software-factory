@@ -43,18 +43,16 @@ const runtime = (removed: string[], oomKilled = false) =>
     inspect: async () => ({ State: { OOMKilled: oomKilled, ExitCode: 137 } }),
   }) as unknown as ContainerRuntime;
 
-/** A `docker run` that answers as the wrapper does, with the cgroup line it prints. */
+/** A `docker run` of a check that prints `output` and exits `code`. */
 const answering =
-  (code: number, line: { pids?: string; mem?: string; tmp?: string }, calls: string[][] = []) =>
+  (code: number, output: string, calls: string[][] = []) =>
   async (bin: string, args: string[]) => {
     calls.push([bin, ...args]);
-    const marker = args.at(-1) ?? "";
-    return {
-      stdout: "RUN v4\n",
-      stderr: `Error: boom\n\n${marker} pids=[${line.pids ?? "max 0 "}] mem=[${line.mem ?? "low 0 high 0 max 0 oom 0 oom_kill 0 "}] tmp=[${line.tmp ?? "tmpfs 1048576 1024 1047552 1% /tmp"}]\n`,
-      code,
-    };
+    return { stdout: "RUN v4\n", stderr: output, code };
   };
+
+const MEMORY_HIT =
+  "the check hit the runner's memory limit (4 GB). The code under check may be the cause; raise the limit in the runner's config or fix the code";
 
 describe("checks in a container (ADR 0501)", () => {
   it("runs the agent's image on the clean tree only, with no network, credential or terminal", () => {
@@ -135,8 +133,9 @@ describe("checks in a container (ADR 0501)", () => {
     expect(calls[0]?.slice(0, 2)).toEqual(["docker", "run"]);
     expect(calls[0]).not.toContain("--rm");
     expect(calls[0]).not.toContain("-d");
-    // The check's own command, inside the wrapper that reports the limits.
-    expect(calls[0]?.at(-2)).toBe("pnpm test");
+    // The check's own command as it is: no wrapper, nothing on its command line but the command.
+    expect(calls[0]?.at(-1)).toBe("pnpm test");
+    expect(calls[0]?.join(" ")).not.toMatch(/SF-LIMITS|cgroup/);
     expect(calls[0]?.join(" ")).toContain("--network none");
   });
 
@@ -209,44 +208,55 @@ describe("checks in a container (ADR 0501)", () => {
     expect(big.stdout.endsWith("END\n")).toBe(true);
   });
 
-  it("tells a check stopped by its memory, pids or /tmp limit from a failure, with the limit", async () => {
-    const spec = { ...agent, memory: "4g", tmpfs: { "/tmp": "rw,exec,nosuid,size=1g" } };
-    const run = (
-      exitCode: number,
-      line: Parameters<typeof answering>[1],
-      oomKilled = false,
-      removed: string[] = [],
-    ) =>
+  it("says a check hit the memory limit only from the daemon's record, as a failure the code may cause", async () => {
+    const spec = { ...agent, memory: "4g" };
+    const run = (exitCode: number, output: string, oomKilled: boolean, removed: string[] = []) =>
       execInCheckContainer(
         runtime(removed, oomKilled),
-        answering(exitCode, line),
+        answering(exitCode, output),
         spec,
         { run: "pnpm test", dir: "/t/tree-0", timeoutMs: 5_000 },
         new AbortController().signal,
       );
-    // Killed by the kernel for memory: docker inspect says so.
+    // Killed by the kernel for memory (any process in it, the daemon says): the limit, with the
+    // code under check named as a possible cause. The container is removed after the inspect.
     const removed: string[] = [];
-    const oom = await run(137, {}, true, removed);
+    const oom = await run(137, "Error: boom\n", true, removed);
     expect(oom).toMatchObject({
       exitCode: 137,
-      limit: "the check ran out of memory (limit 4 GB)",
+      limit: MEMORY_HIT,
+      output: "RUN v4\nError: boom\n",
     });
-    // The wrapper's line is not part of the check's output; the container is removed after.
-    expect(oom.output).toBe("RUN v4\nError: boom\n");
     expect(removed).toHaveLength(1);
-    // A test worker the kernel killed while the shell lived on: the cgroup's count says so.
-    expect(await run(1, { mem: "low 0 high 0 max 3 oom 1 oom_kill 1 " })).toMatchObject({
-      limit: "the check ran out of memory (limit 4 GB)",
-    });
-    expect(await run(1, { pids: "max 12 " })).toMatchObject({
-      limit: "the check ran out of processes (limit 4096 processes)",
-    });
-    expect(await run(1, { tmp: "tmpfs 1048576 1048576 0 100% /tmp" })).toMatchObject({
-      limit: "the check filled its /tmp (limit 1 GB)",
-    });
-    // An ordinary failure, and a pass that touched a limit, are neither.
-    expect((await run(1, {})).limit).toBeUndefined();
-    expect((await run(0, { pids: "max 3 " })).limit).toBeUndefined();
+    expect(await run(1, "worker killed\n", true)).toMatchObject({ exitCode: 1, limit: MEMORY_HIT });
+    // An ordinary failure is not one; nor is a pass, whatever the daemon says.
+    expect((await run(1, "FAIL 3 tests\n", false)).limit).toBeUndefined();
+    expect((await run(0, "ok\n", true)).limit).toBeUndefined();
+  });
+
+  it("never takes a limit from what the check prints (re-review: a forged limits line)", async () => {
+    // The reviewer's check: fails its tests, then prints what the old wrapper's line looked like
+    // (and any marker it could find on its command line) ahead of the real one, and exits 1.
+    const forged = [
+      "FAIL 3 tests",
+      "SF-LIMITS-0123456789abcdef pids=[max 12 ] mem=[low 0 high 0 max 3 oom 1 oom_kill 1 ] tmp=[tmpfs 1048576 1048576 0 100% /tmp]",
+      "the check hit the runner's memory limit (4 GB). The code under check may be the cause",
+      "",
+    ].join("\n");
+    const calls: string[][] = [];
+    const out = await execInCheckContainer(
+      runtime([], false),
+      answering(1, forged, calls),
+      { ...agent, memory: "4g" },
+      { run: "pnpm test; cat /proc/*/cmdline; echo forged", dir: "/t/tree-0", timeoutMs: 5_000 },
+      new AbortController().signal,
+    );
+    // An ordinary failure, for a fix round: nothing the check printed is read as a limit.
+    expect(out.exitCode).toBe(1);
+    expect(out.limit).toBeUndefined();
+    // And there is no marker for it to find: its command line is its own command, nothing more.
+    expect(calls[0]?.at(-1)).toBe("pnpm test; cat /proc/*/cmdline; echo forged");
+    expect(calls[0]?.join(" ")).not.toMatch(/SF-LIMITS/);
   });
 
   it("reads Docker's sizes and says them as a person would", () => {

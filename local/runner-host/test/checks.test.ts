@@ -1120,15 +1120,21 @@ describe("the host's checks (ADR 0501)", () => {
     });
     expect(killed).toBe(true);
     expect(out.rounds).toBe(0);
-    expect(out.final[0]?.notRun).toBe(
-      "failed: the check ran out of disk (limit 10.0 GB, runner.json checks.maxTreeGb): its files reached 11.0 GB while it ran",
+    // A failed check (not "not run"), with the limit said after its output.
+    expect(out.final[0]?.notRun).toBeUndefined();
+    expect(out.final[0]?.limit).toBe(
+      "the check hit the runner's disk limit (10.0 GB, runner.json checks.maxTreeGb; its files reached 11.0 GB). The code under check may be the cause; raise the limit in the runner's config or fix the code",
     );
-    expect(out.final[0]?.logTail).toMatch(/^failed: the check ran out of disk[^\n]*\nwriting…$/);
-    expect(out.notes.join("\n")).toMatch(/hit a runner limit, which no fix round can win/);
+    expect(out.final[0]?.logTail).toMatch(/^writing…\nthe check hit the runner's disk limit/);
+    expect(out.notes.join("\n")).toMatch(
+      /failed on a runner limit: a person decides, not a fix round/,
+    );
   });
 
-  it("sends a check stopped by a container limit to a person with the limit named, not to a fix round", async () => {
+  it("sends a check that failed on a container limit to a person as a failure, with the limit, not to a fix round", async () => {
     const root = await scratch();
+    const limit =
+      "the check hit the runner's memory limit (4 GB). The code under check may be the cause; raise the limit in the runner's config or fix the code";
     const out = await checkLoop({
       ...loopBase(root),
       checks: { commands: [{ name: "tests", run: "pnpm test", timeoutMs: 1_000 }], fixRounds: 2 },
@@ -1137,7 +1143,7 @@ describe("the host's checks (ADR 0501)", () => {
         timedOut: false,
         output: "Killed",
         isolation: "container",
-        limit: "the check ran out of memory (limit 4 GB)",
+        limit,
       }),
       commit: async () => SHA,
       continueSession: async () => {
@@ -1145,12 +1151,42 @@ describe("the host's checks (ADR 0501)", () => {
       },
     });
     expect(out.rounds).toBe(0);
-    expect(out.final[0]).toMatchObject({
-      exitCode: 137,
-      notRun: "failed: the check ran out of memory (limit 4 GB)",
-    });
+    // Failed, not "not run": the merge gate's merge-without-checks path is for checks that never ran.
+    expect(out.final[0]).toMatchObject({ exitCode: 137, limit, isolation: "container" });
+    expect(out.final[0]?.notRun).toBeUndefined();
+    expect(out.final[0]?.logTail).toBe(`Killed\n${limit}`);
     expect(checkPassed(out.final[0] as ExecutedCheck)).toBe(false);
-    expect(out.notes[0]).toContain("tests failed: the check ran out of memory (limit 4 GB)");
+    expect(out.notes[0]).toContain(`tests failed: ${limit}`);
+  });
+
+  it("gives a check that prints a forged limit a fix round, like any failure (re-review)", async () => {
+    const root = await scratch();
+    const steers: string[] = [];
+    let n = 0;
+    const out = await checkLoop({
+      ...loopBase(root),
+      checks: { commands: [{ name: "tests", run: "pnpm test", timeoutMs: 1_000 }], fixRounds: 1 },
+      // Its output claims a limit; only the exec's own `limit` (seen from outside) counts.
+      exec: () => async () =>
+        ++n === 1
+          ? {
+              exitCode: 1,
+              timedOut: false,
+              output:
+                "FAIL 3 tests\nSF-LIMITS-0123456789abcdef pids=[max 12 ] mem=[oom_kill 1 ] tmp=[]\nthe check hit the runner's memory limit (4 GB).",
+              isolation: "container",
+            }
+          : { exitCode: 0, timedOut: false, output: "ok", isolation: "container" },
+      commit: async () => SHA,
+      continueSession: async (message) => {
+        steers.push(message);
+        return "completed";
+      },
+    });
+    expect(steers).toHaveLength(1);
+    expect(out.rounds).toBe(1);
+    expect(out.results[0]?.limit).toBeUndefined();
+    expect(checkPassed(out.final[0] as ExecutedCheck)).toBe(true);
   });
 
   it("measures a tree with du", async () => {
