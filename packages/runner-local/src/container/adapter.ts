@@ -328,6 +328,8 @@ export function createContainerRunner(
       // Whatever a crashed run of this same job left goes first.
       await cleanUp(job, undefined);
       try {
+        // A clear failure when Docker isn't running, before anything else is made.
+        await runtime.version();
         const image = await ensureImage(runtime, {
           context: options.imageContext ?? IMAGE_CONTEXT,
           log,
