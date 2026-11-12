@@ -39,6 +39,7 @@ and the factory's own planning stage writes specs in this same format.
 | [23](23-triage-questions-and-critic.md) | Planning M4: triage questions, the readiness check and the spec critic | 20 |
 | [24](24-planning-splits.md) | Planning splits a work item | 20 |
 | [25](25-verify-drift-check.md) | Verify checks drift from the spec | 04 |
+| [26](26-verify-from-the-factorys-own-evidence.md) | Verify decides from evidence the factory produced: the tests-intact guard, checks run by the runner host on the head SHA, criteria Proven only by executed evidence | 04, 25, 09 |
 | [30](30-runner-local-without-orca.md) | runner-local: agents in tmux on the host, status from hooks, no Orca (piece 1 of the hosts plan) | 03 |
 | [31](31-watch-and-steer-runs.md) | Watch and steer runs from the dashboard: the Live tab (transcript, terminal), `run.steer` for the runner's owner (piece 2 of the hosts plan) | 30 |
 | [34](34-linux-hosts.md) | Linux hosts: the runner as a systemd user service, Linux paths, the harness sandbox and doctor checks on Linux, the install path (piece 5 of the hosts plan) | 08, 30 |
