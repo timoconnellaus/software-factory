@@ -56,15 +56,6 @@ import rkpCert3 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert3.pem?r
 import rkpCert4 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert4.pem?raw";
 import { all, call, first, ok, uid, type World, world } from "./helpers.ts";
 
-/** packages/core's source, to find every operation that decides a pending action. */
-const CORE_SOURCES: Record<string, string> = import.meta.glob<string>(
-  "../../../packages/core/src/**/*.ts",
-  {
-    query: "?raw",
-    import: "default",
-    eager: true,
-  },
-);
 const CONFIG_OPS = ["config.save", "config.rollback"];
 
 const PROTOCOL = { "x-sf-client": "mobile", "x-sf-client-protocol": "1" };
@@ -872,10 +863,34 @@ describe("the typed code's limits hold under parallel guessing (review of PR 1a)
     // ...and a fresh address still gets one and signs in.
     const w = await world();
     await browserSignIn(w);
-    // The per-caller limit is a courtesy: the eleventh in five minutes holds that caller only.
+    // The per-caller limit is a courtesy: the eleventh in a minute holds that caller only.
     const held = await post("mobile/nonce", {}, undefined, PROTOCOL, "2001:db8:0:1::77");
     expect(held.status).toBe(503);
     expect((await post("mobile/nonce", {}, undefined, PROTOCOL, "198.51.100.10")).status).toBe(200);
+  });
+
+  it("asking for a nonce writes nothing to D1, within the limit or over it", async () => {
+    // The courtesy limit is the Workers rate limiting binding (MOBILE_NONCE_LIMIT), checked at the
+    // door before the call: no counter rows, and mobile.nonce is a read, so no audit row either.
+    const rows = async () =>
+      first<{ n: number }>(
+        `SELECT (SELECT COUNT(*) FROM core_audit WHERE operation = 'mobile.nonce')
+              + (SELECT COUNT(*) FROM core_mobile_nonces) AS n`,
+      );
+    const tables = await env.DB.prepare(
+      "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'core_mobile_nonce_asks'",
+    ).all();
+    expect(tables.results).toEqual([]);
+    const before = await rows();
+    const from = "203.0.113.200";
+    const answers = [];
+    for (let i = 0; i < 12; i++) {
+      answers.push((await post("mobile/nonce", {}, undefined, PROTOCOL, from)).status);
+    }
+    expect(answers).toEqual([...Array(10).fill(200), 503, 503]);
+    const over = await post("mobile/nonce", {}, undefined, PROTOCOL, from);
+    expect(await json(over)).toMatchObject({ code: "unavailable" });
+    expect((await rows())?.n).toBe(before?.n);
   });
 
   it("a nonce the engine didn't sign, an altered one or an expired one is refused", async () => {
@@ -1207,27 +1222,12 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
   });
 
   it("config changes and self-modify aren't decided on the phone, by any deciding operation", async () => {
-    // Every operation that can decide a pending action, found in the source rather than listed by
-    // hand: a new one fails here until it has an input below (review of PR 1a, second round).
-    const deciding = Object.entries(CORE_SOURCES).flatMap(([file, text]) =>
-      text
-        .split("defineOperation(")
-        .slice(1)
-        .filter((block) => block.includes("decidePending("))
-        .map((block) => {
-          const name = /name: "([^"]+)"/.exec(block)?.[1];
-          if (!name) throw new Error(`an operation in ${file} with no name`);
-          return name;
-        }),
-    );
-    // Only decidePending approves one, so its check is the only one there is.
-    const approvingWrites = Object.values(CORE_SOURCES).flatMap(
-      (text) =>
-        text.match(/updateTable\("core_pending_actions"\)\s*\.set\(\{[^}]*"approved"/g) ?? [],
-    );
-    expect(approvingWrites).toHaveLength(1);
-    const human = deciding
-      .filter((name) => OPERATIONS.find((o) => o.name === name)?.actors.includes("human"))
+    // Every operation that decides a pending action declares it in the registry (decidesPending):
+    // decidePending refuses one that doesn't, and invoke() refuses any other write of a pending
+    // action's status (core's invoke tests). A new one fails here until it has an input below,
+    // and each is run from the phone against every kind it may not decide (third review of PR 1a).
+    const human = OPERATIONS.filter((o) => o.decidesPending && o.actors.includes("human"))
+      .map((o) => o.name)
       .sort();
     expect(human).toEqual([
       "approval.decide",
@@ -1303,6 +1303,52 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
       (await call("approval.decide", { pendingActionId: id, decision: "rejected" }, w.human))
         .status,
     ).toBe("ok");
+  });
+
+  it("the phone can't cancel an item while a config change or a self-modify action waits on it", async () => {
+    // Cancelling rejects the item's open gates, so from the phone it would decide what the phone
+    // may not (third review of PR 1a): refused, and the gate stays open.
+    const w = await world();
+    const { token } = await browserSignIn(w);
+    const waiting = async (pa: { operation: string; risk: string }) => {
+      const workItemId = await newItem(w, token, "Touches .factory/");
+      await env.DB.prepare("UPDATE core_work_items SET status = 'waiting' WHERE id = ?")
+        .bind(workItemId)
+        .run();
+      return { workItemId, id: await gate(w, workItemId, "approval", {}, pa) };
+    };
+    for (const pa of [
+      { operation: "config.save", risk: "write" },
+      { operation: "config.rollback", risk: "write" },
+      { operation: "pr.open", risk: "self-modify" },
+    ]) {
+      const { workItemId, id } = await waiting(pa);
+      const res = await callOp(token, "workItem.cancel", { workItemId, reason: "from the phone" });
+      expect([pa, res.status]).toEqual([pa, 403]);
+      expect(await json(res)).toMatchObject({
+        error: expect.stringMatching(/cancel it on the desktop app or the website/),
+        details: { decideElsewhere: true },
+      });
+      const row = await first<{ status: string }>(
+        "SELECT status FROM core_pending_actions WHERE id = ?",
+        id,
+      );
+      expect([pa, row?.status]).toEqual([pa, "pending"]);
+    }
+    // An ordinary gate: the phone cancels the item and the gate closes with it.
+    const plain = await waiting({ operation: "pr.open", risk: "write" });
+    const res = await callOp(token, "workItem.cancel", { workItemId: plain.workItemId });
+    expect(res.status).toBe(200);
+    const row = await first<{ status: string }>(
+      "SELECT status FROM core_pending_actions WHERE id = ?",
+      plain.id,
+    );
+    expect(row?.status).toBe("rejected");
+    // The website still cancels one.
+    const web = await waiting({ operation: "config.save", risk: "self-modify" });
+    expect((await call("workItem.cancel", { workItemId: web.workItemId }, w.human)).status).toBe(
+      "ok",
+    );
   });
 
   it("a phone registered with approvals off can't ask for a challenge", async () => {

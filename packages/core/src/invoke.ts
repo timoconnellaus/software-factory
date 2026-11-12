@@ -488,8 +488,25 @@ export async function runOperation<O = unknown>(
     services: deps.services,
     scope,
     floor,
-    write: (statement) =>
-      statements.push(isPrepared(statement) ? statement : toStatement(d1, statement)),
+    write: (statement) => {
+      const prepared = isPrepared(statement) ? statement : toStatement(d1, statement);
+      if (
+        setsPendingStatus(isPrepared(statement) ? preparedSql(statement) : statement.compile().sql)
+      ) {
+        throw new Error(
+          `${op.name} writes a pending action's status with write(): use writePendingStatus`,
+        );
+      }
+      statements.push(prepared);
+    },
+    writePendingStatus: (how, statement) => {
+      if (how === "decide" && !op.decidesPending) {
+        throw new Error(
+          `${op.name} decides a pending action but doesn't declare decidesPending in the registry`,
+        );
+      }
+      statements.push(isPrepared(statement) ? statement : toStatement(d1, statement));
+    },
     guardChanged: (guardName) => statements.push(guardChanged(d1, `${op.name}:${guardName}`)),
     guardExists: (guardName, query: Compilable) => {
       const { sql, parameters } = query.compile();
@@ -813,6 +830,28 @@ export function outboxStatement(
       JSON.stringify(message.payload),
       new Date(Date.parse(now) + OUTBOX_GRACE_MS).toISOString(),
     );
+}
+
+/**
+ * Whether a statement sets a pending action's `status` (ADR 0541 amendment, third review): an
+ * UPDATE of core_pending_actions whose SET clause names `status`. Its WHERE clause may.
+ */
+export function setsPendingStatus(sql: string): boolean {
+  const update =
+    /^\s*update\s+(?:or\s+\w+\s+)?"?core_pending_actions"?\s+set\s+([\s\S]*?)(?:\swhere\s[\s\S]*)?$/i.exec(
+      sql,
+    );
+  return !!update && /(?:^|[\s,(])"?status"?\s*=/i.test(update[1] ?? "");
+}
+
+/**
+ * A prepared statement's SQL. workerd's D1PreparedStatement keeps it as `statement`; anything
+ * without one is treated as unreadable, which `write()` refuses rather than lets through.
+ */
+function preparedSql(statement: D1PreparedStatement): string {
+  const sql = (statement as D1PreparedStatement & { statement?: unknown }).statement;
+  if (typeof sql !== "string") throw new Error("a prepared statement without its SQL");
+  return sql;
 }
 
 function isPrepared(value: Compilable | D1PreparedStatement): value is D1PreparedStatement {

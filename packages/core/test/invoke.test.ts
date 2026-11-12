@@ -9,6 +9,9 @@ import {
   RISK_CLASSES,
   runOperation,
 } from "../src/index.ts";
+import { setsPendingStatus } from "../src/invoke.ts";
+import type { HandlerContext, PendingActionRow } from "../src/operation.ts";
+import { decidePending } from "../src/operations/gates.ts";
 import { call, deps, first, newItem, ok, refusal, rows, sha40, uid, world } from "./helpers.ts";
 
 describe("the registry", () => {
@@ -39,6 +42,117 @@ describe("the registry", () => {
     ]) {
       expect(names, verb).toContain(verb);
     }
+  });
+});
+
+describe("a pending action's status (ADR 0541, third review of PR 1a)", () => {
+  const pendingOp = (
+    name: string,
+    handler: (input: unknown, ctx: HandlerContext) => Promise<Record<string, unknown>>,
+    decides = false,
+  ) =>
+    defineOperation({
+      name,
+      description: "A test operation that writes a pending action's status one way or another.",
+      risk: "write",
+      actors: ["human"],
+      permission: "signed-in",
+      ...(decides ? { decidesPending: true as const } : {}),
+      input: z.object({}),
+      output: z.object({}).passthrough(),
+      handler,
+    });
+  const pa = {
+    id: "pa_nothing",
+    status: "pending",
+    decision: null,
+    operation: "pr.open",
+    risk: "write",
+    created_at: new Date().toISOString(),
+    work_item_id: null,
+    workflow_id: null,
+  } as unknown as PendingActionRow;
+
+  it("is written by decidePending only from an operation that declares decidesPending", async () => {
+    const w = await world();
+    const run = (op: ReturnType<typeof pendingOp>) =>
+      runOperation(deps, op, {}, { actor: w.human, origin: { surface: "test" } });
+    const undeclared = pendingOp("test.decidesUndeclared", async (_i, ctx) =>
+      decidePending(ctx, pa, "approved", null),
+    );
+    await expect(run(undeclared)).rejects.toThrow(/doesn't declare decidesPending/);
+    // Declared, it gets as far as the batch (the row isn't there, so its guard fails the batch).
+    const declared = pendingOp(
+      "test.decidesDeclared",
+      async (_i, ctx) => decidePending(ctx, pa, "approved", null),
+      true,
+    );
+    expect((await refusal(run(declared))).code).toBe("conflict");
+    // Every operation that calls decidePending in core declares it (they run in the engine's tests).
+    expect(
+      OPERATIONS.filter((o) => o.decidesPending)
+        .map((o) => o.name)
+        .sort(),
+    ).toEqual([
+      "adjudicator.record",
+      "approval.decide",
+      "review.merge",
+      "review.sendBack",
+      "spec.approve",
+      "spec.requestChanges",
+    ]);
+  });
+
+  it("can't be written with write(), by a query builder or by SQL", async () => {
+    const w = await world();
+    const run = (op: ReturnType<typeof pendingOp>) =>
+      runOperation(deps, op, {}, { actor: w.human, origin: { surface: "test" } });
+    const built = pendingOp("test.statusBuilt", async (_i, ctx) => {
+      ctx.write(
+        ctx.db
+          .updateTable("core_pending_actions")
+          .set({ status: "approved", decision: "approved" })
+          .where("id", "=", "pa_nothing"),
+      );
+      return {};
+    });
+    await expect(run(built)).rejects.toThrow(/use writePendingStatus/);
+    const raw = pendingOp("test.statusRaw", async (_i, ctx) => {
+      ctx.write(
+        ctx.d1
+          .prepare("UPDATE core_pending_actions SET note = ?, status = 'rejected' WHERE id = ?")
+          .bind("x", "pa_nothing"),
+      );
+      return {};
+    });
+    await expect(run(raw)).rejects.toThrow(/use writePendingStatus/);
+    // Other columns are fine, a status in the WHERE clause too (gate.escalate).
+    const other = pendingOp("test.statusWhere", async (_i, ctx) => {
+      ctx.write(
+        ctx.db
+          .updateTable("core_pending_actions")
+          .set({ note: "x" })
+          .where("id", "=", "pa_nothing")
+          .where("status", "=", "pending"),
+      );
+      return {};
+    });
+    expect((await run(other)).status).toBe("ok");
+  });
+
+  it("recognises a status write in SQL", () => {
+    expect(setsPendingStatus('update "core_pending_actions" set "status" = ? where "id" = ?')).toBe(
+      true,
+    );
+    expect(setsPendingStatus("UPDATE core_pending_actions SET note = ?,status='applied'")).toBe(
+      true,
+    );
+    expect(setsPendingStatus("update or ignore core_pending_actions set status = ?")).toBe(true);
+    expect(
+      setsPendingStatus('update "core_pending_actions" set "note" = ? where "status" = ?'),
+    ).toBe(false);
+    expect(setsPendingStatus('update "core_pending_actions" set "status_note" = ?')).toBe(false);
+    expect(setsPendingStatus('update "core_work_items" set "status" = ?')).toBe(false);
   });
 });
 
