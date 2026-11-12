@@ -148,6 +148,9 @@ export function toolchainPaths(pathEnv: string, home: string, denied: readonly s
         continue;
       }
       add(d);
+      // A package manager's shim script (`<x>/node_modules/.bin/pnpm`, as pnpm/action-setup lays it
+      // out) runs a path in that node_modules: the whole node_modules, not just the shim.
+      if (basename(d) === ".bin" && basename(dirname(d)) === "node_modules") add(dirname(d));
       // A package's own bin (…/node_modules/pnpm/bin/pnpm.cjs) or a node prefix (…/bin/node).
       const nm = real.lastIndexOf(`${sep}node_modules${sep}`);
       if (nm >= 0) {

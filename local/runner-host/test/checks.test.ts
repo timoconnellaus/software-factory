@@ -290,7 +290,15 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       join(home, ".ssh"),
     ]);
     expect(allowed).toEqual(
-      [join(nvm, "bin"), nvm, join(nvm, "lib/node_modules/corepack"), shims, pnpmPkg, local].sort(),
+      [
+        join(nvm, "bin"),
+        nvm,
+        join(nvm, "lib/node_modules/corepack"),
+        join(home, "setup-pnpm/node_modules"),
+        shims,
+        pnpmPkg,
+        local,
+      ].sort(),
     );
     expect(allowed).not.toContain(join(home, ".local"));
     expect(allowed).not.toContain(home);

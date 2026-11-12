@@ -1036,6 +1036,10 @@ export const ANSWERS: Answers = {
       {
         id: "dev_m5",
         name: "M5",
+        platform: "macos",
+        decides: true,
+        attestation: null,
+        current: true,
         keyStorage: "secure-enclave",
         createdAt: ago(60 * 24 * 9),
         lastSeenAt: ago(0),
@@ -1044,6 +1048,10 @@ export const ANSWERS: Answers = {
       {
         id: "dsk_mini",
         name: "Mac mini",
+        platform: "macos",
+        decides: true,
+        attestation: null,
+        current: false,
         keyStorage: "secure-enclave",
         createdAt: ago(60 * 24 * 20),
         lastSeenAt: ago(60 * 24 * 2),
@@ -1052,6 +1060,10 @@ export const ANSWERS: Answers = {
       {
         id: "dsk_old",
         name: "Old laptop",
+        platform: "macos",
+        decides: true,
+        attestation: null,
+        current: false,
         keyStorage: "software",
         createdAt: ago(60 * 24 * 60),
         lastSeenAt: ago(60 * 24 * 40),

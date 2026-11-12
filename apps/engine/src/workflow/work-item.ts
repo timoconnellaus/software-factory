@@ -20,8 +20,8 @@ import {
   ciEvent,
   DEFAULT_BUILDER,
   FOREMAN,
-  has,
   type GateEventPayload,
+  has,
   invoke,
   isOperationError,
   mergeQueueEvent,
@@ -438,7 +438,8 @@ class ItemFlow {
       }
       // v7: the shaping stages are done. Unreleased work waits here for its release (ADR 0493),
       // and delivery re-reads the item and its config as pinned at the pull.
-      if (has(version, "release-wait") && (await this.waitForRelease())) meta = await this.refreshMeta();
+      if (has(version, "release-wait") && (await this.waitForRelease()))
+        meta = await this.refreshMeta();
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
       const plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
@@ -606,7 +607,11 @@ class ItemFlow {
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha, checks: has(version, "host-checks") ? checkNames : null }),
+          verifyPrompt(meta, {
+            criteria,
+            headSha,
+            checks: has(version, "host-checks") ? checkNames : null,
+          }),
           {
             criteria,
             headSha,
