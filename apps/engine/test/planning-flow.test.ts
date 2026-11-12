@@ -176,7 +176,7 @@ describe("Workflow v5: the planning session (spec 20)", () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Add CSV export" },
+      { state: "queued", projectId: w.projectId, title: "Add CSV export" },
       w.human,
     );
     await runStage(w, item.workItemId, "triage", () => triage("medium"));
