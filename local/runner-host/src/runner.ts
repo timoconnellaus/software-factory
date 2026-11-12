@@ -72,6 +72,8 @@ export function buildRunner(
     protectPaths: [dirs.configDir, dirs.runsDir, dirs.reposDir],
     identity,
     ...(config.capabilities ? { capabilities: config.capabilities } : {}),
+    // tmux (default) or a stream-json session shown as a chat (ADR 0450).
+    session: config.session,
     ...options.local,
   });
   const log = options.log ?? ((m: string) => console.log(`[runner] ${m}`));

@@ -25,6 +25,12 @@ export const configSchema = z.object({
   capabilities: z.array(z.enum(CAPABILITIES)).optional(),
   identity: z.object({ name: z.string(), email: z.string() }).optional(),
   /**
+   * How jobs' sessions run (ADR 0450): `tmux`, Claude Code's TUI in tmux (takeover by `tmux
+   * attach`), or `stream-json`, Claude headless as a two-way stream the dashboard shows as a chat
+   * (declares `chat`; takeover by `claude --resume`). Changing it takes a restart.
+   */
+  session: z.enum(["tmux", "stream-json"]).default("tmux"),
+  /**
    * Directories whose immediate git repos are this machine's checkouts (ADR 0260, amended by ADR
    * 0380): a job runs as a worktree of the one whose `origin` is the job's repo, else in the host's
    * own clone. Unset until `login` or `doctor --fix` fills it in once.

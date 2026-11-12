@@ -403,7 +403,7 @@ async function sizeOf(path: string | null): Promise<number> {
 /**
  * After a takeover (ADR 0450): the `takeover` event with the resume command, then the resumed
  * session as the status hook and the transcript report it, until it ends. Only what happens after
- * the stream stopped is read.
+ * the stream stopped is read. Quitting the resumed session hands the run back.
  */
 async function* followResumed(
   session: LocalSession,
@@ -447,7 +447,9 @@ async function* followResumed(
       : undefined;
     return {
       type: "session.ended",
-      outcome: hasResult ? "completed" : "failed",
+      // The person ended it: the run goes back as it is, checked like any other (a build still
+      // needs its commits).
+      outcome: "completed",
       summary:
         summary ??
         (hasResult

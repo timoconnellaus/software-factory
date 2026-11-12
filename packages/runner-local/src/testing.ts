@@ -193,6 +193,8 @@ export interface FakeStreamClaudeOptions {
   stdinLog: string;
   /** ms the first turn takes before it answers (a steer can arrive meanwhile). */
   firstTurnMs?: number;
+  /** Commit a change to README.md during the first turn (a build that made something). */
+  commit?: boolean;
   /** Write the stage result file (`.factory-result.json`) during the first turn. */
   writeResult?: boolean;
   /** Exit after the first turn's result instead of waiting for more input. */
@@ -212,6 +214,7 @@ export interface FakeStreamClaudeOptions {
 export function fakeStreamClaude(options: FakeStreamClaudeOptions): string {
   return `#!${process.execPath}
 // Written by runner-local's tests: a scripted stream-json Claude Code.
+import { execFileSync } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 const opts = ${JSON.stringify(options)};
 const argv = process.argv.slice(2);
@@ -234,6 +237,10 @@ async function turn(text) {
   if (k === 1 && opts.firstTurnMs) await sleep(opts.firstTurnMs);
   if (interrupted) { interrupted = false; out({ type: "result", subtype: "error_during_execution", is_error: true, session_id: sessionId, num_turns: k }); return; }
   out({ type: "user", session_id: sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_" + k, content: "out " + k, is_error: false }] } });
+  if (k === 1 && opts.commit) {
+    appendFileSync("README.md", "hello from the stream\\n");
+    execFileSync("git", ["-c", "user.name=a", "-c", "user.email=a@x.invalid", "-c", "core.hooksPath=/dev/null", "commit", "-qam", "stream change"]);
+  }
   if (k === 1 && opts.writeResult) writeFileSync(".factory-result.json", JSON.stringify({ ok: true }));
   const fail = k === 1 && opts.failFirst;
   out({ type: "result", subtype: fail ? "error_max_turns" : "success", is_error: !!fail, result: "Done with turn " + k, session_id: sessionId, duration_ms: 1200, num_turns: 2, total_cost_usd: 0.5, usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 } });

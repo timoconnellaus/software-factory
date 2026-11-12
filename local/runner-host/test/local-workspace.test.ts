@@ -4,12 +4,18 @@
 // host's clone, made once and kept. Incident 2026-11-11 (#5) was a second registration per job.
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readLaunchRecord } from "@software-factory/harness-claude";
+import { setTimeout as sleep } from "node:timers/promises";
+import { PROMPT_POINTER, readLaunchRecord } from "@software-factory/harness-claude";
 import { type Job, RESULT_FILE } from "@software-factory/runner-contract";
-import { createLocalRunner, type Exec } from "@software-factory/runner-local";
-import { type ScriptedTmuxOptions, scriptedTmux } from "@software-factory/runner-local/testing";
+import { createLocalRunner, type Exec, type LocalRunnerConfig } from "@software-factory/runner-local";
+import {
+  fakeStreamClaude,
+  type ScriptedTmuxOptions,
+  scriptedTmux,
+} from "@software-factory/runner-local/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { expandHome, legacyCheckoutDirs, migrateCheckouts } from "../src/checkouts.ts";
 import { configSchema } from "../src/config.ts";
@@ -26,7 +32,13 @@ afterEach(async () => {
 });
 
 /** "GitHub" (a bare repo), the owner's own checkout of it, the runner's state dir, a fake tmux. */
-async function world(options: { ownerCheckout?: boolean; tmux?: ScriptedTmuxOptions } = {}) {
+async function world(
+  options: {
+    ownerCheckout?: boolean;
+    tmux?: ScriptedTmuxOptions;
+    local?: Partial<LocalRunnerConfig>;
+  } = {},
+) {
   const repo = await scratchRepo();
   cleanups.push(repo.cleanup);
   const reposDir = join(repo.root, "repos"); // the host's clone dir (scratchRepo's hostGit uses it)
@@ -57,6 +69,7 @@ async function world(options: { ownerCheckout?: boolean; tmux?: ScriptedTmuxOpti
       const [jobDir] = await readdir(runsDir);
       return (await readLaunchRecord(join(runsDir, jobDir ?? "")))?.argv.join(" ") ?? null;
     },
+    ...options.local,
   });
   return { ...repo, reposDir, tmux, owner, adapter };
 }
@@ -173,6 +186,86 @@ describe("workspace resolution (ADR 0260, amended)", { timeout: 30_000 }, () => 
     await rm(join(w.root, "runs"), { recursive: true, force: true });
   });
 });
+
+describe("a stream-json session through runJob (spec 37, ADR 0450)", { timeout: 30_000 }, () => {
+  async function streamWorld(fake: { firstTurnMs?: number } = {}) {
+    const bin = join(await realpathOf(tmpdir()), `sf-fake-claude-${process.pid}-${Date.now()}`);
+    await mkdir(bin, { recursive: true });
+    cleanups.push(() => rm(bin, { recursive: true, force: true }));
+    const stdinLog = join(bin, "stdin.jsonl");
+    const claudeBin = join(bin, "claude.mjs");
+    await writeFile(
+      claudeBin,
+      fakeStreamClaude({ stdinLog, commit: true, writeResult: true, ...fake }),
+      { mode: 0o755 },
+    );
+    const w = await world({
+      local: { session: "stream-json", claudeBin, turnGraceMs: 200, waitingInputTimeoutMs: 20_000 },
+    });
+    return { ...w, stdinLog };
+  }
+
+  it("builds end to end: the prompt as JSON, events from the stream, the run branch pushed", async () => {
+    const w = await streamWorld();
+    const cloud = fakeCloud();
+    const cp = await controlPlane(cloud);
+    const j = job();
+    cloud.claims.set("c", j);
+    expect((await w.adapter.manifest()).capabilities).toContain("chat");
+    const report = await runJob({ adapter: w.adapter, cp, git: w.host, job: j, flushMs: 5 });
+    expect(report.error).toBeUndefined();
+    expect(report.outcome).toBe("completed");
+    expect(report.headSha).toBe(git(w.bare, "rev-parse", j.branch));
+    const events = cloud.events.get(j.jobId) ?? [];
+    expect(events.find((e) => e.type === "session.started")).toMatchObject({ mode: "stream" });
+    const types = events.map((e) => e.type);
+    for (const t of ["message", "tool", "tool.result", "turn"]) expect(types).toContain(t);
+    const first = JSON.parse((await readFile(w.stdinLog, "utf8")).split("\n")[0] ?? "{}");
+    expect(first).toMatchObject({ type: "user", message: { content: PROMPT_POINTER } });
+    expect(w.tmux.calls.some((c) => c.includes("new-session"))).toBe(false);
+  });
+
+  it("takes the session over when the dashboard asks, and hands back when the terminal session ends", async () => {
+    const w = await streamWorld({ firstTurnMs: 10_000 });
+    const cloud = fakeCloud();
+    const cp = await controlPlane(cloud);
+    const j = job();
+    cloud.claims.set("c", j);
+    const running = runJob({ adapter: w.adapter, cp, git: w.host, job: j, flushMs: 5 });
+    // Once the session is up, the owner asks for a takeover (run.takeover's row).
+    const seen = async (type: string) => {
+      for (let i = 0; i < 500; i++) {
+        const found = (cloud.events.get(j.jobId) ?? []).find((e) => e.type === type);
+        if (found) return found;
+        await sleep(20);
+      }
+      throw new Error(`no ${type} event`);
+    };
+    await seen("tool");
+    cloud.steers.set(j.jobId, [
+      { id: "st_t", text: "", at: new Date().toISOString(), kind: "takeover" },
+    ]);
+    const handed = (await seen("takeover")) as { hint: string; sessionId: string };
+    expect(handed.hint).toContain(`--resume ${handed.sessionId}`);
+    // The person resumes it in the worktree, commits, and quits: the projected status hook
+    // reports the session.
+    const worktree = /^cd (\S+) && /.exec(handed.hint)?.[1] as string;
+    expect(existsSync(worktree)).toBe(true);
+    await appendFile(join(worktree, "README.md"), "by hand\n");
+    git(worktree, "-c", "user.name=p", "-c", "user.email=p@x.invalid", "commit", "-qam", "by hand");
+    const statusFile = join(w.root, "runs", j.jobId, "status.jsonl");
+    await appendFile(statusFile, `${JSON.stringify({ event: "SessionStart", time: Date.now() })}\n`);
+    await appendFile(statusFile, `${JSON.stringify({ event: "SessionEnd", time: Date.now() })}\n`);
+    const report = await running;
+    expect(report.outcome).toBe("completed");
+    expect(report.handedBack).toBe(true);
+    expect(report.headSha).toBe(git(w.bare, "rev-parse", j.branch));
+  });
+});
+
+async function realpathOf(path: string) {
+  return realpathSync(path);
+}
 
 describe("checkouts in runner.json", () => {
   const orcaList =

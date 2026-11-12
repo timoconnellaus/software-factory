@@ -245,7 +245,7 @@ async function run() {
     },
   });
   log(
-    `runner ${config.runnerId} (contract v${CONTRACT_VERSION}) → ${config.baseUrl}, up to ${config.maxConcurrent} heavy and ${config.maxLight} light jobs`,
+    `runner ${config.runnerId} (contract v${CONTRACT_VERSION}) → ${config.baseUrl}, up to ${config.maxConcurrent} heavy and ${config.maxLight} light jobs, sessions in ${config.session}`,
   );
   let stopping = false;
   const shutdown = async (signal: string) => {
