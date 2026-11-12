@@ -1,8 +1,8 @@
 // Retention (AGENTS.md "Cloudflare cost", rule 3): expired rows go in bounded batches, an intake
 // event keeps its id forever, and nothing that isn't due is touched.
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
 import { invoke } from "@software-factory/core";
+import { describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
 import {
   ARCHIVE,

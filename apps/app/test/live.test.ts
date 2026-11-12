@@ -54,12 +54,14 @@ function render(data: LiveView, initialView?: "transcript" | "terminal") {
 }
 
 describe("an archived run that can't be read", () => {
-  const archived = (over: Partial<LiveView>) =>
-    view("run_a", [], {
-      run: { ...view("run_a", []).run!, active: false, status: "handed_back" },
+  const archived = (over: Partial<LiveView>) => {
+    const base = view("run_a", []);
+    return view("run_a", [], {
+      run: base.run ? { ...base.run, active: false, status: "handed_back" } : null,
       archived: true,
       ...over,
     });
+  };
 
   it("says the log is missing, never that the run was empty", () => {
     const html = render(archived({ archive: "missing" }));
