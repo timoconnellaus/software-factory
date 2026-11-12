@@ -836,7 +836,8 @@ export const jobClaim = defineOperation({
         .where("id", "=", job.project_id)
         .executeTakeFirst();
       if (!item || !project) continue;
-      if (!["running", "waiting"].includes(item.status)) continue;
+      // `planning`: shaping before release runs its triage and planning jobs too (ADR 0493).
+      if (!["running", "waiting", "planning"].includes(item.status)) continue;
       if (!room[job.pool] && (job.pool !== "light" || !room.split || lightBlocked)) continue;
       const refusal = await placementRefusal(
         ctx,

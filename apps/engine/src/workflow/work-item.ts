@@ -27,6 +27,7 @@ import {
   type ProjectPolicy,
   parseProjectPolicy,
   type RunEventPayload,
+  releaseEvent,
   runEvent,
   SLOTS,
 } from "@software-factory/core";
@@ -88,7 +89,18 @@ export type WorkItemOutcome =
  *   under `slot:<slot>:<round>:<index>:<id>`: a work step as a read-only job (advisory: pass, send
  *   back to build, or ask), a gate step through `workflow.gate` (always a person).
  */
-export const WORKFLOW_VERSION = 6;
+/**
+ * - v7 (spec 50 part C, ADR 0493): shaping stages run before release. After the shaping stages
+ *   (triage, and interview planning with its spec gate when the size needs it), `release: check`
+ *   reads whether the item was released. An item released straight from the backlog goes on at
+ *   once, exactly as v6. An item shaped first (`workItem.shape`) becomes ready (`release: shaped`)
+ *   and waits for `release-<item>` (`release: wait #k`, re-checking on each timeout), which the pull
+ *   sends when a person released it and there is room. Delivery (the workflow's slots, build,
+ *   verify, the merge gate) follows.
+ */
+export const WORKFLOW_VERSION = 7;
+/** How long a shaped item waits for its release before it re-reads whether it was released. */
+export const RELEASE_WAIT = "12 hours";
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
 export const CI_WAIT = "10 minutes";
 export const CI_ROUNDS = 12;
@@ -304,6 +316,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(5);
       case 6:
         return flow.runV1(6);
+      case 7:
+        return flow.runV1(7);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -323,7 +337,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       const meta = await this.meta();
@@ -409,6 +423,8 @@ class ItemFlow {
         const committed = await this.act("spec: commit", "spec.commit", { workItemId: id });
         specPath = String(committed.path);
       }
+      // v7: the shaping stages are done. Unreleased work waits here for its release (ADR 0493).
+      if (version >= 7) await this.waitForRelease();
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
       const plan = version >= 6 ? await this.workflowPlan() : null;
@@ -1526,6 +1542,39 @@ class ItemFlow {
   }
 
   /** Queues a stage job and waits for its run to finish (or stall). Holds no slot while queued. */
+  // ---- v7: shaping stages before release (spec 50 part C, ADR 0493) ----
+
+  /**
+   * Waits, after the shaping stages, until the item is released and pulled. An item released
+   * before its Workflow started (no shaping first) is already pulled and goes straight on.
+   */
+  async waitForRelease(): Promise<void> {
+    const id = this.workItemId;
+    const pulled = async (name: string) =>
+      this.step.do(name, async () => {
+        const row = await this.env.DB.prepare("SELECT pulled_at FROM core_work_items WHERE id = ?")
+          .bind(id)
+          .first<{ pulled_at: string | null }>();
+        return !!row?.pulled_at;
+      });
+    if (await pulled("release: check")) return;
+    const shaped = await this.act("release: shaped", "workItem.shaped", { workItemId: id });
+    if (shaped.released === true) return;
+    for (let k = 1; ; k++) {
+      try {
+        await this.step.waitForEvent(`release: wait #${k}`, {
+          type: releaseEvent(id),
+          timeout: RELEASE_WAIT,
+        });
+        return;
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+        // An event that came before the wait started is not lost: the item says it was pulled.
+        if (await pulled(`release: check #${k}`)) return;
+      }
+    }
+  }
+
   // ---- v6: workflows (spec 09 M2, ADR 0371) ----
 
   /**

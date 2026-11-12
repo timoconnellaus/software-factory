@@ -717,7 +717,9 @@ export const workItemCancel = defineOperation({
         throw new OperationError("forbidden", "only the requester or an approver can cancel");
       }
     }
-    if ((PRE_PIPELINE as readonly string[]).includes(w.status)) {
+    // Nothing runs before the pull, unless the item is being (or was) shaped: then its Workflow,
+    // runs and gates are cancelled like any running item's (ADR 0493).
+    if ((PRE_PIPELINE as readonly string[]).includes(w.status) && !w.shaping_started_at) {
       // Nothing runs before the pull (ADR 0491): no Workflow, runs or gates to stop.
       ctx.write(
         ctx.db
@@ -740,7 +742,12 @@ export const workItemCancel = defineOperation({
       });
       return { cancelled: true };
     }
-    if (!(ACTIVE_STATUSES as readonly string[]).includes(w.status)) return { cancelled: false };
+    if (
+      !(ACTIVE_STATUSES as readonly string[]).includes(w.status) &&
+      !(w.shaping_started_at && (PRE_PIPELINE as readonly string[]).includes(w.status))
+    ) {
+      return { cancelled: false };
+    }
     await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     cancelWorkItem(ctx, w, input.reason);
     // Its slot is free: the next queued item may start, after this commits (ADR 0491).
@@ -957,8 +964,15 @@ export const workItemFinish = defineOperation({
   output: z.object({ status: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    if (!["running", "waiting", "paused"].includes(w.status)) return { status: w.status };
-    setItemStatus(ctx, w.id, ["running", "waiting", "paused"], input.status, input.reason);
+    // `planning`: a spec rejected while shaping before release ends the item too (ADR 0493).
+    if (!["running", "waiting", "paused", "planning"].includes(w.status)) return { status: w.status };
+    setItemStatus(
+      ctx,
+      w.id,
+      ["running", "waiting", "paused", "planning"],
+      input.status,
+      input.reason,
+    );
     // Its planning session, if it ended mid-planning, gives its slot back (spec 20).
     endPlanningSessions(ctx, w.id, `${input.status}: ${input.reason}`);
     // An item that ends in the queue (a Workflow giving up, or done without the queue's merge)

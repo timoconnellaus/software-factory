@@ -476,3 +476,62 @@ describe("the pull under races and policy (review of #69)", () => {
     expect(order.at(-1)).toBe(b.workItemId);
   });
 });
+
+describe("shaping before release (ADR 0493)", () => {
+  it("starts the Workflow without a slot, and cancelling stops it", async () => {
+    const w = await world({ ...POLICY, activeLimit: 1 });
+    const shaping = await create(w, "Shape me");
+    const out = await ok<{ status: string }>(
+      "workItem.shape",
+      { workItemId: shaping.workItemId },
+      w.human,
+    );
+    expect(out.status).toBe("planning");
+    expect(await starts(shaping.workItemId)).toBe(1);
+    // Shaping isn't delivery: the only slot is still free for released work.
+    const next = await create(w, "Released", { state: "queued" });
+    expect(await statusOf(next.workItemId)).toBe("running");
+    // A shaping item has a Workflow: cancelling it terminates that, unlike backlog work.
+    await ok("workItem.cancel", { workItemId: shaping.workItemId, reason: "no" }, w.human);
+    expect(await statusOf(shaping.workItemId)).toBe("cancelled");
+    expect(
+      await rows(
+        "SELECT id FROM core_outbox WHERE kind = 'workflow.terminate' AND payload LIKE ?",
+        `%${shaping.workItemId}%`,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("wakes a shaped item's Workflow at the pull instead of creating one", async () => {
+    const w = await world();
+    const item = await create(w, "Shaped");
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    const shaped = await ok<{ released: boolean; event: string }>(
+      "workItem.shaped",
+      { workItemId: item.workItemId },
+      FOREMAN,
+    );
+    expect(shaped.released).toBe(false);
+    expect(await statusOf(item.workItemId)).toBe("ready");
+    await ok("workItem.release", { workItemId: item.workItemId }, w.human);
+    expect(await statusOf(item.workItemId)).toBe("running");
+    expect(await starts(item.workItemId)).toBe(1); // only the shaping one
+    expect(
+      await rows(
+        "SELECT id FROM core_outbox WHERE kind = 'workflow.event' AND payload LIKE ?",
+        `%release-${item.workItemId}%`,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("refuses shaping what isn't backlog or ready, and finishes a spec rejected while shaping", async () => {
+    const w = await world();
+    const running = await create(w, "Running", { state: "queued" });
+    const e = await refusal(call("workItem.shape", { workItemId: running.workItemId }, w.human));
+    expect(e.code).toBe("conflict");
+    const item = await create(w, "Rejected while shaping");
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    await finish(item.workItemId, "rejected");
+    expect(await statusOf(item.workItemId)).toBe("rejected");
+  });
+});

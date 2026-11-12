@@ -296,6 +296,8 @@ export interface CoreWorkItemsTable {
   released_by: string | null;
   /** 0261: when the pipeline started (the pull). */
   pulled_at: Iso | null;
+  /** 0262 (ADR 0493): when its Workflow started to run the shaping stages, before release. */
+  shaping_started_at: Iso | null;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
