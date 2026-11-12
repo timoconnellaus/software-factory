@@ -12,7 +12,7 @@ import {
 import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { EngineApi } from "../src/rpc.ts";
-import { all, first, MANIFEST, ok, uid, world } from "./helpers.ts";
+import { all, first, MANIFEST, ok, uid, waitFor, world } from "./helpers.ts";
 
 const base = "https://sf-engine.example";
 const engineFetch: typeof fetch = async (input, init) =>
@@ -119,6 +119,18 @@ describe("the signed runner channel", () => {
 
   it("answers a replayed request id from the store without running the handler again", async () => {
     const w = await world();
+    // A job to claim, so the claim changes state and is audited (an empty one isn't, ADR 0590).
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Replay" },
+      w.human,
+    );
+    await waitFor("a queued job", () =>
+      first(
+        "SELECT id FROM core_jobs WHERE work_item_id = ? AND status = 'queued'",
+        item.workItemId,
+      ),
+    );
     const body = JSON.stringify({
       claimId: "claim-replay-1",
       manifest: MANIFEST,

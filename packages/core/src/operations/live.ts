@@ -481,6 +481,8 @@ export const runTakeSteers = defineOperation({
   description:
     "The runner host takes a running job's queued steers, oldest first, and they are marked delivered (at most once, ADR 0400). sf-engine's channel holds the call while none are queued. Fenced: a stale token is refused.",
   risk: "write",
+  // Re-taken every 25 s per running job: audited only when it hands steers over (ADR 0590).
+  audit: { changesOnly: true, changed: (out) => out.steers.length > 0 },
   actors: ["runner"],
   permission: "signed-in",
   fenced: true,

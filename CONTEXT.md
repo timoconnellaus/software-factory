@@ -624,8 +624,10 @@ run's branch. The harness has no other git or cloud credentials (ADR 0033).
 _Avoid_: PAT, deploy key, user token
 
 **Audit journal**
-The append-only record of every operation: actor, origin, gate decision, diff. Metrics are SQL
-views over it.
+The append-only record of every operation that changed something: actor, origin, gate decision,
+diff. Machine-frequency calls (heartbeats, empty claims, held waits, presence, log batches) are
+recorded only when they change state, and a runner's input is kept as a digest (ADR 0590). Metrics
+are SQL views over it.
 _Avoid_: log, history, event store, analytics
 
 **Outbox**
