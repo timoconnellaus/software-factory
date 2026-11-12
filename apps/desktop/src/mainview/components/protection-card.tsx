@@ -7,13 +7,13 @@
 import { ago, errorMessage } from "@software-factory/client/format";
 import type { Inbox } from "@software-factory/client/ops";
 import { Button } from "@software-factory/ui/components/button";
-import { Card } from "@software-factory/ui/components/card";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { ExternalLink, saveFile } from "../lib/external.tsx";
 import { read } from "../lib/op.ts";
+import { PageHeader, Panel } from "./shell-list.tsx";
 
 type Drift = Inbox["protection"][number];
 type RulesetFile = Drift["files"][number];
@@ -34,42 +34,52 @@ export function ProtectionChangedCard({ drift }: { drift: Drift }) {
     }
   }
   return (
-    <Card className="gap-2 px-5 py-4" data-testid={`protection-changed-${drift.projectId}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        <StatusDot status="failed" />
-        <span className="font-semibold">
-          Protection on <code className="font-mono">{drift.branch}</code> changed
-        </span>
-        <span className="text-muted-foreground text-xs">
-          {drift.repo.owner}/{drift.repo.name} · {ago(drift.changedAt)}
-        </span>
-      </div>
-      <ul className="grid list-disc gap-0.5 pl-5 text-sm">
-        {drift.problems.map((p) => (
-          <li key={p}>{p.replace(/`/g, "")}</li>
-        ))}
-      </ul>
-      <div className="flex flex-wrap items-center gap-2">
-        {drift.files.map((f) => (
-          <Button
-            key={f.kind}
-            size="sm"
-            disabled={saving !== null}
-            onClick={() => void download(f)}
-          >
-            Download {f.kind === "default-branch" ? "ruleset" : "factory/* ruleset"}
+    <div className="flex flex-col gap-4" data-testid={`protection-changed-${drift.projectId}`}>
+      <PageHeader
+        above={
+          <span className="font-mono text-[11.5px]">
+            {drift.repo.owner}/{drift.repo.name} · {ago(drift.changedAt)}
+          </span>
+        }
+        title={
+          <>
+            Protection on <code className="font-mono">{drift.branch}</code> changed
+          </>
+        }
+        sub="It was green and is now red, so a pull request could merge without the factory check."
+        testId="inbox-title"
+      />
+      <Panel needsYou>
+        <ul className="m-0 grid list-none gap-1 p-0">
+          {drift.problems.map((p) => (
+            <li key={p} className="flex items-center gap-2">
+              <StatusDot status="failed" />
+              {p.replace(/`/g, "")}
+            </li>
+          ))}
+        </ul>
+        <div className="flex flex-wrap items-center gap-2">
+          {drift.files.map((f) => (
+            <Button
+              key={f.kind}
+              size="sm"
+              disabled={saving !== null}
+              onClick={() => void download(f)}
+            >
+              Download {f.kind === "default-branch" ? "ruleset" : "factory/* ruleset"}
+            </Button>
+          ))}
+          <Button size="sm" variant="outline" asChild>
+            <ExternalLink href={drift.rulesetsUrl}>Open GitHub rulesets ↗</ExternalLink>
           </Button>
-        ))}
-        <Button size="sm" variant="outline" asChild>
-          <ExternalLink href={drift.rulesetsUrl}>Open GitHub rulesets ↗</ExternalLink>
-        </Button>
-        <Link to="/setup" search={{}} className="text-sm underline">
-          Check now in Setup
-        </Link>
-      </div>
-      <div className="text-muted-foreground text-xs">
-        On GitHub: New ruleset → Import a ruleset → choose the file → Create.
-      </div>
-    </Card>
+          <Link to="/setup" search={{}} className="text-sm underline">
+            Check now in Setup
+          </Link>
+        </div>
+        <div className="text-ink-muted text-xs">
+          On GitHub: New ruleset → Import a ruleset → choose the file → Create.
+        </div>
+      </Panel>
+    </div>
   );
 }

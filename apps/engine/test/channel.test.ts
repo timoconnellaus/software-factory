@@ -5,6 +5,7 @@ import {
   DEVICE_PATHS,
   httpControlPlane,
   PATHS,
+  RUNNER_COMPAT,
   runnerChannelKey,
   signRunnerRequest,
 } from "@software-factory/runner-contract";
@@ -37,7 +38,12 @@ describe("the signed runner channel", () => {
       capacity: { max: 2, inUse: 0, accepting: true },
       activeJobs: [],
     });
-    expect(beat).toEqual({ commands: [], leases: [], desiredVersion: null });
+    expect(beat).toEqual({
+      commands: [],
+      leases: [],
+      desiredVersion: null,
+      minRunnerCompat: RUNNER_COMPAT,
+    });
     const seen = await first<{ capacity_max: number; last_seen_at: string }>(
       "SELECT capacity_max, last_seen_at FROM core_runners WHERE id = ?",
       w.runner.runnerId,
@@ -308,7 +314,12 @@ describe("device login over the channel (ADR 0056)", () => {
         capacity: { max: 1, inUse: 0, accepting: true },
         activeJobs: [],
       }),
-    ).resolves.toEqual({ commands: [], leases: [], desiredVersion: null });
+    ).resolves.toEqual({
+      commands: [],
+      leases: [],
+      desiredVersion: null,
+      minRunnerCompat: RUNNER_COMPAT,
+    });
     expect(
       await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json(),
     ).toMatchObject({ status: "expired", key: null });
