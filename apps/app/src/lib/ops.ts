@@ -34,6 +34,7 @@ export const APP_OPERATIONS = [
   "chat.send",
   "run.live",
   "run.steer",
+  "run.takeover",
   "project.create",
   "project.list",
   "project.update",
