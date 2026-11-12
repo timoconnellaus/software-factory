@@ -360,56 +360,21 @@ function RepoPicker({ orgId }: { orgId: string }) {
 }
 
 function PolicyAction({ project }: { project: ProjectState }) {
-  const refresh = useRefreshSetup();
-  const [busy, setBusy] = useState(false);
-  const repoUrl = `https://github.com/${project.repo.owner}/${project.repo.name}`;
-  async function propose() {
-    setBusy(true);
-    try {
-      const pr = await op(
-        "policy.proposeTemplate",
-        { projectId: project.id },
-        { idempotencyKey: submitKey() },
-      );
-      toast.success("Policy PR opened. Merge it on GitHub and the policy syncs itself.");
-      window.open(pr.url, "_blank", "noopener");
-      await refresh();
-    } catch (error) {
-      toast.error(errorText(error), { duration: 15_000 });
-    } finally {
-      setBusy(false);
-    }
-  }
-  if (project.policy.state === "invalid") {
-    return (
-      <div className="text-sm" data-testid="policy-invalid">
-        <span className="font-medium">{project.name}</span>: .factory/policy.json isn't valid (
-        {project.policy.error}).{" "}
-        <a
-          href={`${repoUrl}/blob/${project.repo.defaultBranch}/.factory/policy.json`}
-          target="_blank"
-          rel="noreferrer"
-          className="underline"
-        >
-          Open the file
-        </a>
-      </div>
-    );
-  }
+  // Config lives in the app (ADR 0370): every project gets one when it's added, and a broken one
+  // is fixed in its Settings, never with a PR.
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="policy-missing">
       <span>
-        <span className="font-medium">{project.name}</span>: this repo has no factory policy.
+        <span className="font-medium">{project.name}</span>:{" "}
+        {project.policy.state === "invalid"
+          ? `the factory config isn't valid (${project.policy.error}).`
+          : "this project has no factory config yet."}
       </span>
-      {project.policy.prUrl ? (
-        <a href={project.policy.prUrl} target="_blank" rel="noreferrer" className="underline">
-          Review the policy PR on GitHub
-        </a>
-      ) : (
-        <Button size="sm" disabled={busy} onClick={propose} data-testid="create-policy-pr">
-          {busy ? "Opening PR…" : "Create policy PR"}
-        </Button>
-      )}
+      <Button size="sm" asChild data-testid="open-settings">
+        <Link to="/projects/$projectId/settings" params={{ projectId: project.id }}>
+          Open Settings
+        </Link>
+      </Button>
     </div>
   );
 }
@@ -653,8 +618,9 @@ function ProjectDetails({ project }: { project: ProjectState }) {
         { projectId: project.id },
         { idempotencyKey: submitKey() },
       );
-      if (r.valid) toast.success("Policy re-read: valid.");
-      else toast.error(`Policy re-read: ${r.error}`);
+      if (r.valid)
+        toast.success("Imported the repo's .factory/policy.json as a new config version.");
+      else toast.error(`Import failed: ${r.error}`);
       await refresh();
     } catch (error) {
       toast.error(errorText(error));
@@ -709,16 +675,23 @@ function ProjectDetails({ project }: { project: ProjectState }) {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span>
-              Policy:{" "}
-              {project.policySha ? (
+              Config:{" "}
+              {project.configVersion !== null ? (
                 <>
-                  {project.policy.state} at{" "}
-                  <span className="font-mono text-xs">{project.policySha.slice(0, 7)}</span>
+                  <span className="font-mono text-xs">v{project.configVersion}</span>
+                  {project.policy.state !== "valid" ? ` (${project.policy.state})` : ""}
                 </>
               ) : (
-                "not read yet"
+                "none yet"
               )}
-              . It syncs on every push to {project.repo.defaultBranch}.
+              {" · "}
+              <Link
+                to="/projects/$projectId/settings"
+                params={{ projectId: project.id }}
+                className="underline"
+              >
+                Settings
+              </Link>
             </span>
             <Button
               size="sm"
@@ -727,7 +700,7 @@ function ProjectDetails({ project }: { project: ProjectState }) {
               onClick={resync}
               data-testid="resync-policy"
             >
-              {busy ? "Re-syncing…" : "Re-sync"}
+              {busy ? "Importing…" : "Import from repo"}
             </Button>
           </div>
           {project.protection && project.protection.state !== "ok" && (

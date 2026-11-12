@@ -19,6 +19,84 @@ export const POLICY_PATH = ".factory/policy.json";
 const sizes = ["small", "medium", "large"] as const;
 export type SizeName = (typeof sizes)[number];
 
+/** Names people read and steps refer to. */
+const label = z.string().trim().min(1).max(60);
+const instructions = z.string().max(4_000).default("");
+
+/**
+ * An agent (ADR 0372): a harness-neutral profile a step hands to. It names a model role and tier,
+ * never a model or a harness; the runner that takes the job resolves those.
+ */
+export const agentSchema = z
+  .object({
+    name: label,
+    role: z.enum(MODEL_ROLES),
+    tier: z.enum(["standard", "light"]).default("standard"),
+    /** Standing instructions, appended to the prompt of every job this agent runs. */
+    instructions,
+    /** Capabilities its jobs need on top of the stage's (`requires`). */
+    requires: z.array(z.enum(CAPABILITIES)).max(10).default([]),
+  })
+  .strict();
+export type AgentConfig = z.infer<typeof agentSchema>;
+
+/**
+ * A step in a workflow slot (ADR 0371). `work` hands to an agent and is advisory: its verdict is
+ * pass, send back to build, or ask a person. `gate` hands to a person and is enforced.
+ */
+export const stepSchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/, "a short id: lowercase letters, digits, -"),
+    kind: z.enum(["work", "gate"]),
+    name: label,
+    /** work: the agent it hands to. */
+    agent: label.optional(),
+    /** gate: the GitHub login who decides; absent means the project's approvers. */
+    approver: z.string().trim().min(1).max(100).optional(),
+    instructions,
+    /** Run only for items at least this size, or touching this decision domain. */
+    when: z
+      .object({
+        sizeAtLeast: z.enum(sizes).optional(),
+        domain: z.string().min(1).max(40).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type StepConfig = z.infer<typeof stepSchema>;
+
+export const SLOTS = ["afterSpec", "beforeVerify", "afterVerify"] as const;
+export type SlotName = (typeof SLOTS)[number];
+
+/**
+ * A workflow (ADR 0371): a named preset that fills the fixed skeleton's three slots. Workflows only
+ * add steps; the spec gate, verify and the merge gate always come from the skeleton.
+ */
+export const workflowSchema = z
+  .object({
+    name: label,
+    description: z.string().max(500).default(""),
+    slots: z
+      .object({
+        afterSpec: z.array(stepSchema).max(10).default([]),
+        beforeVerify: z.array(stepSchema).max(10).default([]),
+        afterVerify: z.array(stepSchema).max(10).default([]),
+      })
+      .strict()
+      .default({ afterSpec: [], beforeVerify: [], afterVerify: [] }),
+    /**
+     * The agent for the build (role implement): its tier and standing instructions. Triage picks
+     * the workflow, so it has none; verify and the reviewer stay code's own (ADR 0371).
+     */
+    core: z.object({ build: label.optional() }).strict().default({}),
+  })
+  .strict();
+export type WorkflowConfig = z.infer<typeof workflowSchema>;
+
+/** The `modelRoles` keys: a role, or `<role>.light` for its light tier (ADR 0372). */
+const MODEL_ROLE_KEYS: readonly string[] = MODEL_ROLES.flatMap((r) => [r, `${r}.light`]);
+
 export const projectPolicySchema = z
   .object({
     version: z.literal(1),
@@ -65,7 +143,16 @@ export const projectPolicySchema = z
     /** Who gets a timed-out gate or question. Default: the first approver. */
     backupOwner: z.string().min(1).optional(),
     /** Model role → model, for this project's runs (ADR 0018). */
-    modelRoles: z.partialRecord(z.enum(MODEL_ROLES), z.string().min(1)).default({}),
+    modelRoles: z
+      .record(z.string(), z.string().min(1))
+      .default({})
+      .superRefine((value, ctx) => {
+        for (const key of Object.keys(value)) {
+          if (!MODEL_ROLE_KEYS.includes(key)) {
+            ctx.addIssue({ code: "custom", message: `unknown model role "${key}"` });
+          }
+        }
+      }),
     /** Capabilities each stage's job requires (`.factory/` limits placement, ADR 0015). */
     requires: z.partialRecord(z.enum(JOB_STAGES), z.array(z.enum(CAPABILITIES))).default({}),
     /**
@@ -91,8 +178,83 @@ export const projectPolicySchema = z
       .default({ onRed: "warn", requiredChecks: [...DEFAULT_REQUIRED_CHECKS] }),
     /** Review packet sections in order (ADR 0020, spec 14). */
     reviewPacket: z.object({ sections: z.array(z.string().min(1)).min(1) }).optional(),
+    /** Agents steps hand to (ADR 0372). */
+    agents: z.array(agentSchema).max(30).default([]),
+    /** Named workflows; triage picks one per work item. None means the skeleton alone (ADR 0371). */
+    workflows: z.array(workflowSchema).max(20).default([]),
+    /**
+     * Self-improvement (ADR 0373): the factory trials practice changes on the next `trialSize`
+     * items, at most `weeklyCap` a week. Turning it on is a policy change for a person.
+     */
+    improve: z
+      .object({
+        enabled: z.boolean().default(false),
+        trialSize: z.number().int().min(3).max(20).default(5),
+        weeklyCap: z.number().int().min(1).max(10).default(3),
+      })
+      .strict()
+      .default({ enabled: false, trialSize: 5, weeklyCap: 3 }),
+    /**
+     * The adjudicator per gate kind (ADR 0374): `shadow` records the verdict it would give,
+     * `active` approves (never rejects) once it has earned it. Never merge, deploy or self-modify.
+     */
+    adjudicator: z
+      .object({
+        spec: z.enum(["off", "shadow", "active"]).default("off"),
+        step: z.enum(["off", "shadow", "active"]).default("off"),
+      })
+      .strict()
+      .default({ spec: "off", step: "off" }),
   })
-  .strict();
+  .strict()
+  .superRefine((policy, ctx) => {
+    const error = workflowsError(policy.agents, policy.workflows);
+    if (error) ctx.addIssue({ code: "custom", path: ["workflows"], message: error });
+  });
+
+/** Cross-references between agents and workflows that the schema alone can't check. */
+function workflowsError(agents: AgentConfig[], workflows: WorkflowConfig[]): string | null {
+  const byName = new Map<string, AgentConfig>();
+  for (const a of agents) {
+    if (byName.has(a.name.toLowerCase())) return `two agents are called "${a.name}"`;
+    byName.set(a.name.toLowerCase(), a);
+  }
+  const names = new Set<string>();
+  for (const w of workflows) {
+    if (names.has(w.name.toLowerCase())) return `two workflows are called "${w.name}"`;
+    names.add(w.name.toLowerCase());
+    const ids = new Set<string>();
+    for (const slot of SLOTS) {
+      for (const step of w.slots[slot]) {
+        const where = `${w.name} → ${step.name}`;
+        if (ids.has(step.id)) return `${w.name}: two steps have the id "${step.id}"`;
+        ids.add(step.id);
+        if (step.kind === "work") {
+          if (!step.agent) return `${where}: a work step hands to an agent`;
+          const agent = byName.get(step.agent.toLowerCase());
+          if (!agent) return `${where}: no agent called "${step.agent}"`;
+          // Work steps are advisory: they read and report, they never build.
+          if (agent.role === "implement") {
+            return `${where}: a work step can't use "${agent.name}" (role implement): work steps report, they don't build`;
+          }
+          if (step.approver) return `${where}: a work step has no approver (that's a gate step)`;
+        } else if (step.agent) {
+          return `${where}: a gate step hands to a person, not an agent`;
+        }
+      }
+    }
+    for (const [core, role] of [["build", "implement"]] as const) {
+      const name = w.core[core];
+      if (!name) continue;
+      const agent = byName.get(name.toLowerCase());
+      if (!agent) return `${w.name}: no agent called "${name}" for ${core}`;
+      if (agent.role !== role) {
+        return `${w.name}: the ${core} agent needs role ${role} ("${agent.name}" is ${agent.role})`;
+      }
+    }
+  }
+  return null;
+}
 
 export type ProjectPolicy = z.infer<typeof projectPolicySchema> & { overrides: DecisionRules };
 

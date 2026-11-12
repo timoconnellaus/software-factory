@@ -680,6 +680,15 @@ export function createOrcaRunner(
               text: summary.lastAssistantText,
             });
           }
+          // What the run used, per model (spec 09 M3): counts only, never keys or bills.
+          if (summary.usage.length > 0) {
+            artifacts.push({
+              kind: "usage",
+              harness: "claude-code",
+              entries: summary.usage,
+              ...(summary.wallMs !== null ? { wallMs: summary.wallMs } : {}),
+            });
+          }
         }
       }
       for (const url of capabilities.includes("browser")

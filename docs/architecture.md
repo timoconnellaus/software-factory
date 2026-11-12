@@ -15,9 +15,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   (`packages/db/migrations`, ADR 0050). `sf-engine` also binds one private R2 bucket,
   `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes.
 - **Operations** (ADR 0003, 0004) are the only way to change state. Every call goes through
-  `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, read from
-  the default branch), fencing token, permission, handler, then one D1 batch with the audit row and
-  outbox rows (ADR 0035, 0036).
+  `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, from
+  its current config version, and no looser than the version a work item started under), fencing
+  token, permission, handler, then one D1 batch with the audit row and outbox rows (ADR 0035, 0370).
 - **Workflows** own the gates, one per work item; the **foreman** picks a route within them, and
   its decisions are listed as binding or advisory (ADR 0005, 0006). Gates block in v1 and a waiting
   item holds no runner slot.
@@ -38,15 +38,23 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033). Its webhook
   (`software-factory.zerobsai.com/webhooks/github`, served by `sf-engine` through a Workers route)
   checks the signature, dedupes deliveries and maps them to operations: `verify.refresh` on PR and
-  CI events (and on a PR closing, for attached PRs), `push.observe` on pushes (branch confinement, the default-branch policy mirror),
+  CI events (and on a PR closing, for attached PRs), `push.observe` on pushes (branch confinement; config is no longer read from git, ADR 0370),
   `github.installation` (ADR 0231), which keeps the org's **installation** records current (ADR
   0055), and `protection.observe` on `repository_ruleset` / `branch_protection_rule` (ADR 0280).
 - **Onboarding** never asks for an id the factory can fetch (ADR 0055, 0056): Connect GitHub goes
   through GitHub's install flow back to sf-app's `/integrations/github/setup`
   (`github.connectInstallation` verifies the single-use state and the installation as the App), a
-  project is picked from the repos an installation reaches (`github.repos`, `project.create`), the
-  policy is read on create and on every default-branch push, and a runner connects by device login
+  project is picked from the repos an installation reaches (`github.repos`, `project.create`), its
+  first config version is imported from the repo's `.factory/policy.json` or created from the
+  template, and a runner connects by device login
   (`/runner/v1/device/*`, approved at `/runners/connect`). `setup.status` is the Setup checklist.
+- **Config** (ADR 0370, spec 09): a project's config is a sequence of versions in D1
+  (`core_project_policies`, keyed `v<N>`), edited on `/projects/<id>/settings` through
+  `config.get` / `config.preview` / `config.save` / `config.rollback` / `config.export`.
+  `policyImpact` classifies each change. A loosening save is `self-modify` and is applied when an
+  approver approves it. Workflows (ADR 0371) fill the skeleton's three slots, and Workflow v6 runs
+  their steps (`workflow.gate`, `workflow.record`). Agents (ADR 0372) carry a role and tier that
+  the runner's claim resolves to a model.
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`
@@ -109,7 +117,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `packages/ui` | shadcn/ui components and the factory theme (zinc, Geist, status dots) |
 | `packages/timeline` | A work item's event log in words: `describeEntry` turns an audit entry into a label, detail, note, actor and dot. Pure, no dependencies; the dashboard's timeline and `sf timeline` both use it (spec wi-4) |
 | `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC |
-| `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, `.factory/policy.json` schema, model roles, Workflow event names, verify logic (`verify/`: CI, packet assembly, risk flags, the check-only rule, onboarding), incident classes (`incidents/`), a fake GitHub for tests (`/testing`) |
+| `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, the config schema and versions (`config.*`, `policyImpact`), model roles, Workflow event names, verify logic (`verify/`: CI, packet assembly, risk flags, the check-only rule, onboarding), incident classes (`incidents/`), a fake GitHub for tests (`/testing`) |
 | `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
 | `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |

@@ -59,12 +59,20 @@ const V5_STEPS = [
     "planning #{k}: criteria",
   ].map((name) => `\`${name.replaceAll("{", "$" + "{")}\``),
 ];
+// The steps v6 adds (spec 09 M2, ADR 0371): the workflow's options and plan, and the slot steps.
+const V6_STEPS = [
+  '"workflow: options"',
+  '"workflow: plan"',
+  "`slot:${slot}:${round}:${i}:${s.id}`",
+  "`${name}: record`",
+  "`${name}: ask`",
+];
 // The tags v4 builds `{p}` from: frozen like the step names.
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 5 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(5);
+  it("starts new instances on version 6 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(6);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -77,7 +85,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(5);
+    expect(row.workflow_version).toBe(6);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -112,6 +120,9 @@ describe("Workflow versions", () => {
     for (const name of V3_STEPS) expect(source, name).toContain(name);
     for (const name of [...V4_STEPS, ...V4_TAGS]) expect(source, name).toContain(name);
     for (const name of V5_STEPS) expect(source, name).toContain(name);
+    for (const name of V6_STEPS) expect(source, name).toContain(name);
+    // v5 instances still dispatch to the same flow, with v6's workflow slots switched off.
+    expect(source).toContain("return flow.runV1(5);");
     // v4 instances still dispatch to the same flow, with v5's planning session switched off.
     expect(source).toContain("return flow.runV1(4);");
     // v3 instances still dispatch to the same flow, with v4's merge queue switched off.

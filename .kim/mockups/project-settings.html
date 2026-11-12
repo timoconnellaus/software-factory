@@ -1,0 +1,289 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono&display=swap" rel="stylesheet">
+<style>/* Factory design system: tokens.
+   Design language: shadcn/ui (zinc). Colours are HSL triplets, used as hsl(var(--x)). */
+:root {
+  /* Surfaces & text */
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --sidebar: 0 0% 98%;
+  --sidebar-accent: 240 4.8% 95.9%;
+
+  /* Actions */
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+
+  /* Lines & focus */
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+
+  /* Factory status (dots/indicators only, never large fills) */
+  --status-waiting: 38 92% 50%;   /* needs you: amber */
+  --status-running: 217 91% 60%;  /* agent working: blue */
+  --status-done: 142 71% 45%;     /* shipped / passed: green */
+  --status-failed: 0 84% 60%;     /* failed / blocked: red */
+  --status-idle: 240 5% 65%;      /* queued / idle: zinc */
+  --status-local: 262 83% 58%;    /* a local session (you): violet */
+
+  /* Type */
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+  --text-2xl: 24px;
+  --text-3xl: 28px;
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --tracking-tight: -0.02em;
+
+  /* Spacing (4px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radius & elevation */
+  --radius: 0.5rem;
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-lg: calc(var(--radius) + 4px);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-ring-waiting: 0 0 0 2px hsl(var(--status-waiting) / 0.6);
+
+  /* Layout */
+  --sidebar-width: 240px;
+  --header-height: 56px;
+  --content-max: 1200px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --sidebar: 240 5.9% 10%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+  }
+}
+</style><style>/* Factory design system: component styles (shadcn/ui equivalents). Needs tokens.css. */
+* { box-sizing: border-box; border-color: hsl(var(--border)); }
+body { margin: 0; font-family: var(--font-sans); background: hsl(var(--background)); color: hsl(var(--foreground)); font-size: var(--text-base); line-height: 1.45; -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-decoration: none; }
+.text-muted { color: hsl(var(--muted-foreground)); } .text-xs { font-size: var(--text-xs); } .text-sm { font-size: var(--text-sm); }
+.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
+.row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; } .grow { flex: 1; }
+h1 { font-size: var(--text-2xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tight); margin: 0 0 var(--space-1); }
+
+/* App shell (shadcn Sidebar + SidebarInset) */
+.shell { display: grid; grid-template-columns: var(--sidebar-width) 1fr; min-height: 100vh; }
+.sidebar { background: hsl(var(--sidebar)); border-right: 1px solid hsl(var(--border)); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-1); }
+.sb-brand { display: flex; align-items: center; gap: var(--space-2); padding: 6px 8px 14px; font-weight: var(--weight-semibold); }
+.sb-logo { width: 28px; height: 28px; border-radius: 6px; background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); display: grid; place-items: center; }
+.sb-label { font-size: var(--text-xs); color: hsl(var(--muted-foreground)); padding: 10px 8px 4px; font-weight: var(--weight-medium); }
+.sb-item { display: flex; align-items: center; gap: var(--space-2); padding: 6px 8px; border-radius: 6px; }
+.sb-item:hover, .sb-item.active { background: hsl(var(--sidebar-accent)); font-weight: var(--weight-medium); }
+.sb-item .count { margin-left: auto; font-size: var(--text-xs); color: hsl(var(--muted-foreground)); }
+.ic { width: 16px; text-align: center; opacity: .7; }
+.main { display: flex; flex-direction: column; min-width: 0; }
+.header { height: var(--header-height); display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-6); border-bottom: 1px solid hsl(var(--border)); }
+.crumb { color: hsl(var(--muted-foreground)); } .crumb b { color: hsl(var(--foreground)); font-weight: var(--weight-medium); }
+.content { padding: var(--space-6); max-width: var(--content-max); width: 100%; }
+
+/* Card */
+.card { background: hsl(var(--card)); color: hsl(var(--card-foreground)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); }
+.card.waiting { box-shadow: var(--shadow-ring-waiting); }
+.card-h { padding: var(--space-5) var(--space-5) 0; }
+.card-t { font-weight: var(--weight-semibold); font-size: var(--text-lg); letter-spacing: -.01em; margin: 0; }
+.card-d { font-size: var(--text-sm); color: hsl(var(--muted-foreground)); margin-top: var(--space-1); }
+.card-c { padding: var(--space-4) var(--space-5) var(--space-5); }
+.card-f { padding: var(--space-4) var(--space-5) var(--space-5); display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+/* Badge */
+.badge { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 2px 8px; font-size: var(--text-xs); font-weight: var(--weight-medium); border: 1px solid transparent; white-space: nowrap; }
+.b-default { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+.b-secondary { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); }
+.b-outline { border-color: hsl(var(--border)); }
+.b-destructive { background: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
+
+/* Status dot */
+.dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: none; }
+.s-waiting { background: hsl(var(--status-waiting)); } .s-running { background: hsl(var(--status-running)); }
+.s-done { background: hsl(var(--status-done)); } .s-failed { background: hsl(var(--status-failed)); }
+.s-idle { background: hsl(var(--status-idle)); } .s-local { background: hsl(var(--status-local)); }
+
+/* Button */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: var(--radius); font-size: var(--text-base); font-weight: var(--weight-medium); border: 1px solid transparent; cursor: pointer; white-space: nowrap; font-family: inherit; }
+.btn-sm { height: 32px; padding: 0 12px; font-size: var(--text-sm); }
+.btn-default { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }
+.btn-secondary { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); }
+.btn-outline { border-color: hsl(var(--input)); background: hsl(var(--background)); box-shadow: var(--shadow-xs); }
+.btn-ghost { background: transparent; } .btn-ghost:hover { background: hsl(var(--accent)); }
+.btn-destructive { background: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
+
+/* Table, Tabs, Input, Kbd, Progress, Separator */
+.table { width: 100%; border-collapse: collapse; }
+.table th { text-align: left; font-weight: var(--weight-medium); color: hsl(var(--muted-foreground)); font-size: var(--text-sm); padding: 10px 12px; border-bottom: 1px solid hsl(var(--border)); }
+.table td { padding: 12px; border-bottom: 1px solid hsl(var(--border)); } .table tr:last-child td { border-bottom: 0; }
+.tabs { display: inline-flex; background: hsl(var(--muted)); border-radius: var(--radius); padding: 3px; gap: 2px; }
+.tab { padding: 5px 12px; border-radius: 6px; font-size: var(--text-sm); font-weight: var(--weight-medium); color: hsl(var(--muted-foreground)); }
+.tab.on { background: hsl(var(--background)); color: hsl(var(--foreground)); box-shadow: var(--shadow-xs); }
+.input { height: 36px; border: 1px solid hsl(var(--input)); border-radius: var(--radius); padding: 0 12px; display: flex; align-items: center; color: hsl(var(--muted-foreground)); min-width: 220px; background: hsl(var(--background)); }
+.kbd { font-family: var(--font-mono); font-size: 11px; border: 1px solid hsl(var(--border)); border-radius: 4px; padding: 0 4px; color: hsl(var(--muted-foreground)); }
+.progress { height: 8px; background: hsl(var(--muted)); border-radius: 99px; overflow: hidden; } .progress > i { display: block; height: 100%; background: hsl(var(--primary)); }
+.sep { height: 1px; background: hsl(var(--border)); }
+
+/* Factory-specific */
+.stage-steps { display: flex; gap: 4px; align-items: center; font-size: var(--text-xs); }
+.stage-steps span { padding: 2px 8px; border-radius: 99px; border: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); }
+.stage-steps span.done { background: hsl(var(--secondary)); color: hsl(var(--foreground)); }
+.stage-steps span.now { border-color: hsl(var(--status-running)); color: hsl(var(--foreground)); font-weight: var(--weight-medium); }
+.stage-steps span.gate { border-style: dashed; }
+.criteria { display: grid; gap: 6px; } .criterion { display: flex; gap: 8px; align-items: flex-start; font-size: var(--text-sm); }
+
+@media (max-width: 820px) {
+  .shell { grid-template-columns: 1fr; } .sidebar { display: none; }
+  .header { padding: 0 var(--space-4); } .content { padding: var(--space-4); } .hide-sm { display: none !important; }
+}
+
+.settings-grid{display:grid;grid-template-columns:200px 1fr;gap:24px;align-items:start}
+.snav{position:sticky;top:16px;display:grid;gap:2px}
+.snav a{padding:6px 10px;border-radius:6px;font-size:var(--text-sm);color:hsl(var(--muted-foreground))}
+.snav a.on{background:hsl(var(--accent));color:hsl(var(--foreground));font-weight:var(--weight-medium)}
+.snav .chg{float:right;width:6px;height:6px;border-radius:50%;background:hsl(var(--status-waiting));margin-top:7px}
+.field{display:grid;grid-template-columns:1fr 280px;gap:16px;padding:14px 0;border-bottom:1px solid hsl(var(--border));align-items:start}
+.field:last-child{border-bottom:0}
+.field .lbl{font-weight:var(--weight-medium);font-size:var(--text-sm)}
+.field .help{font-size:var(--text-xs);color:hsl(var(--muted-foreground));margin-top:2px}
+.field.changed{background:linear-gradient(90deg,hsl(var(--status-waiting)/.08),transparent);margin:0 -20px;padding-left:20px;padding-right:20px;border-left:2px solid hsl(var(--status-waiting))}
+.ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.inp{height:34px;border:1px solid hsl(var(--input));border-radius:var(--radius);padding:0 10px;background:hsl(var(--background));font:inherit;font-size:var(--text-sm);color:hsl(var(--foreground));width:90px}
+.seg{display:inline-flex;border:1px solid hsl(var(--input));border-radius:var(--radius);overflow:hidden}
+.seg span{padding:6px 12px;font-size:var(--text-sm);cursor:pointer;border-right:1px solid hsl(var(--input))}
+.seg span:last-child{border-right:0}
+.seg span.on{background:hsl(var(--primary));color:hsl(var(--primary-foreground))}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid hsl(var(--border));border-radius:99px;padding:2px 4px 2px 10px;font-size:var(--text-xs)}
+.chip b{font-weight:400;opacity:.6;padding:0 6px;cursor:pointer}
+.was{font-size:var(--text-xs);color:hsl(var(--muted-foreground));text-decoration:line-through}
+.src{font-size:10px}
+.preset-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.pc{border:1px solid hsl(var(--border));border-radius:var(--radius-lg);padding:12px;cursor:pointer;font-size:var(--text-sm)}
+.pc.on{border-color:hsl(var(--primary));box-shadow:0 0 0 1px hsl(var(--primary))}
+.pc .t{font-weight:var(--weight-semibold);margin-bottom:4px}
+.matrix{width:100%;border-collapse:collapse;font-size:var(--text-xs)}
+.matrix th,.matrix td{padding:6px 8px;border-bottom:1px solid hsl(var(--border));text-align:left}
+.matrix td.lock{color:hsl(var(--muted-foreground))}
+.pill{border-radius:4px;padding:1px 6px;font-size:11px;border:1px solid hsl(var(--border))}
+.pill.allow{background:hsl(var(--status-done)/.12)} .pill.review{background:hsl(var(--status-waiting)/.14)} .pill.deny{background:hsl(var(--status-failed)/.12)}
+.savebar{margin-top:24px;background:hsl(var(--background));border:1px solid hsl(var(--border));border-radius:var(--radius-lg);box-shadow:var(--shadow-lg, 0 10px 30px rgba(0,0,0,.12));padding:14px 16px}
+.diff{font-family:var(--font-mono);font-size:12px;background:hsl(var(--muted));border-radius:var(--radius);padding:10px 12px;line-height:1.6;overflow-x:auto;white-space:pre}
+.diff .a{color:hsl(var(--status-done))} .diff .r{color:hsl(var(--status-failed))}
+.warnbox{border:1px solid hsl(var(--status-waiting));border-radius:var(--radius);padding:10px 12px;font-size:var(--text-sm);background:hsl(var(--status-waiting)/.08)}
+.banner{border:1px solid hsl(var(--border));border-radius:var(--radius-lg);padding:10px 14px;font-size:var(--text-sm);display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+@media(max-width:820px){.settings-grid{grid-template-columns:1fr}.snav{display:none}.field{grid-template-columns:1fr}.ctl{justify-content:flex-start}.preset-cards{grid-template-columns:1fr}.field.changed{margin:0 -16px;padding:14px 16px}}
+</style></head><body><div class="shell">
+<aside class="sidebar" data-name="sidebar"><a class="sb-brand" data-name="org switcher" style="border:1px solid hsl(var(--border));border-radius:8px;padding:6px 8px;margin-bottom:10px;background:hsl(var(--background))"><span class="sb-logo">⚙</span><span style="display:grid;line-height:1.2"><span>All factories</span><span class="text-xs text-muted" style="font-weight:400">3 orgs · 2 accounts</span></span><span class="grow"></span><span class="text-muted">⇅</span></a>
+<a class="btn btn-default btn-sm" style="margin:0 4px 8px" data-name="new work button">+ New work <span class="kbd" style="color:inherit;border-color:rgba(255,255,255,.3)">N</span></a>
+<div class="sb-label">Platform</div><a class="sb-item" data-name="nav inbox"><span class="ic">◉</span>Inbox<span class="count">3</span></a><a class="sb-item" data-name="nav work"><span class="ic">▤</span>Work<span class="count">12</span></a><a class="sb-item active" data-name="nav projects"><span class="ic">◫</span>Projects<span class="count">4</span></a><a class="sb-item" data-name="nav runners"><span class="ic">⚙</span>Runners<span class="count">2</span></a><a class="sb-item" data-name="nav metrics"><span class="ic">▲</span>Metrics<span class="count"></span></a><div class="sb-label">Projects</div><a class="sb-item text-sm" data-name="project relationship-os"><span class="dot s-done"></span>relationship-os</a><a class="sb-item text-sm" data-name="project client-acme/web"><span class="dot s-waiting"></span>client-acme/web</a><a class="sb-item text-sm" data-name="project blog-pipeline"><span class="dot s-idle"></span>blog-pipeline</a><a class="sb-item text-sm" data-name="project factory"><span class="dot s-done"></span>factory</a>
+<div class="grow"></div><div class="sep"></div><a class="sb-item text-sm" data-name="runner status"><span class="dot s-done"></span>mac-mini · 3/4 busy</a></aside>
+<div class="main"><header class="header" data-name="header"><span class="crumb">Projects / software-factory / <b>Settings</b></span><span class="grow"></span></header>
+<main class="content">
+<div class="row" style="margin-bottom:12px;align-items:flex-start"><div><h1>Settings</h1><div class="text-muted text-sm">software-factory · config <span class="mono">v14</span> · saved 2 days ago by timoconnellaus</div></div><span class="grow"></span><a class="btn btn-outline btn-sm" data-name="view in github">History</a><a class="btn btn-ghost btn-sm" data-name="edit raw json">Edit as JSON</a><a class="btn btn-ghost btn-sm">Export / import</a></div>
+
+<div class="banner" data-name="how saving works"><span class="dot s-idle"></span><span class="grow">Saving creates a new version. New work items use it; running ones keep theirs. Changes that loosen policy wait for a second approver.</span><a class="text-sm" style="text-decoration:underline">1 trial running (factory)</a></div>
+
+<div class="settings-grid">
+<nav class="snav" data-name="section nav">
+<a class="on">Autonomy <span class="chg"></span></a><a>Gates &amp; timeouts</a><a>Throughput</a><a>People <span class="chg"></span></a><a>Protection</a><a>Review packet</a><div class="sep" style="margin:6px 0"></div><a>Workflows ↗</a><a>Agents ↗</a>
+</nav>
+<div style="display:grid;gap:16px;min-width:0">
+
+<section class="card" data-name="autonomy section"><div class="card-h"><div class="card-t">Autonomy</div><div class="card-d">How much the factory does without asking. Merge, deploy and self-modify always go to a person, whatever you pick.</div></div>
+<div class="card-c">
+<div class="preset-cards" data-name="autonomy policy picker">
+<div class="pc" data-name="cautious"><div class="t">Cautious</div><div class="text-muted text-xs">A person approves every spec and every outbound action.</div></div>
+<div class="pc" data-name="balanced"><div class="t">Balanced <span class="was">current</span></div><div class="text-muted text-xs">Specs for medium work and up. Agents ask before reaching outside.</div></div>
+<div class="pc on" data-name="autonomous"><div class="t">Autonomous <span class="badge b-outline" style="border-color:hsl(var(--status-waiting))">loosens</span></div><div class="text-muted text-xs">Agents act within the floor; you see results at the merge gate.</div></div>
+</div>
+<details style="margin-top:14px" open data-name="overrides"><summary class="text-sm" style="cursor:pointer;font-weight:500">Overrides (1) <span class="text-muted">· per actor and risk class, on top of the policy</span></summary>
+<table class="matrix" style="margin-top:8px"><tr><th>Actor</th><th>Risk class</th><th>Policy says</th><th>Override</th><th></th></tr>
+<tr><td>agent</td><td class="mono">outbound</td><td><span class="pill review">review</span></td><td><span class="pill allow">allow</span></td><td><span class="text-muted">✕</span></td></tr>
+<tr><td>agent</td><td class="mono">merge</td><td><span class="pill review">review</span></td><td class="lock">🔒 always review (in code)</td><td></td></tr>
+<tr><td>agent</td><td class="mono">deploy</td><td><span class="pill review">review</span></td><td class="lock">🔒 always review (in code)</td><td></td></tr>
+</table><a class="btn btn-ghost btn-sm" style="margin-top:6px">+ Add override</a></details>
+</div></section>
+
+<section class="card" data-name="gates section"><div class="card-h"><div class="card-t">Timeouts</div></div><div class="card-c" style="padding-top:4px">
+<div class="field" data-name="gate timeout"><div><div class="lbl">Gate timeout</div><div class="help">Hours a gate waits before it goes to the backup owner. Never auto-accepted.</div></div><div class="ctl"><input class="inp" value="72"> <span class="text-sm text-muted">hours</span></div></div>
+<div class="field" data-name="question timeout"><div><div class="lbl">Question timeout</div><div class="help">Hours an agent's question waits before it goes to the backup owner.</div></div><div class="ctl"><input class="inp" value="48"> <span class="text-sm text-muted">hours</span></div></div>
+</div></section>
+
+<section class="card" data-name="throughput section"><div class="card-h"><div class="card-t">Throughput</div></div><div class="card-c" style="padding-top:4px">
+<div class="field" data-name="wip limit"><div><div class="lbl">WIP limit</div><div class="help">How many items may wait at your gates before new builds stop.</div></div><div class="ctl"><input class="inp" value="5"> <span class="text-sm text-muted">items</span></div></div>
+<div class="field" data-name="retry limit"><div><div class="lbl">Default retry limit</div><div class="help">Automatic retries of a failed agent step (0–5). A step's <i>if it fails</i> can override it.</div></div><div class="ctl"><input class="inp" value="2"></div></div>
+</div></section>
+
+<section class="card" data-name="people section"><div class="card-h"><div class="card-t">People</div></div><div class="card-c" style="padding-top:4px">
+<div class="field changed" data-name="approvers"><div><div class="lbl">Approvers</div><div class="help">Who decides gates. Empty means the org's owners and admins.</div></div><div class="ctl"><span class="chip">timoconnellaus <b>✕</b></span><span class="chip" style="border-color:hsl(var(--status-done))">+ jsmith <b>✕</b></span><a class="btn btn-ghost btn-sm">+ Add</a></div></div>
+<div class="field" data-name="backup owner"><div><div class="lbl">Backup owner</div><div class="help">Gets a gate or question that timed out.</div></div><div class="ctl"><span class="input" style="min-width:180px;height:34px">timoconnellaus ▾</span></div></div>
+</div></section>
+
+<section class="card" data-name="protection section"><div class="card-h"><div class="card-t">Protection on <span class="mono" style="font-size:inherit">main</span></div></div><div class="card-c" style="padding-top:4px">
+<div class="field" data-name="on red"><div><div class="lbl">When protection is red</div><div class="help">Block keeps builds queued until <span class="mono">main</span>'s rulesets are fixed.</div></div><div class="ctl"><span class="seg"><span class="on">Warn</span><span>Block</span></span></div></div>
+<div class="field" data-name="required checks"><div><div class="lbl">Required CI checks</div><div class="help">Besides <span class="mono">factory/verify</span>. Goes into the generated ruleset.</div></div><div class="ctl"><span class="chip mono">ci <b>✕</b></span><a class="btn btn-ghost btn-sm">+ Add</a></div></div>
+</div></section>
+
+<section class="card" data-name="review packet section"><div class="card-h"><div class="card-t">Review packet</div><div class="card-d">Which of the packet's 8 fixed sections show at the merge gate, and in what order. The factory fills each section; you only choose and order them. Drag to reorder.</div></div><div class="card-c" style="padding-top:4px"><div class="field" style="grid-template-columns:24px 1fr auto" data-name="packet section verdict"><span class="text-muted" style="cursor:grab">⋮⋮</span><div><div class="lbl">Verdict row <span class="mono text-muted">verdict</span></div><div class="help">Checks, criteria, holdout results, reviewer verdict and risk at a glance</div></div><div class="ctl"><span class="seg"><span class="on">Show</span><span class="">Hide</span></span></div></div><div class="field" style="grid-template-columns:24px 1fr auto" data-name="packet section changed"><span class="text-muted" style="cursor:grab">⋮⋮</span><div><div class="lbl">What changed <span class="mono text-muted">changed</span></div><div class="help">The agent's summary of the change</div></div><div class="ctl"><span class="seg"><span class="on">Show</span><span class="">Hide</span></span></div></div><div class="field" style="grid-template-columns:24px 1fr auto" data-name="packet section criteria"><span class="text-muted" style="cursor:grab">⋮⋮</span><div><div class="lbl">Acceptance criteria <span class="mono text-muted">criteria</span></div><div class="help">Each criterion with its evidence</div></div><div class="ctl"><span class="seg"><span class="on">Show</span><span class="">Hide</span></span></div></div><div class="field" style="grid-template-columns:24px 1fr auto" data-name="packet section holdout"><span class="text-muted" style="cursor:grab">⋮⋮</span><div><div class="lbl">Holdout tests <span class="mono text-muted">holdout</span></div><div class="help">Tests the builder never saw, and their results</div></div><div class="ctl"><span class="seg"><span class="">Show</span><span class="on">Hide</span></span></div></div><div class="field" style="grid-template-columns:24px 1fr auto" data-name="packet section reviewer"><span class="text-muted" style="cursor:grab">⋮⋮</span><div><div class="lbl">Reviewer notes <span class="mono text-muted">reviewer</span></div><div class="help">The independent reviewer (a different model role)</div></div><div class="ctl"><span class="seg"><span class="on">Show</span><span class="">Hide</span></span></div></div><div class="field" style="grid-template-columns:24px 1fr auto" data-name="packet section visual"><span class="text-muted" style="cursor:grab">⋮⋮</span><div><div class="lbl">Visual evidence <span class="mono text-muted">visual</span></div><div class="help">Screenshots from the run</div></div><div class="ctl"><span class="seg"><span class="">Show</span><span class="on">Hide</span></span></div></div><div class="field" style="grid-template-columns:24px 1fr auto" data-name="packet section risk"><span class="text-muted" style="cursor:grab">⋮⋮</span><div><div class="lbl">Risk flags <span class="mono text-muted">risk</span></div><div class="help">e.g. touches .factory/, widens permissions</div></div><div class="ctl"><span class="seg"><span class="on">Show</span><span class="">Hide</span></span></div></div><div class="field" style="grid-template-columns:24px 1fr auto" data-name="packet section diff"><span class="text-muted" style="cursor:grab">⋮⋮</span><div><div class="lbl">Inline diff <span class="mono text-muted">diff</span></div><div class="help">Collapsed until you open it</div></div><div class="ctl"><span class="seg"><span class="on">Show</span><span class="">Hide</span></span></div></div></div></section>
+
+<section class="card" data-name="workflows link"><div class="card-h"><div class="card-t">Workflows and agents</div><div class="card-d">Steps, who each one hands to, and when the spec step runs live on their own pages. Harness settings, model roles and capabilities are part of each agent.</div></div><div class="card-c"><div class="row"><a class="btn btn-outline btn-sm">Workflows (4) →</a><a class="btn btn-outline btn-sm">Agents (4) →</a></div></div></section>
+
+<div class="savebar" data-name="save bar">
+<div class="row"><b class="text-sm">2 unsaved changes</b><span class="badge b-outline" style="border-color:hsl(var(--status-waiting))"><span class="dot s-waiting"></span>2 loosen policy</span><span class="grow"></span><a class="btn btn-ghost btn-sm" data-name="discard">Discard</a><a class="btn btn-default btn-sm" data-name="open pr">Save v15</a></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px" class="two">
+<div class="diff" data-name="diff preview">  "version": 1,
+<span class="r">-  "autonomyPolicy": "balanced",</span>
+<span class="a">+  "autonomyPolicy": "autonomous",</span>
+<span class="r">-  "approvers": ["timoconnellaus"],</span>
+<span class="a">+  "approvers": ["timoconnellaus", "jsmith"],</span></div>
+<div style="display:grid;gap:8px;align-content:start">
+<div class="warnbox" data-name="impact summary"><b>Loosens:</b> Balanced → Autonomous. Agents may now <span class="mono">spend</span> and act <span class="mono">outbound</span> without asking; runners may <span class="mono">spend</span>; self-improve may <span class="mono">spend</span> with review. Merge, deploy and self-modify still go to a person.</div>
+<div class="warnbox"><b>Loosens:</b> adds jsmith as an approver (more people can open gates).</div>
+<div class="text-xs text-muted">Loosening changes go to an approver as a pending action before they take effect.</div>
+</div></div>
+</div>
+
+</div></div>
+<style>@media(max-width:820px){.two{grid-template-columns:1fr!important}}</style>
+</main></div></div></body></html>
