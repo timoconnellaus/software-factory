@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  deployArgs,
   deployOrder,
   findWorkers,
   migrationsOf,
@@ -86,4 +87,15 @@ test("the repo's own Workers include sf-app and sf-engine", () => {
   const names = findWorkers().map((w) => w.config.name);
   assert.ok(names.includes("sf-app"));
   assert.ok(names.includes("sf-engine"));
+});
+
+test("deployArgs passes the deployed commit only to a Worker that declares DEPLOYED_SHA", () => {
+  const sha = "a".repeat(40);
+  assert.deepEqual(deployArgs({ name: "sf-engine", vars: { DEPLOYED_SHA: "" } }, sha), [
+    "--var",
+    `DEPLOYED_SHA:${sha}`,
+  ]);
+  assert.deepEqual(deployArgs({ name: "sf-app", vars: { X: "1" } }, sha), []);
+  assert.deepEqual(deployArgs({ name: "sf-engine", vars: { DEPLOYED_SHA: "" } }, "not-a-sha"), []);
+  assert.deepEqual(deployArgs({ name: "sf-engine", vars: { DEPLOYED_SHA: "" } }, null), []);
 });

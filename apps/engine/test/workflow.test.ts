@@ -1,3 +1,5 @@
+import { introspectWorkflow } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
   all,
@@ -84,7 +86,12 @@ describe("the work-item Workflow", () => {
     expect(gate?.gate_open_ms).toBeGreaterThanOrEqual(0);
   });
 
-  it("stops at the spec gate for medium work even when the foreman asks to skip it; request changes loops back, approve commits the spec", async () => {
+  it("v4: stops at the spec gate for medium work even when the foreman asks to skip it; request changes loops back, approve commits the spec", async () => {
+    // V1's spec rounds, as a v4 instance started before v5's planning sessions runs them (ADR 0053).
+    await using introspector = await introspectWorkflow(env.WORK_ITEM_WORKFLOW);
+    await introspector.modifyAll(async (m) => {
+      await m.mockStepResult({ name: "meta: version" }, 4);
+    });
     const w = await world();
     const item = await create(w, "Rework settings");
     await runStage(w, item.workItemId, "triage", () => triage("medium", { specRequested: "skip" }));
@@ -137,7 +144,11 @@ describe("the work-item Workflow", () => {
     expect(versions.length).toBe(4); // triage draft + three spec rounds
   });
 
-  it("asks blocking questions and continues when they are answered", async () => {
+  it("v2: a v2 instance in its spec stage at deploy time finishes on the v2 path: blocking questions, then the answers in the next spec run (spec 20, criterion 12)", async () => {
+    await using introspector = await introspectWorkflow(env.WORK_ITEM_WORKFLOW);
+    await introspector.modifyAll(async (m) => {
+      await m.mockStepResult({ name: "meta: version" }, 2);
+    });
     const w = await world();
     const item = await create(w, "Pick a theme store");
     await runStage(w, item.workItemId, "triage", () => triage("large"));

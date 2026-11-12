@@ -28,6 +28,7 @@ import {
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
 import { assertPushable, type HostGit, revokeToken } from "./git.ts";
+import { type RunningRelay, startPlanningRelay } from "./planning-relay.ts";
 
 export interface JobReport {
   jobId: string;
@@ -48,6 +49,17 @@ export class StopJob extends Error {
     readonly fenced: boolean,
   ) {
     super(reason);
+  }
+}
+
+/**
+ * A planning session gave up its slot (ADR 0301, 0350): the host ends the harness and hands back,
+ * and a later answer resumes the same conversation on this runner.
+ */
+export class PlanningYielded extends Error {
+  override name = "PlanningYielded";
+  constructor() {
+    super("the planning session yielded its slot");
   }
 }
 
@@ -261,8 +273,12 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     return note ? { ...j, harness: { ...j.harness, prompt: `${j.harness.prompt}\n${note}` } } : j;
   };
 
+  const planning = job.stage === "planning";
+  let relay: RunningRelay | undefined;
+  let yielded = false;
   const abortedOutcome = (): SessionOutcome => {
     const reason = signal.reason;
+    if (reason instanceof PlanningYielded) return "completed";
     if (reason instanceof StopJob) return "cancelled";
     return String(reason).includes("timeout") ? "timed_out" : "cancelled";
   };
@@ -283,7 +299,24 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       const existing = adapter.resolveCheckout ? await adapter.resolveCheckout(job) : null;
       const clone = await git.ensureRepo(job, token.token, existing);
       if (signal.aborted) throw signal.reason;
-      workspace = await adapter.prepareWorkspace(job, signal);
+      // A planning session reaches its planning operations through the host's relay (ADR 0350).
+      if (planning) {
+        relay = await startPlanningRelay(job, cp, {
+          onYield: () => {
+            if (yielded || stopped) return;
+            yielded = true;
+            log(`${job.jobId}: the planning session yielded its slot`);
+            controller.abort(new PlanningYielded());
+          },
+          onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
+          log,
+        });
+      }
+      workspace = await adapter.prepareWorkspace(
+        job,
+        signal,
+        relay ? { planningRelay: { url: relay.url, token: relay.token } } : undefined,
+      );
       if (workspace.branch !== job.branch) {
         throw new Error(`workspace is on ${workspace.branch}, not ${job.branch}`);
       }
@@ -343,7 +376,9 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         );
       }
     } catch (err) {
-      if (err instanceof StopJob || signal.reason instanceof StopJob) {
+      if (signal.reason instanceof PlanningYielded) {
+        outcome = "completed";
+      } else if (err instanceof StopJob || signal.reason instanceof StopJob) {
         outcome = "cancelled";
       } else {
         error = err instanceof Error ? err.message : String(err);
@@ -353,13 +388,17 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       clearTimeout(timer);
     }
 
+    if (yielded) outcome = "completed";
     if (workspace && !stopped) {
       await stream.push({ type: "job.state", state: "collecting" });
-      // The stage result: read it, pass it through untouched, delete it. Never committed.
+      // The stage result: read it, pass it through untouched, delete it. Never committed. A
+      // planning session has none: its record is in the factory (ADR 0300).
       const resultPath = join(workspace.path, RESULT_FILE);
-      const raw = await readFile(resultPath, "utf8").catch(() => null);
+      const raw = planning ? null : await readFile(resultPath, "utf8").catch(() => null);
       await rm(resultPath, { force: true });
-      if (raw !== null) {
+      if (planning) {
+        result = { planning: yielded ? "yielded" : "stopped" };
+      } else if (raw !== null) {
         try {
           result = JSON.parse(raw);
         } catch {
@@ -408,10 +447,12 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
 
       // Collect even after a failure: a partial diff and the logs are what a person needs.
       const artifacts: Artifact[] = [];
-      try {
-        artifacts.push(await git.diff(workspace.path, startSha ?? workspace.baseSha, job.branch));
-      } catch (err) {
-        artifacts.push({ kind: "log", name: "diff-error", text: String(err) });
+      if (!planning) {
+        try {
+          artifacts.push(await git.diff(workspace.path, startSha ?? workspace.baseSha, job.branch));
+        } catch (err) {
+          artifacts.push({ kind: "log", name: "diff-error", text: String(err) });
+        }
       }
       artifacts.push(
         ...(await adapter
@@ -456,6 +497,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   } finally {
     clearTimeout(timer);
     clearInterval(flusher);
+    await relay?.close().catch(() => {});
     await adapter.release(job, workspace, session).catch((err) => {
       error = `${error ? `${error}; ` : ""}release: ${err instanceof Error ? err.message : err}`;
     });

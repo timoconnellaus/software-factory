@@ -20,6 +20,8 @@ import type {
 import { RESULT_FILE } from "@software-factory/runner-contract";
 
 export const SETTINGS_FILE = ".claude/settings.local.json";
+/** The planning MCP server's name in a planning session's MCP config (tools `mcp__planning__*`). */
+export const PLANNING_MCP_SERVER = "planning";
 /** The authoritative copy, in the run's private directory, passed with `--settings`. */
 export const RUN_SETTINGS_FILE = "claude-settings.json";
 
@@ -44,7 +46,15 @@ export type ClaudeHooks = Record<
   string,
   Array<{
     matcher?: string;
-    hooks: Array<{ type: "command"; command: string; timeout?: number }>;
+    hooks: Array<{
+      type: "command";
+      command: string;
+      timeout?: number;
+      /** Runs in the background and wakes the model when it exits 2 (kim's Stop hook). */
+      asyncRewake?: boolean;
+      rewakeMessage?: string;
+      rewakeSummary?: string;
+    }>;
   }>
 >;
 
@@ -117,6 +127,8 @@ export interface SettingsOptions {
    * there, never write.
    */
   attachmentsDir?: string;
+  /** Files the agent's Read tool may not open (a planning session's relay file, ADR 0350). */
+  denyReadFiles?: string[];
 }
 
 /** Hook events whose output can grant a permission or answer a dialog: a runner may not add them. */
@@ -334,6 +346,7 @@ export const TMP_DIRS = ["wrangler", "xdg-config", "xdg-cache", "npm-cache", "co
 export const DEFAULT_MODES: Record<JobStage, PermissionMode> = {
   triage: "dontAsk",
   spec: "dontAsk",
+  planning: "dontAsk",
   build: "bypassPermissions",
   verify: "dontAsk",
 };
@@ -348,7 +361,10 @@ export function allowedDomains(profile?: HarnessProfile): string[] {
   return [...new Set([...DEFAULT_ALLOWED_DOMAINS, ...(profile?.allowedDomains ?? [])])];
 }
 
-/** What each stage may do. Triage and spec only read and write the result; verify also runs checks. */
+/**
+ * What each stage may do. Triage and spec only read and write the result; verify also runs checks.
+ * A planning session (spec 20) only reads, and acts through its planning MCP server's tools.
+ */
 export function stageAllow(
   stage: JobStage,
   worktree: string,
@@ -366,6 +382,8 @@ export function stageAllow(
     case "triage":
     case "spec":
       return [...read, ...writeResult];
+    case "planning":
+      return [...read, `mcp__${PLANNING_MCP_SERVER}`];
     case "verify":
       return [...read, ...writeResult, ...bash(TOOLCHAIN)];
     case "build":
@@ -414,6 +432,7 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
   const deny = [
     ...bash(DENY_COMMANDS),
     ...readDeny.map((p) => `Read(${p})`),
+    ...(options.denyReadFiles ?? []).map((p) => `Read(${abs(p)})`),
     ...writeDeny.map((p) => `Edit(${p})`),
     ...writeDeny.map((p) => `Write(${p})`),
     // The worktree's git internals are the host's (it pushes from them).

@@ -2,6 +2,7 @@
 // right after commit, and retried by the minute cron with backoff. Delivery is at least once;
 // Workflow ids and one-shot event types make a second delivery harmless.
 import type { OutboxMessage } from "@software-factory/core";
+import { planningHub } from "./planning-hub.ts";
 
 interface OutboxRow {
   id: string;
@@ -104,6 +105,10 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       if (found && !FINISHED.has(found.status)) await found.instance.terminate();
       return;
     }
+    case "planning.changed":
+      // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
+      await planningHub(env, message.payload.workItemId).notify();
+      return;
     case "notify":
       // Web push arrives with spec 15; until then the inbox reads gates and questions from D1.
       console.log("notify", JSON.stringify(message.payload));

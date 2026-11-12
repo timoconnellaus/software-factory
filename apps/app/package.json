@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@software-factory/core": "workspace:*",
+    "@software-factory/timeline": "workspace:*",
     "@software-factory/ui": "workspace:*",
     "@tanstack/react-query": "5.105.3",
     "@tanstack/react-router": "1.170.46",

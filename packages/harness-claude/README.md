@@ -32,6 +32,15 @@ says how Claude runs there:
   - It also writes `launch.json`, the launch record.
   - `verifyLaunch` compares the live process (`ps`) and both settings copies with the record. Any
     difference is `harness-config-mismatch`.
+- **A planning session** (spec 20, ADR 0350, `src/planning/`): `projectHarness` with `planning:
+  { relay }` writes `<runDir>/planning.json` (the host's relay and its per-job secret, 0600, denied to
+  the Read tool) and `<runDir>/mcp.json`, and the launch gains `--mcp-config` and `--session-id`
+  (or `--resume` on a resume job). The stage allows reading and the `mcp__planning__*` tools only.
+  - The **planning MCP server** (`node cli.ts mcp`): one tool per planning operation
+    (`question_ask`, `spec_revise`, `chat_reply`, `planning_ready`, …), schemas from runner-contract.
+  - **Hooks**, kim's semantics: `PostToolUse` brings the news since the cursor at most every 15 s;
+    `UserPromptSubmit` brings it every time and cancels a waiting Stop hook; `Stop` (asyncRewake)
+    waits on `planning.wait` and wakes the model when news is due, or yields when the factory asks.
 - `scrubbedProcessEnv`: the same, for a harness the runner spawns itself.
 - `findTranscript` / `parseTranscript` / `checkOutputLog`: the check output and final message from a
   session's transcript (Orca's per-profile `CLAUDE_CONFIG_DIR` homes are searched too).

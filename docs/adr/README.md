@@ -84,6 +84,8 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0372](0372-agents-are-harness-neutral.md) | Agents are harness-neutral (role + tier, instructions, abstract permissions); the runner resolves the model |
 | [0373](0373-the-factory-improves-its-own-practice.md) | The factory improves its own practice as trials with auto-rollback; policy stays with people |
 | [0374](0374-the-adjudicator-earns-approval-in-shadow-mode.md) | The adjudicator earns gate approvals in shadow mode (≥95% precision), never rejects, never merge/deploy/self-modify |
+| [0360](0360-runners-update-themselves-to-the-deployed-commit.md) | Runners update themselves to the deployed commit: when idle, fast-forward only, rolled back by a wrapper if the new code doesn't start |
 | [0340](0340-a-cli-for-people-gates-stay-in-the-browser.md) | A CLI for people: device login, read/write tokens, `/cli/v1` on sf-engine; gate decisions are browser-only, enforced in `invoke()` |
+| [0350](0350-how-the-planning-loop-is-wired.md) | How the planning loop is wired: one planning call on the channel scoped by the job, a host relay for the harness, the log's id as the cursor, held waits, yields and pinned resumes, pools, the PlanningHub, Workflow v5 |
 | [0330](0330-the-factory-runs-its-own-merge-queue.md) | The factory runs its own merge queue per project: approved merges land one at a time, the head is updated by GitHub's update-branch and the approval carries over a clean update (Workflow v4) |
 | [0320](0320-factory-branches-stay-mergeable.md) | Factory branches merge the default branch before a build; a PR that can't merge goes back to build, and CI that never reports asks a person (Workflow v3) |

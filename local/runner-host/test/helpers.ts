@@ -19,6 +19,7 @@ import {
   type Job,
   memoryIdempotencyStore,
   PATHS,
+  type PlanningRelay,
   parseJobPath,
   type RunnerAdapter,
   type RunnerCommand,
@@ -56,6 +57,11 @@ export interface FakeCloud {
   /** Each job's work item attachments, as the channel serves them (ADR 0310). */
   attachments: Map<string, { meta: AttachmentMeta; base64: string }[]>;
   attachmentCalls: number;
+  /** Planning calls the host relayed (ADR 0350), and how the fake cloud answers them. */
+  planningCalls: { jobId: string; op: string; input: Record<string, unknown> }[];
+  planning: (call: { jobId: string; op: string; input: Record<string, unknown> }) => unknown;
+  /** What the heartbeat answers as `desiredVersion` (ADR 0360); undefined leaves it out. */
+  desiredVersion?: string | null;
 }
 
 export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
@@ -73,6 +79,8 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
     fenced: new Set(),
     attachments: new Map(),
     attachmentCalls: 0,
+    planningCalls: [],
+    planning: () => ({}),
     fetch: async (input, init) =>
       handleRunnerCall(
         new Request(input, init),
@@ -84,6 +92,9 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
             return {
               body: {
                 commands: cloud.commands.splice(0),
+                ...(cloud.desiredVersion !== undefined
+                  ? { desiredVersion: cloud.desiredVersion }
+                  : {}),
                 leases: hb.activeJobs.map((j) => ({
                   jobId: j.jobId,
                   expiresAt: new Date(Date.now() + 600_000).toISOString(),
@@ -147,6 +158,12 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
               return found
                 ? { body: { attachment: found.meta, base64: found.base64 } }
                 : { status: 404, body: { error: "no attachment", code: "not_found" } };
+            }
+            case "planning": {
+              const { op, input } = body as { op: string; input: Record<string, unknown> };
+              const call = { jobId, op, input: input ?? {} };
+              cloud.planningCalls.push(call);
+              return { body: cloud.planning(call) as Record<string, unknown> };
             }
           }
         },
@@ -218,13 +235,24 @@ export interface FakeWorkspace extends WorkspaceHandle {
  */
 export function fakeAdapter(
   clonePath: (job: Job) => string,
-  session: (worktree: string, job: Job, signal: AbortSignal) => Promise<AdapterEvent[]>,
-): RunnerAdapter<FakeWorkspace> & { calls: string[]; prompts: string[] } {
+  session: (
+    worktree: string,
+    job: Job,
+    signal: AbortSignal,
+    relay?: PlanningRelay,
+  ) => Promise<AdapterEvent[]>,
+): RunnerAdapter<FakeWorkspace> & {
+  calls: string[];
+  prompts: string[];
+  relays: Map<string, PlanningRelay>;
+} {
   const calls: string[] = [];
   const prompts: string[] = [];
+  const relays = new Map<string, PlanningRelay>();
   return {
     calls,
     prompts,
+    relays,
     async manifest() {
       return {
         contractVersion: CONTRACT_VERSION,
@@ -236,8 +264,9 @@ export function fakeAdapter(
     async capacity() {
       return { max: 2, inUse: 0, accepting: true };
     },
-    async prepareWorkspace(j) {
+    async prepareWorkspace(j, _signal, options) {
       calls.push("prepare");
+      if (options?.planningRelay) relays.set(j.jobId, options.planningRelay);
       const clone = clonePath(j);
       const path = join(clone, "..", `wt-${j.jobId}`);
       git(
@@ -266,7 +295,7 @@ export function fakeAdapter(
     async *events(j, _s, signal) {
       calls.push("events");
       const ws = join(clonePath(j), "..", `wt-${j.jobId}`);
-      for (const e of await session(ws, j, signal)) yield e;
+      for (const e of await session(ws, j, signal, relays.get(j.jobId))) yield e;
     },
     async collectArtifacts(): Promise<Artifact[]> {
       calls.push("collect");

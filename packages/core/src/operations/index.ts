@@ -9,6 +9,7 @@ export * from "./github.ts";
 export * from "./incidents.ts";
 export * from "./merge-queue.ts";
 export * from "./onboarding.ts";
+export * from "./planning.ts";
 export * from "./projects.ts";
 export * from "./protection.ts";
 export * from "./questions.ts";

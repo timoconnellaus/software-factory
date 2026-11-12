@@ -44,6 +44,17 @@ export const timelineQuery = (workItemId: string) =>
     refetchInterval: 10_000,
   });
 
+/**
+ * A work item's planning (spec 20): the session, questions, spec, chat and who's here. No polling:
+ * the Planning tab's live stream (Server-Sent Events from the engine) invalidates it on each change.
+ */
+export const planningQuery = (workItemId: string) =>
+  queryOptions({
+    queryKey: ["workItem", workItemId, "planning"],
+    queryFn: () => read("planning.get", { workItemId }),
+    staleTime: 60_000,
+  });
+
 /** A work item's attachments (ADR 0310): metadata only; the files come from /api/attachments/<id>. */
 export const attachmentsQuery = (workItemId: string) =>
   queryOptions({

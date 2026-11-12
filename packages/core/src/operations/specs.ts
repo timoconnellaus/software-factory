@@ -116,10 +116,7 @@ export const specCommit = defineOperation({
     if (spec?.status !== "approved") throw new OperationError("conflict", "no approved spec");
     if (spec.commit_sha && spec.path) return { path: spec.path, commitSha: spec.commit_sha };
     const path = `docs/specs/wi-${w.number}-${w.slug}.md`;
-    const criteria = parseJson<string[]>(spec.acceptance_criteria, []);
-    const content = spec.body_md.includes("Acceptance criteria")
-      ? spec.body_md
-      : `${spec.body_md}\n\n## Acceptance criteria\n${criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}\n`;
+    const content = specDocument(spec);
     const repo = await repoRef(ctx, requireProject(ctx));
     const { commitSha } = await ctx.services.github.commitFile(repo, {
       branch: w.branch,
@@ -143,3 +140,57 @@ export const specCommit = defineOperation({
     return { path, commitSha };
   },
 });
+
+const hasSection = (body: string, name: string) =>
+  new RegExp(`^#{1,4}\\s*${name}\\b`, "im").test(body);
+
+/**
+ * The committed spec (ADR 0302): the living spec's body as written, with its provenance tags, plus
+ * any of Acceptance criteria, Assumptions, Coverage and Clarifications it doesn't already have.
+ */
+export function specDocument(spec: {
+  body_md: string;
+  acceptance_criteria: string;
+  assumptions: string;
+  coverage?: string;
+  clarifications?: string;
+}): string {
+  const criteria = parseJson<string[]>(spec.acceptance_criteria, []);
+  const assumptions = parseJson<string[]>(spec.assumptions, []);
+  const coverage = parseJson<
+    { category: string; status: string; questions?: number[]; note?: string }[]
+  >(spec.coverage ?? "[]", []);
+  const clarifications = parseJson<{ question?: number; q: string; a: string; date: string }[]>(
+    spec.clarifications ?? "[]",
+    [],
+  );
+  const parts = [spec.body_md.trimEnd()];
+  if (!hasSection(spec.body_md, "Acceptance criteria") && criteria.length) {
+    parts.push(`## Acceptance criteria\n${criteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`);
+  }
+  if (!hasSection(spec.body_md, "Assumptions") && assumptions.length) {
+    parts.push(
+      `## Assumptions\nReversible; each can be overturned into a question.\n${assumptions
+        .map((a) => `- ${a}${/\[assumption\]/.test(a) ? "" : " [assumption]"}`)
+        .join("\n")}`,
+    );
+  }
+  if (!hasSection(spec.body_md, "Coverage") && coverage.length) {
+    parts.push(
+      `## Coverage\n${coverage
+        .map(
+          (c) =>
+            `- ${c.category}: ${c.status}${c.questions?.length ? ` (${c.questions.map((n) => `Q${n}`).join(", ")})` : ""}${c.note ? `, ${c.note}` : ""}`,
+        )
+        .join("\n")}`,
+    );
+  }
+  if (!hasSection(spec.body_md, "Clarifications") && clarifications.length) {
+    parts.push(
+      `## Clarifications\n${clarifications
+        .map((c) => `- ${c.date}${c.question ? ` [Q${c.question}]` : ""}: ${c.q} → ${c.a}`)
+        .join("\n")}`,
+    );
+  }
+  return `${parts.join("\n\n")}\n`;
+}

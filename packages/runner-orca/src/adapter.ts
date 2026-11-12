@@ -109,6 +109,8 @@ export interface OrcaRunnerConfig extends OrcaCliOptions {
   claudeBin?: string;
   /** How long Claude may take to come up in its terminal before the job fails. */
   startTimeoutMs?: number;
+  /** The Node that runs a planning session's MCP server and hooks (default: this process's). */
+  nodeBin?: string;
   /** Reads a live process's command line (default `ps`). Tests script it. */
   readCommand?: ReadCommand;
   pollMs?: number;
@@ -155,8 +157,15 @@ export function isRunBranch(branch: string): boolean {
   return /^factory\/[0-9]+-[a-z0-9-]+-run-[0-9]+$/.test(branch);
 }
 
-/** A worktree directory name for the job. */
-export function worktreeName(jobId: string): string {
+/**
+ * A worktree directory name for the job. A planning job's is its session's (ADR 0350): every job of
+ * the session gets the same path, so `claude --resume` finds the conversation, which Claude keeps
+ * by working directory.
+ */
+export function worktreeName(jobId: string, planningSessionId?: string): string {
+  if (planningSessionId) {
+    return `sf-plan-${planningSessionId.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 40)}`;
+  }
   return `sf-${jobId.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 40)}`;
 }
 
@@ -369,7 +378,10 @@ export function createOrcaRunner(
       return (await findRepoForJob(orca, job, ownership))?.path ?? null;
     },
 
-    async prepareWorkspace(job): Promise<OrcaWorkspace> {
+    async prepareWorkspace(job, _signal, options): Promise<OrcaWorkspace> {
+      if (job.stage === "planning" && !options?.planningRelay) {
+        throw new Error(`planning job ${job.jobId} came without its relay`);
+      }
       // ADR 0260: the Orca repo that already exists for the job's remote; only when there is none,
       // the host's clone, registered once and kept.
       let repo: { id: string; path: string } | null = await findRepoForJob(orca, job, ownership);
@@ -391,7 +403,7 @@ export function createOrcaRunner(
       }
       const worktree = await orca.worktreeCreate({
         repoId: repo.id,
-        name: worktreeName(job.jobId),
+        name: worktreeName(job.jobId, job.planning?.sessionId),
         branch: job.branch,
         baseRef: config.startPoint ? await config.startPoint(job, repoPath) : job.repo.baseRef,
         comment: `${JOB_COMMENT_PREFIX}${job.jobId}`,
@@ -446,6 +458,14 @@ export function createOrcaRunner(
         hooks: orcaStatusHooks(),
         ...(config.identity ? { identity: config.identity } : {}),
         ...(config.claudeBin ? { claudeBin: config.claudeBin } : {}),
+        ...(job.stage === "planning" && options?.planningRelay
+          ? {
+              planning: {
+                relay: options.planningRelay,
+                ...(config.nodeBin ? { nodeBin: config.nodeBin } : {}),
+              },
+            }
+          : {}),
       });
       return {
         ...workspace,
@@ -531,7 +551,10 @@ export function createOrcaRunner(
       return session;
     },
 
-    async *events(_job, session, signal): AsyncIterable<AdapterEvent> {
+    async *events(job, session, signal): AsyncIterable<AdapterEvent> {
+      // A planning session (ADR 0300) idles in its Stop hook between turns: `done` and idle are
+      // normal there. It ends when the host stops it (a yield, the gate decided) or Claude exits.
+      const planning = job.stage === "planning";
       let lastStatus: string | undefined;
       let lastTool: string | undefined;
       let cursor: string | undefined;
@@ -584,7 +607,7 @@ export function createOrcaRunner(
           // A `done` from before our prompt landed would end the job early: require that the agent
           // was seen working, or that its done state started after the launch.
           const doneAfterLaunch = (row.stateStartedAt ?? 0) >= session.startedAt;
-          if (status === "done" && (sawWorking || doneAfterLaunch)) {
+          if (!planning && status === "done" && (sawWorking || doneAfterLaunch)) {
             yield {
               type: "session.ended",
               outcome: row.interrupted ? "cancelled" : "completed",
@@ -595,7 +618,7 @@ export function createOrcaRunner(
           // The result file is written last; once it exists and the agent has stopped working for
           // a few polls, the turn is over even if Orca never reported `done`.
           quietWithResult = hasResult && status !== "working" ? quietWithResult + 1 : 0;
-          if (quietWithResult >= 3) {
+          if (!planning && quietWithResult >= 3) {
             yield {
               type: "session.ended",
               outcome: "completed",
@@ -603,7 +626,7 @@ export function createOrcaRunner(
             };
             return;
           }
-          if (status === "waiting_input") {
+          if (status === "waiting_input" && !planning) {
             waitingSince ??= Date.now();
             if (Date.now() - waitingSince > waitingInputTimeoutMs) {
               yield {

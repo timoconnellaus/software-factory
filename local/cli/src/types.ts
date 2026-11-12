@@ -54,7 +54,9 @@ export interface WorkItemDetail {
   mergeQueue: { position: number; ahead: number[] } | null;
 }
 
+/** A `workItem.timeline` entry, as the endpoint returns it. */
 export interface TimelineEntry {
+  id: string;
   at: string;
   operation: string;
   actorType: string;
@@ -62,6 +64,8 @@ export interface TimelineEntry {
   decision: string;
   outcome: string;
   reason: string | null;
+  pendingActionId: string | null;
+  result: unknown;
 }
 
 export interface Inbox {

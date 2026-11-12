@@ -37,6 +37,12 @@ own work.
   - `login [--write]`, `logout`, `status`;
   - `ops` and `call <op> [json]`, generic over the registry;
   - `inbox`, `ls`, `show <n>`, `timeline <n>`, `queue`, `new`, `attach <pr>`, `cancel <n>`;
+  - `timeline <n>` prints one line per audit entry, oldest first, in the dashboard's words (spec
+    [wi-4](wi-4-let-s-improve-the-event-log-so-it-s-usef.md), `@software-factory/timeline`): the
+    time, the label (`Merged`, `Gate opened: Merge needs a person`), the actor (`a person`, the agent
+    id, `runner <id>`; the CLI doesn't know the viewer, so never `you`), then the detail, the outcome
+    when it isn't `ok`, and the reason for a held, refused or failed call. `--json` prints the
+    endpoint's `{ entries }` as returned;
   - `open <n>` opens the work item, or its review packet, in the browser.
 
 ## Out of scope
