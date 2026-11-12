@@ -19,11 +19,12 @@ CREATE INDEX core_delivery_state_due_idx ON core_delivery_state (next_check_at);
 
 -- Who lands a queue entry: its own Workflow (v4–v7, and an incident's auto-merge), or the
 -- babysitter's deliverer (v11). How it ended, as sent to the Workflow (`merged`, `conflict`,
--- `failed`), so a lost event can be read back. When GitHub was asked to merge the default branch in.
+-- `failed`, or `withdrawn`: the approval no longer holds, spec 53 PR c), so a lost event can be read
+-- back. When GitHub was asked to merge the default branch in.
 ALTER TABLE core_merge_queue ADD COLUMN driver TEXT NOT NULL DEFAULT 'workflow'
   CHECK (driver IN ('workflow', 'babysitter'));
 ALTER TABLE core_merge_queue ADD COLUMN outcome TEXT
-  CHECK (outcome IS NULL OR outcome IN ('merged', 'conflict', 'failed'));
+  CHECK (outcome IS NULL OR outcome IN ('merged', 'conflict', 'failed', 'withdrawn'));
 ALTER TABLE core_merge_queue ADD COLUMN update_asked_at TEXT;
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 350) WHERE key = 'schema_version';

@@ -231,7 +231,7 @@ const position = z.object({
    * When not queued: how its last babysitter delivery ended, and why (spec 53), so a Workflow that
    * missed the `delivered-<item>` event reads it back. Null otherwise.
    */
-  outcome: z.enum(["merged", "conflict", "failed"]).nullable(),
+  outcome: z.enum(["merged", "conflict", "failed", "withdrawn"]).nullable(),
   outcomeReason: z.string().nullable(),
   /**
    * Held (spec 53, ADR 0581): the default branch is red and this isn't a repair, so the babysitter
