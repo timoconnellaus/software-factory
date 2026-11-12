@@ -14,6 +14,12 @@
 // - `terminal/<workItemId>/<runId>` (GET, WebSocket) is a run's web terminal for the desktop app
 //   (spec 42, ADR 0530): the same attach as sf-app's socket route, then the relay's viewer socket.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
+// - The version handshake (spec 40 M4, ADR 0393): the desktop app sends `x-sf-client-protocol`. A
+//   desktop sign-in or a desktop token's request below DESKTOP_MIN_PROTOCOL gets 426
+//   `update_required`, and the app updates. No header is protocol 0 (builds before the handshake).
+//   It is checked once, in `versionGate` at the top of `handleCli`, so every route and socket a
+//   desktop token can reach gets it, including routes added later. A client opening a WebSocket
+//   must send the protocol headers on the upgrade request too.
 // MCP is meant to come through the same door.
 import {
   type Actor,
@@ -54,6 +60,63 @@ const unauthenticated = () =>
     401,
   );
 
+/** The header the desktop app names its door protocol in (ADR 0393). */
+export const CLIENT_PROTOCOL_HEADER = "x-sf-client-protocol";
+
+/**
+ * The newest desktop door protocol this engine knows (apps/desktop's DOOR_PROTOCOL; bump them
+ * together). A DESKTOP_MIN_PROTOCOL above it is a mistake that would refuse every build, sign-in
+ * included, so it is ignored (and logged) instead of enforced.
+ */
+export const DESKTOP_PROTOCOL_LATEST = 1;
+
+/** The floor to enforce, or null (unset, 0, malformed or above DESKTOP_PROTOCOL_LATEST). */
+export function desktopMinProtocol(env: Pick<Env, "DESKTOP_MIN_PROTOCOL">): number | null {
+  const raw = env.DESKTOP_MIN_PROTOCOL ?? "";
+  if (!/^\d{1,6}$/.test(raw) || Number(raw) <= 0) return null;
+  const min = Number(raw);
+  if (min > DESKTOP_PROTOCOL_LATEST) {
+    console.error(
+      `DESKTOP_MIN_PROTOCOL=${min} is above the newest desktop protocol (${DESKTOP_PROTOCOL_LATEST}); not enforced`,
+    );
+    return null;
+  }
+  return min;
+}
+
+/** The desktop build speaks a door protocol older than the engine still serves (ADR 0393). */
+export function desktopTooOld(request: Request, env: Pick<Env, "DESKTOP_MIN_PROTOCOL">): boolean {
+  const min = desktopMinProtocol(env);
+  if (min === null) return false;
+  const sent = request.headers.get(CLIENT_PROTOCOL_HEADER) ?? "";
+  const protocol = /^\d{1,6}$/.test(sent) ? Number(sent) : 0;
+  return protocol < min;
+}
+
+const updateRequired = (env: Pick<Env, "DESKTOP_MIN_PROTOCOL">) =>
+  reply(
+    {
+      error:
+        "This version of the Software Factory app is too old for the factory. Update it: menu bar, Restart to update (or download it again).",
+      code: "update_required",
+      minProtocol: desktopMinProtocol(env),
+    },
+    426,
+  );
+
+/**
+ * The version handshake for every door route and socket, in one place (ADR 0393): a desktop
+ * sign-in, or any request with a desktop token, below the floor gets 426 `update_required`. CLI
+ * tokens and unauthenticated requests pass through to the route, which answers as usual. Costs
+ * nothing while no floor is set; with one, the token lookup is shared with the route's own.
+ */
+async function versionGate(request: Request, env: Env, path: string): Promise<Response | null> {
+  if (!desktopTooOld(request, env)) return null;
+  const desktop =
+    path.startsWith("desktop/") || (await authenticate(request, env))?.kind === "desktop";
+  return desktop ? updateRequired(env) : null;
+}
+
 /** Who a bearer token is: a CLI token (with its scope) or a desktop device's token. */
 type Caller =
   | { kind: "cli"; userId: string; scope: "read" | "write" }
@@ -64,6 +127,8 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   const path = pathname.slice(
     pathname.startsWith(CLIENT_PREFIX) ? CLIENT_PREFIX.length : CLI_PREFIX.length,
   );
+  const tooOld = await versionGate(request, env, path);
+  if (tooOld) return tooOld;
   if (path === "ops" && request.method === "GET") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
@@ -193,7 +258,19 @@ async function openTerminal(
   return openViewerSocket(env, attached.jobId, attached.path);
 }
 
-async function authenticate(request: Request, env: Env): Promise<Caller | null> {
+/** One token lookup per request: the version gate and the route share it. */
+const callers = new WeakMap<Request, Promise<Caller | null>>();
+
+function authenticate(request: Request, env: Env): Promise<Caller | null> {
+  let caller = callers.get(request);
+  if (!caller) {
+    caller = lookUpCaller(request, env);
+    callers.set(request, caller);
+  }
+  return caller;
+}
+
+async function lookUpCaller(request: Request, env: Env): Promise<Caller | null> {
   const header = request.headers.get("authorization") ?? "";
   const match = /^Bearer\s+(\S+)$/i.exec(header);
   const token = match?.[1];
