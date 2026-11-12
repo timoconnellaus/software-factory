@@ -21,6 +21,7 @@ import {
 import type { RepoRef } from "../services.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
 import { lineStopped } from "./delivery.ts";
+import { askOne } from "./questions.ts";
 import {
   pendingActionId,
   projectId,
@@ -453,7 +454,7 @@ export const mergeQueueList = defineOperation({
 export const mergeQueueUpdate = defineOperation({
   name: "mergeQueue.update",
   description:
-    "Bring the head of the merge queue up to date with the default branch (ADR 0330). `current`: it already contains the default branch. `updating`: GitHub was asked to merge the default branch in (update-branch); call again to see the result. `updated`: GitHub made that clean merge; the review packet carries over to the new head and CI runs there. `conflict`: the default branch can't merge in cleanly (back to build). `refused`/`moved`: GitHub refused, or the head moved some other way. Only the head may update. Risk `write`, like the control plane's other moves of a work item's branch.",
+    "Bring the head of the merge queue up to date with the default branch (ADR 0330). `current`: it already contains the default branch. `updating`: GitHub was asked to merge the default branch in (update-branch); call again to see the result. `updated`: GitHub made that clean merge; the review packet carries over to the new head and CI runs there. `conflict`: the default branch can't merge in cleanly (back to build). `refused`/`moved`: GitHub refused, or the head moved some other way. `held`: the babysitter's bound on updates was reached (`mergeQueue.hold` asks a person). Only the head may update. Risk `write`, like the control plane's other moves of a work item's branch.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -461,13 +462,13 @@ export const mergeQueueUpdate = defineOperation({
     workItemId,
     /**
      * At most this many update-branch requests for the entry (spec 53 review: a default branch
-     * that keeps moving while CI runs must not keep the head updating). Past it, a head that is
-     * behind is `refused` without asking GitHub. Omitted: no bound (v4–v7's Workflows).
+     * that keeps moving while CI runs must not keep the head updating). Past it (plus the updates a
+     * person granted, `mergeQueue.hold`), a head that is behind is `held` without asking GitHub. Omitted: no bound (v4–v7's Workflows).
      */
     maxUpdates: z.number().int().positive().optional(),
   }),
   output: z.object({
-    state: z.enum(["current", "updating", "updated", "conflict", "refused", "moved"]),
+    state: z.enum(["current", "updating", "updated", "conflict", "refused", "moved", "held"]),
     headSha: z.string(),
     reason: z.string().nullable(),
   }),
@@ -500,11 +501,16 @@ export const mergeQueueUpdate = defineOperation({
         reason: `${repository.default_branch} can't merge into the branch cleanly`,
       };
     }
-    if (input.maxUpdates !== undefined && entry.updates >= input.maxUpdates) {
+    // At the bound (plus what a person granted) the head is held, never sent back: the babysitter
+    // asks a person whether to update once more (spec 53 review, `mergeQueue.hold`).
+    if (
+      input.maxUpdates !== undefined &&
+      entry.updates >= input.maxUpdates + entry.updates_granted
+    ) {
       return {
-        state: "refused" as const,
+        state: "held" as const,
         headSha: at,
-        reason: `${repository.default_branch} moved again after ${entry.updates} updates of this branch`,
+        reason: `${repository.default_branch} keeps moving: this branch was updated ${entry.updates} times`,
       };
     }
     const asked = await github.updatePullRequestBranch(repo, {
@@ -624,5 +630,174 @@ export const mergeQueueLeave = defineOperation({
     return {
       left: await releaseMergeQueue(ctx, w, input.outcome, input.reason, input.delivery),
     };
+  },
+});
+
+/**
+ * How long the deliverer's "merging" mark holds (spec 53 review): longer than a pass's lease, so a
+ * pass that died between the mark and GitHub's answer frees the item for a cancel soon after.
+ */
+export const MERGING_HOLDS_MS = 2 * 60_000;
+
+/**
+ * A cancel is refused while the babysitter is merging the item (spec 53 review): between the mark
+ * and GitHub's answer the merge may already have happened. Read now and guarded in the cancel's
+ * batch, so a mark that commits first refuses the cancel, and a cancel that commits first refuses
+ * the mark (`mergeQueue.merging` guards that the item is open).
+ */
+export async function refuseWhileMerging(ctx: HandlerContext, w: WorkItemRow): Promise<void> {
+  const since = new Date(Date.parse(ctx.now) - MERGING_HOLDS_MS).toISOString();
+  const entry = await openEntry(ctx, w.id);
+  if (entry?.merging_at && entry.merging_at > since) {
+    throw new OperationError(
+      "conflict",
+      `#${w.number} is merging; it cannot be cancelled now. Look again in a minute: once it has merged it is done.`,
+    );
+  }
+  ctx.guardExists(
+    "not merging",
+    ctx.db
+      .selectFrom("core_work_items")
+      .select("id")
+      .where("id", "=", w.id)
+      .where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom("core_merge_queue")
+              .select("id")
+              .where("work_item_id", "=", w.id)
+              .where("status", "=", "queued")
+              .where("merging_at", ">", since),
+          ),
+        ),
+      ),
+  );
+}
+
+const requireBabysitterEntry = async (ctx: HandlerContext, w: WorkItemRow) => {
+  if (ctx.actor.type !== BABYSITTER.type || ctx.actor.id !== BABYSITTER.id) {
+    throw new OperationError("forbidden", "only the babysitter's deliverer does this");
+  }
+  const entry = await openEntry(ctx, w.id);
+  if (entry?.driver !== "babysitter") {
+    throw new OperationError("conflict", `work item #${w.number} is not in the babysitter's queue`);
+  }
+  return entry;
+};
+
+export const mergeQueueMerging = defineOperation({
+  name: "mergeQueue.merging",
+  description:
+    "The babysitter's deliverer marks the head of its queue as merging just before it asks GitHub to merge (`merging: true`), and releases the mark when GitHub refuses (`merging: false`) (spec 53 review). While the mark holds, a cancel of the item is refused: the merge may already have happened. Marking is refused for an item that is no longer open or an entry no longer queued. The babysitter only.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId, merging: z.boolean() }),
+  output: z.object({ merging: z.boolean() }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const entry = await requireBabysitterEntry(ctx, w);
+    if (input.merging) await requireOpenToMerge(ctx, w);
+    ctx.write(
+      ctx.db
+        .updateTable("core_merge_queue")
+        .set({ merging_at: input.merging ? ctx.now : null, updated_at: ctx.now })
+        .where("id", "=", entry.id),
+    );
+    ctx.change({ entity: "merge_queue", id: entry.id, after: { merging: input.merging } });
+    return { merging: input.merging };
+  },
+});
+
+/** The answers to the question asked at the update bound (spec 53 review). */
+export const HOLD_ANSWERS = {
+  now: "Update once more, and merge when CI passes",
+  wait: "Wait an hour, then update once more",
+} as const;
+export const HOLD_WAIT_MS = 60 * 60_000;
+
+/** The open entry holding on this question, for waking its deliverer when it is answered. */
+export async function holdingEntry(ctx: HandlerContext, workItemId: string, questionId: string) {
+  return (
+    (await ctx.db
+      .selectFrom("core_merge_queue as q")
+      .innerJoin("core_work_items as w", "w.id", "q.work_item_id")
+      .select(["w.project_id", "w.repository_id"])
+      .where("q.work_item_id", "=", workItemId)
+      .where("q.status", "=", "queued")
+      .where("q.hold_question_id", "=", questionId)
+      .executeTakeFirst()) ?? null
+  );
+}
+
+export const mergeQueueHold = defineOperation({
+  name: "mergeQueue.hold",
+  description:
+    "At its bound on updates (the default branch kept moving while CI ran) the babysitter holds the head of its queue and asks a person, instead of sending good, approved work back to build (spec 53 review). The first call asks (`asked`); while the question is open, `waiting`; once answered, the person's answer allows one more update, now (`resumed`) or after an hour (`holding`, with `until`). The babysitter only.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId, reason: z.string().max(2_000) }),
+  output: z.object({
+    state: z.enum(["asked", "waiting", "resumed", "holding"]),
+    until: z.string().nullable(),
+  }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const entry = await requireBabysitterEntry(ctx, w);
+    if (entry.held_until && entry.held_until > ctx.now) {
+      return { state: "holding" as const, until: entry.held_until };
+    }
+    const queued = ctx.db
+      .selectFrom("core_merge_queue")
+      .select("id")
+      .where("id", "=", entry.id)
+      .where("status", "=", "queued");
+    if (!entry.hold_question_id) {
+      const questionId = await askOne(ctx, w, {
+        prompt: `The default branch keeps moving: #${w.number} was updated ${entry.updates} times and the branch moved again while CI ran. Update once more and merge when CI passes on the new head, or wait?`,
+        context: input.reason,
+        options: [HOLD_ANSWERS.now, HOLD_ANSWERS.wait],
+        defaultAnswer: HOLD_ANSWERS.now,
+        recommendationReason:
+          "The change is approved and was green; another update only merges the default branch in again.",
+      });
+      ctx.write(
+        ctx.db
+          .updateTable("core_merge_queue")
+          .set({ hold_question_id: questionId, updated_at: ctx.now })
+          .where("id", "=", entry.id),
+      );
+      ctx.guardExists("entry open", queued);
+      ctx.change({ entity: "merge_queue", id: entry.id, after: { held: input.reason } });
+      return { state: "asked" as const, until: null };
+    }
+    const q = await ctx.db
+      .selectFrom("core_questions")
+      .select(["status", "answer"])
+      .where("id", "=", entry.hold_question_id)
+      .executeTakeFirst();
+    if (q?.status === "open") return { state: "waiting" as const, until: null };
+    // Answered (or gone: asked again on the next pass). One more update, now or after an hour.
+    const answered = q?.status === "answered";
+    const wait = answered && q?.answer === HOLD_ANSWERS.wait;
+    const until = wait ? new Date(Date.parse(ctx.now) + HOLD_WAIT_MS).toISOString() : null;
+    ctx.write(
+      ctx.db
+        .updateTable("core_merge_queue")
+        .set((eb) => ({
+          hold_question_id: null,
+          updates_granted: answered ? eb("updates_granted", "+", 1) : eb.ref("updates_granted"),
+          held_until: until,
+          updated_at: ctx.now,
+        }))
+        .where("id", "=", entry.id)
+        .where("hold_question_id", "=", entry.hold_question_id),
+    );
+    ctx.guardChanged("hold read once");
+    if (!answered) return { state: "waiting" as const, until: null };
+    ctx.change({ entity: "merge_queue", id: entry.id, after: { resumed: q?.answer ?? null } });
+    return wait ? { state: "holding" as const, until } : { state: "resumed" as const, until: null };
   },
 });

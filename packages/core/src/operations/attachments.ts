@@ -376,32 +376,67 @@ export const workItemAttachmentRemove = defineOperation({
   },
 });
 
+/** Where the stray-blob sweep stopped (an R2 list cursor), in core_meta, so each tick goes on from there. */
+export const SWEEP_CURSOR_KEY = "sweep:attachments:cursor";
+
 /**
  * Deletes blobs with no row (an upload whose batch failed after the blob was written), once they
- * are older than `graceMs` so an upload in flight is never touched. Returns the keys removed.
+ * are older than `graceMs` so an upload in flight is never touched. Bounded per call (AGENTS.md,
+ * Cloudflare cost): at most `maxPages` list pages of 500 keys, each checked against D1 in ONE query
+ * (`json_each`), and the list cursor saved in core_meta so the next call goes on where this one
+ * stopped and a pass over the whole bucket spans as many ticks as it needs. Returns the keys removed
+ * and the cursor saved (null when the pass reached the end and starts over next time).
  */
 export async function sweepStrayAttachmentBlobs(
   d1: D1Database,
   store: AttachmentBlobs,
   now = new Date(),
   graceMs = 60 * 60_000,
-): Promise<string[]> {
+  maxPages = 5,
+): Promise<{ removed: string[]; cursor: string | null }> {
   const removed: string[] = [];
-  let cursor: string | null = null;
-  do {
-    const page = await store.list(cursor ? { cursor } : {});
-    const old = page.keys.filter((k) => now.getTime() - k.uploaded.getTime() > graceMs);
-    for (const { key } of old) {
-      const row = await d1
-        .prepare("SELECT 1 FROM core_attachments WHERE blob_key = ?")
-        .bind(key)
-        .first();
-      if (!row) {
-        await store.delete(key);
-        removed.push(key);
-      }
+  let cursor =
+    (await d1
+      .prepare("SELECT value FROM core_meta WHERE key = ?")
+      .bind(SWEEP_CURSOR_KEY)
+      .first<string>("value")) || null;
+  for (let page = 0; page < maxPages; page++) {
+    let listed: Awaited<ReturnType<AttachmentBlobs["list"]>>;
+    try {
+      listed = await store.list(cursor ? { cursor } : {});
+    } catch (error) {
+      // A saved cursor R2 no longer accepts would fail every tick forever: start the pass over.
+      if (!cursor) throw error;
+      cursor = null;
+      listed = await store.list({});
     }
-    cursor = page.cursor;
-  } while (cursor);
-  return removed;
+    const old = listed.keys
+      .filter((k) => now.getTime() - k.uploaded.getTime() > graceMs)
+      .map((k) => k.key);
+    if (old.length) {
+      // One bound parameter (D1 allows 100), whatever the page size.
+      const { results } = await d1
+        .prepare(
+          `SELECT j.value AS key FROM json_each(?) j
+           WHERE NOT EXISTS (SELECT 1 FROM core_attachments a WHERE a.blob_key = j.value)`,
+        )
+        .bind(JSON.stringify(old))
+        .all<{ key: string }>();
+      const stray = results.map((r) => r.key);
+      // One R2 call per page (500 keys, under R2's 1,000 per delete).
+      if (store.deleteMany) await store.deleteMany(stray);
+      else for (const key of stray) await store.delete(key);
+      removed.push(...stray);
+    }
+    cursor = listed.cursor;
+    if (!cursor) break;
+  }
+  await d1
+    .prepare(
+      `INSERT INTO core_meta (key, value) VALUES (?, ?)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    )
+    .bind(SWEEP_CURSOR_KEY, cursor ?? "")
+    .run();
+  return { removed, cursor };
 }

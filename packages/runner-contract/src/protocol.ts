@@ -93,8 +93,16 @@ export function parseJobPath(path: string): { jobId: string; call: JobCall } | n
   return { jobId: decodeURIComponent(match[1] ?? ""), call };
 }
 
-/** Calls whose responses the cloud never stores (a secret, or a file's bytes). */
+/**
+ * Calls whose responses the cloud never stores: a secret, a file's bytes, a held wait, or a call
+ * that is naturally idempotent. The heartbeat is the last: it renews leases and repeats commands
+ * until they are settled, so running a retry again is right, and storing it cost about 7 rows
+ * written per beat (AGENTS.md, Cloudflare cost, rule 9). The claim is idempotent by its claimId:
+ * a retry gets the job the first call claimed, and the unique (runner, claimId) index stops two
+ * racing retries from claiming two jobs (ADR 0590).
+ */
 export function isUnstoredPath(path: string): boolean {
+  if (path === PATHS.heartbeat || path === PATHS.claim) return true;
   const call = parseJobPath(path)?.call;
   return (
     call === "token" ||

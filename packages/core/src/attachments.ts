@@ -141,6 +141,8 @@ export interface AttachmentBlobs {
   get(key: string): Promise<Uint8Array | null>;
   /** Deleting a missing key is not an error. */
   delete(key: string): Promise<void>;
+  /** Deletes up to 1,000 keys in one call (R2's limit); the sweep's batch delete. */
+  deleteMany?(keys: string[]): Promise<void>;
   /** Keys under `prefix` with their upload time, a page at a time (for the stray-blob sweep). */
   list(options: {
     prefix?: string;
@@ -160,6 +162,9 @@ export function r2AttachmentBlobs(bucket: R2Bucket): AttachmentBlobs {
     async get(key) {
       const object = await bucket.get(key);
       return object ? new Uint8Array(await object.arrayBuffer()) : null;
+    },
+    async deleteMany(keys) {
+      if (keys.length) await bucket.delete(keys);
     },
     async delete(key) {
       await bucket.delete(key);

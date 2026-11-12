@@ -63,6 +63,8 @@ interface FakePull {
   headRepo?: string;
   /** A fork's head SHA (a fork's branch isn't in this repo's refs). */
   headSha?: string;
+  /** The merge commit, once merged. */
+  mergeSha?: string;
 }
 
 const TABLE = "fake_github_repos";
@@ -479,11 +481,14 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         await save(r, state);
         return { merged: false, reason: refused };
       }
-      if (pull.state === "merged") return { merged: true, sha: state.refs[pull.base] ?? expected };
+      // GitHub refuses to merge a PR twice (405 "Pull Request is not mergeable"): a caller that
+      // merges again after a merge it lost track of must find it merged instead (spec 53 review).
+      if (pull.state !== "open") return { merged: false, reason: "Pull Request is not mergeable" };
       if (state.refs[pull.head] !== expected) return { merged: false, reason: "head moved" };
       const merge = await commit(state, expected, `merge-${number}`);
       state.refs[pull.base] = merge;
       pull.state = "merged";
+      pull.mergeSha = merge;
       await save(r, state);
       return { merged: true, sha: merge };
     },
@@ -675,5 +680,6 @@ function pullInfo(r: RepoRef, state: RepoState, p: FakePull): PullRequestInfo {
       repo: p.headRepo ?? `${r.owner}/${r.repo}`,
     },
     base: { ref: p.base },
+    mergeCommitSha: p.mergeSha ?? null,
   };
 }

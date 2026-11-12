@@ -13,17 +13,29 @@ import { mobileAttestation, mobileTestSeams } from "./mobile.ts";
 import { deliverOutbox } from "./outbox.ts";
 import { secrets } from "./secrets.ts";
 
+/**
+ * The GitHub App client, built once per isolate (AGENTS.md, Cloudflare cost, rule 10): its imported
+ * key, App JWT and control-plane tokens are cached in memory, so building it per call minted a token
+ * with an RSA signature on every operation. Job tokens are never cached (ADR 0033).
+ */
+let app: { config: string; client: ReturnType<typeof githubApp> } | null = null;
+export function appFor(
+  appId: string,
+  appSlug: string,
+  privateKey: string,
+): ReturnType<typeof githubApp> {
+  const config = `${appId}\n${appSlug}\n${privateKey}`;
+  if (app?.config !== config) app = { config, client: githubApp({ appId, appSlug, privateKey }) };
+  return app.client;
+}
+
 export function services(env: Env): FactoryServices {
   const { GH_APP_PRIVATE_KEY, RUNNER_CHANNEL_SECRET } = secrets(env);
   const github =
     env.GITHUB_FAKE === "1"
       ? fakeGitHub(env.DB)
       : GH_APP_PRIVATE_KEY
-        ? githubApp({
-            appId: env.GH_APP_ID,
-            appSlug: env.GH_APP_SLUG,
-            privateKey: GH_APP_PRIVATE_KEY,
-          })
+        ? appFor(env.GH_APP_ID, env.GH_APP_SLUG, GH_APP_PRIVATE_KEY)
         : unavailableGitHub();
   return {
     github,

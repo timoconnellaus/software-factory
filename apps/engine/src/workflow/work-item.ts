@@ -23,6 +23,7 @@ import {
   deliveredEvent,
   FOREMAN,
   type GateEventPayload,
+  has,
   invoke,
   isOperationError,
   mergeQueueEvent,
@@ -32,6 +33,7 @@ import {
   releaseEvent,
   runEvent,
   SLOTS,
+  WORKFLOW_VERSION_FEATURES,
 } from "@software-factory/core";
 import {
   type JobStage,
@@ -108,65 +110,9 @@ export type WorkItemOutcome =
  * re-reading its entry after each timeout, `merge #b: deliver: read #i`); the engine's deliverer
  * updates, CIs and merges it. An incident's check-only auto-merge still lands itself, as v7.
  */
-/**
- * What each version does (spec 53, **Workflow versions**). A running instance replays on the code
- * it started with, so a feature must never switch on inside an older version's instance: code asks
- * `has(version, feature)`, never `version >= N`. One row per version, written out in full, and a
- * merged row is never edited. A new version is the next number above what is on `main` when its PR
- * merges; v8–v10 are unused here (other builds had claimed them).
- */
-export type WorkflowFeature =
-  /** v2: the PR opens before verify; verify waits for CI and the packet's verdict decides. */
-  | "ci-verify"
-  /** v3: a PR GitHub can't merge is its own state; missing CI asks a person. */
-  | "conflict-state"
-  /** v4: approved merges land through the project's merge queue (`mergeV4`). */
-  | "merge-queue"
-  /** v5: the spec stage is a planning session. */
-  | "planning-stage"
-  /** v6: the item's workflow fills the skeleton's slots. */
-  | "workflow-slots"
-  /** v7: shaped items wait for their release. */
-  | "release-wait"
-  /** v11: the babysitter lands the approved merge; the item waits for `delivered-<item>`. */
-  | "babysitter-delivery";
-
-export const WORKFLOW_FEATURES: Readonly<Record<number, readonly WorkflowFeature[]>> = {
-  1: [],
-  2: ["ci-verify"],
-  3: ["ci-verify", "conflict-state"],
-  4: ["ci-verify", "conflict-state", "merge-queue"],
-  5: ["ci-verify", "conflict-state", "merge-queue", "planning-stage"],
-  6: ["ci-verify", "conflict-state", "merge-queue", "planning-stage", "workflow-slots"],
-  7: [
-    "ci-verify",
-    "conflict-state",
-    "merge-queue",
-    "planning-stage",
-    "workflow-slots",
-    "release-wait",
-  ],
-  11: [
-    "ci-verify",
-    "conflict-state",
-    "merge-queue",
-    "planning-stage",
-    "workflow-slots",
-    "release-wait",
-    "babysitter-delivery",
-  ],
-};
-
-/** Whether instances of `version` have `feature`. A version with no row has none. */
-export function has(version: number, feature: WorkflowFeature): boolean {
-  return Object.hasOwn(WORKFLOW_FEATURES, version)
-    ? (WORKFLOW_FEATURES[version] as readonly WorkflowFeature[]).includes(feature)
-    : false;
-}
-
 /** Whether the table has a row for `version`: an instance on any other version errors. */
 export const isKnownVersion = (version: number): boolean =>
-  Number.isInteger(version) && Object.hasOwn(WORKFLOW_FEATURES, version);
+  Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
 export const WORKFLOW_VERSION = 11;
 /** How long a shaped item waits for its release before it re-reads whether it was released. */
@@ -375,7 +321,7 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
     // the steps it ran before.
     const meta = await flow.meta();
     if (meta.kind === "attached") return flow.runAttached(version, meta);
-    // Every version runs the same flow; what it does is its row of WORKFLOW_FEATURES.
+    // Every version runs the same flow; what it does is its row of WORKFLOW_VERSION_FEATURES.
     return flow.runV1(version);
   }
 }
@@ -406,7 +352,7 @@ class ItemFlow {
 
       // Triage: the foreman sizes the item on a runner; code decides the spec gate from policy.
       // v6: it also picks one of the project's workflows (ADR 0371).
-      const options = has(version, "workflow-slots") ? await this.workflowOptions() : [];
+      const options = has(version, "workflow-plan") ? await this.workflowOptions() : [];
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
@@ -429,8 +375,8 @@ class ItemFlow {
         let note: string | null = null;
         let answers: { prompt: string; answer: string }[] = [];
         // v5: the planning session (spec 20) instead of v1–v4's spec rounds below.
-        if (has(version, "planning-stage")) criteria = await this.planningStage(meta);
-        for (let k = 1; !has(version, "planning-stage"); k++) {
+        if (has(version, "planning-spec")) criteria = await this.planningStage(meta);
+        for (let k = 1; !has(version, "planning-spec"); k++) {
           const mayAsk = k <= QUESTION_ROUNDS;
           const specRun = await this.runWithRetries(
             meta,
@@ -485,7 +431,7 @@ class ItemFlow {
         meta = await this.refreshMeta();
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
-      const plan = has(version, "workflow-slots") ? await this.workflowPlan() : null;
+      const plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
       let slotNote: string | null = null;
       if (plan) {
         const after = await this.runSlot(meta, plan, "afterSpec", 0, {
@@ -606,12 +552,12 @@ class ItemFlow {
           workItemId: id,
           stage: "verify",
         });
-        if (has(version, "ci-verify")) {
+        if (has(version, "verify-packet")) {
           // Open the PR first, so CI runs on this head while the reviewer works (spec 04). It
           // carries a factory/verify that isn't passing until the packet below says so.
           await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
         }
-        if (has(version, "conflict-state") && (await this.unmergeable(b, headSha))) {
+        if (has(version, "conflicts") && (await this.unmergeable(b, headSha))) {
           note = await conflicted(b, build);
           continue;
         }
@@ -647,9 +593,9 @@ class ItemFlow {
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        if (has(version, "ci-verify")) {
+        if (has(version, "verify-packet")) {
           let ci = await this.waitForCi(b, headSha, version);
-          for (let k = 1; has(version, "conflict-state") && ci === "missing"; k++) {
+          for (let k = 1; has(version, "conflicts") && ci === "missing"; k++) {
             // No CI at all is a setup problem the builder can't fix: ask a person (ADR 0320).
             await this.askNoCi(meta, b, k, headSha);
             ci = await this.waitForCi(b, headSha, version, k + 1);
@@ -671,8 +617,8 @@ class ItemFlow {
           riskFlags: r.riskFlags,
         });
         // v2: the packet's verdict (green CI on the head SHA + a complete packet) decides.
-        const passed = has(version, "ci-verify") ? packet.verdict === "pass" : runnerPassed;
-        if (!passed && has(version, "ci-verify")) {
+        const passed = has(version, "verify-packet") ? packet.verdict === "pass" : runnerPassed;
+        if (!passed && has(version, "verify-packet")) {
           const reasons = Array.isArray(packet.reasons) ? (packet.reasons as string[]) : [];
           note = await failed(
             b,
@@ -749,7 +695,7 @@ class ItemFlow {
           continue;
         }
         let decided: Awaited<ReturnType<ItemFlow["gate"]>> | null = null;
-        if (has(version, "ci-verify") && meta.kind === "incident") {
+        if (has(version, "verify-packet") && meta.kind === "incident") {
           // A check-only incident fix may merge without a person, if the project opted in and the
           // rule holds (ADR 0230). Refused: the normal merge gate below.
           const autoName = `merge #${b}: auto-merge`;
@@ -1227,7 +1173,7 @@ class ItemFlow {
         headSha,
       });
       if (ci.status !== "ok") return "unreadable"; // the packet records why and fails
-      if (has(version, "conflict-state") && ci.output.mergeable === false) return "conflict";
+      if (has(version, "conflicts") && ci.output.mergeable === false) return "conflict";
       const state = String(ci.output.state);
       if (state === "success" || state === "failure") return state;
       if (state === "missing" && i >= CI_MISSING_ROUNDS) return "missing";

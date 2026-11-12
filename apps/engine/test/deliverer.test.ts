@@ -121,6 +121,7 @@ describe("the babysitter's deliverer (v11)", () => {
   });
 
   afterEach(() => {
+    deliverTestSeams.beforeMark = null;
     deliverTestSeams.beforeLand = null;
     mobileTestSeams.beforeCommit = null;
   });
@@ -151,16 +152,16 @@ describe("the babysitter's deliverer (v11)", () => {
   }
 
   // Review of #103, the probe run: a cancelled item could still merge.
-  it("a cancel between ci.read and pr.merge stops the merge: the approval dies with the item", async () => {
+  it("a cancel between ci.read and the merging mark stops the merge: the approval dies with the item", async () => {
     const w = await world();
     const u = await updatedAndWaiting(w, "Cancelled mid-delivery");
     await github.setChecks(w.repo, u.head_sha, CI("success"));
-    deliverTestSeams.beforeLand = async (id) => {
-      deliverTestSeams.beforeLand = null;
+    deliverTestSeams.beforeMark = async (id) => {
+      deliverTestSeams.beforeMark = null;
       await ok("workItem.cancel", { workItemId: id, reason: "not wanted" }, w.human);
     };
     await deliverRepository(env, u.project_id, u.repositoryId);
-    expect(deliverTestSeams.beforeLand).toBeNull(); // the seam ran
+    expect(deliverTestSeams.beforeMark).toBeNull(); // the seam ran
     expect(await merges(u.a)).toEqual([]);
     expect((await github.state(w.repo)).pulls.every((p) => p.state === "open")).toBe(true);
     const approval = await first<{ status: string; decision: string }>(
@@ -187,16 +188,36 @@ describe("the babysitter's deliverer (v11)", () => {
     expect((await github.state(w.repo)).pulls.every((p) => p.state === "open")).toBe(true);
   });
 
-  it("pr.merge's batch refuses a merge whose item was cancelled after its reads", async () => {
+  // Second review of #103, the probe run: a cancel inside the 1-3 s GitHub takes to merge left the
+  // PR merged, the audit `failed`, the approval unused and the item cancelled.
+  it("a cancel while the babysitter is merging is refused: this is merging", async () => {
+    const w = await world();
+    const u = await updatedAndWaiting(w, "Cancelled in the merge window");
+    await github.setChecks(w.repo, u.head_sha, CI("success"));
+    let refused: unknown = null;
+    deliverTestSeams.beforeLand = async (id) => {
+      deliverTestSeams.beforeLand = null;
+      refused = await call("workItem.cancel", { workItemId: id, reason: "not wanted" }, w.human)
+        .then(() => null)
+        .catch((e: unknown) => e);
+    };
+    await deliverRepository(env, u.project_id, u.repositoryId);
+    expect(refused).toMatchObject({
+      code: "conflict",
+      message: expect.stringMatching(/is merging/),
+    });
+    await itemStatus(u.a, "done");
+    expect(await merges(u.a)).toHaveLength(1);
+  });
+
+  it("a cancel that commits while GitHub merges loses: the merge is recorded and the item is done", async () => {
     const w = await world();
     const u = await updatedAndWaiting(w, "Cancelled under the merge");
     mobileTestSeams.beforeCommit = async (op) => {
       if (op !== "pr.merge") return;
       mobileTestSeams.beforeCommit = null;
-      // Straight to D1: the item ends after pr.merge read it (no approval change, to test the guard).
-      await env.DB.prepare("UPDATE core_work_items SET status = 'cancelled' WHERE id = ?")
-        .bind(u.a)
-        .run();
+      // A cancel that got in after pr.merge's reads (no merging mark: pr.merge called directly).
+      await ok("workItem.cancel", { workItemId: u.a, reason: "not wanted" }, w.human);
     };
     await expect(
       call(
@@ -205,12 +226,74 @@ describe("the babysitter's deliverer (v11)", () => {
         BABYSITTER,
         { approvalId: u.pending_action_id },
       ),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({ code: "conflict", details: { recorded: true } });
+    expect((await github.state(w.repo)).pulls[0]?.state).toBe("merged");
+    const item = await first<{ status: string; status_reason: string }>(
+      "SELECT status, status_reason FROM core_work_items WHERE id = ?",
+      u.a,
+    );
+    expect(item).toEqual({
+      status: "done",
+      status_reason: "cancelled after its merge had started",
+    });
     const approval = await first<{ status: string }>(
       "SELECT status FROM core_pending_actions WHERE id = ?",
       u.pending_action_id,
     );
-    expect(approval?.status).toBe("approved"); // not used: the batch didn't commit
+    expect(approval?.status).toBe("applied");
+    const entry = await first<{ status: string; outcome: string }>(
+      "SELECT status, outcome FROM core_merge_queue WHERE work_item_id = ?",
+      u.a,
+    );
+    expect(entry).toEqual({ status: "merged", outcome: "merged" });
+    expect(await merges(u.a)).toHaveLength(1); // the audit says it merged
+  });
+
+  it("a takeover while GitHub merges: the merge is recorded, and the next pass does not merge again", async () => {
+    const w = await world();
+    const u = await updatedAndWaiting(w, "Taken over in the merge window");
+    await github.setChecks(w.repo, u.head_sha, CI("success"));
+    mobileTestSeams.beforeCommit = async (op) => {
+      if (op !== "pr.merge") return;
+      mobileTestSeams.beforeCommit = null;
+      // The pass's lease runs out and another pass takes the queue while GitHub merges.
+      await env.DB.prepare(
+        "UPDATE core_delivery_state SET rev = rev + 1, running_until = NULL WHERE project_id = ?",
+      )
+        .bind(u.project_id)
+        .run();
+    };
+    await deliverRepository(env, u.project_id, u.repositoryId);
+    await deliverRepository(env, u.project_id, u.repositoryId);
+    await itemStatus(u.a, "done");
+    expect(await merges(u.a)).toHaveLength(1);
+    // GitHub was asked to merge once: a second ask would have been refused (405) and sent it back.
+    const asked = await all<{ outcome: string }>(
+      "SELECT outcome FROM core_audit WHERE operation = 'pr.merge' AND work_item_id = ? AND actor_id = 'babysitter'",
+      u.a,
+    );
+    expect(asked.map((r) => r.outcome)).toEqual(["ok"]);
+  });
+
+  it("pr.merge records a PR GitHub already merged at the head as merged, not merged again", async () => {
+    const w = await world();
+    const u = await updatedAndWaiting(w, "Merged by a pass that died");
+    // A pass merged on GitHub and died before anything was recorded.
+    expect(
+      await github.mergePullRequest(w.repo, { number: u.pr, sha: u.head_sha, method: "merge" }),
+    ).toMatchObject({ merged: true });
+    // GitHub refuses a second merge, as the real API does (405).
+    expect(
+      await github.mergePullRequest(w.repo, { number: u.pr, sha: u.head_sha, method: "merge" }),
+    ).toEqual({ merged: false, reason: "Pull Request is not mergeable" });
+    const r = await call(
+      "pr.merge",
+      { workItemId: u.a, headSha: u.head_sha, touchesFactoryConfig: false },
+      BABYSITTER,
+      { approvalId: u.pending_action_id },
+    );
+    expect(r).toMatchObject({ status: "ok", output: { merged: true } });
+    expect(await merges(u.a)).toHaveLength(1);
   });
 
   // Review of #103: two passes over one queue. A pass whose lease expired and was taken over must
@@ -288,7 +371,7 @@ describe("the babysitter's deliverer (v11)", () => {
     expect(await merges(u.a)).toHaveLength(1);
   });
 
-  it("asks GitHub to update a head at most MAX_UPDATES times", async () => {
+  it("asks GitHub to update a head at most MAX_UPDATES times, then holds it", async () => {
     const w = await world();
     const u = await updatedAndWaiting(w, "Main keeps moving");
     await github.push(w.repo, "main", undefined, ["CHANGELOG.md"]);
@@ -297,8 +380,58 @@ describe("the babysitter's deliverer (v11)", () => {
       { workItemId: u.a, maxUpdates: 1 },
       BABYSITTER,
     );
-    expect(r.state).toBe("refused");
-    expect(r.reason).toMatch(/after 1 updates/);
+    expect(r.state).toBe("held");
+    expect(r.reason).toMatch(/updated 1 times/);
+  });
+
+  // Second review of #103: at the bound the deliverer sent good, approved work back to build.
+  it("at the update bound holds the item and asks a person; their answer lands it, no rebuild", async () => {
+    const w = await world();
+    const u = await updatedAndWaiting(w, "Main never stops");
+    await env.DB.prepare("UPDATE core_merge_queue SET updates = 3 WHERE work_item_id = ?")
+      .bind(u.a)
+      .run();
+    await github.push(w.repo, "main", undefined, ["CHANGELOG.md"]);
+    await github.setChecks(w.repo, u.head_sha, CI("success"));
+    await deliverRepository(env, u.project_id, u.repositoryId);
+    const q = await waitFor("a person asked", () =>
+      first<{ id: string; prompt: string; options: string }>(
+        "SELECT id, prompt, options FROM core_questions WHERE work_item_id = ? AND status = 'open' AND asked_by = 'babysitter'",
+        u.a,
+      ),
+    );
+    expect(q.prompt).toMatch(/keeps moving: #\d+ was updated 3 times/);
+    const held = await first<{ status: string; hold_question_id: string }>(
+      "SELECT status, hold_question_id FROM core_merge_queue WHERE work_item_id = ?",
+      u.a,
+    );
+    expect(held).toEqual({ status: "queued", hold_question_id: q.id });
+    // Another pass while it waits asks nothing more and sends nothing back.
+    await deliverRepository(env, u.project_id, u.repositoryId);
+    expect(
+      await all(
+        "SELECT id FROM core_questions WHERE work_item_id = ? AND asked_by = 'babysitter'",
+        u.a,
+      ),
+    ).toHaveLength(1);
+
+    await github.setCiDefault(w.repo, CI("success"));
+    await ok(
+      "question.answer",
+      { questionId: q.id, answer: "Update once more, and merge when CI passes" },
+      w.human,
+    );
+    await itemStatus(u.a, "done");
+    const entry = await first<{ updates: number; status: string }>(
+      "SELECT updates, status FROM core_merge_queue WHERE work_item_id = ?",
+      u.a,
+    );
+    expect(entry).toEqual({ updates: 4, status: "merged" });
+    const builds = await all(
+      "SELECT id FROM core_stages WHERE work_item_id = ? AND stage = 'build'",
+      u.a,
+    );
+    expect(builds).toHaveLength(1); // never sent back to build
   });
 
   it("never takes an item with no repository (one lease per repository)", async () => {

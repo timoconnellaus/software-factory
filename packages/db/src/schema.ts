@@ -557,6 +557,8 @@ export interface CoreRunnersTable {
   paused: JsonText | null;
   /** 0290 (ADR 0520): the runner's RUNNER_COMPAT as it last reported; null (never) counts as 1. */
   compat: number | null;
+  /** The signed time (unix seconds) of the last accepted heartbeat: older ones are replays (0360). */
+  last_signed_at: number | null;
 }
 
 export interface CoreRunnerSharesTable {
@@ -634,6 +636,8 @@ export interface CoreRunEventsTable {
   at: Iso;
   type: string;
   payload: JsonText;
+  /** Set on a row that holds a batch of log lines, `seq` to `last_seq` (migration 0361). */
+  last_seq: number | null;
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */
@@ -814,6 +818,14 @@ export interface CoreMergeQueueTable {
   update_asked_at: Iso | null;
   /** 0350: how many times GitHub was asked to (the babysitter bounds it, spec 53 review). */
   updates: Generated<number>;
+  /** 0350 (spec 53 review): marked just before GitHub is asked to merge; a cancel then waits. */
+  merging_at: Iso | null;
+  /** 0350: the question asked at the update bound, while it is open or not yet read back. */
+  hold_question_id: string | null;
+  /** 0350: update-branch requests a person allowed beyond the bound. */
+  updates_granted: Generated<number>;
+  /** 0350: the person asked to wait until then before the next update. */
+  held_until: Iso | null;
 }
 
 export type MergeQueueDriver = "workflow" | "babysitter";

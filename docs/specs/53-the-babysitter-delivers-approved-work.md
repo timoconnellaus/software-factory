@@ -77,7 +77,7 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
   a lost event costs time, not the item.
 - **Workflow versions.** A running instance replays on the code it started with, so a feature
   must never switch on inside an instance of an older version. No `version >= N` comparisons for
-  features: one table in the Workflow (`WORKFLOW_FEATURES`) maps each version number to the set of
+  features: one table in core (`packages/core/src/workflow-features.ts`, `WORKFLOW_VERSION_FEATURES`) maps each version number to the set of
   features it has, a row per version, immutable once merged, and code asks
   `has(version, "feature")`. v1 to v7's rows reproduce today's behaviour exactly (the existing
   version tests prove it). A PR takes the next number above whatever is on `main` **at merge
@@ -104,7 +104,10 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     calls carries it and is refused once another pass took over (ADR 0586).
   - **Bounded re-updates.** Each pass brings the head up to date again (a `main` that moved while CI
     ran gets one more update and CI run), at most three update-branch requests per entry
-    (`mergeQueue.update`'s `maxUpdates`); past that the item goes back as `failed`.
+    (`mergeQueue.update`'s `maxUpdates`). Past that the head is **held**, never sent back to build
+    (approved, green work is not rebuilt because `main` is busy): `mergeQueue.hold` asks a person
+    "main keeps moving: updated 3 times; update once more and merge when CI passes, or wait?". Each
+    answer allows one more update, now or after an hour; another bound reached asks again.
   - **A merge GitHub refuses is re-snapshotted**, never retried as is and not sent straight back to
     build: the pass brings the head up to date again (a moved `main` updates it and CI runs there);
     a refusal with nothing changed goes back as `failed` (PR (d) asks a person instead).
@@ -112,6 +115,16 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     babysitter an entry no longer open in its queue, read before GitHub is asked and guarded in
     the same batch. Cancelling an item withdraws its approved, unused actions too, not only its
     pending ones.
+  - **The merge window** (second review of #103). GitHub merges inside `pr.merge`'s handler, before
+    its guarded batch, so a cancel or a takeover can land in the 1–3 s between. Three rules close it:
+    the deliverer marks the entry **merging** (`mergeQueue.merging`, guarded) before it asks GitHub,
+    and a cancel while the mark holds is refused ("this is merging; it cannot be cancelled now"); the
+    mark goes when GitHub refuses. When GitHub has merged but the batch fails, the merge is
+    **recorded anyway** in a second write unguarded by state (`HandlerContext.happened`): the audit
+    says merged, the approval is used, and **merged wins over a cancel that raced it**: the item is
+    Done with the note "cancelled after its merge had started". And `pr.merge` reads the PR first: one
+    GitHub already shows merged at the pinned head is recorded as merged, never merged again (GitHub
+    answers a second merge with 405), so a pass that took over mid-merge finishes it.
 - **Merge method and order (decision 4):** merge commits only (`method: "merge"`), one PR at a time
   per repository, in approval order, each updated to the current default branch and CI'd once before
   it lands. The engine's own ordering stays; GitHub's merge queue is not used (ADR 0580 §4).
