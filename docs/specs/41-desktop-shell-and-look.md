@@ -179,3 +179,33 @@ rather than shown empty:
 - **Buttons in a Radix trigger**: the desktop look matched buttons by `data-slot="button"`, which a
   trigger with `asChild` renames, so Open terminal fell back to shadcn's taller, filled outline.
   Buttons now carry `data-button`, and the look keys on that.
+
+## As built (slice 5: the Factory section)
+*Added 2026-11-12.* Built over the operations the client door already serves; nothing on the server
+changed. Screenshots (light and dark, at the default 1200×800 window and a narrow 900×700 one, with
+the design beside them) are in [`docs/screenshots/desktop-factory/`](../screenshots/desktop-factory/).
+`shoot.mjs` takes `SHOT_W`, `SHOT_H` and `SHOT_OUT` for the other sizes and folder.
+- **The sidebar** has Factory between Work and Pinned. Its nested list shows only pages with an
+  operation behind them. Skills and Autopilots (spec 52) have no server side yet, so they are not
+  listed.
+- **Overview** (`/factory`, `FactoryOverview`): Running, Queued (released work waiting for a slot,
+  in pull order), Waiting on you and Runners online, then tables of what runs, the queue, each
+  project's merge queue (`mergeQueue.list`) and the open incident count, all scoped to the rail's
+  org. The design's built-by-the-factory figures, time by stage and usage need aggregates from the
+  audit journal that no operation returns, so they aren't shown.
+- **Runners** (`/factory/runners`, `FactoryRunners`): each of your runners with its state (online,
+  busy, paused for load or tmux with the numbers, rate-limited, draining, offline since), heavy and
+  light slots (`inbox.list`), and its version against the one runners should run, with an update
+  waiting, running, blocked or rolled back (`runner.list`, specs 38 and 43); then the chosen
+  runner's harness, adapter, updates, rate limit, Claude accounts and when it was last heard.
+  **Connect a runner** opens Setup. Pause (drain), resume and remove have no operation (a drain is
+  `sf-runner` on the host), so the design's buttons aren't there. The per-runner "running now" list
+  needs the run's runner in `workItem.list` or `inbox.list`, which neither returns.
+- **Checks and incidents** (`/factory/incidents`, `FactoryIncidents`): incidents are the work items
+  of kind `incident` among each org's 100 most recent items. One is open until its fix item is done,
+  rejected or cancelled (a failed fix leaves it open). Each row shows what went wrong and the item
+  it came from (both from the fix item's title), the fix's state and its pull request. The first
+  guess at the cause, the checks that came from incidents, the project checks and acknowledging an
+  incident need an incident and checks read (and an acknowledge operation) on the client door.
+- Narrow windows (under 1100px) hide the secondary columns (project, head, from, opened); titles
+  wrap rather than clip.

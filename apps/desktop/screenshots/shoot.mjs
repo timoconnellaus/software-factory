@@ -12,10 +12,11 @@ import { createServer } from "vite";
 
 const here = import.meta.dirname;
 const repo = resolve(here, "../../..");
-const out = resolve(repo, "docs/screenshots/desktop-shell");
+// SHOT_OUT (relative to the repo), SHOT_W and SHOT_H shoot another folder or window size.
+const out = resolve(repo, process.env.SHOT_OUT ?? "docs/screenshots/desktop-shell");
 const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const W = 1440;
-const H = 900;
+const W = Number(process.env.SHOT_W) || 1440;
+const H = Number(process.env.SHOT_H) || 900;
 
 /** Each screen: its route, what to do before the shot, and its design file. */
 export const SCREENS = [
@@ -43,6 +44,9 @@ export const SCREENS = [
   { name: "setup", path: "/setup", design: "Setup.html" },
   { name: "this-mac", path: "/settings", design: "SettingsDevices.html" },
   { name: "search", path: "/work", design: "Main.html", keys: ["meta+k"] },
+  { name: "factory-overview", path: "/factory", design: "FactoryOverview.html" },
+  { name: "factory-runners", path: "/factory/runners", design: "FactoryRunners.html" },
+  { name: "factory-incidents", path: "/factory/incidents", design: "FactoryIncidents.html" },
 ];
 
 const args = process.argv.slice(2);

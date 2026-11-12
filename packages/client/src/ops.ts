@@ -78,6 +78,10 @@ export interface OpMap {
   "desktopDevice.list": Def<typeof operations.desktopDeviceList>;
   "desktopDevice.revoke": Def<typeof operations.desktopDeviceRevoke>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
+  "mergeQueue.list": Def<typeof operations.mergeQueueList>;
+  "repository.list": Def<typeof operations.repositoryList>;
+  "cliToken.list": Def<typeof operations.cliTokenList>;
+  "cliToken.revoke": Def<typeof operations.cliTokenRevoke>;
 }
 
 export type OpName = keyof OpMap;
