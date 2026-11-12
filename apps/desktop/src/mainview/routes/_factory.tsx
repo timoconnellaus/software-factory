@@ -13,8 +13,11 @@ export const factoryLayout = createRoute({
 /** The section's pages, in the design's order. */
 export const FACTORY_PAGES = [
   { to: "/factory", label: "Overview", testId: "nav-factory-overview" },
+  { to: "/factory/workflows", label: "Workflows", testId: "nav-factory-workflows" },
+  { to: "/factory/agents", label: "Agents", testId: "nav-factory-agents" },
   { to: "/factory/incidents", label: "Checks and incidents", testId: "nav-factory-incidents" },
   { to: "/factory/runners", label: "Runners", testId: "nav-factory-runners" },
+  { to: "/factory/policy", label: "Policy", testId: "nav-factory-policy" },
 ] as const;
 
 function FactorySection() {

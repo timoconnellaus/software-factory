@@ -178,6 +178,9 @@ describe("the section in the shell", () => {
       "factory",
       "runners",
       "incidents",
+      "policy",
+      "agents",
+      "workflows",
     ]);
   });
 });

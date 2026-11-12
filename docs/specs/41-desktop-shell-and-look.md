@@ -209,3 +209,22 @@ the design beside them) are in [`docs/screenshots/desktop-factory/`](../screensh
   incident need an incident and checks read (and an acknowledge operation) on the client door.
 - Narrow windows (under 1100px) hide the secondary columns (project, head, from, opened); titles
   wrap rather than clip.
+- **Policy, Agents and Workflows** (`/factory/policy`, `/factory/agents`, `/factory/workflows`;
+  `FactoryPolicy`, `FactoryAgents`, `FactoryWorkflow`) show a project's current config from
+  `config.get`, read-only. A picker chooses the project when the rail's org has more than one.
+  Changing the config is a human-only, self-modify-class change (ADR 0370), so the desktop has no
+  edit path: each page's footer names the version and links to the website's project settings or
+  workflows page, and a save waiting for an approver shows as a notice with a link to review it
+  there. The design's Edit policy, Approve and Discard, New agent, Edit instructions, New workflow
+  and Add a step are left out for that reason.
+  - **Policy** words the document in four groups (autonomy, limits, people and time, safeguards),
+    with "Merge, deploy, self-modify: always a person" as a fixed row. A field the document leaves
+    out shows the schema's default; `lib/config-view.ts` holds those once and a test pins them to
+    `projectPolicySchema`. The design's budgets per item and per day have no config field yet.
+  - **Agents** lists the project's agents (role, tier, instructions, which workflow steps use them)
+    and the chosen agent's instructions, then the model roles with the project's own choice or "the
+    default for the role": the view names no model ids (ADR 0018). Skills and per-agent usage (the
+    design's side panels) wait on spec 52 and a usage read.
+  - **Workflows** lists the named workflows, marks the one the project runs (ADR 0492), and shows
+    the chosen one's stages: the fixed skeleton (Spec, Build, Verify, Review, Merge) with the steps
+    its three slots add (ADR 0371). Stage types and shaping stages (spec 52) are design only.

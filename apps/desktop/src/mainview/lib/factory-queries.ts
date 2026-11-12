@@ -16,3 +16,11 @@ export const mergeQueuesQuery = (projectIds: string[]) =>
     staleTime: 15_000,
     refetchInterval: 30_000,
   });
+
+/** A project's config (ADR 0370): the current version's document, history and pending saves. */
+export const configQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId],
+    queryFn: () => read("config.get", { projectId }),
+    staleTime: 30_000,
+  });

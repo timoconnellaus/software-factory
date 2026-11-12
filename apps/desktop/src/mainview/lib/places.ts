@@ -43,6 +43,12 @@ export function tabTitle(path: string, findItem: (id: string) => ItemRef | null)
       return "Runners";
     case "/factory/incidents":
       return "Checks and incidents";
+    case "/factory/policy":
+      return "Policy";
+    case "/factory/agents":
+      return "Agents";
+    case "/factory/workflows":
+      return "Workflows";
     default:
       return "Software Factory";
   }
@@ -82,6 +88,24 @@ export const PLACE_COMMANDS: PlaceCommand[] = [
     label: "Factory: checks and incidents",
     to: "/factory/incidents",
     keywords: "factory incidents checks failures",
+  },
+  {
+    id: "policy",
+    label: "Factory: policy",
+    to: "/factory/policy",
+    keywords: "factory policy autonomy limits approvers",
+  },
+  {
+    id: "agents",
+    label: "Factory: agents",
+    to: "/factory/agents",
+    keywords: "factory agents roles models",
+  },
+  {
+    id: "workflows",
+    label: "Factory: workflows",
+    to: "/factory/workflows",
+    keywords: "factory workflows stages steps",
   },
 ];
 
