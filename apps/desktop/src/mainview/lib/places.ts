@@ -195,11 +195,21 @@ export function matchItems<T extends { number: number; title: string }>(
     .slice(0, limit);
 }
 
-/**
- * Where a work item opens from a card or a list row: its page today. Spec 41's item side panel (a
- * later slice, design WorkActivePanel) opens a running item in a panel over the board instead, so
- * every card and row opens through this, and that slice changes it here.
- */
+/** A work item's own page (links from outside the Work lists: the inbox, details, crumbs). */
 export function openItem(id: string) {
   return { to: "/work/$id", params: { id } } as const;
+}
+
+/**
+ * Where a work item opens from a card on a board or a row in a Work list (spec 41 slice 7, design
+ * WorkActivePanel): the side panel over the list, in the URL as `?item=`, so back and forward open
+ * and close it. The list's own search (view, project, layout) is kept.
+ */
+export function peekItem(id: string) {
+  return {
+    to: "/work",
+    search: (prev: Record<string, unknown>) => ({ ...prev, item: id, itemTab: undefined }),
+    // The panel returns focus here when it closes.
+    "data-peek": id,
+  } as const;
 }

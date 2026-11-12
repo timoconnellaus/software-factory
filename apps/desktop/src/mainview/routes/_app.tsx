@@ -58,9 +58,13 @@ export function useFocused(): string | null {
   const focus = useViewState((s) => s.focus);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const here = focus !== null && pathname === `/work/${focus}`;
+  // Focus asked for in the Work list's side panel: the panel expands to the page, then focuses.
+  const inPanel = useRouterState({
+    select: (s) => s.location.pathname === "/work" && (s.location.search as { item?: string }).item,
+  });
   useEffect(() => {
-    if (focus !== null && !here) updateViewState((s) => setFocus(s, null));
-  }, [focus, here]);
+    if (focus !== null && !here && inPanel !== focus) updateViewState((s) => setFocus(s, null));
+  }, [focus, here, inPanel]);
   return here ? focus : null;
 }
 
