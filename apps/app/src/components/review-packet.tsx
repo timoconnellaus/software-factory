@@ -444,7 +444,8 @@ function TestsIntact({ packet }: { packet: ParsedPacket }) {
               <li key={i} className="flex items-start gap-2">
                 <StatusDot status="waiting" className="mt-1.5" />
                 <div className="min-w-0">
-                  <div>{f.message}</div>
+                  {/* The message is Markdown for factory/verify; here its backticks are noise. */}
+                  <div>{f.message.replaceAll("`", "")}</div>
                   {f.path && (
                     <div className="font-mono text-muted-foreground text-xs">
                       {f.path}
