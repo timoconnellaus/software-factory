@@ -381,3 +381,6 @@ export async function projectForRepo(
 ): Promise<string> {
   return (await repositoryForRepo(db, repo)).projectId;
 }
+
+/** The most events one run.reportEvents call takes, so the most log lines one stored row holds. */
+export const RUN_EVENTS_BATCH_MAX = 500;

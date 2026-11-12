@@ -2,14 +2,9 @@
 // matches steps by name, so v1's step names are frozen: changing one means adding runV2.
 import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { has, WORKFLOW_VERSION_FEATURES } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
-import {
-  has,
-  isWaitTimeout,
-  WORKFLOW_FEATURES,
-  WORKFLOW_VERSION,
-  type WorkflowFeature,
-} from "../src/workflow/work-item.ts";
+import { isWaitTimeout, WORKFLOW_VERSION } from "../src/workflow/work-item.ts";
 import { first, ok, waitFor, world } from "./helpers.ts";
 
 // The step names v1 uses, as patterns. Each must still appear in the source: this list only grows.
@@ -124,31 +119,15 @@ describe("Workflow versions", () => {
     await expect(instance?.waitForStatus("errored")).resolves.toBeUndefined();
   });
 
-  // Before the table, v1–v7 switched each feature on at a version number and kept it for every later
-  // one. Their rows must reproduce exactly that (spec 53, Workflow versions).
-  it("v1–v7's rows of the feature table are today's `version >= N` switches, exactly", () => {
-    const since: Record<Exclude<WorkflowFeature, "babysitter-delivery">, number> = {
-      "ci-verify": 2,
-      "conflict-state": 3,
-      "merge-queue": 4,
-      "planning-stage": 5,
-      "workflow-slots": 6,
-      "release-wait": 7,
-    };
-    for (let v = 1; v <= 7; v++) {
-      const want = Object.entries(since)
-        .filter(([, n]) => v >= n)
-        .map(([f]) => f)
-        .sort();
-      expect([...(WORKFLOW_FEATURES[v] ?? [])].sort(), `v${v}`).toEqual(want);
-      expect(has(v, "babysitter-delivery"), `v${v}`).toBe(false);
-    }
-    // v11 is v7 plus the babysitter's delivery; v8–v10 have no row and run nothing.
-    expect([...(WORKFLOW_FEATURES[11] ?? [])].sort()).toEqual(
-      [...(WORKFLOW_FEATURES[7] ?? []), "babysitter-delivery"].sort(),
+  // v1–v7's rows are proven equal to the old `version >= N` switches in core's
+  // workflow-features.test.ts; v11 is v7 plus the babysitter's delivery (spec 53).
+  it("v11 is v7 plus the babysitter's delivery, and is the newest version", () => {
+    for (let v = 1; v <= 7; v++) expect(has(v, "babysitter-delivery"), `v${v}`).toBe(false);
+    expect([...(WORKFLOW_VERSION_FEATURES[11] ?? [])].sort()).toEqual(
+      [...(WORKFLOW_VERSION_FEATURES[7] ?? []), "babysitter-delivery"].sort(),
     );
-    for (const v of [8, 9, 10]) expect(Object.hasOwn(WORKFLOW_FEATURES, v)).toBe(false);
-    expect(Math.max(...Object.keys(WORKFLOW_FEATURES).map(Number))).toBe(WORKFLOW_VERSION);
+    for (const v of [8, 9, 10]) expect(Object.hasOwn(WORKFLOW_VERSION_FEATURES, v)).toBe(false);
+    expect(Math.max(...Object.keys(WORKFLOW_VERSION_FEATURES).map(Number))).toBe(WORKFLOW_VERSION);
   });
 
   it("only treats a real timeout as a timeout", () => {

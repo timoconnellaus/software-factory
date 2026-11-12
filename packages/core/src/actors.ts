@@ -63,6 +63,13 @@ export interface Origin {
    * caller.
    */
   presence?: { op: string; inputDigest: string; challengeId: string };
+  /**
+   * The runner channel's verified signing time (unix seconds) of a heartbeat or claim, which are not
+   * kept in the channel's idempotency store: a heartbeat not newer than the runner's last changes
+   * none of the runner's state (it only renews leases), and a claim signed before it gets an empty
+   * answer (ADR 0590). Set by the channel, never the caller.
+   */
+  signedAt?: number;
 }
 
 export const FOREMAN: Actor = { type: "agent", id: "foreman" };

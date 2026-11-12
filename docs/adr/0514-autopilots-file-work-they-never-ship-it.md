@@ -29,3 +29,5 @@ reference. The risk is an agent that creates and ships its own work.
 ## Consequences
 - Autopilot runs reuse runs, transcripts, watch and steer, usage and the kill switch.
 - `core_work_items.kind` gains `autopilot`; boards and `activeLimit` ignore that kind.
+
+> Amended 2026-11-12 (spec 52's answers, questions 18 and 19): a run is a work item of kind `autopilot`, **hidden only from the Work lists**. Each run is a full work item, shown as run history on the autopilot's own page, and anything a run produces for a person (an item it filed, a proposal, a digest) appears in Work or the Inbox linked back to the run. (The owner asked "why hidden?", was given this answer, and didn't object.) Until a budget exists, each **autopilot** has its own limits: a time limit per run, a cap on how much one run can file, and a daily run cap. Items an autopilot files may be merged under `autoApprove` like any other ([ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md)); the autopilot itself still never merges.

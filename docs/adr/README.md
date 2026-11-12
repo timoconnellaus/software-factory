@@ -60,7 +60,7 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0054](0054-factory-policy-file.md) | `.factory/policy.json`: the project's autonomy policy file |
 | [0055](0055-github-installations-are-org-records.md) | GitHub App installations are org records, connected through GitHub's install flow |
 | [0056](0056-runner-device-login.md) | Runners connect by device login |
-| [0230](0230-check-only-incident-fixes-auto-merge.md) | A factory incident's check-only fix may merge without a person (amends 0008) |
+| [0230](0230-check-only-incident-fixes-auto-merge.md) | A factory incident's check-only fix may merge without a person (amends 0008). Superseded by 0515 |
 | [0231](0231-verify-verdict-and-the-github-connector.md) | The verify verdict, `factory/verify` and the GitHub App connector |
 | [0240](0240-v1-app-sign-in-and-server-functions.md) | V1 app: GitHub-only sign-in for one user, and one allowlisted server function to the engine |
 | [0241](0241-app-runs-next-to-d1-and-loads-pages-in-one-request.md) | sf-app runs next to D1, and a page loads in one request from a cached session |
@@ -115,13 +115,15 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0541](0541-phone-devices-keystore-keys-and-fingerprint-proofs.md) | Phone devices: a biometric-bound, per-use Keystore key checked by key attestation; pairing by QR (the offer is the approval) or GitHub in the browser; the ADR 0391 presence proof with a fingerprint; one-tap answers and send-back on the phone; amends 0391 |
 | [0542](0542-push-through-firebase-cloud-messaging.md) | Push goes through FCM as a data message of `{v, type, item}`, fanned out from `notifyClients`; the phone fetches content and posts it privately; the service account key is a Worker secret |
 | [0543](0543-policy-changes-are-approved-on-the-phone-with-a-fingerprint.md) | Chat proposes a config change; a human approver approves it with `config.approve`, whose proof binds the base version and the proposal's digest; amends 0370 |
-| [0510](0510-workflows-are-ordered-stages-of-stage-types.md) | Workflows are ordered stages of built-in stage types, defined once per org; floors in code (spec 52, not built) |
-| [0511](0511-a-reconciler-runs-the-stage-list.md) | Proposed: a reconciler (a pure function from a D1 snapshot to the next action, on events and a tick) runs the stage list |
-| [0512](0512-the-review-packet-is-artifact-evidence-and-decision.md) | Proposed: the review packet is an artifact, its evidence and a decision, all bound to one digest |
+| [0510](0510-workflows-are-ordered-stages-of-stage-types.md) | Workflows are ordered stages of built-in stage types, defined once per org; floors in code (spec 52, being built) |
+| [0511](0511-a-reconciler-runs-the-stage-list.md) | A reconciler (a pure function from a D1 snapshot to the next action, on events and a tick) runs the stage list; shadow until it agrees on 20 items in a row |
+| [0512](0512-the-review-packet-is-artifact-evidence-and-decision.md) | The review packet is an artifact, its evidence and a decision, all bound to one digest |
 | [0513](0513-skills-are-shared-by-the-org-and-attached-where-used.md) | Skills are shared by the org and attached to agents, stages and stage types; the factory proposes edits, a person accepts |
 | [0514](0514-autopilots-file-work-they-never-ship-it.md) | Autopilots file work on a trigger; they never merge, deploy or change config, and release only where policy allows |
+| [0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md) | Dark factory mode: the merge gate (and later deploy's) may be approved automatically by an `autoApprove` setting only a person turns on, when every condition holds in code; it switches itself off on trouble. Supersedes 0230 |
 | [0500](0500-the-factory-guards-the-tests.md) | The factory guards the tests: deleted, skipped or weakened tests, new suppressions and gate-file edits are found in code from the diff, go to a person, and block the check-only auto-merge |
 | [0501](0501-the-factory-runs-the-checks-and-only-executed-evidence-proves-a-criterion.md) | The runner host runs the project's checks on the head SHA (through the adapter's `exec`), a failure goes back to the same session, and only executed evidence proves a criterion |
+| [0590](0590-the-audit-journal-records-changes-not-machine-chatter.md) | The audit journal records changes, not machine chatter: changes-only operations (heartbeat, empty claim, held waits, presence, log batches), a runner's input as a digest; retention proposed (machine rows archived to R2 after 90 days as a hash chain), the owner decides |
 | [0580](0580-approval-and-delivery-are-separate.md) | Proposed: an approval only says "this head may merge"; the babysitter (an engine reconciler per repository plus a `babysit` job for judgement) delivers it; Workflow v11 (spec 53) |
 | [0581](0581-a-red-main-stops-the-line.md) | Proposed: main health is recorded per repository; while main is red only repairs merge and the rest are held, visibly |
 | [0582](0582-an-approval-survives-a-clean-merge-of-main.md) | Proposed: an approval survives a clean merge of main with an unchanged change digest and checks passing again; any other new commit withdraws it; amends 0330 |

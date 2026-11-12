@@ -32,3 +32,5 @@ reference: written once, followed by every agent that needs it.
 - Skill files run only inside the job's harness sandbox, with no extra permission.
 - The projection touches `harness-claude` and the runner host (the hosts session's area): new
   files and the smallest hook.
+
+> Amended 2026-11-12 (spec 52's answers, questions 16 and 17): org skills may reach the reviewer that judges the work **only by adding to its built-in skills** (`extend`), and adding, editing or removing one is a policy change a person approves (`self-modify`). Agent instructions follow the same rule as skills: the factory proposes, a person accepts (ADR 0373 amended).

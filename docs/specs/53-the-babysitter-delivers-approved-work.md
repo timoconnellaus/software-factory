@@ -77,7 +77,7 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
   a lost event costs time, not the item.
 - **Workflow versions.** A running instance replays on the code it started with, so a feature
   must never switch on inside an instance of an older version. No `version >= N` comparisons for
-  features: one table in the Workflow (`WORKFLOW_FEATURES`) maps each version number to the set of
+  features: one table in core (`packages/core/src/workflow-features.ts`, `WORKFLOW_VERSION_FEATURES`) maps each version number to the set of
   features it has, a row per version, immutable once merged, and code asks
   `has(version, "feature")`. v1 to v7's rows reproduce today's behaviour exactly (the existing
   version tests prove it). A PR takes the next number above whatever is on `main` **at merge
