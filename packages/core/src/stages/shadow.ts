@@ -1,15 +1,40 @@
 // Shadow mode (spec 52 PR (c), ADR 0511 §7): the reconciler runs beside today's Workflow and drives
-// nothing. At every transition the Workflow makes (`workItem.enterStage`, `workItem.finish`), the
-// engine rebuilds the item's snapshot as it was just before, asks `reconcile()` what comes next, and
-// records that next to what the Workflow did. Pure; the engine loads and stores.
+// nothing. Once an item has ended, the engine's shadow pass reads the stage history the Workflow
+// already wrote and asks `reconcile()`, transition by transition, what it would have done. Pure; the
+// engine loads and stores, off the Workflow's path.
 //
-// What is compared: stage transitions (each stage entered or skipped, send-backs, the end at Done).
-// Not yet: steps inside a stage (jobs, gates, CI waits), slot steps (`agent-check`, `decision`, which
-// today run inside the build and verify lanes) and an item failing or being rejected (that depends on
-// retry counts and a person's decision, which today's stage history doesn't record).
-import { type ItemSnapshot, type ReconcileAction, reconcile, sendBackTo } from "./reconcile.ts";
+// What is compared today: the stage order and skips, and an item's end at Done. What is NOT compared
+// yet is listed in `SHADOW_NOT_COMPARED`, and every item counts each of those as a divergence, so no
+// item can agree by what was never looked at. `reconcile.streak` reports "comparison incomplete"
+// until that list is empty.
+import {
+  type ItemSnapshot,
+  type ReconcileAction,
+  reconcile,
+  type StageEntry,
+} from "./reconcile.ts";
 import { stageType } from "./registry.ts";
 import type { WorkflowDefinition } from "./workflow.ts";
+
+/** Everything the comparison must cover before the agreement streak means anything (spec 52 Q14). */
+export const SHADOW_REQUIRED = [
+  "stage order and skips",
+  "jobs and attempts",
+  "gates opened and decided, and by whom",
+  "send-back targets and rounds",
+  "retry counts",
+  "slot steps",
+  "the end of every item (failed, rejected, cancelled and incomplete, not only Done)",
+] as const;
+export type ShadowAspect = (typeof SHADOW_REQUIRED)[number];
+
+/** What `shadowVerdict` compares today. */
+export const SHADOW_COMPARED: readonly ShadowAspect[] = ["stage order and skips"];
+
+/** What it doesn't yet: each is a divergence on every item, and the streak can't be counted. */
+export const SHADOW_NOT_COMPARED: readonly ShadowAspect[] = SHADOW_REQUIRED.filter(
+  (a) => !SHADOW_COMPARED.includes(a),
+);
 
 /** A `core_stages` row, oldest first. */
 export interface StageRow {
@@ -17,11 +42,8 @@ export interface StageRow {
   status: "active" | "done" | "skipped" | "sent_back" | "failed" | "cancelled";
 }
 
-/** One transition the Workflow made, in the order it made them. */
-export type ObservedTransition =
-  | { kind: "skip"; stage: string }
-  | { kind: "enter"; stage: string }
-  | { kind: "end"; status: "done" };
+/** How the item ended (`core_work_items.status` once closed). */
+export type ItemEnd = "done" | "failed" | "rejected" | "cancelled";
 
 export interface ShadowComparison {
   observed: string;
@@ -29,32 +51,17 @@ export interface ShadowComparison {
   agrees: boolean;
 }
 
+export interface ShadowVerdict {
+  transitions: ShadowComparison[];
+  /** Aspects not compared for this item; each counts as a divergence. */
+  uncompared: string[];
+  /** Transitions that disagree, plus every uncompared aspect. Zero only when all was compared. */
+  divergences: number;
+}
+
 /** The stages today's history records as stages: the definition without its slot steps. */
 export function shadowDefinition(def: WorkflowDefinition): WorkflowDefinition {
   return { ...def, stages: def.stages.filter((s) => !stageType(s.type)?.small) };
-}
-
-/** Today's stage rows as stage entries. A failed or sent-back stage goes where the reconciler sends it. */
-export function entriesFrom(
-  def: WorkflowDefinition,
-  rows: readonly StageRow[],
-): ItemSnapshot["stages"] {
-  const ids = new Set(def.stages.map((s) => s.id));
-  const out: ItemSnapshot["stages"][number][] = [];
-  for (const r of rows) {
-    if (!ids.has(r.stage) || r.status === "cancelled") continue;
-    const round = out.filter((e) => e.stageId === r.stage).length + 1;
-    if (r.status === "failed" || r.status === "sent_back") {
-      // A failed build is retried (a new row of the same stage); anything else goes back to the work.
-      const inst = def.stages.find((s) => s.id === r.stage);
-      const builds = inst ? stageType(inst.type)?.produces.includes("git-head") : false;
-      const to = builds ? r.stage : sendBackTo(def, r.stage);
-      out.push({ stageId: r.stage, round, typeVersion: 1, status: "sent_back", note: `to:${to}` });
-      continue;
-    }
-    out.push({ stageId: r.stage, round, typeVersion: 1, status: r.status });
-  }
-  return out;
 }
 
 function said(a: ReconcileAction): string {
@@ -70,53 +77,91 @@ function said(a: ReconcileAction): string {
       return "end rejected";
     case "wait":
       return `wait ${a.why}`;
+    case "repin":
+      return `repin v${a.version}`;
+    case "flag":
+      return `flag ${a.stageId ?? "-"}`;
     default:
       return `${a.kind} ${a.stageId}`;
   }
 }
 
-function saw(t: ObservedTransition): string {
-  return t.kind === "end" ? `end ${t.status}` : `${t.kind} ${t.stage}`;
-}
+const NOT_COMPARED_TARGET = "not compared: a send-back's target (needs the steps)";
 
 /**
- * Each transition the Workflow made, against what the reconciler predicted from the stage history
- * just before it. `before` is the history before the first of `observed`; each observed transition
- * is applied before predicting the next. The engine's `done` stage is the end.
+ * An ended item's stage history against what the reconciler predicts at each transition, from the
+ * history just before it. A send-back's target is today's (the next stage the history entered),
+ * never the reconciler's own guess, and the transition after a send-back isn't compared: deciding
+ * it needs the steps, which the snapshot doesn't have yet. An end other than Done isn't compared.
  */
-export function shadowCompare(
+export function shadowVerdict(
   definition: WorkflowDefinition,
   item: ItemSnapshot["item"],
-  before: readonly StageRow[],
-  observed: readonly ObservedTransition[],
-): ShadowComparison[] {
+  rows: readonly StageRow[],
+  end: ItemEnd,
+): ShadowVerdict {
   const def = shadowDefinition(definition);
-  const rows = [...before];
-  const out: ShadowComparison[] = [];
-  for (const raw of observed) {
-    const t: ObservedTransition =
-      raw.kind === "enter" && raw.stage === "done" ? { kind: "end", status: "done" } : raw;
-    // The stage the Workflow just left is closed in `rows` already; an entered stage's entry closes
-    // when the next transition comes, so it is active until then.
-    const open = rows.at(-1);
-    const snapshot: ItemSnapshot = {
-      item,
-      definition: def,
-      stages: entriesFrom(
-        def,
-        open?.status === "active" ? [...rows.slice(0, -1), { ...open, status: "done" }] : rows,
-      ),
-      steps: [],
-      observations: {},
-    };
-    // Today's history records a skip for a stage the definition doesn't have (an attached PR's
-    // spec and build): the reconciler would do nothing there, which is the same thing.
-    const absent = t.kind === "skip" && !def.stages.some((st) => st.id === t.stage);
-    const predicted = absent ? `skip ${t.stage}` : said(reconcile(snapshot));
-    const seen = saw(t);
-    out.push({ observed: seen, predicted, agrees: predicted === seen });
-    if (t.kind === "skip") rows.push({ stage: t.stage, status: "skipped" });
-    else if (t.kind === "enter") rows.push({ stage: t.stage, status: "active" });
+  const ids = new Set(def.stages.map((s) => s.id));
+  const history = rows.filter(
+    (r) => r.stage !== "intake" && r.stage !== "done" && r.status !== "cancelled",
+  );
+  const entries: StageEntry[] = [];
+  const transitions: ShadowComparison[] = [];
+  const predict = () =>
+    said(reconcile({ item, definition: def, stages: entries, steps: [], observations: {} }));
+  let afterSendBack = false;
+  history.forEach((r, i) => {
+    const observed = r.status === "skipped" ? `skip ${r.stage}` : `enter ${r.stage}`;
+    if (afterSendBack) {
+      transitions.push({ observed, predicted: NOT_COMPARED_TARGET, agrees: false });
+      afterSendBack = false;
+    } else if (r.status === "skipped" && !ids.has(r.stage)) {
+      // Today's history records a skip for a stage the definition doesn't have (an attached PR's
+      // spec and build): the reconciler does nothing there, which is the same thing.
+      transitions.push({ observed, predicted: observed, agrees: true });
+    } else {
+      const predicted = predict();
+      transitions.push({ observed, predicted, agrees: predicted === observed });
+    }
+    if (!ids.has(r.stage)) return;
+    const round = entries.filter((e) => e.stageId === r.stage).length + 1;
+    const last = i === history.length - 1;
+    if ((r.status === "failed" || r.status === "sent_back") && !(last && end !== "done")) {
+      // Back to the stage today's history entered next. `free`: retry counts aren't compared yet,
+      // so the reconciler's own count mustn't end the item where today's didn't.
+      const next = history.slice(i + 1).find((x) => ids.has(x.stage))?.stage ?? r.stage;
+      entries.push({
+        stageId: r.stage,
+        round,
+        typeVersion: 1,
+        status: "sent_back",
+        note: `to:${next}`,
+        free: true,
+      });
+      afterSendBack = true;
+      return;
+    }
+    entries.push({
+      stageId: r.stage,
+      round,
+      typeVersion: 1,
+      status: r.status === "skipped" ? "skipped" : "done",
+    });
+  });
+  if (end === "done") {
+    const predicted = afterSendBack ? NOT_COMPARED_TARGET : predict();
+    transitions.push({ observed: "end done", predicted, agrees: predicted === "end done" });
+  } else {
+    transitions.push({
+      observed: `end ${end}`,
+      predicted: "not compared: an end other than Done (needs the steps)",
+      agrees: false,
+    });
   }
-  return out;
+  const uncompared = [...SHADOW_NOT_COMPARED];
+  return {
+    transitions,
+    uncompared,
+    divergences: transitions.filter((t) => !t.agrees).length + uncompared.length,
+  };
 }

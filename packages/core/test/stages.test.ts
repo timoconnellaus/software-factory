@@ -10,6 +10,7 @@ import {
   planFromDefinition,
   SOFTWARE,
   STAGE_TYPES,
+  stageGateDecision,
   stageType,
   validateWorkflow,
   type WorkflowDefinition,
@@ -449,5 +450,31 @@ describe("today's per-project workflows as stage lists", () => {
       skip: "only when the work touches auth",
     });
     expect(plan.slots.afterVerify[0]?.skip).toBe("only for large work and up (this is medium)");
+  });
+});
+
+describe("a gate spec says whether a person always decides it (spec 52, re-review)", () => {
+  const NO_FLOOR = { ok: true as const, floor: {} };
+  const settingsOf = (id: string, raw: object = {}) => {
+    const t = stageType(id);
+    if (!t) throw new Error(id);
+    return t.gate(t.settings.parse(raw));
+  };
+  it("a decision step stays with a person under 'agents may plan'; the spec gate follows the policy", () => {
+    const policy = {
+      autonomyPolicy: "autonomous" as const,
+      overrides: { agent: { plan: "allow" as const } },
+    };
+    const step = settingsOf("decision");
+    const spec = settingsOf("interview-planning");
+    if (!step || !spec) throw new Error("no gate");
+    expect(step.alwaysReview).toBe(true);
+    expect(stageGateDecision(step, { actor: "agent", policy, floor: NO_FLOOR }).decision).toBe(
+      "review",
+    );
+    expect(spec.alwaysReview).toBe(false);
+    expect(stageGateDecision(spec, { actor: "agent", policy, floor: NO_FLOOR }).decision).toBe(
+      "allow",
+    );
   });
 });

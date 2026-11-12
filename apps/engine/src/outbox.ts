@@ -5,7 +5,6 @@ import type { OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
 import { planningHub } from "./planning-hub.ts";
 import { failDeadRelease, pullProject } from "./pull.ts";
-import { recordShadow } from "./reconcile-shadow.ts";
 
 interface OutboxRow {
   id: string;
@@ -128,10 +127,6 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // The runner host's held steer call waits on the work item's hub (ADR 0400). A wake, not a
       // change: open Planning tabs don't re-read.
       await planningHub(env, message.payload.workItemId).wake();
-      return;
-    case "reconcile.shadow":
-      // The reconciler in shadow (spec 52 PR (c)): records what it would have done. Drives nothing.
-      await recordShadow(env, message.payload);
       return;
     case "device.revoked":
       // A revoked device's live socket closes now, not when it next calls (ADR 0541).

@@ -100,6 +100,15 @@ export interface OpMap {
   // The reconciler in shadow (spec 52 PR (c)).
   "reconcile.report": Def<typeof operations.reconcileReport>;
   "reconcile.streak": Def<typeof operations.reconcileStreak>;
+  // The work model (spec 50): the backlog, ready and release.
+  "workItem.board": Def<typeof operations.workItemBoard>;
+  "workItem.update": Def<typeof operations.workItemUpdate>;
+  "workItem.move": Def<typeof operations.workItemMove>;
+  "workItem.release": Def<typeof operations.workItemRelease>;
+  "workItem.reorder": Def<typeof operations.workItemReorder>;
+  "workItem.link": Def<typeof operations.workItemLink>;
+  "workItem.unlink": Def<typeof operations.workItemUnlink>;
+  "project.workflow": Def<typeof operations.projectWorkflow>;
   "mergeQueue.list": Def<typeof operations.mergeQueueList>;
   "repository.list": Def<typeof operations.repositoryList>;
   "cliToken.list": Def<typeof operations.cliTokenList>;
@@ -136,3 +145,5 @@ export type ConfigView = OpOutput<"config.get">;
 export type LiveView = OpOutput<"run.live">;
 export type LiveEvent = LiveView["events"][number];
 export type LiveSteer = LiveView["steers"][number];
+export type BoardItem = OpOutput<"workItem.board">["items"][number];
+export type ProjectWorkflow = OpOutput<"project.workflow">;

@@ -13,6 +13,9 @@ CREATE TABLE core_org_configs (
   note TEXT,
   parent_version INTEGER,
   created_at TEXT NOT NULL,
+  -- loosens | tightens | neutral: how this version changed the one before it, recorded at write
+  -- time so orgConfig.get lists the history without reading or parsing older documents.
+  impact TEXT,
   PRIMARY KEY (org_id, version)
 );
 

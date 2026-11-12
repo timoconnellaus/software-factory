@@ -90,26 +90,20 @@ export interface CoreOrgConfigsTable {
   note: string | null;
   parent_version: number | null;
   created_at: Iso;
+  /** How this version changed the one before it, recorded when it was written. */
+  impact: "loosens" | "tightens" | "neutral" | null;
 }
 
-/** Spec 52 PR (c): the shadow reconciler's prediction at each Workflow transition (migration 0281). */
-export interface CoreReconcileShadowTable {
-  id: string;
-  work_item_id: string;
-  org_id: string;
-  seq: number;
-  observed: string;
-  predicted: string;
-  agrees: number;
-  created_at: Iso;
-}
-
-/** Spec 52 PR (c): an item that reached Done under shadow, and how many transitions diverged. */
+/** Spec 52 PR (c): an ended item's shadow verdict (migration 0281), one row per item. */
 export interface CoreReconcileItemsTable {
   work_item_id: string;
   org_id: string;
+  ended: "done" | "failed" | "rejected" | "cancelled";
   transitions: number;
+  /** Disagreeing transitions plus every aspect not yet compared. */
   divergences: number;
+  /** The `ShadowVerdict` as JSON. */
+  report: JsonText;
   finished_at: Iso;
 }
 
@@ -1035,14 +1029,6 @@ export interface CorePairCodeTriesTable {
   caller: Generated<string>;
 }
 
-/** The per-caller courtesy limit on asking for a phone nonce (migration 0310). */
-export interface CoreMobileNonceAsksTable {
-  caller: string;
-  /** Five-minute bucket: epoch ms / 300 000, floored. */
-  bucket: number;
-  n: number;
-}
-
 export interface CorePresenceChallengesTable {
   id: string;
   device_id: string;
@@ -1069,7 +1055,6 @@ export interface CoreDatabase {
   core_repositories: CoreRepositoriesTable;
   core_project_policies: CoreProjectPoliciesTable;
   core_org_configs: CoreOrgConfigsTable;
-  core_reconcile_shadow: CoreReconcileShadowTable;
   core_reconcile_items: CoreReconcileItemsTable;
   core_config_trials: CoreConfigTrialsTable;
   core_adjudications: CoreAdjudicationsTable;
@@ -1115,7 +1100,6 @@ export interface CoreDatabase {
   core_desktop_devices: CoreDesktopDevicesTable;
   core_presence_challenges: CorePresenceChallengesTable;
   core_mobile_nonces: CoreMobileNoncesTable;
-  core_mobile_nonce_asks: CoreMobileNonceAsksTable;
   core_pair_offers: CorePairOffersTable;
   core_pair_code_tries: CorePairCodeTriesTable;
 }

@@ -8,7 +8,8 @@
 // is current, whether the next one is skipped, whether the item waits for release, and when it is
 // done.
 
-import type { ItemFacts, Size } from "./contract.ts";
+import type { GateSpec, ItemFacts, Size } from "./contract.ts";
+import { workflowImpact } from "./impact.ts";
 import { stageType } from "./registry.ts";
 import type { Condition } from "./settings.ts";
 import { conditionHolds } from "./settings.ts";
@@ -22,6 +23,8 @@ export interface StageEntry {
   status: "active" | "done" | "skipped" | "sent_back" | "failed";
   /** Notes carried in by a send-back (the checks' failures, a reviewer's note). */
   note?: string | null;
+  /** A send-back that isn't a failed attempt: a person's at the merge gate, or a head that moved. */
+  free?: boolean;
 }
 
 /** One attempt at a step inside a stage entry: a job, a gate or an operation. */
@@ -42,6 +45,8 @@ export interface StepAttempt {
     | "sent_back";
   /** What the step reported, for a type to read (an agent check's verdict, the checks' failures). */
   output?: { verdict?: "pass" | "sendBack" | "ask"; note?: string; failures?: string[] };
+  /** The head SHA a gate decided on (the merge gate's approval holds for that head only). */
+  headSha?: string;
 }
 
 /** What the outside world looked like when the snapshot was read (spec 52: observations). */
@@ -51,6 +56,8 @@ export interface Observations {
   /** The merge queue: whether this item holds the head of the queue. */
   queueTurn?: boolean;
   merged?: boolean;
+  /** The PR's head SHA now. A merge approval for another head doesn't hold (as today). */
+  headSha?: string;
 }
 
 export interface ItemSnapshot {
@@ -63,7 +70,17 @@ export interface ItemSnapshot {
     retryLimit: number;
     cancelled?: boolean;
   };
+  /** The definition the item runs: the workflow version it is pinned to. */
   definition: WorkflowDefinition;
+  /** The pinned version's number, when known. */
+  version?: number;
+  /**
+   * The workflow's current version, when it is newer than the pinned one. The owner's answers:
+   * a tightening (or neutral) change reaches a running item at its next stage boundary (Q3); at
+   * release the item takes the current version when its shaping stages are unchanged, and is
+   * flagged for a person otherwise (Q4). A loosening never reaches a running item.
+   */
+  latest?: { version: number; definition: WorkflowDefinition };
   stages: readonly StageEntry[];
   steps: readonly StepAttempt[];
   observations: Observations;
@@ -74,14 +91,34 @@ export type ReconcileAction =
   | { kind: "enter"; stageId: string; round: number }
   | { kind: "skip"; stageId: string; reason: string }
   | { kind: "job"; stageId: string; stepId: string; attempt: number }
-  | { kind: "gate"; stageId: string; stepId: string; gateKind: string; operation: string }
+  | {
+      kind: "gate";
+      stageId: string;
+      stepId: string;
+      gateKind: string;
+      operation: string;
+      /** A person decides it whatever the policy (the gate spec's `alwaysReview`). */
+      alwaysReview: boolean;
+    }
   | { kind: "operation"; stageId: string; stepId: string; operation: string }
   | { kind: "wait"; stageId: string | null; why: WaitReason }
   | { kind: "complete"; stageId: string }
-  | { kind: "sendBack"; stageId: string; to: string; note: string }
+  | {
+      kind: "sendBack";
+      stageId: string;
+      /** The stage to go back to; "" the builder, `RECHECK` the stage that checks this one's input. */
+      to: string;
+      note: string;
+      /** Not a failed attempt (a person's merge send-back, a moved head): not counted. */
+      free?: true;
+    }
   | { kind: "done" }
   | { kind: "fail"; stageId: string; reason: string }
-  | { kind: "reject"; stageId: string; reason: string };
+  | { kind: "reject"; stageId: string; reason: string }
+  /** Hand the item to a person: the reconciler can't go on safely (never a failure). */
+  | { kind: "flag"; stageId: string | null; reason: string }
+  /** Move the item to the workflow's current version (Q3, Q4), then reconcile again. */
+  | { kind: "repin"; version: number; reason: string };
 
 export type WaitReason = "release" | "run" | "gate" | "ci" | "queue" | "merge" | "cancelled";
 
@@ -92,12 +129,21 @@ export interface NextContext<S> {
   entry: StageEntry;
   steps: readonly StepAttempt[];
   observations: Observations;
+  /** The type's gate for these settings, from the registry (its operation, risk, `alwaysReview`). */
+  gate: GateSpec | null;
+  /**
+   * Failed attempts so far, across the whole item, as today's Workflow counts them: a failed job
+   * (build, verify, a session), a failed check, and a send-back by an agent check or a decision
+   * step. A person's send-back at the merge gate, a cancelled run and a head that moved don't count.
+   * The item fails once this passes its retry limit.
+   */
+  failures: number;
 }
 
 /** What a type's `next()` may return: an action inside its stage, or the stage's end. */
 export type StageAction = Exclude<
   ReconcileAction,
-  { kind: "enter" } | { kind: "skip" } | { kind: "done" }
+  { kind: "enter" } | { kind: "skip" } | { kind: "done" } | { kind: "flag" } | { kind: "repin" }
 >;
 
 /** The idempotency key every executed action carries (ADR 0511 §3). */
@@ -141,12 +187,23 @@ export function jobStep(
   if (!last) return { kind: "job", stageId: at, stepId, attempt };
   if (last.status === "running") return { kind: "wait", stageId: at, why: "run" };
   if (last.status === "failed") {
-    const failed = count(ctx.steps, stepId, "failed");
-    if (failed > retries)
-      return { kind: "fail", stageId: at, reason: `${stepId} failed ${failed} times` };
+    // Counted across the item, not this entry, as today's Workflow does: retries in one entry and
+    // rounds of entries can't multiply.
+    if (ctx.failures > retries)
+      return {
+        kind: "fail",
+        stageId: at,
+        reason: `gave up after ${ctx.failures} failed attempts (${stepId})`,
+      };
     return { kind: "job", stageId: at, stepId, attempt };
   }
   return null;
+}
+
+/** A stage's gate spec, required: a type whose `next()` opens a gate must declare one. */
+export function gateOf(gate: GateSpec | null): GateSpec {
+  if (!gate) throw new Error("this stage opens a gate, but its type declares none");
+  return gate;
 }
 
 /**
@@ -156,7 +213,7 @@ export function jobStep(
 export function gateStep(
   ctx: NextContext<unknown>,
   stepId: string,
-  gate: { kind: string; operation: string },
+  gate: Pick<GateSpec, "kind" | "operation" | "alwaysReview">,
   after: string | null,
   onChanges: (note: string) => StageAction,
 ): StageAction | null {
@@ -164,7 +221,14 @@ export function gateStep(
   const g = latest(ctx.steps, stepId);
   const work = after ? latest(ctx.steps, after) : undefined;
   if (!g || (work && work.at > g.at))
-    return { kind: "gate", stageId: at, stepId, gateKind: gate.kind, operation: gate.operation };
+    return {
+      kind: "gate",
+      stageId: at,
+      stepId,
+      gateKind: gate.kind,
+      operation: gate.operation,
+      alwaysReview: gate.alwaysReview,
+    };
   const last = g.step;
   if (last.status === "pending") return { kind: "wait", stageId: at, why: "gate" };
   if (last.status === "rejected")
@@ -214,6 +278,40 @@ export function sendBackTo(def: WorkflowDefinition, stageId: string): string {
   return inst ? producerOf(def, inst) : stageId;
 }
 
+/** A send-back target meaning "the stage that checks what this one acts on" (a moved head). */
+export const RECHECK = "@recheck";
+
+/** The nearest earlier stage producing what `inst` consumes: its input's checks. */
+function checkerOf(def: WorkflowDefinition, inst: StageInstance): string {
+  const at = def.stages.findIndex((s) => s.id === inst.id);
+  const kinds = stageType(inst.type)?.consumes ?? [];
+  for (let i = at - 1; i >= 0; i--) {
+    const s = def.stages[i] as StageInstance;
+    if (stageType(s.type)?.produces.some((k) => kinds.includes(k))) return s.id;
+  }
+  return inst.id;
+}
+
+/**
+ * Whether a sent-back entry is a failed attempt, as today's Workflow counts them: an agent check's,
+ * a decision step's or the checks' send-back that goes back to earlier work. A person's send-back at
+ * the merge gate and a moved head are `free`; a step before the build that sends a note forward
+ * (today's `afterSpec` slot) isn't counted either.
+ */
+function countsAsFailure(def: WorkflowDefinition, entry: StageEntry): boolean {
+  if (entry.status !== "sent_back" || entry.free) return false;
+  const from = def.stages.findIndex((s) => s.id === entry.stageId);
+  const to = def.stages.findIndex((s) => s.id === sendBackTarget(entry));
+  return from < 0 || to < 0 || to <= from;
+}
+
+/** Failed attempts across the whole item (`NextContext.failures`). */
+export function failuresOf(snap: Pick<ItemSnapshot, "definition" | "stages" | "steps">): number {
+  const jobs = snap.steps.filter((s) => s.status === "failed").length;
+  const sendBacks = snap.stages.filter((e) => countsAsFailure(snap.definition, e)).length;
+  return jobs + sendBacks;
+}
+
 /** The type's next action for the current entry. Types without `next()` aren't run by the reconciler yet. */
 function stageNext(inst: StageInstance, snap: ItemSnapshot, entry: StageEntry): StageAction {
   const type = stageType(inst.type);
@@ -224,15 +322,20 @@ function stageNext(inst: StageInstance, snap: ItemSnapshot, entry: StageEntry): 
       reason: `stage type ${inst.type} can't run on the reconciler yet`,
     };
   const steps = snap.steps.filter((s) => s.stageId === entry.stageId && s.round === entry.round);
+  const settings = type.settings.parse(inst.settings ?? {});
   const action = type.next({
-    settings: type.settings.parse(inst.settings ?? {}),
+    settings,
     item: snap.item,
     entry,
     steps,
     observations: snap.observations,
+    gate: type.gate(settings),
+    failures: failuresOf(snap),
   });
   if (action.kind === "sendBack" && action.to === "")
     return { ...action, to: producerOf(snap.definition, inst) };
+  if (action.kind === "sendBack" && action.to === RECHECK)
+    return { ...action, to: checkerOf(snap.definition, inst) };
   return action;
 }
 
@@ -248,10 +351,53 @@ function skipReason(inst: StageInstance, snap: ItemSnapshot): string | null {
   return type?.skip?.(type.settings.parse(inst.settings ?? {}), snap.item) ?? null;
 }
 
+const shapingOf = (def: WorkflowDefinition) =>
+  JSON.stringify(def.stages.filter((s) => s.phase === "shaping"));
+
+/**
+ * A newer workflow version, between stages (the owner's answers). Before the item has entered a
+ * delivery stage, once released: the current version when its shaping stages are unchanged, else a
+ * person chooses (Q4). After that: a tightening or neutral change reaches it (Q3); a loosening never
+ * does, and it carries on under the version it is pinned to.
+ */
+function versionChange(snap: ItemSnapshot): ReconcileAction | null {
+  const latest = snap.latest;
+  if (!latest || latest.version === snap.version || !snap.item.released) return null;
+  const pinned = snap.definition;
+  const delivered = snap.stages.some(
+    (e) => pinned.stages.find((s) => s.id === e.stageId)?.phase === "delivery",
+  );
+  const from = snap.version !== undefined ? `v${snap.version}` : "the pinned version";
+  if (!delivered) {
+    if (shapingOf(pinned) === shapingOf(latest.definition))
+      return {
+        kind: "repin",
+        version: latest.version,
+        reason: `released: the shaping stages are unchanged since ${from}, so it takes v${latest.version} (Q4)`,
+      };
+    return {
+      kind: "flag",
+      stageId: null,
+      reason: `the workflow's shaping stages changed since it was shaped (${from} → v${latest.version}): a person chooses (Q4)`,
+    };
+  }
+  const impact = workflowImpact(pinned, latest.definition).class;
+  if (impact === "loosens") return null;
+  return {
+    kind: "repin",
+    version: latest.version,
+    reason: `v${latest.version} ${impact === "tightens" ? "tightens" : "doesn't change"} what ${from} checks, so it reaches this item at a stage boundary (Q3)`,
+  };
+}
+
 /**
  * The item's next action. Pure: the same snapshot always gives the same answer.
  * - The current stage is the active entry; with none, the stage after the last entry (stages run
  *   in order), or the stage a send-back named (its entry's note is `to:<stage id>`), next round.
+ * - Between stages a newer workflow version may apply (Q3, Q4).
+ * - A failed attempt past the item's retry limit fails it, counted as today's Workflow counts.
+ * - A stage, or a send-back's target, that the definition no longer has flags the item for a
+ *   person: it never fails it and never restarts it.
  * - A stage whose condition doesn't hold is skipped; the item waits for release before its first
  *   delivery stage; after the last stage it is done.
  */
@@ -259,32 +405,37 @@ export function reconcile(snap: ItemSnapshot): ReconcileAction {
   if (snap.item.cancelled) return { kind: "wait", stageId: null, why: "cancelled" };
   const stages = snap.definition.stages;
   const last = snap.stages.at(-1);
+  const gone = (stageId: string, what: string): ReconcileAction => ({
+    kind: "flag",
+    stageId,
+    reason: `${what} is no longer in the workflow${snap.version !== undefined ? ` (v${snap.version})` : ""}: a person decides where the item goes`,
+  });
   if (last?.status === "active") {
     const inst = stages.find((s) => s.id === last.stageId);
-    if (!inst)
-      return {
-        kind: "fail",
-        stageId: last.stageId,
-        reason: "the stage is no longer in the definition",
-      };
+    if (!inst) return gone(last.stageId, `its current stage, ${last.stageId},`);
     return stageNext(inst, snap, last);
   }
   if (last?.status === "failed")
     return { kind: "fail", stageId: last.stageId, reason: "the stage failed" };
+  const moved = versionChange(snap);
+  if (moved) return moved;
   let at = 0;
   if (last?.status === "sent_back") {
+    const failures = failuresOf(snap);
+    if (countsAsFailure(snap.definition, last) && failures > snap.item.retryLimit)
+      return {
+        kind: "fail",
+        stageId: last.stageId,
+        reason: `gave up after ${failures} failed attempts`,
+      };
     const to = sendBackTarget(last);
-    at = Math.max(
-      0,
-      stages.findIndex((s) => s.id === to),
-    );
-  } else if (last) at = stages.findIndex((s) => s.id === last.stageId) + 1;
-  if (at <= 0 && last && last.status !== "sent_back")
-    return {
-      kind: "fail",
-      stageId: last.stageId,
-      reason: "the stage is no longer in the definition",
-    };
+    at = stages.findIndex((s) => s.id === to);
+    if (at < 0) return gone(last.stageId, `the stage it was sent back to, ${to},`);
+  } else if (last) {
+    const i = stages.findIndex((s) => s.id === last.stageId);
+    if (i < 0) return gone(last.stageId, `the stage it last finished, ${last.stageId},`);
+    at = i + 1;
+  }
   const inst = stages[at];
   if (!inst) return { kind: "done" };
   if (inst.phase === "delivery" && !snap.item.released)

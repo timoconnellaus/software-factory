@@ -25,6 +25,7 @@ import {
   requestPull,
   requestPullsAfterEnd,
 } from "./backlog.ts";
+import { refusePhoneCancel } from "./gates.ts";
 import { queuedEntriesQuery, releaseMergeQueue } from "./merge-queue.ts";
 import { protectionDriftQuery } from "./protection.ts";
 import {
@@ -761,6 +762,8 @@ export const workItemCancel = defineOperation({
     ) {
       return { cancelled: false };
     }
+    // From the phone, not while a config change or a self-modify action waits (ADR 0541).
+    await refusePhoneCancel(ctx, w.id);
     await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     cancelWorkItem(ctx, w, input.reason);
     // Its slot is free: the next queued item may start, after this commits (ADR 0491).
@@ -944,18 +947,6 @@ export const workItemEnterStage = defineOperation({
         ended_at: input.stage === "done" ? ctx.now : null,
       }),
     );
-    // The shadow reconciler compares this transition with what it would have done (spec 52 PR (c)).
-    ctx.emit({
-      kind: "reconcile.shadow",
-      payload: {
-        workItemId: w.id,
-        at: ctx.now,
-        observed: [
-          ...input.skipped.map((x) => ({ kind: "skip" as const, stage: x.stage })),
-          { kind: "enter" as const, stage: input.stage },
-        ],
-      },
-    });
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -1040,11 +1031,6 @@ export const workItemFinish = defineOperation({
       ctx.write(
         ctx.db.updateTable("core_work_items").set({ stage: "done" }).where("id", "=", w.id),
       );
-      // The shadow reconciler's end of the item (spec 52 PR (c)): it should have predicted Done.
-      ctx.emit({
-        kind: "reconcile.shadow",
-        payload: { workItemId: w.id, at: ctx.now, observed: [{ kind: "enter", stage: "done" }] },
-      });
     }
     ctx.emit({
       kind: "notify",

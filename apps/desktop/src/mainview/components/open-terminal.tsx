@@ -7,8 +7,8 @@
 import type { WorkItemDetail } from "@software-factory/client/ops";
 import { Button } from "@software-factory/ui/components/button";
 import { SquareTerminalIcon } from "lucide-react";
-import { useState } from "react";
-import { type TerminalRun, terminalOf } from "../lib/terminal.ts";
+import { closeTerminal, openTerminal, useOpenTerminal } from "../lib/open-terminals.ts";
+import { terminalOf } from "../lib/terminal.ts";
 import { TerminalDock } from "./terminal-panel.tsx";
 
 export { terminalOf };
@@ -22,7 +22,9 @@ export function OpenTerminal({
   stage?: string;
   className?: string;
 }) {
-  const [open, setOpen] = useState<TerminalRun | null>(null);
+  // Open per item (lib/open-terminals.ts): it survives the side panel expanding to the page.
+  const id = detail.item.id;
+  const open = useOpenTerminal(id);
   const run = terminalOf(detail.runs, stage);
   if (!run && !open) return null;
   return (
@@ -33,16 +35,14 @@ export function OpenTerminal({
           size="md"
           className={className}
           aria-pressed={!!open}
-          onClick={() => setOpen((o) => (o ? null : run))}
+          onClick={() => (open ? closeTerminal(id) : openTerminal(id, run))}
           data-testid="open-terminal"
         >
           <SquareTerminalIcon className="size-3.5" />
           {open ? "Close terminal" : "Open terminal"}
         </Button>
       )}
-      {open && (
-        <TerminalDock workItemId={detail.item.id} run={open} onClose={() => setOpen(null)} />
-      )}
+      {open && <TerminalDock workItemId={id} run={open} onClose={() => closeTerminal(id)} />}
     </>
   );
 }

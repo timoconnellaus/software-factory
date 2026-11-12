@@ -3,35 +3,35 @@
 // - the slot plan: `planWorkflow()` (the Workflow's own), for a table of configs, sizes and domains;
 // - the spec gate: `specRequired()` (what `workItem.triage` records) for every threshold, size and
 //   foreman request, and an attached PR's skip (the triage handler's `kind === "attached"` branch);
-// - every gate under every autonomy policy: the operation the Workflow opens it with, decided by the
-//   real gate (`decide()` on the registry operation's risk, `riskOf` and `alwaysReview`, as invoke
-//   does) against the stage type's gate spec;
-// - the phases: `STAGE_PHASE` for a change; incidents and attached PRs are opened queued, so nothing
-//   of theirs shapes;
-// - the stages a run passes and skips: the `core_stages` rows the Workflow writes, in
-//   `workflow.test.ts` (a small change) and `attach-flow.test.ts` (an attached PR), which assert
-//   `engineStages()` of the compiled definition.
+// - every gate under every autonomy policy: the operation the Workflow opens it with, through that
+//   operation's own `riskOf` and `operationGate()` (the function `invoke()` calls), against the
+//   stage type's gate spec through `stageGateDecision()` (its risk and `alwaysReview`, nothing else);
+// - engine runs, against the compiled definition (`definition.ts`): the stages a run passes and
+//   skips, the phases (what ran before release), send-back targets and slot steps, for a small
+//   change and its send-backs (`workflow.test.ts`), an incident's fix (`workflow.test.ts`), a
+//   shaped medium item with a spec (`shaping.test.ts`), slot steps (`workflows.test.ts`) and an
+//   attached PR (`attach-flow.test.ts`).
 import {
   ALWAYS_REVIEW,
   AUTONOMY_POLICIES,
   type AutonomyPolicyName,
   type DecisionRules,
-  decide,
   getOperation,
+  operationGate,
   type ProjectPolicy,
   parseProjectPolicy,
   type RiskClass,
-  STAGE_PHASE,
   specRequired,
 } from "@software-factory/core";
 import {
   CompileError,
   compileItemWorkflow,
   compileProjectWorkflow,
-  engineStages,
   planFromDefinition,
   SIZES as STAGE_SIZES,
+  STAGE_TYPES,
   specGateHolds,
+  stageGateDecision,
   stageType,
   validateWorkflow,
 } from "@software-factory/core/stages";
@@ -159,24 +159,42 @@ describe("the spec gate from the definition is the one triage records", () => {
   }
 });
 
-// The operation the Workflow (work-item.ts) opens each kind of gate with.
-const ENGINE_GATE_OP: Record<string, string> = {
-  spec: "spec.accept",
-  step: "workflow.gate",
-  merge: "pr.merge",
+// The operation the Workflow (work-item.ts) opens each kind of gate with, and the input it passes
+// (an ordinary merge: the diff touches nothing under `.factory/`).
+const WI = `wi_${"0".repeat(32)}`;
+const ENGINE_GATE: Record<string, { op: string; input: Record<string, unknown> }> = {
+  spec: { op: "spec.accept", input: { workItemId: WI, specId: "spec_1" } },
+  step: {
+    op: "workflow.gate",
+    input: { workItemId: WI, workflow: "w", stepId: "s", name: "S" },
+  },
+  merge: {
+    op: "pr.merge",
+    input: { workItemId: WI, headSha: "a".repeat(40), touchesFactoryConfig: false },
+  },
 };
 const NO_FLOOR = { ok: true as const, floor: {} };
 
-function realGate(
-  op: string,
+/**
+ * The gate today's operation meets, exactly as `invoke()` computes it: the registry operation's own
+ * `riskOf` on the Workflow's input, then `operationGate()` (the policy, the pinned version and
+ * `alwaysReview`), the function invoke calls. Nothing here restates either.
+ */
+async function realGate(
+  kind: string,
   policy: { autonomyPolicy: AutonomyPolicyName; overrides: DecisionRules },
 ) {
-  const operation = getOperation(op);
-  if (!operation) throw new Error(`no operation ${op}`);
-  // invoke(): `riskOf` (a merge touching nothing under .factory/), then the gate, then alwaysReview.
-  const risk: RiskClass = op === "pr.merge" ? "merge" : operation.risk;
-  const d = decide({ actor: "agent", risk, policy, floor: NO_FLOOR }).decision;
-  return operation.alwaysReview && d === "allow" ? "review" : d;
+  const engine = ENGINE_GATE[kind];
+  if (!engine) throw new Error(`no engine gate for ${kind}`);
+  const operation = getOperation(engine.op);
+  if (!operation) throw new Error(`no operation ${engine.op}`);
+  const input = operation.input.parse(engine.input);
+  // `riskOf` here reads only the input (pr.merge); the scope and db it may read are not consulted.
+  const at = { scope: null, floor: NO_FLOOR, db: null } as unknown as Parameters<
+    NonNullable<typeof operation.riskOf>
+  >[1];
+  const risk: RiskClass = operation.riskOf ? await operation.riskOf(input, at) : operation.risk;
+  return operationGate({ op: operation, actor: "agent", risk, policy, floor: NO_FLOOR }).decision;
 }
 
 describe("every gate decides as today's operation does, under every autonomy policy", () => {
@@ -184,11 +202,12 @@ describe("every gate decides as today's operation does, under every autonomy pol
     "no overrides": {},
     "agents may plan": { agent: { plan: "allow" } },
     "agents may merge": { agent: { merge: "allow" } },
+    "agents may do anything": { agent: { "*": "allow" } },
   };
   for (const [what, extra] of Object.entries(CONFIGS)) {
     for (const autonomyPolicy of AUTONOMY_POLICIES) {
       for (const [label, overrides] of Object.entries(OVERRIDES)) {
-        it(`${what}, ${autonomyPolicy}, ${label}`, () => {
+        it(`${what}, ${autonomyPolicy}, ${label}`, async () => {
           const policy = policyOf({ ...extra, autonomyPolicy });
           for (const kind of KINDS) {
             const def = compileItemWorkflow(policy, policy.workflow, kind);
@@ -199,20 +218,16 @@ describe("every gate decides as today's operation does, under every autonomy pol
               const gate = type.gate(type.settings.parse(inst.settings));
               if (!gate) continue;
               gates++;
-              const op = ENGINE_GATE_OP[gate.kind];
-              expect(gate.operation, `${inst.id}'s operation`).toBe(op);
-              const fromDef = decide({
+              expect(gate.operation, `${inst.id}'s operation`).toBe(ENGINE_GATE[gate.kind]?.op);
+              // The registry's gate spec alone (its risk and `alwaysReview`), judged by the gate.
+              const fromDef = stageGateDecision(gate, {
                 actor: "agent",
-                risk: gate.risk,
                 policy: { autonomyPolicy, overrides },
                 floor: NO_FLOOR,
               }).decision;
-              const stepAlways = gate.kind === "step";
-              const fromDefEff = stepAlways && fromDef === "allow" ? "review" : fromDef;
-              expect(fromDefEff, `${kind} ${inst.id}`).toBe(
-                realGate(String(op), { autonomyPolicy, overrides }),
+              expect(fromDef, `${kind} ${inst.id}`).toBe(
+                await realGate(gate.kind, { autonomyPolicy, overrides }),
               );
-              if (gate.kind === "merge") expect(ALWAYS_REVIEW).toContain(gate.risk);
             }
             expect(gates).toBeGreaterThan(0);
           }
@@ -222,15 +237,22 @@ describe("every gate decides as today's operation does, under every autonomy pol
   }
 });
 
-describe("phases: what shapes before release today", () => {
-  it("a change shapes triage and spec, as STAGE_PHASE says; an incident and an attached PR shape nothing", () => {
-    const policy = policyOf({ agents: AGENTS });
-    for (const kind of KINDS) {
-      const def = compileItemWorkflow(policy, null, kind);
-      for (const { stage, phase } of engineStages(def, "large")) {
-        if (phase === null) continue;
-        // Incidents are opened queued (incident.open) and attached PRs on attach: released at once.
-        expect(phase, `${kind} ${stage}`).toBe(kind === "change" ? STAGE_PHASE[stage] : "delivery");
+const SAMPLE_SETTINGS: Record<string, object[]> = {
+  decision: [{ when: { sizeAtLeast: "large" } }, { decider: { person: "octocat" } }],
+};
+
+describe("each gate spec's alwaysReview is its operation's", () => {
+  it("a decision step and a merge always go to a person; the spec gate follows the policy", () => {
+    for (const type of STAGE_TYPES) {
+      const samples = [{}, ...(SAMPLE_SETTINGS[type.id] ?? [])];
+      for (const settings of samples.map((x) => type.settings.parse(x))) {
+        const gate = type.gate(settings);
+        if (!gate) continue;
+        const op = getOperation(gate.operation);
+        expect(op, gate.operation).toBeDefined();
+        expect(gate.alwaysReview, `${type.id}: ${gate.operation}`).toBe(
+          op?.alwaysReview === true || ALWAYS_REVIEW.includes(gate.risk),
+        );
       }
     }
   });

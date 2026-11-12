@@ -26,7 +26,7 @@ import type {
   PendingActionRow,
   Scope,
 } from "./operation.ts";
-import { type Decision, decide, parseFloor, type RiskClass, strictest } from "./policy/gate.ts";
+import { type Decision, operationGate, parseFloor, type RiskClass } from "./policy/gate.ts";
 import { getOperation } from "./registry.ts";
 import {
   activeKillSwitch,
@@ -306,7 +306,10 @@ export async function runOperation<O = unknown>(
   //    project (runner registration, the claim loop) are judged under Cautious + the floor, and so
   //    are calls that bring the policy in (`bootstrapsPolicy`).
   const scoped = scope.project !== null && !op.bootstrapsPolicy;
-  const current = decide({
+  // A work item stays at least as strict as the config version it started under (ADR 0370 §5), and
+  // an `alwaysReview` operation always asks a person (ADR 0371): `operationGate` does both.
+  const gate = operationGate({
+    op,
     actor: actor.type,
     risk,
     policy: scoped
@@ -316,32 +319,14 @@ export async function runOperation<O = unknown>(
       : { autonomyPolicy: "cautious", overrides: {} },
     ...(scope.policyError ? { policyError: scope.policyError } : {}),
     floor,
-  });
-  // A work item stays at least as strict as the config version it started under (ADR 0370 §5):
-  // tightening reaches running work, loosening never does.
-  const pinned =
-    scoped && scope.policy && scope.pinnedPolicy
-      ? decide({
-          actor: actor.type,
-          risk,
-          policy: {
+    pinnedPolicy:
+      scoped && scope.policy && scope.pinnedPolicy
+        ? {
             autonomyPolicy: scope.pinnedPolicy.autonomyPolicy,
             overrides: scope.pinnedPolicy.overrides,
-          },
-          floor,
-        })
-      : null;
-  let gate =
-    pinned && strictest(pinned.decision, current.decision) !== current.decision
-      ? {
-          decision: pinned.decision,
-          reason: `${pinned.reason} (the version this item started under)`,
-        }
-      : current;
-  // A workflow's gate step is enforced in code, never loosened by policy (ADR 0371).
-  if (op.alwaysReview && gate.decision === "allow") {
-    gate = { decision: "review", reason: `${op.name} always asks a person` };
-  }
+          }
+        : null,
+  });
 
   // An approved re-run must match its pending action. `deny` still refuses it.
   let approval: PendingActionRow | undefined;
@@ -458,8 +443,25 @@ export async function runOperation<O = unknown>(
     services: deps.services,
     scope,
     floor,
-    write: (statement) =>
-      statements.push(isPrepared(statement) ? statement : toStatement(d1, statement)),
+    write: (statement) => {
+      const prepared = isPrepared(statement) ? statement : toStatement(d1, statement);
+      if (
+        setsPendingStatus(isPrepared(statement) ? preparedSql(statement) : statement.compile().sql)
+      ) {
+        throw new Error(
+          `${op.name} writes a pending action's status with write(): use writePendingStatus`,
+        );
+      }
+      statements.push(prepared);
+    },
+    writePendingStatus: (how, statement) => {
+      if (how === "decide" && !op.decidesPending) {
+        throw new Error(
+          `${op.name} decides a pending action but doesn't declare decidesPending in the registry`,
+        );
+      }
+      statements.push(isPrepared(statement) ? statement : toStatement(d1, statement));
+    },
     guardChanged: (guardName) => statements.push(guardChanged(d1, `${op.name}:${guardName}`)),
     guardExists: (guardName, query: Compilable) => {
       const { sql, parameters } = query.compile();
@@ -773,6 +775,28 @@ export function outboxStatement(
       JSON.stringify(message.payload),
       new Date(Date.parse(now) + OUTBOX_GRACE_MS).toISOString(),
     );
+}
+
+/**
+ * Whether a statement sets a pending action's `status` (ADR 0541 amendment, third review): an
+ * UPDATE of core_pending_actions whose SET clause names `status`. Its WHERE clause may.
+ */
+export function setsPendingStatus(sql: string): boolean {
+  const update =
+    /^\s*update\s+(?:or\s+\w+\s+)?"?core_pending_actions"?\s+set\s+([\s\S]*?)(?:\swhere\s[\s\S]*)?$/i.exec(
+      sql,
+    );
+  return !!update && /(?:^|[\s,(])"?status"?\s*=/i.test(update[1] ?? "");
+}
+
+/**
+ * A prepared statement's SQL. workerd's D1PreparedStatement keeps it as `statement`; anything
+ * without one is treated as unreadable, which `write()` refuses rather than lets through.
+ */
+function preparedSql(statement: D1PreparedStatement): string {
+  const sql = (statement as D1PreparedStatement & { statement?: unknown }).statement;
+  if (typeof sql !== "string") throw new Error("a prepared statement without its SQL");
+  return sql;
 }
 
 function isPrepared(value: Compilable | D1PreparedStatement): value is D1PreparedStatement {

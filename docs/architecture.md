@@ -75,11 +75,14 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   `orgConfig.*`; a loosening save is `self-modify` for an org admin (the classifier is an
   allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one.
   Projects keep running their own config until PR (d). The **reconciler** (ADR 0511) is
-  `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**: every
-  `workItem.enterStage` and a finish at Done emit `reconcile.shadow`, and sf-engine records what the
-  reconciler would have done next to what the Workflow did (`core_reconcile_shadow`,
-  `core_reconcile_items`, migration 0281; `reconcile.report`, `reconcile.streak`). It drives
-  nothing; the switch-over is its own PR once 20 finished items in a row agree.
+  `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**, off the Workflow's
+  path: every five minutes sf-engine's shadow pass reads the items that ended since its cursor (the
+  `workItem.finish` / `workItem.cancel` audit rows), replays each stage history through the
+  reconciler and writes one verdict row per item (`core_reconcile_items`, migration 0281;
+  `reconcile.report`). It drives nothing. It compares stage order and skips only; everything else
+  (jobs, gates, send-back targets, retries, slot steps, ends other than Done) counts as a divergence,
+  and `reconcile.streak` says "comparison incomplete" and what is missing until it is compared. The
+  switch-over is its own PR once 20 ended items in a row agree.
 - **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
   protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
   `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`

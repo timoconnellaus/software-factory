@@ -26,6 +26,8 @@ interface Script {
   /** CI on the head, read after each verify run, consumed in order; default `pass`. */
   ci?: ("pass" | "fail" | "pending" | "missing")[];
   released?: boolean;
+  /** Pushes to the PR's head after the merge gate's nth decision (1-based): the head moves. */
+  pushAfterGate?: number[];
 }
 
 function snapshot(def: WorkflowDefinition, item: Partial<ItemSnapshot["item"]> = {}): ItemSnapshot {
@@ -70,6 +72,10 @@ const describeAction = (a: ReconcileAction): string => {
       return `fail ${a.stageId}`;
     case "reject":
       return `reject ${a.stageId}`;
+    case "flag":
+      return `flag ${a.stageId ?? "-"}`;
+    case "repin":
+      return `repin v${a.version}`;
   }
 };
 
@@ -84,10 +90,23 @@ function run(start: ItemSnapshot, script: Script = {}, limit = 80): string[] {
   ) as Record<string, Outcome[]>;
   const ci = [...(script.ci ?? [])];
   const out: string[] = [];
-  const setEntry = (status: StageEntry["status"], note?: string) => {
+  // The PR's head: each build makes a new one; a scripted push moves it.
+  let heads = 0;
+  let head = "0".repeat(40);
+  const nextHead = () => {
+    heads++;
+    head = heads.toString(16).padStart(40, "0");
+  };
+  let mergeGates = 0;
+  const setEntry = (status: StageEntry["status"], note?: string, free?: boolean) => {
     const stages = [...snap.stages];
     const last = stages.at(-1) as StageEntry;
-    stages[stages.length - 1] = { ...last, status, ...(note !== undefined ? { note } : {}) };
+    stages[stages.length - 1] = {
+      ...last,
+      status,
+      ...(note !== undefined ? { note } : {}),
+      ...(free ? { free } : {}),
+    };
     snap = { ...snap, stages };
   };
   const settle = (key: string, dflt: StepAttempt["status"]) => {
@@ -112,7 +131,7 @@ function run(start: ItemSnapshot, script: Script = {}, limit = 80): string[] {
             ...snap.stages,
             { stageId: a.stageId, round: a.round, typeVersion: 1, status: "active" },
           ],
-          observations: {},
+          observations: { headSha: head },
         };
         break;
       case "skip":
@@ -132,13 +151,27 @@ function run(start: ItemSnapshot, script: Script = {}, limit = 80): string[] {
           ...snap,
           steps: [
             ...snap.steps,
-            { stageId: a.stageId, round, stepId: a.stepId, attempt: 1, status: "running" },
+            {
+              stageId: a.stageId,
+              round,
+              stepId: a.stepId,
+              attempt: 1,
+              status: "running",
+              ...(a.kind === "gate" ? { headSha: head } : {}),
+            },
           ],
         };
         if (a.kind === "operation") {
           snap = { ...snap, observations: { ...snap.observations, merged: true } };
           settle(`${a.stageId}.${a.stepId}`, "ok");
         } else settle(`${a.stageId}.${a.stepId}`, a.kind === "gate" ? "approved" : "ok");
+        if (a.kind === "job" && a.stepId === "build" && snap.steps.at(-1)?.status === "ok")
+          nextHead();
+        if (a.kind === "gate" && a.gateKind === "merge") {
+          mergeGates++;
+          if (script.pushAfterGate?.includes(mergeGates)) nextHead();
+        }
+        snap = { ...snap, observations: { ...snap.observations, headSha: head } };
         if (a.kind === "job" && a.stepId === "verify")
           snap = { ...snap, observations: { ...snap.observations, ci: ci.shift() ?? "pass" } };
         break;
@@ -158,7 +191,16 @@ function run(start: ItemSnapshot, script: Script = {}, limit = 80): string[] {
         setEntry("done");
         break;
       case "sendBack":
-        setEntry("sent_back", `to:${a.to}\n${a.note}`);
+        setEntry("sent_back", `to:${a.to}\n${a.note}`, a.free);
+        break;
+      case "repin":
+        if (!snap.latest) throw new Error("repin with no latest version");
+        snap = {
+          ...snap,
+          definition: snap.latest.definition,
+          version: snap.latest.version,
+          latest: undefined,
+        };
         break;
       default:
         return out;
@@ -333,5 +375,197 @@ describe("reconcile() over Software, as today's Workflow runs it", () => {
     expect(actionKey("wi_1", { stageId: "build", round: 2, stepId: "build", attempt: 1 })).toBe(
       "wi_1:build:2:build:1",
     );
+  });
+});
+
+describe("the second review: limits, missing stages, versions and the head", () => {
+  const gated = () => {
+    const parsed = parseProjectPolicy(
+      JSON.stringify({
+        version: 1,
+        autonomyPolicy: "balanced",
+        agents: [{ name: "Security", role: "review", tier: "light", instructions: "" }],
+        workflows: [
+          {
+            name: "Gated",
+            slots: {
+              beforeVerify: [{ id: "sec", kind: "work", name: "Security", agent: "Security" }],
+            },
+            core: {},
+          },
+        ],
+        workflow: "Gated",
+      }),
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    return compileProjectWorkflow(parsed.policy, "Gated");
+  };
+  const sendBack = { status: "ok" as const, output: { verdict: "sendBack" as const, note: "no" } };
+
+  it("an agent check's send-backs are bounded: the item fails after the retry limit, as today", () => {
+    const actions = run(snapshot(gated(), { retryLimit: 2 }), {
+      steps: { "sec.check": Array.from({ length: 10 }, () => sendBack) },
+    });
+    expect(actions.filter((a) => a === "job build.build")).toHaveLength(3);
+    expect(actions.at(-1)).toBe("fail sec");
+  });
+
+  it("a person's merge send-backs don't count toward the limit (today's Workflow doesn't count them)", () => {
+    const actions = run(snapshot(SOFTWARE, { retryLimit: 1 }), {
+      steps: { "merge.gate": ["sent_back", "sent_back", "sent_back", "approved"] },
+    });
+    expect(actions.filter((a) => a === "job build.build")).toHaveLength(4);
+    expect(actions.at(-1)).toBe("done");
+  });
+
+  it("failures are counted across the item: build attempts stop at the retry limit plus one", () => {
+    // Each round: one failed build, then a good one whose checks fail. Per-entry counting allowed
+    // (limit + 1)² builds; today's Workflow allows limit + 1 failures in all.
+    const actions = run(snapshot(SOFTWARE, { retryLimit: 2 }), {
+      steps: { "build.build": ["failed", "ok", "failed", "ok", "failed", "ok"] },
+      ci: ["fail", "fail", "fail"],
+    });
+    expect(actions.filter((a) => a === "job build.build").length).toBeLessThanOrEqual(3);
+    expect(actions.at(-1)).toMatch(/^fail /);
+  });
+
+  it("a send-back to a stage no longer in the definition flags the item; it never restarts at Triage", () => {
+    const snap = snapshot(SOFTWARE);
+    const flagged = reconcile({
+      ...snap,
+      definition: { ...SOFTWARE, stages: SOFTWARE.stages.filter((s) => s.id !== "build") },
+      stages: [
+        { stageId: "triage", round: 1, typeVersion: 1, status: "done" },
+        { stageId: "verify", round: 1, typeVersion: 1, status: "sent_back", note: "to:build\nfix" },
+      ],
+    });
+    expect(flagged.kind).toBe("flag");
+    expect(flagged).toMatchObject({ stageId: "verify" });
+  });
+
+  it("a current stage removed from the definition flags the item, never fails it", () => {
+    const snap = snapshot(SOFTWARE);
+    const without = { ...SOFTWARE, stages: SOFTWARE.stages.filter((s) => s.id !== "verify") };
+    for (const status of ["active", "done"] as const)
+      expect(
+        reconcile({
+          ...snap,
+          definition: without,
+          stages: [{ stageId: "verify", round: 1, typeVersion: 1, status }],
+        }).kind,
+      ).toBe("flag");
+  });
+
+  it("Q3: a tightening version reaches a running item at its next stage boundary; a loosening doesn't", () => {
+    const tighter = {
+      ...SOFTWARE,
+      stages: [
+        ...SOFTWARE.stages.slice(0, 4),
+        {
+          ...SOFTWARE.stages[0],
+          id: "sign-off",
+          type: "decision",
+          name: "Sign-off",
+          phase: "delivery" as const,
+          settings: {},
+        },
+        ...SOFTWARE.stages.slice(4),
+      ],
+    } as WorkflowDefinition;
+    const mid: ItemSnapshot = {
+      ...snapshot(SOFTWARE),
+      version: 1,
+      stages: [
+        { stageId: "triage", round: 1, typeVersion: 1, status: "done" },
+        { stageId: "spec", round: 1, typeVersion: 1, status: "skipped" },
+        { stageId: "build", round: 1, typeVersion: 1, status: "done" },
+      ],
+    };
+    expect(reconcile({ ...mid, latest: { version: 2, definition: tighter } })).toMatchObject({
+      kind: "repin",
+      version: 2,
+    });
+    const actions = run({ ...mid, latest: { version: 2, definition: tighter } });
+    expect(actions).toContain("gate sign-off.decision (step)");
+    // Not inside a stage: the active entry finishes under the version it started on.
+    const active = {
+      ...mid,
+      stages: [
+        ...mid.stages,
+        { stageId: "verify", round: 1, typeVersion: 1, status: "active" as const },
+      ],
+    };
+    expect(reconcile({ ...active, latest: { version: 2, definition: tighter } }).kind).toBe("job");
+    // From the tighter version back to Software is a loosening: it never reaches the item.
+    const looser = reconcile({
+      ...mid,
+      definition: tighter,
+      latest: { version: 3, definition: SOFTWARE },
+    });
+    expect(looser.kind).toBe("enter");
+  });
+
+  it("Q4: at release the item takes the current version if its shaping stages are unchanged, else a person chooses", () => {
+    const shaped: ItemSnapshot = {
+      ...snapshot(SOFTWARE, { size: "medium" }),
+      version: 1,
+      stages: [
+        { stageId: "triage", round: 1, typeVersion: 1, status: "done" },
+        { stageId: "spec", round: 1, typeVersion: 1, status: "done" },
+      ],
+    };
+    const sameShaping = {
+      ...SOFTWARE,
+      stages: SOFTWARE.stages.map((s) =>
+        s.id === "build" ? { ...s, settings: { retryLimit: 1 } } : s,
+      ),
+    };
+    expect(reconcile({ ...shaped, latest: { version: 2, definition: sameShaping } }).kind).toBe(
+      "repin",
+    );
+    const newShaping = {
+      ...SOFTWARE,
+      stages: SOFTWARE.stages.map((s) =>
+        s.id === "spec" ? { ...s, settings: { critic: true } } : s,
+      ),
+    };
+    expect(reconcile({ ...shaped, latest: { version: 2, definition: newShaping } })).toMatchObject({
+      kind: "flag",
+      stageId: null,
+    });
+    // Unreleased, it shapes on: the choice is at release.
+    expect(
+      reconcile({
+        ...shaped,
+        item: { ...shaped.item, released: false },
+        latest: { version: 2, definition: newShaping },
+      }),
+    ).toEqual({ kind: "wait", stageId: null, why: "release" });
+  });
+
+  it("the merge approval holds for the head it was given on: a push after it checks and decides again", () => {
+    const actions = run(snapshot(SOFTWARE), { pushAfterGate: [1] });
+    expect(actions).toContain("sendBack merge → verify");
+    expect(actions.filter((a) => a === "gate merge.gate (merge)")).toHaveLength(2);
+    expect(actions.filter((a) => a === "job build.build")).toHaveLength(1);
+    expect(actions.at(-1)).toBe("done");
+  });
+
+  it("the gate action carries the gate spec's alwaysReview", () => {
+    const parsed = gated();
+    const snap = snapshot(parsed);
+    const step = reconcile({
+      ...snap,
+      definition: SOFTWARE,
+      stages: [{ stageId: "merge", round: 1, typeVersion: 1, status: "active" }],
+    });
+    expect(step).toMatchObject({ kind: "gate", gateKind: "merge", alwaysReview: true });
+    const spec = reconcile({
+      ...snap,
+      definition: SOFTWARE,
+      stages: [{ stageId: "spec", round: 1, typeVersion: 1, status: "active" }],
+      steps: [{ stageId: "spec", round: 1, stepId: "session", attempt: 1, status: "ok" }],
+    });
+    expect(spec).toMatchObject({ kind: "gate", gateKind: "spec", alwaysReview: false });
   });
 });

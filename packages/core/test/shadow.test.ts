@@ -1,16 +1,15 @@
-// The reconciler in shadow (spec 52 PR (c)): each stage transition the Workflow makes, against what
-// `reconcile()` predicts from the history just before it. Pure; the engine's tests run it against
-// the real Workflow.
+// The reconciler in shadow (spec 52 PR (c)): an ended item's stage history against what
+// `reconcile()` predicts from the history just before each transition. Pure; the engine's tests run
+// it against the real Workflow.
 import { describe, expect, it } from "vitest";
-import { parseProjectPolicy } from "../src/index.ts";
 import {
   ATTACHED_PR,
-  compileProjectWorkflow,
   type ItemSnapshot,
-  type ObservedTransition,
+  SHADOW_NOT_COMPARED,
+  SHADOW_REQUIRED,
   SOFTWARE,
   type StageRow,
-  shadowCompare,
+  shadowVerdict,
 } from "../src/stages/index.ts";
 
 const item = (over: Partial<ItemSnapshot["item"]> = {}): ItemSnapshot["item"] => ({
@@ -23,42 +22,32 @@ const item = (over: Partial<ItemSnapshot["item"]> = {}): ItemSnapshot["item"] =>
   ...over,
 });
 
-/** Plays a stage history one transition at a time, as `workItem.enterStage` reports them. */
-function play(
-  def: Parameters<typeof shadowCompare>[0],
-  facts: ItemSnapshot["item"],
-  steps: { observed: ObservedTransition[]; closeAs?: StageRow["status"] }[],
-) {
-  const rows: StageRow[] = [{ stage: "intake", status: "done" }];
-  const out: string[] = [];
-  for (const s of steps) {
-    const open = rows.findLastIndex((r) => r.status === "active");
-    if (open >= 0) rows[open] = { ...(rows[open] as StageRow), status: s.closeAs ?? "done" };
-    for (const c of shadowCompare(def, facts, rows, s.observed))
-      out.push(`${c.observed}${c.agrees ? "" : ` (predicted ${c.predicted})`}`);
-    for (const t of s.observed) {
-      if (t.kind === "end") rows.push({ stage: "done", status: "done" });
-      else if (t.kind === "skip") rows.push({ stage: t.stage, status: "skipped" });
-      else rows.push({ stage: t.stage, status: t.stage === "done" ? "done" : "active" });
-    }
-  }
-  return out;
-}
+const rows = (...xs: string[]): StageRow[] =>
+  xs.map((x) => {
+    const [stage, status] = x.split(":") as [string, StageRow["status"]];
+    return { stage, status };
+  });
 
-const enter = (stage: string): ObservedTransition => ({ kind: "enter", stage });
-const skip = (stage: string): ObservedTransition => ({ kind: "skip", stage });
+const said = (v: ReturnType<typeof shadowVerdict>) =>
+  v.transitions.map((t) => (t.agrees ? t.observed : `${t.observed} ≠ ${t.predicted}`));
 
-describe("shadowCompare", () => {
-  it("a small change agrees at every transition", () => {
-    expect(
-      play(SOFTWARE, item(), [
-        { observed: [enter("triage")] },
-        { observed: [skip("spec"), enter("build")] },
-        { observed: [enter("verify")] },
-        { observed: [enter("merge")] },
-        { observed: [enter("done")] },
-      ]),
-    ).toEqual([
+describe("shadowVerdict", () => {
+  it("a small change agrees at every stage transition, and still diverges by what wasn't compared", () => {
+    const v = shadowVerdict(
+      SOFTWARE,
+      item(),
+      rows(
+        "intake:done",
+        "triage:done",
+        "spec:skipped",
+        "build:done",
+        "verify:done",
+        "merge:done",
+        "done:done",
+      ),
+      "done",
+    );
+    expect(said(v)).toEqual([
       "enter triage",
       "skip spec",
       "enter build",
@@ -66,50 +55,93 @@ describe("shadowCompare", () => {
       "enter merge",
       "end done",
     ]);
+    expect(v.uncompared).toEqual([...SHADOW_NOT_COMPARED]);
+    expect(v.divergences).toBe(SHADOW_NOT_COMPARED.length);
+    expect(SHADOW_NOT_COMPARED.length).toBeGreaterThan(0);
+    expect(SHADOW_REQUIRED).toContain("stage order and skips");
   });
 
-  it("a failed verify and a merge send-back both go back to build, and agree", () => {
-    expect(
-      play(SOFTWARE, item(), [
-        { observed: [enter("triage")] },
-        { observed: [skip("spec"), enter("build")] },
-        { observed: [enter("verify")] },
-        { observed: [enter("build")], closeAs: "failed" },
-        { observed: [enter("verify")] },
-        { observed: [enter("merge")] },
-        { observed: [enter("build")], closeAs: "sent_back" },
-        { observed: [enter("verify")] },
-        { observed: [enter("merge")] },
-        { observed: [enter("done")] },
-      ]).every((x) => !x.includes("predicted")),
-    ).toBe(true);
+  it("a send-back's target is not taken from the reconciler: the next stage isn't compared, and diverges", () => {
+    const v = shadowVerdict(
+      SOFTWARE,
+      item(),
+      rows(
+        "intake:done",
+        "triage:done",
+        "spec:skipped",
+        "build:done",
+        "verify:failed",
+        "build:done",
+        "verify:done",
+        "merge:sent_back",
+        "build:done",
+        "verify:done",
+        "merge:done",
+        "done:done",
+      ),
+      "done",
+    );
+    const out = said(v);
+    expect(out.filter((x) => x.includes("not compared: a send-back's target"))).toHaveLength(2);
+    expect(out.at(-1)).toBe("end done");
+    // A send-back to the wrong stage is still the wrong stage: the history says where it went.
+    const wrong = shadowVerdict(
+      SOFTWARE,
+      item(),
+      rows(
+        "intake:done",
+        "triage:done",
+        "spec:skipped",
+        "build:done",
+        "verify:sent_back",
+        "triage:done",
+      ),
+      "failed",
+    );
+    expect(said(wrong)).toContain(
+      "enter triage ≠ not compared: a send-back's target (needs the steps)",
+    );
   });
 
-  it("a divergence is recorded with what the reconciler would have done", () => {
-    // The Workflow skips the spec of a medium item: the reconciler would have entered it.
-    const out = play(SOFTWARE, item({ size: "medium" }), [
-      { observed: [enter("triage")] },
-      { observed: [skip("spec"), enter("build")] },
-    ]);
-    expect(out).toContain("skip spec (predicted enter spec)");
+  it("an end other than Done is compared as a divergence, never skipped", () => {
+    for (const end of ["failed", "rejected", "cancelled"] as const) {
+      const v = shadowVerdict(
+        SOFTWARE,
+        item(),
+        rows("intake:done", "triage:done", "spec:skipped", "build:failed"),
+        end,
+      );
+      expect(v.transitions.at(-1)).toMatchObject({ observed: `end ${end}`, agrees: false });
+      expect(v.divergences).toBe(1 + SHADOW_NOT_COMPARED.length);
+    }
   });
 
-  it("the foreman asking for a spec on a small item, and an attached PR's own stages", () => {
-    expect(
-      play(SOFTWARE, item({ specRequested: "require" }), [
-        { observed: [enter("triage")] },
-        { observed: [enter("spec")] },
-        { observed: [enter("build")] },
-      ]),
-    ).toEqual(["enter triage", "enter spec", "enter build"]);
-    expect(
-      play(ATTACHED_PR, item({ kind: "attached", size: "large" }), [
-        { observed: [enter("triage")] },
-        { observed: [skip("spec"), skip("build"), enter("verify")] },
-        { observed: [enter("merge")] },
-        { observed: [enter("done")] },
-      ]),
-    ).toEqual([
+  it("a divergence in stage order is recorded with what the reconciler would have done", () => {
+    const v = shadowVerdict(
+      SOFTWARE,
+      item({ size: "medium" }),
+      rows("intake:done", "triage:done", "spec:skipped", "build:done"),
+      "cancelled",
+    );
+    expect(said(v)).toContain("skip spec ≠ enter spec");
+  });
+
+  it("an attached PR's own stages", () => {
+    const v = shadowVerdict(
+      ATTACHED_PR,
+      item({ kind: "attached", size: "large" }),
+      rows(
+        "intake:done",
+        "triage:done",
+        "spec:skipped",
+        "build:skipped",
+        "verify:done",
+        "merge:done",
+        "done:done",
+      ),
+      "done",
+    );
+    expect(said(v)).toEqual([
       "enter triage",
       "skip spec",
       "skip build",
@@ -117,30 +149,5 @@ describe("shadowCompare", () => {
       "enter merge",
       "end done",
     ]);
-  });
-
-  it("slot steps aren't stages in today's history, so they aren't compared", () => {
-    const parsed = parseProjectPolicy(
-      JSON.stringify({
-        version: 1,
-        autonomyPolicy: "balanced",
-        workflows: [
-          {
-            name: "Gated",
-            slots: { afterSpec: [{ id: "design", kind: "gate", name: "Design" }] },
-            core: {},
-          },
-        ],
-        workflow: "Gated",
-      }),
-    );
-    if (!parsed.ok) throw new Error(parsed.error);
-    const def = compileProjectWorkflow(parsed.policy, "Gated");
-    expect(
-      play(def, item(), [
-        { observed: [enter("triage")] },
-        { observed: [skip("spec"), enter("build")] },
-      ]),
-    ).toEqual(["enter triage", "skip spec", "enter build"]);
   });
 });

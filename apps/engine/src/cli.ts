@@ -45,6 +45,7 @@ import { invokeDeps } from "./deps.ts";
 import {
   MOBILE_DEVICE_ACTOR,
   mobileCaller,
+  mobileNonceLimit,
   mobileSignInConflict,
   mobileSignInRoute,
   mobileTooOld,
@@ -191,6 +192,8 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (phoneSignIn) {
     return respond(async () => {
       const caller = await mobileCaller(request, env);
+      // The nonce's courtesy limit, at the edge: an over-limit caller never reaches D1.
+      if (phoneSignIn === "mobile.nonce") await mobileNonceLimit(env, caller);
       let r: Awaited<ReturnType<typeof run>>;
       try {
         r = await run(env, phoneSignIn, body, MOBILE_DEVICE_ACTOR, { surface: "mobile", caller });
