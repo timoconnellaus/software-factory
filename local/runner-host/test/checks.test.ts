@@ -1,6 +1,9 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { runSettings } from "@software-factory/harness-claude";
 import {
   CHECK_FAILURE_MAX,
   checkFailureMessage,
@@ -15,7 +18,9 @@ import {
   checkSandbox,
   checkSandboxEnv,
   checkSandboxSettings,
+  processesUnder,
   sandboxAvailable,
+  sandboxedExec,
   spawnCheck,
 } from "../src/check-sandbox.ts";
 import { checkLoop, type Exec, GuardTripped, runChecks } from "../src/checks.ts";
@@ -86,9 +91,70 @@ describe("a check process (ADR 0501)", () => {
     expect(r).toMatchObject({ exitCode: null, timedOut: true });
     expect(Date.now() - started).toBeLessThan(3_000);
   });
+
+  it("kills everything a check started once it ends, even when it exits 0: its group, then whatever left it", async () => {
+    const dir = await scratch();
+    const r = await spawnCheck(
+      [
+        "/bin/sh",
+        "-c",
+        // A loop in the group, and a daemon that left it (setpgrp) and holds stdout.
+        "(while :; do sleep 0.2; done) & perl -e 'setpgrp(0,0); sleep 60' & echo started",
+      ],
+      {
+        cwd: dir,
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        timeoutMs: 20_000,
+        reapUnder: dir,
+      },
+      never,
+    );
+    expect(r).toMatchObject({ exitCode: 0, timedOut: false, output: "started\n" });
+    expect(await processesUnder(dir)).toEqual([]);
+  });
+
+  it("counts only the sandbox child's report of the command's own exit", async () => {
+    const dir = await scratch();
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
+    // Stand-ins for ./check-sandbox-child.mjs: what it writes on fd 3, then its own exit.
+    const child = (report: string, exit = 0) =>
+      spawnCheck(
+        ["/bin/sh", "-c", `printf '%s\\n' '${report}' >&3; exit ${exit}`],
+        { cwd: dir, env, timeoutMs: 10_000, report: true },
+        never,
+      );
+    expect(await child('{"code":0}')).toMatchObject({ exitCode: 0 });
+    expect(await child('{"code":2}')).toMatchObject({ exitCode: 2 });
+    // srt's CLI would have exited 0 for these: a failure here.
+    expect(await child('{"signal":"SIGTERM"}')).toMatchObject({
+      exitCode: null,
+      output: expect.stringContaining("killed by SIGTERM"),
+    });
+    expect(await child('{"signal":"SIGINT"}')).toMatchObject({ exitCode: null });
+    // No report, or one that can't be attributed: a failure.
+    expect(await child("")).toMatchObject({ exitCode: null });
+    expect(await child("not json")).toMatchObject({ exitCode: null });
+    expect(await child('{"code":0}', 1)).toMatchObject({ exitCode: null });
+    // The sandbox couldn't start: not run, never a pass and never a fix round.
+    expect(await child('{"error":"no bwrap"}', 1)).toMatchObject({
+      exitCode: null,
+      notRun: expect.stringContaining("the sandbox could not start"),
+    });
+  });
 });
 
+/**
+ * Whether to run the real OS sandbox tests: where it is available, and always under
+ * SF_REQUIRE_SANDBOX (CI), so a runner without bubblewrap fails them instead of skipping.
+ */
+const requireSandbox = process.env.SF_REQUIRE_SANDBOX === "1";
+const realSandbox = requireSandbox || sandboxAvailable();
+
 describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
+  it.runIf(requireSandbox)("has the OS sandbox on this machine (required here)", () => {
+    expect(sandboxAvailable()).toBe(true);
+  });
+
   const j = job({
     harness: {
       id: "claude-code",
@@ -116,9 +182,21 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       ]),
     );
     expect(s.filesystem.allowRead).toEqual(["/t/sf-checks/job_1-x"]);
-    expect(s.filesystem.allowWrite).toEqual(["/t/sf-checks/job_1-x"]);
+    // Its own tree, home and temp: not the rest of its root (the host's empty tool dirs and git
+    // config, a later round's tree).
+    expect(s.filesystem.allowWrite).toEqual([
+      "/t/sf-checks/job_1-x/tree-0",
+      "/t/sf-checks/job_1-x/home",
+      "/t/sf-checks/job_1-x/tmp",
+    ]);
     expect(s.filesystem.denyWrite).toEqual(
-      expect.arrayContaining(["/Users/o/.ssh", "/runner/config", "/runner/runs"]),
+      expect.arrayContaining([
+        "/Users/o/.ssh",
+        "/runner/config",
+        "/runner/runs",
+        "/t/sf-checks/job_1-x/empty",
+        "/t/sf-checks/job_1-x/gitconfig",
+      ]),
     );
     expect(s.network.allowedDomains).toEqual(
       expect.arrayContaining(["registry.npmjs.org", "example.org"]),
@@ -153,7 +231,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
     expect(sandboxAvailable("win32")).toBe(false);
   });
 
-  it.runIf(sandboxAvailable())(
+  it.runIf(realSandbox)(
     "really confines a check: no reads of protected paths, no writes outside its tree, no network off the list",
     async () => {
       const outside = await scratch("sf-secret-");
@@ -184,6 +262,185 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       );
       expect(r.output).toContain("ok");
       expect(await readFile(join(dir, "here"), "utf8")).toBe("ok\n");
+    },
+    60_000,
+  );
+
+  /** A job's checks root in a scratch runner checks dir, and the real sandboxed exec for it. */
+  async function realCheck(protectPaths: string[] = []) {
+    const parent = await scratch("sf-checks-root-");
+    const root = join(parent, "job_1-x");
+    const dir = join(root, "tree-0");
+    await mkdir(dir, { recursive: true });
+    const sandbox = checkSandbox({ protectPaths });
+    if (!sandbox) throw new Error("no sandbox");
+    return { parent, root, dir, exec: sandbox(j, { root, dir }) };
+  }
+
+  it.runIf(realSandbox)(
+    "fails a check that prints a failure and signals itself or its shell (srt's CLI exits 0 there)",
+    async () => {
+      const { exec } = await realCheck();
+      const run = (cmd: string) => exec({ run: cmd, timeoutMs: 30_000 }, never);
+      expect(await run("echo 1 failing; kill -TERM $$")).toMatchObject({ exitCode: null });
+      expect(await run("echo 1 failing; kill -INT $$")).toMatchObject({ exitCode: null });
+      expect(
+        await run(`node -e "console.log('1 failing'); process.kill(process.pid, 'SIGTERM')"`),
+      ).toMatchObject({ exitCode: null });
+      // Nothing outside the sandbox can be signalled: the reporter above it survives.
+      const parent = await run("kill -TERM $PPID; echo still-reported; exit 4");
+      expect(parent).toMatchObject({
+        exitCode: 4,
+        output: expect.stringContaining("still-reported"),
+      });
+      expect(await run("echo fine")).toMatchObject({ exitCode: 0 });
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox)(
+    "leaves nothing running after a check: a background loop, a daemon that called setsid",
+    async () => {
+      const { root, dir, exec } = await realCheck();
+      const r = await exec(
+        {
+          run: [
+            "(while :; do echo tick > loop.txt; sleep 0.2; done) &",
+            `node -e "require('child_process').spawn('sleep', ['60'], { detached: true, stdio: 'ignore' }).unref()"`,
+            "echo left-them",
+          ].join("\n"),
+          timeoutMs: 30_000,
+        },
+        never,
+      );
+      expect(r).toMatchObject({ exitCode: 0, output: expect.stringContaining("left-them") });
+      expect(await processesUnder(root)).toEqual([]);
+      // The loop is dead: the file it kept writing no longer changes.
+      await rm(join(dir, "loop.txt"), { force: true });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await expect(readFile(join(dir, "loop.txt"), "utf8")).rejects.toThrow();
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox)(
+    "gives a check no settings to rewrite: none on disk, nothing writable in its root but its own dirs",
+    async () => {
+      const secret = await scratch("sf-secret-");
+      await writeFile(join(secret, "key"), "secret");
+      const { parent, root, exec } = await realCheck([secret]);
+      await writeFile(join(parent, "job_2-y"), "another job's");
+      // The first check tries everything a previous review used to switch the sandbox off: the
+      // settings file srt used to read (gone), the host's files in the root, another job's root,
+      // and a background loop that keeps trying after the check ends.
+      const first = await exec(
+        {
+          run: [
+            "ls ..",
+            "for f in ../srt-settings.json ../gitconfig ../empty/npmrc ../tree-1 ../../job_2-y; do echo x > $f && echo WROTE $f; done",
+            "(while :; do echo '{}' > ../srt-settings.json; sleep 0.1; done) &",
+            "echo done",
+          ].join("\n"),
+          timeoutMs: 30_000,
+        },
+        never,
+      );
+      expect(first.output).not.toMatch(/WROTE|^srt-settings/m);
+      expect(await readFile(join(parent, "job_2-y"), "utf8")).toBe("another job's");
+      // The next check is as confined as the first.
+      const next = await exec(
+        { run: `cat ${secret}/key && echo READ-PROTECTED; echo next`, timeoutMs: 30_000 },
+        never,
+      );
+      expect(next.output).not.toContain("READ-PROTECTED");
+      expect(next.output).toContain("next");
+      await expect(readFile(join(root, "srt-settings.json"), "utf8")).rejects.toThrow();
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox)(
+    "reaches no unix socket: the factory's tmux, Docker, the ssh agent (and on macOS no login keychain)",
+    async () => {
+      const { exec } = await realCheck();
+      // One we know is there, outside the check's root, and the real ones this machine has.
+      const own = await scratch("sf-sock-");
+      const server = createServer((c) => c.end("hello")).listen(join(own, "s.sock"));
+      cleanups.push(() => new Promise((r) => server.close(() => r())));
+      const uid = process.getuid?.() ?? 0;
+      const tmuxDirs = [`/private/tmp/tmux-${uid}`, `/tmp/tmux-${uid}`];
+      const tmux = (
+        await Promise.all(
+          tmuxDirs.map((d) =>
+            readdir(d)
+              .then((names) => names.map((n) => join(d, n)))
+              .catch(() => [] as string[]),
+          ),
+        )
+      ).flat();
+      const sockets = [
+        join(own, "s.sock"),
+        ...tmux,
+        "/var/run/docker.sock",
+        join(homedir(), ".docker/run/docker.sock"),
+        ...(process.env.SSH_AUTH_SOCK ? [process.env.SSH_AUTH_SOCK] : []),
+      ];
+      const probe = sockets
+        .map(
+          (s) =>
+            `node -e "require('net').connect(process.argv[1]).on('connect', () => { console.log('CONNECTED ' + process.argv[1]); process.exit(0) }).on('error', (e) => { console.log('refused ' + process.argv[1] + ' ' + e.code); process.exit(0) })" '${s}'`,
+        )
+        .join("\n");
+      const r = await exec({ run: probe, timeoutMs: 60_000 }, never);
+      expect(r.output).not.toContain("CONNECTED");
+      expect(r.output).toContain(`refused ${join(own, "s.sock")}`);
+      if (process.platform === "darwin") {
+        // securityd itself is reachable (the floor allows its mach service, as for the harness), but
+        // the owner's keychains are not on the check's list: their dir is denied.
+        const k = await exec({ run: "security list-keychains", timeoutMs: 30_000 }, never);
+        expect(k.output).not.toContain(join(homedir(), "Library/Keychains"));
+      }
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox)(
+    "keeps every agent's sandbox out of the runner's checks dir: another job's agent can't forge this job's tree",
+    async () => {
+      // A runner data dir outside the system temp dirs the harness lets commands write (as
+      // ~/.local/share/software-factory/runner is): here, beside this test.
+      const data = await mkdtemp(join(fileURLToPath(new URL(".", import.meta.url)), ".runner-"));
+      cleanups.push(() => rm(data, { recursive: true, force: true }));
+      const checksDir = join(data, "checks");
+      const victim = join(checksDir, "job_b-x", "tree-0");
+      await mkdir(victim, { recursive: true });
+      await writeFile(join(victim, "test.sh"), "original");
+      const worktree = await scratch("sf-agent-wt-");
+      const runDir = await scratch("sf-agent-run-");
+      // The harness's own settings for job A's agent, with the runner's protectPaths.
+      const settings = runSettings(j, { worktree, runDir, protectPaths: [checksDir] });
+      const sb = settings.sandbox;
+      if (!sb) throw new Error("no sandbox settings");
+      const r = await sandboxedExec(
+        {
+          network: { ...sb.network, deniedDomains: [], strictAllowlist: true },
+          filesystem: {
+            denyRead: sb.filesystem.denyRead.map((p) => p.replace(/^~/, homedir())),
+            allowRead: sb.filesystem.allowRead,
+            allowWrite: sb.filesystem.allowWrite,
+            denyWrite: sb.filesystem.denyWrite.map((p) => p.replace(/^~/, homedir())),
+          },
+        },
+        {
+          run: `echo forged > ${victim}/test.sh && echo WROTE; cat ${victim}/test.sh && echo READ; echo probe`,
+          timeoutMs: 30_000,
+        },
+        { cwd: worktree, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir() } },
+        never,
+      );
+      expect(r.output).toContain("probe");
+      expect(r.output).not.toMatch(/WROTE|READ/);
+      expect(await readFile(join(victim, "test.sh"), "utf8")).toBe("original");
     },
     60_000,
   );
@@ -350,7 +607,32 @@ describe("the host's checks (ADR 0501)", () => {
       continueSession,
     });
     expect([notRun.rounds, turns]).toEqual([0, 0]);
-    expect(notRun.final).toMatchObject([{ exitCode: null, logTail: NOT_RUN_NO_ISOLATION }]);
+    expect(notRun.final).toMatchObject([
+      { exitCode: null, logTail: NOT_RUN_NO_ISOLATION, notRun: "no isolated exec on this runner" },
+    ]);
+    // An exec that can't run this job's check (a job with no container on a container runner, a
+    // sandbox that couldn't start): "not run", never failed, and never a fix round.
+    const noContainer = await checkLoop({
+      ...loopBase(root),
+      checks,
+      exec: () => async () => ({
+        exitCode: null,
+        timedOut: false,
+        output: "",
+        notRun: "this job has no container",
+      }),
+      commit,
+      continueSession,
+    });
+    expect([noContainer.rounds, turns]).toEqual([0, 0]);
+    expect(noContainer.final).toMatchObject([
+      {
+        exitCode: null,
+        notRun: "this job has no container",
+        logTail: "not run: this job has no container",
+      },
+    ]);
+    expect(noContainer.notes.join("\n")).toMatch(/tests not run/);
   });
 
   it("keeps the failure message within one steer", () => {
@@ -367,6 +649,29 @@ describe("the host's checks (ADR 0501)", () => {
     const text = checkFailureMessage([long, { ...long, name: "lint" }], 1);
     expect(text.length).toBeLessThanOrEqual(CHECK_FAILURE_MAX);
     expect(text).toContain('Check "lint" failed');
+  });
+});
+
+describe("the clean tree export (ADR 0501)", () => {
+  it("runs no filter: an owner's smudge filter and an in-tree .gitattributes do nothing on the host", async () => {
+    const repo = await scratchRepo();
+    cleanups.push(repo.cleanup);
+    const wt = join(repo.root, "seed");
+    const pwned = join(repo.root, "PWNED");
+    // The owner's own config has a filter; the agent commits a .gitattributes that applies it.
+    git(wt, "config", "filter.evil.smudge", `touch ${pwned}; cat`);
+    git(wt, "config", "filter.evil.clean", "cat");
+    await writeFile(join(wt, ".gitattributes"), "* filter=evil\n");
+    await writeFile(join(wt, "a.txt"), "as committed\n");
+    git(wt, "add", ".");
+    git(wt, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "attrs");
+    await rm(pwned, { force: true });
+    const sha = git(wt, "rev-parse", "HEAD");
+    const dest = join(repo.root, "tree");
+    await mkdir(dest);
+    await repo.host.exportTree(wt, sha, dest, join(repo.root, "index"));
+    expect(await readFile(join(dest, "a.txt"), "utf8")).toBe("as committed\n");
+    await expect(readFile(pwned, "utf8")).rejects.toThrow();
   });
 });
 
@@ -458,6 +763,34 @@ describe("runJob with checks (ADR 0501)", () => {
       { name: "tests", exitCode: null, logTail: NOT_RUN_NO_ISOLATION, headSha: handback.headSha },
     ]);
     expect(handback.summary).toMatch(/not run/);
+  });
+
+  it("never runs a job's checks on this machine when the runner's jobs live elsewhere (a container, a sprite)", async () => {
+    for (const cap of ["container-isolation", "cloud-sandbox"]) {
+      const j = job({
+        checks: { commands: [{ name: "tests", run: "true", timeoutMs: 5_000 }], fixRounds: 2 },
+      });
+      const { cloud, adapter, run } = await setup(j, async () => [
+        { type: "session.ended" as const, outcome: "completed" as const },
+      ]);
+      const manifest = adapter.manifest.bind(adapter);
+      adapter.manifest = async () => {
+        const m = await manifest();
+        // `cloud-sandbox` is PR #74's capability for a sprite runner; not in this contract yet.
+        return { ...m, capabilities: [...m.capabilities, cap as (typeof m.capabilities)[number]] };
+      };
+      let hostRan = false;
+      await run({
+        checkSandbox: (jj, dirs) => {
+          hostRan = true;
+          return shellSandbox(jj, dirs);
+        },
+      });
+      expect(hostRan).toBe(false);
+      expect(handbackOf(cloud, j).checks).toMatchObject([
+        { name: "tests", exitCode: null, notRun: "no isolated exec on this runner" },
+      ]);
+    }
   });
 
   it("re-runs the git guards after the checks: a check that rewires git fails the job and nothing is pushed", async () => {

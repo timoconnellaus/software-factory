@@ -14,6 +14,7 @@ import {
   stagePool,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
+import { hostManifest } from "./checks.ts";
 import type { HostGit } from "./git.ts";
 import { type JobReport, type RunJobOptions, runJob } from "./job.ts";
 import { writeLiveJobs } from "./live-jobs.ts";
@@ -40,6 +41,8 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
    * ./check-sandbox.ts). Absent or null: checks are reported not run.
    */
   checkSandbox?: RunJobOptions<W, S>["checkSandbox"];
+  /** Where the jobs' check trees go (the runner's `paths().checksDir`, which harnesses deny). */
+  checksDir?: string;
   /** Tidies up after a crash: jobs this adapter still holds that the host isn't running. */
   reapOrphans?: (running: Set<string>) => Promise<string[]>;
   /** Runs once at start, after `reapOrphans` and before the first claim (the repo migration). */
@@ -129,7 +132,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private async turn(): Promise<void> {
     const every = this.options.heartbeatMs ?? 20_000;
     try {
-      const manifest = await this.options.adapter.manifest();
+      // The host runs the project's checks itself (ADR 0501): it declares `checks` for any adapter.
+      const manifest = hostManifest(await this.options.adapter.manifest());
       const capacity = await this.capacity();
       const selfUpdate = this.options.selfUpdate;
       // A registry that can't be read is reported as nothing rather than failing the heartbeat.
@@ -268,6 +272,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
       ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
       ...(this.options.checkSandbox ? { checkSandbox: this.options.checkSandbox } : {}),
+      ...(this.options.checksDir ? { checksDir: this.options.checksDir } : {}),
     })
       .then((report) => {
         this.log(

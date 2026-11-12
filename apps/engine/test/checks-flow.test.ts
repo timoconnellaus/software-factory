@@ -1,6 +1,7 @@
 // Spec 51 PR B (ADR 0501): the factory runs the project's checks itself. The build job carries
 // them, the host's results decide, a failure after the session's own fixes asks a person, and the
 // reviewer's word alone never proves a criterion.
+import type { Job } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import {
   all,
@@ -10,6 +11,7 @@ import {
   gateOpen,
   github,
   itemStatus,
+  MANIFEST,
   ok,
   runStage,
   triage,
@@ -60,7 +62,7 @@ const linkedPass = {
 };
 
 describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
-  it("puts the declared checks on the build job and decides from the host's results, marking linked criteria proven", async () => {
+  it("puts the declared checks on the build job and decides from the host's results; the reviewer's links prove nothing", async () => {
     const w = await world(CHECKS);
     const item = await create(w);
     await runStage(w, item.workItemId, "triage", () => triage("small"));
@@ -93,7 +95,11 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     );
     expect(packet?.verdict).toBe("pass");
     const sections = JSON.parse(packet?.sections ?? "{}");
-    expect(sections.proof).toMatchObject([{ proven: true, provenBy: ["tests"] }]);
+    // A small item has no approved spec: the reviewer linked "tests", which passed, but only a
+    // person's link (the spec's) proves a criterion.
+    expect(sections.proof).toMatchObject([
+      { proven: false, provenBy: [], notCounted: ["tests"], linkedBy: "reviewer" },
+    ]);
     expect(sections.executed.results).toMatchObject([
       { name: "lint", passed: true },
       { name: "tests", passed: true },
@@ -106,7 +112,7 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     expect(String(run?.output?.summary)).toContain(
       "### Checks run by the factory\n- lint: passed (`pnpm lint`, exit 0, 1 s)\n- tests: passed (`pnpm tests`, exit 0, 1 s)",
     );
-    expect(String(run?.output?.summary)).toContain("Criteria proven by an executed check: 1/1");
+    expect(String(run?.output?.summary)).toContain("Criteria proven by an executed check: 0/1");
   });
 
   it("refuses check results that didn't run on the run's head", async () => {
@@ -127,6 +133,108 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
       ),
     );
     expect(run.status).toBe("failed");
+    expect(
+      await all("SELECT name FROM core_check_results WHERE work_item_id = ?", item.workItemId),
+    ).toEqual([]);
+  });
+
+  // PR #79 adds v7's release wait (`version >= 7 && waitForRelease()`) and keeps v7; this PR is v8.
+  // Whichever lands first, a v8 item that was released without shaping (created queued, so already
+  // pulled) must go straight from triage to build: waitForRelease is a no-op for it. `state` is
+  // ignored until #79 lands, so this holds on both sides of that merge.
+  it("runs a v8 item released without shaping straight from triage to build (no release wait)", async () => {
+    const w = await world(CHECKS);
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Released, never shaped" },
+      w.human,
+    );
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    const job = await runStage(w, item.workItemId, "build", () => build());
+    expect(job.checks?.commands).toHaveLength(2);
+    const row = await first<{ workflow_version: number }>(
+      "SELECT workflow_version FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
+    expect(row?.workflow_version).toBe(8);
+  });
+
+  it("places a build that carries checks only on a runner that declares `checks`", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    const queued = await waitFor("a queued build job", () =>
+      first<{ requires: string }>(
+        "SELECT requires FROM core_jobs WHERE work_item_id = ? AND stage = 'build'",
+        item.workItemId,
+      ),
+    );
+    expect(JSON.parse(queued.requires)).toContain("checks");
+    // An older runner (no `checks`) would drop the field and hand back with none: it isn't offered.
+    const older = await ok<{ job: Job | null }>(
+      "job.claim",
+      {
+        claimId: uid("claim-"),
+        manifest: { ...MANIFEST, capabilities: ["hooks", "headless"] },
+        capacity: { max: 4, inUse: 0, accepting: true },
+      },
+      w.runnerActor,
+    );
+    expect(older.job).toBeNull();
+    const job = await runStage(w, item.workItemId, "build", () => build());
+    expect(job.checks?.commands).toHaveLength(2);
+  });
+
+  it("drops results on a commit that isn't on the head's history (an amended fix round), and keeps the run", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    const amended = "e".repeat(40);
+    await runStage(w, item.workItemId, "build", () => ({
+      ...build(),
+      checks: [
+        // Round 0 ran on a commit the fix round then amended: never pushed, not an ancestor.
+        { name: "lint", exitCode: 0, headSha: amended, round: 0 },
+        { name: "tests", exitCode: 1, headSha: amended, round: 0 },
+        { name: "lint", exitCode: 0, round: 1 },
+        { name: "tests", exitCode: 0, round: 1 },
+      ],
+    }));
+    const run = await waitFor("the build run handed back", () =>
+      first<{ status: string; head_sha: string }>(
+        "SELECT status, head_sha FROM core_runs WHERE work_item_id = ? AND stage = 'build' AND status = 'handed_back'",
+        item.workItemId,
+      ),
+    );
+    const rows = await all<{ name: string; head_sha: string }>(
+      "SELECT name, head_sha FROM core_check_results WHERE work_item_id = ? ORDER BY name",
+      item.workItemId,
+    );
+    expect(rows.map((r) => r.name)).toEqual(["lint", "tests"]);
+    expect(rows.every((r) => r.head_sha === run.head_sha)).toBe(true);
+  });
+
+  it("keeps a failed build's own reason, whatever its check results say", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(
+      w,
+      item.workItemId,
+      "build",
+      () => ({
+        outcome: "failed",
+        checks: [{ name: "tests", exitCode: 1, headSha: "f".repeat(40) }],
+      }),
+      { summary: "the session crashed" },
+    );
+    const run = await waitFor("the build run failed", () =>
+      first<{ status: string; error: string | null; summary: string | null }>(
+        "SELECT * FROM core_runs WHERE work_item_id = ? AND stage = 'build' AND status = 'failed'",
+        item.workItemId,
+      ),
+    );
+    expect(JSON.stringify(run)).not.toMatch(/check results|isn't an ancestor|not the run's head/);
     expect(
       await all("SELECT name FROM core_check_results WHERE work_item_id = ?", item.workItemId),
     ).toEqual([]);
@@ -169,7 +277,7 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     );
     expect(packet?.verdict).toBe("pass");
     expect(JSON.parse(String(packet?.sections)).proof).toMatchObject([
-      { proven: true, provenBy: ["tests"], linkedBy: "reviewer" },
+      { proven: false, notCounted: ["tests"], linkedBy: "reviewer" },
     ]);
   });
 

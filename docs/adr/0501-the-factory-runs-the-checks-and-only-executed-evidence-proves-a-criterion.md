@@ -81,3 +81,67 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 > 11. `continueSession` is off for stream-json sessions until tested against a real one (a failing
 >     check there goes to a person). A hung check settles on `exit` after the kill, even when a
 >     detached process holds its output, and the checks get a timer of their own.
+
+> Amended 2026-11-12, second review of PR #73 (exploits run against `srt` 0.0.81, and the hosts
+> session's review of the runner side). Changed:
+>
+> 1. **No sandbox settings on disk, and nothing a check started outlives it.** The settings went to
+>    `<root>/srt-settings.json`, which the check could write: a background loop left by one check
+>    rewrote them before `srt` read them for the next, which then read `~/.ssh`. Now the host runs
+>    its own small child (`check-sandbox-child.mjs`) that takes the settings and the command on stdin
+>    and calls `SandboxManager` directly: nothing is written. The check writes only its own tree,
+>    HOME and temp (not the rest of its root: the empty tool dirs and git config are denied
+>    explicitly, and a later round's tree is outside its `allowWrite`). After **every** check, however
+>    it ended, the host kills its whole process group and then anything still running with a cwd
+>    under the check's root (a daemon that called setsid). On Linux srt's bubblewrap already runs
+>    with `--new-session --die-with-parent --unshare-pid`.
+> 2. **The command's own exit, never srt's.** srt's CLI exits 0 when its command dies of SIGTERM or
+>    SIGINT, so a test that printed a failure and signalled itself passed. The child reports the
+>    command's own exit (its code, or the signal it died of) on a pipe only the host holds. A sandboxed
+>    process can signal only its own sandbox (macOS `signal (target same-sandbox)`, a pid namespace on
+>    Linux), so nothing in the check can stop that report. Any signal death, a missing or garbled
+>    report, or a child that exits non-zero is a failure. A sandbox that couldn't start is "not run".
+> 3. **The checks root is the runner's, not the system temp dir.** It was `<tmpdir>/sf-checks`, and
+>    every agent's sandbox may write `/tmp` and `/private/tmp`: with two jobs on one runner, job A's
+>    agent could rewrite job B's tree between the export and the check. It is now
+>    `~/.local/share/software-factory/runner/checks` (`paths().checksDir`; not under the state dir,
+>    which the floor denies, so a check could not read its own tree), and every harness's
+>    `protectPaths` names it. The export's index sits beside the job's root, outside the check's view.
+> 4. **`run.handBack` drops what it can't place.** A result on a SHA that isn't the head or one of
+>    its ancestors on GitHub (a fix round that amended or rebased, so that commit was never pushed)
+>    is dropped, never a reason to fail the run. A completed run's last round must still be on its
+>    head. A failed run keeps its own reason, whatever its check results say.
+> 5. **Only a person's link proves.** A criterion is Proven only through the approved spec's
+>    `[checks: …]` tag on that criterion, matched by its text, never by position (a reworded criterion
+>    inherits nothing, and a tag the reviewer writes on a criterion is not the spec's). The reviewer's
+>    links are shown as "linked by the reviewer, not proven", whatever passed.
+> 6. **A `checks` capability** (ADR 0520's compatibility rule). The host declares it for any adapter.
+>    A job that carries checks requires it, so it is never placed on an older runner, which would
+>    drop the field and hand back with none; `job.claim` also adds checks only for a runner that
+>    declares it.
+> 7. **"Not run" is its own result.** An executed check may carry `notRun` (why). A job with no
+>    container on a container runner, a runner whose jobs live elsewhere (a container, a sprite: the
+>    `container-isolation` or `cloud-sandbox` capability; the host's own sandbox is never used for
+>    them), or a sandbox that couldn't start: the check is reported not run, never failed, and never
+>    sent to a fix round it can't win. It still isn't a pass, so a person decides.
+> 8. **A container's install check runs offline.** The check container has no network, so a project
+>    on a container runner declares its install as `pnpm install --offline --frozen-lockfile`, which
+>    installs from the job's pnpm store (the session filled it). An online install fails there.
+> 9. **The export runs no filter.** It is the host's own git, outside every sandbox: attributes come
+>    from the empty tree, no attributes file is read, and every filter driver the checkout's config
+>    names is blanked, so an owner's smudge filter plus an in-tree `.gitattributes` can't run a
+>    command on the agent's content. A container check's output is streamed with a cap.
+> 10. **Tested for real, in CI too.** The sandbox tests run where `sandbox-exec` or bubblewrap and socat
+>     exist, and CI installs them and requires them (`SF_REQUIRE_SANDBOX`): a check that signals
+>     itself, one that leaves a loop and a setsid'd daemon, one that goes for the settings and the
+>     host's files, unix sockets (the factory's tmux socket, Docker's, the ssh agent's), and a harness
+>     command trying the checks dir.
+>
+> **Known limits**, inherited from the harness's floor (ADR 0270) and not changed here: a check can
+> read the owner's home outside the deny list and `/private/tmp`; it can connect to localhost ports
+> (the floor allows local binding for dev servers and the workerd test pool); it can reach github.com
+> and the other allowlisted hosts through the proxy; and on macOS it can talk to securityd (the floor
+> allows its mach service), though the owner's keychains are not on its list because their directory
+> is denied. A daemon that both leaves the check's process group and changes its cwd out of the
+> check's root before the check ends escapes the reaping on macOS; it stays inside the sandbox, which
+> lets it write only that check's own dirs, and the root is deleted when the job ends.

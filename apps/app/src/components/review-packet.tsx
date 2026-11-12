@@ -477,9 +477,11 @@ function CriterionEvidence({
       </div>
       {(proof.provenBy.length > 0 || proof.unproven.length > 0 || proof.notCounted.length > 0) && (
         <div className="text-muted-foreground text-xs" data-testid="criterion-linked-by">
-          {proof.linkedBy === "spec" ? "Linked in the approved spec" : "Linked by the reviewer"}
+          {proof.linkedBy === "spec"
+            ? "Linked in the approved spec"
+            : "Linked by the reviewer, not proven"}
           {proof.notCounted.length > 0 &&
-            ` · ${proof.notCounted.join(", ")} passed but can't prove a criterion (a static check, or CI the spec doesn't name)`}
+            ` · ${proof.notCounted.join(", ")} passed but can't prove a criterion (a static check, or a link the approved spec doesn't make)`}
         </div>
       )}
       <div>Reviewer's opinion: {evidence || "no evidence"}</div>

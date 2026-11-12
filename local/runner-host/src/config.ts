@@ -93,6 +93,12 @@ export interface Paths {
    * must read its own worktree (incident 2026-11-11-bootstrap #10).
    */
   worktreesDir: string;
+  /**
+   * The jobs' check trees (ADR 0501): `<checksDir>/<jobId>-…`. Not the system temp dir, which every
+   * agent may write, and not under the state dir, which the harness's floor denies (a check could
+   * then not read its own tree). Every harness's protectPaths names it, so no agent reaches it.
+   */
+  checksDir: string;
   /** Each run's attachments (`<attachmentsDir>/<jobId>`), which the agent reads: also not under state. */
   attachmentsDir: string;
   /**
@@ -137,6 +143,7 @@ export function paths(
     runsDir: join(stateDir, "runs"),
     worktreesDir: join(dataDir, "worktrees"),
     attachmentsDir: join(dataDir, "attachments"),
+    checksDir: join(dataDir, "checks"),
     containersDir: join(dataDir, "containers"),
     accountsFile: join(configDir, "accounts.json"),
     accountTokensDir: join(configDir, "accounts"),

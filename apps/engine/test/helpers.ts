@@ -35,7 +35,8 @@ export const MANIFEST: CapabilityManifest = {
   contractVersion: CONTRACT_VERSION,
   runnerKind: "test",
   harnesses: ["claude-code"],
-  capabilities: ["hooks", "headless"],
+  // `checks`: the test runner plays a host that runs the project's checks (ADR 0501).
+  capabilities: ["hooks", "headless", "checks"],
 };
 
 export const sha40 = (seed: string) =>
@@ -154,7 +155,7 @@ interface StageOut {
   result?: unknown;
   outcome?: "completed" | "failed";
   push?: Push;
-  checks?: { name: string; exitCode: number; command?: string; headSha?: string }[];
+  checks?: { name: string; exitCode: number; command?: string; headSha?: string; round?: number }[];
 }
 
 export async function runStage(
@@ -162,6 +163,7 @@ export async function runStage(
   workItemId: string,
   stage: Job["stage"],
   result: (job: Job) => Promise<StageOut> | StageOut,
+  options: { summary?: string } = {},
 ): Promise<Job> {
   await waitFor(`a queued ${stage} job`, () =>
     first(
@@ -190,6 +192,7 @@ export async function runStage(
       jobId: job.jobId,
       fencingToken: job.lease.fencingToken,
       outcome: out.outcome ?? "completed",
+      ...(options.summary ? { summary: options.summary } : {}),
       artifactIds: [],
       branch: job.branch,
       ...(headSha ? { headSha } : {}),
@@ -204,7 +207,7 @@ export async function runStage(
               durationMs: 1200,
               logTail: c.exitCode === 0 ? "ok" : `${c.name}: 1 failing`,
               headSha: c.headSha ?? headSha ?? String(job.context.headSha ?? ""),
-              round: 0,
+              round: c.round ?? 0,
             })),
           }
         : {}),

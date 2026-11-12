@@ -87,7 +87,7 @@ export interface CriterionProof {
   unproven: string[];
   /**
    * Linked names that passed but can't prove a criterion: a static check (lint, typecheck,
-   * format), or a CI check run the reviewer chose (only the approved spec may name CI).
+   * format), or any check the reviewer linked (only the approved spec's links prove, ADR 0501).
    */
   notCounted: string[];
   /** Who linked the checks: the human-approved spec, or the reviewer agent (ADR 0501). */
@@ -143,10 +143,12 @@ export interface ProofOptions {
 }
 
 /**
- * Marks each criterion Proven or Not proven (ADR 0501, amended 2026-11-12). The links come from the
- * approved spec when it tags the criterion, else from the reviewer (labelled as such). A linked name
- * counts when it is one of the factory's checks that passed on the SHA and isn't a static check;
- * a CI check run counts only when the spec names it. Never the reviewer's `met`.
+ * Marks each criterion Proven or Not proven (ADR 0501, amended 2026-11-12 twice). Only links a
+ * person approved prove: the approved spec's `[checks: …]` tag on that criterion, matched by its
+ * text (never by position, so a reworded criterion inherits nothing). A spec link counts when it is
+ * one of the factory's checks that passed on the SHA, or a green CI check run, and isn't a static
+ * check. The reviewer's own links are shown ("linked by the reviewer, not proven") and never prove,
+ * whatever passed. Never the reviewer's `met`.
  */
 export function proveCriteria(
   criteria: readonly CriterionInput[],
@@ -168,16 +170,14 @@ export function proveCriteria(
   const spec = (options.specCriteria ?? []).map(
     (c) => specCheckLinks(c) ?? { text: c, checks: null },
   );
-  const fromSpec = (criterion: string, i: number): string[] | null => {
-    const own = specCheckLinks(criterion);
-    const text = norm(own?.text ?? criterion);
-    const match =
-      spec.find((s) => norm(s.text) === text) ??
-      (spec.length === criteria.length ? spec[i] : undefined);
-    return match?.checks ?? null;
+  // By identity: the criterion's own text (without any tag the reviewer wrote on it) must be the
+  // spec's. A reviewer's tag never makes a link the spec's.
+  const fromSpec = (criterion: string): string[] | null => {
+    const text = norm(specCheckLinks(criterion)?.text ?? criterion);
+    return spec.find((s) => norm(s.text) === text)?.checks ?? null;
   };
-  return criteria.map((c, i) => {
-    const specLinks = fromSpec(c.criterion, i);
+  return criteria.map((c) => {
+    const specLinks = fromSpec(c.criterion);
     const linkedBy = specLinks ? "spec" : "reviewer";
     const linked = [...new Set((specLinks ?? c.checks ?? []).map((n) => n.trim()).filter(Boolean))];
     const provenBy: string[] = [];
@@ -185,13 +185,10 @@ export function proveCriteria(
     const notCounted: string[] = [];
     for (const n of linked) {
       const r = factory.get(key(n));
-      if (r?.passed) {
-        if (isStaticCheck(r.name, r.command)) notCounted.push(n);
-        else provenBy.push(n);
-      } else if (!r && ciGreen.has(key(n))) {
-        if (linkedBy === "spec" && !isStaticCheck(n)) provenBy.push(n);
-        else notCounted.push(n);
-      } else unproven.push(n);
+      const passed = r ? r.passed : ciGreen.has(key(n));
+      if (!passed) unproven.push(n);
+      else if (linkedBy === "spec" && !isStaticCheck(n, r?.command)) provenBy.push(n);
+      else notCounted.push(n);
     }
     return {
       criterion: c.criterion,

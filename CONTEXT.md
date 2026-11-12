@@ -207,9 +207,10 @@ person. Only a non-static check proves a criterion.
 _Avoid_: runner check (the agent's own report), CI
 
 **Proven**
-An acceptance criterion is **Proven** when a check it is linked to (a factory check or a CI check
-run) passed on the head SHA; otherwise it is **Not proven**, and the reviewer's reasoning is shown as
-opinion (ADR 0501).
+An acceptance criterion is **Proven** when a check the approved spec links it to (a factory check or
+a CI check run, `[checks: …]` on the criterion) passed on the head SHA; otherwise it is **Not
+proven**, and the reviewer's reasoning, and any checks the reviewer linked, are shown as opinion
+(ADR 0501).
 _Avoid_: met (the reviewer's judgement)
 
 **Tests intact**

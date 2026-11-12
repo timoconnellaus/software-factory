@@ -70,7 +70,7 @@ describe("executed checks and proof (pure)", () => {
       "factory",
     );
 
-  it("marks a criterion proven only by a linked behavioural check that passed, never by the reviewer's word", () => {
+  it("never marks a criterion proven on the reviewer's links or word, whatever passed", () => {
     const executed = executedChecks(
       SHA,
       ["tests", "lint", "e2e"],
@@ -90,7 +90,7 @@ describe("executed checks and proof (pure)", () => {
     expect(
       proof.map((p) => [p.criterion, p.proven, p.provenBy, p.unproven, p.notCounted, p.linkedBy]),
     ).toEqual([
-      ["A", true, ["tests"], [], [], "reviewer"],
+      ["A", false, [], [], ["tests"], "reviewer"],
       ["B", false, [], [], ["ci", "lint"], "reviewer"],
       ["C", false, [], [], [], "reviewer"],
       ["D", false, [], ["e2e", "docs"], [], "reviewer"],
@@ -115,20 +115,46 @@ describe("executed checks and proof (pure)", () => {
       ciWith("e2e"),
       { specCriteria: ["Dark mode persists [checks: e2e]", "Untagged"] },
     );
-    expect(proof.map((p) => [p.proven, p.provenBy, p.linkedBy])).toEqual([
-      [true, ["e2e"], "spec"],
-      [true, ["tests"], "reviewer"],
+    expect(proof.map((p) => [p.proven, p.provenBy, p.notCounted, p.linkedBy])).toEqual([
+      [true, ["e2e"], [], "spec"],
+      [false, [], ["tests"], "reviewer"],
+    ]);
+  });
+
+  it("matches criteria to the spec by their text, never by position", () => {
+    const executed = executedChecks(SHA, ["tests", "e2e"], [ran("tests", 0), ran("e2e", 0)]);
+    const proof = proveCriteria(
+      [
+        // Reworded by the reviewer: it inherits nothing from the spec's first criterion.
+        { criterion: "Dark mode is remembered", met: true, evidence: "x", checks: ["e2e"] },
+        // The spec's own text (case and a trailing stop aside), in another position.
+        { criterion: "the toggle switches the theme.", met: true, evidence: "x" },
+        // A tag the reviewer wrote on a criterion is not the spec's link.
+        { criterion: "Something new [checks: tests]", met: true, evidence: "x" },
+      ],
+      executed,
+      ciWith(),
+      {
+        specCriteria: [
+          "Dark mode persists [checks: e2e]",
+          "The toggle switches the theme [checks: tests, lint]",
+          "Something else",
+        ],
+      },
+    );
+    expect(proof.map((p) => [p.proven, p.provenBy, p.notCounted, p.linkedBy])).toEqual([
+      [false, [], ["e2e"], "reviewer"],
+      [true, ["tests"], [], "spec"],
+      [false, [], [], "reviewer"],
     ]);
   });
 
   it("marks proof weakened when the tests-intact guard found gate-file edits", () => {
     const executed = executedChecks(SHA, ["tests"], [ran("tests", 0)]);
-    const [p] = proveCriteria(
-      [{ criterion: "A", met: true, evidence: "x", checks: ["tests"] }],
-      executed,
-      ciWith(),
-      { gateFilesChanged: true },
-    );
+    const [p] = proveCriteria([{ criterion: "A", met: true, evidence: "x" }], executed, ciWith(), {
+      gateFilesChanged: true,
+      specCriteria: ["A [checks: tests]"],
+    });
     expect(p).toMatchObject({ proven: true, weakened: true });
   });
 
@@ -207,7 +233,7 @@ describe("executed checks and proof (pure)", () => {
       evidence: {
         ...reviewerFailing,
         checks: [],
-        criteria: [{ criterion: "A", met: true, evidence: "x", checks: ["tests"] }],
+        criteria: [{ criterion: "A", met: true, evidence: "x" }],
       },
       ci: green,
       files: [],
@@ -215,6 +241,7 @@ describe("executed checks and proof (pure)", () => {
       hostChecks: true,
       declaredChecks: ["tests"],
       checksRun: [ran("tests", 0)],
+      specCriteria: ["A [checks: tests]"],
     });
     const out = verifyCheckOutput({
       evidencePass: packet.evidencePass,

@@ -18,6 +18,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  type CapabilityManifest,
   type CheckCommand,
   checkFailureMessage,
   checkPassed,
@@ -26,7 +27,7 @@ import {
   type Job,
   type JobChecks,
   logTail,
-  NOT_RUN_NO_ISOLATION,
+  NO_ISOLATION,
   redactSecrets,
   type SessionOutcome,
 } from "@software-factory/runner-contract";
@@ -55,7 +56,7 @@ export async function runChecks(
     const started = Date.now();
     let result: ExecResult;
     if (!exec) {
-      result = { exitCode: null, timedOut: false, output: NOT_RUN_NO_ISOLATION };
+      result = { exitCode: null, timedOut: false, output: "", notRun: NO_ISOLATION };
     } else {
       try {
         result = await exec({ run: c.run, timeoutMs: c.timeoutMs }, signal);
@@ -67,15 +68,22 @@ export async function runChecks(
         };
       }
     }
+    const notRun = result.notRun?.slice(0, 300);
     out.push({
       name: c.name,
       command: c.run,
-      exitCode: result.exitCode,
-      timedOut: result.timedOut,
+      exitCode: notRun ? null : result.exitCode,
+      timedOut: notRun ? false : result.timedOut,
       durationMs: Date.now() - started,
-      logTail: logTail(redactSecrets(result.output, secrets)),
+      logTail: logTail(
+        redactSecrets(
+          notRun ? `not run: ${notRun}\n${result.output}`.trim() : result.output,
+          secrets,
+        ),
+      ),
       headSha,
       round,
+      ...(notRun ? { notRun } : {}),
     });
   }
   return out;
@@ -124,7 +132,7 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
   const { checks, signal } = options;
   const results: ExecutedCheck[] = [];
   const notes: string[] = [];
-  if (!options.exec) notes.push(`the checks were not run: ${NOT_RUN_NO_ISOLATION.slice(9)}`);
+  if (!options.exec) notes.push(`the checks were not run: ${NO_ISOLATION}`);
   for (let round = 0; ; round++) {
     // The session (or a fix round) ran code in the worktree: guard before the host's git.
     await options.guard(round === 0 ? "after the session" : `after fix round ${round}`);
@@ -151,14 +159,18 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
     results.push(...ran);
     const failed = ran.filter((c) => !checkPassed(c));
     const summary = `checks on ${head.slice(0, 7)}${round ? ` (fix round ${round})` : ""}: ${ran
-      .map((c) => `${c.name} ${checkPassed(c) ? "passed" : options.exec ? "failed" : "not run"}`)
+      .map((c) => `${c.name} ${checkPassed(c) ? "passed" : c.notRun ? "not run" : "failed"}`)
       .join(", ")}`;
     notes.push(summary);
     options.log?.(summary);
     const end = { results, final: ran, head, rounds: round, notes };
     if (failed.length === 0 || signal.aborted) return end;
-    // Nothing a session can fix: a person decides.
-    if (!options.exec) return end;
+    // Nothing a session can fix: a check that was not run (no isolation here, no container, a
+    // sandbox that couldn't start) goes to a person, never to a fix round it can't win.
+    if (failed.some((c) => c.notRun)) {
+      notes.push("a check was not run on this runner: a person decides");
+      return end;
+    }
     if (round >= checks.fixRounds) {
       notes.push(`the checks still fail after ${round} fix round(s): a person decides`);
       return end;
@@ -176,6 +188,16 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
       return end;
     }
   }
+}
+
+/**
+ * The adapter's manifest with what this host adds itself: `checks` (ADR 0501), since the host, not
+ * the adapter, runs them (reporting "not run" where it has no isolated exec).
+ */
+export function hostManifest(manifest: CapabilityManifest): CapabilityManifest {
+  return manifest.capabilities.includes("checks")
+    ? manifest
+    : { ...manifest, capabilities: [...manifest.capabilities, "checks"] };
 }
 
 /** Whether a job carries checks for the host to run. */

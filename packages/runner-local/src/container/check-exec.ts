@@ -93,6 +93,8 @@ export async function execInCheckContainer(
       // The CLI's own timeout is ours plus slack: the timer above decides.
       timeoutMs: command.timeoutMs + 30_000,
       signal: stop.signal,
+      // Streamed with a cap: a check that prints gigabytes keeps only its tail (ADR 0501).
+      keepTail: OUTPUT_MAX,
     });
     const output = `${r.stdout}${r.stderr}`;
     return {

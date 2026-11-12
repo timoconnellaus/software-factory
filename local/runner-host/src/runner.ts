@@ -146,7 +146,8 @@ export function buildRunner(
     attachmentsDir: dirs.attachmentsDir,
     startPoint: (job, checkout) => git.startPoint(job, checkout),
     // The harness must not read the runner's key, its other runs, or the clones' git internals.
-    protectPaths: [dirs.configDir, dirs.runsDir, dirs.reposDir],
+    // ADR 0501: nor the jobs' check trees (another job's agent could forge this job's evidence).
+    protectPaths: [dirs.configDir, dirs.runsDir, dirs.reposDir, dirs.checksDir],
     identity,
     ...(config.capabilities ? { capabilities: config.capabilities } : {}),
     // tmux (default) or a stream-json session shown as a chat (ADR 0450).
@@ -184,18 +185,22 @@ export function buildRunner(
     maxConcurrent: config.maxConcurrent,
     maxLight: config.maxLight,
     // ADR 0501: a job without a container runs its checks under the host's OS sandbox, never as the
-    // owner; none of the runner's own dirs or the owner's checkouts are readable there.
-    checkSandbox: containers
-      ? null
-      : checkSandbox({
-          protectPaths: [
-            dirs.configDir,
-            dirs.runsDir,
-            dirs.reposDir,
-            dirs.worktreesDir,
-            ...checkoutDirs(config),
-          ],
-        }),
+    // owner; none of the runner's own dirs or the owner's checkouts are readable there. Only for the
+    // default isolation: a container runner checks in containers, and any other (a sprite per job)
+    // never runs a job's checks on this machine (they are reported not run).
+    checkSandbox:
+      (config.isolation ?? "sandbox") !== "sandbox"
+        ? null
+        : checkSandbox({
+            protectPaths: [
+              dirs.configDir,
+              dirs.runsDir,
+              dirs.reposDir,
+              dirs.worktreesDir,
+              ...checkoutDirs(config),
+            ],
+          }),
+    checksDir: dirs.checksDir,
     heartbeatMs: config.heartbeatMs,
     reapOrphans: async (running) => {
       // Container jobs first, with plain file operations: their job repos are never touched by git.

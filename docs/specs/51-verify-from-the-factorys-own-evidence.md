@@ -55,8 +55,12 @@ commands it ran on the head SHA, and CI. The reviewer's opinion stays, labelled 
   check on a **clean copy of the commit** (no ignored files, no git dir) **through the runner
   adapter's `exec`** (a container runner runs them in a check container), else under the host's OS
   sandbox with the harness's floor; with neither, each check is reported not run (ADR 0501,
-  amended 2026-11-12). The project declares its install as a check. Each
-  result is `{ name, command, exitCode, durationMs, logTail, headSha }` (log tail ≤ 8 KB).
+  amended 2026-11-12). The project declares its install as a check (on a container runner, whose
+  check container has no network, `pnpm install --offline --frozen-lockfile` against the job's
+  store). Each result is `{ name, command, exitCode, durationMs, logTail, headSha }` (log tail
+  ≤ 8 KB), or **not run** with why (`notRun`: no isolation here, a job with no container, a sandbox
+  that couldn't start), which never passes and never goes to a fix round. Only a runner that
+  declares the `checks` capability is given a job that carries checks (ADR 0520's rule).
 - **A failure goes back to the same session.** When a check fails and the adapter can steer, the
   host types the failure (command, exit code, log tail) into the same build session, waits for that
   turn to end, and runs the checks again: at most `retryLimit` rounds. Then it pushes and hands
@@ -70,13 +74,14 @@ commands it ran on the head SHA, and CI. The reviewer's opinion stays, labelled 
 - **The verdict** (`reviewPacket.record`) uses the executed results for the head SHA, never the
   agent's report of checks: every declared check must have a passing result on the SHA, and CI must
   be green. A project with no declared checks is a warning in the packet.
-- **Proven criteria.** The reviewer maps each criterion to check names (`checks: [...]`, executed
-  check names or CI check run names), or the approved spec does (`[checks: …]` on a criterion), which wins. A
-  criterion is **Proven** only when a linked executed check passed on the head SHA (not a static
-  check like lint or typecheck; a CI check run only when the spec names it), marked weakened when
-  the tests-intact guard found gate-file edits; otherwise **Not proven**, with the reviewer's reasoning
-  shown as opinion. The reviewer can't mark a criterion proven on its own say-so. A criterion the
-  reviewer judges unmet still fails the verdict.
+- **Proven criteria.** The approved spec links a criterion to check names (`[checks: …]` on it:
+  executed check names or CI check run names), matched to the reviewer's criteria by text, never by
+  position. A criterion is **Proven** only when a spec-linked check passed on the head SHA (not a
+  static check like lint or typecheck), marked weakened when the tests-intact guard found gate-file
+  edits; otherwise **Not proven**, with the reviewer's reasoning shown as opinion. The reviewer may
+  link checks too (`checks: [...]`), shown as "linked by the reviewer, not proven": the reviewer can't
+  mark a criterion proven on its own say-so or its own links. A criterion the reviewer judges unmet
+  still fails the verdict.
 - **`factory/verify`** reflects the executed results: its summary lists each check's result and
   the proven count, and it fails when a declared check failed or didn't run on the SHA.
 - **The app's review packet** shows a **Checks run by the factory** section (each check, exit code,

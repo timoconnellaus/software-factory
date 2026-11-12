@@ -447,9 +447,17 @@ export const jobEnqueue = defineOperation({
   output: z.object({ jobId: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const requires = [
+    const requires: Capability[] = [
       ...new Set([...(ctx.scope.policy?.requires[input.stage] ?? []), ...input.agentRequires]),
     ];
+    // A job that will carry the project's checks goes only to a runner that runs them (ADR 0501,
+    // the compatibility rule of ADR 0520): an older one would hand back with none.
+    if (
+      jobChecks(ctx.scope.policy ?? null, w, input.stage).checks &&
+      !requires.includes("checks")
+    ) {
+      requires.push("checks");
+    }
     const id = newId("job");
     ctx.write(
       ctx.db.insertInto("core_jobs").values({
@@ -709,6 +717,8 @@ async function buildJob(
   item: WorkItemRow,
   project: ProjectRow,
   leaseExpiresAt: string,
+  /** The claiming runner's capabilities: checks go only to one that declares `checks`. */
+  runnerCaps: readonly string[],
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
   // The item's repository (ADR 0490); placementRefusal already checked there is one.
@@ -757,7 +767,7 @@ async function buildJob(
     ...(job.stage === "planning" && planning ? { planning } : {}),
     requires: parseJson<Capability[]>(job.requires, []),
     limits: { sessionTimeoutMs: job.session_timeout_ms },
-    ...jobChecks(policy, item, job.stage),
+    ...(runnerCaps.includes("checks") ? jobChecks(policy, item, job.stage) : {}),
     lease: { fencingToken: run.fencing_token, expiresAt: leaseExpiresAt },
   };
 }
@@ -832,7 +842,17 @@ export const jobClaim = defineOperation({
         .select("expires_at")
         .where("work_item_id", "=", item.id)
         .executeTakeFirst();
-      return { job: await buildJob(ctx, prior, run, item, project, lease?.expires_at ?? ctx.now) };
+      return {
+        job: await buildJob(
+          ctx,
+          prior,
+          run,
+          item,
+          project,
+          lease?.expires_at ?? ctx.now,
+          input.manifest.capabilities,
+        ),
+      };
     }
 
     const room = await freePools(ctx, current, input.capacity);
@@ -1000,6 +1020,7 @@ export const jobClaim = defineOperation({
           item,
           project,
           expiresAt,
+          input.manifest.capabilities,
         ),
       };
     }
@@ -1262,13 +1283,15 @@ export const runHandBack = defineOperation({
     }
     const result = input.result === undefined ? null : JSON.stringify(input.result);
     if (result && result.length > MAX_RESULT) return fail("result too large");
-    // The factory's own check results (ADR 0501). They're only evidence for the run's own head: the
-    // last round must have run on it, and every earlier round on an ancestor of it (GitHub decides).
-    const checks = input.checks.map((c) => ({ ...c, logTail: redactSecrets(c.logTail) }));
+    // The factory's own check results (ADR 0501). They're only evidence for the run's own head: a
+    // completed run's last round must have run on it, and a result on any other SHA is kept only when
+    // that SHA is an ancestor of the head (GitHub decides). One that isn't (a fix round amended or
+    // rebased, so the commit was never pushed) is dropped, never a reason to fail the run. A run that
+    // failed keeps its own reason: its results are stored where they can be placed, or dropped.
+    let checks = input.checks.map((c) => ({ ...c, logTail: redactSecrets(c.logTail) }));
+    const dropped: string[] = [];
     if (checks.length > 0) {
-      const project = ctx.scope.project;
-      if (!project) throw new OperationError("not_found", "no project");
-      const repo = await repoRef(ctx, project);
+      const repo = await repoRef(ctx, requireRepository(ctx));
       // A build's head is the one it pushed (checked on GitHub above); a verify job's is the head
       // the Workflow asked it to verify (its context), never what the runner says.
       const jobRow = await ctx.db
@@ -1279,23 +1302,32 @@ export const runHandBack = defineOperation({
       const asked = parseJson<{ headSha?: unknown }>(jobRow?.context, {}).headSha;
       const head =
         run.stage === "build" ? (input.headSha ?? null) : typeof asked === "string" ? asked : null;
-      if (!head) return fail("check results without a head they ran on");
-      const last = Math.max(...checks.map((c) => c.round));
-      const off = checks.find((c) => c.round === last && c.headSha !== head);
-      if (off) {
-        return fail(
-          `check ${off.name} ran on ${off.headSha.slice(0, 7)}, not the run's head ${head.slice(0, 7)}`,
-        );
-      }
-      for (const earlier of new Set(
-        checks.filter((c) => c.headSha !== head).map((c) => c.headSha),
-      )) {
-        const rel = await ctx.services.github.compareCommits(repo, earlier, head).catch(() => null);
-        if (rel?.behindBy !== 0) {
+      const completed = input.outcome === "completed";
+      if (!head) {
+        // No head to place them on (a failed build that pushed nothing): nothing is stored.
+        dropped.push(...checks.map((c) => `${c.name}@${c.headSha.slice(0, 7)}`));
+        checks = [];
+      } else {
+        const last = Math.max(...checks.map((c) => c.round));
+        const off = checks.find((c) => c.round === last && c.headSha !== head);
+        if (off && completed) {
           return fail(
-            `check results on ${earlier.slice(0, 7)}, which isn't an ancestor of ${head.slice(0, 7)}`,
+            `check ${off.name} ran on ${off.headSha.slice(0, 7)}, not the run's head ${head.slice(0, 7)}`,
           );
         }
+        const placed = new Set([head]);
+        for (const other of new Set(
+          checks.filter((c) => c.headSha !== head).map((c) => c.headSha),
+        )) {
+          const rel = await ctx.services.github.compareCommits(repo, other, head).catch(() => null);
+          if (rel?.behindBy === 0) placed.add(other);
+        }
+        dropped.push(
+          ...checks
+            .filter((c) => !placed.has(c.headSha))
+            .map((c) => `${c.name}@${c.headSha.slice(0, 7)}`),
+        );
+        checks = checks.filter((c) => placed.has(c.headSha));
       }
     }
     // Whatever the outcome: a failure is evidence too. A later round on the same SHA replaces a
@@ -1318,11 +1350,13 @@ export const runHandBack = defineOperation({
           .onConflict((oc) => oc.columns(["work_item_id", "head_sha", "name"]).doUpdateSet(row)),
       );
     }
-    if (checks.length) {
+    if (checks.length || dropped.length) {
       ctx.change({
         entity: "check_results",
         id: run.id,
         after: {
+          // Results on a commit that isn't on the head's history: not stored (ADR 0501).
+          ...(dropped.length ? { dropped } : {}),
           checks: checks.map((c) => ({
             name: c.name,
             headSha: c.headSha,

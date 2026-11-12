@@ -7,7 +7,6 @@
 // Any channel call refused with 409 `fenced` or `killed`, or a cancel command from the heartbeat,
 // stops the session at once; a fenced run hands nothing back and pushes nothing (ADR 0035).
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
@@ -34,6 +33,7 @@ import {
 } from "@software-factory/runner-contract";
 import type { CheckDirs } from "./check-sandbox.ts";
 import { checkLoop, type Exec, GuardTripped, hasChecks } from "./checks.ts";
+import { paths } from "./config.ts";
 import { assertPushable, type HostGit, revokeToken } from "./git.ts";
 import { type RunningRelay, startPlanningRelay } from "./planning-relay.ts";
 import { type Connect, terminalLoop } from "./terminal.ts";
@@ -256,7 +256,12 @@ export interface RunJobOptions<W extends WorkspaceHandle, S extends SessionHandl
    * the adapter has no `exec` of its own. Absent or null: checks are reported not run.
    */
   checkSandbox?: ((job: Job, dirs: CheckDirs) => Exec) | null;
-  /** Where the jobs' clean check trees go (default: `<tmpdir>/sf-checks`). */
+  /**
+   * Where the jobs' clean check trees go (default: the runner's `paths().checksDir`). Never the
+   * system temp dir: every agent's sandbox may write there, so another job's agent could rewrite
+   * this job's tree between the export and the check. The runner's checks dir is in every
+   * harness's protectPaths (read and write denied).
+   */
   checksDir?: string;
 }
 
@@ -361,13 +366,17 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     const checks = job.checks;
     if (!checks) throw new Error("the job has no checks");
     if (!checksRoot) {
-      const parent = options.checksDir ?? join(tmpdir(), "sf-checks");
+      const parent = options.checksDir ?? paths().checksDir;
       await mkdir(parent, { recursive: true, mode: 0o700 });
       checksRoot = await realpath(await mkdtemp(join(parent, `${job.jobId}-`)));
     }
     const root = checksRoot;
     const adapterExec = adapter.exec?.bind(adapter);
-    const sandbox = options.checkSandbox;
+    // The host's own sandbox only for a runner whose jobs run on this machine: never for one whose
+    // jobs live elsewhere (a container, a cloud sandbox), whose code must not run here.
+    const caps: readonly string[] = (await adapter.manifest()).capabilities;
+    const remote = caps.includes("container-isolation") || caps.includes("cloud-sandbox");
+    const sandbox = remote ? null : options.checkSandbox;
     const exec = adapterExec
       ? (dir: string): Exec =>
           (command, s) =>
@@ -388,7 +397,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         }
         return git.headSha(ws.path);
       },
-      exportTree: (sha, dir) => git.exportTree(ws.path, sha, dir, join(root, "index")),
+      // The export's index is the host's: beside the root, where no check can read or write it.
+      exportTree: (sha, dir) => git.exportTree(ws.path, sha, dir, `${root}.index`),
       root,
       guard: (when) => guard(ws, when),
       continueSession:
@@ -785,7 +795,10 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     clearTimeout(timer);
     clearInterval(flusher);
     await relay?.close().catch(() => {});
-    if (checksRoot) await rm(checksRoot, { recursive: true, force: true }).catch(() => {});
+    if (checksRoot) {
+      await rm(checksRoot, { recursive: true, force: true }).catch(() => {});
+      await rm(`${checksRoot}.index`, { force: true }).catch(() => {});
+    }
     await adapter.release(job, workspace, session).catch((err) => {
       error = `${error ? `${error}; ` : ""}release: ${err instanceof Error ? err.message : err}`;
     });

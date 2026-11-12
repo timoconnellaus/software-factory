@@ -48,9 +48,17 @@ While it has room it claims jobs; a retried claim reuses its `claimId`. For each
    session's turn, it commits the leftovers and runs each check on a **clean copy of that commit**
    (a throwaway index and `checkout-index`: no ignored files, no git dir), through the adapter's
    `exec` (a container job: a check container with no network or credential), else under the OS
-   sandbox with the harness's floor (`src/check-sandbox.ts`: `srt` with the harness's deny lists, a
-   temporary HOME and the job's network allowlist). With neither it runs nothing and reports each
-   check "not run". A failure is typed into the same session (the command, exit code and log tail,
+   sandbox with the harness's floor (`src/check-sandbox.ts`: srt's `SandboxManager` through
+   `src/check-sandbox-child.mjs`, with the harness's deny lists, a temporary HOME and the job's
+   network allowlist; the settings never touch disk, the command's own exit decides and a signal
+   death fails, and after every check its process group and anything left with a cwd under its root
+   are killed). The trees live in the runner's checks dir (`~/.local/share/software-factory/runner/
+   checks`), which every agent's sandbox denies. With neither, or for a job with no container on a
+   container runner, or where the sandbox can't start, it runs nothing and reports the check
+   **not run** (never failed, never a fix round). On a container runner the check container has no
+   network: declare the install check as `pnpm install --offline --frozen-lockfile`, which installs
+   from the job's pnpm store. The host declares the `checks` capability, so only it gets jobs that
+   carry checks. A failure is typed into the same session (the command, exit code and log tail,
    one steer) and the fix checked again, up to `fixRounds`. Before any host git after the session,
    a check or a fix round, the git config and the adapter's `checkWorkspace` are checked again. An
    attached PR's verify job runs them once, on the PR's head, before its reviewer session. The

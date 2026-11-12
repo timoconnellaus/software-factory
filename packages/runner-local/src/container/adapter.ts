@@ -641,7 +641,11 @@ export function createContainerRunner(
     // 0501). No `continueSession`: the agent's container stops when its turn ends, so a failing
     // check goes to a person rather than back into the session.
     async exec(_job, workspace, command, signal) {
-      if (!isContainer(workspace)) throw new Error("this job has no container to run checks in");
+      // A job that runs without a container here (never on the host's own shell): "not run", so a
+      // person decides, never a failed check and a fix round it can't win.
+      if (!isContainer(workspace)) {
+        return { exitCode: null, timedOut: false, output: "", notRun: "this job has no container" };
+      }
       const { pnpmStore } = jobDirs(dirname(workspace.jobRoot), workspace.name);
       return execInCheckContainer(
         runtime,

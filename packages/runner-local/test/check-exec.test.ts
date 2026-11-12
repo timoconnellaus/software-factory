@@ -7,7 +7,7 @@ import {
   dockerRunArgs,
   execInCheckContainer,
 } from "../src/container/index.ts";
-import type { Exec } from "../src/exec.ts";
+import { type Exec, nodeExec } from "../src/exec.ts";
 
 const agent: ContainerSpec = {
   name: "sf-job-1-agent",
@@ -102,5 +102,33 @@ describe("checks in a container (ADR 0501)", () => {
     );
     expect(out).toMatchObject({ exitCode: null, timedOut: true });
     expect(removed).toEqual([expect.stringMatching(/^sf-job-1-agent-check-\d+$/)]);
+  });
+
+  it("streams a check's output with a cap rather than buffering it all", async () => {
+    let asked: Parameters<Exec>[2];
+    const exec: Exec = async (_bin, _args, options) => {
+      asked = options;
+      return { stdout: "", stderr: "", code: 0 };
+    };
+    await execInCheckContainer(
+      runtime([]),
+      exec,
+      agent,
+      { run: "pnpm test", dir: "/t/tree-0", timeoutMs: 1_000 },
+      new AbortController().signal,
+    );
+    expect(asked?.keepTail).toBeGreaterThan(0);
+    // The real exec keeps only the tail of each stream, however much is printed.
+    const big = await nodeExec(
+      "/bin/sh",
+      [
+        "-c",
+        "i=0; while [ $i -lt 2000 ]; do printf '%0100d\\n' $i; i=$((i+1)); done; echo END; exit 3",
+      ],
+      { keepTail: 1_000 },
+    );
+    expect(big.code).toBe(3);
+    expect(big.stdout.length).toBeLessThanOrEqual(1_000);
+    expect(big.stdout.endsWith("END\n")).toBe(true);
   });
 });

@@ -49,6 +49,11 @@ export const executedCheckSchema = z.object({
   headSha: z.string().regex(/^[0-9a-f]{40}$/),
   /** Which fix round this result is from (0 = before any fix). */
   round: z.number().int().min(0).max(10).default(0),
+  /**
+   * Why the host did not run it (no isolated exec here, a job with no container, the sandbox could
+   * not start): never a pass, never a failure a fix round could win. Optional and additive.
+   */
+  notRun: z.string().max(300).optional(),
 });
 export type ExecutedCheck = z.infer<typeof executedCheckSchema>;
 
@@ -62,6 +67,9 @@ export const checkPassed = (c: Pick<ExecutedCheck, "exitCode" | "timedOut">) =>
  * verdict can't pass on it and a person is asked (ADR 0501, amended 2026-11-12).
  */
 export const NOT_RUN_NO_ISOLATION = "not run: no isolated exec on this runner";
+
+/** The `notRun` reason for a runner with no isolated exec. */
+export const NO_ISOLATION = NOT_RUN_NO_ISOLATION.slice("not run: ".length);
 
 /** Token shapes a log tail may carry (a test that dumps its env), each with what replaces it. */
 const SECRET_SHAPES: readonly [RegExp, string][] = [

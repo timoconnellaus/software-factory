@@ -62,6 +62,12 @@ export const CAPABILITIES = [
   "chat",
   "container-isolation",
   "terminal",
+  /**
+   * The runner host runs the project's checks a job carries and reports them on the hand-back
+   * (ADR 0501). A job with checks is placed only on a runner that declares it (ADR 0520's
+   * compatibility rule): an older runner would drop the field and hand back with none.
+   */
+  "checks",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -313,6 +319,11 @@ export interface ExecResult {
   timedOut: boolean;
   /** stdout and stderr interleaved; the host keeps only the tail. */
   output: string;
+  /**
+   * Set when the command was not run at all, with why (a job with no container, a sandbox that
+   * could not start). Reported "not run": never a pass, and never sent to a fix round (ADR 0501).
+   */
+  notRun?: string;
 }
 
 /** What the host hands `openTerminal` (ADR 0440). */

@@ -27,6 +27,12 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The OS sandbox the runner host runs a project's checks in (ADR 0501): srt needs bubblewrap
+      # and socat on Linux, and Ubuntu 24.04 restricts the unprivileged user namespaces bwrap uses.
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       # Turborepo's local cache (.turbo/cache), keyed by commit and restored from the newest
       # earlier entry, so unchanged packages replay their typecheck and test results.
@@ -40,6 +46,11 @@ jobs:
       - run: pnpm typecheck
       # Capped like local runs (docs/parallel-work.md): workerd tests are CPU-heavy.
       - run: pnpm test --concurrency=2
+      # The real check sandbox, outside Turborepo's cache (a cached result would hide a runner
+      # without bubblewrap), and required: SF_REQUIRE_SANDBOX fails the tests where it can't run.
+      - run: pnpm --filter @software-factory/runner-host exec vitest run test/checks.test.ts
+        env:
+          SF_REQUIRE_SANDBOX: "1"
       # The deploy scripts and the repo guards (model ids, runner imports) aren't a workspace
       # package; their tests run on Node directly.
       - run: node --test "scripts/*/*.test.ts"
