@@ -36,12 +36,11 @@ function play(
     if (open >= 0) rows[open] = { ...(rows[open] as StageRow), status: s.closeAs ?? "done" };
     for (const c of shadowCompare(def, facts, rows, s.observed))
       out.push(`${c.observed}${c.agrees ? "" : ` (predicted ${c.predicted})`}`);
-    for (const t of s.observed)
-      rows.push(
-        t.kind === "skip"
-          ? { stage: t.stage, status: "skipped" }
-          : { stage: t.stage, status: t.stage === "done" ? "done" : "active" },
-      );
+    for (const t of s.observed) {
+      if (t.kind === "end") rows.push({ stage: "done", status: "done" });
+      else if (t.kind === "skip") rows.push({ stage: t.stage, status: "skipped" });
+      else rows.push({ stage: t.stage, status: t.stage === "done" ? "done" : "active" });
+    }
   }
   return out;
 }
