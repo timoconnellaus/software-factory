@@ -3,6 +3,7 @@
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
 import * as adjudicator from "./operations/adjudicator.ts";
+import * as adopt from "./operations/adopt.ts";
 import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
@@ -228,6 +229,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   workflows.agentSave,
   workflows.orgConfigGet,
   workflows.orgConfigRollback,
+  adopt.orgConfigAdoptProjectWorkflows,
   workflows.stageTypeList,
   reconcile.reconcileReport,
   reconcile.reconcileStreak,
