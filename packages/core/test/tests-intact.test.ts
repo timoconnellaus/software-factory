@@ -303,4 +303,50 @@ describe("tests intact: review fixes (ADR 0500)", () => {
       kinds([mod("jest.config.js", patch("-  minCoverage: 90,", "+  minCoverage: 50,"))]),
     ).toEqual(["gate-file", "threshold-lowered"]);
   });
+  it("finds a new or changed dependency that runs install scripts, for npm and yarn (fourth review, S4)", () => {
+    const messages = (f: ChangedFile) => testsIntact(SHA, [f]).findings.map((x) => x.message);
+    // npm marks them in the lockfile.
+    expect(
+      messages(
+        mod(
+          "package-lock.json",
+          patch(
+            '+    "node_modules/evil-postinstall": {',
+            '+      "version": "1.0.0",',
+            '+      "hasInstallScript": true,',
+            "+    },",
+            '+    "node_modules/plain": {',
+            '+      "version": "2.0.0"',
+          ),
+        ),
+      ),
+    ).toEqual([
+      "a new or changed dependency runs install scripts (evil-postinstall): npm runs them at install, and every later check runs on the tree they leave",
+    ]);
+    // A dependency without one: nothing.
+    expect(
+      messages(
+        mod(
+          "package-lock.json",
+          patch('+    "node_modules/plain": {', '+      "version": "2.0.0"'),
+        ),
+      ),
+    ).toEqual([]);
+    // yarn's lockfile doesn't say: every added or changed entry is named.
+    expect(
+      messages(
+        mod(
+          "yarn.lock",
+          patch(
+            '+"@scope/pkg@^1.0.0":',
+            '+  version "1.0.1"',
+            "+left-pad@^1.3.0, left-pad@^1.2.0:",
+            '+  version "1.3.0"',
+          ),
+        ),
+      ),
+    ).toEqual([
+      "dependencies were added or changed in yarn.lock (@scope/pkg, left-pad): yarn runs their install scripts at install, the lockfile doesn't say which have any, and every later check runs on the tree they leave",
+    ]);
+  });
 });

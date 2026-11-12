@@ -109,10 +109,37 @@ describe("checks in a container (ADR 0501)", () => {
       { run: "pnpm test", dir: "/t/tree-0", timeoutMs: 5_000 },
       new AbortController().signal,
     );
-    expect(out).toEqual({ exitCode: 0, timedOut: false, output: "2 passed\n" });
+    expect(out).toEqual({
+      exitCode: 0,
+      timedOut: false,
+      output: "2 passed\n",
+      isolation: "container",
+    });
     expect(calls[0]?.slice(0, 3)).toEqual(["docker", "run", "--rm"]);
     expect(calls[0]).not.toContain("-d");
     expect(calls[0]?.join(" ")).toContain("--network none");
+  });
+
+  it("gives a local job's check its own network and proxy, and its store in place (fourth review)", () => {
+    const spec = checkSpec(
+      agent,
+      "pnpm test",
+      3,
+      { dir: "/c/r0-1/tree", pnpmStore: "/c/r0-1/store", pnpmStoreCopy: "/c/r0-1/store" },
+      { network: "sf-chk-1-net", store: "/c/r0-1/store" },
+    );
+    expect(spec.network).toBe("sf-chk-1-net");
+    // Its only way out is its own egress proxy: the proxy variables stay, HOME doesn't.
+    expect(spec.env).toMatchObject({ HTTPS_PROXY: "http://egress:3128", HOME: "/tmp" });
+    expect(spec.mounts).toContainEqual({
+      source: "/c/r0-1/store",
+      target: "/c/r0-1/store",
+      readOnly: false,
+    });
+    // Without one: no network at all, and no proxy.
+    const offline = checkSpec(agent, "pnpm test", 4, { dir: "/c/r0-1/tree" });
+    expect(offline.network).toBe("none");
+    expect(offline.env.HTTPS_PROXY).toBeUndefined();
   });
 
   it("kills and removes a check that runs past its timeout", async () => {

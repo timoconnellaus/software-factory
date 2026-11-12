@@ -13,7 +13,9 @@ import {
   type ExecutedChecks,
   executedChecks,
   notRunLines,
+  notRunTitle,
   proveCriteria,
+  weakerLines,
 } from "./proof.ts";
 import { type RiskFlag, riskFlags } from "./risk.ts";
 import { type TestsIntact, testFindingLines, testsIntact } from "./tests-intact.ts";
@@ -138,7 +140,10 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   }
 
   // Checks the runner could not run: said plainly, never a pass, never a failure (third review, B3).
+  // `factory/verify` is then not success but action required (fourth review, S2): a person merges
+  // only by deciding to merge without them (review.merge).
   warnings.push(...notRunLines(executed.notRun));
+  warnings.push(...weakerLines(executed.weaker));
   if (hostChecks && executed.declared.length === 0) {
     warnings.push(
       "the project declares no checks, so the factory ran none itself: only CI and the reviewer's report back this verdict (ADR 0501)",
@@ -209,6 +214,21 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   };
 }
 
+/** A person's decision to merge without the checks the runner could not run (fourth review). */
+export interface NotRunWaiver {
+  by: string;
+  at: string;
+  checks: string[];
+}
+
+/** What `factory/verify` is posted as. */
+export interface VerifyOutput {
+  status: "in_progress" | "completed";
+  conclusion?: "success" | "failure" | "action_required";
+  title: string;
+  summary: string;
+}
+
 /** The `factory/verify` check run's text for a packet's evidence and the CI as it stands now. */
 export function verifyCheckOutput(args: {
   evidencePass: boolean;
@@ -225,12 +245,14 @@ export function verifyCheckOutput(args: {
   checkLines?: string[];
   /** How many criteria an executed check proves. */
   proven?: { proven: number; total: number; weakened?: boolean } | null;
-}): {
-  status: "in_progress" | "completed";
-  conclusion?: "success" | "failure";
-  title: string;
-  summary: string;
-} {
+  /**
+   * Declared checks the runner could not run on this SHA (fourth review, S2): with everything else
+   * passing, the check is action required, not success, until a person decides at the merge gate.
+   */
+  notRun?: ExecutedChecks["notRun"];
+  /** A person decided to merge without those checks (review.merge): recorded, then success. */
+  notRunWaived?: NotRunWaiver | null;
+}): VerifyOutput {
   const { ci } = args;
   const list = (title: string, items: string[]) =>
     items.length ? [`### ${title}`, ...items.map((i) => `- ${i}`), ""] : [];
@@ -241,9 +263,17 @@ export function verifyCheckOutput(args: {
   }`;
   const findings = args.testFindings ?? [];
   const findingCount = args.testFindingsTotal ?? findings.length;
+  const notRun = args.notRun ?? [];
+  const waived = notRun.length > 0 ? (args.notRunWaived ?? null) : null;
   const summary = [
     `Work item #${args.workItem.number}: ${args.workItem.title}`,
     "",
+    ...list(
+      waived
+        ? `Not run on this runner: a person decided to merge without these checks (${waived.at.slice(0, 10)})`
+        : "Not run on this runner: not passed, proving nothing; a person decides at the merge gate",
+      notRun.map((n) => `${n.name}: ${n.reason}`),
+    ),
     ...list("Tests not intact: a person must look at these (ADR 0500)", findings),
     ...list("What fails", args.evidencePass ? [] : args.evidenceReasons),
     ...list("Warnings", args.warnings),
@@ -279,12 +309,29 @@ export function verifyCheckOutput(args: {
       summary,
     };
   }
+  // Everything else passed, but declared checks could not be run: not success (fourth review, S2).
+  if (notRun.length > 0 && !waived) {
+    return {
+      status: "completed",
+      conclusion: "action_required",
+      title: notRunTitle(notRun),
+      summary,
+    };
+  }
+  const tail = [
+    ...(findingCount
+      ? [`${findingCount} test finding${findingCount === 1 ? "" : "s"} for a person`]
+      : []),
+    ...(waived
+      ? [
+          `merged without ${notRun.length} check${notRun.length === 1 ? "" : "s"} that could not be run, by a person's decision`,
+        ]
+      : []),
+  ];
   return {
     status: "completed",
     conclusion: "success",
-    title: findingCount
-      ? `Verified by the factory; ${findingCount} test finding${findingCount === 1 ? "" : "s"} for a person`
-      : "Verified by the factory",
+    title: tail.length ? `Verified by the factory; ${tail.join("; ")}` : "Verified by the factory",
     summary,
   };
 }
@@ -310,6 +357,8 @@ export function storedTestFindings(sections: Record<string, unknown>): {
 export function storedProof(sections: Record<string, unknown>): {
   checkLines: string[];
   proven: { proven: number; total: number; weakened?: boolean } | null;
+  notRun: ExecutedChecks["notRun"];
+  notRunWaived: NotRunWaiver | null;
 } {
   const e = sections.executed as Partial<ExecutedChecks> | undefined;
   const p = sections.proven as
@@ -330,5 +379,30 @@ export function storedProof(sections: Record<string, unknown>): {
       typeof p?.proven === "number" && typeof p.total === "number"
         ? { proven: p.proven, total: p.total, ...(p.weakened === true ? { weakened: true } : {}) }
         : null,
+    notRun: storedNotRun(sections),
+    notRunWaived: storedWaiver(sections),
+  };
+}
+
+/** The declared checks not run on the packet's SHA, from its sections. */
+export function storedNotRun(sections: Record<string, unknown>): ExecutedChecks["notRun"] {
+  const e = sections.executed as { notRun?: unknown } | undefined;
+  if (!Array.isArray(e?.notRun)) return [];
+  return e.notRun.flatMap((n: unknown) => {
+    const x = n as { name?: unknown; reason?: unknown } | null;
+    return typeof x?.name === "string" && typeof x.reason === "string"
+      ? [{ name: x.name, reason: x.reason }]
+      : [];
+  });
+}
+
+/** The recorded decision to merge without the checks not run, from a packet's sections. */
+export function storedWaiver(sections: Record<string, unknown>): NotRunWaiver | null {
+  const w = sections.notRunWaived as { by?: unknown; at?: unknown; checks?: unknown } | undefined;
+  if (typeof w?.by !== "string" || typeof w.at !== "string") return null;
+  return {
+    by: w.by,
+    at: w.at,
+    checks: Array.isArray(w.checks) ? w.checks.filter((c) => typeof c === "string") : [],
   };
 }

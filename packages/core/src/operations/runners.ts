@@ -1412,6 +1412,8 @@ export const runHandBack = defineOperation({
         created_at: ctx.now,
         // Not run (third review, B3): stored as such, never as a failure or a pass.
         not_run: c.notRun ?? null,
+        // Where it ran (fourth review): the gate names the weaker sandbox.
+        isolation: c.notRun ? null : (c.isolation ?? null),
       };
       ctx.write(
         ctx.db
@@ -1420,15 +1422,21 @@ export const runHandBack = defineOperation({
           .onConflict((oc) => oc.columns(["work_item_id", "head_sha", "name"]).doUpdateSet(row)),
       );
     }
-    // Pruning (Cloudflare cost rule): an item keeps its check results for CHECK_RESULTS_DAYS; older
-    // ones (heads long replaced) go when it hands back again. On the primary key's prefix.
+    // Pruning (Cloudflare cost rule): results of heads the item replaced more than
+    // CHECK_RESULTS_DAYS ago go when it hands back again (on the primary key's prefix); never the
+    // item's current head, the merge gate's evidence. Finished items: the hourly prune
+    // (`pruneCheckResults`, apps/engine).
     if (checks.length) {
       const cutoff = new Date(Date.parse(ctx.now) - CHECK_RESULTS_DAYS * 86_400_000).toISOString();
+      const keep = [
+        ...new Set([...checks.map((c) => c.headSha), ...(w.head_sha ? [w.head_sha] : [])]),
+      ];
       ctx.write(
         ctx.db
           .deleteFrom("core_check_results")
           .where("work_item_id", "=", w.id)
-          .where("created_at", "<", cutoff),
+          .where("created_at", "<", cutoff)
+          .where("head_sha", "not in", keep),
       );
     }
     if (checks.length || dropped.length) {

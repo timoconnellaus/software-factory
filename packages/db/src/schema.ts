@@ -650,6 +650,8 @@ export interface CoreCheckResultsTable {
   created_at: string;
   /** Why the runner could not run it (migration 0271); null for a check that ran. */
   not_run: string | null;
+  /** Where it ran (migration 0272): container, sandbox or weaker-sandbox; null before. */
+  isolation: string | null;
 }
 
 export interface CoreRunSteersTable {

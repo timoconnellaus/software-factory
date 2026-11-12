@@ -51,16 +51,30 @@ export async function copyStoreForCheck(store: string, treeDir: string): Promise
   return copy;
 }
 
+/**
+ * A local job's check (ADR 0501, fourth review): an internal network of its own whose only way out
+ * is a proxy with the job's allowlist, and a pnpm store of its own already beside its tree.
+ */
+export interface CheckEgress {
+  network: string;
+  /** The check's own store (`<check dir>/store`), mounted where it is; never copied. */
+  store?: string;
+}
+
 /** The spec a check runs in: the agent's image and limits, the clean tree, nothing else. */
 export function checkSpec(
   agent: ContainerSpec,
   run: string,
   n: number,
   tree: CheckTree,
+  egress?: CheckEgress,
 ): ContainerSpec {
   const { envFile: _secret, networkAlias: _alias, detachKeys: _keys, ...rest } = agent;
+  // No network at all, unless the check has an egress proxy of its own (a local job's check).
   const env = Object.fromEntries(
-    Object.entries(agent.env).filter(([k]) => !/^(HTTPS?_PROXY|NO_PROXY|ALL_PROXY|HOME)$/i.test(k)),
+    Object.entries(agent.env).filter(
+      ([k]) => !(egress ? /^HOME$/i : /^(HTTPS?_PROXY|NO_PROXY|ALL_PROXY|HOME)$/i).test(k),
+    ),
   );
   return {
     ...rest,
@@ -87,7 +101,7 @@ export function checkSpec(
       CI: "1",
       FORCE_COLOR: "0",
     },
-    network: "none",
+    network: egress?.network ?? "none",
     labels: { ...agent.labels, [JOB_LABEL]: agent.labels[JOB_LABEL] ?? "", [ROLE_LABEL]: "check" },
     interactive: false,
   };
@@ -104,12 +118,24 @@ export async function execInCheckContainer(
   command: { run: string; timeoutMs: number; dir: string },
   signal: AbortSignal,
   pnpmStore?: string,
+  egress?: CheckEgress,
 ): Promise<CheckExecResult> {
-  const copy = pnpmStore ? await copyStoreForCheck(pnpmStore, command.dir) : null;
-  const spec = checkSpec(agent, command.run, ++seq, {
-    dir: command.dir,
-    ...(pnpmStore && copy ? { pnpmStore, pnpmStoreCopy: copy } : {}),
-  });
+  const copy = egress?.store
+    ? egress.store
+    : pnpmStore
+      ? await copyStoreForCheck(pnpmStore, command.dir)
+      : null;
+  const store = egress?.store ?? pnpmStore;
+  const spec = checkSpec(
+    agent,
+    command.run,
+    ++seq,
+    {
+      dir: command.dir,
+      ...(store && copy ? { pnpmStore: store, pnpmStoreCopy: copy } : {}),
+    },
+    egress,
+  );
   const [bin = "docker"] = runtime.runArgv(spec);
   const args = dockerRunArgs(spec).filter((a) => a !== "-d");
   const stop = new AbortController();
@@ -133,6 +159,7 @@ export async function execInCheckContainer(
       exitCode: timedOut || stop.signal.aborted ? null : r.code,
       timedOut,
       output: output.length > OUTPUT_MAX ? output.slice(-OUTPUT_MAX) : output,
+      isolation: "container",
     };
   } finally {
     clearTimeout(timer);

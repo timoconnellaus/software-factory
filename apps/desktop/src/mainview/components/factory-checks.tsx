@@ -27,32 +27,27 @@ function outcome(r: CheckOutcome): string {
 export function FactoryChecks({ packet }: { packet: ParsedPacket }) {
   const executed = packetExecuted(packet);
   if (!executed) return null; // a packet from before the factory ran checks itself
-  const rows = [...executed.rows, ...executed.extra.map((r) => ({ name: r.name, result: r }))];
+  // Checks not run have a heading of their own, apart from failures (fourth review, S2).
+  const all = [...executed.rows, ...executed.extra.map((r) => ({ name: r.name, result: r }))];
+  const rows = all.filter(({ result }) => !result || !notRun(result));
+  const skipped = all.filter(({ result }) => result && notRun(result));
   const note = executed.ranOn
     ? `Ran on ${executed.ranOn.slice(0, 7)}, not on ${packet.headSha.slice(0, 7)}: the merge queue carried this packet to the updated head.`
     : `Run by the runner host on ${packet.headSha.slice(0, 7)}, not reported by an agent.`;
   return (
     <section className="flex flex-col gap-2" data-testid="factory-checks">
       <SectionTitle note={note}>Checks run by the factory</SectionTitle>
-      {executed.notRun.length > 0 && (
-        <Panel className="text-amber-700 dark:text-amber-400" data-testid="checks-not-run">
-          {[...new Set(executed.notRun.map((n) => n.reason))].map((reason) => (
-            <div key={reason}>
-              These checks could not be run on this runner: {reason} (
-              {executed.notRun
-                .filter((n) => n.reason === reason)
-                .map((n) => n.name)
-                .join(", ")}
-              ). They are not passed, and the criteria they would prove are Not proven: you decide.
-            </div>
-          ))}
+      {executed.weaker.length > 0 && (
+        <Panel className="text-amber-700 dark:text-amber-400" data-testid="checks-weaker">
+          Ran in the weaker sandbox of a Mac runner whose owner opted in (
+          {executed.weaker.join(", ")}): a process a check leaves can outlive it.
         </Panel>
       )}
-      {rows.length === 0 ? (
+      {rows.length === 0 && skipped.length === 0 ? (
         <Panel className="text-ink-muted">
           The project declares no checks: only CI backs this verdict.
         </Panel>
-      ) : (
+      ) : rows.length === 0 ? null : (
         <div className="overflow-hidden rounded-[10px] bg-panel shadow-panel">
           {rows.map(({ name, result }) => (
             <div
@@ -61,25 +56,13 @@ export function FactoryChecks({ packet }: { packet: ParsedPacket }) {
               data-testid="factory-check"
             >
               <div className="flex flex-wrap items-center gap-2">
-                <StatusDot
-                  status={
-                    !result
-                      ? "idle"
-                      : result.passed
-                        ? "done"
-                        : notRun(result)
-                          ? "waiting"
-                          : "failed"
-                  }
-                />
+                <StatusDot status={!result ? "idle" : result.passed ? "done" : "failed"} />
                 <span className="font-mono text-[12.5px]">{name}</span>
                 <span className="text-ink-3 text-xs">
                   {result ? (
                     <>
                       <code className="font-mono">{result.command}</code> · {outcome(result)}
-                      {notRun(result)
-                        ? ""
-                        : ` · ${Math.max(1, Math.round(result.durationMs / 1000))} s`}
+                      {` · ${Math.max(1, Math.round(result.durationMs / 1000))} s`}
                       {result.round
                         ? ` · after ${result.round} fix round${result.round === 1 ? "" : "s"}`
                         : ""}
@@ -97,6 +80,42 @@ export function FactoryChecks({ packet }: { packet: ParsedPacket }) {
             </div>
           ))}
         </div>
+      )}
+      {skipped.length > 0 && (
+        <>
+          <SectionTitle
+            note={
+              executed.waived
+                ? `Merged without them by a person's decision, ${executed.waived.at.slice(0, 10)}.`
+                : "Not failures, not passes: the criteria they would prove are Not proven. You decide."
+            }
+          >
+            Not run on this runner
+          </SectionTitle>
+          <div
+            className="overflow-hidden rounded-[10px] bg-panel shadow-panel"
+            data-testid="checks-not-run"
+          >
+            {skipped.map(({ name, result }) => (
+              <div
+                key={name}
+                className="flex flex-col gap-1 border-line-soft border-t px-3.5 py-2.5 first:border-t-0"
+                data-testid="factory-check-not-run"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusDot status="waiting" />
+                  <span className="font-mono text-[12.5px]">{name}</span>
+                  <code className="font-mono text-ink-3 text-xs">{result?.command}</code>
+                </div>
+                <div className="text-amber-700 text-xs dark:text-amber-400">
+                  {result?.notRun ??
+                    executed.notRun.find((n) => n.name === name)?.reason ??
+                    "not run"}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </section>
   );

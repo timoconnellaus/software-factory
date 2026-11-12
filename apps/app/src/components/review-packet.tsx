@@ -65,6 +65,10 @@ export function ReviewPacket({ detail, full = false }: { detail: WorkItemDetail;
   const { decide, pending } = useDecide();
   const [sendBack, setSendBack] = useState(false);
   const canDecide = !!mergeGate && detail.viewer.isApprover;
+  // Declared checks the runner could not run (ADR 0501): merging is a recorded decision without them.
+  const executedChecks = packet ? packetExecuted(packet) : null;
+  const without =
+    executedChecks && !executedChecks.waived ? executedChecks.notRun.map((n) => n.name) : [];
   const me = useSession().user.id;
   const approverNames = detail.approvers.users.map((u) =>
     u.id === me ? "you" : (u.githubLogin ?? u.name),
@@ -141,11 +145,20 @@ export function ReviewPacket({ detail, full = false }: { detail: WorkItemDetail;
                   : "Only an approver on this project can merge"
             }
             onClick={() =>
-              decide({ kind: "review.merge", workItemId: item.id, openedFullDiff: opened })
+              decide({
+                kind: "review.merge",
+                workItemId: item.id,
+                openedFullDiff: opened,
+                ...(without.length > 0 ? { mergeWithoutChecks: true } : {}),
+              })
             }
             data-testid="merge"
           >
-            {pending === "review.merge" ? "Merging…" : "Merge"}
+            {pending === "review.merge"
+              ? "Merging…"
+              : without.length > 0
+                ? "Merge without these checks"
+                : "Merge"}
           </Button>
         </div>
       </div>
@@ -493,49 +506,91 @@ function CriterionEvidence({
 function FactoryChecks({ packet }: { packet: ParsedPacket }) {
   const executed = packetExecuted(packet);
   if (!executed) return null; // a packet from before the factory ran checks itself
-  const rows = [...executed.rows, ...executed.extra.map((r) => ({ name: r.name, result: r }))];
+  const all = [...executed.rows, ...executed.extra.map((r) => ({ name: r.name, result: r }))];
+  // Checks not run have a heading of their own, apart from failures (ADR 0501, fourth review).
+  const rows = all.filter(({ result }) => !result?.notRun);
+  const skipped = all.filter(({ result }) => !!result?.notRun);
   return (
-    <Panel
-      title="Checks run by the factory"
-      subtitle={
-        executed.ranOn
-          ? `Ran on ${executed.ranOn.slice(0, 7)}, not on ${packet.headSha.slice(0, 7)}: the merge queue carried this packet to the updated head`
-          : `Run by the runner host on ${packet.headSha.slice(0, 7)}, not reported by an agent`
-      }
-      testId="section-factoryChecks"
-    >
-      {rows.length === 0 ? (
-        <Empty>The project declares no checks: only CI backs this verdict.</Empty>
-      ) : (
-        <ul className="grid gap-2 text-sm">
-          {rows.map(({ name, result }) => (
-            <li key={name} className="grid gap-1" data-testid="factory-check">
-              <div className="flex flex-wrap items-center gap-2">
-                <StatusDot status={!result ? "idle" : result.passed ? "done" : "failed"} />
-                <b>{name}</b>
-                {result ? (
-                  <span className="text-muted-foreground text-xs">
-                    <code className="font-mono">{result.command}</code> ·{" "}
-                    {result.timedOut ? "timed out" : `exit ${result.exitCode ?? "signal"}`} ·{" "}
-                    {Math.max(1, Math.round(result.durationMs / 1000))} s
-                    {result.round
-                      ? ` · after ${result.round} fix round${result.round === 1 ? "" : "s"}`
-                      : ""}
-                  </span>
-                ) : (
-                  <span className="text-muted-foreground text-xs">didn't run on this commit</span>
+    <>
+      <Panel
+        title="Checks run by the factory"
+        subtitle={
+          executed.ranOn
+            ? `Ran on ${executed.ranOn.slice(0, 7)}, not on ${packet.headSha.slice(0, 7)}: the merge queue carried this packet to the updated head`
+            : `Run by the runner host on ${packet.headSha.slice(0, 7)}, not reported by an agent`
+        }
+        testId="section-factoryChecks"
+      >
+        {executed.weaker.length > 0 && (
+          <div
+            className="mb-2 text-amber-700 text-xs dark:text-amber-400"
+            data-testid="checks-weaker"
+          >
+            Ran in the weaker sandbox of a Mac runner whose owner opted in (
+            {executed.weaker.join(", ")}): a process a check leaves can outlive it.
+          </div>
+        )}
+        {rows.length === 0 ? (
+          <Empty>
+            {skipped.length
+              ? "No check ran on this commit."
+              : "The project declares no checks: only CI backs this verdict."}
+          </Empty>
+        ) : (
+          <ul className="grid gap-2 text-sm">
+            {rows.map(({ name, result }) => (
+              <li key={name} className="grid gap-1" data-testid="factory-check">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusDot status={!result ? "idle" : result.passed ? "done" : "failed"} />
+                  <b>{name}</b>
+                  {result ? (
+                    <span className="text-muted-foreground text-xs">
+                      <code className="font-mono">{result.command}</code> ·{" "}
+                      {result.timedOut ? "timed out" : `exit ${result.exitCode ?? "signal"}`} ·{" "}
+                      {Math.max(1, Math.round(result.durationMs / 1000))} s
+                      {result.round
+                        ? ` · after ${result.round} fix round${result.round === 1 ? "" : "s"}`
+                        : ""}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">didn't run on this commit</span>
+                  )}
+                </div>
+                {result && !result.passed && result.logTail && (
+                  <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap">
+                    {result.logTail}
+                  </pre>
                 )}
-              </div>
-              {result && !result.passed && result.logTail && (
-                <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap">
-                  {result.logTail}
-                </pre>
-              )}
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+      {skipped.length > 0 && (
+        <Panel
+          title="Not run on this runner"
+          subtitle={
+            executed.waived
+              ? `Merged without them by a person's decision, ${executed.waived.at.slice(0, 10)}`
+              : "Not failures, not passes: the criteria they would prove are Not proven. Merging means merging without them, and that's recorded"
+          }
+          testId="section-checksNotRun"
+        >
+          <ul className="grid gap-2 text-sm">
+            {skipped.map(({ name, result }) => (
+              <li key={name} className="grid gap-1" data-testid="factory-check-not-run">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusDot status="waiting" />
+                  <b>{name}</b>
+                  <code className="font-mono text-muted-foreground text-xs">{result?.command}</code>
+                </div>
+                <div className="text-amber-700 text-xs dark:text-amber-400">{result?.notRun}</div>
+              </li>
+            ))}
+          </ul>
+        </Panel>
       )}
-    </Panel>
+    </>
   );
 }
 

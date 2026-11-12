@@ -4,6 +4,7 @@ export * from "./check-exec.ts";
 export * from "./egress.ts";
 export * from "./image.ts";
 export * from "./job-repo.ts";
+export * from "./local-check.ts";
 export * from "./reap.ts";
 export * from "./runtime.ts";
 export * from "./spec.ts";

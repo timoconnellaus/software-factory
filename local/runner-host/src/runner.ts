@@ -35,6 +35,7 @@ import {
   noteUsage,
   useAccount,
 } from "./accounts.ts";
+import { localChecks } from "./check-mode.ts";
 import { checkSandbox } from "./check-sandbox.ts";
 import { checkoutDirs } from "./checkouts.ts";
 import type { Paths, RunnerConfig } from "./config.ts";
@@ -254,19 +255,28 @@ export function buildRunner(
     // owner; none of the runner's own dirs or the owner's checkouts are readable there. Only for the
     // default isolation: a container runner checks in containers, and any other (a sprite per job)
     // never runs a job's checks on this machine (they are reported not run).
+    // Fourth review: on a Mac, a fresh check container when a container runtime answers; with
+    // none, not run, unless runner.json opts in to the weaker macOS sandbox (./check-mode.ts).
     checkSandbox:
       (config.isolation ?? "sandbox") !== "sandbox"
         ? null
-        : checkSandbox({
-            protectPaths: [
-              dirs.configDir,
-              dirs.runsDir,
-              dirs.reposDir,
-              dirs.worktreesDir,
-              ...checkoutDirs(config),
-            ],
-            socketsDir: dirs.checkSocketsDir,
-            checksDir: dirs.checksDir,
+        : localChecks({
+            weakerMacSandbox: config.checks?.weakerMacSandbox ?? false,
+            runtime:
+              process.platform === "darwin"
+                ? dockerRuntime({ exec, bin: dockerBin(config) })
+                : null,
+            sandbox: checkSandbox({
+              protectPaths: [
+                dirs.configDir,
+                dirs.runsDir,
+                dirs.reposDir,
+                dirs.worktreesDir,
+                ...checkoutDirs(config),
+              ],
+              socketsDir: dirs.checkSocketsDir,
+              checksDir: dirs.checksDir,
+            }),
           }),
     checksDir: dirs.checksDir,
     heartbeatMs: config.heartbeatMs,

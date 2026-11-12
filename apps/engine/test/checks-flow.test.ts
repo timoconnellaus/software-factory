@@ -1,12 +1,15 @@
 // Spec 51 PR B (ADR 0501): the factory runs the project's checks itself. The build job carries
 // them, the host's results decide, a failure after the session's own fixes asks a person, and the
 // reviewer's word alone never proves a criterion.
+import { env } from "cloudflare:workers";
 import type { Job } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
+import { pruneCheckResults } from "../src/index.ts";
 import {
   all,
   BALANCED,
   build,
+  call,
   first,
   gateOpen,
   github,
@@ -138,8 +141,47 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
       { name: "tests", not_run: reason, exit_code: null },
     ]);
     // No question at build, no second build: straight to verify.
-    await runStage(w, item.workItemId, "verify", () => linkedPass);
+    const verify = await runStage(w, item.workItemId, "verify", () => linkedPass);
     await gateOpen(item.workItemId, "merge");
+    // Fourth review, S2: with CI green and the reviewer approving, factory/verify is still not
+    // success: action required, saying how many declared checks could not run and why.
+    const head = String(verify.context.headSha);
+    const posted = await verifyRun(w, head);
+    expect(posted).toMatchObject({ conclusion: "action_required" });
+    expect(String(posted?.output?.title)).toBe(
+      `2 declared checks could not be run on this runner: ${reason}`,
+    );
+    // A person merges only by deciding to merge without them, never by the plain merge.
+    const plain = await call(
+      "review.merge",
+      { workItemId: item.workItemId, openedFullDiff: true },
+      w.human,
+    ).catch((e: unknown) => e);
+    expect(String((plain as { message?: string }).message ?? JSON.stringify(plain))).toMatch(
+      /could not be run on this runner.*merge without these checks/,
+    );
+    await ok(
+      "review.merge",
+      { workItemId: item.workItemId, openedFullDiff: true, mergeWithoutChecks: true },
+      w.human,
+    );
+    const decided = await first<{ sections: string }>(
+      "SELECT sections FROM core_review_packets WHERE work_item_id = ? AND head_sha = ? ORDER BY created_at DESC",
+      item.workItemId,
+      head,
+    );
+    expect(JSON.parse(String(decided?.sections)).notRunWaived).toMatchObject({
+      by: w.human.id,
+      checks: ["lint", "tests"],
+    });
+    const gate = await first<{ note: string | null }>(
+      "SELECT note FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge'",
+      item.workItemId,
+    );
+    expect(gate?.note).toContain("Merged without these checks");
+    const after = await verifyRun(w, head);
+    expect(after).toMatchObject({ conclusion: "success" });
+    expect(String(after?.output?.title)).toMatch(/merged without 2 checks that could not be run/);
     expect(
       await all("SELECT id FROM core_questions WHERE work_item_id = ?", item.workItemId),
     ).toEqual([]);
@@ -425,5 +467,41 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     expect(q.context).toMatch(/check lint didn't run/);
     await ok("question.answer", { questionId: q.id, answer: "Stop this work item" }, w.human);
     await itemStatus(item.workItemId, "failed");
+  });
+  it("keeps check results while their item is open and 30 days after it ends, then prunes them (bounded)", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", () => ({
+      ...build(),
+      checks: [
+        { name: "lint", exitCode: 0 },
+        { name: "tests", exitCode: 0 },
+      ],
+    }));
+    const old = "2026-01-01T00:00:00.000Z";
+    await env.DB.prepare("UPDATE core_check_results SET created_at = ? WHERE work_item_id = ?")
+      .bind(old, item.workItemId)
+      .run();
+    const count = async () =>
+      (await all("SELECT name FROM core_check_results WHERE work_item_id = ?", item.workItemId))
+        .length;
+    const now = new Date("2026-11-12T00:00:00.000Z");
+    // Open: kept, however old (the merge gate's evidence).
+    await pruneCheckResults(env.DB, now);
+    expect(await count()).toBe(2);
+    // Ended 10 days ago: kept.
+    await env.DB.prepare("UPDATE core_work_items SET status = 'done', updated_at = ? WHERE id = ?")
+      .bind("2026-11-02T00:00:00.000Z", item.workItemId)
+      .run();
+    await pruneCheckResults(env.DB, now);
+    expect(await count()).toBe(2);
+    // Ended more than 30 days ago: gone, at most `limit` rows a time.
+    await env.DB.prepare("UPDATE core_work_items SET updated_at = ? WHERE id = ?")
+      .bind(old, item.workItemId)
+      .run();
+    expect(await pruneCheckResults(env.DB, now, 1)).toBe(1);
+    expect(await pruneCheckResults(env.DB, now)).toBe(1);
+    expect(await count()).toBe(0);
   });
 });

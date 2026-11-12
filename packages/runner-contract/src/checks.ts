@@ -32,6 +32,9 @@ export const jobChecksSchema = z.object({
 });
 export type JobChecks = z.infer<typeof jobChecksSchema>;
 
+/** Where a check can run (ADR 0501): see `executedCheckSchema.isolation`. */
+export const CHECK_ISOLATIONS = ["container", "sandbox", "weaker-sandbox"] as const;
+
 /** The longest log tail kept per check. */
 export const CHECK_LOG_TAIL_MAX = 8_000;
 
@@ -54,8 +57,16 @@ export const executedCheckSchema = z.object({
    * not start): never a pass, never a failure a fix round could win. Optional and additive.
    */
   notRun: z.string().max(300).optional(),
+  /**
+   * Where it ran (ADR 0501, fourth review): a check container (`container`), the OS sandbox of a
+   * Linux runner (`sandbox`), or the weaker OS sandbox of a Mac runner whose owner opted in
+   * (`weaker-sandbox`: a process a check leaves can outlive it). The merge gate says so for the
+   * weaker one. Optional and additive.
+   */
+  isolation: z.enum(CHECK_ISOLATIONS).optional(),
 });
 export type ExecutedCheck = z.infer<typeof executedCheckSchema>;
+export type CheckIsolation = (typeof CHECK_ISOLATIONS)[number];
 
 /** A check passed: it exited 0 and wasn't cut short. */
 export const checkPassed = (c: Pick<ExecutedCheck, "exitCode" | "timedOut">) =>

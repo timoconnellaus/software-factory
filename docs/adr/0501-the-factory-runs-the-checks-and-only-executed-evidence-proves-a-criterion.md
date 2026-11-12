@@ -214,3 +214,67 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 > securityd (the owner's keychains are denied). Within a round, a check sees what the check before
 > it left in the tree (that is how the install carries over), so an install's lifecycle scripts can
 > change what the tests run: the guard flags any change to them, and a person sees it at the gate.
+
+> **Amended 2026-11-12 (fourth review).** The fourth review, run on a Mac, found a "not run" check
+> still let `factory/verify` pass, a leftover process could escape on macOS, a check could read the
+> shared temp dirs there and reach no server it started, and the install step decided what the test
+> runner was. What is now true:
+>
+> 1. **"Not run" is not success.** When any declared check did not run on the head, `factory/verify`
+>    is posted as **action required**, titled "N declared checks could not be run on this runner:
+>    <reason>", even with CI green and the reviewer approving. The packet's verdict still passes
+>    (nothing a build can fix, so no build attempt is burned) and the item reaches the merge gate,
+>    which shows those checks under their own heading, "Not run on this runner", apart from failures
+>    and with the reason; their criteria are Not proven. `review.merge` refuses (`conflict`) unless
+>    the person sends `mergeWithoutChecks: true` ("Merge without these checks" in the app). That
+>    decision is recorded on the packet (`notRunWaived`: who, when, which checks), in the audit, and
+>    in the gate's note, and `factory/verify` is posted again as success, saying a person merged
+>    without them. Auto-merge stays refused (`pr.autoMerge`). The phone's merge doesn't send it yet:
+>    it is refused there with the reason, and the person decides on the desktop app or the website.
+> 2. **On a Mac, checks run in a check container.** The macOS OS sandbox can't close the leftover
+>    process: a process that calls `setsid` behind a middle shell that exits inside the tracker's
+>    100 ms poll is never seen, runs on after the job with the allowlisted network, and can exhaust
+>    the process limit so later checks are "not run". A tracking loop can't close that, and Seatbelt
+>    can't scope loopback per process (a rule names localhost or `*`, one port or `*`), so a check
+>    either reaches the owner's services or none, its own server included. So a `sandbox` runner on
+>    macOS runs each check in a fresh **check container** when a container runtime answers
+>    (OrbStack, Docker Desktop; `container.docker` or `docker` on PATH), reusing the container
+>    runner's check path (`execInCheckContainer`, the agent image, read-only root, every capability
+>    dropped, no new privileges, a pids limit). For a local job it gets an internal network of its
+>    own per check whose only way out is the image's egress proxy with the job's allowlist
+>    (`allowedDomains(profile)`, not the model API): that is how install reaches the registry, as
+>    srt's proxy does on Linux. Its loopback is private, so a test that starts a server works; when
+>    its shell exits the container stops and every process in it dies; the container, proxy and
+>    network are removed after every check. Its pnpm store is its own (`<check dir>/store`, empty at
+>    the start of the round's first check), and nothing of the Mac's filesystem is mounted but the
+>    check's tree and store. Each result says where it ran (`isolation`: `container`, `sandbox`,
+>    `weaker-sandbox`; migration 0272).
+> 3. **No container runtime: not run, unless the owner opts in.** Without one, every declared check
+>    on a Mac runner is "not run: this Mac runner has no container runtime" (handled by 1). The
+>    runner's owner may set `checks.weakerMacSandbox: true` in runner.json (only there: never from the
+>    repo or the cloud) to use the macOS OS sandbox instead; the gate and `factory/verify` then say
+>    the checks ran in the weaker sandbox. In that mode a check also can't read `/tmp`,
+>    `/private/tmp` or the user's `/var/folders/<x>/<y>` (only its own dirs), can't run `launchctl`
+>    (denied by path in the sandbox profile: it reads the owner's login session through the
+>    bootstrap port, which the mach rules don't cover), and still has no loopback. **Its limit, in
+>    plain words: a process a check starts can outlive the check, and keep running with the job's
+>    allowlisted network after the job, until the Mac restarts or someone kills it.** It can still
+>    write only that check's own dirs, which no later check uses.
+> 4. **Linux stays on srt** (bubblewrap, private network and pid namespaces). Tested: the
+>    setsid-behind-an-exiting-shell escape dies with the sandbox, and a server the check starts is
+>    reachable on its own loopback.
+> 5. **`sf-runner doctor`** reports which mode checks will run in and why (`checkModeReport`).
+> 6. **The install step is trusted.** Each later check runs on the tree the previous one left,
+>    `node_modules` and `.bin` included, so whatever install runs decides what the test runner is.
+>    That is accepted because install is the project's own declared command, it runs inside the same
+>    isolation as every check (so it can reach only the allowlist and write only its check's dirs),
+>    and what it runs is a finding for a person: pnpm 10 runs no dependency's scripts unless the
+>    project allows it (a package.json finding); for npm, a new or changed lockfile entry marked
+>    `hasInstallScript` is a gate finding naming the package; yarn's lockfile doesn't say which
+>    packages have scripts, so every dependency added or changed in yarn.lock is named. A finding
+>    blocks auto-merge and is shown at the gate.
+> 7. **Results are kept while their item is open and for 30 days after it ends** (done, failed,
+>    rejected, cancelled): they are the merge gate's evidence. An hourly prune
+>    (`pruneCheckResults`, minute 41) deletes at most 500 older rows a time, oldest first on
+>    `core_check_results_created_idx` (migration 0272). A hand-back still drops an open item's
+>    results for heads it replaced more than 30 days ago, never its current head's.

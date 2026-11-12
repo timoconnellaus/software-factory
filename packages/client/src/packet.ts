@@ -227,6 +227,8 @@ const checkOutcome = z.object({
   round: z.number().default(0),
   /** Why the runner could not run it (ADR 0501, third review): never passed, never proven. */
   notRun: z.string().nullable().optional(),
+  /** Where it ran (fourth review): `weaker-sandbox` is named at the gate. */
+  isolation: z.string().nullable().optional(),
   passed: z.boolean(),
 });
 const executedSection = z.object({
@@ -234,6 +236,12 @@ const executedSection = z.object({
   results: z.array(checkOutcome.nullable()),
   extra: z.array(checkOutcome).default([]),
   notRun: z.array(z.object({ name: z.string(), reason: z.string() })).default([]),
+  weaker: z.array(z.string()).default([]),
+});
+const waiverSection = z.object({
+  by: z.string(),
+  at: z.string(),
+  checks: z.array(z.string()).default([]),
 });
 const proofSection = z.array(
   z.object({
@@ -265,15 +273,25 @@ export function packetExecuted(p: ParsedPacket): {
   ranOn: string | null;
   /** Declared checks the runner could not run on this SHA, with why: a person decides. */
   notRun: { name: string; reason: string }[];
+  /** Declared checks that ran in the weaker sandbox of a Mac runner whose owner opted in. */
+  weaker: string[];
+  /**
+   * A person decided to merge without the checks not run (fourth review, S2): who and when.
+   * Null while nobody has.
+   */
+  waived: { by: string; at: string; checks: string[] } | null;
 } | null {
   const r = executedSection.safeParse(p.sections.executed);
   if (!r.success) return null;
   const ranOn = p.sections.checksRanOn;
+  const waived = waiverSection.safeParse(p.sections.notRunWaived);
   return {
     rows: r.data.declared.map((name, i) => ({ name, result: r.data.results[i] ?? null })),
     extra: r.data.extra,
     ranOn: typeof ranOn === "string" ? ranOn : null,
     notRun: r.data.notRun,
+    weaker: r.data.weaker,
+    waived: waived.success ? waived.data : null,
   };
 }
 

@@ -89,7 +89,7 @@ export async function runChecks(
       ),
       headSha,
       round,
-      ...(notRun ? { notRun } : {}),
+      ...(notRun ? { notRun } : result.isolation ? { isolation: result.isolation } : {}),
     });
   }
   return out;

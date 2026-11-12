@@ -2,7 +2,12 @@
 // item's Review tab: the verdict, the criteria met or not, and Your decision. Merge and Send
 // back go through `decide()`, so each asks for Touch ID once (ADR 0391); only the look changed.
 import type { WorkItemDetail } from "@software-factory/client/ops";
-import { keptOnRunner, type ParsedPacket, packetProof } from "@software-factory/client/packet";
+import {
+  keptOnRunner,
+  type ParsedPacket,
+  packetExecuted,
+  packetProof,
+} from "@software-factory/client/packet";
 import { Button } from "@software-factory/ui/components/button";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
@@ -121,6 +126,10 @@ export function MergeDecision({
   const { decide, pending } = useDecide();
   const [note, setNote] = useState("");
   const sha = packet.headSha.slice(0, 7);
+  // Declared checks the runner could not run (ADR 0501, fourth review): merging is an explicit
+  // decision to merge without them, recorded with the merge.
+  const executed = packetExecuted(packet);
+  const without = executed && !executed.waived ? executed.notRun.map((n) => n.name) : [];
   if (!mergeGate) return null;
   return (
     <Panel needsYou className="gap-2.5" data-testid="decision">
@@ -143,12 +152,28 @@ export function MergeDecision({
             : "Only an approver on this project can merge"
         }
         onClick={() =>
-          decide({ kind: "review.merge", workItemId: item.id, openedFullDiff: opened })
+          decide({
+            kind: "review.merge",
+            workItemId: item.id,
+            openedFullDiff: opened,
+            ...(without.length > 0 ? { mergeWithoutChecks: true } : {}),
+          })
         }
         data-testid="merge"
       >
-        {pending === "review.merge" ? "Merging…" : `Merge ${sha}`}
+        {pending === "review.merge"
+          ? "Merging…"
+          : without.length > 0
+            ? `Merge ${sha} without these checks`
+            : `Merge ${sha}`}
       </Button>
+      {without.length > 0 && (
+        <p className="m-0 text-amber-700 text-xs leading-normal dark:text-amber-400">
+          {without.length === 1 ? "1 declared check" : `${without.length} declared checks`} could
+          not be run on the runner ({without.join(", ")}). Merging means merging without them;
+          that's recorded.
+        </p>
+      )}
       <Button
         variant="outline"
         disabled={!canDecide || pending !== null || !note.trim()}

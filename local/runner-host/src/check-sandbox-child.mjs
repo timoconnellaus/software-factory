@@ -43,13 +43,36 @@ async function readStdin() {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+/**
+ * macOS: programs the check may not run (`launchctl`), as `(deny process-exec …)` rules appended to
+ * the sandbox profile srt wrote. Seatbelt applies the last rule that matches, so they win over its
+ * `(allow process-exec)`. The profile is single-quoted after `sandbox-exec -p` and ends with srt's
+ * own deny-write rule `(with message "…_SBX"))`: where that end isn't found, nothing runs.
+ */
+function denyExecRules(wrapped, paths) {
+  if (!Array.isArray(paths) || paths.length === 0) return wrapped;
+  // The first such end after the profile starts: a `'` inside the profile is escaped (`'\\''`), so
+  // the command (after the profile) can't place one before it.
+  const start = wrapped.indexOf("sandbox-exec -p '");
+  const end = start < 0 ? -1 : wrapped.indexOf(`_SBX"))'`, start);
+  if (!wrapped.startsWith("env ") || end < 0) {
+    throw new Error("the sandbox profile could not take the runner's own rules");
+  }
+  const at = end + `_SBX"))`.length;
+  const rules = paths
+    .filter((p) => typeof p === "string" && /^\/[\w./-]+$/.test(p))
+    .map((p) => `(deny process-exec (literal "${p}"))`)
+    .join("\n");
+  return `${wrapped.slice(0, at)}\n${rules}${wrapped.slice(at)}`;
+}
+
 async function main() {
-  const { settings, command, tmpdir } = await readStdin();
+  const { settings, command, tmpdir, denyExec } = await readStdin();
   if (typeof command !== "string" || !settings) throw new Error("no settings or command on stdin");
   // srt hands the command TMPDIR=$CLAUDE_CODE_TMPDIR, else the shared /tmp/claude: the check's own.
   if (typeof tmpdir === "string") process.env.CLAUDE_CODE_TMPDIR = tmpdir;
   await SandboxManager.initialize(settings);
-  const wrapped = await SandboxManager.wrapWithSandbox(command);
+  const wrapped = denyExecRules(await SandboxManager.wrapWithSandbox(command), denyExec);
   const env = typeof tmpdir === "string" ? { ...process.env, TMPDIR: tmpdir } : process.env;
   const child = spawn(wrapped, { shell: true, env, stdio: ["ignore", "inherit", "inherit"] });
   child.on("error", (err) => {

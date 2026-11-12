@@ -364,6 +364,11 @@ export interface ExecResult {
    * could not start). Reported "not run": never a pass, and never sent to a fix round (ADR 0501).
    */
   notRun?: string;
+  /**
+   * Where it ran (ADR 0501, fourth review): a check container, the OS sandbox, or the weaker OS
+   * sandbox of a Mac runner whose owner opted in. Reported with the check; the gate names the last.
+   */
+  isolation?: "container" | "sandbox" | "weaker-sandbox";
 }
 
 /** What the host hands `openTerminal` (ADR 0440). */

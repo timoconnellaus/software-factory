@@ -188,6 +188,69 @@ const STRICT_OFF =
 const THRESHOLD =
   /["']?\b(lines|branches|functions|statements|thresholds?|coverageThreshold|minCoverage|min_coverage|minimumCoverage|fail_under|failUnder|fail-under|perFile)["']?\s*[:=]\s*(-?\d+(?:\.\d+)?)/i;
 
+const NPM_LOCK = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json)$/;
+const YARN_LOCK = /(^|\/)yarn\.lock$/;
+/** A package's key in package-lock v2/v3 (`"node_modules/foo": {`). */
+const NPM_LOCK_KEY = /^\s*"((?:[^"]*\/)?node_modules\/(?:@[^/"]+\/)?[^/"]+)"\s*:\s*\{/;
+/** An entry's first line in yarn.lock: `foo@^1.0.0:`, `"@scope/foo@npm:1.0.0":`, `foo@1, foo@^1:`. */
+const YARN_ENTRY = /^"?((?:@[^@/\s"]+\/)?[^@\s",]+)@[^\n]*:\s*$/;
+
+/**
+ * A new or changed dependency whose install runs its own scripts (ADR 0501, fourth review, S4).
+ * The install check runs them, and every later check runs on the tree it left (node_modules and
+ * `.bin` included), so such a script decides what the test runner is. pnpm 10 runs no dependency's
+ * scripts unless the project allows it (`onlyBuiltDependencies`, a PACKAGE_INSTALL finding); npm and
+ * yarn run them all. npm's lockfile marks them (`"hasInstallScript": true`); yarn's doesn't say,
+ * so any dependency added or changed there is named.
+ */
+function installScriptDeps(
+  path: string,
+  lines: readonly PatchLine[],
+): { line: number | null; message: string } | null {
+  const names: string[] = [];
+  let first: number | null = null;
+  if (NPM_LOCK.test(path)) {
+    let key: string | null = null;
+    for (const l of lines) {
+      if (l.sign !== "+") continue;
+      const k = NPM_LOCK_KEY.exec(l.text);
+      if (k?.[1]) key = k[1].replace(/^(?:.*\/)?node_modules\//, "");
+      if (/"hasInstallScript"\s*:\s*true/.test(l.text)) {
+        names.push(key ?? "a dependency");
+        first ??= l.line;
+      }
+    }
+    if (names.length === 0) return null;
+    return {
+      line: first,
+      message: `a new or changed dependency runs install scripts (${list(names)}): npm runs them at install, and every later check runs on the tree they leave`,
+    };
+  }
+  if (YARN_LOCK.test(path)) {
+    for (const l of lines) {
+      if (l.sign !== "+") continue;
+      const e = YARN_ENTRY.exec(l.text);
+      if (e?.[1] && !l.text.startsWith(" ") && e[1] !== "__metadata") {
+        names.push(e[1]);
+        first ??= l.line;
+      }
+    }
+    if (names.length === 0) return null;
+    return {
+      line: first,
+      message: `dependencies were added or changed in yarn.lock (${list(names)}): yarn runs their install scripts at install, the lockfile doesn't say which have any, and every later check runs on the tree they leave`,
+    };
+  }
+  return null;
+}
+
+const list = (names: readonly string[]) => {
+  const unique = [...new Set(names)];
+  return unique.length > 10
+    ? `${unique.slice(0, 10).join(", ")} and ${unique.length - 10} more`
+    : unique.join(", ");
+};
+
 interface PatchLine {
   sign: "+" | "-";
   text: string;
@@ -491,6 +554,16 @@ export function testsIntact(headSha: string, files: readonly ChangedFile[]): Tes
         line: null,
         text: null,
         message: `the lockfile changes how the test tooling resolves: ${[...tooling].sort().join(", ")}`,
+      });
+    }
+    const scripts = lockfile ? installScriptDeps(f.path, lines) : null;
+    if (scripts) {
+      add({
+        kind: "gate-file",
+        path: f.path,
+        line: scripts.line,
+        text: null,
+        message: scripts.message,
       });
     }
   }

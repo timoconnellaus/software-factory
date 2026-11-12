@@ -53,12 +53,41 @@ export default {
     await runAdjudicator(env);
     // Once an hour: the improver (ADR 0373) decides running trials and starts the next one.
     if (now.getUTCMinutes() === 23) await runImprover(env, now);
+    // Once an hour: check results of items that ended more than 30 days ago (ADR 0501).
+    if (now.getUTCMinutes() === 41) await pruneCheckResults(env.DB, now);
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
       await sweepStrayAttachmentBlobs(env.DB, r2AttachmentBlobs(env.ATTACHMENTS), now);
     }
   },
 } satisfies ExportedHandler<Env>;
+
+/** How long the factory's check results outlive their item (ADR 0501, fourth review). */
+export const CHECK_RESULTS_KEEP_DAYS = 30;
+
+/**
+ * The factory's check results are evidence for the merge gate (ADR 0501): kept while their item is
+ * open, and for CHECK_RESULTS_KEEP_DAYS after it ends (done, failed, rejected, cancelled). Hourly, at
+ * most `limit` rows a time, oldest first on `core_check_results_created_idx` (migration 0272); the
+ * item is a primary-key lookup. Returns how many went.
+ */
+export async function pruneCheckResults(db: D1Database, now: Date, limit = 500): Promise<number> {
+  const cutoff = new Date(now.getTime() - CHECK_RESULTS_KEEP_DAYS * 86_400_000).toISOString();
+  const r = await db
+    .prepare(
+      `DELETE FROM core_check_results WHERE rowid IN (
+         SELECT r.rowid FROM core_check_results r
+         JOIN core_work_items w ON w.id = r.work_item_id
+         WHERE r.created_at < ?1
+           AND w.status IN ('done', 'failed', 'rejected', 'cancelled')
+           AND w.updated_at < ?1
+         ORDER BY r.created_at
+         LIMIT ?2)`,
+    )
+    .bind(cutoff, limit)
+    .run();
+  return r.meta.changes ?? 0;
+}
 
 /**
  * Runs whose lease expired (the runner stopped heartbeating) are failed through `run.expire`, which

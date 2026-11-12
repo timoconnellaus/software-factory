@@ -18,11 +18,19 @@ import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import {
   assemblePacket,
+  storedNotRun,
   storedProof,
   storedTestFindings,
+  storedWaiver,
   verifyCheckOutput,
 } from "../verify/packet.ts";
-import { type CheckRun, executedChecks, hostChecksOn, notRunLines } from "../verify/proof.ts";
+import {
+  type CheckRun,
+  executedChecks,
+  hostChecksOn,
+  notRunLines,
+  notRunTitle,
+} from "../verify/proof.ts";
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
 import { requireQueueHead } from "./merge-queue.ts";
@@ -66,7 +74,8 @@ export async function postVerify(
     packetId: string | null;
     output: {
       status: "queued" | "in_progress" | "completed";
-      conclusion?: "success" | "failure";
+      /** `action_required`: declared checks could not be run, a person decides (fourth review). */
+      conclusion?: "success" | "failure" | "action_required";
       title: string;
       summary: string;
     };
@@ -140,7 +149,7 @@ const reviewerSchema = z.object({
 export const reviewPacketRecord = defineOperation({
   name: "reviewPacket.record",
   description:
-    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041), and post `factory/verify` for that SHA from the App (ADR 0037). The reviewer's report (criteria with evidence and the checks each links to, the reviewer's verdict, risk flags) is opinion; the agent's own report of checks is never used (ADR 0501). The verdict passes only when CI on GitHub is green for the SHA, every check the project declares passed on that SHA as the runner host ran it, and the packet is complete (every criterion met with evidence, the reviewer approves). Each criterion is marked Proven only when a check it links to passed on the SHA. Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0500): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
+    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041), and post `factory/verify` for that SHA from the App (ADR 0037). The reviewer's report (criteria with evidence and the checks each links to, the reviewer's verdict, risk flags) is opinion; the agent's own report of checks is never used (ADR 0501). The verdict passes only when CI on GitHub is green for the SHA, every check the project declares passed on that SHA as the runner host ran it (a check the runner could not run is not a failure: the verdict may pass, but `factory/verify` is then posted as action required, and the merge gate needs a person's explicit decision to merge without it, review.merge `mergeWithoutChecks`), and the packet is complete (every criterion met with evidence, the reviewer approves). Each criterion is marked Proven only when a check it links to passed on the SHA. Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0500): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -177,6 +186,12 @@ export const reviewPacketRecord = defineOperation({
     checkError: z.string().nullable(),
     /** The tests-intact guard's findings for this SHA (ADR 0500), one line each. */
     testFindings: z.array(z.string()).default([]),
+    /**
+     * Declared checks the runner could not run on this SHA, one line per reason (fourth review,
+     * S2). The verdict may still pass (nothing a build can fix, no build attempt burned), but
+     * `factory/verify` is action required and the merge gate asks a person to merge without them.
+     */
+    notRun: z.array(z.string()).default([]),
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
@@ -302,9 +317,78 @@ export const reviewPacketRecord = defineOperation({
       checkRunId: posted.checkRunId,
       checkError: posted.error,
       testFindings: testFindingLines(packet.testsIntact.findings, packet.testsIntact.total),
+      notRun: notRunLines(packet.executed.notRun),
     };
   },
 });
+
+/**
+ * The merge gate's rule for declared checks the runner could not run (fourth review, S2): a person
+ * merges only by an explicit decision to merge without them (`review.merge` with
+ * `mergeWithoutChecks`). Without it, refused with `conflict`. With it, the decision is recorded on
+ * the packet (`notRunWaived`: who, when, which checks) and in the audit, and `factory/verify` on the
+ * SHA is posted again as success, saying so. Nothing to decide (no packet, no check not run, already
+ * decided): returns []. Never called by an agent: review.merge is a person's.
+ */
+export async function decideNotRun(
+  ctx: HandlerContext,
+  item: WorkItemRow,
+  headSha: string,
+  mergeWithoutChecks: boolean,
+): Promise<string[]> {
+  const packet = await ctx.db
+    .selectFrom("core_review_packets")
+    .select(["id", "sections", "risk_flags"])
+    .where("work_item_id", "=", item.id)
+    .where("head_sha", "=", headSha)
+    .orderBy("created_at", "desc")
+    .executeTakeFirst();
+  if (!packet) return [];
+  const sections = parseObject(packet.sections);
+  const notRun = storedNotRun(sections);
+  if (notRun.length === 0 || storedWaiver(sections)) return [];
+  if (!mergeWithoutChecks) {
+    throw new OperationError(
+      "conflict",
+      `${notRunTitle(notRun)}. Merge only by deciding to merge without these checks.`,
+      { notRun: notRun.map((n) => n.name), needs: "mergeWithoutChecks" },
+    );
+  }
+  const waiver = { by: ctx.actor.id, at: ctx.now, checks: notRun.map((n) => n.name) };
+  const next: Record<string, unknown> = { ...sections, notRunWaived: waiver };
+  ctx.write(
+    ctx.db
+      .updateTable("core_review_packets")
+      .set({ sections: JSON.stringify(next) })
+      .where("id", "=", packet.id),
+  );
+  ctx.change({
+    entity: "review_packet",
+    id: packet.id,
+    after: { mergeWithoutChecks: notRun, headSha },
+  });
+  const repo = await repoRef(ctx, requireRepository(ctx));
+  const ci = await readCi(ctx, repo, headSha);
+  await postVerify(ctx, {
+    project: requireProject(ctx),
+    repo,
+    headSha,
+    item,
+    prNumber: item.pr_number,
+    packetId: packet.id,
+    output: verifyCheckOutput({
+      evidencePass: next.evidencePass === true,
+      evidenceReasons: strings(next.evidenceReasons),
+      warnings: strings(next.warnings),
+      riskFlags: strings(parseJson(packet.risk_flags)),
+      ci,
+      workItem: item,
+      ...storedTestFindings(next),
+      ...storedProof(next),
+    }),
+  });
+  return waiver.checks;
+}
 
 export const ciRead = defineOperation({
   name: "ci.read",
@@ -351,6 +435,7 @@ function checkRunOf(r: {
   log_tail: string;
   round: number;
   not_run: string | null;
+  isolation?: string | null;
 }): CheckRun {
   return {
     name: r.name,
@@ -361,6 +446,7 @@ function checkRunOf(r: {
     logTail: r.log_tail,
     round: r.round,
     notRun: r.not_run,
+    isolation: r.isolation ?? null,
   };
 }
 

@@ -26,7 +26,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readlink, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, sep } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -128,6 +128,15 @@ export function socketPathProblem(
 const within = (p: string, dir: string) =>
   p === dir || p.startsWith(dir.endsWith(sep) ? dir : `${dir}${sep}`);
 
+/** `p`'s real path, or `p` where it doesn't resolve. */
+const realOr = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
 /** The tools a check may need, found on its PATH. */
 const TOOLS = ["node", "npm", "npx", "pnpm", "pnpx", "corepack", "yarn", "git", "bun"];
 
@@ -197,6 +206,31 @@ export function sandboxAvailable(
   return false;
 }
 
+/**
+ * The shared temp dirs a check on macOS may not read (fourth review, S3): `/tmp` and `/private/tmp`,
+ * and the user's own `/var/folders/<x>/<y>` (its `T`, `C` and `0`), where the owner's other tools
+ * keep their temp files and caches. The check's own temp is under its own dir.
+ */
+export function macTempDenies(tmp: string = tmpdir()): string[] {
+  const out = ["/tmp", "/private/tmp"];
+  let real = tmp;
+  try {
+    real = realpathSync(tmp);
+  } catch {
+    // as given
+  }
+  const m = /^(?:\/private)?(\/var\/folders\/[^/]+\/[^/]+)/.exec(real);
+  if (m?.[1]) out.push(m[1], `/private${m[1]}`);
+  return out;
+}
+
+/**
+ * Programs a check on macOS may not run (fourth review): `launchctl` reads and drives the owner's
+ * login session (`launchctl print gui/<uid>`), which the sandbox's mach rules don't cover (it uses
+ * the bootstrap port every process inherits). Denied by path in the sandbox profile.
+ */
+export const MAC_DENY_EXEC = ["/bin/launchctl"];
+
 /** The sandbox for one check: the harness floor (ADR 0270) around the check's own directories. */
 export function checkSandboxSettings(
   job: Pick<Job, "harness">,
@@ -209,7 +243,15 @@ export function checkSandboxSettings(
   // The rest of the job's checks (other checks, the export's index) and other jobs' checks.
   const jobRoot = dirname(dirs.root);
   const checksDir = dirname(jobRoot);
-  const denied = [home, ...homeDeny, ...options.protectPaths, jobRoot, checksDir];
+  const platform = options.platform ?? process.platform;
+  // macOS (the weaker sandbox a Mac runner's owner opted in to): no shared temp dirs either.
+  // The runner's checks dir is under its data dir in the home, never in a temp dir; a check dir that
+  // is (a test's scratch dir) keeps the temp dir that holds it readable, or it couldn't run at all.
+  const temps =
+    platform === "darwin"
+      ? macTempDenies().filter((t) => !within(dirs.root, t) && !within(realOr(dirs.root), t))
+      : [];
+  const denied = [home, ...homeDeny, ...options.protectPaths, jobRoot, checksDir, ...temps];
   const tools = toolchainPaths(
     (options.env ?? process.env).PATH ?? "",
     home,
@@ -624,6 +666,8 @@ export function sandboxedExec(
      * `env.TMPDIR`. Default: the command's.
      */
     sockets?: string;
+    /** Programs the check may not run (macOS: added to the sandbox profile). */
+    denyExec?: string[];
   },
   signal: AbortSignal,
 ): Promise<ExecResult> {
@@ -638,6 +682,7 @@ export function sandboxedExec(
         settings,
         command: command.run,
         ...(options.env.TMPDIR !== undefined ? { tmpdir: options.env.TMPDIR } : {}),
+        ...(options.denyExec?.length ? { denyExec: options.denyExec } : {}),
       }),
       report: true,
       track: true,
@@ -732,7 +777,8 @@ function runInSandbox(
       }
       const settings = checkSandboxSettings(job, { ...dirs, sockets }, options);
       const env = await checkSandboxEnv(dirs.root, options.env);
-      return await sandboxedExec(
+      const mac = (options.platform ?? process.platform) === "darwin";
+      const r = await sandboxedExec(
         settings,
         command,
         {
@@ -740,10 +786,13 @@ function runInSandbox(
           env,
           sockets,
           reapUnder: dirs.root,
+          ...(mac ? { denyExec: MAC_DENY_EXEC } : {}),
           ...(options.node ? { node: options.node } : {}),
         },
         signal,
       );
+      // On macOS this is the weaker sandbox a Mac runner's owner opted in to (fourth review).
+      return r.notRun ? r : { ...r, isolation: mac ? "weaker-sandbox" : "sandbox" };
     } finally {
       await rm(sockets, { recursive: true, force: true }).catch(() => {});
     }

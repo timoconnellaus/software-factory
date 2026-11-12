@@ -208,6 +208,68 @@ describe("executed checks and proof (pure)", () => {
     ]);
   });
 
+  it("posts factory/verify as action required, not success, while declared checks were not run (fourth review)", () => {
+    const reason = "this Mac runner has no container runtime";
+    const packet = assemblePacket({
+      headSha: SHA,
+      evidence: {
+        summary: "",
+        criteria: [{ criterion: "A", met: true, evidence: "x" }],
+        checks: [],
+        reviewer: { role: "review", verdict: "approve", notes: "" },
+        riskFlags: [],
+      },
+      ci: green,
+      files: [],
+      sameModelAsImplementer: false,
+      hostChecks: true,
+      declaredChecks: ["lint", "tests"],
+      checksRun: [
+        { ...ran("lint", 0), isolation: "weaker-sandbox" },
+        { ...ran("tests", null), notRun: reason },
+      ],
+    });
+    // Nothing a build can fix: the verdict passes (no build attempt burned)...
+    expect(packet.verdict).toBe("pass");
+    expect(packet.executed.weaker).toEqual(["lint"]);
+    expect(packet.warnings.join("\n")).toMatch(/ran in the weaker sandbox .* \(lint\)/);
+    const args = {
+      evidencePass: packet.evidencePass,
+      evidenceReasons: packet.evidenceReasons,
+      warnings: packet.warnings,
+      riskFlags: [],
+      ci: green,
+      workItem: { number: 7, title: "x" },
+    };
+    // ...but factory/verify is not success.
+    const out = verifyCheckOutput({ ...args, ...storedProof(packet.sections) });
+    expect(out).toMatchObject({
+      status: "completed",
+      conclusion: "action_required",
+      title: `1 declared check could not be run on this runner: ${reason}`,
+    });
+    expect(out.summary).toContain(`- tests: ${reason}`);
+    expect(out.summary).toContain("in the weaker sandbox");
+    // CI still decides first: pending stays pending, failing fails.
+    expect(
+      verifyCheckOutput({
+        ...args,
+        ci: { ...green, state: "pending" },
+        ...storedProof(packet.sections),
+      }).status,
+    ).toBe("in_progress");
+    // A person's recorded decision to merge without them: success, saying so.
+    const waived = verifyCheckOutput({
+      ...args,
+      ...storedProof({
+        ...packet.sections,
+        notRunWaived: { by: "usr_1", at: "2026-11-12T00:00:00.000Z", checks: ["tests"] },
+      }),
+    });
+    expect(waived.conclusion).toBe("success");
+    expect(waived.title).toMatch(/merged without 1 check that could not be run/);
+  });
+
   it("marks proof weakened when the tests-intact guard found gate-file edits", () => {
     const executed = executedChecks(SHA, ["tests"], [ran("tests", 0)]);
     const [p] = proveCriteria([{ criterion: "A", met: true, evidence: "x" }], executed, ciWith(), {

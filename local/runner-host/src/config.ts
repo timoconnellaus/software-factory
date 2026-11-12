@@ -65,6 +65,18 @@ export const configSchema = z.object({
    * permissions off; `sprites` is a cloud sandbox per job on Sprites, made by this host (ADR 0480).
    */
   isolation: z.enum(["sandbox", "container", "sprites"]).default("sandbox"),
+  /**
+   * Where a `sandbox` runner runs the project's checks (ADR 0501, fourth review). On a Mac they run
+   * in a fresh check container when a container runtime answers (`container.docker`, else `docker`
+   * on PATH); with none, they are "not run". `weakerMacSandbox: true` lets them run under the macOS
+   * OS sandbox instead, which can't stop a process a check leaves from outliving it, nor give a
+   * check a loopback of its own: the merge gate then says they ran in the weaker sandbox. Only this
+   * file sets it: never the repo, never the cloud. Linux runners always use the OS sandbox.
+   */
+  checks: z
+    .object({ weakerMacSandbox: z.boolean().default(false) })
+    .strict()
+    .optional(),
   /** Container isolation's settings (ADR 0430). */
   container: z
     .object({

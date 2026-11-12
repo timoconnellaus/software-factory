@@ -30,6 +30,8 @@ export interface CheckRun {
    * never passed, never proven, and never a failure the build is sent back for (third review).
    */
   notRun?: string | null | undefined;
+  /** Where it ran (fourth review): `weaker-sandbox` is named at the gate. */
+  isolation?: string | null | undefined;
 }
 
 export interface CheckOutcome extends CheckRun {
@@ -58,6 +60,11 @@ export interface ExecutedChecks {
    * at the merge gate), never passed, never proven.
    */
   notRun: { name: string; reason: string }[];
+  /**
+   * Declared checks that ran in the weaker sandbox of a Mac runner whose owner opted in (fourth
+   * review): a process such a check leaves can outlive it. Said at the gate, never hidden.
+   */
+  weaker: string[];
 }
 
 export function executedChecks(
@@ -96,7 +103,31 @@ export function executedChecks(
   });
   const names = new Set(decls.map((d) => key(d.name)));
   const extra = ran.filter((r) => !names.has(key(r.name))).map(outcome);
-  return { declared: decls.map((d) => d.name), results, extra, reasons, notRun };
+  const weaker = results
+    .filter((r): r is CheckOutcome => !!r && !r.notRun && r.isolation === "weaker-sandbox")
+    .map((r) => r.name);
+  return { declared: decls.map((d) => d.name), results, extra, reasons, notRun, weaker };
+}
+
+/**
+ * `factory/verify`'s title when declared checks could not be run (fourth review, S2): "N declared
+ * checks could not be run on this runner: <reason>".
+ */
+export function notRunTitle(notRun: ExecutedChecks["notRun"]): string {
+  const reasons = [...new Set(notRun.map((n) => n.reason))];
+  const n = notRun.length;
+  const title = `${n} declared check${n === 1 ? "" : "s"} could not be run on this runner: ${reasons.join("; ")}`;
+  // A check run's title is short on GitHub; the summary says the rest.
+  return title.length > 200 ? `${title.slice(0, 199)}…` : title;
+}
+
+/** The gate's line for checks that ran in the weaker sandbox (fourth review). */
+export function weakerLines(weaker: readonly string[]): string[] {
+  return weaker.length
+    ? [
+        `these checks ran in the weaker sandbox of a Mac runner whose owner opted in (${weaker.join(", ")}): a process a check leaves can outlive it (ADR 0501)`,
+      ]
+    : [];
 }
 
 /**
@@ -288,6 +319,7 @@ export function checkLines(executed: Pick<ExecutedChecks, "declared" | "results"
     if (!r) return `${name}: didn't run on this commit`;
     if (r.notRun) return `${name}: not run (${r.notRun})`;
     const how = r.timedOut ? "timed out" : `exit ${r.exitCode ?? "signal"}`;
-    return `${name}: ${r.passed ? "passed" : "failed"} (\`${r.command}\`, ${how}, ${Math.round(r.durationMs / 1000)} s)`;
+    const where = r.isolation === "weaker-sandbox" ? ", in the weaker sandbox" : "";
+    return `${name}: ${r.passed ? "passed" : "failed"} (\`${r.command}\`, ${how}, ${Math.round(r.durationMs / 1000)} s${where})`;
   });
 }

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import {
   cp,
@@ -225,6 +225,9 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
         // the job's other checks, and other jobs'; this check's own dir is re-allowed
         "/t/sf-checks/job_1-x",
         "/t/sf-checks",
+        // macOS (fourth review, S3): the shared temp dirs.
+        "/tmp",
+        "/private/tmp",
       ]),
     );
     expect(s.filesystem.allowRead).toEqual([
@@ -646,6 +649,83 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       expect(r.output).toMatch(/node v\d+/);
       expect(r.output).toMatch(/git version/);
       if (process.platform === "darwin") expect(r.output).not.toContain("LISTED-HOME");
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox && process.platform === "darwin")(
+    "macOS (the weaker sandbox): no /tmp, /private/tmp or the user's /var/folders, and no launchctl",
+    async () => {
+      // Fourth review, S3: at the runner's real checks dir (under its data dir, not a temp dir).
+      const real = paths();
+      await mkdir(real.checksDir, { recursive: true, mode: 0o700 });
+      const jobRoot = await mkdtemp(join(real.checksDir, "job_s3-"));
+      cleanups.push(() => rm(jobRoot, { recursive: true, force: true }));
+      const root = join(jobRoot, "r0-0");
+      const dir = join(root, "tree");
+      await mkdir(dir, { recursive: true });
+      const inTmp = `/tmp/sf-s3-probe-${process.pid}`;
+      const inVar = join(tmpdir(), `sf-s3-probe-${process.pid}`);
+      await writeFile(inTmp, "TMP-SECRET");
+      await writeFile(inVar, "VARFOLDERS-SECRET");
+      cleanups.push(() => rm(inTmp, { force: true }));
+      cleanups.push(() => rm(inVar, { force: true }));
+      const sandbox = checkSandbox({
+        protectPaths: [real.configDir, real.runsDir],
+        checksDir: real.checksDir,
+        socketsDir: real.checkSocketsDir,
+      });
+      if (!sandbox) throw new Error("no sandbox");
+      const r = await sandbox(j, { root, dir })(
+        {
+          run: [
+            `cat ${inTmp} /private${inTmp} ${inVar}`,
+            `ls ${dirname(realpathSync(tmpdir()))} >/dev/null 2>&1 && echo LISTED-VAR-FOLDERS`,
+            "launchctl print gui/$(id -u) 2>&1 | head -3",
+            "/bin/launchctl print gui/$(id -u) >/dev/null 2>&1 && echo LAUNCHCTL-WORKED",
+            "echo ok > here && cat here",
+          ].join("\n"),
+          timeoutMs: 60_000,
+        },
+        never,
+      );
+      expect(r.notRun).toBeUndefined();
+      expect(r.isolation).toBe("weaker-sandbox");
+      expect(r.output).not.toMatch(
+        /TMP-SECRET|VARFOLDERS-SECRET|LISTED-VAR-FOLDERS|LAUNCHCTL-WORKED|type = login/,
+      );
+      expect(r.output).toContain("ok");
+    },
+    120_000,
+  );
+
+  it.runIf(realSandbox && process.platform === "linux")(
+    "Linux: a server the check starts is reachable on its own loopback, and a setsid escape dies with it",
+    async () => {
+      const { root, dir, exec } = await realCheck();
+      const marker = `sf-escape-${process.pid}-${Date.now()}`;
+      const r = await exec(
+        {
+          run: [
+            // Fourth review, S5: a test that starts a server and talks to it.
+            `node -e "const s = require('http').createServer((q, r) => r.end('pong')).listen(0, '127.0.0.1', async () => { console.log('server said ' + await (await fetch('http://127.0.0.1:' + s.address().port)).text()); s.close() })"`,
+            // Fourth review, S1: the middle shell exits at once; the grandchild calls setsid.
+            `( ( cd / && exec perl -MPOSIX -e 'POSIX::setsid(); $0 = "${marker}"; while (1) { open(F, ">", $ARGV[0]); print F time; close F; sleep 1 }' "$PWD/alive" & ) & )`,
+            "sleep 1; echo left-it",
+          ].join("\n"),
+          timeoutMs: 60_000,
+        },
+        never,
+      );
+      expect(r).toMatchObject({ exitCode: 0, isolation: "sandbox" });
+      expect(r.output).toContain("server said pong");
+      expect(r.output).toContain("left-it");
+      const ps = spawnSync("ps", ["-A", "-o", "pid=,command="], { encoding: "utf8" }).stdout;
+      expect(ps.split("\n").filter((l) => l.includes(marker))).toEqual([]);
+      expect(await processesUnder(root)).toEqual([]);
+      const before = await readFile(join(dir, "alive"), "utf8");
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      expect(await readFile(join(dir, "alive"), "utf8")).toBe(before);
     },
     120_000,
   );
