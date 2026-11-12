@@ -114,13 +114,12 @@ describe("stop the line (spec 53)", () => {
     }>("delivery.status", { projectId: w.projectId }, w.human);
     expect(status.repositories[0]?.main?.state).toBe("red");
     expect(status.repositories[0]?.deliveries.map((d) => d.state)).toEqual(["held"]);
-    const inbox = await ok<{ mainRed: { projectId: string; held: number; failing: string[] }[] }>(
+    const inbox = await ok<{ mainRed: { projectId: string; failing: string[] }[] }>(
       "inbox.list",
       {},
       w.human,
     );
     expect(inbox.mainRed.find((c) => c.projectId === w.projectId)).toMatchObject({
-      held: 1,
       failing: ["ci"],
     });
 

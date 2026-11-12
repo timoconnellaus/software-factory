@@ -17,7 +17,8 @@ CREATE TABLE core_main_health (
   first_red_sha TEXT,
   checked_at TEXT NOT NULL
 );
-CREATE INDEX core_main_health_red_idx ON core_main_health (project_id, red_since);
+-- `delivery.status` reads a project's rows; the inbox reaches them through the caller's projects.
+CREATE INDEX core_main_health_project_idx ON core_main_health (project_id);
 
 -- A work item whose merge repairs a red default branch (a fix or a revert): it lands while the
 -- line is stopped, ahead of everything else in its queue. Set by a person (`workItem.markRepair`)
