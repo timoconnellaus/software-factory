@@ -49,6 +49,17 @@ export const configSchema = z.object({
    */
   load: loadPolicySchema.optional(),
   /**
+   * Test only: how long a pending update waits before the host takes light jobs only, and before it
+   * takes nothing (ADR 0520; defaults 30 and 60 minutes). Leave it out of a real runner.json.
+   */
+  updateCaps: z
+    .object({
+      heavyAfterMinutes: z.number().min(0).max(1_440).optional(),
+      allAfterMinutes: z.number().min(0).max(1_440).optional(),
+    })
+    .strict()
+    .optional(),
+  /**
    * Where jobs run (ADR 0430): `sandbox` (default) is a worktree with Claude Code's OS sandbox on
    * this machine (ADR 0270); `container` is a Docker container per job, every stage with
    * permissions off.

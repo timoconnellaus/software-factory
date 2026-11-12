@@ -342,22 +342,33 @@ What differs from macOS:
 `local/runner-host/scripts/linux-check.sh` runs runner-local's real-tmux test, the harness tests
 and these unit tests in a Debian container (Docker or OrbStack). It skips when neither is running.
 
-## Updating itself (spec 08, ADR 0360)
-The engine answers each heartbeat with `desiredVersion`: the commit it was deployed from, which
-passed CI, `factory/verify` and the merge gate. The runner reports its own commit and update state
-on each heartbeat, and when it is behind:
+## Updating itself (spec 08 and 38, ADR 0360 and 0520)
+The engine answers each heartbeat with `desiredVersion`: the last commit on `main` that changed
+runner code (`RUNNER_SHA`: this package, `packages/runner-*`, `packages/harness-*` and their
+workspace dependencies, computed by the deploy), which passed CI, `factory/verify` and the merge
+gate. A deploy that changed only the engine or the app doesn't move it. A checkout at that commit or
+ahead of it (on a later deployed commit, say) is `current`. The runner reports its own commit, its
+`RUNNER_COMPAT` and its update state on each heartbeat, and when it is behind:
 1. **It checks it can.** Otherwise it reports `blocked` with the reason and carries on claiming on
    its current code. Blocked when:
    - `autoUpdate` is `false` in `runner.json`;
    - the checkout has local changes (anything in `git status --porcelain`, untracked files too);
    - it is on a branch other than `main` (detached is fine);
    - the desired commit isn't on `origin/main` (it fetches `origin main` to find out);
-   - the move isn't a fast-forward (it would go backwards, or the checkout has its own commits);
+   - the move isn't a fast-forward (the checkout has its own commits);
    - it isn't the launchd service (`sf-runner run` in a terminal reports, but never updates);
    - the update to that commit already failed (retried after an hour) or was rolled back (never
      retried).
-2. **It waits** (`waiting`): no new claims; the jobs it holds finish. None is cancelled.
-3. **Once idle it updates** (`updating`): it writes the update record, moves the checkout to
+2. **It keeps working** (`waiting`): it claims as usual on its current code, and the jobs it holds
+   finish. None is cancelled for an update. If the update has been pending:
+   - **30 minutes**, it claims light jobs only (triage, spec, planning): its heartbeat and claims
+     report the heavy pool full, so no new build or verify comes; ones already claimed finish;
+   - **60 minutes**, it claims nothing, so light jobs can't hold the update off forever. It
+     reports `claims: none`, and the engine asks its idle planning sessions to yield (they resume
+     here once it has updated). While it is `waiting` the engine starts no planning session on it.
+
+   The timer is kept in `update-pending-since` in the state dir, so a restart doesn't restart it.
+3. **At the first heartbeat with no job running it updates** (`updating`): it writes the update record, moves the checkout to
    exactly that commit (`git merge --ff-only`, or `checkout --detach` if detached), runs
    `pnpm install --frozen-lockfile` and exits 75, and launchd starts the new code. If the move or
    the install fails it moves back, reports `blocked` and carries on.
@@ -372,6 +383,16 @@ The record is a few one-line files in `~/.local/state/software-factory/runner/up
 `pending`, `confirmed`, `failed`, `rolled_back`; `from`, `to`, `mode`, `starts`, `at`, `reason`),
 and rolled-back commits are listed in `update-rolled-back`. The plist passes the state directory as
 `SF_RUNNER_STATE_DIR` so the wrapper and Node agree on it.
+
+**A breaking engine change drains at once.** The heartbeat also carries `minRunnerCompat`, the
+engine's `RUNNER_COMPAT` (`packages/runner-contract`). When it is above this code's, the runner
+claims nothing from that heartbeat on, whatever the caps say (the engine also sends no job to a
+runner whose reported `compat` is below its own), and updates once its jobs have ended
+(or reports `blocked` with both reasons if it can't update). `RUNNER_COMPAT` is bumped by hand only
+for a change an older runner can't follow; the rule is in its comment and in ADR 0520.
+
+`updateCaps` in `runner.json` (`{ "heavyAfterMinutes": 30, "allAfterMinutes": 60 }`) is for tests
+only; leave it out of a real runner.
 
 **Turn it off** with `"autoUpdate": false` in `runner.json` (then restart the service:
 `launchctl kickstart -k gui/$(id -u)/com.software-factory.runner` on macOS,

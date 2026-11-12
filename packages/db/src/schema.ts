@@ -519,6 +519,8 @@ export interface CoreRunnersTable {
   account_requested_at: Iso | null;
   /** 0300 (ADR 0532): why it takes nothing new in some pools (capacity.paused), or null. */
   paused: JsonText | null;
+  /** 0290 (ADR 0520): the runner's RUNNER_COMPAT as it last reported; null (never) counts as 1. */
+  compat: number | null;
 }
 
 export interface CoreRunnerSharesTable {

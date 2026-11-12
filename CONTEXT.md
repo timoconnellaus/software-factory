@@ -304,6 +304,22 @@ tmux on the runner's machine, ADR 0380; it replaced the first adapter, `runner-o
 boxes, sandboxes and `runner-codex-cloud`. The core only knows the contract.
 _Avoid_: driver, plugin, integration
 
+**Runner code**
+What a runner host runs from its own checkout: `local/runner-host`, `packages/runner-*`,
+`packages/harness-*` and their workspace dependencies. The **desired version** a heartbeat hands out
+is the last commit on `main` that changed it (`RUNNER_SHA`, computed by the deploy), not every
+deployed commit; a runner at or ahead of it is current (ADR 0520). A runner behind it keeps claiming
+and updates at its first idle heartbeat (light jobs only after 30 minutes pending, nothing after 60).
+_Avoid_: runner version (ambiguous with the compat level)
+
+**Runner compat level**
+`RUNNER_COMPAT` in `packages/runner-contract`: a number bumped by hand in the PR that makes a change
+an older runner can't follow. The engine sends its own as `minRunnerCompat`; a runner below it claims
+nothing until it has updated, and the engine sends no job to a runner that reported a lower one
+(ADR 0520). Everything short of that follows the compatibility rule:
+optional new fields, growing enums, new kinds of job behind a capability.
+_Avoid_: contract version (`CONTRACT_VERSION`, which stays fixed)
+
 **Job session**
 The live harness for one job: under runner-local, Claude Code in the tmux session `sf-<jobId>` on
 the factory's own tmux socket (`tmux -L software-factory`), in the job's worktree. Its status comes
