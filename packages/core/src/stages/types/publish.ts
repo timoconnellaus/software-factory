@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import { same } from "../../policy/impact.ts";
 import type { StageType } from "../contract.ts";
+import { gateStep, latest } from "../reconcile.ts";
 import { deciderImpact, deciderSchema } from "../settings.ts";
 
 const settings = z
@@ -66,6 +67,24 @@ export const publish: StageType<typeof settings> = {
     { id: "decide", kind: "decision" },
     { id: "act", kind: "check" },
   ],
+  // The merge gate on the review packet; approved, the merge through the queue (or directly).
+  next: (ctx) => {
+    const at = ctx.entry.stageId;
+    if (ctx.observations.merged) return { kind: "complete", stageId: at };
+    const gated = gateStep(ctx, "gate", { kind: "merge", operation: "pr.merge" }, null, (note) => ({
+      kind: "sendBack",
+      stageId: at,
+      to: "",
+      note,
+    }));
+    if (gated) return gated;
+    if (ctx.settings.via === "mergeQueue" && !ctx.observations.queueTurn)
+      return { kind: "wait", stageId: at, why: "queue" };
+    const merge = latest(ctx.steps, "merge")?.step;
+    if (!merge) return { kind: "operation", stageId: at, stepId: "merge", operation: "pr.merge" };
+    if (merge.status === "failed") return { kind: "fail", stageId: at, reason: "the merge failed" };
+    return { kind: "wait", stageId: at, why: "merge" };
+  },
   impact: (before, after, stageId) => {
     const out: ImpactChange[] = deciderImpact(`${stageId}.decider`, before.decider, after.decider);
     if (before.via !== after.via)

@@ -8,6 +8,7 @@ import type { Capability, ModelRole } from "@software-factory/runner-contract";
 import type { z } from "zod";
 import type { RiskClass } from "../policy/gate.ts";
 import type { ImpactChange } from "../policy/impact.ts";
+import type { ItemSnapshot, NextContext, StageAction } from "./reconcile.ts";
 
 export const PHASES = ["shaping", "delivery"] as const;
 export type Phase = (typeof PHASES)[number];
@@ -154,6 +155,17 @@ export interface StageType<S extends z.ZodType = z.ZodType> {
    * compared setting by setting. Absent, or returning null: the bump is a loosening (ADR 0516).
    */
   migrate?(settings: unknown, fromVersion: number): unknown | null;
+  /**
+   * Why the stage is skipped for this item, beyond its `when` (the spec stage below its size
+   * threshold); null when it runs. Pure.
+   */
+  skip?(settings: z.infer<S>, item: ItemSnapshot["item"]): string | null;
+  /**
+   * The next action inside the current entry (ADR 0511): a job, a gate, an operation, a wait, or
+   * the stage's end (complete, send back, fail, reject). Pure. A send-back with `to: ""` goes to the
+   * nearest earlier stage that produces what this one consumes.
+   */
+  next?(ctx: NextContext<z.infer<S>>): StageAction;
 }
 
 /** Erases a type's settings parameter so different types fit one registry. */

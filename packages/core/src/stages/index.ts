@@ -4,6 +4,7 @@ export * from "./compile.ts";
 export * from "./contract.ts";
 export * from "./impact.ts";
 export * from "./org-config.ts";
+export * from "./reconcile.ts";
 export * from "./registry.ts";
 export * from "./settings.ts";
 export * from "./validate.ts";
