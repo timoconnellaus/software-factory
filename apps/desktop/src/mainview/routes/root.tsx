@@ -41,11 +41,13 @@ function Root() {
       }),
     [router, client],
   );
-  // The main process's inbox count changes on a live push or a poll: refresh what shows gates.
+  // The main process's inbox count changes on a live push or a poll: refresh what shows gates,
+  // and the Work lists and board, which the same events move (a gate opened, an item shaped).
   useEffect(
     () =>
       onInbox(() => {
         void client.invalidateQueries({ queryKey: ["inbox"] });
+        void client.invalidateQueries({ queryKey: ["work"] });
       }),
     [client],
   );

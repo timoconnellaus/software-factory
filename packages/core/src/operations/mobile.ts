@@ -16,10 +16,11 @@
 //
 // The nonce is stateless until used (ADR 0541 amendment, 2026-11-12, second review): an expiry and
 // random bytes signed with an HMAC under the engine's secret. Asking for one stores nothing, so no
-// number of callers can use them up and block other people's sign-in; a per-caller courtesy limit
-// (ten every five minutes) is all that is counted. mobile.authStart checks the signature and the
-// expiry, then records the nonce as spent in a statement of its own, committed before anything
-// else is decided, so it is spent whatever the answer and whatever happens to the rest of the call.
+// number of callers can use them up and block other people's sign-in. The per-caller courtesy limit
+// is sf-engine's (a Workers rate limiting binding in front of the door), so asking writes nothing
+// to D1 either. mobile.authStart checks the signature and the expiry, then records the nonce as
+// spent in a statement of its own, committed before anything else is decided, so it is spent
+// whatever the answer and whatever happens to the rest of the call.
 //
 // The typed code's limits. A guess costs a real phone running the real app: the attestation is
 // checked before the code is even looked at, and each try needs a new nonce and a new Keystore key.
@@ -82,8 +83,6 @@ export const PAIR_CODE_ATTEMPTS = 5;
 export const PAIR_CODE_TRIES_PER_CALLER = 10;
 /** Wrong typed codes an hour, across the factory, after which a caller with a wrong one is held. */
 export const PAIR_CODE_WRONG_PER_HOUR = 30;
-/** Nonces one caller may ask for every five minutes: a courtesy limit, nothing global. */
-export const MOBILE_NONCES_PER_CALLER = 10;
 /** The answer to every refused code or QR secret, whatever the reason (one answer, see above). */
 export const PAIR_CODE_REFUSED =
   "this pairing code is wrong, used or expired: check it against the screen, or make a new one on the desktop or the website";
@@ -228,8 +227,8 @@ function attestationService(ctx: HandlerContext): MobileAttestationService {
 export const mobileNonce = defineOperation({
   name: "mobile.nonce",
   description:
-    "A one-use nonce (5 minutes) for the phone's key attestation (ADR 0541): the phone generates its Keystore key with SHA-256 of this nonce as the attestation challenge, then sends both with mobile.authStart. Stateless: signed by the engine and recorded only when mobile.authStart spends it. Ten every five minutes per network address, as a courtesy. Called unsigned by sf-engine's client door.",
-  risk: "write",
+    "A one-use nonce (5 minutes) for the phone's key attestation (ADR 0541): the phone generates its Keystore key with SHA-256 of this nonce as the attestation challenge, then sends both with mobile.authStart. Stateless: signed by the engine and recorded only when mobile.authStart spends it. sf-engine's client door limits it per network address before the call (a courtesy). Called unsigned by sf-engine's client door. A read: it writes nothing, so it isn't audited either.",
+  risk: "read",
   actors: ["runner"],
   permission: "signed-in",
   input: z.object({}),
@@ -238,19 +237,7 @@ export const mobileNonce = defineOperation({
   async handler(_input, ctx) {
     requireMobileActor(ctx);
     const service = attestationService(ctx);
-    const caller = ctx.origin.caller ?? "";
     const nowMs = Date.parse(ctx.now);
-    // The courtesy limit: one counter per caller and five-minute window. It holds only that caller.
-    const bucket = Math.floor(nowMs / MOBILE_NONCE_TTL_MS);
-    ctx.write(
-      ctx.d1
-        .prepare(
-          `INSERT INTO core_mobile_nonce_asks (caller, bucket, n) VALUES (?1, ?2, 1)
-           ON CONFLICT (caller, bucket) DO UPDATE SET n = n + 1 WHERE n < ?3`,
-        )
-        .bind(caller, bucket, MOBILE_NONCES_PER_CALLER),
-    );
-    ctx.guardChanged("under this caller's nonce limit");
     const expiresMs = nowMs + MOBILE_NONCE_TTL_MS;
     return {
       nonce: await signNonce(service, expiresMs),
