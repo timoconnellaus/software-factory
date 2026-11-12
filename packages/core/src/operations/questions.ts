@@ -22,6 +22,7 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import { logPlanning, openSession, takeBackFromGate, wakeSession } from "../planning.ts";
 import { approverIds, backupOwnerId } from "../scope.ts";
 import { questionsEvent } from "../workflow-events.ts";
+import { resumeParked } from "./backlog.ts";
 import { byJob, notifyAway, planningJob, planningJobFields } from "./planning.ts";
 import { fencingToken, jobId, questionId, requireWorkItem, workItemId } from "./shared.ts";
 
@@ -674,6 +675,12 @@ async function answerQuestion(
     await wakeSession(ctx, requireWorkItem(ctx));
     return { answered: true, revised: revisable, roundComplete: false };
   }
+  // A parked item's needs-info question (spec 23): the item goes on once the request is clear.
+  // Its Workflow hasn't started (or ended when triage parked it): no round to close.
+  const resumed = await resumeParked(ctx, requireWorkItem(ctx), {
+    answered: { id: q.id, answer: input.answer ?? "" },
+  });
+  if (resumed) return { answered: true, revised: false, roundComplete: resumed === "resumed" };
   const roundComplete = await closeRoundIfDone(ctx, [q.id]);
   return { answered: true, revised: false, roundComplete };
 }

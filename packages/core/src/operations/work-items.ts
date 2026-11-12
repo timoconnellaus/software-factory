@@ -10,6 +10,7 @@ import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { endPlanningSessions } from "../planning.ts";
 import { specRequired } from "../policy/project-policy.ts";
+import { parkIfNotReady } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
@@ -161,6 +162,8 @@ export const workItemCreate = defineOperation({
     outcome: z.enum(["created", "attached", "duplicate"]),
     /** Where a created item is now: `running` when the pull started it at once. */
     status: z.string().optional(),
+    /** Set when the readiness pre-check parked it in the Backlog (spec 23). */
+    needsInfo: z.object({ waitingOn: z.string(), reason: z.string() }).optional(),
   }),
   async handler(input, ctx) {
     const project = requireProject(ctx);
@@ -261,8 +264,28 @@ export const workItemCreate = defineOperation({
       acceptanceCriteria: input.acceptanceCriteria ?? null,
     });
     await linkNewItem(ctx, { id: created.id, org_id: project.org_id }, input.waitsFor);
+    // Marked ready or released at once: the readiness pre-check runs (spec 23), and an unclear
+    // request lands in the Backlog with a question to its requester instead.
+    const parked =
+      input.state === "ready" || input.state === "queued"
+        ? parkIfNotReady(
+            ctx,
+            {
+              id: created.id,
+              project_id: project.id,
+              org_id: project.org_id,
+              number: project.next_number,
+              title,
+              requester_user_id: requester,
+              body: input.body,
+              parent_work_item_id: null,
+              kind: "change",
+            },
+            input.state,
+          )
+        : null;
     // Create and release: the pull runs right after this commits, in its own batch.
-    if (input.state === "queued") requestPull(ctx, project.id);
+    if (input.state === "queued" && !parked) requestPull(ctx, project.id);
     ctx.write(
       ctx.db
         .insertInto("core_intake_keys")
@@ -278,7 +301,8 @@ export const workItemCreate = defineOperation({
       number: project.next_number,
       branch: created.branch,
       outcome: "created" as const,
-      status: input.state,
+      status: parked ? "backlog" : input.state,
+      ...(parked ? { needsInfo: { waitingOn: parked.waitingOn, reason: parked.reason } } : {}),
     };
   },
 });
