@@ -69,6 +69,9 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   door + desktop devices + presence (cloud), M2 `apps/desktop` shell + runner, M3 screens, M4 signing
   and updates, M5 the website strip-down. **M1 is built** (`desktop-m1`, migration 0140): `/client/v1`,
   `desktop.*`, `desktopDevice.*`, `presence.*`, `/desktop/connect`, `/open/*`, Setup's devices card.
+  **M2a is built** (`desktop-m2`): `apps/desktop` (sign-in, the device key, the door client with the
+  presence flow, the supervised runner on bundled Node, launchd takeover, the menu bar, badge,
+  notifications by polling, login item, deep links) and `sf-runner`'s host lock. Next: M2b (live socket).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

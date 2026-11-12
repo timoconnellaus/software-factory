@@ -293,6 +293,10 @@ describe("the desktop app's client door (/client/v1)", () => {
       '{"a":{"d":[1,{"x":1,"y":2}]},"b":1}',
     );
     expect(await inputDigest({ a: 1, b: 2 })).toBe(await inputDigest({ b: 2, a: 1 }));
+    // The vector the desktop app's own digest is pinned to too (apps/desktop/test/door.test.ts).
+    expect(await inputDigest({ b: [1, { d: undefined, c: "x" }], a: null })).toBe(
+      "48aa8d7ca4745dc18af09c1efd1d919435cf93ad6aac93632f0e3cb043fae4f4",
+    );
     // DER: SEQUENCE { INTEGER 0x00 ‖ 0x80…, INTEGER 0x01 }
     const r = new Uint8Array(32).fill(0x80);
     const der = new Uint8Array([0x30, 0x26, 0x02, 0x21, 0x00, ...r, 0x02, 0x01, 0x01]);
