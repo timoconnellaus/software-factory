@@ -179,3 +179,46 @@ rather than shown empty:
 - **Buttons in a Radix trigger**: the desktop look matched buttons by `data-slot="button"`, which a
   trigger with `asChild` renames, so Open terminal fell back to shadcn's taller, filled outline.
   Buttons now carry `data-button`, and the look keys on that.
+
+## As built (slice 2, part 1: Backlog and Ready)
+*Amended 2026-11-12.* Built on spec 50's operations (`workItem.board`, `create`, `update`, `move`,
+`release`, `link`, `unlink`, `cancel`). Screenshots, light and dark at the default window
+(1200×800) and a narrow one (960×720, `-narrow`), are in
+[`docs/screenshots/desktop-work/`](../screenshots/desktop-work/), the designs in `design/`
+(`node apps/desktop/screenshots/shoot.mjs --out desktop-work --size 1200x800 …`).
+- **The Work list** has Backlog, Planning (only while something is shaping), Ready, In the
+  factory, Done and Stopped, then the projects. Its counts are `workItem.board`'s per project and
+  state across each org, so they are no longer capped at the 100 most recent items. A project's
+  count is its open work (everything not done or stopped). Queued work counts as in the factory.
+- **The project switcher** is a project picker on Backlog, Ready and Planning (`?project=`). A
+  project's row opens **its page** (`WorkProject`): counts by state, what is in the factory and who
+  it waits on, its workflow (from `config.get`), repositories and approvers, and Board. The design's
+  budget, "Brings in work", "Context for agents" and Edit project have no operation: left out.
+- **Backlog**: quick add (one item per line, straight to the backlog of the chosen project), the
+  list in pull order (priority, then rank), and a selection's actions: Mark ready, Set priority,
+  Release, Cancel. The design's Run triage, Plan, Move to project and Import from GitHub issues,
+  and its Readiness and Source filters, need server work (a triage pass before release, moving an
+  item between projects, issue import) and are left out. Delete is **Cancel**: the item stops and
+  shows under Stopped, nothing is deleted.
+- **Ready**: Release per row and **Release in priority order** (every item nothing stops). An item
+  that waits for another is released all the same (outline button) and waits in Queued. Why an item
+  can't be released shows in place of its button (no repository, invalid config), mirroring core's
+  `releaseRefusal`; the server's refusal is shown if it still refuses. The design's "Review is full"
+  banner is `inbox.list`'s `wipHolds`. The Spec column needs a shaping read per item: left out.
+- **Priorities** are written P0–P3, the stored 0 urgent … 3 low, so normal is P2 (the design's
+  default). The design's P4 doesn't exist.
+- **An item before release** (`ItemBacklog`): the strip shows Backlog, Ready, Queued (and Planning
+  while shaping) then the workflow's stages; tabs are Overview, Plan and Activity. Next step: Mark
+  ready and Release (backlog), Release and Back to the backlog (ready), Take it back to ready
+  (queued). Details show priority, size, repository, what it waits for and what waits on it, with
+  **Edit** (title, description, priority, size, repository, waits-for links; only the priority once
+  shaped). The design's triage notes and draft acceptance criteria need server work
+  (`workItem.get` doesn't return the item's draft criteria; there is no triage before release).
+  Plan this item (`workItem.shape`) is the next slice's, as spec 50 part C says.
+- **New work** (`WorkNew`) goes to the backlog by default; "Release it straight away" is create and
+  release, with the routing preview. Priority and one "waits for" item can be set. The workflow is
+  shown, set by the project. The design's Triage it now and Plan it now need the same server work as
+  above.
+- **The title bar**: every toolbar control (back, forward, sidebar, tabs, new tab, search, New
+  item) is 28px with the 7px radius. Double-clicking its empty space zooms and unzooms the window;
+  checked in the dev build's real window (`window/titlebar-before.png`, `titlebar-zoomed.png`).

@@ -1,6 +1,7 @@
-// Work (spec 41, design WorkActive/WorkDone): the items in the factory, done or stopped, for every
-// project or one, as a board by stage or a list. Lanes are the factory's stages; a project's own
-// workflow lanes come with spec 50 (slice 2).
+// Work (spec 41, design WorkActive/WorkDone; spec 50 adds WorkBacklog/WorkReady/WorkProject): one
+// route for the section's views. `view` picks Backlog, Planning, Ready, In the factory, Done or
+// Stopped; `project` alone is the project's page, and with a view it filters that view. In the
+// factory is a board by stage or a list.
 
 import { ago, STAGE_LABEL } from "@software-factory/client/format";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
@@ -10,8 +11,10 @@ import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Chip } from "../components/shell-list.tsx";
 import { useOrgScope, useScopedInbox } from "../components/shell-sidebar.tsx";
+import { BacklogPage, PlanningPage, ReadyPage } from "../components/work-backlog.tsx";
+import { ProjectPage } from "../components/work-project.tsx";
 import { openItem } from "../lib/places.ts";
-import { workListsQuery } from "../lib/queries.ts";
+import { boardsQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import {
   cardState,
@@ -30,18 +33,43 @@ interface Search {
   layout?: Layout;
 }
 
+const VIEWS: WorkView[] = ["backlog", "planning", "ready", "active", "done", "stopped"];
+
 export const Route = createRoute({
   getParentRoute: () => workLayout,
   path: "/work",
   validateSearch: (s: Record<string, unknown>): Search => ({
-    ...(s.view === "active" || s.view === "done" || s.view === "stopped" ? { view: s.view } : {}),
+    ...(VIEWS.includes(s.view as WorkView) ? { view: s.view as WorkView } : {}),
     ...(typeof s.project === "string" ? { project: s.project } : {}),
     ...(s.layout === "board" || s.layout === "list" ? { layout: s.layout } : {}),
   }),
-  loader: ({ context: { queryClient, session } }) =>
-    queryClient.ensureQueryData(workListsQuery(session.orgs.map((o) => o.id))).catch(() => null),
-  component: WorkPage,
+  loader: ({ context: { queryClient, session } }) => {
+    const orgIds = session.orgs.map((o) => o.id);
+    return Promise.all([
+      queryClient.ensureQueryData(workListsQuery(orgIds)),
+      queryClient.ensureQueryData(boardsQuery(orgIds)),
+    ]).catch(() => null);
+  },
+  component: WorkRoute,
 });
+
+function WorkRoute() {
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
+  const setProject = (project: string | null) =>
+    void navigate({ search: { ...search, project: project ?? undefined } });
+  if (search.view === "backlog") {
+    return <BacklogPage projectId={search.project ?? null} onProject={setProject} />;
+  }
+  if (search.view === "ready") {
+    return <ReadyPage projectId={search.project ?? null} onProject={setProject} />;
+  }
+  if (search.view === "planning") {
+    return <PlanningPage projectId={search.project ?? null} onProject={setProject} />;
+  }
+  if (search.project && !search.view) return <ProjectPage projectId={search.project} />;
+  return <WorkPage />;
+}
 
 function WorkPage() {
   const search = Route.useSearch();

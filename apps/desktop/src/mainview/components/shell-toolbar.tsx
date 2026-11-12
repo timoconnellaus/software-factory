@@ -1,5 +1,6 @@
 // The toolbar (spec 41): under the traffic lights, the window's drag region. Back and forward, the
-// sidebar toggle, the tabs, search (⌘K) and New item. Its controls opt out of dragging.
+// sidebar toggle, the tabs, search (⌘K) and New item. Its controls opt out of dragging. Every
+// control in it is 28px high with the same 7px radius (spec 41, criterion 14).
 import { Kbd } from "@software-factory/ui/components/kbd";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -137,7 +138,7 @@ export function Toolbar({ onSearch }: { onSearch: () => void }) {
               }}
               className={cn(
                 NO_DRAG,
-                "group flex h-[30px] min-w-0 max-w-[240px] flex-none cursor-default items-center gap-2 rounded-lg px-2.5 text-ink-3",
+                "group flex h-7 min-w-0 max-w-[240px] flex-none cursor-default items-center gap-2 rounded-[7px] px-2.5 text-ink-3",
                 active ? "bg-panel font-medium text-ink shadow-panel" : "hover:bg-field/60",
               )}
               data-testid="tab"
@@ -218,7 +219,7 @@ function ToolButton({
       onClick={onClick}
       className={cn(
         NO_DRAG,
-        "flex size-7 flex-none items-center justify-center rounded-md text-ink-3 hover:bg-field [&_svg]:size-4",
+        "flex size-7 flex-none items-center justify-center rounded-[7px] text-ink-3 hover:bg-field [&_svg]:size-4",
       )}
     >
       {children}

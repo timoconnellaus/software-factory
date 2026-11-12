@@ -78,6 +78,14 @@ export interface OpMap {
   "desktopDevice.list": Def<typeof operations.desktopDeviceList>;
   "desktopDevice.revoke": Def<typeof operations.desktopDeviceRevoke>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
+  // The work model (spec 50): the backlog, ready and release.
+  "workItem.board": Def<typeof operations.workItemBoard>;
+  "workItem.update": Def<typeof operations.workItemUpdate>;
+  "workItem.move": Def<typeof operations.workItemMove>;
+  "workItem.release": Def<typeof operations.workItemRelease>;
+  "workItem.reorder": Def<typeof operations.workItemReorder>;
+  "workItem.link": Def<typeof operations.workItemLink>;
+  "workItem.unlink": Def<typeof operations.workItemUnlink>;
 }
 
 export type OpName = keyof OpMap;
@@ -110,3 +118,4 @@ export type ConfigView = OpOutput<"config.get">;
 export type LiveView = OpOutput<"run.live">;
 export type LiveEvent = LiveView["events"][number];
 export type LiveSteer = LiveView["steers"][number];
+export type BoardItem = OpOutput<"workItem.board">["items"][number];

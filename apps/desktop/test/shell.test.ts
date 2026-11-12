@@ -255,7 +255,10 @@ describe("places and search", () => {
   const find = (id: string) => ITEMS.find((i) => i.id === id) ?? null;
   it("titles tabs", () => {
     expect(tabTitle("/", find)).toBe("Inbox");
-    expect(tabTitle("/work?view=done", find)).toBe("Work");
+    expect(tabTitle("/work?view=done", find)).toBe("Done");
+    expect(tabTitle("/work?view=backlog&project=prj_factory", find)).toBe("Backlog");
+    expect(tabTitle("/work?project=prj_factory", find)).toBe("A project");
+    expect(tabTitle("/work", find)).toBe("In the factory");
     expect(tabTitle("/work/wi_13?tab=review", find)).toBe("#13 Guard the tests in verify");
     expect(tabTitle("/work/unknown", find)).toBe("Work item");
     expect(tabTitle("/settings", find)).toBe("This Mac");
@@ -269,7 +272,7 @@ describe("places and search", () => {
   });
 
   it("finds by number first, else by every word of the title", () => {
-    expect(matchItems(ITEMS, "#1").map((i) => i.number)).toEqual([1, 13, 11, 12]);
+    expect(matchItems(ITEMS, "#1").map((i) => i.number)).toEqual([1, 13, 11, 12, 17, 15, 16, 14]);
     expect(matchItems(ITEMS, "13").map((i) => i.number)).toEqual([13]);
     expect(matchItems(ITEMS, "guard verify").map((i) => i.number)).toEqual([13]);
     expect(matchItems(ITEMS, "nothing like this")).toEqual([]);
@@ -282,22 +285,34 @@ describe("Work views and the board", () => {
     expect(viewOf("waiting")).toBe("active");
     expect(viewOf("done")).toBe("done");
     expect(viewOf("cancelled")).toBe("stopped");
+    expect(viewOf("backlog")).toBe("backlog");
+    expect(viewOf("shaping")).toBe("planning");
+    expect(viewOf("ready")).toBe("ready");
+    // Released work is in the factory, waiting in its first lane.
+    expect(viewOf("queued")).toBe("active");
   });
 
   it("filters by view, project and org, and counts per view", () => {
     expect(
       workItemsFor(ITEMS, { view: "active", orgId: "org_personal" }).map((i) => i.number),
-    ).toEqual([13, 9, 11, 12, 26]);
+    ).toEqual([13, 9, 11, 12, 26, 28]);
     expect(workItemsFor(ITEMS, { view: "active", orgId: null, projectId: "prj_crm" })).toHaveLength(
       1,
     );
-    expect(countsByView(ITEMS, null)).toEqual({ active: 6, done: 3, stopped: 0 });
+    expect(countsByView(ITEMS, null)).toEqual({
+      backlog: 6,
+      planning: 0,
+      ready: 3,
+      active: 7,
+      done: 3,
+      stopped: 0,
+    });
   });
 
   it("puts each active item in its stage's lane, in the factory's order", () => {
     const board = lanes(workItemsFor(ITEMS, { view: "active", orgId: "org_personal" }));
     expect(board.map((l) => `${l.stage}:${l.items.map((i) => i.number).join(",")}`)).toEqual([
-      "intake:",
+      "intake:28",
       "triage:",
       "spec:12",
       "build:9,11",

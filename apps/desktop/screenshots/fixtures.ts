@@ -12,6 +12,7 @@ const PERSONAL = "org_personal";
 const CLIENT = "org_client";
 const FACTORY = "prj_factory";
 const CRM = "prj_crm";
+const SITE = "prj_site";
 const RUNNER = "rnr_m5";
 
 type Summary = OpOutput<"workItem.list">["items"][number];
@@ -43,8 +44,25 @@ function item(
     prUrl: null,
     createdAt: ago(60 * 26),
     updatedAt: ago(n),
+    priority: "normal",
+    repositoryId: "repo_software-factory",
+    releasedAt: ago(60 * 26),
     ...extra,
   };
+}
+
+/** Work before release (spec 50): captured in the backlog, shaped to ready, or queued. */
+function pre(
+  n: number,
+  title: string,
+  status: "backlog" | "ready" | "queued" | "shaping",
+  extra: Partial<Summary> = {},
+): Summary {
+  return item(n, title, "intake", status, {
+    size: null,
+    releasedAt: status === "queued" ? ago(50) : null,
+    ...extra,
+  });
 }
 
 export const ITEMS: Summary[] = [
@@ -77,9 +95,64 @@ export const ITEMS: Summary[] = [
   item(3, "Import contacts from a CSV", "build", "running", {
     projectId: CRM,
     orgId: CLIENT,
+    repositoryId: "repo_crm",
     statusReason: "Builder",
     updatedAt: ago(22),
   }),
+  // The backlog and ready (spec 50, design WorkBacklog/WorkReady), in pull order per state.
+  pre(22, "Test the comment parser against every comment form", "backlog", {
+    priority: "high",
+    size: "small",
+    createdAt: ago(120),
+  }),
+  pre(21, "Show cost per work item on the Done list", "backlog", {
+    priority: "high",
+    size: "medium",
+    createdAt: ago(60 * 24),
+  }),
+  pre(20, "Runner offline alert has no link to the runner", "backlog", { createdAt: ago(60 * 48) }),
+  pre(17, "Dark mode for the review packet", "backlog", {
+    priority: "low",
+    size: "small",
+    createdAt: ago(60 * 120),
+  }),
+  pre(15, "Let a question be assigned to another member", "backlog", {
+    priority: "low",
+    size: "large",
+    createdAt: ago(60 * 144),
+  }),
+  pre(16, "Record usage for every run", "ready", {
+    priority: "high",
+    size: "medium",
+    createdAt: ago(60 * 72),
+  }),
+  pre(14, "Weekly regression run", "ready", {
+    priority: "high",
+    size: "small",
+    createdAt: ago(60 * 96),
+  }),
+  pre(28, "Show the plan's age at release", "queued", { size: "small", createdAt: ago(60 * 30) }),
+  pre(2, "Rewrite the pricing page intro", "ready", {
+    id: "wi_site_2",
+    projectId: SITE,
+    repositoryId: null,
+    size: "small",
+    createdAt: ago(60 * 50),
+  }),
+  pre(5, "Import contacts from a vCard", "backlog", {
+    id: "wi_crm_5",
+    projectId: CRM,
+    orgId: CLIENT,
+    repositoryId: "repo_crm",
+    size: "large",
+    createdAt: ago(60 * 70),
+  }),
+];
+
+/** "Waits for" links (spec 50): #21 waits for #16; #14 for #26, still in verify. */
+const LINKS: [string, string][] = [
+  ["wi_21", "wi_16"],
+  ["wi_14", "wi_26"],
 ];
 
 const project = (id: string, orgId: string, name: string, slug: string) => ({
@@ -110,6 +183,13 @@ const project = (id: string, orgId: string, name: string, slug: string) => ({
 
 const PROJECTS = [
   project(FACTORY, PERSONAL, "Factory", "software-factory"),
+  // A project with no repository yet (ADR 0490): its work can be captured, not released.
+  {
+    ...project(SITE, PERSONAL, "Website", "website"),
+    repo: null,
+    repositories: [],
+    connection: { status: "missing" as const, account: null, manageUrl: null },
+  },
   project(CRM, CLIENT, "CRM", "crm"),
 ];
 
@@ -198,7 +278,100 @@ const CRITERIA = [
   "A flagged change always goes to a person",
 ];
 
+const PRE = ["backlog", "shaping", "ready", "queued"];
+const ACTIVE_STATES = ["running", "waiting", "paused"];
+const PRIORITY_ORDER = ["urgent", "high", "normal", "low"];
+
+function link(id: string) {
+  const w = ITEMS.find((i) => i.id === id) as Summary;
+  return { id: w.id, number: w.number, title: w.title, status: w.status, projectId: w.projectId };
+}
+
+/** `workItem.board` over the fixtures: the states asked for, in pull order, and counts per state. */
+function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
+  const states = input.states ?? [...PRE, ...ACTIVE_STATES];
+  const inOrg = ITEMS.filter(
+    (i) => i.orgId === input.orgId && (!input.projectId || i.projectId === input.projectId),
+  );
+  const items = inOrg
+    .filter((i) => (states as string[]).includes(i.status))
+    .sort(
+      (a, b) =>
+        PRIORITY_ORDER.indexOf(a.priority ?? "normal") -
+          PRIORITY_ORDER.indexOf(b.priority ?? "normal") ||
+        Date.parse(a.createdAt) - Date.parse(b.createdAt),
+    )
+    .map((i) => {
+      const waitsFor = LINKS.filter(([from]) => from === i.id).map(([, to]) => link(to));
+      return {
+        id: i.id,
+        projectId: i.projectId,
+        number: i.number,
+        title: i.title,
+        kind: i.kind,
+        status: i.status,
+        statusReason: i.statusReason,
+        stage: i.stage,
+        phase: (["intake", "triage", "spec"].includes(i.stage) ? "shaping" : "delivery") as
+          | "shaping"
+          | "delivery",
+        priority: i.priority ?? "normal",
+        rank: Date.parse(i.createdAt) / 1000,
+        size: i.size,
+        repositoryId: i.repositoryId ?? null,
+        requesterUserId: i.requesterUserId,
+        releasedAt: i.releasedAt ?? null,
+        createdAt: i.createdAt,
+        updatedAt: i.updatedAt,
+        waitsFor,
+        blockedBy: waitsFor.filter((w) => w.status !== "done"),
+      };
+    });
+  const counts = new Map<string, { projectId: string; status: string; n: number }>();
+  for (const i of inOrg) {
+    const key = `${i.projectId}:${i.status}`;
+    const c = counts.get(key) ?? { projectId: i.projectId, status: i.status, n: 0 };
+    c.n++;
+    counts.set(key, c);
+  }
+  return { items, counts: [...counts.values()] };
+}
+
+/** A work item: before release it has no stages, runs, spec or gates yet (spec 50). */
 function detail(id: string): OpOutput<"workItem.get"> {
+  const d = pipelineDetail(id);
+  const links = {
+    releasedBy: d.item.releasedAt ? ME : null,
+    shaping: null,
+    waitsFor: LINKS.filter(([from]) => from === id).map(([, to]) => link(to)),
+    waitedOnBy: LINKS.filter(([, to]) => to === id).map(([from]) => link(from)),
+  };
+  if (!PRE.includes(d.item.status)) return { ...d, ...links };
+  return {
+    ...d,
+    ...links,
+    item: {
+      ...d.item,
+      body:
+        id === "wi_21"
+          ? "The Done list shows tokens. I want to see what each item cost in dollars too, so I can tell which kinds of work are expensive."
+          : d.item.body,
+      specRequired: null,
+      specDecisionReason: null,
+      domains: [],
+      workflow: null,
+      workflowReason: null,
+    },
+    stages: [],
+    spec: null,
+    questions: [],
+    gates: [],
+    runs: [],
+    reviewPacket: null,
+  };
+}
+
+function pipelineDetail(id: string): OpOutput<"workItem.get"> {
   const base = ITEMS.find((i) => i.id === id) ?? (ITEMS[0] as Summary);
   const n = base.number;
   const atMerge = base.stage === "merge";
@@ -721,6 +894,24 @@ export const ANSWERS: Answers = {
     items: ITEMS.filter((i) => !input.orgId || i.orgId === input.orgId),
   }),
   "workItem.get": (input) => detail(input.workItemId),
+  "workItem.board": (input) => board(input),
+  "config.get": (input) => ({
+    projectId: input.projectId,
+    current: {
+      version: 3,
+      sha: "5da8988",
+      source: "app",
+      note: null,
+      createdBy: ME,
+      createdAt: ago(60 * 48),
+      valid: true,
+      impact: null,
+      policy: { workflow: "software", approvers: [] },
+    },
+    error: null,
+    history: [],
+    pending: [],
+  }),
   "workItem.timeline": () => TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),

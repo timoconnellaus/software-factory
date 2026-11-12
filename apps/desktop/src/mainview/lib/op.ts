@@ -59,7 +59,9 @@ export type ReadOpName =
   | "setup.status"
   | "runner.list"
   | "protection.ruleset"
-  | "desktopDevice.list";
+  | "desktopDevice.list"
+  | "workItem.board"
+  | "config.get";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

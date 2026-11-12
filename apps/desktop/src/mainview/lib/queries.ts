@@ -123,6 +123,35 @@ export const workListsQuery = (orgIds: string[]) =>
     refetchInterval: 15_000,
   });
 
+/**
+ * Every org's board (spec 50, `workItem.board`): backlog, shaping, ready, queued and active items in
+ * pull order, each tagged with its org, and the counts per project and state (done and stopped
+ * included), which the Work list shows. The rail's org scope filters this on the client.
+ */
+export const boardsQuery = (orgIds: string[]) =>
+  queryOptions({
+    queryKey: ["work", "board", orgIds],
+    queryFn: async () => {
+      const boards = await Promise.all(
+        orgIds.map(async (orgId) => ({ orgId, board: await read("workItem.board", { orgId }) })),
+      );
+      return {
+        items: boards.flatMap(({ orgId, board }) => board.items.map((i) => ({ ...i, orgId }))),
+        counts: boards.flatMap(({ orgId, board }) => board.counts.map((c) => ({ ...c, orgId }))),
+      };
+    },
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
+
+/** A project's factory config (ADR 0370): its workflow and approvers, for the project page. */
+export const configQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId],
+    queryFn: () => read("config.get", { projectId }),
+    staleTime: 60_000,
+  });
+
 export const runnersQuery = () =>
   queryOptions({
     queryKey: ["runners"],

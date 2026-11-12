@@ -1,6 +1,8 @@
-// New work (spec 11, mockup new-work): a chat-style box, a project picker and the routing preview.
-// Send calls workItem.create as the signed-in person, attaches any staged files (picked, dropped or
-// pasted), and opens the work item.
+// New work (spec 11; spec 50, design WorkNew): the title and description, the project (its workflow
+// is the project's), priority, what it waits for, and what happens next: the backlog (the default)
+// or straight to the factory (create and release, with the routing preview). Send calls
+// workItem.create as the signed-in person, attaches any staged files (picked, dropped or pasted),
+// and opens the work item.
 // Ported from sf-app for spec 40 M3. Differences: staged files go up through the client door; the
 // session has no email, so the Requester row falls back to the name.
 
@@ -14,6 +16,7 @@ import {
 } from "@software-factory/ui/components/collapsible";
 import { Input } from "@software-factory/ui/components/input";
 import { Kbd } from "@software-factory/ui/components/kbd";
+import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
 import {
   Select,
   SelectContent,
@@ -30,8 +33,15 @@ import { toast } from "sonner";
 import { AttachButton } from "../components/attach-button.tsx";
 import { Field, PageArea, PageHeader, SectionTitle } from "../components/shell-list.tsx";
 import { StagedAttachments, uploadStaged } from "../components/staged-attachments.tsx";
+import { PRIORITIES, PRIORITY_LABEL, type Priority } from "../lib/backlog.ts";
 import { OpError, op } from "../lib/op.ts";
-import { openPullsQuery, projectsQuery, routingQuery } from "../lib/queries.ts";
+import {
+  boardsQuery,
+  configQuery,
+  openPullsQuery,
+  projectsQuery,
+  routingQuery,
+} from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { workLayout } from "./_work.tsx";
 
@@ -75,6 +85,9 @@ function NewWorkPage() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [projectId, setProjectId] = useState<string | undefined>();
+  const [priority, setPriority] = useState<Priority>("normal");
+  const [waitsFor, setWaitsFor] = useState<string>("none");
+  const [next, setNext] = useState<"backlog" | "queued">("backlog");
   const [sending, setSending] = useState(false);
   // Files to attach once the item exists (picked, dropped or pasted on this form).
   const [files, setFiles] = useState<File[]>([]);
@@ -82,7 +95,13 @@ function NewWorkPage() {
   const eventId = useRef(crypto.randomUUID());
   const selected = projectId ?? defaultProject(projects.data ?? [], search.project)?.id;
   const routing = useQuery({ ...routingQuery(selected ?? ""), enabled: !!selected });
-  const canSend = !!selected && body.trim().length > 0 && !sending;
+  const config = useQuery({ ...configQuery(selected ?? ""), enabled: !!selected });
+  const board = useQuery(boardsQuery(session.orgs.map((o) => o.id)));
+  const project = projects.data?.find((p) => p.id === selected);
+  const workflow = (config.data?.current?.policy as { workflow?: string | null } | null)?.workflow;
+  // What it can wait for: unfinished work in the project's org (any project).
+  const waitable = (board.data?.items ?? []).filter((i) => i.orgId === project?.orgId);
+  const canSend = !!selected && (body.trim().length > 0 || title.trim().length > 0) && !sending;
 
   async function send() {
     if (!canSend || !selected) return;
@@ -94,18 +113,25 @@ function NewWorkPage() {
         body: body.trim(),
         source: "app",
         eventId: eventId.current,
-        // New work sends straight to the factory: create and release (ADR 0491).
-        state: "queued",
+        // The backlog, or create and release in one step (ADR 0491).
+        state: next,
+        priority,
+        ...(waitsFor !== "none" ? { waitsFor: [waitsFor] } : {}),
       });
       if (files.length > 0) {
         const failures = await uploadStaged(created.workItemId, files);
         for (const failure of failures) toast.error(`Not attached: ${failure}`);
       }
-      await queryClient.invalidateQueries({ queryKey: ["inbox"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["inbox"] }),
+        queryClient.invalidateQueries({ queryKey: ["work"] }),
+      ]);
       toast.success(
-        created.outcome === "created"
-          ? `Sent to the factory as #${created.number}`
-          : "Already sent",
+        created.outcome !== "created"
+          ? "Already sent"
+          : next === "backlog"
+            ? `Added to the backlog as #${created.number}`
+            : `Sent to the factory as #${created.number}`,
       );
       await navigate({ to: "/work/$id", params: { id: created.workItemId } });
     } catch (error) {
@@ -131,14 +157,14 @@ function NewWorkPage() {
           </>
         }
         title="New work item"
-        sub="Write it the way you would tell a colleague. Triage sizes it, asks what's unclear and decides whether it needs a spec."
+        sub="Write it the way you would tell a colleague. It goes to the backlog unless you say otherwise."
       />
       <Field htmlFor="new-title" label="Title">
         <Input
           id="new-title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder="Optional: triage writes one if you leave it empty"
+          placeholder="Optional: the description's first line if you leave it empty"
           data-testid="new-work-title"
         />
       </Field>
@@ -160,9 +186,15 @@ function NewWorkPage() {
           data-testid="new-work-body"
         />
       </Field>
-      <div className="flex flex-wrap items-end gap-3">
-        <Field htmlFor="new-project" label="Project" className="min-w-[200px]">
-          <Select value={selected ?? ""} onValueChange={setProjectId}>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] items-end gap-3">
+        <Field htmlFor="new-project" label="Project">
+          <Select
+            value={selected ?? ""}
+            onValueChange={(v) => {
+              setProjectId(v);
+              setWaitsFor("none");
+            }}
+          >
             <SelectTrigger id="new-project" className="w-full" data-testid="project-picker">
               <SelectValue placeholder="No projects" />
             </SelectTrigger>
@@ -174,6 +206,44 @@ function NewWorkPage() {
                     {" "}
                     · {session.orgs.find((o) => o.id === p.orgId)?.name ?? ""}
                   </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <div className="flex flex-col gap-[5px]">
+          <span className="font-medium text-ink-3 text-xs">Workflow</span>
+          <span className="flex h-8 items-center gap-2 text-ink-3" data-testid="new-workflow">
+            <span className="truncate rounded-full bg-panel px-[7px] py-px font-medium text-[11px] text-ink-2 shadow-ring">
+              {config.isPending ? "…" : (workflow ?? "The skeleton")}
+            </span>
+            <span className="truncate text-xs">set by the project</span>
+          </span>
+        </div>
+        <Field htmlFor="new-priority" label="Priority">
+          <Select value={priority} onValueChange={(v) => setPriority(v as Priority)}>
+            <SelectTrigger id="new-priority" className="w-full" data-testid="priority-picker">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PRIORITIES.map((p) => (
+                <SelectItem key={p} value={p}>
+                  {PRIORITY_LABEL[p]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field htmlFor="new-waits" label="Waits for">
+          <Select value={waitsFor} onValueChange={setWaitsFor}>
+            <SelectTrigger id="new-waits" className="w-full" data-testid="waits-picker">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Nothing</SelectItem>
+              {waitable.map((i) => (
+                <SelectItem key={i.id} value={i.id}>
+                  #{i.number} {i.title}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -193,12 +263,31 @@ function NewWorkPage() {
       {selected && (
         <section className="flex flex-col gap-2">
           <SectionTitle>What happens next</SectionTitle>
-          <RoutingPreview state={routing} />
+          <RadioGroup
+            value={next}
+            onValueChange={(v) => setNext(v as "backlog" | "queued")}
+            className="gap-2"
+            data-testid="what-next"
+          >
+            <NextChoice
+              value="backlog"
+              chosen={next}
+              title="Keep it in the backlog"
+              sub="Nothing runs. Sort it and release it later."
+            />
+            <NextChoice
+              value="queued"
+              chosen={next}
+              title="Release it straight away"
+              sub="For small, clear changes. The factory starts it when the project has room."
+            />
+          </RadioGroup>
+          {next === "queued" && <RoutingPreview state={routing} />}
         </section>
       )}
       <div className="flex flex-wrap items-center gap-2">
         <Button onClick={send} disabled={!canSend} data-testid="send-to-factory">
-          {sending ? "Sending…" : "Send to the factory"}
+          {sending ? "Sending…" : next === "backlog" ? "Add to backlog" : "Send to the factory"}
           <Kbd className="bg-primary-foreground/15 text-primary-foreground">⌘↵</Kbd>
         </Button>
         <Button variant="outline" onClick={() => window.history.back()}>
@@ -207,6 +296,37 @@ function NewWorkPage() {
       </div>
       {selected && <OpenPulls projectId={selected} />}
     </PageArea>
+  );
+}
+
+/** One choice of what happens next: the whole card is its label. */
+function NextChoice({
+  value,
+  chosen,
+  title,
+  sub,
+}: {
+  value: string;
+  chosen: string;
+  title: string;
+  sub: string;
+}) {
+  const id = `next-${value}`;
+  return (
+    <label
+      htmlFor={id}
+      className={
+        chosen === value
+          ? "flex cursor-default items-start gap-3 rounded-[10px] bg-panel px-3.5 py-3 shadow-[0_0_0_1.5px_var(--ink)]"
+          : "flex cursor-default items-start gap-3 rounded-[10px] bg-panel px-3.5 py-3 shadow-panel"
+      }
+    >
+      <RadioGroupItem id={id} value={value} className="mt-0.5" />
+      <span className="flex flex-col gap-0.5">
+        <span className="font-medium">{title}</span>
+        <span className="text-ink-3 text-xs">{sub}</span>
+      </span>
+    </label>
   );
 }
 
