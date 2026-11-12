@@ -42,11 +42,13 @@ export interface OpMap {
   "planning.resume": Def<typeof operations.planningResume>;
   "planning.finishAlone": Def<typeof operations.planningFinishAlone>;
   "spec.edit": Def<typeof operations.specEdit>;
+  "artifact.get": Def<typeof operations.artifactGet>;
   "spec.releaseEdit": Def<typeof operations.specReleaseEdit>;
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;
   "run.takeover": Def<typeof operations.runTakeover>;
+  "run.reportArchiveMissing": Def<typeof operations.runReportArchiveMissing>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;

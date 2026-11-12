@@ -13,6 +13,7 @@ import { ago, errorMessage } from "@software-factory/client/format";
 import type { WorkItemDetail } from "@software-factory/client/ops";
 import {
   answerText,
+  appliedValues,
   blocks,
   bulkAcceptable,
   changedSpan,
@@ -44,13 +45,16 @@ import { Input } from "@software-factory/ui/components/input";
 import { Kbd } from "@software-factory/ui/components/kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@software-factory/ui/components/popover";
 import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
+import { Slider } from "@software-factory/ui/components/slider";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@software-factory/ui/components/toggle-group";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouteContext } from "@tanstack/react-router";
 import {
   CheckIcon,
+  MapPinIcon,
   Maximize2Icon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
@@ -71,6 +75,7 @@ import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/ques
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
+import { CanvasPane, FullSize, MockupsPane, type Pin } from "./planning-visuals.tsx";
 
 /** How often an open Planning tab says it is still here. */
 const PRESENCE_MS = 20_000;
@@ -90,6 +95,25 @@ export function Planning({
   const focus = mode === "focus";
   // Docked, chat folds to a strip on the right; in focus it stays open.
   const [chatOpen, setChatOpen] = useState(false);
+  // Spec 21: the workspace's tab, comment mode, a hovered option's preview, a mockup opened full size.
+  const [tab, setTab] = useState<"plan" | "mockups" | "canvas">(() => {
+    // A link can open the workspace on a tab: `pane=mockups` or `pane=canvas` (spec 21).
+    const pane = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("pane");
+    return pane === "mockups" || pane === "canvas" ? pane : "plan";
+  });
+  const [pinMode, setPinMode] = useState(false);
+  const [preview, setPreview] = useState<{
+    artifactId: string;
+    values: Record<string, string>;
+  } | null>(null);
+  const [opened, setOpened] = useState<PlanningView["artifacts"][number] | null>(null);
+  const shown = planning.data?.session?.shownArtifactId ?? null;
+  const lastShown = useRef<string | null | undefined>(undefined);
+  // The planner showed something: go to it, as kim's `show` does (not on the first load).
+  useEffect(() => {
+    if (lastShown.current !== undefined && shown && shown !== lastShown.current) setTab("mockups");
+    lastShown.current = shown;
+  }, [shown]);
   const [draft, setDraft] = useState<Draft>({ text: "" });
 
   // F gives planning the whole window, Esc gives it back (not while typing).
@@ -98,6 +122,16 @@ export function Planning({
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable=true]")) return;
       if (document.querySelector("[role=dialog]")) return;
+      if ((e.key === "c" || e.key === "C") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        // Comment mode (spec 21): the next click on a mockup pins a comment there.
+        setPinMode((on) => !on);
+        setTab((t) => (t === "plan" ? "mockups" : t));
+        return;
+      }
+      if (e.key === "Escape" && pinMode) {
+        setPinMode(false);
+        return;
+      }
       if (e.key === "Escape" && focus) updateViewState((s) => setFocus(s, null));
       else if ((e.key === "f" || e.key === "F") && !e.metaKey && !e.ctrlKey && !e.altKey) {
         updateViewState((s) => setFocus(s, focus ? null : item.id));
@@ -105,7 +139,7 @@ export function Planning({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [focus, item.id]);
+  }, [focus, item.id, pinMode]);
 
   const view = planning.data;
   if (!view) {
@@ -133,24 +167,69 @@ export function Planning({
           view={view}
           workItemId={item.id}
           onDiscuss={discuss}
+          onPreview={setPreview}
           className={cn(
             "w-[300px] flex-none overflow-y-auto border-line-soft border-r px-3 py-3",
             focus && "w-[336px]",
           )}
         />
-        <Spec
-          view={view}
-          workItemId={item.id}
-          onComment={(anchor) => {
-            setDraft({ text: "", anchor });
-            setChatOpen(true);
-          }}
-          onOverturn={(a) => {
-            setDraft({ text: `Overturn this assumption and ask me instead: “${a}”` });
-            setChatOpen(true);
-          }}
-          className="min-w-0 flex-1 overflow-y-auto"
-        />
+        <section className="flex min-w-0 flex-1 flex-col bg-panel" data-testid="workspace">
+          <WorkspaceTabs
+            view={view}
+            tab={tab}
+            onTab={setTab}
+            pinMode={pinMode}
+            onPinMode={() => {
+              setPinMode((on) => !on);
+              setTab((t) => (t === "plan" ? "mockups" : t));
+            }}
+          />
+          {tab === "plan" ? (
+            <Spec
+              view={view}
+              workItemId={item.id}
+              onComment={(anchor) => {
+                setDraft({ text: "", anchor });
+                setChatOpen(true);
+              }}
+              onOverturn={(a) => {
+                setDraft({ text: `Overturn this assumption and ask me instead: “${a}”` });
+                setChatOpen(true);
+              }}
+              className="min-h-0 flex-1 overflow-y-auto"
+            />
+          ) : tab === "mockups" ? (
+            <div className="min-h-0 flex-1 overflow-auto">
+              <MockupsPane
+                view={view}
+                workItemId={item.id}
+                preview={preview}
+                pinMode={pinMode}
+                onPin={(pin) => {
+                  // A pin joins the message being written; it never clears it (review of #90, 3).
+                  setDraft((d) => ({ text: d.text, pin }));
+                  setPinMode(false);
+                  setChatOpen(true);
+                }}
+                onAsk={(text, questionId) => {
+                  setDraft({ text, ...(questionId ? { questionId } : {}) });
+                  setChatOpen(true);
+                }}
+                onOpen={setOpened}
+              />
+            </div>
+          ) : (
+            <div className="min-h-0 flex-1">
+              <CanvasPane view={view} workItemId={item.id} onOpen={setOpened} />
+            </div>
+          )}
+          <FullSize
+            view={view}
+            workItemId={item.id}
+            artifact={opened}
+            onClose={() => setOpened(null)}
+          />
+        </section>
         {showChat ? (
           <Chat
             view={view}
@@ -386,11 +465,14 @@ function Questions({
   view,
   workItemId,
   onDiscuss,
+  onPreview,
   className,
 }: {
   view: PlanningView;
   workItemId: string;
   onDiscuss: (questionId: string) => void;
+  /** Spec 21: what a hovered option or a dragged slider would show in its mockup. */
+  onPreview?: (preview: { artifactId: string; values: Record<string, string> } | null) => void;
   className?: string;
 }) {
   const open = view.questions.filter((q) => q.status === "open");
@@ -444,6 +526,7 @@ function Questions({
             total={total}
             messages={view.messages.filter((m) => m.questionId === q.id).length}
             onDiscuss={() => onDiscuss(q.id)}
+            {...(onPreview ? { onPreview } : {})}
           />
         </div>
       ))}
@@ -559,6 +642,7 @@ function QuestionCard({
   messages,
   onDiscuss,
   onDone,
+  onPreview,
 }: {
   question: PlanningQuestion;
   workItemId: string;
@@ -568,8 +652,27 @@ function QuestionCard({
   messages: number;
   onDiscuss?: () => void;
   onDone?: () => void;
+  onPreview?: (preview: { artifactId: string; values: Record<string, string> } | null) => void;
 }) {
   const options = questionOptions(q);
+  /** Spec 21: shows what an answer would set in the question's mockup, without saving it. */
+  const previewAnswer = (answer: string | null) => {
+    if (!onPreview || !q.artifactId) return;
+    const values =
+      answer === null
+        ? null
+        : appliedValues(
+            {
+              kind: q.kind,
+              artifactId: q.artifactId,
+              optionValues: q.optionValues,
+              control: q.control,
+              unit: q.unit,
+            },
+            answer,
+          );
+    onPreview(values ? { artifactId: q.artifactId, values } : null);
+  };
   const recommended = recommendedValues(q);
   const [values, setValues] = useState<string[]>(() =>
     q.answer ? initialAnswer(q) : recommended.length ? recommended : initialAnswer(q),
@@ -641,6 +744,8 @@ function QuestionCard({
         )}
         data-testid="question-option"
         data-selected={selected ? "true" : "false"}
+        onMouseEnter={() => previewAnswer(option)}
+        onMouseLeave={() => previewAnswer(null)}
       >
         {control(id)}
         <span className="grow">{option}</span>
@@ -731,20 +836,45 @@ function QuestionCard({
           <Markdown>{q.recommendationReason}</Markdown>
         </div>
       )}
-      {q.kind === "number" && (
-        <Input
-          type="number"
-          value={values[0] ?? ""}
-          onChange={(e) => setValues([e.target.value])}
-          aria-label={q.prompt}
-        />
+      {q.kind === "number" && q.control && q.min !== null && q.max !== null ? (
+        <div className="flex items-center gap-3" data-testid="question-slider">
+          <Slider
+            min={q.min}
+            max={q.max}
+            step={q.step ?? 1}
+            value={[Number(values[0] ?? q.defaultAnswer ?? q.min)]}
+            onValueChange={([v]) => {
+              setValues([String(v)]);
+              previewAnswer(String(v));
+            }}
+            onPointerUp={() => previewAnswer(null)}
+            aria-label={q.prompt}
+          />
+          <span className="w-14 text-right font-mono text-xs">
+            {values[0] ?? q.defaultAnswer ?? q.min}
+            {q.unit ?? ""}
+          </span>
+        </div>
+      ) : (
+        q.kind === "number" && (
+          <Input
+            type="number"
+            value={values[0] ?? ""}
+            onChange={(e) => setValues([e.target.value])}
+            aria-label={q.prompt}
+          />
+        )
       )}
       {q.kind === "text" && (
         <Textarea
           rows={2}
           placeholder={q.defaultAnswer ?? "Your answer"}
           value={values[0] ?? ""}
-          onChange={(e) => setValues([e.target.value])}
+          onChange={(e) => {
+            setValues([e.target.value]);
+            if (q.control) previewAnswer(e.target.value);
+          }}
+          onBlur={() => previewAnswer(null)}
           aria-label={q.prompt}
         />
       )}
@@ -849,8 +979,63 @@ function Chip({ tag }: { tag: string }) {
   );
 }
 
-/** A chat draft: a message, maybe about a question, maybe a comment on plan lines (spec 27). */
-type Draft = { text: string; questionId?: string; anchor?: Anchor };
+/** A chat draft: a message, maybe about a question, a comment on plan lines (spec 27) or a pin on a mockup (spec 21). */
+type Draft = { text: string; questionId?: string; anchor?: Anchor; pin?: Pin };
+
+/** The workspace's tabs (design PlanFocus): the plan, the mockups, the canvas, and Comment. */
+function WorkspaceTabs({
+  view,
+  tab,
+  onTab,
+  pinMode,
+  onPinMode,
+}: {
+  view: PlanningView;
+  tab: "plan" | "mockups" | "canvas";
+  onTab: (tab: "plan" | "mockups" | "canvas") => void;
+  pinMode: boolean;
+  onPinMode: () => void;
+}) {
+  const mockups = view.artifacts.length;
+  return (
+    <div
+      className="flex h-11 flex-none items-center gap-2 border-line-soft border-b px-4"
+      data-testid="workspace-tabs"
+    >
+      <ToggleGroup
+        type="single"
+        value={tab}
+        onValueChange={(v) => v && onTab(v as "plan" | "mockups" | "canvas")}
+        size="sm"
+        variant="outline"
+      >
+        <ToggleGroupItem value="plan" className="px-3">
+          Plan
+        </ToggleGroupItem>
+        <ToggleGroupItem value="mockups" className="gap-1.5 px-3" data-testid="tab-mockups">
+          Mockups
+          {mockups > 0 && <span className="font-mono text-ink-muted text-xs">{mockups}</span>}
+        </ToggleGroupItem>
+        <ToggleGroupItem value="canvas" className="px-3" data-testid="tab-canvas">
+          Canvas
+        </ToggleGroupItem>
+      </ToggleGroup>
+      <span className="grow" />
+      {mockups > 0 && (
+        <Button
+          size="sm"
+          variant={pinMode ? "default" : "outline"}
+          onClick={onPinMode}
+          title="Pin a comment to an element of a mockup"
+          data-testid="comment-mode"
+        >
+          <MapPinIcon className="size-3.5" />
+          {pinMode ? "Click a spot to comment" : "Comment"} <Kbd>C</Kbd>
+        </Button>
+      )}
+    </div>
+  );
+}
 
 /** Comments whose lines are no longer in the plan (review of #85): listed, never dropped. */
 function OrphanedComments({ view, bodyMd }: { view: PlanningView; bodyMd: string }) {
@@ -1090,6 +1275,7 @@ function Chat({
           text,
           ...(draft.questionId ? { questionId: draft.questionId } : {}),
           ...(draft.anchor ? { anchor: draft.anchor } : {}),
+          ...(draft.pin ? { pin: draft.pin } : {}),
           ...(interrupt ? { interrupt: true } : {}),
         },
         { idempotencyKey: submitKey() },
@@ -1145,6 +1331,15 @@ function Chat({
               <span className="font-medium text-foreground">{m.authorName}</span>
               {m.kind === "gate" && <Badge variant="outline">spec gate: changes</Badge>}
               {m.questionId && <Chip tag={`Q${numbers.get(m.questionId) ?? "?"}`} />}
+              {m.pin && <PinLabel view={view} pin={m.pin} testId="message-pin" />}
+              {!m.pin && m.replyTo && pinOf(view, m.replyTo) && (
+                <PinLabel
+                  view={view}
+                  pin={pinOf(view, m.replyTo)}
+                  prefix="re "
+                  testId="message-reply-pin"
+                />
+              )}
               {m.anchor && (
                 <span className="flex items-center gap-0.5" title={m.anchor.quote}>
                   <MessageSquarePlusIcon className="size-3" /> on the plan
@@ -1177,6 +1372,26 @@ function Chat({
         <div ref={end} />
       </div>
       <div className="grid flex-none gap-1.5 border-line-soft border-t px-4 py-3">
+        {draft.pin && (
+          <div
+            className="flex items-center gap-2 text-muted-foreground text-xs"
+            data-testid="comment-pin"
+          >
+            <MapPinIcon className="size-3" />
+            <span className="truncate">
+              On {draft.pin.element} in{" "}
+              {view.artifacts.find((a) => a.id === draft.pin?.artifactId)?.title ?? "a mockup"}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 px-1 text-xs"
+              onClick={() => onDraft({ text: draft.text })}
+            >
+              ✕
+            </Button>
+          </div>
+        )}
         {draft.anchor && (
           <div
             className="flex items-center gap-2 text-muted-foreground text-xs"
@@ -1456,6 +1671,36 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         onConfirm={(note) => decide({ kind: "spec.requestChanges", workItemId: item.id, note })}
       />
     </div>
+  );
+}
+
+/** The pin of the message `id` replies to, if that message is a pinned comment (spec 21, AC4). */
+function pinOf(view: PlanningView, id: string): Pin | null {
+  return view.messages.find((x) => x.id === id)?.pin ?? null;
+}
+
+/** A pinned comment's element, titled with its mockup; a reply to one says "re" it. */
+function PinLabel({
+  view,
+  pin,
+  prefix = "",
+  testId,
+}: {
+  view: PlanningView;
+  pin: Pin | null;
+  prefix?: string;
+  testId: string;
+}) {
+  if (!pin) return null;
+  return (
+    <span
+      className="flex min-w-0 items-center gap-0.5 truncate"
+      title={view.artifacts.find((a) => a.id === pin.artifactId)?.title ?? "a mockup"}
+      data-testid={testId}
+    >
+      <MapPinIcon className="size-3 flex-none" /> {prefix}
+      {pin.element}
+    </span>
   );
 }
 

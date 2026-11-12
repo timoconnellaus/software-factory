@@ -3,6 +3,7 @@
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
 import * as adjudicator from "./operations/adjudicator.ts";
+import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
 import * as backlog from "./operations/backlog.ts";
@@ -117,6 +118,12 @@ export const OPERATIONS: readonly AnyOperation[] = [
   planning.planningNews,
   planning.planningPeek,
   planning.specEdit,
+  artifacts.artifactAdd,
+  artifacts.artifactUpdate,
+  artifacts.artifactDelete,
+  artifacts.artifactShow,
+  artifacts.artifactGet,
+  artifacts.artifactRead,
   planning.specReleaseEdit,
   planning.planningWait,
   planning.planningYield,
@@ -201,6 +208,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.runReportEvents,
   live.runLive,
   live.runSteer,
+  live.runReportArchiveMissing,
   live.runTakeSteers,
   live.runTakeover,
   terminal.runTerminalAttach,

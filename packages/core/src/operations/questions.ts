@@ -24,6 +24,7 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { logPlanning, openSession, takeBackFromGate, wakeSession } from "../planning.ts";
+import { checkQuestionVisuals } from "../planning-visuals.ts";
 import { approverIds, backupOwnerId } from "../scope.ts";
 import { questionsEvent } from "../workflow-events.ts";
 import { resumeParked } from "./backlog.ts";
@@ -191,6 +192,8 @@ export const questionAsk = defineOperation({
         const q = parse(planningQuestionSchema, raw, i);
         const { options, defaults } = normalizeQuestion(q);
         const text = defaults ? defaultText(defaults) : null;
+        // Spec 21: links to the planner's mockups, checked against what they declare.
+        await checkQuestionVisuals(ctx, w.id, { ...q, options });
         ctx.write(
           ctx.db.insertInto("core_questions").values({
             ...base,
@@ -207,6 +210,14 @@ export const questionAsk = defineOperation({
             irreversible: q.irreversible ? 1 : 0,
             position: q.position ?? ++position,
             planning_session_id: sessionId,
+            artifact_id: q.artifactId ?? null,
+            option_artifacts: q.optionArtifacts ? JSON.stringify(q.optionArtifacts) : null,
+            option_values: q.optionValues ? JSON.stringify(q.optionValues) : null,
+            control: q.control ?? null,
+            unit: q.unit ?? null,
+            min: q.min ?? null,
+            max: q.max ?? null,
+            step: q.step ?? null,
             // "Finish alone" (ADR 0470): a bulk-acceptable question is accepted as it is asked,
             // recorded as the answer of the person who gave the instruction.
             ...(aloneBy && text && bulkAcceptable({ ...q, default: text })
@@ -315,6 +326,25 @@ export const questionUpdate = defineOperation({
     });
     const text = defaults ? defaultText(defaults) : null;
     const revision = q.revision + 1;
+    // Spec 21: the links to visuals as they will be after this edit, checked as on ask.
+    const json = <T>(v: string | null) => (v ? parseJson<T>(v, {} as T) : null);
+    const visuals = {
+      kind,
+      options,
+      artifactId: p.artifactId !== undefined ? p.artifactId : q.artifact_id,
+      optionArtifacts:
+        p.optionArtifacts !== undefined
+          ? p.optionArtifacts
+          : json<Record<string, string>>(q.option_artifacts),
+      optionValues:
+        p.optionValues !== undefined
+          ? p.optionValues
+          : json<Record<string, Record<string, string>>>(q.option_values),
+      control: p.control !== undefined ? p.control : q.control,
+      min: p.min !== undefined ? p.min : q.min,
+      max: p.max !== undefined ? p.max : q.max,
+    };
+    await checkQuestionVisuals(ctx, q.work_item_id, visuals);
     // An answer stands only while it still answers the same question (review of #71, G): it is
     // reopened when the question becomes one a person must answer themselves, or its kind or
     // options change.
@@ -343,6 +373,16 @@ export const questionUpdate = defineOperation({
               }
             : {}),
           kind,
+          artifact_id: visuals.artifactId ?? null,
+          option_artifacts: visuals.optionArtifacts
+            ? JSON.stringify(visuals.optionArtifacts)
+            : null,
+          option_values: visuals.optionValues ? JSON.stringify(visuals.optionValues) : null,
+          control: visuals.control ?? null,
+          ...(p.unit !== undefined ? { unit: p.unit } : {}),
+          min: visuals.min ?? null,
+          max: visuals.max ?? null,
+          ...(p.step !== undefined ? { step: p.step } : {}),
           options: JSON.stringify(options),
           default_values: defaults ? JSON.stringify(defaults) : null,
           default_answer: text,

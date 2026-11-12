@@ -4,6 +4,7 @@
 export * from "./channel.ts";
 export * from "./plan-blocks.ts";
 export * from "./planning.ts";
+export * from "./planning-visuals.ts";
 export * from "./protocol.ts";
 export * from "./stage-results.ts";
 export * from "./terminal.ts";
