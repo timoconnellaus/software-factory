@@ -33,7 +33,11 @@ export {
   resolveDesktopToken,
 } from "./operations/desktop.ts";
 export { DEVICE_LOGIN_ACTOR, normalizeUserCode } from "./operations/devices.ts";
-export { PHONE_REFUSES_PENDING, phoneMayDecidePending } from "./operations/gates.ts";
+export {
+  PHONE_REFUSES_CANCEL,
+  PHONE_REFUSES_PENDING,
+  phoneMayDecidePending,
+} from "./operations/gates.ts";
 export * as operations from "./operations/index.ts";
 export {
   formatPairCode,

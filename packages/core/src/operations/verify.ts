@@ -706,7 +706,8 @@ async function moveAttachedHead(
       .where("id", "=", item.id),
   );
   const note = `withdrawn: the pull request's head moved to ${headSha.slice(0, 7)}, so the factory verifies it again`;
-  ctx.write(
+  ctx.writePendingStatus(
+    "close",
     ctx.db
       .updateTable("core_pending_actions")
       .set({
