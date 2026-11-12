@@ -3,6 +3,8 @@
 // (scrolled-off lines, then the latest screen). The runner's owner gets a message box; everyone
 // else watches read-only. Pure presentation: `live-run.tsx` polls and sends. While the run is
 // active on a runner that shares its terminal, Web terminal is the real pane (spec 35, ADR 0440).
+
+import { capitalise, clock, errorMessage } from "@software-factory/client/format";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Input } from "@software-factory/ui/components/input";
@@ -11,7 +13,6 @@ import { ToggleGroup, ToggleGroupItem } from "@software-factory/ui/components/to
 import { cn } from "@software-factory/ui/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { capitalise, clock, errorMessage } from "#/lib/format";
 import { latestStatus, type TranscriptItem, terminalText, transcriptItems } from "#/lib/live";
 import type { LiveView } from "#/lib/ops";
 import { WebTerminal } from "./web-terminal";

@@ -38,6 +38,8 @@ export interface StatusLine {
   input?: string;
   /** A notification's or a failure's message. */
   message?: string;
+  /** A failure's error type (`StopFailure`: `rate_limit`, `authentication_failed`, …). */
+  error?: string;
   /** A notification's type (`permission_prompt`, `idle_prompt`, …). */
   type?: string;
   /** Why a session ended or started (`SessionEnd` reason, `SessionStart` source). */
@@ -70,8 +72,11 @@ function finish() {
     const line = { event: String(h.hook_event_name ?? "unknown"), time: Date.now() };
     if (typeof h.tool_name === "string") line.tool = h.tool_name;
     if (h.tool_input !== undefined) line.input = clip(JSON.stringify(h.tool_input));
-    const message = h.message ?? h.error ?? h.error_message;
+    const failed = line.event === "StopFailure";
+    const message =
+      h.message ?? h.error_details ?? h.error_message ?? (failed ? h.last_assistant_message : undefined) ?? h.error;
     if (message !== undefined) line.message = clip(typeof message === "string" ? message : JSON.stringify(message));
+    if (typeof h.error === "string") line.error = clip(h.error);
     if (typeof h.notification_type === "string") line.type = h.notification_type;
     const reason = h.reason ?? h.source;
     if (typeof reason === "string") line.reason = reason;

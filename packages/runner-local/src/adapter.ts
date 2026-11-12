@@ -10,10 +10,15 @@ import { appendFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/pr
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  accountConfigDir,
   attachmentsPrompt,
+  carryConversation,
   checkOutputLog,
+  DEFAULT_HARNESS_ACCOUNT,
   findTranscript,
   HARNESS_CONFIG_MISMATCH,
+  type HarnessAccount,
+  isUsageLimitText,
   type LaunchRecord,
   PID_FILE,
   PRIVATE_WORKTREE_FILES,
@@ -30,6 +35,7 @@ import {
   STATUS_FILE,
   type StatusLine,
   shellQuote,
+  usageLimitOf,
   verifyLaunch,
   writeAttachments,
 } from "@software-factory/harness-claude";
@@ -76,6 +82,15 @@ export interface LocalWorkspace extends WorkspaceHandle {
   statusFile: string;
   /** Where this run's attachments go: outside the worktree and the protected run dirs. */
   attachmentsDir: string;
+  /** The Claude account the run uses (ADR 0410), taken when the workspace was prepared. */
+  account: HarnessAccount;
+  /**
+   * How the live harness's command line is read, when `ps` on the host can't see it (a container
+   * job reads it with `docker exec`, ADR 0430). Default: the adapter's `readCommand`.
+   */
+  readCommand?: ReadCommand;
+  /** More checks before the prompt (a container job's own configuration, ADR 0430). */
+  launchChecks?: () => Promise<string[]>;
 }
 
 export interface LocalSession extends SessionHandle {
@@ -89,6 +104,9 @@ export interface LocalSession extends SessionHandle {
   startedAt: number;
   /** When the prompt pointer was sent: only a turn submitted after it can end the job. */
   promptSentAt: number;
+  /** The run's Claude account (ADR 0410) and its config dir, where its transcript goes. */
+  account: string;
+  configDir: string;
 }
 
 export interface LocalRunnerConfig {
@@ -142,6 +160,21 @@ export interface LocalRunnerConfig {
   exec?: Exec;
   /** The tmux executable and socket (tests use their own socket). */
   tmux?: Omit<TmuxOptions, "exec">;
+  /**
+   * The Claude account a job uses (ADR 0410): the host's active one, asked once when the job's
+   * workspace is prepared, so a switch never touches a running job. Default: the host's own.
+   */
+  account?: (job: Job) => Promise<HarnessAccount> | HarnessAccount;
+  /**
+   * The config dirs of every account on the host, where a planning session resumed on another
+   * account than it started on finds its conversation.
+   */
+  accountConfigDirs?: () => Promise<string[]> | string[];
+  /**
+   * A run ended: with the usage-limit message Claude gave, or null when it ended without one
+   * (ADR 0410: the host surfaces it per account; nothing switches on its own).
+   */
+  onAccountUsage?: (account: string, usageLimit: string | null) => void;
 }
 
 export const DEFAULT_CAPABILITIES: Capability[] = [
@@ -387,6 +420,7 @@ export function createLocalRunner(
         launchScript: "",
         statusFile: join(runDir, STATUS_FILE),
         attachmentsDir,
+        account: DEFAULT_HARNESS_ACCOUNT,
       };
       try {
         const baseSha = (await run(exec, "git", ["rev-parse", "HEAD"], { cwd: path })).trim();
@@ -410,7 +444,21 @@ export function createLocalRunner(
         )
           .trim()
           .split("\n");
+        // The host's active account, now: the job keeps it to the end (ADR 0410).
+        const account = (await config.account?.(job)) ?? DEFAULT_HARNESS_ACCOUNT;
+        partial.account = account;
+        // A planning session resumed after the owner switched accounts: its conversation is in
+        // the old account's config dir, and `claude --resume` looks in the new one.
+        if (planning && job.planning?.resume && config.accountConfigDirs) {
+          await carryConversation({
+            cwd: path,
+            sessionId: job.planning.sessionRef,
+            to: accountConfigDir(account),
+            from: await config.accountConfigDirs(),
+          });
+        }
         const projected = await projectHarness(job, {
+          account,
           worktree: path,
           runDir,
           // The checkout may be the owner's own: the harness reads only its worktree, never the
@@ -474,6 +522,8 @@ export function createLocalRunner(
         startedAt: Date.now(),
         promptSentAt: Number.POSITIVE_INFINITY,
         takeover: { label: "Attach in a terminal", hint: attachCommand(name, tmux.socket) },
+        account: workspace.account.name,
+        configDir: accountConfigDir(workspace.account),
       };
       const fail = async (error: Error): Promise<never> => {
         await tmux.kill(name).catch(() => {});
@@ -515,7 +565,10 @@ export function createLocalRunner(
 
       // Before the job does anything: the live process and its settings must be exactly what the
       // harness set. Otherwise kill it and fail the job (incident 2026-11-11 #6).
-      const problems = await verifyLaunch(workspace.launch, config.readCommand);
+      const problems = [
+        ...(await verifyLaunch(workspace.launch, workspace.readCommand ?? config.readCommand)),
+        ...((await workspace.launchChecks?.()) ?? []),
+      ];
       if (problems.length > 0) await fail(new HarnessConfigMismatch(problems));
 
       // The prompt goes in a file; the terminal gets one short line pointing at it. A long paste
@@ -611,16 +664,31 @@ export function createLocalRunner(
       const summaryFromTranscript = async (): Promise<string | undefined> => {
         const path =
           transcript ??
-          (await findTranscript(session.worktreePath, { since: session.startedAt - 60_000 }).catch(
-            () => null,
-          ));
+          (await findTranscript(session.worktreePath, {
+            since: session.startedAt - 60_000,
+            configDirs: [session.configDir],
+          }).catch(() => null));
         if (!path) return undefined;
         const summary = await readTranscript(path).catch(() => null);
         return summary?.lastAssistantText ?? undefined;
       };
+      // Usage limits are surfaced against the run's account, never acted on (ADR 0410).
+      let usageLimit: string | null = null;
+      const reportUsage = (outcome: string) => {
+        if (outcome === "completed" || usageLimit) {
+          config.onAccountUsage?.(session.account, usageLimit);
+        }
+      };
+      const limitEvent = (message: string): AdapterEvent => ({
+        type: "agent.status",
+        status: "error",
+        message: clip(`usage limit on Claude account "${session.account}": ${message}`, 1_000),
+      });
       const exited = async (): Promise<AdapterEvent> => {
         const hasResult = await exists(resultPath);
         const summary = await summaryFromTranscript();
+        if (!usageLimit && !hasResult && isUsageLimitText(summary)) usageLimit = summary ?? null;
+        reportUsage(hasResult ? "completed" : "failed");
         return {
           type: "session.ended",
           outcome: hasResult ? "completed" : "failed",
@@ -699,9 +767,27 @@ export function createLocalRunner(
                 waitingSince ??= line.time;
               }
               break;
-            case "StopFailure":
-              yield* setStatus("error", line.message);
-              break;
+            case "StopFailure": {
+              const limit = usageLimitOf(line);
+              if (!limit) {
+                yield* setStatus("error", line.message);
+                break;
+              }
+              usageLimit = limit;
+              status = "error";
+              yield limitEvent(limit);
+              // A planning session waits for the owner (it may switch and steer); a job has
+              // nothing left to do on this account: it fails now instead of idling to a timeout.
+              if (planning) break;
+              yield* await finalLogs();
+              reportUsage("failed");
+              yield {
+                type: "session.ended",
+                outcome: "failed",
+                summary: `usage limit on Claude account "${session.account}": ${limit}`,
+              };
+              return;
+            }
             case "Stop":
               // A Stop from before the prompt was submitted (nothing asked yet) is not the end.
               if (!submitted) break;
@@ -713,6 +799,19 @@ export function createLocalRunner(
               yield* await finalLogs();
               {
                 const summary = await summaryFromTranscript();
+                // Claude's last word was the usage-limit notice: the turn didn't do the work.
+                if (isUsageLimitText(summary) && !(await exists(resultPath))) {
+                  usageLimit = summary ?? "usage limit reached";
+                  yield limitEvent(usageLimit);
+                  reportUsage("failed");
+                  yield {
+                    type: "session.ended",
+                    outcome: "failed",
+                    summary: `usage limit on Claude account "${session.account}": ${usageLimit}`,
+                  };
+                  return;
+                }
+                reportUsage("completed");
                 yield {
                   type: "session.ended",
                   outcome: "completed",
@@ -762,9 +861,10 @@ export function createLocalRunner(
         if (screen) artifacts.push({ kind: "log", name: "terminal-screen", text: screen });
         const transcript =
           (await transcriptFromStatus(session.statusFile)) ??
-          (await findTranscript(workspace.path, { since: session.startedAt - 60_000 }).catch(
-            () => null,
-          ));
+          (await findTranscript(workspace.path, {
+            since: session.startedAt - 60_000,
+            configDirs: [session.configDir],
+          }).catch(() => null));
         if (transcript) {
           const summary = await readTranscript(transcript).catch(() => null);
           const checks = summary ? checkOutputLog(summary) : null;

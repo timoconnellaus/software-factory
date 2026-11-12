@@ -12,7 +12,7 @@ export interface LiveEvent {
 }
 
 export function liveUrl(engineUrl: string): string {
-  const u = new URL(engineUrl.replace(/\/+$/, "") + "/client/v1/live");
+  const u = new URL(`${engineUrl.replace(/\/+$/, "")}/client/v1/live`);
   u.protocol = u.protocol === "http:" ? "ws:" : "wss:";
   return u.toString();
 }

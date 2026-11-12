@@ -73,12 +73,25 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   (block X, migration 0170), is built on `timoconnellaus/hosts-watch-steer`: the Live tab (transcript
   and terminal from `run.live`, polled), `run.steer` for the runner's owner, the held `steer` call
   on the channel, `message` events from the transcript. Criteria 1 and 2 need a live run on the M5.
+  Piece 3, [spec 32](specs/32-claude-accounts-on-a-host.md) / [ADR 0410](adr/0410-claude-accounts-live-on-the-host.md)
+  (block Y, migration 0180), is built on branch `timoconnellaus/hosts-accounts`: Claude accounts on
+  a host (`sf-runner account add|use|list|remove`), the active one in each job's launch, the
+  dashboard's picker on Setup (`runner.account.use`, delivered as `account.use` on the heartbeat),
+  usage limits surfaced per account. Its live checks (a real second login, a switch from Setup) are
+  in the PR.
   Piece 5, **Linux hosts** (block Z, [spec 34](specs/34-linux-hosts.md) /
   [ADR 0420](adr/0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md), branch
   `timoconnellaus/hosts-linux`): a systemd user service chosen by platform, Linux log path, the
   harness's per-platform deny lists, Linux doctor checks (bubblewrap, socat, linger), the install
   path in the runner-host README, and `local/runner-host/scripts/linux-check.sh` (the tests in a
   Debian container). Criteria 2–3, 6 and 8 need a live Linux host (README "Running on Linux").
+  Piece 4, **a container per job** (block AA, [spec 33](specs/33-container-per-job.md) /
+  [ADR 0430](adr/0430-a-container-per-job.md), branch `timoconnellaus/hosts-containers`):
+  `runner.json` `"isolation": "container"` runs each job's Claude in a Docker container
+  (`packages/runner-local/src/container/`, image `packages/runner-local/container/`). Each job gets a
+  self-contained job repo, an egress allowlist proxy, every stage `bypassPermissions`, and the launch
+  check inside the container. The host still pushes. Planning sessions stay on the host. Criteria 1
+  and 9 need a live run on the M5 with Docker Desktop (runner-host README, "A container per job").
   Piece 6, **the web terminal** (block AB, [spec 35](specs/35-web-terminal.md) /
   [ADR 0440](adr/0440-a-web-terminal-relayed-through-a-durable-object-per-job.md), migration 0210,
   branch `timoconnellaus/hosts-web-terminal`): the Live tab's Web terminal view (xterm.js), the
@@ -105,7 +118,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   **M2a is built** (`desktop-m2`): `apps/desktop` (sign-in, the device key, the door client with the
   presence flow, the supervised runner on bundled Node, launchd takeover, the menu bar, badge,
   notifications by polling, login item, deep links) and `sf-runner`'s host lock. **M2b is built** (`desktop-m2b`): the ClientHub Durable Object per person, `/client/v1/live`, `notify`
-  fan-out (the assignee, or the org's owners and admins), and the app's live socket. Next: M3 (screens).
+  fan-out (the assignee, or the org's owners and admins), and the app's live socket. **M3 is built** (`desktop-m3-screens`): the inbox, New work (with
+  attachments over the door as `{ $bytes }`), the work item with Planning and its timeline, the
+  review packet (Merge and Send back through Touch ID), Setup and attach, ported into
+  `apps/desktop`; the shared logic is in `packages/client`. Next: M4 (signing and updates).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

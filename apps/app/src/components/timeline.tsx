@@ -2,9 +2,10 @@
 // stored separately. Gate decisions show how long the gate was open. The wording (labels, details,
 // notes, actors, dots) is @software-factory/timeline's, shared with `sf timeline` (spec wi-4); this
 // file keeps the layout and the gate matching.
+
+import { clock, duration } from "@software-factory/client/format";
 import { describeEntry } from "@software-factory/timeline";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
-import { clock, duration } from "#/lib/format";
 import type { TimelineEntry, WorkItemDetail } from "#/lib/ops";
 
 const DECISION_KIND: Record<string, string> = {

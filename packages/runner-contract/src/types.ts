@@ -40,6 +40,9 @@ export const CONTRACT_VERSION = "1" as const;
  *   without it still runs every job; its agent just sees no attachments.
  * - `steer`: a person can send a message into the live session from the dashboard (ADR 0400). The
  *   host keeps the channel's `steer` call open while the session runs and calls `adapter.steer`.
+ * - `container-isolation`: each job's harness runs in its own container: only the job's repo
+ *   mounted, no host credentials, an egress allowlist (ADR 0430). Planning sessions still run on
+ *   the host, so a policy should require it for the other stages only.
  * - `terminal`: the live session's terminal can be bridged to the dashboard's web terminal
  *   (ADR 0440). The host keeps the channel's `terminal` call open while the session runs and, when
  *   someone watches, relays `adapter.openTerminal` over a WebSocket to the job's relay.
@@ -53,6 +56,7 @@ export const CAPABILITIES = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "container-isolation",
   "terminal",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];

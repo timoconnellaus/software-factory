@@ -3,6 +3,7 @@
 // contract imports it.
 export * from "./adapter.ts";
 export * from "./checkouts.ts";
+export * from "./container/index.ts";
 export * from "./exec.ts";
 export * from "./reap.ts";
 export * from "./terminal.ts";

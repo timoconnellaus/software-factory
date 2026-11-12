@@ -1,12 +1,13 @@
 // The runner host daemon (ADR 0014, 0016, 0100). Outbound only: every ~20 s it heartbeats (manifest,
 // capacity, the jobs it holds with their fencing tokens, which renews their leases), applies the
-// commands that come back (cancel, drain), and claims jobs while it has room. Each job runs
-// concurrently through `runJob`, which also takes the dashboard's steers for its session on a held
-// channel call (ADR 0400). Nothing here knows which runner adapter it drives.
+// commands that come back (cancel, drain, account.use: ADR 0410), and claims jobs while it has
+// room. Each job runs concurrently through `runJob`, which also takes the dashboard's steers for its
+// session on a held channel call (ADR 0400). Nothing here knows which runner adapter it drives.
 import {
   ChannelCallError,
   type ControlPlaneClient,
   type Job,
+  type RunnerAccounts,
   type RunnerAdapter,
   type RunnerEvent,
   type SessionHandle,
@@ -51,6 +52,14 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
    * non-zero and the service (launchd or systemd) starts the new code.
    */
   onUpdated?: () => void;
+  /**
+   * The host's Claude accounts (ADR 0410): reported on every heartbeat (names only), and switched
+   * when the owner picks one in the dashboard (`account.use`).
+   */
+  accounts?: {
+    report(): Promise<RunnerAccounts>;
+    use(name: string): Promise<void>;
+  };
 }
 
 interface Running {
@@ -118,6 +127,11 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       const manifest = await this.options.adapter.manifest();
       const capacity = await this.capacity();
       const selfUpdate = this.options.selfUpdate;
+      // A registry that can't be read is reported as nothing rather than failing the heartbeat.
+      const accounts = await this.options.accounts?.report().catch((err) => {
+        this.log(`accounts: ${err instanceof Error ? err.message : err}`);
+        return undefined;
+      });
       const { commands, leases, desiredVersion } = await this.options.cp.heartbeat({
         manifest,
         capacity,
@@ -129,6 +143,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
           })),
         rateLimitedUntil: null,
         ...(selfUpdate ? { version: selfUpdate.report() } : {}),
+        ...(accounts ? { accounts } : {}),
       });
       this.failures = 0;
       if (selfUpdate && !this.confirmed) {
@@ -151,6 +166,14 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
         } else if (command.kind === "drain") {
           this.log("drain: taking no new jobs");
           this.draining = true;
+        } else if (command.kind === "account.use" && this.options.accounts) {
+          // The owner's pick from the dashboard (ADR 0410): new jobs use it, running ones keep
+          // theirs. The next heartbeat reports it active, which settles the pick.
+          await this.options.accounts.use(command.name).then(
+            () => this.log(`account: new jobs use "${command.name}" (picked in the dashboard)`),
+            (err) =>
+              this.log(`account.use ${command.name}: ${err instanceof Error ? err.message : err}`),
+          );
         }
       }
       if (selfUpdate && !this.stopped) {
