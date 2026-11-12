@@ -12,9 +12,17 @@ checks that came from incidents are real.
 - An org has projects. A project runs on one workflow. A workflow uses repositories when a stage
   needs code. A project is not a repository.
 - One object runs through the app, the **work item**: org → project → work item → run.
-- A work item goes Backlog → Planning (optional) → Ready → (release) Queued → the workflow's stages
-  → Done. Planning before release is proposed and awaits the owner (spec 50, part C). A work item
-  always uses its project's workflow.
+- A **workflow** is an ordered list of stages. A **stage** is a lane on the board and an instance of
+  a **stage type** (code with a fixed contract: what it runs, produces, proves and shows, and
+  whether a person decides). A **step** is what happens inside a stage. Owner's decision, 2026-11-12.
+- A workflow has **shaping stages** (with a person, before release, no build slot) and **delivery
+  stages** (in the factory, after release). Only Backlog, release (Ready → Queued) and Done are the
+  same for every item. Interview planning is one shaping stage type.
+- A **skill** is how the team does one thing, written once and shared across the org. Skills are
+  attached to an agent, to a step in a workflow, or built into a stage type.
+- An **autopilot** is a trigger (a schedule or an event), an agent, the skills it follows and where
+  its output goes. What it files goes through the same backlog and workflow as anything else. It
+  never merges or deploys, and releases work only where policy allows.
 
 ## Sections
 | Section | What it is for |
@@ -22,7 +30,7 @@ checks that came from incidents are real.
 | Inbox | Decisions that wait on you, and nothing else: merge gates, plan approvals, questions |
 | Chat | Ask and tell. A chat can add to the backlog, release work and draft a policy change. It cannot approve, merge or loosen policy |
 | Work | Backlog, Ready, In the factory, Done, and one board per project |
-| Factory | Overview, Workflows, Agents, Autopilots, Checks and incidents, Runners, Policy |
+| Factory | Overview, Workflows, Agents, Skills, Autopilots, Checks and incidents, Runners, Policy |
 | Settings | Repositories, Members, Connections, Devices and notifications |
 
 ## Layout
@@ -82,6 +90,7 @@ way the app already does.
 | [FactoryOverview.html](FactoryOverview.html) | Factory: overview | 1440 × 980 |
 | [FactoryWorkflow.html](FactoryWorkflow.html) | Factory: workflows | 1440 × 1040 |
 | [FactoryAgents.html](FactoryAgents.html) | Factory: agents | 1440 × 1040 |
+| [FactorySkills.html](FactorySkills.html) | Factory: skills | 1440 × 900 |
 | [FactoryAutopilots.html](FactoryAutopilots.html) | Factory: autopilots | 1440 × 900 |
 | [FactoryIncidents.html](FactoryIncidents.html) | Factory: checks and incidents | 1440 × 1040 |
 | [FactoryRunners.html](FactoryRunners.html) | Factory: runners | 1440 × 900 |
