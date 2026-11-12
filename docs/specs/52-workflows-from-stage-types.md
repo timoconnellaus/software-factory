@@ -1265,7 +1265,12 @@ screen needs).
    same-named, different agent gets the project's slug), the overridable settings at Software's
    values in the org workflow and each project's own values as its overrides, its looser ones
    approved by the run for the version it writes. A project whose move doesn't classify neutral is
-   left as it is, with the reason; the run refuses an org change that would loosen. A project's
+   left as it is, with the reason, and so is one whose new org workflow would loosen against the
+   floor (a conditional check) or whose workflow declares its own checks; the others still move. The
+   run refuses any other org change that would loosen. At most 25 projects move a run (one D1 batch
+   of at most 25 × 8 statements plus the org version's), guarded on every base version it read; the
+   rest are listed and move in the next run. A project on an org workflow sees only the org agents
+   its workflow's stages name, so one project's agent never becomes another's default. A project's
    other, unused slot workflows and its agents stay in its config (deviation from "removed": removing
    them would itself classify as loosening). Still to come in (d): the tightening re-pin at the next
    boundary (Q3).

@@ -4,9 +4,23 @@
 import { env } from "cloudflare:workers";
 import { createDb } from "@software-factory/db";
 import { describe, expect, it } from "vitest";
-import { parseProjectPolicy, resolveScope } from "../src/index.ts";
+import { invoke, type OperationError, parseProjectPolicy, resolveScope } from "../src/index.ts";
+import { ADOPT_PER_RUN } from "../src/operations/adopt.ts";
 import { compileProjectWorkflow, planFromDefinition } from "../src/stages/index.ts";
-import { call, first, ok, onboard, POLICY, refusal, rows, uid, world } from "./helpers.ts";
+import {
+  call,
+  deps,
+  FOREMAN,
+  first,
+  ok,
+  onboard,
+  POLICY,
+  RUNNER_ACTOR,
+  refusal,
+  rows,
+  uid,
+  world,
+} from "./helpers.ts";
 
 type W = Awaited<ReturnType<typeof world>>;
 
@@ -109,6 +123,7 @@ const adopt = (w: W, dryRun: boolean, baseVersion = 0) =>
       changes: { class: string }[];
     }[];
     skipped: { name: string; reason: string }[];
+    remaining: string[];
   }>("orgConfig.adoptProjectWorkflows", { orgId: w.orgId, baseVersion, dryRun }, w.human);
 
 describe("orgConfig.adoptProjectWorkflows", () => {
@@ -234,5 +249,71 @@ describe("orgConfig.adoptProjectWorkflows", () => {
     await adopt(w, false);
     const scope = await resolveScope(createDb(env.DB), { projectId: w.projectId });
     expect(parseProjectPolicy(JSON.stringify(scope.rawPolicy)).ok).toBe(true);
+  });
+
+  it("refuses an agent, a runner, and a CLI or MCP token", async () => {
+    const w = await world(TODAY);
+    const input = { orgId: w.orgId, baseVersion: 0, dryRun: true };
+    for (const actor of [FOREMAN, RUNNER_ACTOR(uid("run_"))]) {
+      const refused = await refusal(call("orgConfig.adoptProjectWorkflows", input, actor));
+      expect(refused.code).toBe("forbidden");
+    }
+    for (const surface of ["cli", "mcp"] as const) {
+      const refused = await invoke(deps, "orgConfig.adoptProjectWorkflows", input, {
+        actor: w.human,
+        origin: { surface },
+      }).catch((e: OperationError) => e);
+      expect((refused as OperationError).code).toBe("forbidden");
+    }
+  });
+
+  it("leaves a project whose workflow would loosen against the floor, and moves the rest", async () => {
+    const w = await world(TODAY);
+    // Its agent check runs only for auth work.
+    await project(w, "Conditional", {
+      ...TODAY,
+      workflows: [
+        {
+          ...FEATURE,
+          name: "Auth only",
+          slots: {
+            ...FEATURE.slots,
+            beforeVerify: [{ ...FEATURE.slots.beforeVerify[0], when: { domain: "auth" } }],
+          },
+        },
+      ],
+      workflow: "Auth only",
+    });
+    const done = await adopt(w, false);
+    expect(done.projects.map((p) => p.name)).toEqual(["Software factory"]);
+    expect(done.skipped).toEqual([
+      {
+        projectId: expect.any(String),
+        name: "Conditional",
+        reason: expect.stringMatching(/loosen/),
+      },
+    ]);
+    expect(done.workflows.map((x) => x.name)).toEqual(["Ship a feature"]);
+  });
+
+  it("leaves a project whose workflow declares its own checks", async () => {
+    const w = await world({
+      ...TODAY,
+      workflows: [{ ...FEATURE, checks: [{ name: "e2e", run: "pnpm e2e" }] }],
+    });
+    const done = await adopt(w, false);
+    expect(done.projects).toEqual([]);
+    expect(done.skipped[0]?.reason).toMatch(/declares its own checks/);
+  });
+
+  it("moves at most ADOPT_PER_RUN projects a run; the next run moves the rest", async () => {
+    const w = await world(TODAY);
+    for (let i = 0; i < ADOPT_PER_RUN; i++) await project(w, `P${i}`, TODAY);
+    const one = await adopt(w, false);
+    expect(one.projects).toHaveLength(ADOPT_PER_RUN);
+    expect(one.remaining).toHaveLength(1);
+    const second = await adopt(w, false, 1);
+    expect(second.projects.map((p) => p.name)).toEqual(one.remaining);
+    expect(second.remaining).toEqual([]);
   });
 });

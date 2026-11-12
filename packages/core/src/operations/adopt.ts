@@ -39,8 +39,19 @@ const OVERRIDABLE: readonly { stage: string; key: string }[] = [
   { stage: "verify", key: "sections" },
 ];
 
-/** The most projects one run adopts; more fails closed (the admin runs it again after). */
+/** The most projects one run reads; more fails closed. */
 const MAX_PROJECTS = 200;
+
+/**
+ * The most projects one run moves. The write is one batch: per project at most 8 statements (its
+ * config version's guard, insert and pointer, its audit row, and up to 4 override approvals), plus
+ * the org version's (guard, insert, pointer, audit, one notification per org admin, and the carry of
+ * approvals already held at the base version, at most 500 by that read's limit). So at most
+ * 25 × 8 + 4 + 500 + admins statements, under D1's 1,000. The rest wait for the next run: it is
+ * guarded on every base version it read, so a run that lost a race writes nothing, and one run
+ * after another moves only projects not yet on an org workflow.
+ */
+export const ADOPT_PER_RUN = 25;
 
 /** A stage's settings with its type's defaults filled in. */
 function parsedSettings(s: StageInstance): Record<string, unknown> {
@@ -205,6 +216,8 @@ export const orgConfigAdoptProjectWorkflows = defineOperation({
       }),
     ),
     skipped: z.array(z.object({ projectId: z.string(), name: z.string(), reason: z.string() })),
+    /** Projects that would move but wait for the next run (at most ADOPT_PER_RUN move in one). */
+    remaining: z.array(z.string()),
   }),
   async handler(input, ctx) {
     return adopt(ctx, input);
@@ -256,6 +269,16 @@ async function adopt(
     if (onOrgWorkflow(before)) continue; // already on one
     if (before.workflows.length > 0 && !before.workflow) {
       skip("it defines workflows but names none for its items");
+      continue;
+    }
+    const active = before.workflow
+      ? before.workflows.find((w) => w.name.toLowerCase() === before.workflow?.toLowerCase())
+      : undefined;
+    if (active?.checks.length) {
+      // An org workflow holds no checks of its own yet (ADR 0501): moving them would change what runs.
+      skip(
+        `its workflow ${active.name} declares its own checks, which an org workflow can't hold yet`,
+      );
       continue;
     }
     let compiled: WorkflowDefinition;
@@ -320,13 +343,21 @@ async function adopt(
   const orgImpact = summarise(
     orgConfigImpact(config, after.config).changes.filter((c) => !newAgent.has(c.path)),
   );
-  if (orgImpact.class === "loosens")
+  // A workflow this run adds that loosens against the floor (a conditional check, say) leaves the
+  // projects that would use it where they are, with the reason; the others still move. Anything
+  // else that loosens the org's config refuses the run.
+  const loosening = new Map<string, string[]>();
+  const elsewhere: string[] = [];
+  for (const c of orgImpact.changes) {
+    if (c.class !== "loosens") continue;
+    const id = [...added].find((a) => c.path === a || c.path.startsWith(`${a}.`));
+    if (id) loosening.set(id, [...(loosening.get(id) ?? []), c.summary]);
+    else elsewhere.push(c.summary);
+  }
+  if (elsewhere.length)
     throw new OperationError(
       "conflict",
-      `adopting the projects' workflows would loosen the org's config: ${orgImpact.changes
-        .filter((c) => c.class === "loosens")
-        .map((c) => c.summary)
-        .join(" ")}`,
+      `adopting the projects' workflows would loosen the org's config: ${elsewhere.join(" ")}`,
     );
   const nextVersion = version + 1;
 
@@ -344,6 +375,15 @@ async function adopt(
     row: ProjectRow;
   }[] = [];
   for (const p of planned) {
+    const loosens = loosening.get(p.id);
+    if (loosens) {
+      skipped.push({
+        projectId: p.row.id,
+        name: p.row.name,
+        reason: `as an org workflow, its workflow would loosen against the floor: ${loosens.join(" ")}`,
+      });
+      continue;
+    }
     const active = p.from?.toLowerCase();
     const docWorkflows = Array.isArray(p.doc.workflows)
       ? (p.doc.workflows as { name?: string }[]).filter(
@@ -407,6 +447,8 @@ async function adopt(
     });
   }
 
+  // At most ADOPT_PER_RUN move in this run; the rest move in the next.
+  const remaining = projects.splice(ADOPT_PER_RUN).map((p) => p.name);
   // Only the workflows and agents a project that moves uses: a skipped project's stay out.
   const kept = new Set(projects.map((p) => p.workflow));
   const writtenWorkflows = after.config.workflows.filter((w) => !added.has(w.id) || kept.has(w.id));
@@ -430,6 +472,7 @@ async function adopt(
     agents: writtenAgents.filter((a) => addedAgents.includes(a.name)).map((a) => a.name),
     projects: projects.map(({ raw: _r, row: _row, looser: _l, ...rest }) => rest),
     skipped,
+    remaining,
   };
   // Software itself is a built-in: a project on it names `wf_software` with no org workflow.
   if (
