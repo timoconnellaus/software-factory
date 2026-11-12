@@ -32,7 +32,22 @@ const decisionOutput = z.object({
 });
 
 /**
- * Decides a pending action once. A repeat of the same decision is a no-op that reports
+ * Whether the phone may decide this pending action, by any operation (ADR 0541 amendment,
+ * 2026-11-12). Not a config change (`config.save`, `config.rollback`) and nothing self-modify (a
+ * merge that touches `.factory/` included): the fingerprint prompt reads only "Approve config.save
+ * on #n", and binding it to the version's digest is spec 60 PR 8. Until then these are decided on
+ * the desktop app or the website. `decidePending` checks it, so every deciding operation does.
+ */
+export function phoneMayDecidePending(pa: { operation: string; risk: string }): boolean {
+  return !(CONFIG_WRITES as readonly string[]).includes(pa.operation) && pa.risk !== "self-modify";
+}
+
+export const PHONE_REFUSES_PENDING =
+  "this change is approved on the desktop app or the website, not the phone: approve this on the desktop app or the website";
+
+/**
+ * Decides a pending action once. Every operation that decides one goes through here, so the
+ * phone's limit (`phoneMayDecidePending`) holds whichever operation it calls. A repeat of the same decision is a no-op that reports
  * `alreadyDecided`; a contradicting one is a conflict (spec 12, criterion 3).
  */
 export function decidePending(
@@ -42,6 +57,9 @@ export function decidePending(
   note: string | null,
   openedFullDiff: boolean | null = null,
 ): z.input<typeof decisionOutput> {
+  if (ctx.actor.type === "human" && ctx.origin.surface === "mobile" && !phoneMayDecidePending(pa)) {
+    throw new OperationError("forbidden", PHONE_REFUSES_PENDING, { decideElsewhere: true });
+  }
   if (pa.status !== "pending") {
     const same = pa.decision === decision || (decision === "approved" && pa.status === "applied");
     if (same) return { pendingActionId: pa.id, decision, alreadyDecided: true };

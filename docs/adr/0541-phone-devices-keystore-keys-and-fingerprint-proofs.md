@@ -35,8 +35,9 @@ describes the key.
      Someone who learns the PIN can't enrol their own finger and approve. The phone then has to
      pair again.
    - Generation passes `setAttestationChallenge(challenge)`. The challenge is a nonce the phone
-     first fetches from `mobile/nonce` (unsigned). It is one use, lives 5 minutes, and is stored
-     as a hash. So the attestation is fresh and tied to this sign-in.
+     first fetches from `mobile/nonce` (unsigned). It is one use, lives 5 minutes, and is
+     stateless until used (amended 2026-11-12, second review: signed by the engine, recorded
+     only as a hash when spent). So the attestation is fresh and tied to this sign-in.
 3. **The engine checks the attestation at sign-in.** The phone sends the certificate chain with
    `mobile.authStart`, and the engine verifies all of the following:
    - **The chain** ends at one of Google's hardware attestation root keys, pinned in core. The
@@ -160,7 +161,7 @@ and stable; one tap for answers on the phone only). Building PR 1a settled these
   key from a software level" is refused. The stricter one is built. Only the boot state (not
   `Verified`, or the bootloader unlocked) registers a phone as `software`.
 - **The challenge** is SHA-256 of the nonce's UTF-8 bytes (32 bytes). The nonce is stored only as
-  its hash and spent by the sign-in that uses it.
+  its hash, when the sign-in that uses it spends it (see the second amendment).
 - **The key checks** are made on the hardware-enforced list: EC P-256, `SIGN`, `origin` generated,
   `userAuthType` with the fingerprint bit and *without* the password bit (so the PIN can't stand in),
   no `authTimeout` (or 0), no `noAuthRequired` on either list. The app check needs exactly one
@@ -254,3 +255,39 @@ code didn't spend the nonce, so codes could be guessed with no phone at all. Fix
 - **The emulator** signs in with a `dev` build flavour of its own package id that only a
   non-production engine accepts, as `software` (spec 60, "The dev build flavour"). The production
   engine knows one package, and no flag on it accepts a software attestation.
+
+## Amendment, 2026-11-12: after the second review of PR 1a
+The second review ran attacks against the fixes above. Five held; these didn't, and are changed on
+the same PR (each has a test that failed before):
+- **A self-modify merge could be approved from the phone.** The check sat in `invoke()` and looked
+  only at `approval.decide`, but `review.merge` decides a merge gate whose risk is `self-modify`
+  when the PR touches `.factory/`. The check now lives in `decidePending` (gates.ts), which every
+  operation that decides a pending action goes through, keyed on the pending action's operation
+  and risk class: from the `mobile` surface, a config change or anything `self-modify` is refused,
+  whichever operation decides it. A test finds every deciding operation in core's source (and
+  that only `decidePending` writes an approval), and fails until a new one is covered.
+- **Nonces are stateless until used.** The 200-nonce engine cap was a single point anyone could
+  fill from twenty addresses, blocking every phone sign-in (QR, typed and browser). A nonce is now
+  `<expiry>.<random>.<HMAC>` under the engine's secret (`RUNNER_CHANNEL_SECRET`, label
+  `sf-mobile:nonce:`, as runner keys are derived under it), and asking for one stores nothing
+  shared. `mobile.authStart` checks the signature and expiry, then inserts the nonce's hash into
+  `core_mobile_nonces` in a statement of its own, committed before anything is decided; the
+  primary key makes it single use. What remains per caller (ten nonces every five minutes,
+  `core_mobile_nonce_asks`) is a courtesy limit that holds only that caller.
+- **Every wrong code counts against its offer**, in the statement that refuses it, whatever the
+  caller caps say of the try (before, a try that missed the cap answered 403 and counted nothing).
+- **One answer for every refused code.** A right code whose offer closed or was used on its way
+  rolled the batch back into a 409 only a right code could produce, and left the nonce unspent for
+  a replay. Now the nonce is already spent, and every refusal of a typed code or QR secret (wrong,
+  used, expired, closed, raced) is the same 403 and body. `attemptsLeft` is gone: it told a
+  guesser which tags were live. The owner sees "2 wrong tries so far, of 5" on the screen showing
+  the code (`mobile.pairOfferStatus` `wrongTries`), and the offer's status says when it closed.
+- **A live offer's tag is unique, in SQL.** The offer insert is guarded so two offers made at once
+  never share a tag: one person's wrong codes never count against another person's offer.
+- **Revoking a device refuses a decision in flight.** Every write from a desktop or phone token
+  carries a guard in its own batch that the device isn't revoked, read before the call's writes.
+- **The caller hash is keyed** (an HMAC under the engine's secret, label `sf-mobile:caller:`), so a
+  stored hash can't be reversed by hashing the address space.
+- **Certificates are DER, strictly.** A length or tag number not in its shortest form is refused,
+  and so is a critical extension the checker doesn't read (anything but basicConstraints, keyUsage
+  and the key description).

@@ -151,6 +151,8 @@ export interface KeyOptions {
   /** Put a key description in the intermediate too (an attacker extending the chain). */
   extensionInIntermediate?: boolean;
   intermediateNotAfter?: number;
+  /** An extension marked critical in the leaf, by OID (one the checker doesn't understand). */
+  criticalInLeaf?: string;
 }
 
 function keyDescription(o: KeyOptions): Uint8Array {
@@ -259,7 +261,12 @@ export async function attestedKey(root: Awaited<ReturnType<typeof testRoot>>, o:
     issuerKeys: midKeys,
     notBefore: 0,
     notAfter: Date.UTC(2106, 1, 7),
-    extensions: [extension("1.3.6.1.4.1.11129.2.1.17", kd)],
+    extensions: [
+      extension("1.3.6.1.4.1.11129.2.1.17", kd),
+      ...(o.criticalInLeaf
+        ? [seq(oid(o.criticalInLeaf), bool(true), octets(seq(bool(true))))]
+        : []),
+    ],
   });
   const sign = async (message: string) =>
     b64url(

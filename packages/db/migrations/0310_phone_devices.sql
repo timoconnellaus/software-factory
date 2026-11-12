@@ -5,8 +5,9 @@
 -- - core_desktop_auth_requests gains `platform`, `attestation` and `offer_id`, and the same widening.
 -- - core_cli_tokens' `kind` allows `mobile` (`sfm_` tokens, bound to a device).
 -- - core_presence_challenges is rebuilt only because it references the devices table.
--- - New: core_mobile_nonces (the one-use attestation challenge), core_pair_offers (Add a phone)
---   and core_pair_code_tries (the hourly cap on typed codes).
+-- - New: core_mobile_nonces (spent attestation nonces), core_mobile_nonce_asks (the per-caller
+--   courtesy limit on asking for one), core_pair_offers (Add a phone) and core_pair_code_tries
+--   (the hourly cap on typed codes).
 --
 -- SQLite can't change a CHECK in place, so the tables are rebuilt. The rebuilt children are made
 -- to reference the *new* devices table before the old one is dropped: dropping a parent with
@@ -110,9 +111,11 @@ CREATE INDEX core_desktop_devices_user_idx ON core_desktop_devices (user_id, cre
 CREATE INDEX core_cli_tokens_user_idx ON core_cli_tokens (user_id, created_at);
 CREATE INDEX core_cli_tokens_device_idx ON core_cli_tokens (device_id);
 
--- The challenge a phone's Keystore key is generated with (ADR 0541 decision 2): one use, 5
--- minutes, stored only as the SHA-256 of the nonce. `caller` is a hash of the network address the
--- door saw (an IPv4 address or an IPv6 /64), for the per-caller limit on unspent nonces.
+-- The challenge a phone's Keystore key is generated with (ADR 0541 decision 2) is stateless until
+-- used: an expiry and random bytes signed with the engine's HMAC, so asking for one stores nothing.
+-- This table holds only spent nonces, by the SHA-256 of the nonce: mobile.authStart inserts one
+-- before it decides anything, and the primary key makes it single use. `caller` is a keyed hash of
+-- the network address the door saw (an IPv4 address or an IPv6 /64).
 CREATE TABLE core_mobile_nonces (
   nonce_hash TEXT PRIMARY KEY NOT NULL,
   caller TEXT NOT NULL DEFAULT '',
@@ -120,8 +123,18 @@ CREATE TABLE core_mobile_nonces (
   expires_at TEXT NOT NULL,
   consumed_at TEXT
 );
-CREATE INDEX core_mobile_nonces_live_idx ON core_mobile_nonces (consumed_at, expires_at);
-CREATE INDEX core_mobile_nonces_caller_idx ON core_mobile_nonces (caller, expires_at);
+CREATE INDEX core_mobile_nonces_expires_idx ON core_mobile_nonces (expires_at);
+
+-- The per-caller courtesy limit on asking for nonces: one counter per caller and five-minute
+-- bucket. It holds only that caller back; nothing here is shared between callers.
+CREATE TABLE core_mobile_nonce_asks (
+  caller TEXT NOT NULL,
+  bucket INTEGER NOT NULL,
+  n INTEGER NOT NULL,
+  PRIMARY KEY (caller, bucket)
+);
+-- For pruning (the cron deletes buckets older than a day).
+CREATE INDEX core_mobile_nonce_asks_bucket_idx ON core_mobile_nonce_asks (bucket);
 
 -- Add a phone (ADR 0541 decision 6): the offer is the approval, made by a signed-in person on the
 -- website or on the desktop with Touch ID. One use, 5 minutes. The QR's secret and the typed code

@@ -14,17 +14,27 @@
 //   hashes. The phone sends its secret (from the QR) or the typed code with authStart, gets the
 //   one-time code back directly, and exchanges it as above.
 //
-// The typed code's limits (ADR 0541 amendment, 2026-11-12). A guess costs a real phone running the
-// real app: the attestation is checked before the code is even looked at, and every refusal after
-// the nonce is found (a bad chain, a wrong code, a limit) spends the nonce, so each try needs a new
-// nonce and a new Keystore key. Then, counted in SQL in the call's own batch, so parallel tries
-// can't race past them:
-// - five wrong codes close the offer they name (its `attempts`, incremented in place);
+// The nonce is stateless until used (ADR 0541 amendment, 2026-11-12, second review): an expiry and
+// random bytes signed with an HMAC under the engine's secret. Asking for one stores nothing, so no
+// number of callers can use them up and block other people's sign-in; a per-caller courtesy limit
+// (ten every five minutes) is all that is counted. mobile.authStart checks the signature and the
+// expiry, then records the nonce as spent in a statement of its own, committed before anything
+// else is decided, so it is spent whatever the answer and whatever happens to the rest of the call.
+//
+// The typed code's limits. A guess costs a real phone running the real app: the attestation is
+// checked before the code is even looked at, and each try needs a new nonce and a new Keystore key.
+// Then, counted in SQL in the call's own batch, so parallel tries can't race past them:
+// - every wrong code counts against the live offer it names (its `attempts`, incremented in place,
+//   whatever the caller limits below say), and the fifth closes it. A live offer's tag is unique,
+//   so a wrong code counts against one offer only;
 // - one caller (the network address the door saw) gets ten typed codes an hour;
 // - once thirty wrong codes have come in an hour, a caller who has already sent a wrong one this
 //   hour is held. A caller's first code isn't, so other people's guessing never stops the owner's
-//   right code: only their offer's own five can, and then the owner is told to make a new code.
-// - a caller holds at most ten unspent nonces, and the engine two hundred.
+//   right code: only their offer's own five can.
+// Every refusal of a code or a QR secret is one answer (the same status and body): wrong, used,
+// expired, closed, or a right code whose offer closed while it was on its way. Nothing tells a
+// guesser whether a tag is live or how many tries an offer has left; the screen showing the code
+// (mobile.pairOfferStatus) tells its owner how many wrong tries it has had.
 //
 // The phone isn't anyone before it signs in, so the client door calls mobile.nonce,
 // mobile.authStart and mobile.authExchange unsigned, as MOBILE_DEVICE_ACTOR.
@@ -72,9 +82,11 @@ export const PAIR_CODE_ATTEMPTS = 5;
 export const PAIR_CODE_TRIES_PER_CALLER = 10;
 /** Wrong typed codes an hour, across the factory, after which a caller with a wrong one is held. */
 export const PAIR_CODE_WRONG_PER_HOUR = 30;
-/** At most this many unspent nonces at once (mobile/nonce is unauthenticated), and per caller. */
-export const MOBILE_NONCE_LIMIT = 200;
-export const MOBILE_NONCE_LIMIT_PER_CALLER = 10;
+/** Nonces one caller may ask for every five minutes: a courtesy limit, nothing global. */
+export const MOBILE_NONCES_PER_CALLER = 10;
+/** The answer to every refused code or QR secret, whatever the reason (one answer, see above). */
+export const PAIR_CODE_REFUSED =
+  "this pairing code is wrong, used or expired: check it against the screen, or make a new one on the desktop or the website";
 /** At most this many live offers per person. */
 export const PAIR_OFFER_LIMIT = 5;
 
@@ -109,6 +121,11 @@ export interface MobileAttestationService {
   signingCerts: readonly string[];
   /** Google's revocation list, cached for a day. Throws when it can't be had: sign-in is refused. */
   revoked(): Promise<ReadonlySet<string>>;
+  /**
+   * HMAC-SHA256 of `message` under the engine's secret, separated by `label` (base64url). Signs the
+   * stateless nonces. Throws `unavailable` when the engine has no secret: sign-in is refused.
+   */
+  mac(label: string, message: string): Promise<string>;
   /** Checks a chain. sf-engine passes Google's roots; tests may pass a test root here. */
   verify(
     chain: readonly string[],
@@ -139,10 +156,7 @@ async function verifyAttestation(
   nonce: string,
   chain: readonly string[],
 ): Promise<{ ok: VerifiedAttestation } | { refused: { message: string; reason: string } }> {
-  const service = ctx.services.mobileAttestation;
-  if (!service) {
-    throw new OperationError("unavailable", "phone sign-in isn't set up on this engine");
-  }
+  const service = attestationService(ctx);
   let revoked: ReadonlySet<string>;
   try {
     revoked = await service.revoked();
@@ -173,10 +187,48 @@ async function verifyAttestation(
   }
 }
 
+/** Encodes a stateless nonce: `<expiry ms, base 36>.<random>.<mac>`. */
+async function signNonce(service: MobileAttestationService, expiresMs: number): Promise<string> {
+  const body = `${expiresMs.toString(36)}.${randomToken(24)}`;
+  return `${body}.${await service.mac("nonce", body)}`;
+}
+
+/** Whether a nonce is one this engine signed and it hasn't expired (stateless: spent is checked apart). */
+async function nonceValid(
+  service: MobileAttestationService,
+  nonce: string,
+  now: string,
+): Promise<boolean> {
+  const parts = nonce.split(".");
+  if (parts.length !== 3) return false;
+  const [expiry = "", random = "", mac = ""] = parts;
+  if (!/^[0-9a-z]{1,12}$/.test(expiry) || !b64url.test(random) || !b64url.test(mac)) return false;
+  const expected = await service.mac("nonce", `${expiry}.${random}`);
+  if (!constantTimeEqual(expected, mac)) return false;
+  const expiresMs = Number.parseInt(expiry, 36);
+  const nowMs = Date.parse(now);
+  return expiresMs > nowMs && expiresMs <= nowMs + MOBILE_NONCE_TTL_MS;
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function attestationService(ctx: HandlerContext): MobileAttestationService {
+  const service = ctx.services.mobileAttestation;
+  if (!service) {
+    throw new OperationError("unavailable", "phone sign-in isn't set up on this engine");
+  }
+  return service;
+}
+
 export const mobileNonce = defineOperation({
   name: "mobile.nonce",
   description:
-    "A one-use nonce (5 minutes) for the phone's key attestation (ADR 0541): the phone generates its Keystore key with SHA-256 of this nonce as the attestation challenge, then sends both with mobile.authStart. Stored only as a hash. Called unsigned by sf-engine's client door.",
+    "A one-use nonce (5 minutes) for the phone's key attestation (ADR 0541): the phone generates its Keystore key with SHA-256 of this nonce as the attestation challenge, then sends both with mobile.authStart. Stateless: signed by the engine and recorded only when mobile.authStart spends it. Ten every five minutes per network address, as a courtesy. Called unsigned by sf-engine's client door.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -185,45 +237,25 @@ export const mobileNonce = defineOperation({
   redact: { output: (o) => ({ ...o, nonce: "[redacted]" }) },
   async handler(_input, ctx) {
     requireMobileActor(ctx);
+    const service = attestationService(ctx);
     const caller = ctx.origin.caller ?? "";
-    const live = await ctx.d1
-      .prepare(
-        `SELECT (SELECT COUNT(*) FROM core_mobile_nonces WHERE consumed_at IS NULL AND expires_at > ?1) AS total,
-                (SELECT COUNT(*) FROM core_mobile_nonces WHERE caller = ?2 AND consumed_at IS NULL AND expires_at > ?1) AS mine`,
-      )
-      .bind(ctx.now, caller)
-      .first<{ total: number; mine: number }>();
-    if (
-      Number(live?.total ?? 0) >= MOBILE_NONCE_LIMIT ||
-      Number(live?.mine ?? 0) >= MOBILE_NONCE_LIMIT_PER_CALLER
-    ) {
-      throw new OperationError(
-        "unavailable",
-        "too many sign-ins at once: try again in a few minutes",
-      );
-    }
-    const nonce = randomToken();
-    const expiresAt = new Date(Date.parse(ctx.now) + MOBILE_NONCE_TTL_MS).toISOString();
-    // The limits again, in the insert itself, so parallel calls can't all pass the read above.
+    const nowMs = Date.parse(ctx.now);
+    // The courtesy limit: one counter per caller and five-minute window. It holds only that caller.
+    const bucket = Math.floor(nowMs / MOBILE_NONCE_TTL_MS);
     ctx.write(
       ctx.d1
         .prepare(
-          `INSERT INTO core_mobile_nonces (nonce_hash, caller, created_at, expires_at, consumed_at)
-           SELECT ?1, ?2, ?3, ?4, NULL
-           WHERE (SELECT COUNT(*) FROM core_mobile_nonces WHERE consumed_at IS NULL AND expires_at > ?3) < ?5
-             AND (SELECT COUNT(*) FROM core_mobile_nonces WHERE caller = ?2 AND consumed_at IS NULL AND expires_at > ?3) < ?6`,
+          `INSERT INTO core_mobile_nonce_asks (caller, bucket, n) VALUES (?1, ?2, 1)
+           ON CONFLICT (caller, bucket) DO UPDATE SET n = n + 1 WHERE n < ?3`,
         )
-        .bind(
-          await sha256Hex(nonce),
-          caller,
-          ctx.now,
-          expiresAt,
-          MOBILE_NONCE_LIMIT,
-          MOBILE_NONCE_LIMIT_PER_CALLER,
-        ),
+        .bind(caller, bucket, MOBILE_NONCES_PER_CALLER),
     );
-    ctx.guardChanged("under the nonce limits");
-    return { nonce, expiresAt };
+    ctx.guardChanged("under this caller's nonce limit");
+    const expiresMs = nowMs + MOBILE_NONCE_TTL_MS;
+    return {
+      nonce: await signNonce(service, expiresMs),
+      expiresAt: new Date(expiresMs).toISOString(),
+    };
   },
 });
 
@@ -254,8 +286,6 @@ const startOutput = z.discriminatedUnion("status", [
     error: z.string(),
     /** The attestation check that failed. */
     attestation: z.string().optional(),
-    /** Wrong codes the named offer still takes (an estimate under parallel tries). */
-    attemptsLeft: z.number().optional(),
   }),
 ]);
 
@@ -295,31 +325,31 @@ export const mobileAuthStart = defineOperation({
   },
   async handler(input, ctx) {
     requireMobileActor(ctx);
-    const nonceHash = await sha256Hex(input.nonce);
-    const nonce = await ctx.db
-      .selectFrom("core_mobile_nonces")
-      .selectAll()
-      .where("nonce_hash", "=", nonceHash)
-      .executeTakeFirst();
-    if (!nonce || nonce.consumed_at || expired(ctx, nonce)) {
-      throw new OperationError("forbidden", "this sign-in's nonce is used or expired: start again");
-    }
-    // From here every answer spends the nonce, refusals included: another try needs a new nonce,
-    // and so a new Keystore key attested with its challenge.
-    const spendNonce = () => {
-      ctx.write(
-        ctx.db
-          .updateTable("core_mobile_nonces")
-          .set({ consumed_at: ctx.now })
-          .where("nonce_hash", "=", nonceHash)
-          .where("consumed_at", "is", null),
-      );
-      ctx.guardChanged("use the nonce once");
-    };
-    const refuse = (refusal: Omit<Refusal, "status">): Refusal => {
-      spendNonce();
-      return { status: "refused", ...refusal };
-    };
+    const service = attestationService(ctx);
+    const usedOrExpired = () =>
+      new OperationError("forbidden", "this sign-in's nonce is used or expired: start again");
+    if (!(await nonceValid(service, input.nonce, ctx.now))) throw usedOrExpired();
+    // Spend the nonce first, in a statement of its own that commits now: whatever is decided next,
+    // and whatever happens to the rest of this call's batch, it stays spent. Another try needs a
+    // new nonce, and so a new Keystore key attested with its challenge. (The one write outside the
+    // batch, on purpose: a rolled-back batch must not give the nonce back.)
+    const spent = await ctx.d1
+      .prepare(
+        `INSERT INTO core_mobile_nonces (nonce_hash, caller, created_at, expires_at, consumed_at)
+         VALUES (?1, ?2, ?3, ?4, ?3) ON CONFLICT (nonce_hash) DO NOTHING`,
+      )
+      .bind(
+        await sha256Hex(input.nonce),
+        ctx.origin.caller ?? "",
+        ctx.now,
+        new Date(Date.parse(ctx.now) + MOBILE_NONCE_TTL_MS).toISOString(),
+      )
+      .run();
+    if (spent.meta.changes !== 1) throw usedOrExpired();
+    const refuse = (refusal: Omit<Refusal, "status">): Refusal => ({
+      status: "refused",
+      ...refusal,
+    });
 
     // The attestation first: a typed code is only looked at for a real phone running our app.
     const checked = await verifyAttestation(ctx, input.nonce, input.attestationChain);
@@ -363,11 +393,7 @@ export const mobileAuthStart = defineOperation({
         row.closed_at ||
         expired(ctx, row)
       ) {
-        return refuse({
-          code: "denied",
-          error:
-            "this pairing code is used, expired or wrong: make a new one on the desktop or the website",
-        });
+        return refuse({ code: "forbidden", error: PAIR_CODE_REFUSED });
       }
       ctx.write(
         ctx.db
@@ -381,7 +407,6 @@ export const mobileAuthStart = defineOperation({
       ctx.guardChanged("use the offer once");
       offer = row;
     }
-    spendNonce();
 
     const id = newId("desktopAuthRequest");
     const expiresAt = new Date(Date.parse(ctx.now) + MOBILE_AUTH_TTL_MS).toISOString();
@@ -433,15 +458,20 @@ export const mobileAuthStart = defineOperation({
 
 type Refusal = Extract<z.output<typeof startOutput>, { status: "refused" }>;
 
-/** The try counts toward the caps only if they hold when the batch runs (one statement). */
-const UNDER_CAPS = `(SELECT COUNT(*) FROM core_pair_code_tries WHERE caller = ?4 AND at > ?5) < ?6
+/**
+ * The try counts toward the caps only if they hold when the batch runs (one statement). Each count
+ * stops at its cap (a LIMIT in the subquery), so it reads at most that many index rows
+ * (core_pair_code_tries_caller_idx, core_pair_code_tries_at_idx) however many tries there were.
+ */
+const UNDER_CAPS = `(SELECT COUNT(*) FROM (SELECT 1 FROM core_pair_code_tries WHERE caller = ?4 AND at > ?5 LIMIT ?6)) < ?6
   AND NOT (EXISTS (SELECT 1 FROM core_pair_code_tries WHERE caller = ?4 AND at > ?5 AND ok = 0)
-           AND (SELECT COUNT(*) FROM core_pair_code_tries WHERE at > ?5 AND ok = 0) >= ?7)`;
+           AND (SELECT COUNT(*) FROM (SELECT 1 FROM core_pair_code_tries WHERE at > ?5 AND ok = 0 LIMIT ?7)) >= ?7)`;
 
 /**
  * Finds the live offer a typed code names. Counts the try, and a wrong one against the offer its
  * first two characters name, in SQL in the call's batch. A right code consumes its offer there too,
- * guarded, so a code can't pair twice or after its offer closed.
+ * guarded, so a code can't pair twice or after its offer closed; if a guard fails the batch rolls
+ * back and the door answers PAIR_CODE_REFUSED, as for any other refused code.
  */
 async function redeemTypedCode(
   ctx: HandlerContext,
@@ -451,11 +481,11 @@ async function redeemTypedCode(
   const hourAgo = new Date(Date.parse(ctx.now) - 3_600_000).toISOString();
   const counts = await ctx.d1
     .prepare(
-      `SELECT (SELECT COUNT(*) FROM core_pair_code_tries WHERE caller = ?1 AND at > ?2) AS mine,
-              (SELECT COUNT(*) FROM core_pair_code_tries WHERE caller = ?1 AND at > ?2 AND ok = 0) AS mineWrong,
-              (SELECT COUNT(*) FROM core_pair_code_tries WHERE at > ?2 AND ok = 0) AS wrong`,
+      `SELECT (SELECT COUNT(*) FROM (SELECT 1 FROM core_pair_code_tries WHERE caller = ?1 AND at > ?2 LIMIT ?3)) AS mine,
+              EXISTS (SELECT 1 FROM core_pair_code_tries WHERE caller = ?1 AND at > ?2 AND ok = 0) AS mineWrong,
+              (SELECT COUNT(*) FROM (SELECT 1 FROM core_pair_code_tries WHERE at > ?2 AND ok = 0 LIMIT ?4)) AS wrong`,
     )
-    .bind(caller, hourAgo)
+    .bind(caller, hourAgo, PAIR_CODE_TRIES_PER_CALLER, PAIR_CODE_WRONG_PER_HOUR)
     .first<{ mine: number; mineWrong: number; wrong: number }>();
   const held =
     Number(counts?.mine ?? 0) >= PAIR_CODE_TRIES_PER_CALLER ||
@@ -469,6 +499,7 @@ async function redeemTypedCode(
     };
   }
   const hash = await sha256Hex(code);
+  // The right code for some offer, live or not.
   const named =
     code.length === CODE_LENGTH
       ? await ctx.db
@@ -514,52 +545,23 @@ async function redeemTypedCode(
   }
 
   recordTry(false);
-  if (named) {
-    // The right code for an offer that is closed, used or expired. Only a real phone with our app
-    // gets this far, and a dead offer can't be used, so saying so gives nothing away.
-    return {
-      refused: {
-        code: "denied",
-        error: named.closed_at
-          ? "this code's offer was closed after too many wrong tries: make a new code on the desktop or the website"
-          : "this code is used or expired: make a new code on the desktop or the website",
-      },
-    };
+  // A wrong code counts against the live offer its first two characters name, in place and
+  // whatever the caller limits said of the try: parallel tries each add one, and the fifth closes
+  // the offer. The answer is the same whether or not a live offer has that tag, and whether this
+  // was the right code for a dead offer: the code is refused, and that is all a caller learns.
+  if (!named) {
+    ctx.write(
+      ctx.d1
+        .prepare(
+          `UPDATE core_pair_offers
+           SET attempts = attempts + 1,
+               closed_at = CASE WHEN attempts + 1 >= ?1 THEN ?2 ELSE closed_at END
+           WHERE code_tag = ?3 AND consumed_at IS NULL AND closed_at IS NULL AND expires_at > ?2`,
+        )
+        .bind(PAIR_CODE_ATTEMPTS, ctx.now, code.slice(0, TAG_LENGTH)),
+    );
   }
-  // A wrong code counts against the live offer its first two characters name, in place: parallel
-  // tries each add one, and the fifth closes the offer. Only a try that counted (under the caps)
-  // counts against the offer.
-  const tag = code.slice(0, TAG_LENGTH);
-  const offers = await ctx.db
-    .selectFrom("core_pair_offers")
-    .select(["attempts"])
-    .where("code_tag", "=", tag)
-    .where("consumed_at", "is", null)
-    .where("closed_at", "is", null)
-    .where("expires_at", ">", ctx.now)
-    .execute();
-  ctx.write(
-    ctx.d1
-      .prepare(
-        `UPDATE core_pair_offers
-         SET attempts = attempts + 1,
-             closed_at = CASE WHEN attempts + 1 >= ?1 THEN ?2 ELSE closed_at END
-         WHERE code_tag = ?3 AND consumed_at IS NULL AND closed_at IS NULL AND expires_at > ?2
-           AND EXISTS (SELECT 1 FROM core_pair_code_tries WHERE id = ?4)`,
-      )
-      .bind(PAIR_CODE_ATTEMPTS, ctx.now, tag, tryId),
-  );
-  const attemptsLeft = Math.max(0, ...offers.map((o) => PAIR_CODE_ATTEMPTS - o.attempts - 1));
-  return {
-    refused: {
-      code: "forbidden",
-      error:
-        attemptsLeft > 0
-          ? "that code isn't right: check it against the screen"
-          : "that code isn't right, and the offer is closed: make a new one",
-      attemptsLeft,
-    },
-  };
+  return { refused: { code: "forbidden", error: PAIR_CODE_REFUSED } };
 }
 
 async function phoneRequest(ctx: HandlerContext, id: string) {
@@ -861,21 +863,28 @@ export const mobilePairOffer = defineOperation({
     const secret = randomToken();
     const id = newId("pairOffer");
     const expiresAt = new Date(Date.parse(ctx.now) + PAIR_OFFER_TTL_MS).toISOString();
+    // The tag again, in the insert itself: two offers made at once never share one, so one
+    // person's wrong codes never count against another person's offer.
     ctx.write(
-      ctx.db.insertInto("core_pair_offers").values({
-        id,
-        user_id: ctx.actor.id,
-        surface: surface === "desktop" ? "desktop" : "app",
-        secret_hash: await sha256Hex(secret),
-        code_tag: code.slice(0, TAG_LENGTH),
-        code_hash: await sha256Hex(code),
-        created_at: ctx.now,
-        expires_at: expiresAt,
-        consumed_at: null,
-        closed_at: null,
-        device_id: null,
-      }),
+      ctx.d1
+        .prepare(
+          `INSERT INTO core_pair_offers (id, user_id, surface, secret_hash, code_tag, code_hash, attempts, created_at, expires_at)
+           SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8
+           WHERE NOT EXISTS (SELECT 1 FROM core_pair_offers WHERE code_tag = ?5
+             AND consumed_at IS NULL AND closed_at IS NULL AND expires_at > ?7)`,
+        )
+        .bind(
+          id,
+          ctx.actor.id,
+          surface === "desktop" ? "desktop" : "app",
+          await sha256Hex(secret),
+          code.slice(0, TAG_LENGTH),
+          await sha256Hex(code),
+          ctx.now,
+          expiresAt,
+        ),
     );
+    ctx.guardChanged("a tag no live offer uses");
     ctx.change({ entity: "pair_offer", id, after: { by: ctx.actor.id, surface } });
     return {
       offerId: id,
@@ -889,7 +898,7 @@ export const mobilePairOffer = defineOperation({
 export const mobilePairOfferStatus = defineOperation({
   name: "mobile.pairOfferStatus",
   description:
-    "Where one of your pairing offers stands, for the screen that shows the code: waiting, paired (with the phone's name, where its key lives and its attested security level, so you can check it and remove it if it isn't yours), expired or closed.",
+    "Where one of your pairing offers stands, for the screen that shows the code: how many wrong codes it has had (five close it), and waiting, paired (with the phone's name, where its key lives and its attested security level, so you can check it and remove it if it isn't yours), expired or closed.",
   risk: "read",
   actors: ["human"],
   permission: "signed-in",
@@ -897,6 +906,10 @@ export const mobilePairOfferStatus = defineOperation({
   output: z.object({
     status: z.enum(["waiting", "pairing", "paired", "expired", "closed"]),
     expiresAt: z.string(),
+    /** Wrong typed codes counted against it; only its owner sees this, never the phone guessing. */
+    wrongTries: z.number(),
+    /** The wrong codes that close it. */
+    maxWrongTries: z.number(),
     device: z
       .object({
         id: z.string(),
@@ -935,6 +948,8 @@ export const mobilePairOfferStatus = defineOperation({
     return {
       status,
       expiresAt: row.expires_at,
+      wrongTries: row.attempts,
+      maxWrongTries: PAIR_CODE_ATTEMPTS,
       device: device
         ? {
             id: device.id,

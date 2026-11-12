@@ -26,7 +26,6 @@ import type {
   PendingActionRow,
   Scope,
 } from "./operation.ts";
-import { CONFIG_WRITES } from "./operations/config.ts";
 import { type Decision, decide, parseFloor, type RiskClass, strictest } from "./policy/gate.ts";
 import { getOperation } from "./registry.ts";
 import {
@@ -137,19 +136,6 @@ export function deviceDecidable(
   if (surface !== "mobile" || !op.mobileDecidable) return false;
   return op.mobileDecidable === true || op.mobileDecidable(input);
 }
-
-/**
- * Whether the phone may decide this pending action with `approval.decide` (ADR 0541 amendment,
- * 2026-11-12). Not a config change (`config.save`, `config.rollback`) and nothing self-modify:
- * the fingerprint prompt reads only "Approve config.save on #n", and binding it to the version's
- * digest is spec 60 PR 8. Until then these are decided on the desktop app or the website.
- */
-export function phoneMayDecidePending(pa: { operation: string; risk: string }): boolean {
-  return !(CONFIG_WRITES as readonly string[]).includes(pa.operation) && pa.risk !== "self-modify";
-}
-
-export const PHONE_REFUSES_PENDING =
-  "this change is approved on the desktop app or the website, not the phone: approve this on the desktop app or the website";
 
 export async function runOperation<O = unknown>(
   deps: InvokeDeps,
@@ -301,30 +287,6 @@ export async function runOperation<O = unknown>(
         { browserOnly: true },
       ),
     );
-  }
-
-  // 4d. A config or self-modify pending action isn't decided on the phone, either way, until the
-  //     fingerprint prompt can name the version it approves (spec 60 PR 8).
-  if (actor.type === "human" && origin.surface === "mobile" && op.name === "approval.decide") {
-    const id = (input as { pendingActionId?: unknown }).pendingActionId;
-    const pa =
-      typeof id === "string"
-        ? await db
-            .selectFrom("core_pending_actions")
-            .select(["operation", "risk"])
-            .where("id", "=", id)
-            .executeTakeFirst()
-        : undefined;
-    if (pa && !phoneMayDecidePending(pa)) {
-      return refuse(
-        {
-          decision: "n/a",
-          outcome: "forbidden",
-          reason: `${pa.operation} (${pa.risk}) isn't decided from the phone`,
-        },
-        new OperationError("forbidden", PHONE_REFUSES_PENDING, { decideElsewhere: true }),
-      );
-    }
   }
 
   // 5. Kill switch (ADR 0044): non-human writes to a covered item are refused. The details name the
@@ -540,7 +502,23 @@ export async function runOperation<O = unknown>(
   // 11. One batch: writes + guards + fence + approval consumed + audit + outbox. All or nothing.
   const auditId = newId("audit");
   const outboxIds = messages.map(() => newId("outbox"));
+  // A desktop's or phone's call holds only while the device does: removing it while a decision is
+  // on its way refuses the decision, in the same batch that would apply it (review of spec 60 PR
+  // 1a). First, so it reads the device as it was before this call's own writes.
+  const deviceGuard =
+    actor.type === "human" && isDeviceSurface(origin.surface) && origin.deviceId
+      ? origin.deviceId
+      : null;
   const batch = [
+    ...(deviceGuard
+      ? [
+          d1
+            .prepare(
+              "INSERT INTO core_batch_guard (name, ok) SELECT 'device', EXISTS (SELECT 1 FROM core_desktop_devices WHERE id = ? AND revoked_at IS NULL)",
+            )
+            .bind(deviceGuard),
+        ]
+      : []),
     ...statements,
     ...(fence
       ? [
@@ -592,6 +570,18 @@ export async function runOperation<O = unknown>(
       },
       subject,
     ).run();
+    if (guard && deviceGuard) {
+      const device = await db
+        .selectFrom("core_desktop_devices")
+        .select("revoked_at")
+        .where("id", "=", deviceGuard)
+        .executeTakeFirst();
+      if (!device || device.revoked_at) {
+        throw new OperationError("forbidden", "this device was removed: nothing was changed", {
+          deviceRemoved: true,
+        });
+      }
+    }
     if (guard || unique) {
       throw new OperationError("conflict", `${op.name}: the state changed underneath this call`);
     }

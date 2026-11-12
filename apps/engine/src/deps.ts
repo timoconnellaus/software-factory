@@ -9,7 +9,7 @@ import {
 import { fakeGitHub } from "@software-factory/core/testing";
 import { runnerChannelKey } from "@software-factory/runner-contract";
 import { githubApp } from "./github/app.ts";
-import { mobileAttestation } from "./mobile.ts";
+import { mobileAttestation, mobileTestSeams } from "./mobile.ts";
 import { deliverOutbox } from "./outbox.ts";
 import { secrets } from "./secrets.ts";
 
@@ -48,6 +48,9 @@ export function invokeDeps(env: Env): InvokeDeps {
     services: services(env),
     floor: env.FACTORY_FLOOR,
     deliver: (ids) => deliverOutbox(env, ids),
+    beforeCommit: async (op) => {
+      await mobileTestSeams.beforeCommit?.(op);
+    },
   };
 }
 

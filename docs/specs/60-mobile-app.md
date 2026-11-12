@@ -173,7 +173,8 @@ All of it is operations, in `packages/core`, behind the door.
 - `core_desktop_auth_requests` gains `platform`, `attestation`, `offer_id`.
 - `core_cli_tokens` is rebuilt so that `kind` allows `mobile`.
 - New tables:
-  - `core_mobile_nonces` (hash, expiry);
+  - `core_mobile_nonces` (hash, expiry: spent nonces only; a nonce is stateless until used, ADR
+    0541 second amendment) and `core_mobile_nonce_asks` (the per-caller courtesy limit);
   - `core_pair_offers` (id, user, secret hash, typed-code hash, attempts, expiry, consumed);
   - `core_push_registrations` (device, encrypted token, updated);
   - `core_device_notification_settings` (device, types, summary time, time zone).
@@ -451,6 +452,16 @@ spec.
      `flutter analyze` is clean, and the `flutter test` widget tests cover the three decision paths.
   6. On a real phone with the `dev` flavour against a local engine (the owner, by hand), StrongBox
      or the TEE registers, and a merge asks for the fingerprint once.
+- Notes from the second review of PR 1a, to check in this PR:
+  - **keyUsage on every issuer against a real device's chain.** The engine requires basicConstraints
+    `cA` and keyUsage `keyCertSign` on every issuer, and refuses unknown critical extensions. The
+    captured fixtures pass, but check it against the chain of a real phone signing in (StrongBox and
+    TEE, an RKP chain if the phone has one) before the release build ships, and record the result.
+  - **The dev flavour's local entry point must not be deployable.** It sets `mobileTestSeams`, so it
+    lives outside what `wrangler deploy` builds (not `apps/engine/src/index.ts`, not named in
+    `apps/engine/wrangler.jsonc`), with a test that the deployed entry never imports it.
+  - The pair screens show the one refusal the engine gives for every refused code; the website or
+    desktop showing the code is where its owner sees wrong tries.
 - Screenshots: SignIn, Pair, PairConfirm, Inbox, MergeGate, Fingerprint, SendBack.
 
 **PR 2: push and notification settings**

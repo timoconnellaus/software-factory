@@ -189,8 +189,8 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   }
   const phoneSignIn = mobileSignInRoute(path);
   if (phoneSignIn) {
-    const caller = await mobileCaller(request);
     return respond(async () => {
+      const caller = await mobileCaller(request, env);
       let r: Awaited<ReturnType<typeof run>>;
       try {
         r = await run(env, phoneSignIn, body, MOBILE_DEVICE_ACTOR, { surface: "mobile", caller });

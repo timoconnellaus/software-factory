@@ -8,6 +8,9 @@
 // - The attestation service: `MOBILE_SIGNING_CERTS` and Google's revocation list, fetched from
 //   https://android.googleapis.com/attestation/status and kept for a day. If it can't be fetched
 //   and no copy younger than a day is held, phone sign-in is refused (fails closed).
+// - The engine's HMAC for the phone: the stateless nonces and the caller hash are keyed under
+//   RUNNER_CHANNEL_SECRET, separated by label (`sf-mobile:<label>:`), as runner keys are derived
+//   under it (`sf-runner-channel:`). No secret, no phone sign-in.
 import {
   GOOGLE_ATTESTATION_ROOTS,
   MAX_PATCH_AGE_MONTHS,
@@ -15,9 +18,11 @@ import {
   MOBILE_PACKAGE,
   type MobileAttestationService,
   OperationError,
+  PAIR_CODE_REFUSED,
   type PinnedRoot,
   verifyAndroidAttestation,
 } from "@software-factory/core";
+import { secrets } from "./secrets.ts";
 
 /** The header a client names its door protocol in (ADR 0393's, shared with the desktop). */
 export const MOBILE_PROTOCOL_HEADER = "x-sf-client-protocol";
@@ -36,7 +41,9 @@ export const mobileTestSeams: {
   roots: readonly PinnedRoot[] | null;
   revoked: ReadonlySet<string> | null;
   fetch: typeof fetch | null;
-} = { roots: null, revoked: null, fetch: null };
+  /** Runs between an operation's handler and its batch, to change the state under a call. */
+  beforeCommit: ((operation: string) => Promise<void>) | null;
+} = { roots: null, revoked: null, fetch: null, beforeCommit: null };
 
 /** The phone's sign-in route for a door path, or null. */
 export function mobileSignInRoute(
@@ -50,19 +57,50 @@ export function mobileSignInRoute(
 
 export { MOBILE_DEVICE_ACTOR };
 
+const keys = new Map<string, Promise<CryptoKey>>();
+
 /**
- * Who is calling the unsigned sign-in, for its per-caller limits: a hash of the address Cloudflare
- * gives in `cf-connecting-ip` (which a client can't set through the edge), an IPv6 address by its
- * /64, since one connection usually holds a whole /64. Without the header (a local engine) every
- * call is the same caller.
+ * HMAC-SHA256 under the engine's secret, separated by label, base64url. Throws `unavailable` when
+ * RUNNER_CHANNEL_SECRET isn't set.
  */
-export async function mobileCaller(request: Request): Promise<string> {
+export async function mobileMac(env: Env, label: string, message: string): Promise<string> {
+  const secret = secrets(env).RUNNER_CHANNEL_SECRET;
+  if (!secret) {
+    throw new OperationError("unavailable", "phone sign-in isn't set up on this engine");
+  }
+  let key = keys.get(secret);
+  if (!key) {
+    key = crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    keys.set(secret, key);
+  }
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    await key,
+    new TextEncoder().encode(`sf-mobile:${label}:${message}`),
+  );
+  return btoa(String.fromCharCode(...new Uint8Array(mac)))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
+
+/**
+ * Who is calling the unsigned sign-in, for its per-caller limits: an HMAC under the engine's secret
+ * of the address Cloudflare gives in `cf-connecting-ip` (which a client can't set through the
+ * edge), an IPv6 address by its /64, since one connection usually holds a whole /64. Keyed, so the
+ * stored value can't be reversed to an address by hashing the address space. Without the header (a
+ * local engine) every call is the same caller.
+ */
+export async function mobileCaller(request: Request, env: Env): Promise<string> {
   const ip = (request.headers.get("cf-connecting-ip") ?? "").trim().toLowerCase();
   const key = ip.includes(":") ? `v6:${ipv6Prefix64(ip)}` : `v4:${ip}`;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
-  return [...new Uint8Array(digest).slice(0, 16)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return (await mobileMac(env, "caller", key)).slice(0, 32);
 }
 
 /** The first four groups of an IPv6 address, `::` expanded. */
@@ -81,23 +119,26 @@ export function ipv6Prefix64(ip: string): string {
 }
 
 /**
- * A guarded write in a phone sign-in found the state changed: the nonce was spent by a parallel
- * call, a limit filled up between the read and the batch, or the offer closed or was used while the
- * code was on its way. Said plainly instead of "the state changed".
+ * A guarded write in a phone sign-in found the state changed. For mobile/nonce: the caller's
+ * courtesy limit filled. For mobile/start: a typed code's offer was used or closed while it was on
+ * its way, or a caller limit filled between the read and the batch. The nonce is already spent
+ * (its own statement), and the answer is the one every refused code gets, so it can't tell a right
+ * code from a wrong one.
  */
 export function mobileSignInConflict(route: string, error: unknown): unknown {
   if (!(error instanceof OperationError) || error.code !== "conflict") return error;
   if (route === "mobile.nonce") {
     return new OperationError(
       "unavailable",
-      "too many sign-ins at once: try again in a few minutes",
+      "too many sign-ins from this network: try again in a few minutes",
     );
   }
   if (route === "mobile.authStart") {
-    return new OperationError(
-      "conflict",
-      "this sign-in changed while it was sent (its nonce was used, or the code's offer was used or closed): start again, and if the code is refused, make a new code on the desktop or the website",
-    );
+    return new OperationError("forbidden", PAIR_CODE_REFUSED, {
+      status: "refused",
+      code: "forbidden",
+      error: PAIR_CODE_REFUSED,
+    });
   }
   return error;
 }
@@ -148,9 +189,7 @@ export function clearRevocationCache() {
 }
 
 /** The attestation service for invoke(), from the Worker's env. */
-export function mobileAttestation(
-  env: Pick<Env, "MOBILE_SIGNING_CERTS" | "MOBILE_MAX_PATCH_AGE_MONTHS">,
-): MobileAttestationService {
+export function mobileAttestation(env: Env): MobileAttestationService {
   const signingCerts = (env.MOBILE_SIGNING_CERTS ?? "")
     .split(",")
     .map((s) => s.trim())
@@ -160,6 +199,7 @@ export function mobileAttestation(
   return {
     signingCerts,
     revoked: () => revokedSerials(),
+    mac: (label, message) => mobileMac(env, label, message),
     verify: (chain, expected) =>
       verifyAndroidAttestation(chain, {
         ...expected,

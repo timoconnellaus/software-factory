@@ -57,6 +57,14 @@ const copy = (b: Uint8Array) => new Uint8Array(b);
 
 const BASIC_CONSTRAINTS = "2.5.29.19";
 const KEY_USAGE = "2.5.29.15";
+/** The Android key attestation's key description. */
+const KEY_DESCRIPTION = "1.3.6.1.4.1.11129.2.1.17"; // KEY_DESCRIPTION_OID (android.ts imports this file)
+/** The extensions this checker reads, and so the only ones it accepts marked critical. */
+const UNDERSTOOD_CRITICAL: ReadonlySet<string> = new Set([
+  BASIC_CONSTRAINTS,
+  KEY_USAGE,
+  KEY_DESCRIPTION,
+]);
 
 /**
  * Whether a certificate may issue others: basicConstraints with cA TRUE, and keyUsage with
@@ -100,6 +108,14 @@ export function parseCertificate(der: Uint8Array): Certificate {
     for (const ext of children(list)) {
       const parts = children(expect(ext, T.SEQUENCE));
       const id = oid(parts[0] as Der);
+      // Extension ::= SEQUENCE { extnID, critical BOOLEAN DEFAULT FALSE, extnValue OCTET STRING }.
+      // A critical extension this checker doesn't understand refuses the certificate (RFC 5280
+      // 4.2): it might restrict the key in a way we would otherwise ignore.
+      if (parts.length > 3) throw new DerError(`malformed extension ${id}`);
+      const flag = parts.length === 3 ? expect(parts[1], T.BOOLEAN) : null;
+      if (flag && bool(flag) && !UNDERSTOOD_CRITICAL.has(id)) {
+        throw new DerError(`unknown critical extension ${id}`);
+      }
       const value = expect(parts[parts.length - 1], T.OCTET_STRING);
       if (extensions.has(id)) throw new DerError(`duplicate extension ${id}`);
       extensions.set(id, content(value));

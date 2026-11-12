@@ -9,12 +9,16 @@
 import { env } from "cloudflare:workers";
 import {
   AttestationError,
+  DerError,
   GOOGLE_ATTESTATION_ROOTS,
   inputDigest,
   KEY_DESCRIPTION_OID,
+  OPERATIONS,
+  PAIR_CODE_REFUSED,
   parseCertificate,
   parseKeyDescription,
   presenceMessage,
+  readDer,
   verifyAndroidAttestation,
 } from "@software-factory/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -24,6 +28,7 @@ import {
   clearRevocationCache,
   ipv6Prefix64,
   mobileCaller,
+  mobileMac,
   mobileTestSeams,
   revokedSerials,
 } from "../src/mobile.ts";
@@ -50,6 +55,17 @@ import rkpCert2 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert2.pem?r
 import rkpCert3 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert3.pem?raw";
 import rkpCert4 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert4.pem?raw";
 import { all, call, first, ok, uid, type World, world } from "./helpers.ts";
+
+/** packages/core's source, to find every operation that decides a pending action. */
+const CORE_SOURCES: Record<string, string> = import.meta.glob<string>(
+  "../../../packages/core/src/**/*.ts",
+  {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  },
+);
+const CONFIG_OPS = ["config.save", "config.rollback"];
 
 const PROTOCOL = { "x-sf-client": "mobile", "x-sf-client-protocol": "1" };
 
@@ -106,6 +122,7 @@ afterEach(() => {
   mobileTestSeams.roots = null;
   mobileTestSeams.revoked = null;
   mobileTestSeams.fetch = null;
+  mobileTestSeams.beforeCommit = null;
   clearRevocationCache();
 });
 
@@ -116,8 +133,10 @@ async function nonce(from = ip) {
 }
 
 /** A phone: a nonce, a key attested with its challenge (options override the good defaults). */
-async function phone(options: Partial<KeyOptions> = {}, under = root, from = ip) {
-  const n = await nonce(from);
+async function phone(options: Partial<KeyOptions> = {}, under = root) {
+  // Each from its own address: the nonce's courtesy limit isn't what these tests are about, and
+  // the typed-code limits key on the address that sends the code.
+  const n = await nonce(randomIp());
   const key = await attestedKey(under, { challenge: await challengeFor(n), ...options });
   return { nonce: n, ...key };
 }
@@ -413,6 +432,11 @@ describe("Android key attestation (criterion 1)", () => {
         "extension",
       ],
       [
+        "an unknown critical extension (name constraints)",
+        () => phone({ criticalInLeaf: "2.5.29.30" }),
+        "malformed",
+      ],
+      [
         "an expired intermediate",
         () => phone({ intermediateNotAfter: Date.now() - 1000 }),
         "expired",
@@ -439,6 +463,22 @@ describe("Android key attestation (criterion 1)", () => {
     const after = await all("SELECT id FROM core_desktop_auth_requests WHERE platform = 'android'");
     expect(after.length).toBe(before.length);
     expect(await tokens(w.userId)).toBe(1);
+  });
+
+  it("DER only: a length or tag number not in its shortest form is refused", () => {
+    const ok = new Uint8Array([0x04, 0x02, 0xaa, 0xbb]);
+    expect(readDer(ok).end).toBe(4);
+    const long = new Uint8Array([0x04, 0x81, 0x80, ...new Uint8Array(0x80)]);
+    expect(readDer(long).end).toBe(long.length);
+    for (const bytes of [
+      [0x04, 0x81, 0x02, 0xaa, 0xbb], // long form for a length under 128
+      [0x04, 0x82, 0x00, 0x02, 0xaa, 0xbb], // a leading zero byte
+      [0x04, 0x82, 0x00, 0x80, ...new Uint8Array(0x80)],
+      [0x9f, 0x05, 0x00], // a high tag number form for tag 5
+      [0x9f, 0x80, 0x81, 0x00], // a leading 0x80 in the tag number
+    ]) {
+      expect(() => readDer(new Uint8Array(bytes))).toThrow(DerError);
+    }
   });
 
   it("a nonce is used once, and a chain can't be replayed with a fresh one", async () => {
@@ -593,7 +633,15 @@ describe("pairing: the browser and the pair offer (criteria 2 and 3)", () => {
     for (let i = 0; i < 5; i++) {
       const bad = await start(await phone(), { offer: { code: wrongCode(i) } });
       expect(bad.res.status).toBe(403);
-      expect(await json(bad.res)).toMatchObject({ details: { attemptsLeft: 4 - i } });
+      expect((await json<{ error: string }>(bad.res)).error).toBe(PAIR_CODE_REFUSED);
+      // Only the screen showing the code is told how many wrong tries it has had.
+      expect(
+        await ok<{ wrongTries: number }>(
+          "mobile.pairOfferStatus",
+          { offerId: next.offerId },
+          w.human,
+        ),
+      ).toMatchObject({ wrongTries: i + 1, maxWrongTries: 5 });
     }
     const closed = await first<{ closed_at: string | null; attempts: number }>(
       "SELECT closed_at, attempts FROM core_pair_offers WHERE id = ?",
@@ -601,10 +649,11 @@ describe("pairing: the browser and the pair offer (criteria 2 and 3)", () => {
     );
     expect(closed?.attempts).toBe(5);
     expect(closed?.closed_at).not.toBeNull();
-    // Even the right code is refused now, and the owner is told to make a new one.
+    // Even the right code is refused now, with the answer every refused code gets; the owner's
+    // screen says the offer closed.
     const right = await start(await phone(), { offer: { code: next.code } });
     expect(right.res.status).toBe(403);
-    expect((await json<{ error: string }>(right.res)).error).toMatch(/closed.*make a new code/);
+    expect((await json<{ error: string }>(right.res)).error).toBe(PAIR_CODE_REFUSED);
     expect(await tokens(w.userId)).toBe(1);
   });
 
@@ -657,7 +706,7 @@ describe("pairing: the browser and the pair offer (criteria 2 and 3)", () => {
 /** The desktop's sign-in (spec 40), for the Mac side of these tests. */
 /** The hash the door keys a caller's limits by, for an address. */
 const callerOf = (address: string) =>
-  mobileCaller(new Request("https://x", { headers: { "cf-connecting-ip": address } }));
+  mobileCaller(new Request("https://x", { headers: { "cf-connecting-ip": address } }), env);
 
 /** Typed-code tries already made in the last hour, from a caller. */
 async function pastTries(address: string, n: number, ok = 0) {
@@ -690,7 +739,7 @@ describe("the typed code's limits hold under parallel guessing (review of PR 1a)
     const attackers = await Promise.all(
       Array.from({ length: 40 }, async (_, i) => {
         const from = `203.0.113.${i + 1}`;
-        return { from, p: await phone({}, root, from) };
+        return { from, p: await phone() };
       }),
     );
     const results = await Promise.all(
@@ -705,10 +754,13 @@ describe("the typed code's limits hold under parallel guessing (review of PR 1a)
     );
     expect(row?.attempts).toBe(5);
     expect(row?.closed_at).not.toBeNull();
-    // The owner's right code now says the offer is closed: make a new code.
+    // The owner's right code is refused like any other; their screen says the offer closed.
     const owner = await start(await phone(), { offer: { code: offer.code } });
     expect(owner.res.status).toBe(403);
-    expect((await json<{ error: string }>(owner.res)).error).toMatch(/closed.*make a new code/);
+    expect((await json<{ error: string }>(owner.res)).error).toBe(PAIR_CODE_REFUSED);
+    expect(
+      await ok<{ status: string }>("mobile.pairOfferStatus", { offerId: offer.offerId }, w.human),
+    ).toMatchObject({ status: "closed", wrongTries: 5 });
     expect(await tokens(w.userId)).toBe(0);
   });
 
@@ -769,7 +821,7 @@ describe("the typed code's limits hold under parallel guessing (review of PR 1a)
     const attacker = "198.51.100.66";
     await pastTries(attacker, 6);
     // Ten at once from the caller: only four fit under its ten.
-    const phones = await Promise.all(Array.from({ length: 10 }, () => phone({}, root, attacker)));
+    const phones = await Promise.all(Array.from({ length: 10 }, () => phone()));
     const results = await Promise.all(
       phones.map((p, i) => start(p, { offer: { code: `00ZZZZZZZ${i}` } }, attacker)),
     );
@@ -780,11 +832,7 @@ describe("the typed code's limits hold under parallel guessing (review of PR 1a)
     );
     expect(mine?.n).toBe(10);
     // The next one is refused before it's counted.
-    const held = await start(
-      await phone({}, root, attacker),
-      { offer: { code: "00ZZZZZZZZ" } },
-      attacker,
-    );
+    const held = await start(await phone(), { offer: { code: "00ZZZZZZZZ" } }, attacker);
     expect(held.res.status).toBe(503);
     // None of it touched the owner's offer, and the owner pairs from their own address.
     const owner = await start(await phone(), { offer: { code: offer.code } });
@@ -798,27 +846,141 @@ describe("the typed code's limits hold under parallel guessing (review of PR 1a)
     // A caller who already sent a wrong code this hour is held.
     const repeat = "192.0.2.2";
     await pastTries(repeat, 1);
-    const held = await start(
-      await phone({}, root, repeat),
-      { offer: { code: "00ZZZZZZZZ" } },
-      repeat,
-    );
+    const held = await start(await phone(), { offer: { code: "00ZZZZZZZZ" } }, repeat);
     expect(held.res.status).toBe(503);
     // The owner's first code goes through.
     const owner = await start(await phone(), { offer: { code: offer.code } });
     expect(owner.res.status).toBe(200);
   });
 
-  it("a caller holds at most ten unspent nonces, counted in SQL; another caller still gets one", async () => {
-    const results = await Promise.all(
-      Array.from({ length: 20 }, () =>
-        post("mobile/nonce", {}, undefined, PROTOCOL, "198.51.100.9"),
+  it("nonces are stateless until used: no number of callers blocks anyone else's sign-in", async () => {
+    // Twenty /64s asking ten nonces each (the second review's attack) store nothing...
+    const before = await first<{ n: number }>("SELECT COUNT(*) AS n FROM core_mobile_nonces");
+    const asks = await Promise.all(
+      Array.from({ length: 25 }, (_, a) =>
+        Promise.all(
+          Array.from({ length: 10 }, () =>
+            post("mobile/nonce", {}, undefined, PROTOCOL, `2001:db8:${a.toString(16)}:1::9`),
+          ),
+        ),
       ),
     );
-    const statuses = results.map((r) => r.status);
-    expect(statuses.filter((s) => s === 200).length).toBe(10);
-    expect(statuses.filter((s) => s !== 200)).toEqual(Array(10).fill(503));
+    expect(asks.flat().map((r) => r.status)).toEqual(Array(250).fill(200));
+    expect((await first<{ n: number }>("SELECT COUNT(*) AS n FROM core_mobile_nonces"))?.n).toBe(
+      before?.n,
+    );
+    // ...and a fresh address still gets one and signs in.
+    const w = await world();
+    await browserSignIn(w);
+    // The per-caller limit is a courtesy: the eleventh in five minutes holds that caller only.
+    const held = await post("mobile/nonce", {}, undefined, PROTOCOL, "2001:db8:0:1::77");
+    expect(held.status).toBe(503);
     expect((await post("mobile/nonce", {}, undefined, PROTOCOL, "198.51.100.10")).status).toBe(200);
+  });
+
+  it("a nonce the engine didn't sign, an altered one or an expired one is refused", async () => {
+    const real = await nonce();
+    const [expiry = "", random = "", mac = ""] = real.split(".");
+    const forged = [
+      `${expiry}.${random}.${"A".repeat(mac.length)}`,
+      `${(Number.parseInt(expiry, 36) + 60_000).toString(36)}.${random}.${mac}`,
+      `${expiry}.${random.slice(1)}A.${mac}`,
+      "x".repeat(43),
+    ];
+    for (const n of forged) {
+      const key = await attestedKey(root, { challenge: await challengeFor(n) });
+      const { res } = await start({ nonce: n, ...key });
+      expect([n, res.status]).toEqual([n, 403]);
+      expect((await json<{ error: string }>(res)).error).toMatch(/nonce is used or expired/);
+    }
+    // Signed by the engine, but expired, or for longer than a nonce lives.
+    for (const at of [Date.now() - 1_000, Date.now() + 60 * 60_000]) {
+      const body = `${at.toString(36)}.${random}`;
+      const n = `${body}.${await mobileMac(env, "nonce", body)}`;
+      const key = await attestedKey(root, { challenge: await challengeFor(n) });
+      expect((await start({ nonce: n, ...key })).res.status).toBe(403);
+    }
+  });
+
+  it("every wrong code counts against the offer, even past the caller's cap (review, second round)", async () => {
+    const w = await world();
+    const offer = await ok<{ offerId: string; code: string }>("mobile.pairOffer", {}, w.human);
+    const attacker = "198.51.100.77";
+    await pastTries(attacker, 9);
+    const phones = await Promise.all(Array.from({ length: 4 }, () => phone()));
+    const results = await Promise.all(
+      phones.map((p, i) => start(p, { offer: { code: wrongFor(offer.code, i) } }, attacker)),
+    );
+    expect(results.map((r) => r.res.status)).toEqual([403, 403, 403, 403]);
+    const row = await first<{ attempts: number }>(
+      "SELECT attempts FROM core_pair_offers WHERE id = ?",
+      offer.offerId,
+    );
+    expect(row?.attempts).toBe(4);
+  });
+
+  it("a right code whose offer closes on its way gets the wrong-code answer, and its nonce is spent", async () => {
+    const w = await world();
+    const offer = await ok<{ offerId: string; code: string }>("mobile.pairOffer", {}, w.human);
+    const wrong = await start(await phone(), { offer: { code: wrongFor(offer.code, 1) } });
+    const wrongBody = await json(wrong.res);
+    // The offer closes between the right code's read and its batch.
+    mobileTestSeams.beforeCommit = async (op) => {
+      if (op !== "mobile.authStart") return;
+      await env.DB.prepare("UPDATE core_pair_offers SET closed_at = ? WHERE id = ?")
+        .bind(new Date().toISOString(), offer.offerId)
+        .run();
+    };
+    const p = await phone();
+    const right = await start(p, { offer: { code: offer.code } });
+    mobileTestSeams.beforeCommit = null;
+    expect([right.res.status, wrong.res.status]).toEqual([403, 403]);
+    expect(await json(right.res)).toEqual(wrongBody);
+    expect(await tokens(w.userId)).toBe(0);
+    // The nonce was spent before anything was decided: replaying it from elsewhere is refused.
+    const replay = await start(p, { offer: { code: offer.code } }, "203.0.113.200");
+    expect(replay.res.status).toBe(403);
+    expect((await json<{ error: string }>(replay.res)).error).toMatch(/nonce is used/);
+  });
+
+  it("the answer to a wrong code doesn't say whether its tag is live", async () => {
+    const w = await world();
+    const offer = await ok<{ offerId: string; code: string }>("mobile.pairOffer", {}, w.human);
+    const live = await start(await phone(), { offer: { code: wrongFor(offer.code, 3) } });
+    // A tag no live offer has.
+    const tags = await all<{ code_tag: string }>(
+      "SELECT code_tag FROM core_pair_offers WHERE closed_at IS NULL AND consumed_at IS NULL",
+    );
+    const used = new Set(tags.map((t) => t.code_tag));
+    const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    const free =
+      [...alphabet].flatMap((a) => [...alphabet].map((b) => a + b)).find((t) => !used.has(t)) ?? "";
+    const dead = await start(await phone(), { offer: { code: `${free}ZZZZZZZZ` } });
+    expect([live.res.status, dead.res.status]).toEqual([403, 403]);
+    const a = await json(live.res);
+    expect(a).toEqual(await json(dead.res));
+    expect(JSON.stringify(a)).not.toMatch(/attemptsLeft/);
+  });
+
+  it("two offers never share a live tag, so wrong codes count against one offer only", async () => {
+    const w = await world();
+    const offers = await Promise.all(
+      Array.from({ length: 5 }, () => ok<{ code: string }>("mobile.pairOffer", {}, w.human)),
+    );
+    const tags = offers.map((o) => o.code.slice(0, 2));
+    expect(new Set(tags).size).toBe(tags.length);
+  });
+
+  it("the caller hash is keyed by the engine's secret", async () => {
+    const plain = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("v4:192.0.2.9"));
+    const unkeyed = [...new Uint8Array(plain).slice(0, 16)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const keyed = await callerOf("192.0.2.9");
+    expect(keyed).not.toBe(unkeyed);
+    const other = { ...env, RUNNER_CHANNEL_SECRET: "another-secret" } as Env;
+    const req = new Request("https://x", { headers: { "cf-connecting-ip": "192.0.2.9" } });
+    expect(await mobileCaller(req, other)).not.toBe(keyed);
   });
 
   it("an IPv6 caller is keyed by its /64", async () => {
@@ -1044,38 +1206,103 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
     expect((await json<{ error: string }>(res)).error).toMatch(/can't approve/);
   });
 
-  it("config changes and self-modify aren't decided on the phone, with or without a proof", async () => {
+  it("config changes and self-modify aren't decided on the phone, by any deciding operation", async () => {
+    // Every operation that can decide a pending action, found in the source rather than listed by
+    // hand: a new one fails here until it has an input below (review of PR 1a, second round).
+    const deciding = Object.entries(CORE_SOURCES).flatMap(([file, text]) =>
+      text
+        .split("defineOperation(")
+        .slice(1)
+        .filter((block) => block.includes("decidePending("))
+        .map((block) => {
+          const name = /name: "([^"]+)"/.exec(block)?.[1];
+          if (!name) throw new Error(`an operation in ${file} with no name`);
+          return name;
+        }),
+    );
+    // Only decidePending approves one, so its check is the only one there is.
+    const approvingWrites = Object.values(CORE_SOURCES).flatMap(
+      (text) =>
+        text.match(/updateTable\("core_pending_actions"\)\s*\.set\(\{[^}]*"approved"/g) ?? [],
+    );
+    expect(approvingWrites).toHaveLength(1);
+    const human = deciding
+      .filter((name) => OPERATIONS.find((o) => o.name === name)?.actors.includes("human"))
+      .sort();
+    expect(human).toEqual([
+      "approval.decide",
+      "review.merge",
+      "review.sendBack",
+      "spec.approve",
+      "spec.requestChanges",
+    ]);
+
     const w = await world();
     const { token, phone: p } = await browserSignIn(w);
-    const workItemId = await newItem(w, token);
+    const head = "c".repeat(40);
+    type Case = {
+      kind: "spec" | "merge" | "approval";
+      input: (id: string, item: string) => object;
+    };
+    const cases: Record<string, Case[]> = {
+      "approval.decide": [
+        { kind: "approval", input: (id) => ({ pendingActionId: id, decision: "approved" }) },
+        { kind: "approval", input: (id) => ({ pendingActionId: id, decision: "rejected" }) },
+        { kind: "merge", input: (id) => ({ pendingActionId: id, decision: "rejected" }) },
+      ],
+      "review.merge": [
+        {
+          kind: "merge",
+          input: (_, workItemId) => ({ workItemId, openedFullDiff: true, headSha: head }),
+        },
+      ],
+      "review.sendBack": [
+        {
+          kind: "merge",
+          input: (_, workItemId) => ({ workItemId, note: "no", openedFullDiff: true }),
+        },
+      ],
+      "spec.approve": [{ kind: "spec", input: (_, workItemId) => ({ workItemId }) }],
+      "spec.requestChanges": [
+        { kind: "spec", input: (_, workItemId) => ({ workItemId, note: "smaller" }) },
+      ],
+    };
     const pending: { operation: string; risk: string }[] = [
       { operation: "config.save", risk: "self-modify" },
       { operation: "config.save", risk: "write" },
       { operation: "config.rollback", risk: "write" },
+      { operation: "pr.merge", risk: "self-modify" },
       { operation: "pr.open", risk: "self-modify" },
     ];
-    for (const pa of pending) {
-      const id = await gate(w, workItemId, "approval", {}, pa);
-      for (const decision of ["approved", "rejected"]) {
-        const input = { pendingActionId: id, decision };
-        const proof = await prove(token, p, "approval.decide", input);
-        const res = await callOp(token, "approval.decide", input, proof);
-        expect([pa, decision, res.status]).toEqual([pa, decision, 403]);
-        expect((await json<{ error: string }>(res)).error).toMatch(
-          /approve this on the desktop app or the website/,
-        );
+    for (const op of human) {
+      for (const c of cases[op] ?? []) {
+        for (const pa of pending) {
+          if (c.kind !== "approval" && CONFIG_OPS.includes(pa.operation)) continue;
+          const workItemId = await newItem(w, token, "Touches .factory/");
+          const id = await gate(w, workItemId, c.kind, { workItemId, headSha: head }, pa);
+          const input = c.input(id, workItemId);
+          const proof = await prove(token, p, op, input);
+          const res = await callOp(token, op, input, proof);
+          const label = [op, c.kind, pa, input];
+          expect([...label, res.status]).toEqual([...label, 403]);
+          expect((await json<{ error: string }>(res)).error).toMatch(
+            /approve this on the desktop app or the website/,
+          );
+          const row = await first<{ status: string }>(
+            "SELECT status FROM core_pending_actions WHERE id = ?",
+            id,
+          );
+          expect([...label, row?.status]).toEqual([...label, "pending"]);
+        }
       }
-      const row = await first<{ status: string }>(
-        "SELECT status FROM core_pending_actions WHERE id = ?",
-        id,
-      );
-      expect(row?.status).toBe("pending");
-      // The website still decides it.
-      expect(
-        (await call("approval.decide", { pendingActionId: id, decision: "rejected" }, w.human))
-          .status,
-      ).toBe("ok");
     }
+    // The website still decides one.
+    const item = await newItem(w, token);
+    const id = await gate(w, item, "approval", {}, { operation: "config.save", risk: "write" });
+    expect(
+      (await call("approval.decide", { pendingActionId: id, decision: "rejected" }, w.human))
+        .status,
+    ).toBe("ok");
   });
 
   it("a phone registered with approvals off can't ask for a challenge", async () => {
@@ -1161,6 +1388,29 @@ describe("tokens, revocation and the door (criterion 6)", () => {
     const after = await callOp(token, "inbox.list", {});
     expect(after.status).toBe(401);
     expect(await json(after)).toMatchObject({ code: "unauthenticated" });
+  });
+
+  it("removing a phone while its approval is on its way refuses the approval (review, second round)", async () => {
+    const w = await world();
+    const { token, phone: p, deviceId } = await browserSignIn(w);
+    const workItemId = await newItem(w, token);
+    const pa = await gate(w, workItemId, "spec");
+    const input = { workItemId };
+    const proof = await prove(token, p, "spec.approve", input);
+    // The phone is removed after the token was checked, before the decision commits.
+    mobileTestSeams.beforeCommit = async (op) => {
+      if (op !== "spec.approve") return;
+      await env.DB.prepare("UPDATE core_desktop_devices SET revoked_at = ? WHERE id = ?")
+        .bind(new Date().toISOString(), deviceId)
+        .run();
+    };
+    const res = await callOp(token, "spec.approve", input, proof);
+    mobileTestSeams.beforeCommit = null;
+    expect(res.status).toBe(403);
+    expect((await json<{ error: string }>(res)).error).toMatch(/device was removed/);
+    expect(
+      await first<{ status: string }>("SELECT status FROM core_pending_actions WHERE id = ?", pa),
+    ).toEqual({ status: "pending" });
   });
 
   it("renews with a fingerprint: a new token, the old one revoked", async () => {
@@ -1258,7 +1508,7 @@ describe("tokens, revocation and the door (criterion 6)", () => {
 
   it("prunes old nonces, offers and typed-code tries", async () => {
     const w = await world();
-    await nonce();
+    await start(await phone());
     await ok("mobile.pairOffer", {}, w.human);
     await env.DB.prepare("INSERT INTO core_pair_code_tries (id, at, ok) VALUES (?, ?, 0)")
       .bind(uid("t"), new Date(Date.now() - 3 * 86_400_000).toISOString())

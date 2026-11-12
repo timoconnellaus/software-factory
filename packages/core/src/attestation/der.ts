@@ -1,5 +1,5 @@
 // A small DER reader for the X.509 certificates of an Android key attestation (ADR 0541). Only what
-// those need: definite lengths, high tag numbers (the attestation's [701], [709] …), INTEGER,
+// those need: definite lengths in their shortest form (DER, not BER), high tag numbers (the attestation's [701], [709] …), INTEGER,
 // ENUMERATED, BOOLEAN, OCTET STRING, BIT STRING, OID, NULL, SET, SEQUENCE and the two time types.
 // Every read is bounds-checked: anything malformed throws a DerError, never reads past the buffer.
 
@@ -53,9 +53,11 @@ export function readDer(buf: Uint8Array, offset = 0, limit = buf.length): Der {
     for (let n = 0; ; n++) {
       if (n > 3) throw new DerError("tag number too long");
       const b = byte();
+      if (n === 0 && b === 0x80) throw new DerError("tag number not minimal");
       tag = tag * 128 + (b & 0x7f);
       if ((b & 0x80) === 0) break;
     }
+    if (tag < 0x1f) throw new DerError("tag number not minimal");
   }
   let length = byte();
   if (length & 0x80) {
@@ -63,7 +65,13 @@ export function readDer(buf: Uint8Array, offset = 0, limit = buf.length): Der {
     if (count === 0) throw new DerError("indefinite length");
     if (count > 4) throw new DerError("length too long");
     length = 0;
-    for (let n = 0; n < count; n++) length = length * 256 + byte();
+    for (let n = 0; n < count; n++) {
+      const b = byte();
+      // DER: the shortest form only. No leading zero byte, and the long form only past 127.
+      if (n === 0 && b === 0) throw new DerError("length not minimal");
+      length = length * 256 + b;
+    }
+    if (length < 0x80) throw new DerError("length not minimal");
   }
   const body = i;
   const end = body + length;

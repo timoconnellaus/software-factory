@@ -231,6 +231,11 @@ function OfferView({ offer, onDone }: { offer: Offer; onDone: () => void }) {
             ? "A phone is pairing…"
             : `Expires ${new Date(offer.expiresAt).toLocaleTimeString()}`}
         </div>
+        {s && s.wrongTries > 0 && (
+          <div className="text-muted-foreground text-xs" data-testid="pair-wrong-tries">
+            {s.wrongTries} wrong {s.wrongTries === 1 ? "try" : "tries"} so far, of {s.maxWrongTries}
+          </div>
+        )}
       </div>
     </div>
   );
