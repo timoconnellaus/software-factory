@@ -64,8 +64,7 @@ just a config option. Nothing special."
      `**/wrangler.*`), CI and repository settings (`.github/**`), factory policy (`.factory/**`), and
      lock files changed without a matching manifest change (`pnpm-lock.yaml` and the like). A path
      list is globs over repository paths; matching is case-insensitive.
-   - **The factory's own policy code is protected in code, not by a setting** (working answer,
-     owner to confirm). A second built-in list, `SELF_MODIFY_PATHS` beside `RISK_PATHS`, holds the
+   - **The factory's own policy code is protected in code, not by a setting** (decided by the owner, 2026-11-12). A second built-in list, `SELF_MODIFY_PATHS` beside `RISK_PATHS`, holds the
      paths that make a merge self-modify today: `.factory/**` and the code that enforces policy,
      gates, the operation registry and workflows (`packages/core/src/policy/**`,
      `packages/core/src/gate.ts`, `packages/core/src/registry.ts`,
@@ -82,8 +81,7 @@ just a config option. Nothing special."
    a landing that broke `main` (spec 53, `revertVerdict()`). That exception holds only when **all**
    of these hold, each in code:
    - the workflow's own revert switch is on (`revertWithoutPerson`, a setting of the workflow's
-     Deliver stage, **off by default, per workflow**, never per project; working answer, owner to
-     confirm). It is separate from `autoApprove`: having one on never turns on the other. Turning it
+     Deliver stage, **off by default, per workflow**, never per project; decided by the owner, 2026-11-12). It is separate from `autoApprove`: having one on never turns on the other. Turning it
      on is a loosening, so it is a `self-modify` save an org admin makes and approves (rule 2);
    - `revertVerdict()`'s own conditions hold (spec 53); and
    - the revert's diff touches **no** path in `SELF_MODIFY_PATHS`. A revert of a change to the
@@ -104,8 +102,7 @@ just a config option. Nothing special."
    - CI goes red on the default branch's head after one of its merges, before the next green run.
    It then puts a card in the inbox for the project's approvers and the org's admins: what went wrong, the merges it
    approved since the last green, and **Lift the hold**. Lifting it is a project config save and a
-   loosening, so **an org admin** makes it and an org admin approves it (rule 2, spec 52 Q6; working
-   answer, owner to confirm). A project approver who is not an org admin sees the card and can't
+   loosening, so **an org admin** makes it and an org admin approves it (rule 2, spec 52 Q6; decided by the owner, 2026-11-12). A project approver who is not an org admin sees the card and can't
    lift it. Other projects on the same workflow are not affected.
 8. **The old exception goes.** ADR 0230's `pr.autoMerge` and the `check-merge` risk class are
    replaced by this setting: an incident's check-only fix merges with no person only when the mode is
@@ -119,7 +116,7 @@ just a config option. Nothing special."
   person.
 - The adjudicator gains `merge` as a gate kind it shadows (ADR 0374). Its approval is necessary and
   never sufficient: the other conditions are checked in code.
-- **Sampling doesn't block** (working answer, owner to confirm). ADR 0374's "every fifth approval is
+- **Sampling doesn't block** (decided by the owner, 2026-11-12). ADR 0374's "every fifth approval is
   left to a person" would hold one eligible merge in five, which contradicts "just auto approving
   merges". With `autoApprove` on, the sampled merge is **not held**: it is auto-approved like the
   others and also put in front of a person afterwards as a **review-after-merge** inbox item. The
@@ -129,7 +126,7 @@ just a config option. Nothing special."
   today ("approve a merge with review.merge"), and `review.merge` is a person's operation. Build step
   (e) adds an internal decision path for the Workflow (not an operation any token can call) that
   records the verdict and its facts as the merge gate's decision, actor `auto-approve`.
-- **Preview approvals and Publish** (spec 52 Q2 × Q12; working answer, owner to confirm). A person's
+- **Preview approvals and Publish** (spec 52 Q2 × Q12; decided by the owner, 2026-11-12). A person's
   Preview approval carries over to a directly following Publish. The adjudicator's Preview approval
   carries over only in a workflow whose Publish gate has `autoApprove` on and whose conditions hold
   for that digest; otherwise Publish asks a person.
@@ -140,3 +137,8 @@ just a config option. Nothing special."
 - A green CI, a passing packet and the adjudicator can all be wrong together. The size and path
   limits, the code-owned risk paths and the self-switch-off bound the damage; reverting is a normal
   change.
+
+> Amended 2026-11-12: the owner confirmed every working answer here as written (sampling doesn't
+> hold merges, `SELF_MODIFY_PATHS` in code in every workflow, an org admin lifts the hold, a Preview
+> approval carries to Publish only where `autoApprove` is on, a built-in may be un-tightened back to
+> the shipped version as a loosening an org admin approves). They are decided.
