@@ -59,7 +59,11 @@ export type ReadOpName =
   | "setup.status"
   | "runner.list"
   | "protection.ruleset"
-  | "desktopDevice.list";
+  | "desktopDevice.list"
+  | "mergeQueue.list"
+  | "config.get"
+  | "repository.list"
+  | "cliToken.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

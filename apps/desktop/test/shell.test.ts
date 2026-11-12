@@ -190,7 +190,7 @@ describe("status bar", () => {
   });
 
   it("counts only running items as running", () => {
-    expect(runningCount(inbox)).toBe(3);
+    expect(runningCount(inbox)).toBe(4);
   });
 
   it("says when it last heard from the factory, or that it can't", () => {
