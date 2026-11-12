@@ -9,6 +9,7 @@
 // is bounded (OUTPUT_PENDING_MAX): past it the socket closes with "the view fell behind" and the view
 // offers Reconnect, which attaches afresh and redraws. Nothing grows without limit here.
 import type { TerminalEvent } from "../shared/rpc.ts";
+import { PROTOCOL_HEADERS } from "./protocol.ts";
 
 /** The most terminals open at once from this app. */
 export const TERMINAL_SOCKETS_MAX = 4;
@@ -96,6 +97,7 @@ export class Terminals {
     if (!token) return { ok: false, error: "Sign in to open the terminal." };
     const ws = this.socket(terminalSocketUrl(this.engineUrl, p.workItemId, p.runId), {
       authorization: `Bearer ${token}`,
+      ...PROTOCOL_HEADERS,
     });
     ws.binaryType = "arraybuffer";
     this.open_.set(p.id, ws);

@@ -104,7 +104,11 @@ describe("the main process's terminal sockets", () => {
     const s = sockets[0];
     expect(s?.url).toBe(`wss://sf-engine.example/client/v1/terminal/${ITEM}/${RUN}`);
     expect(s?.url).not.toContain("sfd_");
-    expect(s?.headers).toEqual({ authorization: "Bearer sfd_secret" });
+    expect(s?.headers).toEqual({
+      authorization: "Bearer sfd_secret",
+      "x-sf-client": "desktop",
+      "x-sf-client-protocol": "1",
+    });
     expect(s?.binaryType).toBe("arraybuffer");
     expect(terminalSocketUrl("http://localhost:8787/", ITEM, RUN)).toBe(
       `ws://localhost:8787/client/v1/terminal/${ITEM}/${RUN}`,
