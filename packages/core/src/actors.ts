@@ -2,7 +2,9 @@
 // the signed-in session, the runner channel sets `runner` from the verified signature, the Workflow
 // sets `agent` (the foreman), connectors set `intake`.
 
-export const ACTOR_TYPES = ["human", "agent", "runner", "intake", "self-improve"] as const;
+// `scheduler` is the factory's own pull (ADR 0491): it only starts work a person (or a policy
+// that lets agents) already released, so it reads and writes but can do nothing else.
+export const ACTOR_TYPES = ["human", "agent", "runner", "intake", "self-improve", "scheduler"] as const;
 export type ActorType = (typeof ACTOR_TYPES)[number];
 
 export interface Actor {
@@ -40,3 +42,5 @@ export interface Origin {
 }
 
 export const FOREMAN: Actor = { type: "agent", id: "foreman" };
+/** The pull (ADR 0491): starts released work under the active limit. Never reviewable by default. */
+export const SCHEDULER: Actor = { type: "scheduler", id: "pull" };
