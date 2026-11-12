@@ -391,11 +391,13 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
       prNumber: pr.number,
       trigger: "closed",
       merged: true,
+      mergedBy: "octo",
     });
     expect(r).toMatchObject({ outcome: "merged", workItemId: created.workItemId });
     expect(await item(created.workItemId)).toMatchObject({
       status: "done",
-      status_reason: "the pull request was merged on GitHub, outside the factory",
+      stage: "done",
+      status_reason: "merged outside the factory by octo",
     });
   });
 

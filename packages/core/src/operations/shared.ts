@@ -269,20 +269,58 @@ export const ATTACHED_SKIP_REASON = "attached PR: built outside the factory";
  * Workflow. The caller has checked who may cancel and that the item is still open.
  */
 export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: string): void {
-  endPlanningSessions(ctx, w.id, `cancelled: ${reason}`);
+  endWorkItem(ctx, w, reason, "cancelled");
+}
+
+/**
+ * Ends an open work item as `cancelled`, or as `done` when its work landed some other way (its PR
+ * merged on GitHub outside the factory). Done keeps the stage history true: the stage it was in
+ * is done, the stages after it are skipped, and it enters `done`. Everything else is as for a
+ * cancel: runs stop, gates close, the Workflow ends.
+ */
+export function endWorkItem(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  reason: string,
+  as: "cancelled" | "done",
+): void {
+  endPlanningSessions(ctx, w.id, `${as}: ${reason}`);
   ctx.write(
     ctx.db
       .updateTable("core_work_items")
-      .set({ status: "cancelled", status_reason: reason, closed_at: ctx.now, updated_at: ctx.now })
+      .set({
+        status: as,
+        status_reason: reason,
+        closed_at: ctx.now,
+        updated_at: ctx.now,
+        ...(as === "done" ? { stage: "done" as const } : {}),
+      })
       .where("id", "=", w.id),
   );
   ctx.write(
     ctx.db
       .updateTable("core_stages")
-      .set({ status: "cancelled", ended_at: ctx.now, reason })
+      .set({ status: as, ended_at: ctx.now, reason })
       .where("work_item_id", "=", w.id)
       .where("status", "=", "active"),
   );
+  if (as === "done") {
+    const from = STAGES.indexOf(w.stage as (typeof STAGES)[number]);
+    for (const stage of STAGES.slice(from + 1)) {
+      ctx.write(
+        ctx.db.insertInto("core_stages").values({
+          id: newId("stage"),
+          work_item_id: w.id,
+          stage,
+          attempt: 1,
+          status: stage === "done" ? "done" : "skipped",
+          reason: stage === "done" ? null : reason,
+          started_at: ctx.now,
+          ended_at: ctx.now,
+        }),
+      );
+    }
+  }
   ctx.write(
     ctx.db
       .updateTable("core_jobs")
@@ -317,7 +355,7 @@ export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: stri
         decision: "rejected",
         decided_at: ctx.now,
         decided_by: ctx.actor.id,
-        note: "work item cancelled",
+        note: as === "done" ? "work item done" : "work item cancelled",
       })
       .where("work_item_id", "=", w.id)
       .where("status", "=", "pending"),
@@ -334,7 +372,7 @@ export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: stri
     entity: "work_item",
     id: w.id,
     before: { status: w.status },
-    after: { status: "cancelled", reason },
+    after: { status: as, reason },
   });
 }
 

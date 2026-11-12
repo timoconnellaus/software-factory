@@ -51,7 +51,7 @@ async function deliver(event: string, payload: unknown) {
 const pullRequestEvent = (
   w: World,
   action: string,
-  pr: { number: number; headSha: string; branch: string; merged?: boolean },
+  pr: { number: number; headSha: string; branch: string; merged?: boolean; mergedBy?: string },
 ) =>
   deliver("pull_request", {
     action,
@@ -59,6 +59,7 @@ const pullRequestEvent = (
     pull_request: {
       number: pr.number,
       merged: pr.merged ?? false,
+      merged_by: pr.mergedBy ? { login: pr.mergedBy, type: "User" } : null,
       head: { sha: pr.headSha, ref: pr.branch },
       base: { ref: "main" },
     },
@@ -283,17 +284,31 @@ describe("an attached PR's Workflow (spec 05)", () => {
   });
 
   // The factory kept verifying PRs merged or closed on GitHub outside it, and opening incidents.
-  it("ends the item Done when its PR is merged on GitHub outside the factory: runs and gates stop", async () => {
+  it("ends the item Done when a person merges its PR on GitHub: who merged it, stages as they were, runs and gates stop", async () => {
     const w = await world();
     const { pr, item } = await attached(w);
     await runStage(w, item.workItemId, "triage", () => triage("small"));
-    await pullRequestEvent(w, "closed", { ...pr, merged: true });
+    await waitFor("the verify stage", () =>
+      first("SELECT id FROM core_work_items WHERE id = ? AND stage = 'verify'", item.workItemId),
+    );
+    await pullRequestEvent(w, "closed", { ...pr, merged: true, mergedBy: "octo" });
     await itemStatus(item.workItemId, "done");
-    const row = await first<{ status_reason: string }>(
-      "SELECT status_reason FROM core_work_items WHERE id = ?",
+    const row = await first<{ status_reason: string; stage: string }>(
+      "SELECT status_reason, stage FROM core_work_items WHERE id = ?",
       item.workItemId,
     );
-    expect(row?.status_reason).toBe("the pull request was merged on GitHub, outside the factory");
+    expect(row).toEqual({ status_reason: "merged outside the factory by octo", stage: "done" });
+    const stages = async () =>
+      (
+        await all<{ stage: string; status: string }>(
+          "SELECT stage, status FROM core_stages WHERE work_item_id = ? ORDER BY started_at, rowid",
+          item.workItemId,
+        )
+      ).map((s) => `${s.stage}:${s.status}`);
+    const after = await stages();
+    // Nothing cancelled: the stage it was in is done, the rest skipped, then done.
+    expect(after.filter((s) => s.endsWith(":cancelled"))).toEqual([]);
+    expect(after.slice(-3)).toEqual(["verify:done", "merge:skipped", "done:done"]);
     expect(
       await all(
         "SELECT id FROM core_jobs WHERE work_item_id = ? AND status IN ('queued', 'claimed')",
@@ -303,6 +318,48 @@ describe("an attached PR's Workflow (spec 05)", () => {
     expect(
       await all(
         "SELECT id FROM core_pending_actions WHERE work_item_id = ? AND status = 'pending'",
+        item.workItemId,
+      ),
+    ).toEqual([]);
+
+    // GitHub redelivers the webhook: nothing more happens.
+    await pullRequestEvent(w, "closed", { ...pr, merged: true, mergedBy: "octo" });
+    expect(await stages()).toEqual(after);
+  });
+
+  it("leaves the factory's own merge to its Workflow, even when GitHub's webhook beats pr.merge's commit", async () => {
+    const w = await world();
+    const { pr, item } = await attached(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "verify", () => verifyPass);
+    await gateOpen(item.workItemId, "merge");
+    const status = async () =>
+      (
+        await first<{ status: string; status_reason: string | null }>(
+          "SELECT status, status_reason FROM core_work_items WHERE id = ?",
+          item.workItemId,
+        )
+      )?.status;
+    const before = await status();
+
+    // Merged by the factory's App: its own merge, whatever the database says yet.
+    await pullRequestEvent(w, "closed", {
+      ...pr,
+      merged: true,
+      mergedBy: `${env.GH_APP_SLUG}[bot]`,
+    });
+    // No merged_by, but a person approved the merge of this head and pr.merge hasn't committed:
+    // the approval is `approved`, not yet `applied`.
+    await env.DB.prepare(
+      "UPDATE core_pending_actions SET status = 'approved' WHERE work_item_id = ? AND kind = 'merge' AND status = 'pending'",
+    )
+      .bind(item.workItemId)
+      .run();
+    await pullRequestEvent(w, "closed", { ...pr, merged: true });
+    expect(await status()).toBe(before);
+    expect(
+      await all(
+        "SELECT id FROM core_stages WHERE work_item_id = ? AND status IN ('cancelled', 'skipped') AND reason LIKE 'merged outside%'",
         item.workItemId,
       ),
     ).toEqual([]);

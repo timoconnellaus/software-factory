@@ -36,7 +36,7 @@ import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../w
 import { requireQueueHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
-  cancelWorkItem,
+  endWorkItem,
   projectForRepo,
   projectId,
   repoName,
@@ -565,6 +565,10 @@ export const verifyRefresh = defineOperation({
     trigger: z.enum(["pull_request", "ci", "rerequested", "closed"]),
     /** With `closed`: whether the PR was merged. */
     merged: z.boolean().default(false),
+    /** With a merge: who merged it on GitHub (the webhook's `merged_by` login). */
+    mergedBy: z.string().max(200).nullable().default(null),
+    /** With a merge: whether `merged_by` is the factory's own App (`<slug>[bot]`). */
+    mergedByApp: z.boolean().default(false),
   }),
   output: z.object({
     outcome: z.enum(["posted", "unattached", "ignored", "cancelled", "merged"]),
@@ -599,32 +603,25 @@ export const verifyRefresh = defineOperation({
       if (!item || !["running", "waiting", "paused"].includes(item.status)) {
         return { outcome: "ignored" as const, ...none, workItemId: item?.id ?? null };
       }
-      if (input.merged) {
-        // The factory's own merge (an approval it carried out) is finished by its Workflow.
-        const own = await ctx.db
-          .selectFrom("core_pending_actions")
-          .select("id")
-          .where("work_item_id", "=", item.id)
-          .where("kind", "=", "merge")
-          .where("status", "=", "applied")
-          .executeTakeFirst();
-        if (own) return { outcome: "ignored" as const, ...none, workItemId: item.id };
+      if (input.merged && (input.mergedByApp || (await factoryMerging(ctx, item, input.headSha)))) {
+        // The factory's own merge: its Workflow finishes the item. GitHub's `closed` webhook can
+        // arrive before pr.merge's batch commits, so an applied approval alone isn't enough.
+        return { outcome: "ignored" as const, ...none, workItemId: item.id };
       }
       ctx.subject({ workItemId: item.id });
       const { releaseMergeQueue } = await import("./merge-queue.ts");
+      const by = input.mergedBy ?? "someone";
       const reason = input.merged
-        ? "the pull request was merged on GitHub, outside the factory"
+        ? `merged outside the factory by ${by}`
         : "the pull request was closed without merging";
       await releaseMergeQueue(ctx, item, input.merged ? "merged" : "left", reason);
-      cancelWorkItem(ctx, item, reason);
+      endWorkItem(ctx, item, reason, input.merged ? "done" : "cancelled");
       if (input.merged) {
-        ctx.write(
-          ctx.db
-            .updateTable("core_work_items")
-            .set({ status: "done", status_reason: reason, closed_at: ctx.now, updated_at: ctx.now })
-            .where("id", "=", item.id),
-        );
-        ctx.change({ entity: "work_item", id: item.id, after: { status: "done", reason } });
+        ctx.change({
+          entity: "work_item",
+          id: item.id,
+          after: { mergedOutside: true, mergedBy: input.mergedBy },
+        });
         return { outcome: "merged" as const, ...none, workItemId: item.id };
       }
       return { outcome: "cancelled" as const, ...none, workItemId: item.id };
@@ -1058,4 +1055,33 @@ function parseObject(text: string | null): Record<string, unknown> {
 }
 function strings(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+/**
+ * Whether the factory itself is merging this item's PR at `headSha`: a merge approval for that
+ * head that a person approved (pr.merge may still be running, its batch uncommitted) or that has
+ * been applied. A webhook's `merged_by` is the surer sign; this covers a missing one.
+ */
+async function factoryMerging(
+  ctx: HandlerContext,
+  item: { id: string },
+  headSha: string,
+): Promise<boolean> {
+  // An item has a handful of merge approvals (one per verify round); read by core_pending_actions'
+  // work-item index.
+  const approvals = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select("input")
+    .where("work_item_id", "=", item.id)
+    .where("kind", "=", "merge")
+    .where("status", "in", ["approved", "applied"])
+    .limit(20)
+    .execute();
+  return approvals.some((a) => {
+    try {
+      return (JSON.parse(a.input) as { headSha?: unknown }).headSha === headSha;
+    } catch {
+      return false;
+    }
+  });
 }
