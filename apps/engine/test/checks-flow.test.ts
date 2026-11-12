@@ -2,6 +2,7 @@
 // them, the host's results decide, a failure after the session's own fixes asks a person, and the
 // reviewer's word alone never proves a criterion.
 import { env } from "cloudflare:workers";
+import { has } from "@software-factory/core";
 import type { Job } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { pruneCheckResults } from "../src/index.ts";
@@ -291,7 +292,8 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
       "SELECT workflow_version FROM core_work_items WHERE id = ?",
       item.workItemId,
     );
-    expect(row?.workflow_version).toBe(8);
+    // v8 or any later version: it has the host's checks (a row of the features table).
+    expect(has(Number(row?.workflow_version), "host-checks")).toBe(true);
   });
 
   it("places a build that carries checks only on a runner that declares `checks`", async () => {
