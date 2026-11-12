@@ -38,6 +38,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AB | 0210–0219 | 0440–0449 | Web terminal in the dashboard (`hosts-web-terminal`): spec 35. The TerminalRelay Durable Object per job, the `terminal` held call and host socket, `run.terminal.*`, the tmux control-mode bridge, the Live tab's web terminal. Used: migration 0210; ADR 0440 | in progress |
 | AC | 0220–0229 | 0450–0459 | Chat UI on a stream-json session (`hosts-chat-ui`): spec 37. Used: migration 0220; ADR 0450 | in progress |
 | AG | 0260–0269 | 0490–0499 | Projects, repositories, backlog and release (`work-model`): spec 50. A project has repositories (migration 0260, ADR 0490); backlog, ready, queued, `workItem.release`, waits-for links and the pull (migration 0261, ADR 0491); a project runs one workflow (ADR 0492) | in progress |
+| AH | 0270–0279 | 0500–0509 | Verify from the factory's own evidence (`verify-evidence`): spec 51. PR A, the tests-intact guard (ADR 0500, no migrations); PR B, checks run by the runner host, proven criteria (ADR 0501, migration 0270). | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.

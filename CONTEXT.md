@@ -192,8 +192,17 @@ _Avoid_: hidden test, eval
 What a person reviews at a gate: a verdict row, what changed, criteria with evidence, reviewer
 notes, screenshots, risk flags, the diff and a preview link. Sections are set per project in
 `.factory/` (`reviewPacket.sections`). It also backs the `factory/verify` check. The packet in the
-app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments.
+app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments. Its **Tests
+intact** section is always shown (ADR 0500).
 _Avoid_: PR summary, report
+
+**Tests intact**
+The factory's own check, in code, that a diff doesn't weaken the tests the build is judged by:
+deleted, removed, skipped or commented-out tests, new lint or type suppressions, lowered thresholds
+and edits to gate files (`.factory/`, CI workflows, test and lint config), read from GitHub's diff at
+the head SHA (ADR 0500). A **finding** is for a person: it never fails the verdict, no agent judges
+it, and it blocks the check-only auto-merge. Findings belong to one SHA's review packet.
+_Avoid_: test tampering check, reviewer finding
 
 **CLI token**
 What `sf login` gets once a person approves its code in the app: acts as that person on the `cli`
