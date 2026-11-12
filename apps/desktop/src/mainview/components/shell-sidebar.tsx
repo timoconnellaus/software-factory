@@ -13,6 +13,7 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
+  FactoryIcon,
   InboxIcon,
   LayoutGridIcon,
   LogOutIcon,
@@ -187,6 +188,9 @@ export function Sidebar() {
       <SideLink to="/work" active={section === "work"} icon={<SquareCheckIcon />}>
         Work
       </SideLink>
+      <SideLink to="/factory" active={section === "factory"} icon={<FactoryIcon />}>
+        Factory
+      </SideLink>
       {pinned.length > 0 && (
         <>
           <div className="px-2 pt-4 pb-1 font-medium text-[11px] text-ink-muted">Pinned</div>
@@ -236,7 +240,7 @@ function SideLink({
   icon,
   children,
 }: {
-  to: "/" | "/work" | "/settings";
+  to: "/" | "/work" | "/factory" | "/settings";
   active: boolean;
   icon: React.ReactNode;
   children: React.ReactNode;

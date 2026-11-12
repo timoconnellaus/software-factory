@@ -82,6 +82,37 @@ export const ITEMS: Summary[] = [
   }),
 ];
 
+/**
+ * The Factory section's items (spec 41, slice 5): incidents are work items of kind incident, one
+ * item is in the merge queue and a released one waits for a slot. `workItem.list` serves them with
+ * ITEMS; the shell's tests pin ITEMS alone.
+ */
+export const FACTORY_ITEMS: Summary[] = [
+  item(40, "Factory incident: #8 had a run that failed", "merge", "waiting", {
+    kind: "incident",
+    source: "incident",
+    statusReason: "Packet ready",
+    prUrl: "https://github.com/example/software-factory/pull/47",
+    createdAt: ago(60 * 22),
+    updatedAt: ago(50),
+  }),
+  item(41, "Factory incident: #4 was sent back at review", "done", "done", {
+    kind: "incident",
+    source: "incident",
+    prUrl: "https://github.com/example/software-factory/pull/44",
+    createdAt: ago(60 * 50),
+    updatedAt: ago(60 * 45),
+  }),
+  item(42, "Keep the runner count fresh", "merge", "running", {
+    statusReason: "Merge queue: CI on the merged head",
+    updatedAt: ago(12),
+  }),
+  item(43, "Show the budget in the status bar", "intake", "queued", {
+    releasedAt: ago(25),
+    updatedAt: ago(25),
+  }),
+];
+
 const project = (id: string, orgId: string, name: string, slug: string) => ({
   id,
   orgId,
@@ -152,7 +183,9 @@ const INBOX: OpOutput<"inbox.list"> = {
       irreversible: false,
     },
   ],
-  running: ITEMS.filter((i) => ["running", "waiting", "paused"].includes(i.status)),
+  running: [...ITEMS, ...FACTORY_ITEMS].filter((i) =>
+    ["running", "waiting", "paused"].includes(i.status),
+  ),
   runners: [
     {
       id: RUNNER,
@@ -718,7 +751,7 @@ export const ANSWERS: Answers = {
   "project.list": (input) => ({ projects: PROJECTS.filter((p) => p.orgId === input.orgId) }),
   "inbox.list": () => INBOX,
   "workItem.list": (input) => ({
-    items: ITEMS.filter((i) => !input.orgId || i.orgId === input.orgId),
+    items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
   }),
   "workItem.get": (input) => detail(input.workItemId),
   "workItem.timeline": () => TIMELINE,
@@ -732,7 +765,12 @@ export const ANSWERS: Answers = {
         name: "M5",
         ownerUserId: ME,
         keyVersion: 1,
-        manifest: null,
+        manifest: {
+          contractVersion: "1",
+          runnerKind: "local",
+          harnesses: ["claude-code"],
+          capabilities: [],
+        },
         capacityMax: 2,
         light: { max: 6, inUse: 2 },
         accepting: true,
@@ -742,9 +780,24 @@ export const ANSWERS: Answers = {
         desiredVersion: "5da8988",
         autoUpdate: true,
         update: null,
-        accounts: null,
+        accounts: { names: ["work", "personal"], active: "work", requested: null, limits: [] },
       },
     ],
+  }),
+  "mergeQueue.list": (input) => ({
+    entries:
+      input.projectId === FACTORY
+        ? [
+            {
+              workItemId: "wi_42",
+              number: 42,
+              title: "Keep the runner count fresh",
+              headSha: "9c41e07d2b",
+              enqueuedAt: ago(12),
+              repositoryId: "repo_software-factory",
+            },
+          ]
+        : [],
   }),
   "setup.status": () => SETUP,
   "workItem.previewRouting": () => ({

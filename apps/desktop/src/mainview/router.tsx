@@ -5,9 +5,13 @@ import { QueryClient } from "@tanstack/react-query";
 import { createHashHistory, createRouter } from "@tanstack/react-router";
 import { PagePending } from "./components/page-pending.tsx";
 import { appRoute } from "./routes/_app.tsx";
+import { factoryLayout } from "./routes/_factory.tsx";
 import { settingsLayout } from "./routes/_settings.tsx";
 import { workLayout } from "./routes/_work.tsx";
 import { Route as attach } from "./routes/attach.tsx";
+import { Route as factoryIncidents } from "./routes/factory.incidents.tsx";
+import { Route as factoryOverview } from "./routes/factory.index.tsx";
+import { Route as factoryRunners } from "./routes/factory.runners.tsx";
 import { Route as inbox } from "./routes/index.tsx";
 import { Route as newWork } from "./routes/new.tsx";
 import { rootRoute } from "./routes/root.tsx";
@@ -21,6 +25,7 @@ export const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     inbox,
     workLayout.addChildren([newWork, attach, workList, workItem, review]),
+    factoryLayout.addChildren([factoryOverview, factoryRunners, factoryIncidents]),
     settingsLayout.addChildren([setup, settings]),
   ]),
 ]);
