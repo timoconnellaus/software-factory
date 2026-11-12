@@ -87,6 +87,10 @@ export interface OpMap {
   "workItem.link": Def<typeof operations.workItemLink>;
   "workItem.unlink": Def<typeof operations.workItemUnlink>;
   "project.workflow": Def<typeof operations.projectWorkflow>;
+  "mergeQueue.list": Def<typeof operations.mergeQueueList>;
+  "repository.list": Def<typeof operations.repositoryList>;
+  "cliToken.list": Def<typeof operations.cliTokenList>;
+  "cliToken.revoke": Def<typeof operations.cliTokenRevoke>;
 }
 
 export type OpName = keyof OpMap;

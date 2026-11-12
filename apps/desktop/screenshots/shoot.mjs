@@ -94,6 +94,23 @@ export const SCREENS = [
   { name: "active-all", path: "/work", design: "WorkActiveAll.html" },
   { name: "active-all-list", path: "/work?layout=list", design: "WorkActiveAll.html" },
   { name: "done", path: "/work?view=done", design: "WorkDone.html" },
+  { name: "factory-overview", path: "/factory", design: "FactoryOverview.html" },
+  { name: "factory-runners", path: "/factory/runners", design: "FactoryRunners.html" },
+  { name: "factory-incidents", path: "/factory/incidents", design: "FactoryIncidents.html" },
+  { name: "factory-policy", path: "/factory/policy", design: "FactoryPolicy.html" },
+  { name: "factory-agents", path: "/factory/agents", design: "FactoryAgents.html" },
+  { name: "factory-workflows", path: "/factory/workflows", design: "FactoryWorkflow.html" },
+  {
+    name: "settings-repositories",
+    path: "/settings/repositories",
+    design: "SettingsProjects.html",
+  },
+  {
+    name: "settings-connections",
+    path: "/settings/connections",
+    design: "SettingsConnections.html",
+  },
+  { name: "settings-devices", path: "/settings/devices", design: "SettingsDevices.html" },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
   { name: "update-required-ready", path: "/", query: "?update=ready", design: "Main.html" },

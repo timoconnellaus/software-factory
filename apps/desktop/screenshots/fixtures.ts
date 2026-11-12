@@ -167,6 +167,90 @@ const LINKS: [string, string][] = [
   ["wi_14", "wi_26"],
 ];
 
+/**
+ * The Factory section's items (spec 41, slice 5): incidents are work items of kind incident, one
+ * item is in the merge queue and a released one waits for a slot. `workItem.list` serves them with
+ * ITEMS; the shell's tests pin ITEMS alone.
+ */
+export const FACTORY_ITEMS: Summary[] = [
+  item(40, "Factory incident: #8 had a run that failed", "merge", "waiting", {
+    kind: "incident",
+    source: "incident",
+    statusReason: "Packet ready",
+    prUrl: "https://github.com/example/software-factory/pull/47",
+    createdAt: ago(60 * 22),
+    updatedAt: ago(50),
+  }),
+  item(41, "Factory incident: #4 was sent back at review", "done", "done", {
+    kind: "incident",
+    source: "incident",
+    prUrl: "https://github.com/example/software-factory/pull/44",
+    createdAt: ago(60 * 50),
+    updatedAt: ago(60 * 45),
+  }),
+  item(42, "Keep the runner count fresh", "merge", "running", {
+    statusReason: "Merge queue: CI on the merged head",
+    updatedAt: ago(12),
+  }),
+  item(43, "Show the budget in the status bar", "intake", "queued", {
+    releasedAt: ago(25),
+    updatedAt: ago(25),
+  }),
+];
+
+/** The Factory project's config (spec 41, slice 5): a version as `config.get` returns it. */
+export const POLICY_DOC = {
+  version: 1,
+  autonomyPolicy: "balanced",
+  spec: { requiredFrom: "medium" },
+  wipLimit: 3,
+  retryLimit: 2,
+  approvers: ["owner"],
+  agents: [
+    {
+      name: "Builder",
+      role: "implement",
+      tier: "standard",
+      instructions:
+        "Work one task at a time and commit when its checks pass.\nWrite the failing test before the fix.\nNever edit, skip or delete an existing test to make a check pass.\nIf a criterion cannot be proven by a check, say so in your notes.",
+      requires: [],
+    },
+    {
+      name: "Spec critic",
+      role: "review",
+      tier: "light",
+      instructions: "Challenge the spec before a person approves it.\nName what isn't testable.",
+      requires: [],
+    },
+  ],
+  workflows: [
+    {
+      name: "Software",
+      description: "Code changes: a spec, a build, verify and review.",
+      slots: {
+        afterSpec: [{ id: "critic", kind: "work", name: "Spec critic", agent: "Spec critic" }],
+        beforeVerify: [],
+        afterVerify: [
+          {
+            id: "ui-check",
+            kind: "gate",
+            name: "Browser walk-through",
+            when: { domain: "ui" },
+          },
+        ],
+      },
+      core: { build: "Builder" },
+    },
+    {
+      name: "Docs",
+      description: "Writing only: no build, a person reads it.",
+      slots: { afterSpec: [], beforeVerify: [], afterVerify: [] },
+      core: {},
+    },
+  ],
+  workflow: "Software",
+};
+
 const project = (id: string, orgId: string, name: string, slug: string) => ({
   id,
   orgId,
@@ -244,7 +328,9 @@ const INBOX: OpOutput<"inbox.list"> = {
       irreversible: false,
     },
   ],
-  running: ITEMS.filter((i) => ["running", "waiting", "paused"].includes(i.status)),
+  running: [...ITEMS, ...FACTORY_ITEMS].filter((i) =>
+    ["running", "waiting", "paused"].includes(i.status),
+  ),
   runners: [
     {
       id: RUNNER,
@@ -702,10 +788,60 @@ const SETUP: OpOutput<"setup.status"> = {
       manageUrl: "https://github.com/settings/installations",
     },
   ],
-  projects: [{ ...(PROJECTS[0] as (typeof PROJECTS)[number]), protection: null }],
+  // The check's real result while the ruleset isn't imported (the protect step above).
+  projects: [
+    {
+      ...(PROJECTS[0] as (typeof PROJECTS)[number]),
+      protection: {
+        state: "red",
+        branch: "main",
+        problems: ["`factory/verify` is not a required check on main"],
+        warnings: [],
+        files: [],
+        rulesetsUrl: "https://github.com/example/software-factory/settings/rules",
+        viewerIsRepoAdmin: true,
+        adminMessage: "",
+      },
+    },
+  ],
   missingEvents: [],
   runners: { total: 1, online: 1 },
 };
+
+/**
+ * Rows of core_cli_tokens as the engine has them: each desktop app's token (kind "desktop", made by
+ * `desktop.authExchange`) beside a CLI token. `cliToken.list` answers only the CLI ones.
+ */
+export const TOKENS: (OpOutput<"cliToken.list">["tokens"][number] & { kind: "cli" | "desktop" })[] =
+  [
+    {
+      id: "clt_desktop_m5",
+      name: "M5",
+      kind: "desktop",
+      scope: "write",
+      createdAt: ago(60 * 24 * 9),
+      expiresAt: new Date(now + 21 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+    {
+      id: "clt_desktop_mini",
+      name: "Mac mini",
+      kind: "desktop",
+      scope: "write",
+      createdAt: ago(60 * 24 * 20),
+      expiresAt: new Date(now + 10 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+    {
+      id: "clt_1",
+      name: "M5 terminal",
+      kind: "cli",
+      scope: "write",
+      createdAt: ago(60 * 24 * 4),
+      expiresAt: new Date(now + 26 * 24 * 60 * 60_000).toISOString(),
+      revokedAt: null,
+    },
+  ];
 
 type PlanningQ = OpOutput<"planning.get">["questions"][number];
 
@@ -969,28 +1105,11 @@ export const ANSWERS: Answers = {
   "project.list": (input) => ({ projects: PROJECTS.filter((p) => p.orgId === input.orgId) }),
   "inbox.list": () => INBOX,
   "workItem.list": (input) => ({
-    items: ITEMS.filter((i) => !input.orgId || i.orgId === input.orgId),
+    items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
   }),
   "workItem.get": (input) => detail(input.workItemId),
   "workItem.board": (input) => board(input),
   "project.workflow": (input) => workflowOf(input.projectId),
-  "config.get": (input) => ({
-    projectId: input.projectId,
-    current: {
-      version: 3,
-      sha: "5da8988",
-      source: "app",
-      note: null,
-      createdBy: ME,
-      createdAt: ago(60 * 48),
-      valid: true,
-      impact: null,
-      policy: { workflow: "software", approvers: [] },
-    },
-    error: null,
-    history: [],
-    pending: [],
-  }),
   "workItem.timeline": () => TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),
@@ -1002,7 +1121,12 @@ export const ANSWERS: Answers = {
         name: "M5",
         ownerUserId: ME,
         keyVersion: 1,
-        manifest: null,
+        manifest: {
+          contractVersion: "1",
+          runnerKind: "local",
+          harnesses: ["claude-code"],
+          capabilities: [],
+        },
         capacityMax: 2,
         light: { max: 6, inUse: 2 },
         accepting: true,
@@ -1012,9 +1136,85 @@ export const ANSWERS: Answers = {
         desiredVersion: "5da8988",
         autoUpdate: true,
         update: null,
-        accounts: null,
+        accounts: { names: ["work", "personal"], active: "work", requested: null, limits: [] },
       },
     ],
+  }),
+  "config.get": (input) => ({
+    projectId: input.projectId,
+    current: {
+      version: 12,
+      sha: "5da8988",
+      source: "app",
+      note: "Two agents and the Software workflow",
+      createdBy: "owner",
+      createdAt: ago(60 * 24 * 3),
+      valid: true,
+      impact: "neutral",
+      policy: POLICY_DOC,
+    },
+    error: null,
+    history: [],
+    pending:
+      input.projectId === FACTORY
+        ? [
+            {
+              pendingActionId: "pa_cfg_1",
+              operation: "config.save",
+              note: "Retries per item, 2 to 3",
+              by: "owner",
+              createdAt: ago(30),
+              baseVersion: 12,
+            },
+          ]
+        : [],
+  }),
+  "desktopDevice.list": () => ({
+    devices: [
+      {
+        id: "dev_m5",
+        name: "M5",
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 9),
+        lastSeenAt: ago(0),
+        revokedAt: null,
+      },
+      {
+        id: "dsk_mini",
+        name: "Mac mini",
+        keyStorage: "secure-enclave",
+        createdAt: ago(60 * 24 * 20),
+        lastSeenAt: ago(60 * 24 * 2),
+        revokedAt: null,
+      },
+      {
+        id: "dsk_old",
+        name: "Old laptop",
+        keyStorage: "software",
+        createdAt: ago(60 * 24 * 60),
+        lastSeenAt: ago(60 * 24 * 40),
+        revokedAt: ago(60 * 24 * 30),
+      },
+    ],
+  }),
+  // The door lists only kind "cli" (a desktop's token is its device's), as the engine does.
+  "cliToken.list": () => ({
+    tokens: TOKENS.filter((t) => t.kind === "cli").map(({ kind: _, ...t }) => t),
+  }),
+  "mergeQueue.list": (input) => ({
+    entries:
+      input.projectId === FACTORY
+        ? [
+            {
+              workItemId: "wi_42",
+              number: 42,
+              title: "Keep the runner count fresh",
+              headSha: "9c41e07d2b",
+              enqueuedAt: ago(12),
+              repositoryId: "repo_software-factory",
+            },
+          ]
+        : [],
   }),
   "setup.status": () => SETUP,
   "workItem.previewRouting": () => ({
