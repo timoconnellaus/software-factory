@@ -6,7 +6,7 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation } from "../operation.ts";
-import { repoRef, requireProject, requireWorkItem, workItemId } from "./shared.ts";
+import { repoRef, requireRepository, requireWorkItem, workItemId } from "./shared.ts";
 
 export const specPropose = defineOperation({
   name: "spec.propose",
@@ -117,7 +117,7 @@ export const specCommit = defineOperation({
     if (spec.commit_sha && spec.path) return { path: spec.path, commitSha: spec.commit_sha };
     const path = `docs/specs/wi-${w.number}-${w.slug}.md`;
     const content = specDocument(spec);
-    const repo = await repoRef(ctx, requireProject(ctx));
+    const repo = await repoRef(ctx, requireRepository(ctx));
     const { commitSha } = await ctx.services.github.commitFile(repo, {
       branch: w.branch,
       path,
