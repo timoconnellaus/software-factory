@@ -66,6 +66,8 @@ export const checks: StageType<typeof settings> = {
   gate: () => null,
   needsPerson: false,
   reversibility: "reversible-outside",
+  // Its reviewer is code's (F10): no org agent, no org text but additions a person approves (Q16).
+  judges: "code",
   steps: (s) => [
     { id: "open-pr", kind: "check" },
     { id: "ci", kind: "check" },

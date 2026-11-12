@@ -16,6 +16,22 @@ import { validateWorkflow, type WorkflowError } from "./validate.ts";
 import { type WorkflowDefinition, workflowDefinitionSchema } from "./workflow.ts";
 
 export const MAX_ORG_WORKFLOWS = 30;
+/** The last versions of archived workflows the document keeps (ADR 0516). */
+export const MAX_ARCHIVED = 200;
+/**
+ * The stored document's size in bytes (its pretty JSON, as `core_org_configs.raw` holds it). Well
+ * under D1's row limit, and small enough that `currentOrgConfig` parses it on every org config read
+ * without cost: the schema's own maxima (30 workflows, 200 archived, 20 stages, 4,000 characters of
+ * instructions a stage) would allow tens of megabytes.
+ */
+export const MAX_ORG_CONFIG_BYTES = 256 * 1024;
+/** All stage instructions in one workflow together, in characters. */
+export const MAX_WORKFLOW_INSTRUCTIONS = 16_000;
+
+/** The document as it is stored: pretty JSON and a newline. Its size is what the cap measures. */
+export function orgConfigRaw(config: OrgConfig): string {
+  return `${JSON.stringify(config, null, 2)}\n`;
+}
 
 export const orgConfigSchema = z
   .object({
@@ -34,7 +50,7 @@ export const orgConfigSchema = z
      * The last version of each archived workflow, by id (ADR 0516): a workflow re-added under the
      * same id is compared against it, so archiving and re-adding can't drop a gate unnoticed.
      */
-    archived: z.array(workflowDefinitionSchema).max(200).default([]),
+    archived: z.array(workflowDefinitionSchema).max(MAX_ARCHIVED).default([]),
   })
   .strict();
 export type OrgConfig = z.infer<typeof orgConfigSchema>;
@@ -111,6 +127,23 @@ export function parseOrgConfig(input: unknown): OrgConfigParse {
   const errors: OrgConfigError[] = [];
   const doc = (message: string, workflowId: string | null = null) =>
     errors.push({ rule: "schema", stageId: null, workflowId, message });
+  const bytes = new TextEncoder().encode(orgConfigRaw(config)).length;
+  if (bytes > MAX_ORG_CONFIG_BYTES)
+    doc(
+      `the org config is ${Math.ceil(bytes / 1024)} KiB; it can be at most ${MAX_ORG_CONFIG_BYTES / 1024} KiB (shorten instructions, or remove workflows)`,
+    );
+  for (const w of [...config.workflows, ...Object.values(config.builtIns)]) {
+    if (!w) continue;
+    const chars = w.stages.reduce((n, s) => {
+      const i = (s.settings as { instructions?: unknown } | undefined)?.instructions;
+      return n + (typeof i === "string" ? i.length : 0);
+    }, 0);
+    if (chars > MAX_WORKFLOW_INSTRUCTIONS)
+      doc(
+        `${w.name}'s stage instructions come to ${chars} characters; a workflow's can be at most ${MAX_WORKFLOW_INSTRUCTIONS}`,
+        w.id,
+      );
+  }
   const agentNames = new Set<string>();
   for (const a of config.agents) {
     if (agentNames.has(a.name.toLowerCase())) doc(`two agents are called "${a.name}"`);

@@ -19,16 +19,18 @@ import {
   builtIn,
   builtInKind,
   EMPTY_ORG_CONFIG,
+  MAX_ARCHIVED,
   type OrgConfig,
   orgConfigErrorText,
+  orgConfigRaw,
   parseOrgConfig,
 } from "../stages/org-config.ts";
-import { STAGE_TYPES } from "../stages/registry.ts";
+import { STAGE_TYPES, stageType } from "../stages/registry.ts";
 import { validateWorkflow } from "../stages/validate.ts";
 import { type WorkflowDefinition, workflowDefinitionSchema } from "../stages/workflow.ts";
 
 /** The org config operations whose loosening calls wait for an org admin. */
-export const ORG_CONFIG_WRITES = ["workflow.save", "orgConfig.rollback"] as const;
+export const ORG_CONFIG_WRITES = ["workflow.save", "orgConfig.rollback", "agent.save"] as const;
 
 const orgId = z.string().min(1);
 const baseVersion = z.number().int().nonnegative();
@@ -113,9 +115,35 @@ export function orgConfigImpact(before: OrgConfig, after: OrgConfig): PolicyImpa
     for (const c of workflowImpact(b, builtIn(after, kind)).changes)
       changes.push({ ...c, path: `${b.id}.${c.path}` });
   }
-  if (JSON.stringify(before.agents) !== JSON.stringify(after.agents))
-    changes.push({ path: "agents", class: "neutral", summary: "Agents changed." });
+  // Agents are practice, except one that judges the work (an agent check's): a different prompt
+  // there may pass what the old one sent back, so changing or removing it loosens (Q16).
+  const judging = new Set([...judgingAgents(before), ...judgingAgents(after)]);
+  const byName = (c: OrgConfig) => new Map(c.agents.map((a) => [a.name.toLowerCase(), a]));
+  const was = byName(before);
+  const now2 = byName(after);
+  for (const name of new Set([...was.keys(), ...now2.keys()])) {
+    if (JSON.stringify(was.get(name)) === JSON.stringify(now2.get(name))) continue;
+    const label = now2.get(name)?.name ?? was.get(name)?.name ?? name;
+    changes.push(
+      judging.has(name)
+        ? {
+            path: `agents.${label}`,
+            class: "loosens",
+            summary: `${label} judges work in a workflow: changing it changes what passes.`,
+          }
+        : { path: `agents.${label}`, class: "neutral", summary: `The agent ${label} changed.` },
+    );
+  }
   return summarise(changes);
+}
+
+/** The agents (lower-cased names) that judge work in any of the document's workflows. */
+function judgingAgents(config: OrgConfig): string[] {
+  const out: string[] = [];
+  for (const w of [...config.workflows, ...Object.values(config.builtIns)])
+    for (const s of w?.stages ?? [])
+      if (s.agent && stageType(s.type)?.judges) out.push(s.agent.toLowerCase());
+  return out;
 }
 
 function requireBase(version: number, base: number) {
@@ -168,6 +196,8 @@ export async function writeOrgVersion(
     source: "app" | "import" | "rollback" | "migrated";
     note: string | null;
     createdBy?: string;
+    /** The version it replaces, to record how this one changed it (read by `orgConfig.get`). */
+    before: OrgConfig;
   },
 ): Promise<{ version: number }> {
   const version = expect + 1;
@@ -185,7 +215,8 @@ export async function writeOrgVersion(
     ctx.db.insertInto("core_org_configs").values({
       org_id: org,
       version,
-      raw: `${JSON.stringify(config, null, 2)}\n`,
+      raw: orgConfigRaw(config),
+      impact: orgConfigImpact(input.before, config).class,
       source: input.source,
       created_by: input.createdBy ?? ctx.actor.id,
       note: input.note,
@@ -392,6 +423,7 @@ async function saveWorkflow(
   const impact = orgConfigImpact(config, after);
   const written = await writeOrgVersion(ctx, input.orgId, version, after, {
     source: "app",
+    before: config,
     note: input.note || null,
     ...(createdBy ? { createdBy } : {}),
   });
@@ -438,6 +470,7 @@ export const workflowCreateFromTemplate = defineOperation({
     const after = validated(withWorkflow(config, workflow));
     const written = await writeOrgVersion(ctx, input.orgId, version, after, {
       source: "app",
+      before: config,
       note: input.note || `New workflow ${input.name}, from ${template.name}`,
     });
     return { version: written.version, workflowId: id };
@@ -464,6 +497,18 @@ export const workflowArchive = defineOperation({
     // Projects run their own config until spec 52 PR (d), so no org workflow is in use yet; (d)
     // refuses archiving one a project runs. The archived version is kept: a workflow re-added under
     // this id is compared against it (ADR 0516).
+    // The document keeps the last version of up to MAX_ARCHIVED archived workflows. The next archive
+    // is refused, never made by dropping the oldest: a dropped one could be re-added under its id
+    // compared only against the Software floor (ADR 0516). Re-adding or replacing an archived
+    // workflow frees its place.
+    if (
+      config.archived.length >= MAX_ARCHIVED &&
+      !config.archived.some((w) => w.id === input.workflowId)
+    )
+      throw new OperationError(
+        "conflict",
+        `the org already keeps ${MAX_ARCHIVED} archived workflows, so this one can't be archived: re-add or replace an archived workflow first`,
+      );
     const after = validated({
       ...config,
       workflows: config.workflows.filter((w) => w.id !== input.workflowId),
@@ -471,6 +516,7 @@ export const workflowArchive = defineOperation({
     });
     return writeOrgVersion(ctx, input.orgId, version, after, {
       source: "app",
+      before: config,
       note: input.note || `Archived ${workflow.name}`,
     });
   },
@@ -479,30 +525,52 @@ export const workflowArchive = defineOperation({
 export const agentSave = defineOperation({
   name: "agent.save",
   description:
-    "Add an org agent, or replace one by name (ADR 0372): its role, tier, instructions and capabilities. Workflow stages hand to org agents by name. A change that breaks a workflow (a role a stage can't take) is refused. Org admins only.",
+    "Add an org agent, or replace one by name (ADR 0372): its role, tier, instructions and capabilities. Workflow stages hand to org agents by name. A change that breaks a workflow (a role a stage can't take) is refused. Changing an agent that judges work (an agent check's) loosens, so it waits for an org admin. Org admins only.",
   risk: "write",
+  riskOf: (input, at) =>
+    riskOfSave(at.db, input.orgId, input.baseVersion, (c) => withAgent(c, input.agent)),
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
   input: z.object({ orgId, baseVersion, agent: agentSchema, note }),
   output: z.object({ version: z.number() }),
   async handler(input, ctx) {
-    const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
-    requireBase(version, input.baseVersion);
-    const name = input.agent.name.toLowerCase();
-    const exists = config.agents.some((a) => a.name.toLowerCase() === name);
-    const after = validated({
-      ...config,
-      agents: exists
-        ? config.agents.map((a) => (a.name.toLowerCase() === name ? input.agent : a))
-        : [...config.agents, input.agent],
-    });
-    return writeOrgVersion(ctx, input.orgId, version, after, {
-      source: "app",
-      note: input.note || `${exists ? "Changed" : "Added"} the agent ${input.agent.name}`,
-    });
+    return saveAgent(ctx, input);
   },
 });
+
+function withAgent(config: OrgConfig, agent: z.infer<typeof agentSchema>): OrgConfig {
+  const name = agent.name.toLowerCase();
+  const exists = config.agents.some((a) => a.name.toLowerCase() === name);
+  return {
+    ...config,
+    agents: exists
+      ? config.agents.map((a) => (a.name.toLowerCase() === name ? agent : a))
+      : [...config.agents, agent],
+  };
+}
+
+async function saveAgent(
+  ctx: HandlerContext,
+  input: {
+    orgId: string;
+    baseVersion: number;
+    agent: z.infer<typeof agentSchema>;
+    note?: string | undefined;
+  },
+  createdBy?: string,
+) {
+  const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
+  requireBase(version, input.baseVersion);
+  const exists = config.agents.some((a) => a.name.toLowerCase() === input.agent.name.toLowerCase());
+  const after = validated(withAgent(config, input.agent));
+  return writeOrgVersion(ctx, input.orgId, version, after, {
+    source: "app",
+    before: config,
+    note: input.note || `${exists ? "Changed" : "Added"} the agent ${input.agent.name}`,
+    ...(createdBy ? { createdBy } : {}),
+  });
+}
 
 const versionView = z.object({
   version: z.number(),
@@ -537,6 +605,8 @@ export const orgConfigGet = defineOperation({
     ),
   }),
   async handler(input, ctx) {
+    // The current version is the one document parsed. The history is metadata only: each version's
+    // impact was recorded when it was written, so no older document is read or parsed here.
     const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
     const rows = await ctx.db
       .selectFrom("core_org_configs as c")
@@ -545,31 +615,23 @@ export const orgConfigGet = defineOperation({
         "c.version",
         "c.source",
         "c.note",
-        "c.raw",
+        "c.impact",
         "c.created_at",
         "u.github_login",
         "u.name",
       ])
       .where("c.org_id", "=", input.orgId)
       .orderBy("c.version", "desc")
-      .limit(51)
+      .limit(50)
       .execute();
-    const parsed = rows.map((r) => {
-      const p = parseOrgConfig(JSON.parse(r.raw));
-      return p.ok ? p.config : null;
-    });
-    const history = rows.slice(0, 50).map((r, i) => {
-      const now = parsed[i];
-      const before = parsed[i + 1] ?? EMPTY_ORG_CONFIG;
-      return {
-        version: r.version,
-        source: r.source,
-        note: r.note,
-        createdBy: r.github_login ?? r.name ?? null,
-        createdAt: r.created_at,
-        impact: now ? orgConfigImpact(before, now).class : null,
-      };
-    });
+    const history = rows.map((r) => ({
+      version: r.version,
+      source: r.source,
+      note: r.note,
+      createdBy: r.github_login ?? r.name ?? null,
+      createdAt: r.created_at,
+      impact: r.impact,
+    }));
     const waiting = await ctx.db
       .selectFrom("core_pending_actions as pa")
       .leftJoin("core_user as u", "u.id", "pa.actor_id")
@@ -639,6 +701,7 @@ async function rollbackOrgConfig(
   const impact = orgConfigImpact(config, target);
   const written = await writeOrgVersion(ctx, input.orgId, version, target, {
     source: "rollback",
+    before: config,
     note: input.note || `Rolled back to v${input.toVersion}`,
     ...(createdBy ? { createdBy } : {}),
   });
@@ -658,8 +721,11 @@ export async function applyApprovedOrgConfig(
   const written =
     pa.operation === "orgConfig.rollback"
       ? await rollbackOrgConfig(ctx, input, pa.actor_id)
-      : await saveWorkflow(ctx, input, pa.actor_id);
-  ctx.write(
+      : pa.operation === "agent.save"
+        ? await saveAgent(ctx, input, pa.actor_id)
+        : await saveWorkflow(ctx, input, pa.actor_id);
+  ctx.writePendingStatus(
+    "apply",
     ctx.db.updateTable("core_pending_actions").set({ status: "applied" }).where("id", "=", pa.id),
   );
   return written;

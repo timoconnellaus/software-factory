@@ -412,6 +412,8 @@ current (ADR 0370 §2). The **floors** are F-rules: no setting, template or agen
   refuse otherwise (spec 50's rule 3, generalised).
 - **F10** Code-owned prompts stay code's: no type exposes a setting that replaces the verify or
   reviewer prompt, or that names a model id (ADR 0018).
+  A stage whose judge is the factory's own reviewer (Checks) takes no org agent: an agent's instructions
+  would reach the judge (Q16, ADR 0516).
 
 ### The impact check
 `workflowImpact(before, after, registry)` extends `policyImpact` (ADR 0370 §3). Each change is

@@ -90,6 +90,8 @@ export interface CoreOrgConfigsTable {
   note: string | null;
   parent_version: number | null;
   created_at: Iso;
+  /** How this version changed the one before it, recorded when it was written. */
+  impact: "loosens" | "tightens" | "neutral" | null;
 }
 
 export interface CoreMemberTable {

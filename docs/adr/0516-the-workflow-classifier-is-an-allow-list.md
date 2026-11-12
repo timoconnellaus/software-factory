@@ -17,14 +17,24 @@ as "loosens if …, otherwise neutral", so every case nobody thought of came out
    doesn't recognise is a loosening. In code (`packages/core/src/stages/impact.ts`):
    - a setting that differs and that the stage type's `impact()` returns nothing for loosens;
    - every stage removal loosens (a gate or check is gone, or what one depends on is);
-   - an added stage tightens only if it is a check or gate that runs for every item; anything else
-     added loosens;
+   - an added stage tightens only if it is a check or gate that runs for every item **and acts on
+     nothing outside the factory**; anything else added loosens. An added stage whose type is
+     `irreversible` or `reversible-outside` (a merge, a publish, a deploy, a Checks stage that opens a
+     PR) is an **action gained**, a loosening even though it has a gate: a workflow that never merged
+     must not gain a merge with no approval, and the tighten-only Attached PR built-in can't gain a
+     second merge;
    - **order**: every pair of stages both versions have keeps its order, or the save loosens;
    - a `when` change on a check or gate follows the condition rules; on any other stage it loosens;
    - a type version bump is compared through the type's own `migrate()`; a type without one, or a
      migration that fails, loosens;
    - only names, descriptions, the template reference, agent hand-offs and the settings each type
      names as practice (instructions, CI waits, retry limits, queue timing) are neutral.
+   - **who judges is policy** (Q16): a stage type that judges the work says so (`judges`). Checks'
+     judge is the factory's own reviewer (`judges: "code"`): it takes **no org agent** (floor F10,
+     refused on save), and org skills reach it only as additions a person approves (spec 52 PR (f)).
+     An agent check's judge is its named agent (`judges: "agent"`): handing it to another agent, or
+     changing that agent (`agent.save`, now judged like a workflow save), loosens. Other agent
+     changes stay neutral.
 2. **The review packet's `sections`.** Absent means every section. Setting a list where there was
    none, or dropping a section, loosens; only adding tightens; reordering is neutral.
 3. **What a save is compared against.** The org's current version of that workflow id; else the last
@@ -40,7 +50,15 @@ as "loosens if …, otherwise neutral", so every case nobody thought of came out
 6. **A property test guards it.** Random workflow edits; for each one classified neutral or
    tightening, every gate, check, decider, evidence item, required check, section, the critic, the
    merge queue and the order of every checked or gated pair of the before version must still hold in
-   the after version, for every built-in kind, size and domain.
+   the after version, and the after version must take **no outward or irreversible action** (an
+   action, its risk, a connector) the before version didn't, for every built-in kind, size and domain.
+7. **The document is bounded.** An org config is at most 256 KiB as stored, and a workflow's stage
+   instructions together at most 16,000 characters; a save over either is refused. `orgConfig.get`
+   parses only the current version: each version's impact is recorded when it is written
+   (`core_org_configs.impact`), and the history lists versions by that metadata. The document keeps
+   the last version of at most 200 archived workflows; the 201st archive is **refused** (re-adding or
+   replacing an archived workflow frees a place). It never drops the oldest, which would let that id
+   be re-added compared only against the Software floor.
 
 ## Consequences
 - Some harmless edits now need an admin's approval (adding a build stage, reordering two work
