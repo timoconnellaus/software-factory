@@ -1,7 +1,7 @@
 // The pull (ADR 0491): `queue.pull` by the scheduler, after a release, create-and-release, finish or
 // cancel commits (the outbox), and from the minute cron. Always its own batch: a pull that loses a
 // race aborts itself, never the call that asked for it, and the next pull picks up.
-import { invoke, isOperationError, SCHEDULER } from "@software-factory/core";
+import { FOREMAN, invoke, isOperationError, SCHEDULER } from "@software-factory/core";
 import { invokeDeps } from "./deps.ts";
 
 /** Pulls one project. Never throws an operation's refusal: the cron catches up. */
@@ -64,4 +64,27 @@ export async function pullQueuedWork(env: Env, limit = 20): Promise<number> {
     .all<{ project_id: string }>();
   for (const { project_id } of results) await pullProject(env, project_id);
   return results.length;
+}
+
+/**
+ * A shaped item was released and pulled, but its Workflow has ended (errored or terminated while it
+ * waited, ADR 0493). Nothing would ever deliver it: end it as failed, with the reason, which frees
+ * its slot and tells its requester.
+ */
+export async function failDeadRelease(env: Env, workItemId: string, state: string): Promise<void> {
+  try {
+    await invoke(
+      invokeDeps(env),
+      "workItem.finish",
+      {
+        workItemId,
+        status: "failed",
+        reason: `released, but its shaping Workflow had ${state === "missing" ? "gone" : state}: capture it again`,
+      },
+      { actor: FOREMAN, origin: { surface: "cron" } },
+    );
+  } catch (error) {
+    if (!isOperationError(error)) throw error;
+    console.warn(`dead release ${workItemId}: ${error.code} ${error.message}`);
+  }
 }

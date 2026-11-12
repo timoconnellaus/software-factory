@@ -67,6 +67,14 @@ const V6_STEPS = [
   "`${name}: record`",
   "`${name}: ask`",
 ];
+// The steps v7 adds (spec 50 part C, ADR 0493): the wait for the release after the shaping stages.
+const V7_STEPS = [
+  '"release: meta"',
+  '"release: check"',
+  '"release: shaped"',
+  "`release: wait #${k}`",
+  "`release: check #${k}`",
+];
 // The steps v8 adds (spec 51, ADR 0501): the factory's checks on the build's head, the question when
 // they still fail, and the attached PR's check names for its reviewer.
 const V8_STEPS = [
@@ -133,6 +141,9 @@ describe("Workflow versions", () => {
     for (const name of [...V4_STEPS, ...V4_TAGS]) expect(source, name).toContain(name);
     for (const name of V5_STEPS) expect(source, name).toContain(name);
     for (const name of V6_STEPS) expect(source, name).toContain(name);
+    for (const name of V7_STEPS) expect(source, name).toContain(name);
+    // v6 instances still dispatch to the same flow, with v7's release wait switched off.
+    expect(source).toContain("return flow.runV1(6);");
     for (const name of V8_STEPS) expect(source, name).toContain(name);
     // v5 instances still dispatch to the same flow, with v6's workflow slots switched off.
     expect(source).toContain("return flow.runV1(5);");

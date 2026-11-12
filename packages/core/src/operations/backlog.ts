@@ -12,10 +12,19 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import type { ProjectPolicy } from "../policy/project-policy.ts";
+import { type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
+import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
-import { projectId, repositoryId, requireProject, requireWorkItem, workItemId } from "./shared.ts";
+import {
+  projectId,
+  repoRef,
+  repositoryId,
+  requireProject,
+  requireWorkItem,
+  STAGE_PHASE,
+  workItemId,
+} from "./shared.ts";
 
 /** States before release: no Workflow instance exists in them, except `shaping` (part C). */
 export const PRE_PIPELINE = ["backlog", "shaping", "ready", "queued"] as const;
@@ -113,7 +122,7 @@ export interface StartConditions {
  */
 export function startPipeline(
   ctx: HandlerContext,
-  item: { id: string; number: number },
+  item: { id: string; number: number; shaping_started_at?: string | null },
   project: Pick<ProjectRow, "id" | "org_id" | "policy_sha">,
   pin: {
     policy: Pick<ProjectPolicy, "workflow"> | null;
@@ -161,6 +170,21 @@ export function startPipeline(
       ),
   );
   ctx.guardChanged(`start #${item.number}`);
+  if (item.shaping_started_at) {
+    // Shaped before release (ADR 0493): its Workflow already ran the shaping stages and waits at
+    // `release: wait`. Wake it; delivery reads the version and workflow pinned just now.
+    ctx.emit({
+      kind: "workflow.event",
+      payload: { instanceId: item.id, type: releaseEvent(item.id), payload: {} },
+    });
+    ctx.change({
+      entity: "work_item",
+      id: item.id,
+      before: { status: "queued" },
+      after: { status: "running", pulled: true, workflow, shaped: true },
+    });
+    return;
+  }
   ctx.write(
     ctx.db.insertInto("core_stages").values({
       id: newId("stage"),
@@ -193,6 +217,7 @@ export interface PullCandidate {
   released_at: string | null;
   created_at: string;
   repository_id: string | null;
+  shaping_started_at: string | null;
 }
 
 /** Pull order (ADR 0491): priority, then rank, then release time, then creation. */
@@ -301,7 +326,16 @@ export async function pullQueued(
   const queue = (
     await ctx.db
       .selectFrom("core_work_items")
-      .select(["id", "number", "priority", "rank", "released_at", "created_at", "repository_id"])
+      .select([
+        "id",
+        "number",
+        "priority",
+        "rank",
+        "released_at",
+        "created_at",
+        "repository_id",
+        "shaping_started_at",
+      ])
       .where("project_id", "=", project.id)
       .where("status", "=", "queued")
       .execute()
@@ -407,9 +441,54 @@ function requirePre(w: WorkItemRow, what: string) {
   }
 }
 
+/**
+ * A shaped item's plan at release (ADR 0493): how old it is and how far the default branch moved
+ * since it was written, so the person releasing it sees a stale plan. Refuses when the config in
+ * force now requires a plan (by the item's size) that shaping didn't make.
+ */
+async function shapedPlan(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+): Promise<{ shapedAt: string | null; baseSha: string | null; behindBy: number | null }> {
+  const policy = ctx.scope.policy;
+  if (policy && w.size && !w.spec_required && specRequired(policy, w.size).required) {
+    throw new OperationError(
+      "conflict",
+      `work item #${w.number} was shaped without a plan, but the config now requires one for ${w.size} work: cancel it and shape it again`,
+    );
+  }
+  let behindBy: number | null = null;
+  const repository = ctx.scope.repository;
+  if (w.shaped_base_sha && repository) {
+    try {
+      behindBy = (
+        await ctx.services.github.compareCommits(
+          await repoRef(ctx, repository),
+          w.shaped_base_sha,
+          repository.default_branch,
+        )
+      ).aheadBy;
+    } catch {
+      behindBy = null;
+    }
+  }
+  return { shapedAt: w.shaped_at, baseSha: w.shaped_base_sha, behindBy };
+}
+
 const startedOutput = z.object({
   /** `queued`: the factory pulls it right after this call commits, when there is room. */
   status: z.string(),
+  /**
+   * A shaped item's plan (ADR 0493): when it was shaped, the default branch's head then, and how
+   * many commits the branch has gained since (null when unknown).
+   */
+  plan: z
+    .object({
+      shapedAt: z.string().nullable(),
+      baseSha: z.string().nullable(),
+      behindBy: z.number().nullable(),
+    })
+    .optional(),
   /** What it waits for that isn't done; empty when nothing holds it. */
   blockedBy: z.array(
     z.object({ id: z.string(), number: z.number(), title: z.string(), status: z.string() }),
@@ -430,6 +509,7 @@ export const workItemRelease = defineOperation({
     const project = requireProject(ctx);
     const refused = releaseRefusal(ctx, w);
     if (refused) throw refused;
+    const plan = w.shaping_started_at ? await shapedPlan(ctx, w) : null;
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -456,7 +536,151 @@ export const workItemRelease = defineOperation({
     return {
       status: "queued",
       blockedBy: blocked.map(({ projectId: _p, ...b }) => b),
+      ...(plan ? { plan } : {}),
     };
+  },
+});
+
+export const workItemShape = defineOperation({
+  name: "workItem.shape",
+  description:
+    "Shape a backlog or ready work item before releasing it (ADR 0493): its workflow's shaping stages run now, with no commitment to build. With today's engine those are triage and interview planning (the spec stage and its gate, on the light pool). It doesn't count against the active limit. When shaping is done the item is ready, and releasing it later goes straight to delivery (build, verify, the merge gate). Small items need no shaping: release them from the backlog and they shape inside delivery, as before.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ workItemId }),
+  output: z.object({ status: z.string() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const project = requireProject(ctx);
+    if (w.shaping_started_at) {
+      throw new OperationError("conflict", `work item #${w.number} is already being shaped`);
+    }
+    // Shaping has the same preconditions as release, except who may (only a person, for now).
+    const refused = releaseRefusal(ctx, w);
+    if (refused) throw refused;
+    const policy = ctx.scope.policy;
+    if (await activeKillSwitch(ctx.db, project.org_id, project.id)) {
+      throw new OperationError("killed", "a kill switch is on: nothing starts shaping");
+    }
+    const shapingNow = Number(
+      (
+        await ctx.db
+          .selectFrom("core_work_items")
+          .select(sql<number>`count(*)`.as("n"))
+          .where("project_id", "=", project.id)
+          .where("status", "=", "shaping")
+          .executeTakeFirst()
+      )?.n ?? 0,
+    );
+    const limit = policy?.shapingLimit ?? 5;
+    if (shapingNow >= limit) {
+      throw new OperationError(
+        "conflict",
+        `${shapingNow} items are already shaping on this project (its shaping limit is ${limit}): release or cancel one first`,
+      );
+    }
+    const workflow = policy?.workflow ?? null;
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          status: "shaping",
+          status_reason: null,
+          shaping_started_at: ctx.now,
+          // The version shaping runs under; the pull pins delivery's again at release.
+          policy_sha: project.policy_sha,
+          workflow,
+          workflow_reason: workflow ? "the project's workflow" : null,
+          updated_at: ctx.now,
+        })
+        .where("id", "=", w.id)
+        .where("status", "in", ["backlog", "ready"])
+        .where("shaping_started_at", "is", null),
+    );
+    ctx.guardChanged("shape");
+    ctx.write(
+      ctx.db.insertInto("core_stages").values({
+        id: newId("stage"),
+        work_item_id: w.id,
+        stage: "intake",
+        attempt: 1,
+        status: "done",
+        started_at: ctx.now,
+        ended_at: ctx.now,
+      }),
+    );
+    ctx.emit({
+      kind: "workflow.create",
+      payload: { instanceId: w.id, params: { workItemId: w.id } },
+    });
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      before: { status: w.status },
+      after: { status: "shaping" },
+    });
+    return { status: "shaping" };
+  },
+});
+
+export const workItemShaped = defineOperation({
+  name: "workItem.shaped",
+  description:
+    "The Workflow finished a work item's shaping stages before release (ADR 0493): the item becomes ready and waits for a person to release it. Returns whether it was already released (then delivery goes on at once).",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId }),
+  output: z.object({ released: z.boolean(), event: z.string() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const event = releaseEvent(w.id);
+    if (w.pulled_at) return { released: true, event };
+    // What the plan was written against: the default branch's head now. Best effort: a GitHub
+    // outage leaves it unknown, and release then can't say how far the branch moved.
+    let baseSha: string | null = null;
+    const repository = ctx.scope.repository;
+    if (repository) {
+      try {
+        baseSha = await ctx.services.github.getBranchSha(
+          await repoRef(ctx, repository),
+          repository.default_branch,
+        );
+      } catch {
+        baseSha = null;
+      }
+    }
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          status: "ready",
+          status_reason: "shaped: release it to build",
+          shaped_at: ctx.now,
+          shaped_base_sha: baseSha,
+          updated_at: ctx.now,
+        })
+        .where("id", "=", w.id)
+        .where("status", "=", "shaping"),
+    );
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      before: { status: w.status },
+      after: { status: "ready", shaped: true },
+    });
+    ctx.emit({
+      kind: "notify",
+      payload: {
+        event: "workItem.shaped",
+        userId: w.requester_user_id,
+        workItemId: w.id,
+        title: `Ready to release: ${w.title}`,
+        url: `/work/${w.id}`,
+      },
+    });
+    return { released: false, event };
   },
 });
 
@@ -475,6 +699,14 @@ export const workItemMove = defineOperation({
       throw new OperationError(
         "conflict",
         `work item #${w.number} is ${w.status}: only backlog, ready or queued work can move`,
+      );
+    }
+    // A shaped item's Workflow already ran its shaping stages and waits for the release: it is
+    // released or cancelled, not moved back (spec 50 part C).
+    if (w.shaping_started_at && input.to === "backlog") {
+      throw new OperationError(
+        "conflict",
+        `work item #${w.number} was shaped: release it, or cancel it`,
       );
     }
     if (w.status === input.to) return { status: w.status };
@@ -525,9 +757,23 @@ export const workItemUpdate = defineOperation({
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     requirePre(w, "it can be edited");
+    // A shaped plan is fixed (ADR 0493): delivery builds what was planned. Only its place in the
+    // queue can change; anything else means cancelling it and shaping again.
+    if (
+      w.shaping_started_at &&
+      Object.keys(input).some((k) => k !== "workItemId" && k !== "priority")
+    ) {
+      throw new OperationError(
+        "conflict",
+        `work item #${w.number} has been shaped: its plan is fixed (only its priority can change); cancel it and capture it again to change it`,
+      );
+    }
     // Released work keeps its repository: release checked it, and the pull relies on it. Take it
     // back to ready (workItem.move) to change it.
-    if (input.repositoryId !== undefined && !["backlog", "ready"].includes(w.status)) {
+    if (
+      input.repositoryId !== undefined &&
+      (!["backlog", "ready"].includes(w.status) || w.shaping_started_at)
+    ) {
       throw new OperationError(
         "conflict",
         `work item #${w.number} is ${w.status}: its repository changes only in backlog or ready`,
@@ -743,6 +989,8 @@ const boardItem = z.object({
   status: z.string(),
   statusReason: z.string().nullable(),
   stage: z.string(),
+  /** The stage's phase (ADR 0493): shaping (before release) or delivery. */
+  phase: z.enum(["shaping", "delivery"]),
   priority,
   rank: z.number(),
   size: z.string().nullable(),
@@ -852,6 +1100,7 @@ export const workItemBoard = defineOperation({
           status: w.status,
           statusReason: w.status_reason,
           stage: w.stage,
+          phase: STAGE_PHASE[w.stage as keyof typeof STAGE_PHASE] ?? "delivery",
           priority: priorityOf(w.priority),
           rank: w.rank,
           size: w.size,

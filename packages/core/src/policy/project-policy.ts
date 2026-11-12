@@ -160,6 +160,11 @@ export const projectPolicySchema = z
      */
     activeLimit: z.number().int().positive().max(100).default(10),
     /**
+     * How many items may be shaping at once (ADR 0493): shaping uses runners too, so a burst of it
+     * can't crowd out released work.
+     */
+    shapingLimit: z.number().int().positive().max(100).default(5),
+    /**
      * Who may release work from ready to queued (ADR 0491). A person always may; agents, intakes and
      * chat only with `agents: true`. Turning it on is a loosening, so only a person can.
      */

@@ -27,6 +27,7 @@ import {
   type ProjectPolicy,
   parseProjectPolicy,
   type RunEventPayload,
+  releaseEvent,
   runEvent,
   SLOTS,
 } from "@software-factory/core";
@@ -90,7 +91,13 @@ export type WorkItemOutcome =
  *   back to build, or ask), a gate step through `workflow.gate` (always a person).
  */
 /**
- * - v7 is PR #79's (spec 50 part C); on this branch it runs as v6 did.
+ * - v7 (spec 50 part C, ADR 0493): shaping stages run before release. After the shaping stages
+ *   (triage, and interview planning with its spec gate when the size needs it), `release: check`
+ *   reads whether the item was released. An item released straight from the backlog goes on at
+ *   once, exactly as v6. An item shaped first (`workItem.shape`) becomes ready (`release: shaped`)
+ *   and waits for `release-<item>` (`release: wait #k`, re-checking on each timeout), which the pull
+ *   sends when a person released it and there is room. Delivery (the workflow's slots, build,
+ *   verify, the merge gate) follows.
  * - v8 (spec 51, ADR 0501): the runner host runs the project's checks after the build session and
  *   sends failures back into the same session. After `build #b: advance`, `build #b: checks` reads
  *   the results on the pushed head; any declared check still failing there asks a person
@@ -101,6 +108,8 @@ export const WORKFLOW_VERSION = 8;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
+/** How long a shaped item waits for its release before it re-reads whether it was released. */
+export const RELEASE_WAIT = "12 hours";
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
 export const CI_WAIT = "10 minutes";
 export const CI_ROUNDS = 12;
@@ -342,7 +351,7 @@ class ItemFlow {
   async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
-      const meta = await this.meta();
+      let meta = await this.meta();
       await this.act("triage: enter", "workItem.enterStage", {
         workItemId: id,
         stage: "triage",
@@ -425,6 +434,9 @@ class ItemFlow {
         const committed = await this.act("spec: commit", "spec.commit", { workItemId: id });
         specPath = String(committed.path);
       }
+      // v7: the shaping stages are done. Unreleased work waits here for its release (ADR 0493),
+      // and delivery re-reads the item and its config as pinned at the pull.
+      if (version >= 7 && (await this.waitForRelease())) meta = await this.refreshMeta();
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
       const plan = version >= 6 ? await this.workflowPlan() : null;
@@ -987,8 +999,17 @@ class ItemFlow {
     return this.metaRead;
   }
 
-  private async readMeta(): Promise<Meta> {
-    return this.step.do("meta: item", async () => {
+  /**
+   * After a shaped item's release (v7): the item and the limits of the config version the pull
+   * pinned, read again, so delivery never runs on what was journaled at shaping time.
+   */
+  async refreshMeta(): Promise<Meta> {
+    this.metaRead = this.readMeta("release: meta");
+    return this.metaRead;
+  }
+
+  private async readMeta(name = "meta: item"): Promise<Meta> {
+    return this.step.do(name, async () => {
       const row = await this.env.DB.prepare(
         `SELECT w.number, w.title, w.body, w.branch, w.kind, w.pr_number, w.head_sha,
                 r.default_branch, p.raw FROM core_work_items w
@@ -997,7 +1018,9 @@ class ItemFlow {
          LEFT JOIN core_repositories r ON r.id = COALESCE(w.repository_id, (
            SELECT id FROM core_repositories WHERE project_id = w.project_id
            AND (SELECT count(*) FROM core_repositories WHERE project_id = w.project_id) = 1))
-         LEFT JOIN core_project_policies p ON p.project_id = pr.id AND p.sha = pr.policy_sha
+         -- The version the item runs on (pinned at its pull), else the project's.
+         LEFT JOIN core_project_policies p ON p.project_id = pr.id
+           AND p.sha = COALESCE(w.policy_sha, pr.policy_sha)
          WHERE w.id = ?`,
       )
         .bind(this.workItemId)
@@ -1622,6 +1645,39 @@ class ItemFlow {
   }
 
   /** Queues a stage job and waits for its run to finish (or stall). Holds no slot while queued. */
+  // ---- v7: shaping stages before release (spec 50 part C, ADR 0493) ----
+
+  /**
+   * Waits, after the shaping stages, until the item is released and pulled. An item released
+   * before its Workflow started (no shaping first) is already pulled and goes straight on.
+   */
+  async waitForRelease(): Promise<boolean> {
+    const id = this.workItemId;
+    const pulled = async (name: string) =>
+      this.step.do(name, async () => {
+        const row = await this.env.DB.prepare("SELECT pulled_at FROM core_work_items WHERE id = ?")
+          .bind(id)
+          .first<{ pulled_at: string | null }>();
+        return !!row?.pulled_at;
+      });
+    if (await pulled("release: check")) return false;
+    const shaped = await this.act("release: shaped", "workItem.shaped", { workItemId: id });
+    if (shaped.released === true) return true;
+    for (let k = 1; ; k++) {
+      try {
+        await this.step.waitForEvent(`release: wait #${k}`, {
+          type: releaseEvent(id),
+          timeout: RELEASE_WAIT,
+        });
+        return true;
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+        // An event that came before the wait started is not lost: the item says it was pulled.
+        if (await pulled(`release: check #${k}`)) return true;
+      }
+    }
+  }
+
   // ---- v6: workflows (spec 09 M2, ADR 0371) ----
 
   /**
@@ -1631,10 +1687,13 @@ class ItemFlow {
    */
   async workflowOptions(): Promise<{ name: string; description: string }[]> {
     const text = await this.step.do("workflow: options", async () => {
-      const row = await this.env.DB.prepare("SELECT pulled_at FROM core_work_items WHERE id = ?")
+      const row = await this.env.DB.prepare(
+        "SELECT pulled_at, shaping_started_at FROM core_work_items WHERE id = ?",
+      )
         .bind(this.workItemId)
-        .first<{ pulled_at: string | null }>();
-      if (row?.pulled_at) return JSON.stringify([]);
+        .first<{ pulled_at: string | null; shaping_started_at: string | null }>();
+      // Only an item from before 0261 (never pulled, never shaped) is offered a pick.
+      if (row?.pulled_at || row?.shaping_started_at) return JSON.stringify([]);
       const policy = await this.pinnedPolicy();
       return JSON.stringify(
         (policy?.workflows ?? []).map((w) => ({ name: w.name, description: w.description })),

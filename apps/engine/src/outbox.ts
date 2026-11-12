@@ -4,7 +4,7 @@
 import type { OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
 import { planningHub } from "./planning-hub.ts";
-import { pullProject } from "./pull.ts";
+import { failDeadRelease, pullProject } from "./pull.ts";
 
 interface OutboxRow {
   id: string;
@@ -79,8 +79,15 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
     }
     case "workflow.event": {
       const found = await instanceStatus(env, message.payload.instanceId);
-      // An event for a finished or unknown instance has nobody to wake: drop it.
-      if (!found || FINISHED.has(found.status)) return;
+      // An event for a finished or unknown instance has nobody to wake: drop it. Except a shaped
+      // item's release (ADR 0493): the pull already counted it running, so with no Workflow to
+      // deliver it, it would hold a slot for ever. Fail it, visibly, instead.
+      if (!found || FINISHED.has(found.status)) {
+        if (message.payload.type.startsWith("release-")) {
+          await failDeadRelease(env, message.payload.instanceId, found?.status ?? "missing");
+        }
+        return;
+      }
       await found.instance.sendEvent({
         type: message.payload.type,
         payload: message.payload.payload,

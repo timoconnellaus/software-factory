@@ -69,6 +69,14 @@ released to the factory, waiting for a slot. No Workflow exists in them; creatin
 in the backlog unless the caller releases it in the same step (New work, `sf new`).
 _Avoid_: draft, todo, inbox (the inbox is what waits on a person)
 
+**Shaping, delivery**
+The two phases of a workflow's stages, with release between them (ADR 0493). **Shaping** stages
+need a person, hold no build slot and don't count as active; with today's engine they are triage and
+interview planning (the spec stage and its gate). **Delivery** is everything from build on. A person
+can shape an item before releasing it (`workItem.shape`; its status is `shaping`, then `ready`);
+small items are released from the backlog and shape inside delivery.
+_Avoid_: planning state (planning is one stage type), pre-work
+
 **Release**
 Handing a backlog or ready item to the factory (`workItem.release`): it becomes queued. A person may
 always release; an agent, intake or chat only where the project's config sets `release.agents`.

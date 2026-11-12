@@ -138,10 +138,10 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     ).toEqual([]);
   });
 
-  // PR #79 adds v7's release wait (`version >= 7 && waitForRelease()`) and keeps v7; this PR is v8.
-  // Whichever lands first, a v8 item that was released without shaping (created queued, so already
-  // pulled, ADR 0491) must go straight from triage to build: waitForRelease is a no-op for it. This
-  // holds on both sides of #79's merge.
+  // v7 (PR #79) waits for the release after the shaping stages (`version >= 7 && waitForRelease()`)
+  // and v8 builds on it. A v8 item released without shaping (created queued, so already pulled, ADR
+  // 0491) must go straight from triage to build: waitForRelease is a no-op for it. (A shaped v8 item
+  // waiting for its release is shaping.test.ts, which runs at the current version.)
   it("runs a v8 item released without shaping straight from triage to build (no release wait)", async () => {
     const w = await world(CHECKS);
     const item = await ok<{ workItemId: string }>(
