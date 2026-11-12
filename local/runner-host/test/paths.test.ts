@@ -26,3 +26,20 @@ describe("runner paths", () => {
     });
   }
 });
+
+describe("live jobs file", () => {
+  it("overlapping writes all land (one temp file each)", async () => {
+    const { mkdtemp, readdir } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { readLiveJobs, writeLiveJobs } = await import("../src/live-jobs.ts");
+    const dir = await mkdtemp(join(tmpdir(), "live-jobs-"));
+    const file = join(dir, "live-jobs.json");
+    await Promise.all([
+      writeLiveJobs(file, ["a"]),
+      writeLiveJobs(file, []),
+      writeLiveJobs(file, ["b"]),
+    ]);
+    expect(await readLiveJobs(file)).not.toBeNull();
+    expect((await readdir(dir)).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+});
