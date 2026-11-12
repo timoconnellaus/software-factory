@@ -5,7 +5,8 @@
 import { nextRestart } from "./backoff.ts";
 
 export interface LiveEvent {
-  type: "hello" | "notify";
+  /** `planning.changed`: a Planning view this person has open changed (spec 26). */
+  type: "hello" | "notify" | "planning.changed";
   event?: string;
   title?: string;
   workItemId?: string | null;

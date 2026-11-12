@@ -77,6 +77,7 @@ export type AppRPC = {
       sessionChanged: Session;
       runnerChanged: RunnerState;
       inboxChanged: { count: number };
+      planningChanged: { workItemId: string };
       navigate: { path: string };
     };
   };

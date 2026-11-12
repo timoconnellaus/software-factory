@@ -280,7 +280,7 @@ function detail(id: string): OpOutput<"workItem.get"> {
             },
           ]
         : []),
-      ...(n === 12
+      ...(n === 12 && !alone()
         ? [
             {
               id: "pa_spec_12",
@@ -515,6 +515,14 @@ function question(n: number, prompt: string, extra: Partial<PlanningQ>): Plannin
 }
 
 /** A question answered with its default, written the way `planning.ask` stores one. */
+/** `?fixture=alone`: the planner finishing alone, before the spec gate (spec 26 screenshot). */
+let seenAlone = false;
+const alone = () => {
+  // Routes are in the hash; remember it once seen, as the router may rewrite the hash afterwards.
+  seenAlone ||= (globalThis.location?.hash ?? "").includes("fixture=alone");
+  return seenAlone;
+};
+
 function kept(n: number, prompt: string, answer: string, options: string[]): PlanningQ {
   return question(n, prompt, {
     options,
@@ -523,6 +531,8 @@ function kept(n: number, prompt: string, answer: string, options: string[]): Pla
     recommendation: answer,
     answer,
     acceptedDefault: true,
+    // With finish alone on, the later ones were accepted under it (spec 26 screenshot).
+    acceptedAlone: alone() && n >= 4,
   });
 }
 
@@ -564,7 +574,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
           paused: false,
           pausedBy: null,
           canInterrupt: true,
-          finishAlone: null,
+          finishAlone: alone() ? { by: ME, byName: "You", at: ago(6) } : null,
           focusedQuestionId: "pq_6",
           runner: { id: RUNNER, name: "M5", online: true, lastSeenAt: ago(0) },
           waitingForRunner: false,
