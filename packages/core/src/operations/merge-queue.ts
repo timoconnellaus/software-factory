@@ -5,7 +5,7 @@
 // approved head) and merged; nothing else lands while its CI runs. A conflict, or red CI after the
 // update, takes the item out of the queue and back to build. pr.merge and pr.autoMerge refuse a
 // queued item that isn't the head, or a head the queue didn't bring there.
-import type { MergeQueueStatus } from "@software-factory/db";
+import type { DeliveryOutcome, MergeQueueDriver, MergeQueueStatus } from "@software-factory/db";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
@@ -17,7 +17,7 @@ import {
   type WorkItemRow,
 } from "../operation.ts";
 import type { RepoRef } from "../services.ts";
-import { mergeQueueEvent } from "../workflow-events.ts";
+import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
 import {
   pendingActionId,
   projectId,
@@ -44,6 +44,7 @@ interface QueueRow {
   number: number;
   title: string;
   repository_id: string | null;
+  driver: MergeQueueDriver;
 }
 
 /**
@@ -67,6 +68,7 @@ export function queuedEntriesQuery(
         "q.approved_sha",
         "q.head_sha",
         "q.enqueued_at",
+        "q.driver",
         "w.number",
         "w.title",
         "w.repository_id",
@@ -115,13 +117,25 @@ export async function releaseMergeQueue(
   item: Pick<WorkItemRow, "id" | "project_id" | "repository_id">,
   status: Exclude<MergeQueueStatus, "queued">,
   reason: string,
+  /** How the babysitter's delivery ended (spec 53): told to the item's Workflow. */
+  outcome?: DeliveryOutcome,
 ): Promise<boolean> {
   const entry = await openEntry(ctx, item.id);
   if (!entry) return false;
+  // A delivery that ends without the babysitter saying how (the item finished or was cancelled)
+  // ended as `failed`; the Workflow is gone or going by then.
+  const told: DeliveryOutcome | null =
+    entry.driver === "babysitter" ? (outcome ?? (status === "merged" ? "merged" : "failed")) : null;
   ctx.write(
     ctx.db
       .updateTable("core_merge_queue")
-      .set({ status, end_reason: reason, ended_at: ctx.now, updated_at: ctx.now })
+      .set({
+        status,
+        end_reason: reason,
+        ended_at: ctx.now,
+        updated_at: ctx.now,
+        outcome: told,
+      })
       .where("id", "=", entry.id)
       .where("status", "=", "queued"),
   );
@@ -131,10 +145,22 @@ export async function releaseMergeQueue(
     before: { status: "queued" },
     after: { status, reason },
   });
+  if (told && entry.workflow_id) {
+    ctx.emit({
+      kind: "workflow.event",
+      payload: {
+        instanceId: entry.workflow_id,
+        type: deliveredEvent(item.id),
+        payload: { outcome: told, reason },
+      },
+    });
+  }
   const next = (await queuedEntries(ctx, item.project_id, item.repository_id)).find(
     (e) => e.work_item_id !== item.id,
   );
-  if (next?.workflow_id) {
+  // The next head may be the babysitter's to land (spec 53).
+  if (next?.driver === "babysitter") wakeDelivery(ctx, item);
+  if (next?.workflow_id && next.driver === "workflow") {
     ctx.emit({
       kind: "workflow.event",
       payload: {
@@ -145,6 +171,17 @@ export async function releaseMergeQueue(
     });
   }
   return true;
+}
+
+/** Asks the babysitter's deliverer to look at the item's repository queue once this call commits. */
+export function wakeDelivery(
+  ctx: HandlerContext,
+  item: Pick<WorkItemRow, "project_id" | "repository_id">,
+): void {
+  ctx.emit({
+    kind: "delivery.wake",
+    payload: { projectId: item.project_id, repositoryId: item.repository_id },
+  });
 }
 
 /**
@@ -183,6 +220,14 @@ const position = z.object({
   /** The work item numbers ahead of this one, head first. */
   ahead: z.array(z.number()),
   headSha: z.string().nullable(),
+  /** Who lands it: its own Workflow, or the babysitter (spec 53). Null when not queued. */
+  driver: z.enum(["workflow", "babysitter"]).nullable(),
+  /**
+   * When not queued: how its last babysitter delivery ended, and why (spec 53), so a Workflow that
+   * missed the `delivered-<item>` event reads it back. Null otherwise.
+   */
+  outcome: z.enum(["merged", "conflict", "failed"]).nullable(),
+  outcomeReason: z.string().nullable(),
 });
 
 async function positionOf(
@@ -192,7 +237,24 @@ async function positionOf(
   const entries = await queuedEntries(ctx, item.project_id, item.repository_id);
   const i = entries.findIndex((e) => e.work_item_id === item.id);
   if (i < 0) {
-    return { queued: false, entryId: null, position: null, head: false, ahead: [], headSha: null };
+    const last = await ctx.db
+      .selectFrom("core_merge_queue")
+      .select(["id", "outcome", "end_reason"])
+      .where("work_item_id", "=", item.id)
+      .orderBy("enqueued_at", "desc")
+      .orderBy("id", "desc")
+      .executeTakeFirst();
+    return {
+      queued: false,
+      entryId: last?.outcome ? last.id : null,
+      position: null,
+      head: false,
+      ahead: [],
+      headSha: null,
+      driver: null,
+      outcome: last?.outcome ?? null,
+      outcomeReason: last?.outcome ? last.end_reason : null,
+    };
   }
   const entry = entries[i] as QueueRow;
   return {
@@ -202,6 +264,9 @@ async function positionOf(
     head: i === 0,
     ahead: entries.slice(0, i).map((e) => e.number),
     headSha: entry.head_sha,
+    driver: entry.driver,
+    outcome: null,
+    outcomeReason: null,
   };
 }
 
@@ -212,10 +277,22 @@ export const mergeQueueEnter = defineOperation({
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
-  input: z.object({ workItemId, headSha: sha, pendingActionId: pendingActionId.nullable() }),
+  input: z.object({
+    workItemId,
+    headSha: sha,
+    pendingActionId: pendingActionId.nullable(),
+    /**
+     * Who lands it (spec 53): `workflow`, the item's own Workflow (v4–v7, the default); or
+     * `babysitter`, the engine's deliverer (v11), which needs the approval to land with.
+     */
+    driver: z.enum(["workflow", "babysitter"]).default("workflow"),
+  }),
   output: position,
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
+    if (input.driver === "babysitter" && !input.pendingActionId) {
+      throw new OperationError("invalid_input", "the babysitter lands only an approved merge");
+    }
     if (!w.pr_number) throw new OperationError("conflict", "no pull request");
     if (w.head_sha !== input.headSha) {
       throw new OperationError("conflict", "the branch moved since the review packet was made");
@@ -234,8 +311,10 @@ export const mergeQueueEnter = defineOperation({
           head_sha: input.headSha,
           enqueued_at: ctx.now,
           updated_at: ctx.now,
+          driver: input.driver,
         }),
       );
+      if (input.driver === "babysitter") wakeDelivery(ctx, w);
       ctx.change({
         entity: "merge_queue",
         id,
@@ -250,6 +329,9 @@ export const mergeQueueEnter = defineOperation({
         head: entries.length === 0,
         ahead: entries.map((e) => e.number),
         headSha: input.headSha,
+        driver: input.driver,
+        outcome: null,
+        outcomeReason: null,
       };
     }
     return positionOf(ctx, w);
@@ -353,6 +435,13 @@ export const mergeQueueUpdate = defineOperation({
       expectedHeadSha: at,
     });
     if (asked.status === "requested") {
+      // When it was asked, so the babysitter knows how long GitHub has been at it (spec 53).
+      ctx.write(
+        ctx.db
+          .updateTable("core_merge_queue")
+          .set({ update_asked_at: ctx.now })
+          .where("id", "=", entry.id),
+      );
       // GitHub makes the merge commit asynchronously; it is often there already.
       const after = (await github.pullRequestMergeability(repo, w.pr_number)).headSha;
       if (after && after !== at) {
@@ -449,10 +538,14 @@ export const mergeQueueLeave = defineOperation({
     workItemId,
     outcome: z.enum(["merged", "left"]),
     reason: z.string().max(2_000),
+    /** The babysitter's delivery outcome (spec 53), sent to the item's Workflow. */
+    delivery: z.enum(["merged", "conflict", "failed"]).optional(),
   }),
   output: z.object({ left: z.boolean() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    return { left: await releaseMergeQueue(ctx, w, input.outcome, input.reason) };
+    return {
+      left: await releaseMergeQueue(ctx, w, input.outcome, input.reason, input.delivery),
+    };
   },
 });

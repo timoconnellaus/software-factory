@@ -44,6 +44,11 @@ export type OutboxMessage =
    * pushes to open Planning tabs and wakes the agent's wait.
    */
   | { kind: "planning.changed"; payload: { workItemId: string } }
+  /**
+   * Run the babysitter's deliverer for one repository queue after this call commits (spec 53, ADR
+   * 0580). `repositoryId` null: the project's items that record no repository.
+   */
+  | { kind: "delivery.wake"; payload: { projectId: string; repositoryId: string | null } }
   /** Run `queue.pull` for a project after this call commits (ADR 0491). */
   | { kind: "queue.pull"; payload: { projectId: string } }
   /**

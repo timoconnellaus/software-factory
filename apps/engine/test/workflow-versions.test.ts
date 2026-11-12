@@ -75,12 +75,16 @@ const V7_STEPS = [
   "`release: wait #${k}`",
   "`release: check #${k}`",
 ];
+// The steps v11 adds (spec 53, ADR 0580): the babysitter delivers the approved merge.
+const V11_STEPS = ["{p}: enqueue", "{p}: wait #{i}", "{p}: read #{i}", "merge #{b}: deliver"].map(
+  (name) => `${name.replaceAll("{", "$" + "{")}`,
+);
 // The tags v4 builds `{p}` from: frozen like the step names.
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 7 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(7);
+  it("starts new instances on version 11 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(11);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -93,7 +97,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(7);
+    expect(row.workflow_version).toBe(11);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -134,6 +138,9 @@ describe("Workflow versions", () => {
     for (const name of V5_STEPS) expect(source, name).toContain(name);
     for (const name of V6_STEPS) expect(source, name).toContain(name);
     for (const name of V7_STEPS) expect(source, name).toContain(name);
+    for (const name of V11_STEPS) expect(source, name).toContain(name);
+    // v7 instances still dispatch to the same flow, with v11's babysitter switched off.
+    expect(source).toContain("return flow.runV1(7);");
     // v6 instances still dispatch to the same flow, with v7's release wait switched off.
     expect(source).toContain("return flow.runV1(6);");
     // v5 instances still dispatch to the same flow, with v6's workflow slots switched off.

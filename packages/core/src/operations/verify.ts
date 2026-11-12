@@ -476,6 +476,23 @@ export const verifyRefresh = defineOperation({
         },
       });
     }
+    // ...and the babysitter's deliverer, when the head it brought up to date has settled (spec 53).
+    if (ci.state !== "pending" && item.stage === "merge") {
+      const delivering = await ctx.db
+        .selectFrom("core_merge_queue")
+        .select("id")
+        .where("work_item_id", "=", item.id)
+        .where("status", "=", "queued")
+        .where("driver", "=", "babysitter")
+        .where("head_sha", "=", input.headSha)
+        .executeTakeFirst();
+      if (delivering) {
+        ctx.emit({
+          kind: "delivery.wake",
+          payload: { projectId: item.project_id, repositoryId: item.repository_id },
+        });
+      }
+    }
 
     let output: Parameters<typeof postVerify>[1]["output"];
     if (packet) {
