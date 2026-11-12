@@ -1,0 +1,82 @@
+# Spec 26: The planning loop, to kim's standard
+
+Read first: the [audit against kim](../reviews/2026-11-12-planning-against-kim.md), [spec 20](20-planning-loop.md),
+ADRs [0350](../adr/0350-how-the-planning-loop-is-wired.md) and [0470](../adr/0470-planning-steering.md),
+and the planning screens in `docs/design/factory-ui/` (`ItemPlan.html`, `PlanFocus.html`, `PlanFocusMockup.html`).
+
+## Goal
+Fix what spec 20 built wrong or weaker than kim, and give people the steering the approved design
+shows. Afterwards a person's word always reaches the planner before the spec reaches the gate, and
+a person can redirect, interrupt, stop, pause or hand off the planner from the Planning tab.
+
+Planning logic keys on the planning session, never on the work item's lifecycle state (spec 50 may
+move planning before release).
+
+## Scope
+Three PRs.
+
+**A. The loop** (core, runner-contract, harness-claude):
+- PostToolUse looks for news at most every 2 s, not 15 s. `planning.news` writes nothing when
+  nothing changed.
+- `planning.ready` is refused while a person's answer or message is undelivered.
+- A person's chat message, answer or revised answer while the spec waits at the gate withdraws the
+  gate and starts the next round. The Workflow's planning stage handles `withdrawn`.
+- Oversize news keeps answers and messages, drops presence first, and names the right cursor for
+  the rest.
+- Chat news carries `about: { questionId, number, prompt }`. Answer news carries `skipped`.
+- People may skip a planning question (`question.answer { skipped: true }`). A skipped question
+  counts as answered, and the agent decides it.
+- Kim's size limits on planning questions: prompt 10,000 characters, recommendation 20,000, 100
+  options.
+- Read receipts: an answer and a person's message record when they reached the agent, for exactly
+  the events delivered.
+- After the first announcement, questions the agent asks and its chat replies notify the owner, once
+  per call, when nobody has the Planning view open.
+- `run.steer` on a planning run also stores the text in the chat (delivered).
+
+**B. Steering** (core, runner-contract, the runner adapter's `interrupt` capability, the host's
+steer loop):
+- `chat.send { interrupt: true }`, `planning.stop`, `planning.pause`, `planning.resume`,
+  `planning.finishAlone { on }`, as ADR 0470 describes.
+
+**C. The Planning tab** (inside the planning components of `apps/desktop` and `apps/app` only):
+- Skip, read receipts, the question number on chat threads.
+- Chat: Enter sends after the current step, ⌘-Enter interrupts.
+- Stop on the activity line, Pause and Resume, "Let the planner finish alone".
+- Desktop: updates when the engine says something changed, not on a 3 s poll.
+- The plan is a plain document in its pane (only the Canvas tab is a canvas).
+
+## Out of scope
+Answering without Touch ID on desktop (an owner decision, pending). People editing the plan and
+comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22, 24).
+
+## Acceptance criteria
+1. A person's chat message sent while the agent works reaches it at its next tool call 2 s or more
+   after the last look. A test drives the hook with a fake relay.
+2. `planning.ready` with a person's answer or message undelivered is refused (`conflict`), and
+   succeeds once the agent has read the news.
+3. A person's chat message or answer while the spec waits at the gate withdraws the pending
+   `spec.accept`, moves the round on, and lets the agent revise and ask for the gate again in the
+   same session. An engine test drives the Workflow through it.
+4. News over 9,500 characters keeps every answer and message. When it still has to be cut, the
+   pointer names a cursor that returns every event that was cut.
+5. A skipped question reaches the agent as `skipped: true`, counts as answered for
+   `planning.ready`, and is refused for questions outside a planning session.
+6. Chat news about a question carries its number and prompt.
+7. An answer and a message show when they reached the agent. Events past the page a delivery read
+   stay undelivered.
+8. Questions asked and replies sent after the announcement notify the owner when nobody is present,
+   and not when someone is.
+9. A steer on a planning run appears in the planning chat and is not delivered a second time as news.
+10. An interrupt stops the agent's current step and the agent then reads the message as news. A
+    runner without `interrupt` gets the message after the current step, and the app says so.
+11. A paused session isn't woken by news and resumes with everything since its cursor. Stop ends
+    the agent's current step without ending the session.
+12. With finish alone on, every bulk-acceptable question, asked before or after, is accepted with its
+    default and logged as accepted by the person who turned it on. Security, privacy, irreversible
+    and no-default questions still wait for a person. Approval is still a person's.
+13. The Planning tab shows all of the above (before and after screenshots in each UI PR), and the
+    desktop's view updates within 2 s of a change without polling.
+
+## As built
+(Filled in by each PR.)
