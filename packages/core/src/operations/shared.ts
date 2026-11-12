@@ -37,6 +37,17 @@ export const STAGE_PHASE: Record<(typeof STAGES)[number], "shaping" | "delivery"
   done: "delivery",
 };
 
+/** Each stage's name as people read it (the built-in workflow's; ADR 0493's stages). */
+export const STAGE_LABEL: Record<(typeof STAGES)[number], string> = {
+  intake: "Intake",
+  triage: "Triage",
+  spec: "Spec",
+  build: "Build",
+  verify: "Verify",
+  merge: "Merge",
+  done: "Done",
+};
+
 export function requireWorkItem(ctx: HandlerContext): WorkItemRow {
   const item = ctx.scope.workItem;
   if (!item) throw new OperationError("not_found", "no such work item");
