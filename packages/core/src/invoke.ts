@@ -26,7 +26,7 @@ import type {
   PendingActionRow,
   Scope,
 } from "./operation.ts";
-import { type Decision, decide, parseFloor, type RiskClass, strictest } from "./policy/gate.ts";
+import { type Decision, operationGate, parseFloor, type RiskClass } from "./policy/gate.ts";
 import { getOperation } from "./registry.ts";
 import {
   activeKillSwitch,
@@ -184,7 +184,10 @@ export async function runOperation<O = unknown>(
   const input = parsed.data as Record<string, unknown>;
   let risk: RiskClass = op.risk;
   const floor = parseFloor(deps.floor);
-  const redactedInput = op.redact?.input ? op.redact.input(input) : input;
+  const redacted = op.redact?.input ? op.redact.input(input) : input;
+  // A runner's input is machine chatter (manifests, event batches already kept in core_run_events):
+  // the audit keeps its digest and the ids a reader follows, not the body (ADR 0590).
+  const redactedInput = actor.type === "runner" ? await auditDigest(redacted) : redacted;
 
   let scope: Scope = {
     orgId: null,
@@ -306,7 +309,10 @@ export async function runOperation<O = unknown>(
   //    project (runner registration, the claim loop) are judged under Cautious + the floor, and so
   //    are calls that bring the policy in (`bootstrapsPolicy`).
   const scoped = scope.project !== null && !op.bootstrapsPolicy;
-  const current = decide({
+  // A work item stays at least as strict as the config version it started under (ADR 0370 §5), and
+  // an `alwaysReview` operation always asks a person (ADR 0371): `operationGate` does both.
+  const gate = operationGate({
+    op,
     actor: actor.type,
     risk,
     policy: scoped
@@ -316,32 +322,14 @@ export async function runOperation<O = unknown>(
       : { autonomyPolicy: "cautious", overrides: {} },
     ...(scope.policyError ? { policyError: scope.policyError } : {}),
     floor,
-  });
-  // A work item stays at least as strict as the config version it started under (ADR 0370 §5):
-  // tightening reaches running work, loosening never does.
-  const pinned =
-    scoped && scope.policy && scope.pinnedPolicy
-      ? decide({
-          actor: actor.type,
-          risk,
-          policy: {
+    pinnedPolicy:
+      scoped && scope.policy && scope.pinnedPolicy
+        ? {
             autonomyPolicy: scope.pinnedPolicy.autonomyPolicy,
             overrides: scope.pinnedPolicy.overrides,
-          },
-          floor,
-        })
-      : null;
-  let gate =
-    pinned && strictest(pinned.decision, current.decision) !== current.decision
-      ? {
-          decision: pinned.decision,
-          reason: `${pinned.reason} (the version this item started under)`,
-        }
-      : current;
-  // A workflow's gate step is enforced in code, never loosened by policy (ADR 0371).
-  if (op.alwaysReview && gate.decision === "allow") {
-    gate = { decision: "review", reason: `${op.name} always asks a person` };
-  }
+          }
+        : null,
+  });
 
   // An approved re-run must match its pending action. `deny` still refuses it.
   let approval: PendingActionRow | undefined;
@@ -446,6 +434,7 @@ export async function runOperation<O = unknown>(
   const statements: D1PreparedStatement[] = [];
   const messages: OutboxMessage[] = [];
   const changes: Change[] = [];
+  let changed = false;
   let subject: Partial<Scope> = { ...scope };
   const presence = origin.presence ? await presenceAllows(op, origin, rawInput) : false;
   const ctx: HandlerContext = {
@@ -488,6 +477,9 @@ export async function runOperation<O = unknown>(
     },
     emit: (message) => messages.push(message),
     change: (c) => changes.push(c),
+    changed: () => {
+      changed = true;
+    },
     subject: (ref) => {
       subject = {
         ...subject,
@@ -517,7 +509,21 @@ export async function runOperation<O = unknown>(
   }
 
   // 11. One batch: writes + guards + fence + approval consumed + audit + outbox. All or nothing.
-  const auditId = newId("audit");
+  //     A changes-only operation that changed nothing writes no audit row (ADR 0590).
+  const audited =
+    !op.audit?.changesOnly ||
+    idempotencyKey !== undefined ||
+    approval !== undefined ||
+    changed ||
+    changes.length > 0 ||
+    messages.length > 0 ||
+    op.audit.changed?.(output) === true;
+  const auditId = audited ? newId("audit") : null;
+  // Nothing to write and nothing to audit: no batch at all. Its fence and device guards only
+  // protect writes, and each guard costs an insert and a delete (rows written).
+  if (!auditId && statements.length === 0 && messages.length === 0) {
+    return { status: "ok", output: output as O, auditId: null };
+  }
   const outboxIds = messages.map(() => newId("outbox"));
   // A desktop's or phone's call holds only while the device does: removing it while a decision is
   // on its way refuses the decision, in the same batch that would apply it (review of spec 60 PR
@@ -556,17 +562,23 @@ export async function runOperation<O = unknown>(
           guardChanged(d1, "approval used once"),
         ]
       : []),
-    audit(
-      {
-        decision: gate.decision,
-        outcome: "ok",
-        reason: approval ? `approved (${approval.id}) by ${approval.decided_by}` : gate.reason,
-        result: op.redact?.output ? op.redact.output(output) : output,
-        diff: changes,
-        auditId,
-      },
-      subject,
-    ),
+    ...(auditId
+      ? [
+          audit(
+            {
+              decision: gate.decision,
+              outcome: "ok",
+              reason: approval
+                ? `approved (${approval.id}) by ${approval.decided_by}`
+                : gate.reason,
+              result: op.redact?.output ? op.redact.output(output) : output,
+              diff: changes,
+              auditId,
+            },
+            subject,
+          ),
+        ]
+      : []),
     ...messages.map((message, i) => outboxStatement(d1, now, outboxIds[i] as string, message)),
     clearGuards(d1),
   ];
@@ -838,4 +850,23 @@ function refusalCode(outcome: Outcome) {
     default:
       return "denied" as const;
   }
+}
+
+/** The fields of a runner's input the audit keeps beside the digest: what a reader follows. */
+const DIGEST_KEEPS = ["jobId", "fencingToken", "claimId", "workItemId"] as const;
+
+/** What the audit keeps of a runner's input (ADR 0590): its digest and size, and the ids a reader follows. */
+export async function auditDigest(input: unknown): Promise<Record<string, unknown>> {
+  const kept: Record<string, unknown> = {};
+  if (input && typeof input === "object") {
+    for (const k of DIGEST_KEEPS) {
+      const v = (input as Record<string, unknown>)[k];
+      if (v !== undefined) kept[k] = v;
+    }
+  }
+  return {
+    sha256: await inputDigest(input),
+    bytes: new TextEncoder().encode(canonicalJson(input ?? {})).length,
+    ...kept,
+  };
 }

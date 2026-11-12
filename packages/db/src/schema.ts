@@ -557,6 +557,8 @@ export interface CoreRunnersTable {
   paused: JsonText | null;
   /** 0290 (ADR 0520): the runner's RUNNER_COMPAT as it last reported; null (never) counts as 1. */
   compat: number | null;
+  /** The signed time (unix seconds) of the last accepted heartbeat: older ones are replays (0360). */
+  last_signed_at: number | null;
 }
 
 export interface CoreRunnerSharesTable {
@@ -634,6 +636,8 @@ export interface CoreRunEventsTable {
   at: Iso;
   type: string;
   payload: JsonText;
+  /** Set on a row that holds a batch of log lines, `seq` to `last_seq` (migration 0361). */
+  last_seq: number | null;
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */
