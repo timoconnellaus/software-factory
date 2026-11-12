@@ -1,6 +1,8 @@
 // Spec 51 PR B (ADR 0501): checks the factory runs itself, and criteria proven only by them.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import ownPolicy from "../../../.factory/policy.json";
+import turbo from "../../../turbo.json";
 import {
   assemblePacket,
   declaredChecks,
@@ -458,5 +460,18 @@ describe("checks.forHead before v8 (ADR 0501)", () => {
       FOREMAN,
     );
     expect(out).toMatchObject({ declared: [], passed: true });
+  });
+});
+
+describe("this repository's own checks", () => {
+  it("declares its test check within the check container's 4 GB: one package at a time, two workers", () => {
+    const policy = parsed(ownPolicy);
+    expect(declaredChecks(policy, null).map((c) => c.name)).toEqual(["install", "lint", "test"]);
+    // Inside the container vitest sees every host core and would start a worker per core.
+    expect(policy.checks.find((c) => c.name === "test")?.run).toBe(
+      "VITEST_MAX_WORKERS=2 pnpm turbo run test --concurrency=1",
+    );
+    // Turbo's strict env mode drops what a task doesn't declare: the cap must reach vitest.
+    expect(turbo.tasks.test.passThroughEnv).toContain("VITEST_MAX_WORKERS");
   });
 });
