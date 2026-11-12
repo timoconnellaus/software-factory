@@ -9,6 +9,8 @@ import { PID_FILE, STATUS_FILE, type StatusLine } from "@software-factory/harnes
 import { type Exec, type ExecResult, nodeExec } from "./exec.ts";
 
 export * from "./container/testing.ts";
+export * from "./sprites/fake.ts";
+export * from "./sprites/ws-server.ts";
 
 /**
  * Whether tests that start tmux control-mode clients should skip (spec 43): inside a factory job
@@ -34,6 +36,8 @@ export interface FakeSession {
   /** Text submitted with Enter, in order (the prompt pointer, then steering). */
   submitted: string[];
   trustPending: boolean;
+  /** What the pane runs, when the test spawned it (`spawn`): keys are written to it. */
+  proc?: { write(data: string): void };
 }
 
 export interface ScriptedTmuxOptions {
@@ -48,9 +52,22 @@ export interface ScriptedTmuxOptions {
   /** Runs everything that isn't tmux (default: the real thing). */
   base?: Exec;
   pid?: number;
+  /**
+   * Runs the pane's script instead of standing in for Claude (a sprite job's bridge, ADR 0480):
+   * typed text and keys go to what it returns, and the pane is dead once it sets `session.dead`.
+   */
+  spawn?: (session: FakeSession, script: string) => { write(data: string): void };
 }
 
 const ok = (stdout = ""): ExecResult => ({ stdout, stderr: "", code: 0 });
+/** What a named key sends to a spawned pane. */
+const KEYS: Record<string, string> = {
+  Enter: "\r",
+  Down: "\x1b[B",
+  Up: "\x1b[A",
+  Escape: "\x1b",
+  "C-c": "\x03",
+};
 const err = (stderr: string): ExecResult => ({ stdout: "", stderr, code: 1 });
 
 export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
@@ -94,6 +111,10 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
           trustPending: !!options.trustDialog,
         };
         sessions.set(name, s);
+        if (options.spawn) {
+          s.proc = options.spawn(s, script);
+          return ok();
+        }
         writeFileSync(join(runDir, PID_FILE), `${options.pid ?? 4242}\n`);
         if (s.trustPending) {
           s.screen = "Quick safety check\n❯ No, exit\n  Yes, I trust this folder";
@@ -120,6 +141,16 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
         const s = sessions.get(target(rest));
         if (!s) return err(`can't find pane: ${target(rest)}`);
         const li = rest.indexOf("-l");
+        if (s.proc) {
+          if (li >= 0) {
+            s.proc.write(rest[li + 1] ?? "");
+            return ok();
+          }
+          for (const key of rest.slice(rest.indexOf("-t") + 2)) {
+            s.proc.write(KEYS[key] ?? "");
+          }
+          return ok();
+        }
         if (li >= 0) {
           s.typed += rest[li + 1] ?? "";
           return ok();

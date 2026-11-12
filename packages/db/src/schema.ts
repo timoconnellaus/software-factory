@@ -231,6 +231,11 @@ export interface CoreBatchGuardTable {
 
 export type Stage = "intake" | "triage" | "spec" | "build" | "verify" | "merge" | "done";
 export type WorkItemStatus =
+  // 0261 (ADR 0491): before the pipeline; `shaping` is spec 50 part C's.
+  | "backlog"
+  | "shaping"
+  | "ready"
+  | "queued"
   | "running"
   | "waiting"
   | "paused"
@@ -281,6 +286,24 @@ export interface CoreWorkItemsTable {
   closed_at: Iso | null;
   /** 0260 (ADR 0490): the repository it uses; null when none is chosen yet. */
   repository_id: string | null;
+  /** 0261 (ADR 0491): 0 urgent, 1 high, 2 normal, 3 low. */
+  priority: Generated<number>;
+  /** 0261: the order within a priority, lower first. */
+  rank: Generated<number>;
+  /** 0261: JSON string[] written while shaping; null when none. */
+  acceptance_criteria: JsonText | null;
+  released_at: Iso | null;
+  released_by: string | null;
+  /** 0261: when the pipeline started (the pull). */
+  pulled_at: Iso | null;
+}
+
+/** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
+export interface CoreWorkItemLinksTable {
+  work_item_id: string;
+  waits_for_id: string;
+  created_at: Iso;
+  created_by: string;
 }
 
 export interface CoreIntakeKeysTable {
@@ -934,6 +957,7 @@ export interface CoreDatabase {
   core_kill_switches: CoreKillSwitchesTable;
   core_batch_guard: CoreBatchGuardTable;
   core_work_items: CoreWorkItemsTable;
+  core_work_item_links: CoreWorkItemLinksTable;
   core_intake_keys: CoreIntakeKeysTable;
   core_intake_events: CoreIntakeEventsTable;
   core_stages: CoreStagesTable;

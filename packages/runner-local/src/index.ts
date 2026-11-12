@@ -8,6 +8,7 @@ export * from "./container/index.ts";
 export * from "./exec.ts";
 export * from "./procs.ts";
 export * from "./reap.ts";
+export * from "./sprites/index.ts";
 export * from "./stream.ts";
 export * from "./terminal.ts";
 export * from "./tmux.ts";
