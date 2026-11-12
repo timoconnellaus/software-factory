@@ -115,21 +115,31 @@ export interface NewWorkItem {
   pr?: { branch: string; number: number; url: string; headSha: string };
   /** Number to use; the caller read `next_number` and the batch guards it. */
   number: number;
-  /** A running trial it joins (ADR 0373): it then runs on the trial's candidate version. */
-  trial?: { id: string; candidateSha: string } | null;
+  /**
+   * Where it starts (ADR 0441): `backlog` or `ready` (nothing runs), or `queued` (released; the
+   * caller then pulls it, or starts it at once). Its config version and workflow are pinned when
+   * its pipeline starts, not here.
+   */
+  state: "backlog" | "ready" | "queued";
+  /** 0 urgent … 3 low (default 2). */
+  priority?: number;
+  /** Criteria written while shaping. */
+  acceptanceCriteria?: string[] | null;
 }
 
 /**
- * Queues the writes that create a work item and start its Workflow: the item, its lease row, the
- * intake stage, the project's number bump (guarded) and `workflow.create`.
+ * Queues the writes that create a work item: the item (in `state`), its lease row and the
+ * project's number bump (guarded). It doesn't start the pipeline: `startPipeline` / the pull do
+ * (ADR 0441).
  */
 export function createWorkItem(
   ctx: HandlerContext,
   item: NewWorkItem,
-): { id: string; branch: string } {
+): { id: string; branch: string; number: number; rank: number; created_at: string } {
   const id = newId("workItem");
   const slug = slugify(item.title);
   const branch = item.pr?.branch ?? itemBranch(item.number, slug);
+  const rank = Date.parse(ctx.now) / 1000;
   ctx.write(
     ctx.db
       .updateTable("core_projects")
@@ -152,39 +162,38 @@ export function createWorkItem(
       requester_user_id: item.requesterUserId,
       source: item.source,
       stage: "intake",
-      status: "running",
+      status: item.state,
       branch,
       head_sha: item.pr?.headSha ?? null,
       pr_number: item.pr?.number ?? null,
       pr_url: item.pr?.url ?? null,
       workflow_id: id,
-      policy_sha: item.trial?.candidateSha ?? item.project.policy_sha,
-      trial_id: item.trial?.id ?? null,
+      policy_sha: null,
+      trial_id: null,
       parent_work_item_id: item.parentWorkItemId ?? null,
+      priority: item.priority ?? 2,
+      rank,
+      acceptance_criteria: item.acceptanceCriteria ? JSON.stringify(item.acceptanceCriteria) : null,
+      released_at: item.state === "queued" ? ctx.now : null,
+      released_by: item.state === "queued" ? ctx.actor.id : null,
       created_at: ctx.now,
       updated_at: ctx.now,
     }),
   );
   ctx.write(ctx.db.insertInto("core_leases").values({ work_item_id: id, fencing_token: 0 }));
-  ctx.write(
-    ctx.db.insertInto("core_stages").values({
-      id: newId("stage"),
-      work_item_id: id,
-      stage: "intake",
-      attempt: 1,
-      status: "done",
-      started_at: ctx.now,
-      ended_at: ctx.now,
-    }),
-  );
-  ctx.emit({ kind: "workflow.create", payload: { instanceId: id, params: { workItemId: id } } });
   ctx.change({
     entity: "work_item",
     id,
-    after: { title: item.title, source: item.source, requester: item.requesterUserId, branch },
+    after: {
+      title: item.title,
+      source: item.source,
+      requester: item.requesterUserId,
+      branch,
+      status: item.state,
+    },
   });
   ctx.subject({ workItemId: id, projectId: item.project.id, orgId: item.project.org_id });
-  return { id, branch };
+  return { id, branch, number: item.number, rank, created_at: ctx.now };
 }
 
 export function setItemStatus(

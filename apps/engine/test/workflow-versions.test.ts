@@ -76,7 +76,7 @@ describe("Workflow versions", () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Versioned" },
+      { state: "queued", projectId: w.projectId, title: "Versioned" },
       w.human,
     );
     const row = await waitFor("the version recorded", () =>
@@ -94,7 +94,11 @@ describe("Workflow versions", () => {
       await m.mockStepResult({ name: "meta: version" }, 99);
     });
     const w = await world();
-    await ok("workItem.create", { projectId: w.projectId, title: "From the future" }, w.human);
+    await ok(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "From the future" },
+      w.human,
+    );
     const [instance] = await waitFor("the instance", async () => {
       const list = await introspector.get();
       return list.length > 0 ? list : null;

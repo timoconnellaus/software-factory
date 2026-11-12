@@ -83,6 +83,11 @@ describe("migration 0210: a project is not a repository (ADR 0440)", () => {
           "INSERT INTO core_verify_checks (project_id, head_sha, work_item_id, status, title, updated_at) VALUES (?, 'abc', 'wi_1', 'queued', 't', ?)",
         )
         .bind(P1, NOW),
+      db
+        .prepare(
+          "INSERT INTO core_attachments (id, work_item_id, org_id, project_id, filename, content_type, size_bytes, sha256, blob_key, uploader_type, uploader_id, created_at) VALUES ('att_1', 'wi_1', 'o1', ?, 'a.png', 'image/png', 1, 'x', 'k', 'human', 'u1', ?)",
+        )
+        .bind(P1, NOW),
     ]);
     await applyD1Migrations(db, env.TEST_MIGRATIONS);
   });
@@ -140,6 +145,7 @@ describe("migration 0210: a project is not a repository (ADR 0440)", () => {
     expect(await count("SELECT count(*) AS n FROM core_config_trials")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM core_merge_queue")).toBe(1);
     expect(await count("SELECT count(*) AS n FROM core_verify_checks")).toBe(1);
+    expect(await count("SELECT count(*) AS n FROM core_attachments")).toBe(1);
     expect(
       await count("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'core_0210_%'"),
     ).toBe(0);
@@ -170,5 +176,41 @@ describe("migration 0210: a project is not a repository (ADR 0440)", () => {
         .bind(NOW)
         .run(),
     ).rejects.toThrow(/FOREIGN KEY/);
+  });
+});
+
+describe("migration 0211: backlog, ready, queued (ADR 0441)", () => {
+  it("keeps every item, its merge-queue entry and attachments, and adds the new states", async () => {
+    // UPGRADE_DB was migrated to the latest in the 0210 block above, with rows from before 0210.
+    const item = await db
+      .prepare(
+        "SELECT status, priority, rank, repository_id, pulled_at FROM core_work_items WHERE id = 'wi_1'",
+      )
+      .first();
+    expect(item).toEqual({
+      status: "running",
+      priority: 2,
+      rank: 0,
+      repository_id: `repo_${hex("a")}`,
+      pulled_at: null,
+    });
+    expect(
+      (await db.prepare("SELECT count(*) AS n FROM core_merge_queue").first<{ n: number }>())?.n,
+    ).toBe(1);
+    expect(
+      (await db.prepare("SELECT count(*) AS n FROM core_attachments").first<{ n: number }>())?.n,
+    ).toBe(1);
+    await db.prepare("UPDATE core_work_items SET status = 'backlog' WHERE id = 'wi_1'").run();
+    await expect(
+      db.prepare("UPDATE core_work_items SET status = 'someday' WHERE id = 'wi_1'").run(),
+    ).rejects.toThrow(/CHECK/);
+    await expect(
+      db
+        .prepare(
+          "INSERT INTO core_work_item_links (work_item_id, waits_for_id, created_at, created_by) VALUES ('wi_1', 'wi_1', ?, 'u1')",
+        )
+        .bind(NOW)
+        .run(),
+    ).rejects.toThrow(/CHECK/);
   });
 });

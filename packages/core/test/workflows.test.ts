@@ -1,7 +1,7 @@
 // Spec 09 M2: workflows and agents in the config (ADR 0371, 0372).
 import { describe, expect, it } from "vitest";
 import { parseFloor, parseProjectPolicy, policyImpact } from "../src/index.ts";
-import { call, FOREMAN, newItem, ok, POLICY, refusal, world } from "./helpers.ts";
+import { call, FOREMAN, first, newItem, ok, POLICY, refusal, world } from "./helpers.ts";
 
 const agents = [
   { name: "Security", role: "review" },
@@ -85,32 +85,22 @@ describe("workflows in the config", () => {
   });
 });
 
-describe("workItem.setWorkflow (criterion 5)", () => {
-  it("changes the workflow before build, and refuses after", async () => {
-    const w = await world(doc());
+describe("an item follows its project's workflow (ADR 0442)", () => {
+  it("pins the project's workflow when the item is pulled; setWorkflow is refused", async () => {
+    const w = await world(doc({ workflow: "Ship a feature" }));
     const item = await newItem(w);
-    const set = await ok<{ workflow: string }>(
-      "workItem.setWorkflow",
-      { workItemId: item.workItemId, workflow: "ship a feature" },
-      w.human,
+    const row = await first<{ workflow: string | null; workflow_reason: string | null }>(
+      "SELECT workflow, workflow_reason FROM core_work_items WHERE id = ?",
+      item.workItemId,
     );
-    expect(set.workflow).toBe("Ship a feature");
-    const missing = await refusal(
-      call("workItem.setWorkflow", { workItemId: item.workItemId, workflow: "Nope" }, w.human),
-    );
-    expect(missing.code).toBe("not_found");
-    const agent = await refusal(
-      call("workItem.setWorkflow", { workItemId: item.workItemId, workflow: null }, FOREMAN),
-    );
-    expect(agent.code).toBe("forbidden");
-    await ok("workItem.enterStage", { workItemId: item.workItemId, stage: "build" }, FOREMAN);
-    const late = await refusal(
+    expect(row).toEqual({ workflow: "Ship a feature", workflow_reason: "the project's workflow" });
+    const refused = await refusal(
       call("workItem.setWorkflow", { workItemId: item.workItemId, workflow: null }, w.human),
     );
-    expect(late.code).toBe("conflict");
+    expect(refused.code).toBe("conflict");
   });
 
-  it("records triage's pick, falling back to the skeleton for an unknown name", async () => {
+  it("ignores triage's pick: the item keeps its project's workflow", async () => {
     const w = await world(doc());
     const item = await newItem(w);
     const r = await ok<{ workflow: string | null }>(
@@ -121,14 +111,29 @@ describe("workItem.setWorkflow (criterion 5)", () => {
       },
       FOREMAN,
     );
-    expect(r.workflow).toBe("Ship a feature");
-    const other = await newItem(w, "Other");
-    const r2 = await ok<{ workflow: string | null }>(
-      "workItem.triage",
-      { workItemId: other.workItemId, result: { size: "small", reason: "tiny", workflow: "Nope" } },
-      FOREMAN,
+    expect(r.workflow).toBeNull();
+  });
+
+  it("refuses a config naming a workflow it doesn't define", () => {
+    expect(errorOf(doc({ workflow: "Nope" }))).toMatch(/no workflow called "Nope"/);
+  });
+
+  it("calls switching the project's workflow to one without its gate steps loosening", () => {
+    const floor = parseFloor(undefined);
+    const parse = (v: unknown) => {
+      const p = parseProjectPolicy(JSON.stringify(v));
+      if (!p.ok) throw new Error(p.error);
+      return p.policy;
+    };
+    const quick = { name: "Quick fix", slots: {}, core: {} };
+    const before = parse(doc({ workflows: [feature, quick], workflow: "Ship a feature" }));
+    const after = parse(doc({ workflows: [feature, quick], workflow: "Quick fix" }));
+    const loosened = policyImpact(before, after, floor).changes.filter(
+      (c) => c.path === "workflow",
     );
-    expect(r2.workflow).toBeNull();
+    expect(loosened.map((c) => c.class)).toEqual(["loosens"]);
+    const back = policyImpact(after, before, floor).changes.filter((c) => c.path === "workflow");
+    expect(back.map((c) => c.class)).toEqual(["tightens"]);
   });
 });
 

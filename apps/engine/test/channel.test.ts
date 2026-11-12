@@ -142,7 +142,7 @@ describe("the signed runner channel", () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Channel item" },
+      { state: "queued", projectId: w.projectId, title: "Channel item" },
       w.human,
     );
     const c = await client(w.runner.runnerId);
@@ -218,12 +218,12 @@ describe("attachments over the channel (ADR 0310)", () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Attachment item" },
+      { state: "queued", projectId: w.projectId, title: "Attachment item" },
       w.human,
     );
     const other = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Someone else's" },
+      { state: "queued", projectId: w.projectId, title: "Someone else's" },
       w.human,
     );
     const mine = await ok<{ attachment: { id: string } }>(
@@ -324,7 +324,7 @@ describe("planning over the channel (spec 20, ADR 0350)", () => {
   async function planningJob(w: Awaited<ReturnType<typeof world>>) {
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Plan me" },
+      { state: "queued", projectId: w.projectId, title: "Plan me" },
       w.human,
     );
     await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
@@ -424,7 +424,7 @@ describe("steering over the channel (spec 31, ADR 0400)", () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Steer me" },
+      { state: "queued", projectId: w.projectId, title: "Steer me" },
       w.human,
     );
     const c = await client(w.runner.runnerId);

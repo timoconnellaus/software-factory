@@ -73,11 +73,16 @@ describe("projects and repositories (ADR 0440)", () => {
     expect(p.policy.state).toBe("valid");
     expect(p.configVersion).toBe(1);
     // Work on it that needs code is refused with the reason (part B lets it wait in the backlog).
-    const e = await refusal(
-      call("workItem.create", { projectId: p.id, title: "Launch post" }, w.human),
+    // It can be captured, but not released while its workflow needs a repository (ADR 0441).
+    const captured = await ok<{ workItemId: string; status: string }>(
+      "workItem.create",
+      { projectId: p.id, title: "Launch post" },
+      w.human,
     );
-    expect(e.code).toBe("not_found");
-    expect(e.message).toMatch(/has no repository/);
+    expect(captured.status).toBe("backlog");
+    const e = await refusal(call("workItem.release", { workItemId: captured.workItemId }, w.human));
+    expect(e.code).toBe("conflict");
+    expect(e.message).toMatch(/its project has none/);
     // Nothing to import config from.
     const imported = await refusal(call("policy.resync", { projectId: p.id }, w.human));
     expect(imported.message).toMatch(/has no repository/);
@@ -109,16 +114,16 @@ describe("projects and repositories (ADR 0440)", () => {
     );
     expect(listed.repositories.map((r) => r.name)).toEqual([w.repo.repo, name]);
 
-    // Two repositories and none named: refused with the reason, never a guess.
+    // Two repositories and none named: release is refused with the reason, never a guess.
     const e = await refusal(
-      call("workItem.create", { projectId: w.projectId, title: "x" }, w.human),
+      call("workItem.create", { projectId: w.projectId, title: "x", state: "queued" }, w.human),
     );
-    expect(e.code).toBe("not_found");
-    expect(e.message).toMatch(/2 repositories: name one/);
+    expect(e.code).toBe("conflict");
+    expect(e.message).toMatch(/choose one of the project's 2/);
 
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, repositoryId: added.id, title: "Fix the site" },
+      { projectId: w.projectId, repositoryId: added.id, title: "Fix the site", state: "queued" },
       w.human,
     );
     const row = await first<{ repository_id: string }>(

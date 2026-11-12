@@ -7,6 +7,7 @@ import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext, type RepositoryRow } from "../operation.ts";
 import type { PullRequestInfo } from "../services.ts";
 import { prHeadEvent } from "../workflow-events.ts";
+import { startPipeline } from "./backlog.ts";
 import {
   createWorkItem,
   projectId,
@@ -158,6 +159,13 @@ export const workItemAttachPr = defineOperation({
       requesterUserId: ctx.actor.id,
       number: project.next_number,
       pr: { branch: pr.head.ref, number: pr.number, url: pr.url, headSha: pr.head.sha },
+      // An attached PR is already built: it skips the backlog and the active limit (ADR 0441).
+      state: "queued",
+    });
+    startPipeline(ctx, created, project, {
+      policy: ctx.scope.policy,
+      trial: null,
+      workflow: false,
     });
     // One key per PR. An earlier item for it that was cancelled, failed or rejected gives the key
     // up to the new one.

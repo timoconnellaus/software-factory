@@ -40,6 +40,9 @@ const KNOWN = new Set([
   "spec",
   "timeouts",
   "wipLimit",
+  "activeLimit",
+  "release",
+  "workflow",
   "retryLimit",
   "approvers",
   "backupOwner",
@@ -153,6 +156,24 @@ export function policyImpact(
       "wipLimit",
       after.wipLimit < before.wipLimit ? "tightens" : "neutral",
       `WIP limit ${before.wipLimit} → ${after.wipLimit}.`,
+    );
+  }
+  if (before.activeLimit !== after.activeLimit) {
+    // How many items run at once is throughput, not permission (like wipLimit).
+    add(
+      "activeLimit",
+      after.activeLimit < before.activeLimit ? "tightens" : "neutral",
+      `Active limit ${before.activeLimit} → ${after.activeLimit}.`,
+    );
+  }
+  if (before.release.agents !== after.release.agents) {
+    // Letting agents release work commits the factory without a person (ADR 0441).
+    add(
+      "release.agents",
+      after.release.agents ? "loosens" : "tightens",
+      after.release.agents
+        ? "Agents may release work to the factory."
+        : "Only people may release work to the factory.",
     );
   }
   if (before.retryLimit !== after.retryLimit) {
@@ -335,11 +356,35 @@ function gateSteps(policy: ProjectPolicy): Map<string, string> {
   return gates;
 }
 
+/** The gate steps of the project's workflow (ADR 0442), by step name. */
+function projectGates(policy: ProjectPolicy): Set<string> {
+  const name = policy.workflow?.toLowerCase();
+  const w = name ? policy.workflows.find((x) => x.name.toLowerCase() === name) : undefined;
+  const gates = new Set<string>();
+  for (const slot of SLOTS) {
+    for (const step of w?.slots[slot] ?? []) {
+      if (step.kind === "gate") gates.add(`${slot}/${step.name.toLowerCase()}`);
+    }
+  }
+  return gates;
+}
+
 function workflowChanges(
   before: ProjectPolicy,
   after: ProjectPolicy,
   add: (path: string, cls: ImpactClass, summary: string) => void,
 ) {
+  if ((before.workflow ?? "").toLowerCase() !== (after.workflow ?? "").toLowerCase()) {
+    // Switching the project's workflow removes the old one's gate steps from every new item.
+    const was = projectGates(before);
+    const now = projectGates(after);
+    const lost = [...was].filter((g) => !now.has(g));
+    add(
+      "workflow",
+      lost.length ? "loosens" : now.size > was.size ? "tightens" : "neutral",
+      `The project's workflow: ${before.workflow ?? "the skeleton alone"} → ${after.workflow ?? "the skeleton alone"}${lost.length ? `, without the gate steps ${list(lost.map((g) => g.split("/")[1] ?? g))}` : ""}.`,
+    );
+  }
   if (!same(before.workflows, after.workflows)) {
     const was = gateSteps(before);
     const now = gateSteps(after);

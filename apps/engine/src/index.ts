@@ -41,6 +41,7 @@ export default {
     await expireQuietRuns(env, now);
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);
+    await pullQueuedWork(env);
     await runAdjudicator(env);
     // Once an hour: the improver (ADR 0373) decides running trials and starts the next one.
     if (now.getUTCMinutes() === 23) await runImprover(env, now);
@@ -76,6 +77,33 @@ export async function expireQuietRuns(env: Env, now: Date): Promise<number> {
     } catch (error) {
       if (!isOperationError(error)) throw error;
       console.warn(`expire ${job_id}: ${error.code} ${error.message}`);
+    }
+  }
+  return results.length;
+}
+
+/**
+ * The pull (ADR 0441): for each project with queued work, start what fits under its active limit.
+ * Release, finish and cancel pull too; this catches the rest (a "waits for" item done in another
+ * project, a link removed, a kill switch turned off).
+ */
+export async function pullQueuedWork(env: Env, limit = 20): Promise<number> {
+  const { results } = await env.DB.prepare(
+    "SELECT DISTINCT project_id FROM core_work_items WHERE status = 'queued' LIMIT ?",
+  )
+    .bind(limit)
+    .all<{ project_id: string }>();
+  for (const { project_id } of results) {
+    try {
+      await invoke(
+        invokeDeps(env),
+        "queue.pull",
+        { projectId: project_id },
+        { actor: FOREMAN, origin: { surface: "cron" } },
+      );
+    } catch (error) {
+      if (!isOperationError(error)) throw error;
+      console.warn(`pull ${project_id}: ${error.code} ${error.message}`);
     }
   }
   return results.length;

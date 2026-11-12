@@ -52,17 +52,21 @@ const POLICY = {
 };
 
 async function create(w: Awaited<ReturnType<typeof world>>, title = "Add dark mode") {
-  return ok<{ workItemId: string }>("workItem.create", { projectId: w.projectId, title }, w.human);
+  return ok<{ workItemId: string }>(
+    "workItem.create",
+    { state: "queued", projectId: w.projectId, title },
+    w.human,
+  );
 }
 
 describe("workflows (spec 09 M2)", () => {
   it("runs a work step before verify, sends back on its verdict, then holds at a gate step", async () => {
-    const w = await world(POLICY);
+    // The project runs one workflow (ADR 0442): triage isn't asked to pick, and its pick is ignored.
+    const w = await world({ ...POLICY, workflow: "Ship a feature" });
     const item = await create(w);
     const triaged = await runStage(w, item.workItemId, "triage", (job) => {
-      // Triage is told the project's workflows.
-      expect(job.harness.prompt).toContain("Ship a feature: New behaviour");
-      return triage("small", { workflow: "Ship a feature", workflowReason: "new behaviour" });
+      expect(job.harness.prompt).not.toContain("Ship a feature: New behaviour");
+      return triage("small", { workflow: "Big only", workflowReason: "ignored" });
     });
     expect(triaged.stage).toBe("triage");
 
@@ -121,13 +125,16 @@ describe("workflows (spec 09 M2)", () => {
       "SELECT workflow, workflow_reason FROM core_work_items WHERE id = ?",
       item.workItemId,
     );
-    expect(row).toMatchObject({ workflow: "Ship a feature", workflow_reason: "new behaviour" });
+    expect(row).toMatchObject({
+      workflow: "Ship a feature",
+      workflow_reason: "the project's workflow",
+    });
   });
 
   it("skips a step whose condition doesn't hold, and records the skip", async () => {
-    const w = await world(POLICY);
+    const w = await world({ ...POLICY, workflow: "Big only" });
     const item = await create(w, "Fix a typo");
-    await runStage(w, item.workItemId, "triage", () => triage("small", { workflow: "Big only" }));
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
     await runStage(w, item.workItemId, "build", () => build());
     // Straight to the real verify: the architecture step is for medium work and up.
     await runStage(w, item.workItemId, "verify", (job) => {
@@ -146,10 +153,13 @@ describe("workflows (spec 09 M2)", () => {
     });
   });
 
-  it("falls back to the skeleton for a workflow the project doesn't have, with the default Builder", async () => {
+  it("runs the skeleton alone for a project with no workflow, with the default Builder", async () => {
     const w = await world(POLICY);
     const item = await create(w);
-    await runStage(w, item.workItemId, "triage", () => triage("small", { workflow: "Nope" }));
+    // Triage's pick is ignored (ADR 0442): the project names no workflow.
+    await runStage(w, item.workItemId, "triage", () =>
+      triage("small", { workflow: "Ship a feature" }),
+    );
     await runStage(w, item.workItemId, "build", (job) => {
       // No workflow: the build uses the agent called Builder (ADR 0372), light here.
       expect(job.harness.model).toBe(resolveModel("implement", {}, "light"));
@@ -165,7 +175,7 @@ describe("workflows (spec 09 M2)", () => {
       item.workItemId,
     );
     expect(row?.workflow).toBeNull();
-    expect(row?.workflow_reason).toMatch(/doesn't have/);
+    expect(row?.workflow_reason).toBeNull();
   });
 });
 

@@ -185,7 +185,7 @@ export async function onboard(
 export async function newItem(w: Awaited<ReturnType<typeof world>>, title = "Add dark mode") {
   return ok<{ workItemId: string; number: number; branch: string; outcome: string }>(
     "workItem.create",
-    { projectId: w.projectId, title, body: `Please ${title.toLowerCase()}.` },
+    { state: "queued", projectId: w.projectId, title, body: `Please ${title.toLowerCase()}.` },
     w.human,
   );
 }

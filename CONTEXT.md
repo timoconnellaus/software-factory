@@ -62,6 +62,30 @@ spec and acceptance criteria, runs and a review packet. Each one is driven by on
 (an attached PR).
 _Avoid_: task, ticket, job (a job is one stage's assignment to a runner), issue (the GitHub thing)
 
+**Backlog, ready, queued**
+The states a work item has before its pipeline starts (ADR 0441). **Backlog**: captured (title,
+notes, project, priority); nothing runs. **Ready**: shaped (size, acceptance criteria). **Queued**:
+released to the factory, waiting for a slot. No Workflow exists in them; creating an item leaves it
+in the backlog unless the caller releases it in the same step (New work, `sf new`).
+_Avoid_: draft, todo, inbox (the inbox is what waits on a person)
+
+**Release**
+Handing a backlog or ready item to the factory (`workItem.release`): it becomes queued. A person may
+always release; an agent, intake or chat only where the project's config sets `release.agents`.
+_Avoid_: submit, start, approve
+
+**Pull**
+The factory starting the next queued item of a project while its active items (running, waiting,
+paused) are under the config's `activeLimit`: by priority, then rank, then release time, skipping
+items whose **waits for** items aren't done. The pull pins the config version and the project's
+workflow (ADR 0441, 0442).
+_Avoid_: dispatch, schedule (the scheduler places jobs on runners)
+
+**Waits for**
+A link from one work item to another in the same org, any project: the first isn't pulled until the
+second is done (a launch post waits for its feature). No cycles.
+_Avoid_: depends on, blocked by (that is the read: what still holds it)
+
 **Attached PR**
 A pull request opened outside the factory (by a local session or a person) and attached to a work
 item of kind `attached` (`workItem.attachPr`, the `/attach` page that its failing `factory/verify`
