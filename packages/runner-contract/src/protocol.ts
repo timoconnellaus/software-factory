@@ -97,7 +97,7 @@ export function parseJobPath(path: string): { jobId: string; call: JobCall } | n
  * Calls whose responses the cloud never stores: a secret, a file's bytes, a held wait, or a call
  * that is naturally idempotent. The heartbeat is the last: it renews leases and repeats commands
  * until they are settled, so running a retry again is right, and storing it cost about 7 rows
- * written per beat (AGENTS.md, Cloudflare cost, rule 10).
+ * written per beat (AGENTS.md, Cloudflare cost, rule 9).
  */
 export function isUnstoredPath(path: string): boolean {
   if (path === PATHS.heartbeat) return true;

@@ -1,4 +1,4 @@
-// The ClientHub answers the desktop app's keepalive without waking (AGENTS.md, Cloudflare cost, rule 7).
+// The ClientHub answers the desktop app's keepalive without waking (AGENTS.md, Cloudflare cost, rule 6).
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";

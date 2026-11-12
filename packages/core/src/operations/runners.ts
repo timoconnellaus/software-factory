@@ -246,6 +246,8 @@ function reportRunnerState(
     accounts?: RunnerAccounts | undefined;
     /** Only the heartbeat carries it; a claim leaves the stored value alone. */
     compat?: number | null;
+    /** A heartbeat's signed time: the update applies only when it is newer than the last one. */
+    signedAt?: number | undefined;
   },
 ): { pendingAccount: string | null } {
   // The owner's pick is done once the runner reports it active, and moot once the runner reports
@@ -282,9 +284,20 @@ function reportRunnerState(
         ...(report.accounts ? { accounts: json(report.accounts) } : {}),
         ...(report.compat !== undefined ? { compat: report.compat } : {}),
         ...(settled ? { account_requested: null, account_requested_at: null } : {}),
+        ...(report.signedAt !== undefined ? { last_signed_at: report.signedAt } : {}),
       })
-      .where("id", "=", runner.id),
+      .where("id", "=", runner.id)
+      .$if(report.signedAt !== undefined, (q) =>
+        q.where((eb) =>
+          eb.or([
+            eb("last_signed_at", "is", null),
+            eb("last_signed_at", "<", report.signedAt ?? 0),
+          ]),
+        ),
+      ),
   );
+  // Two heartbeats racing: the batch aborts unless this one is still the newest.
+  if (report.signedAt !== undefined) ctx.guardChanged("newest heartbeat");
   return { pendingAccount: requested !== null && !settled ? requested : null };
 }
 
@@ -366,9 +379,23 @@ export const runnerHeartbeat = defineOperation({
   }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
+    // A heartbeat isn't stored by the channel, so a captured one could be replayed within the
+    // signing window: one not newer than the last accepted is refused, and changes nothing.
+    const signedAt = ctx.origin.signedAt;
+    if (
+      signedAt !== undefined &&
+      runner.last_signed_at !== null &&
+      signedAt <= runner.last_signed_at
+    ) {
+      throw new OperationError(
+        "conflict",
+        "a heartbeat no newer than the last one (a replay, or out of order): ignored",
+      );
+    }
     const { pendingAccount } = reportRunnerState(ctx, runner, {
       ...input,
       compat: input.compat ?? null,
+      signedAt,
     });
     // The runner claims nothing until an update it is waiting for (ADR 0520): free its light pool
     // by asking an idle planning session (nobody there, nothing undelivered) to yield, as a full

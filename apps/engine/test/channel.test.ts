@@ -117,6 +117,48 @@ describe("the signed runner channel", () => {
     });
   });
 
+  it("refuses a replayed or older heartbeat, which changes nothing (it isn't stored)", async () => {
+    const w = await world();
+    const beat = (capacityMax: number) =>
+      JSON.stringify({
+        manifest: MANIFEST,
+        capacity: { max: capacityMax, inUse: 0, accepting: true },
+        activeJobs: [],
+      });
+    const send = async (body: string, at: Date, key: string) =>
+      worker.fetch(
+        new Request(`${base}${PATHS.heartbeat}`, {
+          method: "POST",
+          headers: await signRunnerRequest({
+            key: w.runner.key,
+            runner: w.runner.runnerId,
+            method: "POST",
+            path: PATHS.heartbeat,
+            body,
+            idempotencyKey: key,
+            now: at,
+          }),
+          body,
+        }),
+        env,
+      );
+    const t0 = new Date(Date.now() - 60_000);
+    const captured = beat(1);
+    expect((await send(captured, t0, "beat:replay-0001")).status).toBe(200);
+    expect((await send(beat(3), new Date(t0.getTime() + 20_000), "beat:replay-0002")).status).toBe(
+      200,
+    );
+    // The captured first heartbeat, replayed inside the signing window: refused, capacity kept.
+    const replay = await send(captured, t0, "beat:replay-0001");
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toMatchObject({ code: "conflict" });
+    const row = await first<{ capacity_max: number }>(
+      "SELECT capacity_max FROM core_runners WHERE id = ?",
+      w.runner.runnerId,
+    );
+    expect(row?.capacity_max).toBe(3);
+  });
+
   it("answers a replayed request id from the store without running the handler again", async () => {
     const w = await world();
     const body = JSON.stringify({

@@ -401,7 +401,15 @@ export async function sweepStrayAttachmentBlobs(
       .bind(SWEEP_CURSOR_KEY)
       .first<string>("value")) || null;
   for (let page = 0; page < maxPages; page++) {
-    const listed = await store.list(cursor ? { cursor } : {});
+    let listed: Awaited<ReturnType<AttachmentBlobs["list"]>>;
+    try {
+      listed = await store.list(cursor ? { cursor } : {});
+    } catch (error) {
+      // A saved cursor R2 no longer accepts would fail every tick forever: start the pass over.
+      if (!cursor) throw error;
+      cursor = null;
+      listed = await store.list({});
+    }
     const old = listed.keys
       .filter((k) => now.getTime() - k.uploaded.getTime() > graceMs)
       .map((k) => k.key);
@@ -414,10 +422,11 @@ export async function sweepStrayAttachmentBlobs(
         )
         .bind(JSON.stringify(old))
         .all<{ key: string }>();
-      for (const { key } of results) {
-        await store.delete(key);
-        removed.push(key);
-      }
+      const stray = results.map((r) => r.key);
+      // One R2 call per page (500 keys, under R2's 1,000 per delete).
+      if (store.deleteMany) await store.deleteMany(stray);
+      else for (const key of stray) await store.delete(key);
+      removed.push(...stray);
     }
     cursor = listed.cursor;
     if (!cursor) break;

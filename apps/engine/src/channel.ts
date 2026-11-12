@@ -75,7 +75,8 @@ export async function handleChannel(request: Request, env: Env): Promise<Respons
   return handleRunnerCall(
     request,
     { keyFor, store: d1IdempotencyStore(env.DB), unstoredPath: isUnstoredPath },
-    ({ runner, path, body }) => route(env, runner, path, body, new URL(request.url).origin),
+    ({ runner, path, body, signedAt }) =>
+      route(env, runner, path, body, new URL(request.url).origin, signedAt),
   );
 }
 
@@ -85,6 +86,7 @@ async function route(
   path: string,
   body: unknown,
   origin: string,
+  signedAt?: number,
 ): Promise<ChannelReply> {
   const record = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
   let op: string;
@@ -119,7 +121,14 @@ async function route(
       release: "run.release",
     }[job.call];
   }
-  return invokeReply(env, op, input, { type: "runner", id: runner });
+  // The heartbeat is unstored: its signed time lets the cloud refuse a replayed one (ADR 0016).
+  return invokeReply(
+    env,
+    op,
+    input,
+    { type: "runner", id: runner },
+    path === PATHS.heartbeat ? signedAt : undefined,
+  );
 }
 
 /**
@@ -332,11 +341,12 @@ async function invokeReply(
   op: string,
   input: unknown,
   actor: Actor,
+  signedAt?: number,
 ): Promise<ChannelReply> {
   try {
     const result = await invoke(invokeDeps(env), op, input, {
       actor,
-      origin: { surface: "runner-channel" },
+      origin: { surface: "runner-channel", ...(signedAt !== undefined ? { signedAt } : {}) },
     });
     if (result.status === "pending") {
       return { status: 202, body: { pending: true, pendingActionId: result.pendingActionId } };
