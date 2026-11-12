@@ -4,7 +4,7 @@
 import { HARNESS_PERMISSION_MODES, JOB_STAGES } from "@software-factory/runner-contract";
 import { ACTOR_TYPES } from "../actors.ts";
 import { decide, type FloorParse, RISK_CLASSES } from "./gate.ts";
-import { type ProjectPolicy, SLOTS } from "./project-policy.ts";
+import { type ProjectPolicy, SLOTS, type SlotName, type StepConfig } from "./project-policy.ts";
 
 export type ImpactClass = "loosens" | "tightens" | "neutral";
 
@@ -56,6 +56,7 @@ const KNOWN = new Set([
   "workflows",
   "improve",
   "adjudicator",
+  "checks",
 ]);
 
 /**
@@ -297,6 +298,25 @@ export function policyImpact(
     );
   }
 
+  // The factory's own checks (ADR 0501): dropping or changing one lowers the bar; adding raises it.
+  checkChanges("checks", before.checks, after.checks, add);
+  for (const w of after.workflows) {
+    const was = before.workflows.find((x) => x.name.toLowerCase() === w.name.toLowerCase());
+    if (was) checkChanges(`workflows.${w.name}.checks`, was.checks, w.checks, add);
+  }
+  for (const w of before.workflows) {
+    if (
+      w.checks.length &&
+      !after.workflows.some((x) => x.name.toLowerCase() === w.name.toLowerCase())
+    ) {
+      add(
+        `workflows.${w.name}.checks`,
+        "loosens",
+        `Removing ${w.name} drops its checks ${list(w.checks.map((c) => c.name))}.`,
+      );
+    }
+  }
+
   // Workflows and agents (ADR 0371, 0372): gate steps are policy, the rest is practice.
   workflowChanges(before, after, add);
 
@@ -373,17 +393,147 @@ function gateSteps(policy: ProjectPolicy): Map<string, string> {
   return gates;
 }
 
-/** The gate steps of the project's workflow (ADR 0492), by step name. */
-function projectGates(policy: ProjectPolicy): Set<string> {
+function checkChanges(
+  path: string,
+  before: ProjectPolicy["checks"],
+  after: ProjectPolicy["checks"],
+  add: (path: string, cls: ImpactClass, summary: string) => void,
+) {
+  const key = (c: { name: string }) => c.name.toLowerCase();
+  for (const b of before) {
+    const a = after.find((x) => key(x) === key(b));
+    if (!a) add(path, "loosens", `No longer runs the check ${b.name}.`);
+    else if (a.run !== b.run)
+      add(path, "loosens", `Changes what the check ${b.name} runs: \`${b.run}\` → \`${a.run}\`.`);
+    else if (a.timeoutMinutes !== b.timeoutMinutes)
+      add(path, "neutral", `The check ${b.name} may run ${a.timeoutMinutes} min.`);
+  }
+  for (const a of after) {
+    if (!before.some((x) => key(x) === key(a))) add(path, "tightens", `Runs the check ${a.name}.`);
+  }
+}
+
+/**
+ * What an item on the project's workflow passes through (ADR 0492): each judging step, keyed by the
+ * slot it runs in and what judges it, by content rather than by name: the agent's definition (role,
+ * tier, instructions, requirements) for a check, who decides for a gate, what the step is told and
+ * when it runs. Two workflows whose keys match judge an item the same way.
+ */
+function itemPath(policy: ProjectPolicy): Map<string, string> {
   const name = policy.workflow?.toLowerCase();
   const w = name ? policy.workflows.find((x) => x.name.toLowerCase() === name) : undefined;
-  const gates = new Set<string>();
+  const agents = new Map(policy.agents.map((a) => [a.name.toLowerCase(), a]));
+  const out = new Map<string, string>();
   for (const slot of SLOTS) {
     for (const step of w?.slots[slot] ?? []) {
-      if (step.kind === "gate") gates.add(`${slot}/${step.name.toLowerCase()}`);
+      const agent = step.kind === "work" ? agents.get((step.agent ?? "").toLowerCase()) : undefined;
+      const judge = agent
+        ? {
+            role: agent.role,
+            tier: agent.tier,
+            instructions: agent.instructions,
+            requires: [...agent.requires].sort(),
+          }
+        : step.kind === "work"
+          ? { missing: step.agent ?? null }
+          : { approver: step.approver?.toLowerCase() ?? null };
+      const base = `${slot}:${step.kind}:${canonical({ judge, instructions: step.instructions, when: step.when })}`;
+      let key = base;
+      for (let n = 2; out.has(key); n++) key = `${base}#${n}`;
+      out.set(
+        key,
+        `${step.kind === "gate" ? "the gate" : "the agent check"} ${step.name} (${slot})`,
+      );
     }
   }
-  return gates;
+  return out;
+}
+
+/** Every slot step, by `<workflow>/<step id>` (lower-cased workflow name). */
+function slotSteps(
+  policy: ProjectPolicy,
+): Map<string, { workflow: string; slot: SlotName; step: StepConfig }> {
+  const out = new Map<string, { workflow: string; slot: SlotName; step: StepConfig }>();
+  for (const w of policy.workflows)
+    for (const slot of SLOTS)
+      for (const step of w.slots[slot])
+        out.set(`${w.name.toLowerCase()}/${step.id}`, { workflow: w.name, slot, step });
+  return out;
+}
+
+/** The agents (lower-cased names) a `work` step hands to: each judges the work it reads. */
+function judgingAgents(policy: ProjectPolicy): Set<string> {
+  const out = new Set<string>();
+  for (const { step } of slotSteps(policy).values())
+    if (step.kind === "work" && step.agent) out.add(step.agent.toLowerCase());
+  return out;
+}
+
+/**
+ * What judges the work, and what it is told, is policy (spec 52, Q16; ADR 0516): a `work` step's
+ * agent passes, sends back or asks, so a different agent, a changed prompt, a narrower condition or
+ * a removed step may pass what the old one sent back. A gate's instructions are what its decider is
+ * told. Free text can't be shown to only add requirements, so any change to it loosens.
+ */
+function judgeChanges(
+  before: ProjectPolicy,
+  after: ProjectPolicy,
+  add: (path: string, cls: ImpactClass, summary: string) => void,
+) {
+  const was = slotSteps(before);
+  const now = slotSteps(after);
+  for (const [key, { workflow, slot, step: b }] of was) {
+    const moved = now.get(key);
+    const a = moved?.step;
+    const at = `workflows.${key}`;
+    const label = `${workflow} → ${b.name}`;
+    // A judging step moved to another slot (spec 52, fourth review): earlier, it sees less (a check
+    // before build sees no build); later, it runs after what it guarded (a design gate after the
+    // build it was to approve first). Either way it may pass what it used to stop.
+    if (moved && moved.slot !== slot && moved.step.kind === b.kind)
+      add(
+        at,
+        "loosens",
+        `${label} moves from ${slot} to ${moved.slot}: it sees other work, or runs after what it guarded.`,
+      );
+    if (b.kind === "work") {
+      if (!a || a.kind !== "work") {
+        add(at, "loosens", `Removes the agent check ${label}.`);
+        continue;
+      }
+      if ((a.agent ?? "").toLowerCase() !== (b.agent ?? "").toLowerCase())
+        add(at, "loosens", `${label} is judged by ${a.agent ?? "no agent"}, not ${b.agent}.`);
+      if (!same(a.when, b.when))
+        add(
+          at,
+          a.when ? "loosens" : "tightens",
+          a.when ? `${label} runs for different items.` : `${label} runs for every item.`,
+        );
+    }
+    if (a && a.instructions !== b.instructions)
+      add(at, "loosens", `Changes what ${label} is told: it may now pass what it sent back.`);
+  }
+  for (const [key, { workflow, step: a }] of now) {
+    if (a.kind !== "work" || was.get(key)?.step.kind === "work") continue;
+    add(
+      `workflows.${key}`,
+      a.when ? "neutral" : "tightens",
+      `Adds the agent check ${workflow} → ${a.name}${a.when ? " for some items" : ""}.`,
+    );
+  }
+  const judging = new Set([...judgingAgents(before), ...judgingAgents(after)]);
+  const agentsBefore = new Map(before.agents.map((x) => [x.name.toLowerCase(), x]));
+  const agentsAfter = new Map(after.agents.map((x) => [x.name.toLowerCase(), x]));
+  for (const name of judging) {
+    const b = agentsBefore.get(name);
+    const a = agentsAfter.get(name);
+    if (!b || !a || same(a, b)) continue;
+    add(
+      `agents.${a.name}`,
+      "loosens",
+      `${a.name} judges work in a workflow: changing its role, tier or instructions changes what passes.`,
+    );
+  }
 }
 
 function workflowChanges(
@@ -392,16 +542,21 @@ function workflowChanges(
   add: (path: string, cls: ImpactClass, summary: string) => void,
 ) {
   if ((before.workflow ?? "").toLowerCase() !== (after.workflow ?? "").toLowerCase()) {
-    // Switching the project's workflow removes the old one's gate steps from every new item.
-    const was = projectGates(before);
-    const now = projectGates(after);
-    const lost = [...was].filter((g) => !now.has(g));
+    // Switching the project's workflow changes what every new item passes through: a gate step or
+    // an agent check the old workflow had, in that slot and judged that way, and the new one lacks
+    // is gone for every item (spec 52, fourth review). Compared by content, so a same-named step
+    // with another judge, other instructions or in another slot is not the same step.
+    const was = itemPath(before);
+    const now = itemPath(after);
+    const lost = [...was].filter(([k]) => !now.has(k)).map(([, label]) => label);
+    const gained = [...now.keys()].some((k) => !was.has(k));
     add(
       "workflow",
-      lost.length ? "loosens" : now.size > was.size ? "tightens" : "neutral",
-      `The project's workflow: ${before.workflow ?? "the skeleton alone"} → ${after.workflow ?? "the skeleton alone"}${lost.length ? `, without the gate steps ${list(lost.map((g) => g.split("/")[1] ?? g))}` : ""}.`,
+      lost.length ? "loosens" : gained ? "tightens" : "neutral",
+      `The project's workflow: ${before.workflow ?? "the skeleton alone"} → ${after.workflow ?? "the skeleton alone"}${lost.length ? `, without ${list(lost)}` : ""}.`,
     );
   }
+  judgeChanges(before, after, add);
   if (!same(before.workflows, after.workflows)) {
     const was = gateSteps(before);
     const now = gateSteps(after);
@@ -425,7 +580,7 @@ function workflowChanges(
         `Workflows: ${names(before) || "none"} → ${names(after) || "none"}.`,
       );
     } else {
-      add("workflows", "neutral", "Workflow steps or instructions changed.");
+      add("workflows", "neutral", "Workflow steps changed.");
     }
   }
   if (!same(before.agents, after.agents)) {
@@ -436,6 +591,7 @@ function workflowChanges(
         add(`agents.${a.name}`, "loosens", `${a.name} no longer requires ${list(dropped)}.`);
     }
     add("agents", "neutral", "Agents changed (role, tier or instructions).");
+    // (An agent a `work` step hands to is a judge: judgeChanges classes its changes as loosening.)
   }
 }
 

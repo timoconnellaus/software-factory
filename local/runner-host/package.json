@@ -16,6 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.81",
     "@software-factory/harness-claude": "workspace:*",
     "@software-factory/runner-contract": "workspace:*",
     "@software-factory/runner-local": "workspace:*",

@@ -715,6 +715,25 @@ export interface CoreRunEventsTable {
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */
+/** The factory's own check results, per work item and commit (migration 0270, ADR 0501). */
+export interface CoreCheckResultsTable {
+  work_item_id: string;
+  head_sha: string;
+  name: string;
+  run_id: string;
+  command: string;
+  exit_code: number | null;
+  timed_out: Generated<number>;
+  duration_ms: number;
+  log_tail: string;
+  round: Generated<number>;
+  created_at: string;
+  /** Why the runner could not run it (migration 0271); null for a check that ran. */
+  not_run: string | null;
+  /** Where it ran (migration 0272): container, sandbox or weaker-sandbox; null before. */
+  isolation: string | null;
+}
+
 export interface CoreRunSteersTable {
   id: string;
   run_id: string;
@@ -1181,6 +1200,7 @@ export interface CoreDatabase {
   core_run_archive_chunks: CoreRunArchiveChunksTable;
   core_run_archive_leases: CoreRunArchiveLeasesTable;
   core_run_steers: CoreRunSteersTable;
+  core_check_results: CoreCheckResultsTable;
   core_run_terminal_attaches: CoreRunTerminalAttachesTable;
   core_artifacts: CoreArtifactsTable;
   core_leases: CoreLeasesTable;

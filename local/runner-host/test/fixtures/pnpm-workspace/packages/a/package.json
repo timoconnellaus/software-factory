@@ -1,0 +1,11 @@
+{
+  "name": "a",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "test": "node -e \"if (require('is-number')(5) !== true) process.exit(1); console.log('a: is-number works')\""
+  },
+  "dependencies": {
+    "is-number": "7.0.0"
+  }
+}

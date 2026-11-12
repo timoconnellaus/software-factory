@@ -47,3 +47,7 @@ rules forbid. It would also cost a lot in Workflow determinism and versioning.
 > workflow, so it can't take an agent from one.
 
 > Amended 2026-11-12 ([ADR 0510](0510-workflows-are-ordered-stages-of-stage-types.md), spec [52](../specs/52-workflows-from-stage-types.md), not built yet): the owner has decided workflows become ordered lists of stages, each an instance of a built-in stage type, defined once per org. The skeleton becomes the Software template and the three slots become positions in its list; the slot steps become `agent-check` and `decision` stages. Gates stay in code, now as part of stage types, with floors checked by `validateWorkflow` instead of being purely structural. This ADR holds until spec 52 is built.
+
+> Amended 2026-11-12 (spec 52, Q16, as built): a `work` step is advisory to the item but it still
+> judges: its agent, condition and instructions, and its agent's profile, are policy. Changing any
+> of them loosens (see the note on ADR 0373); adding a work step for every item tightens.

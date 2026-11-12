@@ -35,7 +35,8 @@ export const MANIFEST: CapabilityManifest = {
   contractVersion: CONTRACT_VERSION,
   runnerKind: "test",
   harnesses: ["claude-code"],
-  capabilities: ["hooks", "headless"],
+  // `checks`: the test runner plays a host that runs the project's checks (ADR 0501).
+  capabilities: ["hooks", "headless", "checks"],
 };
 
 export const sha40 = (seed: string) =>
@@ -152,15 +153,27 @@ export async function all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
 type Push = Parameters<typeof github.push>[3];
 
 /** Plays the runner host for one job: claim the next job of `stage`, then hand back. */
+/** What a test's runner does for a stage. `checks`: the host's check results, on the pushed head. */
+interface StageOut {
+  result?: unknown;
+  outcome?: "completed" | "failed";
+  push?: Push;
+  checks?: {
+    name: string;
+    exitCode: number | null;
+    command?: string;
+    headSha?: string;
+    round?: number;
+    notRun?: string;
+  }[];
+}
+
 export async function runStage(
   w: World,
   workItemId: string,
   stage: Job["stage"],
-  result: (
-    job: Job,
-  ) =>
-    | Promise<{ result?: unknown; outcome?: "completed" | "failed"; push?: Push }>
-    | { result?: unknown; outcome?: "completed" | "failed"; push?: Push },
+  result: (job: Job) => Promise<StageOut> | StageOut,
+  options: { summary?: string } = {},
 ): Promise<Job> {
   await waitFor(`a queued ${stage} job`, () =>
     first(
@@ -189,10 +202,34 @@ export async function runStage(
       jobId: job.jobId,
       fencingToken: job.lease.fencingToken,
       outcome: out.outcome ?? "completed",
+      ...(options.summary ? { summary: options.summary } : {}),
       artifactIds: [],
       branch: job.branch,
       ...(headSha ? { headSha } : {}),
       ...(out.result !== undefined ? { result: out.result } : {}),
+      ...(out.checks
+        ? {
+            checks: out.checks.map((c) => ({
+              name: c.name,
+              // The command the job carries for it (what the host runs), unless the test says.
+              command:
+                c.command ??
+                job.checks?.commands.find((x) => x.name === c.name)?.run ??
+                `pnpm ${c.name}`,
+              exitCode: c.exitCode,
+              ...(c.notRun ? { notRun: c.notRun } : {}),
+              timedOut: false,
+              durationMs: 1200,
+              logTail: c.notRun
+                ? `not run: ${c.notRun}`
+                : c.exitCode === 0
+                  ? "ok"
+                  : `${c.name}: 1 failing`,
+              headSha: c.headSha ?? headSha ?? String(job.context.headSha ?? ""),
+              round: c.round ?? 0,
+            })),
+          }
+        : {}),
     },
     w.runnerActor,
   );
@@ -233,10 +270,22 @@ export const verifyPass = {
     riskFlags: [],
   },
 };
+/**
+ * The reviewer finds a criterion unmet and reports a failing test. Where the project declares
+ * checks the factory's own results replace the report (ADR 0501); the unmet criterion fails it
+ * either way.
+ */
 export const verifyFail = {
   result: {
     ...verifyPass.result,
     checks: [{ name: "tests", status: "fail", detail: "1 failing" }],
+    criteria: [
+      {
+        criterion: "The page has a dark mode toggle",
+        met: false,
+        evidence: "the toggle doesn't switch the theme",
+      },
+    ],
   },
 };
 

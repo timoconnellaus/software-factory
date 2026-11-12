@@ -29,6 +29,9 @@ const HELPER = [
 ].join(" ");
 
 /** Where the host keeps the item branches it fetched, in any checkout. */
+/** Git's empty tree: no `.gitattributes`, for an export with no filters. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 export const FETCH_NAMESPACE = "refs/software-factory/heads";
 
 /** Variables the host's own git calls never inherit. */
@@ -299,6 +302,59 @@ export function hostGit(options: HostGitOptions) {
       return (await git(worktree, ["status", "--porcelain"])).trim().length > 0;
     },
 
+    /**
+     * Writes the tree of `sha` into `dest` (an empty directory) and nothing else: no ignored files
+     * the session left (`node_modules`, `dist/`, caches), no git dir (ADR 0501). Through a
+     * throwaway index, so the worktree's own index is untouched, and with `checkout-index` rather
+     * than `git archive`, which would honour an `export-ignore` the agent wrote.
+     *
+     * No filter runs: the export is the host's own git, outside every sandbox, so a smudge filter in
+     * the checkout's config (git-lfs, an owner's own) paired with a `.gitattributes` the agent wrote
+     * would run the owner's command on the agent's content. Attributes come from the empty tree (no
+     * in-tree `.gitattributes`), no attributes file, and every filter driver the config names is
+     * blanked (an empty `smudge`/`process` is no filter), so the copy is the blobs as committed.
+     */
+    async exportTree(worktree: string, sha: string, dest: string, index: string): Promise<void> {
+      if (!/^[0-9a-f]{40}$/.test(sha)) throw new GitError(`not a commit: ${sha}`);
+      const indexEnv = { ...env(), GIT_INDEX_FILE: index, GIT_ATTR_NOSYSTEM: "1" };
+      const listed = await exec("git", ["config", "--name-only", "--get-regexp", "^filter\\."], {
+        cwd: worktree,
+        env: env(),
+      });
+      const drivers = new Set(
+        listed.stdout
+          .split("\n")
+          .map((k) => /^filter\.(.+)\.[^.]+$/.exec(k.trim())?.[1])
+          .filter((d): d is string => !!d),
+      );
+      const noFilters = [
+        `--attr-source=${EMPTY_TREE}`,
+        "-c",
+        "core.attributesFile=/dev/null",
+        ...[...drivers].flatMap((d) => [
+          "-c",
+          `filter.${d}.smudge=`,
+          "-c",
+          `filter.${d}.process=`,
+          "-c",
+          `filter.${d}.required=false`,
+        ]),
+      ];
+      for (const args of [
+        ["read-tree", sha],
+        ["checkout-index", "--all", "--force", `--prefix=${dest.replace(/\/?$/, "/")}`],
+      ]) {
+        const result = await exec("git", [...noFilters, ...base, ...args], {
+          cwd: worktree,
+          timeoutMs: 10 * 60_000,
+          env: indexEnv,
+        });
+        if (result.code !== 0) {
+          throw new GitError(`git ${args[0]} exited ${result.code}: ${result.stderr.trim()}`);
+        }
+      }
+    },
+
     /** Commits whatever the session left uncommitted, so a build never loses work. */
     async commitLeftovers(worktree: string, message: string): Promise<boolean> {
       if (!(await this.dirty(worktree))) return false;
@@ -308,15 +364,21 @@ export function hostGit(options: HostGitOptions) {
     },
 
     /**
-     * Pushes HEAD to the run branch with the job token. Never forces, never pushes anything else.
+     * Pushes HEAD (or `commit`) to the run branch with the job token. Never forces, never pushes
+     * anything else.
      */
     async pushRunBranch(
       job: Job,
       worktree: string,
       token: { token: string; pushBranch: string },
+      /** The commit to push (the last one the checks ran on, ADR 0501); default HEAD. */
+      commit?: string,
     ): Promise<string> {
       assertPushable(job, token.pushBranch);
-      const sha = await this.headSha(worktree);
+      if (commit !== undefined && !/^[0-9a-f]{40}$/.test(commit)) {
+        throw new GitError(`not a commit: ${commit}`);
+      }
+      const sha = commit ?? (await this.headSha(worktree));
       await git(
         worktree,
         [
