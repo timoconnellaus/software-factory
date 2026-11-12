@@ -117,17 +117,21 @@ export function tmuxCli(options: TmuxOptions = {}) {
       ]);
     },
 
-    /** The session's pane, or null when the session is gone. */
+    /**
+     * The session's pane, or null when the session is gone. Formats separate fields with `:`, not a
+     * tab: tmux 3.3 (Debian 12's) prints control characters in `-F` output as `_`, and `:` can't be
+     * in a session name (spec 34, found by `scripts/linux-check.sh`).
+     */
     async paneState(name: string): Promise<PaneState | null> {
       const r = await call([
         "list-panes",
         "-t",
         `=${name}`,
         "-F",
-        "#{pane_dead}\t#{pane_pid}\t#{history_size}",
+        "#{pane_dead}:#{pane_pid}:#{history_size}",
       ]);
       if (r.code !== 0) return null;
-      const [dead, pid, history] = (r.stdout.split("\n")[0] ?? "").split("\t");
+      const [dead, pid, history] = (r.stdout.split("\n")[0] ?? "").split(":");
       return {
         dead: dead === "1",
         pid: /^\d+$/.test(pid ?? "") ? Number(pid) : null,
@@ -177,7 +181,7 @@ export function tmuxCli(options: TmuxOptions = {}) {
       const r = await call([
         "list-sessions",
         "-F",
-        "#{session_name}\t#{pane_dead}\t#{session_created}",
+        "#{session_name}:#{pane_dead}:#{session_created}",
       ]);
       if (r.code !== 0) {
         if (NO_SERVER.test(r.stderr) || !r.stderr.trim()) return [];
@@ -187,7 +191,7 @@ export function tmuxCli(options: TmuxOptions = {}) {
         .split("\n")
         .filter(Boolean)
         .map((line) => {
-          const [name = "", dead, created] = line.split("\t");
+          const [name = "", dead, created] = line.split(":");
           return { name, dead: dead === "1", created: Number(created) || 0 };
         });
     },

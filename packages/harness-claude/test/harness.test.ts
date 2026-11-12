@@ -1,4 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,7 @@ import {
   launchScript,
   parseStatusLines,
   parseTranscript,
+  procCommand,
   projectDirName,
   projectHarness,
   psCommand,
@@ -81,7 +83,10 @@ describe("run settings", () => {
   });
 
   it("runs build in bypassPermissions inside the sandbox, never pushing", () => {
-    const s = runSettings({ stage: "build" }, { worktree: "/w/job", runDir: "/r/job" });
+    const s = runSettings(
+      { stage: "build" },
+      { worktree: "/w/job", runDir: "/r/job", platform: "darwin" },
+    );
     expect(s.permissions.defaultMode).toBe("bypassPermissions");
     expect(s.skipDangerousModePermissionPrompt).toBe(true);
     expect(s.sandbox.autoAllowBashIfSandboxed).toBe(true);
@@ -112,6 +117,7 @@ describe("run settings", () => {
           runDir: "/r/job",
           runTmp: "/t/job",
           tempDirs: ["/tmp"],
+          platform: "darwin",
           protectPaths: ["/home/me/.config/software-factory", "/home/me/checkout"],
           git: {
             commonDir: "/home/me/checkout/.git",
@@ -275,6 +281,50 @@ describe("run settings", () => {
     const first = await readStatusFrom(projected.statusFile ?? "", 0);
     expect(first.lines).toHaveLength(4);
     expect((await readStatusFrom(projected.statusFile ?? "", first.offset)).lines).toEqual([]);
+  });
+
+  it("denies Linux's credential stores on Linux and macOS's keychain on macOS (ADR 0420)", () => {
+    const linux = runSettings(
+      { stage: "build" },
+      { worktree: "/w", runDir: "/r", platform: "linux" },
+    );
+    const mac = runSettings(
+      { stage: "build" },
+      { worktree: "/w", runDir: "/r", platform: "darwin" },
+    );
+    for (const p of [".local/share/keyrings", ".password-store", ".claude/.credentials.json"]) {
+      expect(linux.permissions.deny).toContain(`Read(~/${p})`);
+      expect(linux.permissions.deny).toContain(`Read(~/${p}/**)`);
+      expect(linux.sandbox.filesystem.denyRead).toContain(`~/${p}`);
+      expect(linux.sandbox.filesystem.denyWrite).toContain(`~/${p}`);
+    }
+    expect(JSON.stringify(linux)).not.toContain("Library");
+    expect(linux.sandbox.filesystem.allowWrite).not.toContain("/private/tmp");
+    expect(linux.sandbox.filesystem.allowWrite).toContain("/tmp");
+    expect(linux.permissions.deny).toEqual(
+      expect.arrayContaining(["Bash(systemctl:*)", "Bash(loginctl:*)", "Bash(secret-tool:*)"]),
+    );
+    expect(mac.permissions.deny).toContain("Read(~/Library/Keychains/**)");
+    expect(mac.permissions.deny).toContain("Read(~/.claude/.credentials.json)");
+    expect(mac.sandbox.filesystem.allowWrite).toContain("/private/tmp");
+    expect(mac.permissions.deny).not.toContain("Read(~/.local/share/keyrings)");
+  });
+
+  it("reads a live process's command line from /proc on Linux (no procps, ADR 0420)", async () => {
+    const line = await procCommand(process.pid);
+    if (process.platform !== "linux") {
+      expect(line).toBeNull();
+      return;
+    }
+    expect(line?.split(" ")[0]).toBe(
+      readFileSync(`/proc/${process.pid}/cmdline`, "utf8").split("\0")[0],
+    );
+    // The same string procps prints, where procps is installed.
+    const ps = spawnSync("ps", ["-ww", "-o", "command=", "-p", String(process.pid)], {
+      encoding: "utf8",
+    });
+    if (ps.status === 0) expect(line).toBe(ps.stdout.replace(/\n$/, ""));
+    expect(await procCommand(2 ** 22 + 7)).toBeNull();
   });
 
   it("denies reads of protected paths", () => {

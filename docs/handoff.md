@@ -73,6 +73,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   (block X, migration 0170), is built on `timoconnellaus/hosts-watch-steer`: the Live tab (transcript
   and terminal from `run.live`, polled), `run.steer` for the runner's owner, the held `steer` call
   on the channel, `message` events from the transcript. Criteria 1 and 2 need a live run on the M5.
+  Piece 5, **Linux hosts** (block Z, [spec 34](specs/34-linux-hosts.md) /
+  [ADR 0420](adr/0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md), branch
+  `timoconnellaus/hosts-linux`): a systemd user service chosen by platform, Linux log path, the
+  harness's per-platform deny lists, Linux doctor checks (bubblewrap, socat, linger), the install
+  path in the runner-host README, and `local/runner-host/scripts/linux-check.sh` (the tests in a
+  Debian container). Criteria 2–3, 6 and 8 need a live Linux host (README "Running on Linux").
 - **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
   versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals

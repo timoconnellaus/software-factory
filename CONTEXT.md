@@ -309,6 +309,8 @@ already has for each repo (found under the `checkouts` dirs in `runner.json` by 
 identity; its own clone only when there is none, ADR 0260), and is the only thing
 that pushes: the run branch, with the job token (ADR 0250). Before a build it merges the project's
 default branch into the run branch, leaving any conflict for the session to resolve (ADR 0320).
+It runs on the owner's Macs as a launchd LaunchAgent and on Linux machines they own as a systemd
+user service, always as the owner (ADR 0420).
 It keeps its own code on the commit the engine was deployed from, updating itself when idle
 (ADR 0360).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
