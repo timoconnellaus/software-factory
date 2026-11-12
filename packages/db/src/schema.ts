@@ -763,6 +763,8 @@ export interface CorePlanningSessionsTable {
   activity: string | null;
   focused_question_id: string | null;
   announced_at: Iso | null;
+  /** Spec 26: the last "away" notice, so questions and replies notify once per burst. */
+  notified_at: Iso | null;
   replaces_session_id: string | null;
   created_by: string;
   created_at: Iso;
@@ -792,6 +794,8 @@ export interface CorePlanningMessagesTable {
   kind: Generated<"chat" | "gate">;
   delivered_at: Iso | null;
   created_at: Iso;
+  /** Spec 26: the steer this message was typed as; delivered when the host takes it. */
+  steer_id: string | null;
 }
 
 export interface CorePlanningPresenceTable {

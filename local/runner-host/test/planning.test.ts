@@ -132,17 +132,19 @@ describe("a planning job on the runner host (spec 20)", () => {
         const hook = await runHookProcess("post-tool-use", file, { tool_name: "Read" });
         seen.process = hook.stdout;
         // A second tool call within 15 s is throttled.
-        seen.throttled = await runNewsHook(
-          "PostToolUse",
-          { tool_name: "Grep" },
-          {
-            relayFile: file,
-            relay: info,
-          },
-        );
+        seen.throttled = (
+          await runNewsHook(
+            "PostToolUse",
+            { tool_name: "Grep" },
+            {
+              relayFile: file,
+              relay: info,
+            },
+          )
+        ).response;
         // The agent ends its turn: the Stop hook waits; the factory asks it to yield.
         const woke = await runStopHook({ relayFile: file, relay: info, retryMs: 10 });
-        seen.context = woke ?? "(let it stop)";
+        seen.context = woke.response ?? "(let it stop)";
         // The host ends the harness once the yield went through.
         if (!signal.aborted) {
           await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
@@ -169,7 +171,10 @@ describe("a planning job on the runner host (spec 20)", () => {
       "planning.yield",
     ]);
     expect(cloud.planningCalls.every((c) => c.jobId === j.jobId)).toBe(true);
-    expect(cloud.planningCalls[1]?.input).toEqual({ activity: "reading the repo" });
+    // The hook holds what it fetches until it has shown it (spec 26)…
+    expect(cloud.planningCalls[1]?.input).toEqual({ hold: true, activity: "reading the repo" });
+    // …and the next call acknowledges the cursor it showed.
+    expect(cloud.planningCalls[2]?.input).toMatchObject({ hold: true, ack: 12 });
     expect(JSON.stringify(seen.tool)).toContain("questionIds");
     const out = JSON.parse(seen.process ?? "{}") as {
       hookSpecificOutput?: { hookEventName: string; additionalContext: string };

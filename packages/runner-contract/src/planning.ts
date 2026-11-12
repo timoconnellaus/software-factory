@@ -14,6 +14,7 @@ export const PLANNING_OPS = [
   "spec.revise",
   "chat.reply",
   "planning.news",
+  "planning.peek",
   "planning.wait",
   "planning.yield",
   "planning.ready",
@@ -158,19 +159,36 @@ export const chatReplyInputSchema = z.object({
   questionId: z.string().min(1).optional(),
   replyTo: z.string().min(1).optional(),
 });
+/**
+ * How a hook confirms what the agent actually saw (spec 26): `ack` is the cursor of the last event
+ * the hooks showed it, which marks everything up to there read; `hold` leaves what this call returns
+ * unread until a later `ack`, so news a hook couldn't show (a timeout, a cut) comes again.
+ */
+const deliveryFields = {
+  ack: z.number().int().nonnegative().optional(),
+  hold: z.boolean().optional(),
+};
 export const planningNewsInputSchema = z.object({
   /** Events after this cursor. Omitted: after the last one the session was given. */
   cursor: z.number().int().nonnegative().optional(),
+  ...deliveryFields,
   /** What the agent is doing, shown in the app's pill (the hook passes its last tool). */
   activity: z.string().max(200).optional(),
 });
+/** A hook's cheap look (a read): is there anything after `cursor` (default: the last delivered)? */
+export const planningPeekInputSchema = z.object({
+  cursor: z.number().int().nonnegative().optional(),
+});
 export const planningWaitInputSchema = z.object({
   cursor: z.number().int().nonnegative().optional(),
+  ...deliveryFields,
   idleMs: z.number().int().min(0).max(600_000).default(PLANNING_IDLE_MS),
   timeoutMs: z.number().int().min(0).max(PLANNING_WAIT_MAX_MS).default(PLANNING_WAIT_MAX_MS),
 });
 export const planningYieldInputSchema = z.object({});
 export const planningReadyInputSchema = z.object({
+  /** Added by the harness: the cursor the hooks last showed you (spec 26). */
+  ack: z.number().int().nonnegative().optional(),
   /** A line for the approver: what's settled, what's assumed. */
   note: z.string().max(2_000).optional(),
 });
@@ -185,6 +203,7 @@ export const PLANNING_INPUTS = {
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema,
+  "planning.peek": planningPeekInputSchema,
   "planning.wait": planningWaitInputSchema,
   "planning.yield": planningYieldInputSchema,
   "planning.ready": planningReadyInputSchema,
@@ -205,6 +224,7 @@ export const PLANNING_TOOL_DESCRIPTIONS: Record<PlanningOp, string> = {
   "chat.reply": "Reply in the planning chat, optionally about a question or to a message.",
   "planning.news":
     "Answers, revised answers, chat and presence since you last looked. The hooks bring news on their own; call this only to check now.",
+  "planning.peek": "Whether there is news since you last looked (the hooks use it).",
   "planning.wait":
     "Wait for news (the Stop hook does this for you when you end your turn). Due after a 15 s pause in answers, a chat message, or every open question answered.",
   "planning.yield":
@@ -274,3 +294,14 @@ export const planningWaitSchema = planningNewsSchema.extend({
   recheckAt: z.string().nullable(),
 });
 export type PlanningWait = z.infer<typeof planningWaitSchema>;
+
+/** `planning.peek`: is there anything after the cursor? A read, so it costs no write. */
+export const planningPeekSchema = z.object({
+  /** The log's latest event id for the work item. */
+  latest: z.number(),
+  /** Whether any event the agent is told about (answers, chat, presence…) follows the cursor. */
+  news: z.boolean(),
+  yield: z.boolean(),
+  ended: z.boolean(),
+});
+export type PlanningPeek = z.infer<typeof planningPeekSchema>;

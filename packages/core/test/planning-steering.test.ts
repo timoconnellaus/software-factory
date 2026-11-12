@@ -212,7 +212,7 @@ describe("the planning loop to kim's standard (spec 26)", () => {
     expect(revised.questions.find((x) => x.id === q)?.answerDeliveredAt).toBeNull();
   });
 
-  it("tells the owner about later questions and replies only when nobody is watching (criterion 8)", async () => {
+  it("tells the owner about later questions and replies once per burst, only when nobody is watching (criterion 8)", async () => {
     const w = await world();
     const { item, agent } = await planning(w);
     await agent("spec.revise", SPEC);
@@ -225,19 +225,28 @@ describe("the planning loop to kim's standard (spec 26)", () => {
     await agent("chat.reply", { text: "Drafted." });
     const questionNotes = await outboxCount("notify", `"planning.question"`, id);
     const replyNotes = await outboxCount("notify", `"planning.reply"`, id);
+    // One notice for the burst: the question's; the reply right after it adds none.
     expect(questionNotes).toBe(1);
-    expect(replyNotes).toBe(1);
+    expect(replyNotes).toBe(0);
+    // Two minutes on, a reply notifies again.
+    await rows(
+      "UPDATE core_planning_sessions SET notified_at = ? WHERE work_item_id = ?",
+      new Date(Date.now() - 3 * 60_000).toISOString(),
+      id,
+    );
+    await agent("chat.reply", { text: "Revised." });
+    expect(await outboxCount("notify", `"planning.reply"`, id)).toBe(1);
 
     await ok("planning.presence", { workItemId: id, open: true }, w.human);
     await agent("question.ask", { questions: [{ prompt: "Third?" }] });
     await agent("chat.reply", { text: "Asked one more." });
     expect(await outboxCount("notify", `"planning.question"`, id)).toBe(questionNotes);
-    expect(await outboxCount("notify", `"planning.reply"`, id)).toBe(replyNotes);
+    expect(await outboxCount("notify", `"planning.reply"`, id)).toBe(1);
   });
 
-  it("puts a steer on a planning run in the chat, delivered, and not again as news (criterion 9)", async () => {
+  it("puts a steer on a planning run in the chat, read once the host takes it, and not again as news (criterion 9)", async () => {
     const w = await world();
-    const { item, agent } = await planning(w);
+    const { item, agent, job, m5 } = await planning(w);
     const live = await ok<{ run: { id: string } }>(
       "run.live",
       { workItemId: item.workItemId },
@@ -248,14 +257,14 @@ describe("the planning loop to kim's standard (spec 26)", () => {
       { workItemId: item.workItemId, runId: live.run.id, text: "Skip the export button." },
       w.human,
     );
-    const view = await ok<{ messages: { text: string; deliveredAt: string | null }[] }>(
-      "planning.get",
-      { workItemId: item.workItemId },
-      w.human,
-    );
+    type View = { messages: { text: string; deliveredAt: string | null }[] };
+    const view = await ok<View>("planning.get", { workItemId: item.workItemId }, w.human);
     expect(view.messages).toEqual([
-      expect.objectContaining({ text: "Skip the export button.", deliveredAt: expect.any(String) }),
+      expect.objectContaining({ text: "Skip the export button.", deliveredAt: null }),
     ]);
+    await ok("run.takeSteers", { jobId: job.jobId, fencingToken: job.lease.fencingToken }, m5);
+    const taken = await ok<View>("planning.get", { workItemId: item.workItemId }, w.human);
+    expect(taken.messages[0]?.deliveredAt).toEqual(expect.any(String));
     const news = await agent<PlanningNews>("planning.news");
     expect(news.events.filter((e) => e.type === "chat.message")).toEqual([]);
   });
@@ -274,5 +283,63 @@ describe("the planning loop to kim's standard (spec 26)", () => {
       item.workItemId,
     );
     expect(again.updated_at).toBe(seen.updated_at);
+  });
+
+  it("never opens the gate with a person's word unread when the two race (review of #67, item 1)", async () => {
+    for (let i = 0; i < 6; i++) {
+      const w = await world();
+      const { item, agent } = await planning(w);
+      await agent("spec.revise", SPEC);
+      const send = () =>
+        ok("chat.send", { workItemId: item.workItemId, text: `Race ${i}` }, w.human);
+      const [ready, chat] = await Promise.allSettled([agent("planning.ready"), send()]);
+      // The loser of the race is refused as a conflict, and the person sends again.
+      if (chat.status === "rejected") {
+        expect((chat.reason as { code?: string }).code).toBe("conflict");
+        await send();
+      }
+      if (ready.status === "rejected") {
+        expect((ready.reason as { code?: string }).code).toBe("conflict");
+      }
+      const state = await first<{ at_gate: number; delivered_cursor: number }>(
+        "SELECT at_gate, delivered_cursor FROM core_planning_sessions WHERE work_item_id = ?",
+        item.workItemId,
+      );
+      const unread = await rows<{ id: number }>(
+        "SELECT id FROM core_planning_events WHERE work_item_id = ? AND id > ? AND type = 'chat.message'",
+        item.workItemId,
+        state.delivered_cursor,
+      );
+      // At the gate only with nothing unread; otherwise the message is waiting for the planner.
+      expect(state.at_gate === 1 && unread.length > 0).toBe(false);
+    }
+  });
+
+  it("lets an approval and a person's word at the gate race without losing either (review of #67, item 2)", async () => {
+    for (let i = 0; i < 6; i++) {
+      const w = await world();
+      const { item, agent } = await planning(w);
+      const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+      await agent("planning.ready");
+      const gate = await openGate(item.workItemId, specId);
+      const [approve, chat] = await Promise.allSettled([
+        ok("spec.approve", { workItemId: item.workItemId }, w.human),
+        ok("chat.send", { workItemId: item.workItemId, text: `Wait ${i}` }, w.human),
+      ]);
+      if (chat.status === "rejected") {
+        // The approval won: sending again leaves the decision as it is.
+        await ok("chat.send", { workItemId: item.workItemId, text: `Wait ${i}` }, w.human);
+      }
+      const decided = await pendingAction(gate);
+      const withdrawals = await outboxCount("workflow.event", `"withdrawn"`, approvalEvent(gate));
+      if (decided.decision === "approved") {
+        expect(approve.status).toBe("fulfilled");
+        expect(withdrawals).toBe(0);
+      } else {
+        expect(decided.decision).toBe("withdrawn");
+        expect(approve.status).toBe("rejected");
+        expect(withdrawals).toBe(1);
+      }
+    }
   });
 });

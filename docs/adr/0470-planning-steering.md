@@ -16,6 +16,13 @@ current step or as an interrupt, Stop, Pause, and "Let the planner finish alone"
 - **News at almost every step.** PostToolUse looks for news at most every 2 s, not 15 s (kim takes
   its own interview at every step). `planning.news` writes nothing when nothing changed, so a look
   costs one read.
+- **Delivery is what the agent saw.** A hook asks with `hold` and acknowledges the cursor it showed
+  (`ack`) on its next call, after it has printed the news. News a hook couldn't show (a timeout, a
+  cut) comes again, and read receipts mean the agent was shown it. A read (`planning.peek`) comes
+  first, so an empty look writes nothing.
+- **Races are guarded, not just checked.** Each rule below is enforced in the operation's D1 batch
+  (`guardExists`, `guardChanged`). The call that loses a race is refused as `conflict` and retried.
+  It never commits half.
 - **No gate on stale news.** `planning.ready` is refused (`conflict`) while a person's answer or
   message since the agent's cursor is undelivered. The agent reads the news and asks again.
 - **A person's word takes the spec back from the gate.** While the spec waits at the gate, a person's

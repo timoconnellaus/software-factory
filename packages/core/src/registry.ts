@@ -89,6 +89,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   planning.specRevise,
   planning.chatReply,
   planning.planningNews,
+  planning.planningPeek,
   planning.planningWait,
   planning.planningYield,
   planning.planningReady,

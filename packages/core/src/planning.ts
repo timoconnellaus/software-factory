@@ -261,6 +261,8 @@ export async function readNews(
   ctx: Pick<HandlerContext, "db" | "now">,
   workItemId: string,
   cursor: number,
+  /** Only events up to this cursor (a range the agent was shown, spec 26). */
+  upTo?: number,
 ): Promise<{
   cursor: number;
   events: PlanningNewsEvent[];
@@ -273,6 +275,7 @@ export async function readNews(
     .select(["id", "type", "actor_id", "payload", "at"])
     .where("work_item_id", "=", workItemId)
     .where("id", ">", cursor)
+    .$if(upTo !== undefined, (q) => q.where("id", "<=", upTo as number))
     .orderBy("id")
     .limit(500)
     .execute()) as LogRow[];
@@ -610,42 +613,20 @@ export async function withdrawSpecGate(ctx: HandlerContext, workItemId: string, 
     .where("kind", "=", "spec")
     .where("status", "=", "pending")
     .execute();
-  if (!pending.length) return;
-  ctx.write(
-    ctx.db
-      .updateTable("core_pending_actions")
-      .set({
-        status: "rejected",
-        decision: "withdrawn",
-        decided_at: ctx.now,
-        decided_by: ctx.actor.id,
-        note,
-      })
-      .where(
-        "id",
-        "in",
-        pending.map((p) => p.id),
-      )
-      .where("status", "=", "pending"),
-  );
-  for (const p of pending) {
-    if (!p.workflow_id) continue;
-    ctx.emit({
-      kind: "workflow.event",
-      payload: {
-        instanceId: p.workflow_id,
-        type: approvalEvent(p.id),
-        payload: { decision: "withdrawn", note, by: ctx.actor.id },
-      },
-    });
-  }
+  for (const gate of pending) withdrawOne(ctx, gate, note);
 }
 
 /**
  * A person answered or wrote while the spec waits at the gate: the planner must see it, so the spec
- * leaves the gate and the next round starts (ADR 0470). A gate the Workflow opens after this (the
- * planner asked a moment before) is stale: approving it is refused, and the planner's next
- * `planning.ready` withdraws it. Returns whether the spec was taken back.
+ * leaves the gate and the next round starts (ADR 0470). Every branch is guarded in the operation's
+ * batch, so a concurrent `planning.ready` or gate decision can't slip past it (the loser of the race
+ * is refused as `conflict` and retried by the person):
+ * - not at the gate: the batch requires it still isn't, so a gate asked for meanwhile fails this call;
+ * - at the gate and its spec gate already decided (approved a moment ago): the decision stands;
+ * - at the gate, the gate open: the gate is withdrawn, guarded on it still being pending;
+ * - at the gate, the gate not opened yet: only the session moves on; the gate the Workflow opens
+ *   next is stale (approving it is refused, and the planner's next `planning.ready` withdraws it).
+ * Returns whether the spec was taken back.
  */
 export async function takeBackFromGate(
   ctx: HandlerContext,
@@ -653,7 +634,28 @@ export async function takeBackFromGate(
   why: string,
 ): Promise<boolean> {
   const session = await openSession(ctx, w.id);
-  if (!session?.at_gate) return false;
+  if (!session) return false;
+  if (!session.at_gate) {
+    ctx.guardExists(
+      "the spec isn't at the gate",
+      ctx.db
+        .selectFrom("core_planning_sessions")
+        .select("id")
+        .where("id", "=", session.id)
+        .where("at_gate", "=", 0),
+    );
+    return false;
+  }
+  const gate = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select(["id", "status", "workflow_id"])
+    .where("work_item_id", "=", w.id)
+    .where("kind", "=", "spec")
+    .where("created_at", ">=", session.ready_at ?? session.created_at)
+    .orderBy("created_at", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  if (gate && gate.status !== "pending") return false;
   const note = `withdrawn: ${why}, so the planner revises before the gate`;
   ctx.write(
     ctx.db
@@ -666,9 +668,11 @@ export async function takeBackFromGate(
         updated_at: ctx.now,
       })
       .where("id", "=", session.id)
-      .where("at_gate", "=", 1),
+      .where("at_gate", "=", 1)
+      .where("round", "=", session.round),
   );
-  await withdrawSpecGate(ctx, w.id, note);
+  ctx.guardChanged("the spec still waits at the gate");
+  if (gate) withdrawOne(ctx, gate, note);
   ctx.write(
     ctx.db
       .updateTable("core_work_items")
@@ -680,17 +684,98 @@ export async function takeBackFromGate(
   return true;
 }
 
+/** Withdraws one pending spec gate, guarded on it still being pending (else the batch fails). */
+function withdrawOne(
+  ctx: HandlerContext,
+  gate: { id: string; workflow_id: string | null },
+  note: string,
+) {
+  ctx.write(
+    ctx.db
+      .updateTable("core_pending_actions")
+      .set({
+        status: "rejected",
+        decision: "withdrawn",
+        decided_at: ctx.now,
+        decided_by: ctx.actor.id,
+        note,
+      })
+      .where("id", "=", gate.id)
+      .where("status", "=", "pending"),
+  );
+  ctx.guardChanged("the spec gate is still undecided");
+  if (gate.workflow_id) {
+    ctx.emit({
+      kind: "workflow.event",
+      payload: {
+        instanceId: gate.workflow_id,
+        type: approvalEvent(gate.id),
+        payload: { decision: "withdrawn", note, by: ctx.actor.id },
+      },
+    });
+  }
+}
+
 /**
  * Refuses a decision on a spec gate the planner no longer stands behind: its session is open but
- * not at the gate (a person wrote after it asked, ADR 0470).
+ * not at the gate (a person wrote after it asked, ADR 0470). Guarded, so a take-back committing
+ * first fails the decision instead of being overtaken by it.
  */
 export async function assertSpecGateCurrent(ctx: HandlerContext, workItemId: string | null) {
   if (!workItemId) return;
   const session = await openSession(ctx, workItemId);
-  if (session && !session.at_gate) {
+  if (!session) return;
+  if (!session.at_gate) {
     throw new OperationError(
       "conflict",
       "a person wrote after the planner asked for the gate: it is revising, and asks again when it's done",
     );
   }
+  ctx.guardExists(
+    "the planner still stands behind the gate",
+    ctx.db
+      .selectFrom("core_planning_sessions")
+      .select("id")
+      .where("id", "=", session.id)
+      .where("at_gate", "=", 1)
+      .where("round", "=", session.round),
+  );
+}
+
+/** Whether a person did anything the agent must read after `cursor` (no page limit). */
+export async function hasUnreadPersonNews(
+  ctx: Pick<HandlerContext, "db">,
+  workItemId: string,
+  cursor: number,
+): Promise<number> {
+  const row = await ctx.db
+    .selectFrom("core_planning_events")
+    .select((eb) => eb.fn.countAll().as("n"))
+    .where("work_item_id", "=", workItemId)
+    .where("id", ">", cursor)
+    .where("type", "in", [...USER_EVENTS])
+    .executeTakeFirst();
+  return Number(row?.n ?? 0);
+}
+
+/** Guards the batch on a person having done nothing the agent hasn't read since `cursor`. */
+export function guardNoUnreadPersonNews(ctx: HandlerContext, workItemId: string, cursor: number) {
+  ctx.guardExists(
+    "nothing from a person is unread",
+    ctx.db
+      .selectFrom("core_work_items")
+      .select("id")
+      .where("id", "=", workItemId)
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom("core_planning_events")
+              .select("id")
+              .where("work_item_id", "=", workItemId)
+              .where("id", ">", cursor)
+              .where("type", "in", [...USER_EVENTS]),
+          ),
+        ),
+      ),
+  );
 }

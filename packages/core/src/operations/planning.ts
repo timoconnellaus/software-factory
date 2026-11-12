@@ -6,6 +6,7 @@ import { json, parseJson } from "@software-factory/db";
 import {
   chatReplyInputSchema,
   planningNewsInputSchema,
+  planningPeekInputSchema,
   planningReadyInputSchema,
   planningWaitInputSchema,
   specReviseInputSchema,
@@ -17,7 +18,10 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import {
   batchDue,
   enqueuePlanningJob,
+  guardNoUnreadPersonNews,
+  hasUnreadPersonNews,
   logPlanning,
+  NEWS_EVENTS,
   newsEnvelope,
   OPEN_SESSION,
   openSession,
@@ -98,6 +102,9 @@ export async function planningJob(
   return { session, runId: run.id };
 }
 
+/** Away notices for questions and replies go at most this often (one per burst). */
+const NOTIFY_BURST_MS = 2 * 60_000;
+
 /** How stale `agent_seen_at` may get before a look with nothing new writes it again. */
 const SEEN_REFRESH_MS = 30_000;
 
@@ -151,8 +158,21 @@ export async function notifyAway(
   title: string,
 ) {
   if (!session.announced_at) return;
+  // Once per burst (kim's push settle): nothing more for two minutes after a notice.
+  if (
+    session.notified_at &&
+    Date.parse(ctx.now) - Date.parse(session.notified_at) < NOTIFY_BURST_MS
+  ) {
+    return;
+  }
   const w = requireWorkItem(ctx);
   if ((await presentPeople(ctx, w.id)).length) return;
+  ctx.write(
+    ctx.db
+      .updateTable("core_planning_sessions")
+      .set({ notified_at: ctx.now })
+      .where("id", "=", session.id),
+  );
   const approvers = await approverIds(ctx.db, w.org_id, ctx.scope.policy);
   const to = approvers.includes(w.requester_user_id) ? w.requester_user_id : (approvers[0] ?? null);
   ctx.emit({
@@ -538,7 +558,7 @@ const newsOutput = z.object({
 export const planningNews = defineOperation({
   name: "planning.news",
   description:
-    "The planning agent's news since its cursor (spec 20): answers, revised answers, people's chat messages and presence changes. Moves the session's cursor. The PostToolUse and UserPromptSubmit hooks call it.",
+    "The planning agent's news since its cursor (spec 20): answers, revised answers, people's chat messages and presence changes. A hook passes `ack` (the last cursor it showed the agent) and `hold`, so news it couldn't show comes again (spec 26); without `hold` the news is marked read at once (the agent's own planning_news call).",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -547,13 +567,64 @@ export const planningNews = defineOperation({
   scope: byJob,
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
-    const from = input.cursor ?? session.delivered_cursor;
+    const acked = await acknowledge(ctx, session, input.ack);
+    const from = input.cursor ?? acked;
     const news = await readNews(ctx, session.work_item_id, from);
-    deliver(ctx, session, news.cursor, news.delivered);
+    if (!input.hold) deliver(ctx, session, news.cursor, news.delivered, acked);
     markWorking(ctx, session, input.activity);
     return { ...(await newsEnvelope(ctx, session)), cursor: news.cursor, events: news.events };
   },
 });
+
+export const planningPeek = defineOperation({
+  name: "planning.peek",
+  description:
+    "Whether there is planning news after a cursor (default: the last one delivered), and whether the session must yield or has ended (spec 26). A read, so a hook's look between the agent's steps costs no write.",
+  risk: "read",
+  actors: ["runner"],
+  permission: "signed-in",
+  input: planningPeekInputSchema.extend(planningJobFields),
+  output: z.object({
+    latest: z.number(),
+    news: z.boolean(),
+    yield: z.boolean(),
+    ended: z.boolean(),
+  }),
+  scope: byJob,
+  async handler(input, ctx) {
+    const { session } = await planningJob(ctx, input);
+    const from = Math.max(input.cursor ?? 0, session.delivered_cursor);
+    const rows = await ctx.db
+      .selectFrom("core_planning_events")
+      .select(["id", "type"])
+      .where("work_item_id", "=", session.work_item_id)
+      .where("id", ">", from)
+      .orderBy("id", "desc")
+      .limit(200)
+      .execute();
+    return {
+      latest: rows[0]?.id ?? from,
+      news: rows.some((r) => (NEWS_EVENTS as readonly string[]).includes(r.type)),
+      yield: session.yield_requested_at !== null,
+      ended: !OPEN_SESSION.includes(session.status),
+    };
+  },
+});
+
+/**
+ * Marks read what a hook says the agent was shown (`ack`, spec 26): the cursor moves there and the
+ * answers and messages up to it get their receipts. Returns the cursor news continues from.
+ */
+async function acknowledge(
+  ctx: HandlerContext,
+  session: PlanningSessionRow,
+  ack: number | undefined,
+): Promise<number> {
+  if (ack === undefined || ack <= session.delivered_cursor) return session.delivered_cursor;
+  const shown = await readNews(ctx, session.work_item_id, session.delivered_cursor, ack);
+  deliver(ctx, session, ack, shown.delivered);
+  return ack;
+}
 
 /**
  * Moves the session's cursor and marks exactly the answers and people's messages it carried as read
@@ -564,8 +635,10 @@ function deliver(
   session: PlanningSessionRow,
   cursor: number,
   delivered: { questionIds: string[]; messageIds: string[] },
+  /** The cursor already moved to in this call (an `ack`). */
+  floor = session.delivered_cursor,
 ) {
-  if (cursor <= session.delivered_cursor) return;
+  if (cursor <= floor) return;
   ctx.write(
     ctx.db
       .updateTable("core_planning_sessions")
@@ -605,13 +678,14 @@ export const planningWait = defineOperation({
   scope: byJob,
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
-    const from = input.cursor ?? session.delivered_cursor;
+    const acked = await acknowledge(ctx, session, input.ack);
+    const from = input.cursor ?? acked;
     const news = await readNews(ctx, session.work_item_id, from);
     const envelope = await newsEnvelope(ctx, session);
     const dueAt = batchDue(news.userEvents, envelope.openQuestions, input.idleMs);
     const due = dueAt !== null && dueAt <= Date.parse(ctx.now);
     if (due) {
-      deliver(ctx, session, news.cursor, news.delivered);
+      if (!input.hold) deliver(ctx, session, news.cursor, news.delivered, acked);
       markWorking(ctx, session);
       return { ...envelope, cursor: news.cursor, events: news.events, due, recheckAt: null };
     }
@@ -690,13 +764,16 @@ export const planningReady = defineOperation({
     }
     if (!w.current_spec_id) throw new OperationError("conflict", "revise the spec first");
     // No gate on stale news (ADR 0470): a person's answer or message the agent hasn't read yet.
-    const unread = await readNews(ctx, w.id, session.delivered_cursor);
-    if (unread.userEvents.length) {
+    // Checked now and guarded in the batch, so one arriving meanwhile fails this call instead.
+    const read = await acknowledge(ctx, session, input.ack);
+    const unread = await hasUnreadPersonNews(ctx, w.id, read);
+    if (unread) {
       throw new OperationError(
         "conflict",
-        `a person answered or wrote since you last looked (${unread.userEvents.length} event${unread.userEvents.length === 1 ? "" : "s"}): call planning_news, act on it, then ask for the gate again`,
+        `a person answered or wrote since you last looked (${unread} event${unread === 1 ? "" : "s"}): call planning_news, act on it, then ask for the gate again`,
       );
     }
+    guardNoUnreadPersonNews(ctx, w.id, read);
     const open = await ctx.db
       .selectFrom("core_questions")
       .select("number")
@@ -722,8 +799,11 @@ export const planningReady = defineOperation({
           at_gate: 1,
           updated_at: ctx.now,
         })
-        .where("id", "=", session.id),
+        .where("id", "=", session.id)
+        .where("at_gate", "=", 0)
+        .where("round", "=", session.round),
     );
+    ctx.guardChanged("the round hasn't moved since the planner looked");
     ctx.emit({
       kind: "workflow.event",
       payload: {

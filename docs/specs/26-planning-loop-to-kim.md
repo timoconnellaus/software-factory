@@ -99,4 +99,24 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
 - `notifyAway` sends `planning.question` and `planning.reply` notices after the announcement, when
   nobody is present.
 - `run.steer` on a planning run writes a delivered chat message and logs `chat.steered` (not news).
+- After review (fixes on #67):
+  - Every check is guarded in the operation's batch:
+    - `planning.ready` guards "nothing from a person is unread" and "the round hasn't moved";
+    - `takeBackFromGate` guards "not at the gate" when it doesn't act, and "still at the gate,
+      gate still pending" when it does. It leaves a gate that was just decided alone;
+    - approving a spec gate guards "the planner still stands behind it".
+    The loser of a race is refused as `conflict` and retried. A core test races `planning.ready`
+    against a chat, and an approval against a chat at the gate.
+  - Delivery is confirmed by the hook. `planning.news` and `planning.wait` take `ack` (the cursor
+    the hooks last showed the agent) and `hold` (don't mark this call's news read). The hooks save
+    the cursor they showed only after printing it. `planning_ready` sends the same `ack` through the
+    MCP server.
+  - `fitNews` never drops answers or messages. Long texts are shortened, and events that don't fit
+    come at the next step, because only the shown cursor is acknowledged.
+  - `planning.peek` (read risk) comes first, so a look with nothing new and the same activity costs
+    no write and no audit row.
+  - `hasUnreadPersonNews` counts without the 500-event page.
+  - A planning steer's chat message is marked read when the host takes the steer (`steer_id`), and
+    it takes the spec back from the gate.
+  - Away notices go once per burst (`notified_at`, 2 minutes).
 - Not in A: the interrupt, Stop, Pause and finish alone (PR B), and the UI (PR C).
