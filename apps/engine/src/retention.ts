@@ -102,7 +102,11 @@ export async function archiveRunEvents(
     if (events.length > 0) {
       const first = events[0]?.seq ?? 0;
       const last = events.at(-1)?.seq ?? first;
-      await putNdjson(env.ARCHIVE, `${prefix}events-${String(first).padStart(10, "0")}.ndjson`, events);
+      await putNdjson(
+        env.ARCHIVE,
+        `${prefix}events-${String(first).padStart(10, "0")}.ndjson`,
+        events,
+      );
       await env.DB.prepare("DELETE FROM core_run_events WHERE run_id = ? AND seq <= ?")
         .bind(run.id, last)
         .run();
