@@ -271,7 +271,7 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
   scope?: (input: z.output<I>, db: Db) => Promise<ScopeRef>;
   /**
    * Machine-frequency operations (a heartbeat, an empty claim, a held wait, presence; ADR 0590,
-   * AGENTS.md "Cloudflare cost" rule 3) write no audit row unless the call changed state: the handler
+   * AGENTS.md "Cloudflare cost" rule 12) write no audit row unless the call changed state: the handler
    * called `ctx.change` or `ctx.changed`, queued an outbox message, or `changed(output)` is true.
    * Refusals and failures are always audited, and so is a call with an idempotency key.
    */
