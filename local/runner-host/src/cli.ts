@@ -12,9 +12,15 @@
 //                                  per remote, no job worktree or tmux session without a job),
 //                                  and that each running job's Claude runs exactly as the
 //                                  harness launched it (ADR 0270); on Linux also bubblewrap,
-//                                  socat, the user systemd and linger
+//                                  socat, the user systemd and linger. With container isolation
+//                                  (ADR 0430): Docker, the agent image (--fix builds it), the
+//                                  model credential, and no container left without a job
 //   sf-runner install | uninstall  the service: ~/Library/LaunchAgents on macOS,
 //                                  ~/.config/systemd/user on Linux
+//   sf-runner account list | add <name> [--token-stdin [--oauth|--api-key]] [--no-login]
+//                     | use <name> | remove <name>
+//                                  Claude accounts on this host (ADR 0410): new jobs use the
+//                                  active one; credentials never leave this machine
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile } from "node:fs/promises";
@@ -23,14 +29,22 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import {
+  checkRunningContainer,
   checkRunningHarness,
+  currentImage,
   diagnose,
+  diagnoseContainers,
+  ensureImage,
   jobIdOfSession,
   nodeExec,
+  readContainerRecord,
+  reapContainers,
   reapOrphans,
   tmuxAtLeast,
   tmuxCli,
 } from "@software-factory/runner-local";
+import { accountCommand } from "./account-cli.ts";
+import { AccountError, accountPaths, activeAccount, listAccounts } from "./accounts.ts";
 import { checkoutDirs, migrateCheckouts } from "./checkouts.ts";
 import type { RunnerConfig } from "./config.ts";
 import {
@@ -47,7 +61,14 @@ import { acquireHostLock, HostLockedError } from "./host-lock.ts";
 import { installHint, linuxChecks } from "./linux.ts";
 import { readLiveJobs } from "./live-jobs.ts";
 import { findOnPath, parsePairingInput, serviceNode } from "./pairing.ts";
-import { buildRunner, hostDirs, liveJobsFile } from "./runner.ts";
+import {
+  buildRunner,
+  containerDirs,
+  dockerBin,
+  hostDirs,
+  hostModelCredential,
+  liveJobsFile,
+} from "./runner.ts";
 import {
   createSelfUpdater,
   pnpmInstall,
@@ -245,7 +266,7 @@ async function run() {
     },
   });
   log(
-    `runner ${config.runnerId} (contract v${CONTRACT_VERSION}) → ${config.baseUrl}, up to ${config.maxConcurrent} heavy and ${config.maxLight} light jobs`,
+    `runner ${config.runnerId} (contract v${CONTRACT_VERSION}) → ${config.baseUrl}, up to ${config.maxConcurrent} heavy and ${config.maxLight} light jobs, sessions in ${config.session}`,
   );
   let stopping = false;
   const shutdown = async (signal: string) => {
@@ -300,6 +321,13 @@ async function status() {
   const state = service ? await service.status(nodeExec) : null;
   console.log(
     `service: ${service ? `${state ?? "not installed"} (${service.kind}, ${service.file})` : `none on ${process.platform}`}`,
+  );
+  const accounts = await listAccounts(accountPaths(dirs)).catch(() => null);
+  const active = accounts?.find((a) => a.active);
+  console.log(
+    active
+      ? `Claude account for new jobs: ${active.name} (${accounts?.length} on this host; sf-runner account list)`
+      : "Claude account: unknown (accounts.json unreadable)",
   );
   const live = await readLiveJobs(liveJobsFile(dirs));
   console.log(
@@ -445,6 +473,58 @@ async function doctor(args: string[]) {
     if (left.length) throw new Error(`${left.length} problem(s) left after --fix`);
     return relevant.some((f) => !f.fixable) ? "fixed what can be fixed here" : "fixed";
   });
+  const configured = await loadConfig(dirs.configFile).catch(() => null);
+  if (configured?.isolation === "container") {
+    // ADR 0430: a container per job.
+    const { runtime } = containerDirs(configured, dirs);
+    let dockerUp = false;
+    await check(`docker (${dockerBin(configured)})`, async () => {
+      const v = await runtime.version();
+      dockerUp = true;
+      return `server ${v}`;
+    });
+    if (dockerUp) {
+      await check("agent image", async () => {
+        const image = await currentImage(runtime);
+        if (image.id) return `${image.tag} (${image.id.slice(0, 19)})`;
+        if (!values.fix) {
+          throw new Error(
+            `${image.tag} isn't built; sf-runner doctor --fix builds it (a few minutes)`,
+          );
+        }
+        console.log(`  building ${image.tag}…`);
+        const built = await ensureImage(runtime);
+        return `${built.tag} built (${built.id.slice(0, 19)})`;
+      });
+      await check("container jobs (no container, network or job dir without a job)", async () => {
+        const live = await liveJobs();
+        if (!live) return "not checked: the running service doesn't report its jobs";
+        const findings = await diagnoseContainers(containerDirs(configured, dirs), live);
+        if (findings.length === 0) return "ok";
+        for (const f of findings) console.log(`  - ${f}`);
+        if (!values.fix) {
+          throw new Error(`${findings.length} left over; run sf-runner doctor --fix`);
+        }
+        const reaped = await reapContainers(containerDirs(configured, dirs), live);
+        return `fixed: removed what ${reaped.join(", ")} left`;
+      });
+    }
+    await check("model credential for containers (the active Claude account)", async () => {
+      // A container gets the active account's token; a login account can't go in (ADR 0430).
+      const account = await activeAccount(accountPaths(dirs));
+      const credential = await hostModelCredential(configured)(undefined, account);
+      if (!credential) {
+        throw new Error(
+          "none: add a token account (`claude setup-token | sf-runner account add <name> --token-stdin`, then `sf-runner account use <name>`), or put CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY) in runner.json container.env",
+        );
+      }
+      const name = Object.keys(credential.env)[0] as keyof NonNullable<
+        NonNullable<RunnerConfig["container"]>["env"]
+      >;
+      if (account.token) return `${name} from token account "${account.name}"`;
+      return `${name} from ${configured.container?.env?.[name] ? "runner.json" : "sf-runner's environment"} (account "${account.name}")`;
+    });
+  }
   await check("running jobs' harness (permission mode, setting sources, settings)", async () => {
     const live = await liveJobs();
     // Unknown live set (an old host): check every run dir that has a launch record.
@@ -452,7 +532,14 @@ async function doctor(args: string[]) {
     const lines: string[] = [];
     let bad = 0;
     for (const jobId of jobs) {
-      const checked = await checkRunningHarness(join(dirs.runsDir, jobId));
+      const runDir = join(dirs.runsDir, jobId);
+      // A container job's Claude is checked inside its container (ADR 0430).
+      const checked = (await readContainerRecord(runDir))
+        ? await checkRunningContainer(
+            runDir,
+            configured ? containerDirs(configured, dirs).runtime : undefined,
+          )
+        : await checkRunningHarness(runDir);
       if (!checked) {
         if (live) lines.push(`${jobId}: no launch record (started by an older runner?)`);
         continue;
@@ -461,7 +548,9 @@ async function doctor(args: string[]) {
         bad++;
         lines.push(`${jobId}: harness-config-mismatch: ${checked.problems.join("; ")}`);
       } else {
-        lines.push(`${jobId}: ${checked.record.mode}, as launched`);
+        lines.push(
+          `${jobId}: ${checked.record.mode}${checked.record.isolation === "container" ? " in its container" : ""}, as launched`,
+        );
       }
     }
     for (const line of lines) console.log(`  - ${line}`);
@@ -512,10 +601,15 @@ async function install(args: string[]) {
   const localBin = join(process.env.HOME ?? "", ".local", "bin");
   // On Linux Claude Code's sandbox runs bubblewrap and socat (ADR 0420): their dirs go on PATH too.
   const needed = ["tmux", "claude", ...(process.platform === "linux" ? ["bwrap", "socat"] : [])];
-  const tools = needed.map((name) => ({
-    name,
-    path: findOnPath(name, process.env.PATH, undefined, [localBin]),
-  }));
+  const config = await loadConfig(dirs.configFile).catch(() => null);
+  const tools = [
+    ...needed.map((name) => ({
+      name,
+      path: findOnPath(name, process.env.PATH, undefined, [localBin]),
+    })),
+    // A container runner starts each job with `docker` (ADR 0430).
+    ...(config?.isolation === "container" ? [{ name: "docker", path: dockerBin(config) }] : []),
+  ];
   for (const t of tools) {
     if (!t.path)
       console.log(`! ${t.name} wasn't found on PATH or in the usual places: jobs won't start.`);
@@ -578,13 +672,33 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     await service.uninstall(nodeExec, service.file);
     console.log(`Removed ${service.name} (${service.file})`);
   },
+  account: async (args) => {
+    const code = await accountCommand(args, {
+      paths: accountPaths(dirs),
+      runsDir: dirs.runsDir,
+      liveJobs,
+      allRuns: () => readdir(dirs.runsDir).catch(() => [] as string[]),
+      readStdin,
+      runClaude: (env) =>
+        new Promise((resolve) => {
+          const child = spawn("claude", [], { stdio: "inherit", env });
+          child.on("error", (err) => {
+            console.error(`couldn't start claude: ${err.message}`);
+            resolve(null);
+          });
+          child.on("exit", (code) => resolve(code));
+        }),
+      log: (line) => console.log(line),
+    });
+    if (code !== 0) process.exit(code);
+  },
 };
 const fn = command ? commands[command] : undefined;
 if (!fn) {
-  console.log("usage: sf-runner login|run|status|doctor [--fix]|install|uninstall");
+  console.log("usage: sf-runner login|run|status|doctor [--fix]|install|uninstall|account");
   process.exit(command ? 2 : 0);
 }
 fn(rest).catch((err) => {
   console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
+  process.exit(err instanceof AccountError ? 2 : 1);
 });

@@ -23,6 +23,7 @@ import * as protection from "./operations/protection.ts";
 import * as questions from "./operations/questions.ts";
 import * as runners from "./operations/runners.ts";
 import * as specs from "./operations/specs.ts";
+import * as terminal from "./operations/terminal.ts";
 import * as verify from "./operations/verify.ts";
 import * as workItems from "./operations/work-items.ts";
 
@@ -142,6 +143,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.runnerRegister,
   runners.runnerRotateKey,
   runners.runnerList,
+  runners.runnerAccountUse,
   devices.runnerDeviceStart,
   devices.runnerDevicePoll,
   devices.runnerDeviceLookup,
@@ -155,6 +157,10 @@ export const OPERATIONS: readonly AnyOperation[] = [
   live.runLive,
   live.runSteer,
   live.runTakeSteers,
+  live.runTakeover,
+  terminal.runTerminalAttach,
+  terminal.runTerminalDetach,
+  terminal.runTerminalHost,
   runners.runAddArtifact,
   runners.runHandBack,
   runners.runRelease,

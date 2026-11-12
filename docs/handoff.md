@@ -73,12 +73,36 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   (block X, migration 0170), is built on `timoconnellaus/hosts-watch-steer`: the Live tab (transcript
   and terminal from `run.live`, polled), `run.steer` for the runner's owner, the held `steer` call
   on the channel, `message` events from the transcript. Criteria 1 and 2 need a live run on the M5.
+  Piece 8, **a chat UI on a stream-json session** (block AC, [spec 37](specs/37-chat-ui-stream-json.md) /
+  [ADR 0450](adr/0450-a-stream-json-session-mode-with-a-chat-view.md), migration 0220, branch
+  `timoconnellaus/hosts-chat-ui`): `runner.json` `session: "stream-json"` runs Claude headless as a
+  two-way stream (runner-local `stream.ts`, the `chat` capability), the Live tab's Chat view, and
+  `run.takeover` (stop the stream, show `claude --resume <id>`). Criteria 1–4 need a live run on the M5.
+  Piece 3, [spec 32](specs/32-claude-accounts-on-a-host.md) / [ADR 0410](adr/0410-claude-accounts-live-on-the-host.md)
+  (block Y, migration 0180), is built on branch `timoconnellaus/hosts-accounts`: Claude accounts on
+  a host (`sf-runner account add|use|list|remove`), the active one in each job's launch, the
+  dashboard's picker on Setup (`runner.account.use`, delivered as `account.use` on the heartbeat),
+  usage limits surfaced per account. Its live checks (a real second login, a switch from Setup) are
+  in the PR.
   Piece 5, **Linux hosts** (block Z, [spec 34](specs/34-linux-hosts.md) /
   [ADR 0420](adr/0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md), branch
   `timoconnellaus/hosts-linux`): a systemd user service chosen by platform, Linux log path, the
   harness's per-platform deny lists, Linux doctor checks (bubblewrap, socat, linger), the install
   path in the runner-host README, and `local/runner-host/scripts/linux-check.sh` (the tests in a
   Debian container). Criteria 2–3, 6 and 8 need a live Linux host (README "Running on Linux").
+  Piece 4, **a container per job** (block AA, [spec 33](specs/33-container-per-job.md) /
+  [ADR 0430](adr/0430-a-container-per-job.md), branch `timoconnellaus/hosts-containers`):
+  `runner.json` `"isolation": "container"` runs each job's Claude in a Docker container
+  (`packages/runner-local/src/container/`, image `packages/runner-local/container/`). Each job gets a
+  self-contained job repo, an egress allowlist proxy, every stage `bypassPermissions`, and the launch
+  check inside the container. The host still pushes. Planning sessions stay on the host. Criteria 1
+  and 9 need a live run on the M5 with Docker Desktop (runner-host README, "A container per job").
+  Piece 6, **the web terminal** (block AB, [spec 35](specs/35-web-terminal.md) /
+  [ADR 0440](adr/0440-a-web-terminal-relayed-through-a-durable-object-per-job.md), migration 0210,
+  branch `timoconnellaus/hosts-web-terminal`): the Live tab's Web terminal view (xterm.js), the
+  `TerminalRelay` Durable Object per job, the held `terminal` call and the host's outbound socket,
+  `run.terminal.attach`/`detach`/`host`, the tmux control-mode bridge in runner-local. Criteria 1,
+  2 and 6 need a live run on the M5 (engine deployed first, then the runner updated).
 - **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
   versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals

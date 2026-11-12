@@ -6,6 +6,7 @@
 import type { HarnessId, Job } from "@software-factory/runner-contract";
 import { claudeArgv } from "./launch.ts";
 
+export * from "./account.ts";
 export * from "./attachments.ts";
 export * from "./launch.ts";
 export * from "./planning/hooks.ts";
@@ -15,6 +16,7 @@ export * from "./planning/relay.ts";
 export * from "./project.ts";
 export * from "./settings.ts";
 export * from "./status.ts";
+export * from "./stream-json.ts";
 export * from "./transcript.ts";
 
 export const HARNESS_ID: HarnessId = "claude-code";

@@ -292,15 +292,56 @@ The live harness for one job: under runner-local, Claude Code in the tmux sessio
 the factory's own tmux socket (`tmux -L software-factory`), in the job's worktree. Its status comes
 from the harness's status hook (`<runDir>/status.jsonl`), not the screen (ADR 0380). What the agent
 says comes from its transcript, as `message` events. People watch it on the work item page's
-**Live** tab (spec 31).
+**Live** tab (spec 31). On a container runner, the tmux session runs the job's container, and
+Claude runs inside it (ADR 0430). In a runner's **stream-json** session mode it is instead Claude
+Code headless as a child process of the runner host, a two-way JSON stream (see Session mode).
 _Avoid_: terminal (the session may have no terminal attached), pane
+
+**Session mode**
+How a runner runs its job sessions (ADR 0450), set per runner in `runner.json` `session`: `tmux`
+(the default: Claude Code's TUI in tmux; takeover by `tmux attach`) or `stream-json` (Claude Code
+headless, `claude -p --input-format stream-json --output-format stream-json`: the prompt pointer
+and steers go in as JSON user messages, its events come from the structured output, and takeover is
+by `claude --resume`). Both run the harness's launch script and are verified the same way (ADR
+0270). On the wire a session's mode is `terminal` or `stream` (`session.started`), and a runner in
+stream mode declares `chat`.
+_Avoid_: headless mode (`headless` is a capability), chat mode
+
+**Chat view**
+The Live tab's view of a stream-json run (spec 37): the agent's text as Markdown, each tool call
+with its input and output, a line per turn with its tokens and time, and the owner's messages, with
+a composer and **Take over in a terminal** for the runner's owner. Not the planning chat.
+_Avoid_: chat (alone: that is planning's), transcript (the terminal run's view)
+
+**Takeover by resume**
+Handing a stream-json run to a person (ADR 0450): `run.takeover` (the runner's owner only) asks the
+host to stop the session cleanly, and the run then shows the exact `claude --resume <session-id>`
+command (its worktree, settings, mode and model) to run on that machine. The job keeps its worktree
+and lease and follows the resumed session through the status hook; quitting it hands the run back.
+_Avoid_: attach (that is tmux), take over (alone: the lease takeover of ADR 0021 cancels the run)
 
 **Steer**
 A person's message into a live job session, sent from the Live tab with `run.steer` (ADR 0400) and
-typed into the session as if at its terminal. Only the owner of the run's runner may steer (it runs
+typed into the session as if at its terminal (a stream-json session gets it as a JSON user message,
+ADR 0450). Only the owner of the run's runner may steer (it runs
 on their machine with their model credential); others watch read-only. Every steer is journalled;
 the runner host takes it over a held `steer` call on the signed channel, at most once.
 _Avoid_: chat (planning has its own chat), prompt (the job's prompt is set at launch), command
+
+**Web terminal**
+A running job's real terminal in the browser: the **Web terminal** view on the Live tab (spec 35,
+ADR 0440), xterm.js over a WebSocket to the job's **terminal relay**. Opening it is an operation,
+`run.terminal.attach`, which records who attached, when, and the mode: `type` for the owner of the
+run's runner, `watch` (read-only) for everyone else in the org. The relay enforces the mode. It
+shows the visible screen, not scrollback.
+_Avoid_: console, shell, remote desktop
+
+**Terminal relay**
+The `TerminalRelay` Durable Object in sf-engine, one per job (ADR 0440). The runner host connects to
+it outbound with a one-use ticket it got from the signed channel's held `terminal` call, and viewers
+connect through sf-app. It forwards the host's output to every viewer and only the runner owner's
+keys and size to the host, and tells the host to stop when the last viewer leaves.
+_Avoid_: proxy, tunnel (nothing listens on the host)
 
 **Runner host**
 The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
@@ -315,6 +356,25 @@ It keeps its own code on the commit the engine was deployed from, updating itsel
 (ADR 0360).
 _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 
+**Claude account** (on a host)
+A Claude subscription or key a runner host runs Claude Code with (ADR 0410): a **login** (its own
+Claude config dir, used as `CLAUDE_CONFIG_DIR`) or a **token** (a `claude setup-token` OAuth token or
+an API key in a 0600 file), plus `default`, whatever `claude` uses with no account set. Added and
+removed only on the host (`sf-runner account`). One is **active**: a job takes it when its workspace
+is prepared and keeps it. The owner switches it by hand, on the host or from Setup
+(`runner.account.use`, which sends only the name). The factory sees names, never credentials.
+_Avoid_: profile (Orca's word), login (only one kind), key (only one kind)
+
+**Isolation**
+How a runner confines a job's harness, set per runner in `runner.json` (ADR 0430):
+- `sandbox`, the default: a git worktree with Claude Code's OS sandbox (ADR 0270);
+- `container`: a Docker container per job. It mounts only the **job repo** (a new repo per job, with
+  only the start point's history and the default branch), a fresh home and temp dirs. Egress goes
+  only through the job's **egress proxy** (the stage's allowed hosts and the model API). Every stage
+  runs `bypassPermissions`. The container gets the job's Claude account as its token, so it needs a
+  token account (or `default` with a token in `runner.json`). A login account can't be used.
+_Avoid_: sandbox (for the container: the sandbox is Claude's own)
+
 **Capability**
 Something a runner or harness declares it can do. Jobs ask for capabilities; `.factory/` can
 restrict them. The known ones:
@@ -327,7 +387,13 @@ restrict them. The known ones:
 - `headless`: runs a session with no terminal or UI attached (e.g. `claude -p`);
 - `work-item-attachments`: fetches the work item's attachments over the job channel into the run,
   outside the git tree (ADR 0310);
-- `steer`: a person can message the live session from the dashboard (a **steer**, ADR 0400).
+- `container-isolation`: each job's harness runs in its own container (ADR 0430); planning sessions
+  still run on the host;
+- `steer`: a person can message the live session from the dashboard (a **steer**, ADR 0400);
+- `chat`: sessions run as a structured stream (the stream-json **session mode**): the dashboard
+  shows them in the **Chat view** and the owner can take one over by resume (ADR 0450);
+- `terminal`: the live session's terminal can be bridged to the dashboard's **web terminal**
+  (runner-local: a tmux control-mode client, ADR 0440).
 _Avoid_: feature, permission (that is the operation's), skill
 
 **Harness**

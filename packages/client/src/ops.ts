@@ -38,6 +38,7 @@ export interface OpMap {
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;
+  "run.takeover": Def<typeof operations.runTakeover>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;
@@ -61,6 +62,7 @@ export interface OpMap {
   "runner.register": Def<typeof operations.runnerRegister>;
   "runner.rotateKey": Def<typeof operations.runnerRotateKey>;
   "runner.list": Def<typeof operations.runnerList>;
+  "runner.account.use": Def<typeof operations.runnerAccountUse>;
   "cli.deviceLookup": Def<typeof operations.cliDeviceLookup>;
   "cli.approveDevice": Def<typeof operations.cliApproveDevice>;
   "cli.denyDevice": Def<typeof operations.cliDenyDevice>;
