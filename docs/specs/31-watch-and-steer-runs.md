@@ -3,7 +3,7 @@
 Read first: the plan ([`.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`](../../.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md)),
 ADRs [0400](../adr/0400-watch-and-steer-runs-from-the-dashboard.md), [0380](../adr/0380-runner-local-tmux-and-hook-status.md),
 [0100](../adr/0100-runner-contract.md), [0350](../adr/0350-how-the-planning-loop-is-wired.md) (the held
-`planning.wait`, the PlanningHub), [0023](../adr/0023-model-credentials-stay-with-the-runner-owner.md)
+`planning.wait`, the PlanningHub), [0023](../adr/0023-runners-owned-by-users-and-requester-routing.md)
 and [0038](../adr/0038-runner-sharing-is-an-owner-allowlist.md); spec [30](30-runner-local-without-orca.md);
 `packages/runner-local`, `local/runner-host`, `apps/engine/src/channel.ts`, and the work item page
 (`apps/app/src/routes/_app/work.$id.index.tsx`). Mockup: [`.kim/mockups/live-run.html`](../../.kim/mockups/live-run.html).
