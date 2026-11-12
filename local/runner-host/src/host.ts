@@ -15,6 +15,7 @@ import {
 import type { HostGit } from "./git.ts";
 import { type JobReport, runJob } from "./job.ts";
 import { writeLiveJobs } from "./live-jobs.ts";
+import type { SelfUpdate } from "./self-update.ts";
 
 export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle> {
   adapter: RunnerAdapter<W, S>;
@@ -38,6 +39,17 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
   onStart?: () => Promise<void>;
   /** Where the host records the jobs it is running, for `sf-runner status` and `doctor`. */
   liveJobsFile?: string;
+  /**
+   * The runner's self-update (ADR 0360). Its report rides on every heartbeat; after each one it
+   * decides whether to claim, drain (claim nothing this turn: jobs are finishing before an update)
+   * or restart. The host never runs git for it and never cancels a job for it.
+   */
+  selfUpdate?: SelfUpdate;
+  /**
+   * Called once the host has stopped after an update (no jobs running), so the process exits
+   * non-zero and launchd starts the new code.
+   */
+  onUpdated?: () => void;
 }
 
 interface Running {
@@ -57,6 +69,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   /** A claim whose answer never arrived is retried with the same id (same job back). */
   private pendingClaimId: string | null = null;
   private failures = 0;
+  /** The first successful heartbeat since start confirms a pending update. */
+  private confirmed = false;
   readonly log: (message: string) => void;
 
   constructor(private readonly options: HostOptions<W, S>) {
@@ -102,7 +116,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     try {
       const manifest = await this.options.adapter.manifest();
       const capacity = await this.capacity();
-      const { commands, leases } = await this.options.cp.heartbeat({
+      const selfUpdate = this.options.selfUpdate;
+      const { commands, leases, desiredVersion } = await this.options.cp.heartbeat({
         manifest,
         capacity,
         activeJobs: [...this.running.values()]
@@ -112,8 +127,15 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
             fencingToken: r.job.lease.fencingToken,
           })),
         rateLimitedUntil: null,
+        ...(selfUpdate ? { version: selfUpdate.report() } : {}),
       });
       this.failures = 0;
+      if (selfUpdate && !this.confirmed) {
+        this.confirmed = true;
+        await selfUpdate.confirm().catch((err) => {
+          this.log(`self-update confirm: ${err instanceof Error ? err.message : err}`);
+        });
+      }
       for (const lease of leases) {
         const r = this.running.get(lease.jobId);
         if (r) r.job.lease.expiresAt = lease.expiresAt;
@@ -128,6 +150,18 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
         } else if (command.kind === "drain") {
           this.log("drain: taking no new jobs");
           this.draining = true;
+        }
+      }
+      if (selfUpdate && !this.stopped) {
+        const decision = await selfUpdate.consider(desiredVersion ?? null, this.running.size === 0);
+        if (decision === "restart") {
+          await this.stopForUpdate();
+          return;
+        }
+        // Waiting for the running jobs to finish before updating: claim nothing this turn.
+        if (decision === "drain") {
+          this.schedule(every);
+          return;
         }
       }
       while (!this.stopped && !this.draining) {
@@ -155,6 +189,16 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     }
     // Back off on repeated failures, up to 5 minutes.
     this.schedule(this.failures ? Math.min(every * 2 ** (this.failures - 1), 300_000) : every);
+  }
+
+  /** Updated and idle: stop the loop and let the process exit for launchd to restart it. */
+  private async stopForUpdate() {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.log("updated: stopping so the new code starts");
+    await this.recordLive();
+    // After this turn has finished, so `stop()` from the callback doesn't wait on it.
+    setImmediate(() => this.options.onUpdated?.());
   }
 
   /** Both pools (ADR 0301): `max`/`inUse` are the heavy pool, `light` the light one. */
