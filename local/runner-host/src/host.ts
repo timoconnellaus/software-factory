@@ -229,7 +229,9 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
           this.running.size === 0,
           minRunnerCompat ?? null,
         );
-        if (decision === "restart") {
+        // Not while draining: the restarted process wouldn't be, and would claim again before
+        // whoever drained it (the desktop app, a drain command) stops it.
+        if (decision === "restart" && !this.draining) {
           await this.stopForUpdate();
           return;
         }
@@ -306,8 +308,11 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     // The adapter may see workspaces the host doesn't run (a crashed run): count them as heavy.
     const inUse = Math.max(heavyInUse, (reported?.inUse ?? 0) - lightInUse);
     const open = Math.min(this.options.maxConcurrent, reported?.max ?? this.options.maxConcurrent);
-    // The adapter's own pause (its tmux not answering) first, else the load's (ADR 0552).
-    const paused = reported?.paused ?? this.options.load?.check() ?? undefined;
+    // Why it takes nothing new (ADR 0552): a drain first, then the adapter's own pause (its tmux
+    // not answering), else the load's.
+    const paused: CapacityPaused | undefined = this.draining
+      ? { reason: "draining", pools: ["heavy", "light"] }
+      : (reported?.paused ?? this.options.load?.check() ?? undefined);
     // A paused heavy pool also reports full, as a closed one does (ADR 0520), so an engine that
     // doesn't read `paused` sends no heavy job either.
     const max = this.heavyClosed || paused?.pools.includes("heavy") ? Math.min(open, inUse) : open;

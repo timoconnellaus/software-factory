@@ -70,5 +70,9 @@ and nothing checked that it had worked.
 > - **Abandoned sessions.** A session whose kill didn't answer, or a new-session that failed, is
 >   killed again in a background clean-up that `capacity()` starts and never awaits. It doesn't
 >   count as in use once its harness is gone, and dead panes never count.
-> - **Capacity is bounded.** `capacity()` answers within 30 s.
+> - **Capacity is bounded.** `capacity()` answers within 12 s, so a host turn (two capacity reads)
+>   stays well under a minute even while tmux is failing; a drain waits for the turn.
+> - **A drain is a pause.** The heartbeat reports `paused: { reason: "draining" }` (and
+>   `accepting: false`), and a pending update never restarts a draining host: the new process
+>   wouldn't be draining.
 > - **Typing.** It is never retried.

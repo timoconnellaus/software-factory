@@ -8,6 +8,7 @@ import { configSchema } from "../src/config.ts";
 import { RunnerHost } from "../src/host.ts";
 import { runJob } from "../src/job.ts";
 import { DEFAULT_LOAD_POLICY, LoadGate, loadPolicySchema } from "../src/load.ts";
+import type { SelfUpdate } from "../src/self-update.ts";
 import { controlPlane, fakeAdapter, fakeCloud, git, job, scratchRepo } from "./helpers.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -118,6 +119,52 @@ describe("the host under load", () => {
     const { cloud, claimed } = await host(4);
     expect(cloud.heartbeats[0]?.capacity.paused).toBeUndefined();
     expect(claimed).toBe(1);
+  });
+});
+
+describe("a draining host", () => {
+  it("reports draining as its pause, and a pending update never restarts it", async () => {
+    const repo = await scratchRepo();
+    cleanups.push(repo.cleanup);
+    const cloud = fakeCloud();
+    const cp = await controlPlane(cloud);
+    cloud.commands.push({ kind: "drain" });
+    let considered = 0;
+    let updated = 0;
+    const selfUpdate: SelfUpdate = {
+      report: () => ({
+        sha: "a".repeat(40),
+        autoUpdate: true,
+        update: { state: "waiting", target: "b".repeat(40), reason: null },
+      }),
+      confirm: async () => {},
+      consider: async () => {
+        considered++;
+        return "restart";
+      },
+    };
+    const h = new RunnerHost({
+      adapter: fakeAdapter((x) => repo.host.clonePath(x), edit),
+      cp,
+      git: repo.host,
+      maxConcurrent: 2,
+      heartbeatMs: 20,
+      log: () => {},
+      selfUpdate,
+      onUpdated: () => updated++,
+    });
+    await h.start();
+    const end = Date.now() + 10_000;
+    while (considered < 3) {
+      if (Date.now() > end) throw new Error("timed out waiting for three turns");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await h.stop();
+    expect(updated).toBe(0);
+    expect(cloud.heartbeats.at(-1)?.capacity).toMatchObject({
+      accepting: false,
+      paused: { reason: "draining", pools: ["heavy", "light"] },
+    });
   });
 });
 

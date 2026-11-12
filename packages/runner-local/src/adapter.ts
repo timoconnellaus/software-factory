@@ -449,7 +449,7 @@ export function createLocalRunner(
       sessionGone: false,
     });
   /** A quick tmux for the background and capacity: one try, a short timeout. */
-  const quickTmux = tmuxCli({ ...config.tmux, exec, attempts: 1, timeoutMs: 10_000 });
+  const quickTmux = tmuxCli({ ...config.tmux, exec, attempts: 1, timeoutMs: 8_000 });
   const ABANDONED_KEEP_MS = 120_000;
   const quickStop = { termGraceMs: 1_000, killGraceMs: 1_000 };
   let maintaining: Promise<void> | null = null;
@@ -483,8 +483,11 @@ export function createLocalRunner(
       maintaining = null;
     });
   };
-  /** capacity() answers within this, whatever tmux does (the lease is 10 minutes). */
-  const CAPACITY_DEADLINE_MS = 30_000;
+  /**
+   * capacity() answers within this, whatever tmux does: the host asks twice a turn, and a drain
+   * waits for the turn, so a turn stays well under a minute (the lease is 10 minutes).
+   */
+  const CAPACITY_DEADLINE_MS = 12_000;
 
   async function release(
     job: Job,

@@ -40,7 +40,7 @@ export const capabilityManifestSchema = z.object({
 });
 
 export const capacityPausedSchema = z.object({
-  reason: z.enum(["load", "tmux"]),
+  reason: z.enum(["load", "tmux", "draining"]),
   pools: z
     .array(z.enum(["heavy", "light"]))
     .min(1)
@@ -71,7 +71,8 @@ export const capacitySchema = z.object({
   /**
    * Why the runner takes nothing new in some pools for now (ADR 0552), when it doesn't: `load`, the
    * host's 1-minute load average is past its threshold for those pools (heavy stops first, then
-   * light), with the numbers; `tmux`, the factory's tmux server isn't answering (ADR 0550). The
+   * light), with the numbers; `tmux`, the factory's tmux server isn't answering (ADR 0550);
+   * `draining`, the owner drained it (a drain command, or `RunnerHost.drain()`). The
    * scheduler gives a paused pool nothing; with both pools paused `accepting` is false too.
    */
   paused: capacityPausedSchema.optional(),

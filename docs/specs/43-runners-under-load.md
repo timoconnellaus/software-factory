@@ -32,8 +32,9 @@ overloaded.
      started from `capacity()` and never awaited, kills it and stops its harness again until tmux
      confirms it gone, and keeps at it for 2 minutes in case it starts late.
    - Capacity doesn't count a dead pane (kept by remain-on-exit), nor an abandoned session whose
-     harness is confirmed gone. `capacity()` answers within 30 s whatever tmux does: one try of
-     10 s, then the deadline.
+     harness is confirmed gone. `capacity()` answers within 12 s whatever tmux does: one try of
+     8 s, then the deadline. The host asks twice a turn, and `drain()` waits for the turn, so a turn
+     stays well under a minute.
    - If something survives, release throws `ReleaseIncomplete`. The host then doesn't report the job
      released: it logs it, its lease lapses, and `sf-runner doctor` shows the process
      (`orphan-process`). The background clean-up retries the stop, and the survivor counts as in

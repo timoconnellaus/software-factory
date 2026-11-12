@@ -28,7 +28,11 @@ export function runnerLabel(r: Runner): string {
     ? `heavy ${r.inUse}/${r.max} · light ${r.light.inUse}/${r.light.max}`
     : `${r.inUse}/${r.max}`;
   // Paused for its load or its tmux (ADR 0552): "runner busy: load 19.3 on 10 cores, no new jobs".
-  const p = r.state === "offline" || r.state === "rate-limited" ? null : r.paused;
+  // A drain (the owner paused it) reads as draining, below.
+  const p =
+    r.state === "offline" || r.state === "rate-limited" || r.paused?.reason === "draining"
+      ? null
+      : r.paused;
   if (p) {
     const why =
       p.reason === "load"
