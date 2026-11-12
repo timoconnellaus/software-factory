@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
+import { describeEntry } from "@software-factory/timeline";
 import { type Api, httpApi, type OperationInfo, result } from "./api.ts";
 import {
   type CliConfig,
@@ -494,7 +495,7 @@ const show: Command = {
 
 const timeline: Command = {
   usage: "sf timeline <n|wi_id> [--project <name|id>] [--limit <n>] [--json]",
-  summary: "A work item's audit trail, oldest first",
+  summary: "A work item's event log, oldest first, in the dashboard's words",
   options: { project: { type: "string", short: "p" }, limit: { type: "string" } },
   async run(ctx, values, args) {
     const id = await resolveWorkItem(ctx.scope, args[0], str(values.project));
@@ -509,14 +510,18 @@ const timeline: Command = {
       printJson(ctx, { entries });
       return 0;
     }
+    // The web timeline's wording (spec wi-4). The CLI doesn't know the viewer's id or fetch gates,
+    // so a person reads as "a person" and a decision's note stays on the web.
     for (const line of table(
-      entries.map((e) => [
-        e.at.slice(0, 19).replace("T", " "),
-        e.operation,
-        `${e.actorType}:${e.actorId}`,
-        e.decision === "n/a" ? e.outcome : `${e.decision}/${e.outcome}`,
-        oneLine(e.reason ?? "", 80),
-      ]),
+      entries.map((e) => {
+        const d = describeEntry(e);
+        return [
+          e.at.slice(0, 19).replace("T", " "),
+          d.label,
+          d.actor,
+          oneLine([d.detail, d.outcome, d.note].filter(Boolean).join(" · "), 100),
+        ];
+      }),
     )) {
       ctx.io.out(line);
     }
