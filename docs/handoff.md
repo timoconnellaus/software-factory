@@ -9,7 +9,7 @@ Last refreshed: 2026-11-11 (spec 05, attach an outside PR). V1 is defined in [`v
 ## The product
 A software factory on Cloudflare. Work comes in from anywhere, agents take it through triage, spec,
 build and verify, and people step in only at gates. Runners are adapters; `runner-local` (git
-worktree + tmux on the owner's Macs, ADR 0350) replaced the first one, `runner-orca`. Small
+worktree + tmux on the owner's Macs, ADR 0370) replaced the first one, `runner-orca`. Small
 team, multi-org (Better Auth). Plan: [`.kim/plans/2026-11-10-personal-software-factory-design.md`](../.kim/plans/2026-11-10-personal-software-factory-design.md).
 Architecture: [`architecture.md`](architecture.md). UI: [`ui-plan.md`](ui-plan.md).
 
@@ -57,10 +57,11 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #23 | Work item #1, attachments ([ADR 0310](adr/0310-work-item-attachments.md), migration 0090), built by the factory; `main` merged in and renumbered by hand after it was stuck (incident #7). Merged with `factory/verify` red (the head moved past the one the factory verified), a bootstrap exception the owner approved |
 | #30 | The merge queue ([ADR 0330](adr/0330-the-factory-runs-its-own-merge-queue.md), [spec 06](specs/06-merge-queue.md), migration 0100): approved merges land one at a time per project through Workflow v4; the head is updated by GitHub's update-branch, CI runs once on it, and the approval and review packet carry over. Merged with `factory/verify` red (not opened by the factory), a bootstrap exception the owner approved |
 | #28 | Attach an outside PR ([spec 05](specs/05-attach-a-pull-request.md), [ADR 0290](adr/0290-an-outside-pr-is-attached-and-verified.md)): `workItem.attachPr` gives a local session's or a person's PR a work item of kind `attached` (migration 0080); the Workflow's `runAttached` (kind-gated, no version bump) triages it, skips spec and build, verifies the PR's own head and opens the merge gate, never pushing to its branch; a push re-verifies and withdraws a pending merge, closing the PR cancels the item; the unattached `factory/verify` links to sf-app's `/attach`, and New work lists open unattached PRs. Merged with `factory/verify` red as the **last** bootstrap exception (it can't attach itself); every PR after it is attached instead. Merged with `factory/verify` red, the last bootstrap exception: it is what lets outside PRs pass `factory/verify` (the default-branch ruleset was switched off for #30 and #28, then back on) |
+| #33, #35, #36, #37 | Spec 20, planning M1 ([ADR 0350](adr/0350-how-the-planning-loop-is-wired.md), migration 0120): planning is a live session on a runner. The planning log, sessions, chat and presence; heavy and light pools; the planning MCP server and kim-style hooks through the runner host's relay; Workflow v5's spec stage; the Planning tab, layout A. Merged with `factory/verify` red (not attached), with the default-branch ruleset switched off by the owner |
 
 ## In flight
-- **Run agents without Orca** (block R, plan `.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`):
-  piece 1, [spec 30](specs/30-runner-local-without-orca.md) / [ADR 0350](adr/0350-runner-local-tmux-and-hook-status.md),
+- **Run agents without Orca** (block U, plan `.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`):
+  piece 1, [spec 30](specs/30-runner-local-without-orca.md) / [ADR 0370](adr/0370-runner-local-tmux-and-hook-status.md),
   is built on branch `timoconnellaus/no-orca`: `packages/runner-local` (git worktree + tmux on
   `tmux -L software-factory`, status from the harness's hook file, takeover by `tmux attach`)
   replaces `packages/runner-orca`, which is deleted. Acceptance criteria 1–3 need a live run on the
@@ -68,9 +69,9 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   `brew install tmux` if missing, `git pull`, `sf-runner doctor --fix` (sets `checkouts` once from
   Orca's repos), then `sf-runner install` with no jobs running. Job worktrees the old runner left in
   Orca (`sf-job:` comments) are removed in Orca by hand. Pieces 2–8 get their own specs.
-- **Planning design** (`planning-process`, block I): planning rebuilt as a live session on a runner,
+- **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
-  `.kim/plans/2026-11-11-factory-planning.md`. Next build: spec 20 (M1, the loop).
+  `.kim/plans/2026-11-11-factory-planning.md`.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
@@ -121,7 +122,7 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   - Kill switches: `killSwitch.set { scope: "org" | "project", id, on }`.
 - Deep links the outbox `notify` rows carry: `/?item=<workItemId>` and `/work/<workItemId>`.
 
-**Runner session (step 3: runner-host, runner-orca, harness-claude; runner-orca since replaced by runner-local, ADR 0350)**
+**Runner session (step 3: runner-host, runner-orca, harness-claude; runner-orca since replaced by runner-local, ADR 0370)**
 - Build against `@software-factory/runner-contract`: `httpControlPlane` (signed client),
   `RunnerAdapter`, the wire schemas, `RESULT_FILE` and the stage result schemas. The host's loop is
   in [`packages/runner-contract/README.md`](../packages/runner-contract/README.md).
@@ -169,6 +170,17 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   asks a blocking `operations` Question (Re-check CI / Stop this work item), no build retry.
 - Merge queue: built, see below (ADR 0330).
 
+**Runners update themselves (ADR 0360, spec 08, incident #9)**
+- The deploy passes `DEPLOYED_SHA` (the deployed commit) to sf-engine. `runner.heartbeat` answers
+  it as `desiredVersion` and records the runner's reported `version` (migration 0130:
+  `core_runners.version`, `auto_update`, `update_state`, `update_target`, `update_reason`).
+- The runner host updates itself: idle → fast-forward to exactly that commit → `pnpm install
+  --frozen-lockfile` → exit 75. launchd runs `local/runner-host/bin/sf-runner-service`, which rolls
+  back after three unconfirmed starts. It reports `blocked` (with the reason) instead of guessing.
+- `runner.list`, the inbox's runner health line and `sf-runner status` show it.
+- An existing runner moves onto the wrapper with one `sf-runner install`, which now adds Orca's bin
+  directory to `PATH` and retries the bootstrap.
+
 **Prompts travel as a file (incident 2026-11-11 #8)**
 - The runner adapter (runner-orca then, runner-local now) writes the job's prompt to `.factory-prompt.md` in the worktree (in
   `PRIVATE_WORKTREE_FILES`, so it's excluded from git) and types only `PROMPT_POINTER`, one line,
@@ -200,6 +212,33 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   `mergeQueue { position, ahead }`; finish and cancel release the entry and wake the next head.
 - A conflict or red CI at the head leaves the queue and goes back to build. The App has no
   `workflows` permission, so an update that brings in `.github/workflows/` changes is refused.
+
+**Planning, the loop (spec 20, ADRs 0300, 0301, 0302, 0350)**
+- Workflow **v5** (`WORKFLOW_VERSION = 5`): the spec stage is a planning session. `planning.start`
+  queues a light `planning` job; each round waits for the agent's `planning.ready`
+  (`planning-ready-<item>-<k>`, escalating open blocking questions on each question timeout), then
+  the spec gate. Request changes → `planning.note` (a chat message from the approver, same
+  session); approval or rejection → `planning.end`. Cancelling or finishing the item also ends it.
+  v1–v4 keep V1's spec rounds and `planning_round`.
+- The planning job's operations go over `/runner/v1/jobs/:id/planning`, scoped by the job and
+  fenced by its lease: `question.ask/update/delete/reorder/focus`, `spec.revise`, `chat.reply`,
+  `planning.news/wait/yield/ready`. People: `question.answer { note? }` (planning answers can be
+  revised), `chat.send`, `planning.presence`, `planning.move` (Continue on another runner),
+  `planning.get` (the Planning view). Live updates: `EngineApi.planningStream(workItemId)` (SSE from
+  the work item's PlanningHub). `inbox.list` has `planning` (sessions with a first draft) and each
+  runner's `light` pool.
+- Runners report `capacity.light`; the scheduler places light jobs (triage, spec, planning) and
+  heavy ones (build, verify) apart, pins a resume to its runner, and asks the oldest idle session to
+  yield when the light pool is full. The host relays the harness's planning calls; the harness
+  projects the planning MCP server and the hooks (`sf-runner --max-light`, default 6).
+- `spec.commit` writes Assumptions, Coverage and Clarifications sections and keeps the provenance
+  tags.
+- The app's Planning tab is layout A (`components/planning.tsx`, logic in `lib/planning.ts`):
+  questions (by kind, with a note; planning answers can be changed) | the spec (provenance chips,
+  assumptions highlighted, what changed since the last revision, coverage, clarifications) | chat,
+  with the gate bar, the session pill, Continue on another runner, full screen (F / Esc) and phone
+  tabs. It re-reads `planning.get` on each Server-Sent Event from `/api/work/<id>/planning/live`
+  and heartbeats `planning.presence`. The inbox shows "Planning is ready" cards.
 
 ## Next
 R1 is built in three internal milestones ([`specs/README.md`](specs/README.md)):

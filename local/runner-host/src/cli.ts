@@ -5,14 +5,15 @@
 //                                  print a code, wait for approval in the app, save the key, install
 //   sf-runner pair --runner-id r_… --key-stdin   (fallback: a key registered in Setup)
 //   sf-runner run                  run in the foreground (what the service runs)
-//   sf-runner status               config (key redacted), service state and the jobs it is running
+//   sf-runner status               config (key redacted), service state, the jobs it is running,
+//                                  and its version against the desired one (self-update, ADR 0360)
 //   sf-runner doctor [--fix]       check node, git, tmux, claude, the channel, the checkouts (one
 //                                  per remote, no job worktree or tmux session without a job),
 //                                  and that each running job's Claude runs exactly as the
 //                                  harness launched it (ADR 0270)
 //   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -43,8 +44,19 @@ import * as launchd from "./launchd.ts";
 import { readLiveJobs } from "./live-jobs.ts";
 import { findOnPath, parsePairingInput, serviceNode } from "./pairing.ts";
 import { buildRunner, hostDirs, liveJobsFile } from "./runner.ts";
+import {
+  createSelfUpdater,
+  pnpmInstall,
+  readUpdateRecord,
+  readVersionStatus,
+  runnerRepo,
+  type SelfUpdate,
+  UPDATE_EXIT_CODE,
+} from "./self-update.ts";
 
 const dirs = paths();
+/** `local/runner-host/src` of the checkout this CLI runs from. */
+const srcDir = () => dirname(realpathSync(new URL(import.meta.url).pathname));
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -74,6 +86,7 @@ async function pair(args: string[]) {
       url: { type: "string" },
       name: { type: "string" },
       max: { type: "string" },
+      "max-light": { type: "string" },
     },
   });
   const existing = await loadConfig(dirs.configFile).catch(() => null);
@@ -89,11 +102,12 @@ async function pair(args: string[]) {
     key,
     ...(values.name ? { name: values.name } : {}),
     ...(values.max ? { maxConcurrent: Number(values.max) } : {}),
+    ...(values["max-light"] ? { maxLight: Number(values["max-light"]) } : {}),
   });
   await adopt(config);
 }
 
-/** Fills in `checkouts` once, when it isn't set yet (ADR 0350), and says what it chose. */
+/** Fills in `checkouts` once, when it isn't set yet (ADR 0370), and says what it chose. */
 async function withCheckouts(config: RunnerConfig): Promise<RunnerConfig> {
   const { config: next, chosen } = await migrateCheckouts(config, nodeExec, [
     dirs.reposDir,
@@ -117,7 +131,12 @@ async function adopt(config: RunnerConfig) {
   try {
     await cp.heartbeat({
       manifest,
-      capacity: { max: config.maxConcurrent, inUse: 0, accepting: false },
+      capacity: {
+        max: config.maxConcurrent,
+        inUse: 0,
+        accepting: false,
+        light: { max: config.maxLight, inUse: 0 },
+      },
       activeJobs: [],
       rateLimitedUntil: null,
     });
@@ -147,6 +166,7 @@ async function login(args: string[]) {
       url: { type: "string" },
       app: { type: "string" },
       max: { type: "string" },
+      "max-light": { type: "string" },
       "no-install": { type: "boolean" },
       "no-open": { type: "boolean" },
     },
@@ -176,6 +196,7 @@ async function login(args: string[]) {
     key: got.key,
     ...(got.name ? { name: got.name } : {}),
     ...(values.max ? { maxConcurrent: Number(values.max) } : {}),
+    ...(values["max-light"] ? { maxLight: Number(values["max-light"]) } : {}),
   });
   console.log(`Approved: ${got.name ?? got.runnerId}.`);
   await adopt(await withCheckouts(config));
@@ -186,9 +207,18 @@ async function run() {
   const config = await requireConfig();
   await mkdir(dirs.runsDir, { recursive: true, mode: 0o700 });
   const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
-  const { host } = buildRunner(config, dirs, { log });
+  const selfUpdate = await startSelfUpdate(config, log);
+  const { host } = buildRunner(config, dirs, {
+    log,
+    ...(selfUpdate ? { selfUpdate } : {}),
+    // Updated and idle: exit non-zero so launchd (KeepAlive, SuccessfulExit=false) starts the new code.
+    onUpdated: () => {
+      log(`exiting ${UPDATE_EXIT_CODE} so launchd starts the updated runner`);
+      process.exit(UPDATE_EXIT_CODE);
+    },
+  });
   log(
-    `runner ${config.runnerId} (contract v${CONTRACT_VERSION}) → ${config.baseUrl}, up to ${config.maxConcurrent} jobs`,
+    `runner ${config.runnerId} (contract v${CONTRACT_VERSION}) → ${config.baseUrl}, up to ${config.maxConcurrent} heavy and ${config.maxLight} light jobs`,
   );
   let stopping = false;
   const shutdown = async (signal: string) => {
@@ -202,6 +232,37 @@ async function run() {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   await host.start();
   // The host's timers keep the process alive.
+}
+
+/** The self-updater for this checkout, or undefined when it isn't a git checkout. */
+async function startSelfUpdate(
+  config: RunnerConfig,
+  log: (m: string) => void,
+): Promise<SelfUpdate | undefined> {
+  try {
+    const repo = await runnerRepo(nodeExec, srcDir());
+    if (!repo) {
+      log("self-update off: the runner isn't running from a git checkout");
+      return undefined;
+    }
+    const updater = await createSelfUpdater({
+      repo,
+      stateDir: dirs.stateDir,
+      autoUpdate: config.autoUpdate,
+      canRestart: process.env.SF_RUNNER_SERVICE === "1",
+      exec: nodeExec,
+      installDeps: pnpmInstall(nodeExec),
+      log,
+    });
+    const { sha, update } = updater.report();
+    log(
+      `code ${sha.slice(0, 7)} in ${repo}; auto-update ${config.autoUpdate ? "on" : "off"}${update.state === "rolled_back" ? `; last update rolled back: ${update.reason}` : ""}`,
+    );
+    return updater;
+  } catch (err) {
+    log(`self-update off: ${err instanceof Error ? err.message : err}`);
+    return undefined;
+  }
 }
 
 async function status() {
@@ -228,6 +289,26 @@ async function status() {
       ? "job sessions in tmux: unknown (tmux not reachable)"
       : `job sessions in tmux (-L ${tmux.socket}): ${sessions.length ? sessions.map((s) => `${jobIdOfSession(s.name)}${s.dead ? " (exited)" : ""}`).join(", ") : "none"}`,
   );
+  const version = await readVersionStatus(dirs.stateDir);
+  const record = await readUpdateRecord(dirs.stateDir);
+  const sha7 = (s: string | null | undefined) => (s ? s.slice(0, 12) : "unknown");
+  if (version) {
+    console.log(
+      [
+        `version: ${sha7(version.sha)} (auto-update ${version.autoUpdate ? "on" : "off"})`,
+        `desired: ${version.desired ? sha7(version.desired) : "unknown (the engine didn't say)"}`,
+        `update: ${version.state}${version.target && version.target !== version.desired ? ` → ${sha7(version.target)}` : ""}${version.reason ? ` (${version.reason})` : ""}`,
+        `  as of ${version.at}`,
+      ].join("\n"),
+    );
+  } else {
+    console.log("version: unknown (no heartbeat recorded by a self-updating runner yet)");
+  }
+  if (record?.status === "pending") {
+    console.log(
+      `update in progress: ${sha7(record.from)} → ${sha7(record.to)}, ${record.starts} start(s) without a confirmation (rolled back after 3)`,
+    );
+  }
   console.log(`state: ${dirs.stateDir}\nlog: ${join(dirs.logDir, "runner.log")}`);
 }
 
@@ -361,7 +442,12 @@ async function doctor(args: string[]) {
       const { cp, adapter } = buildRunner(config, dirs);
       await cp.heartbeat({
         manifest: await adapter.manifest(),
-        capacity: { max: config.maxConcurrent, inUse: 0, accepting: false },
+        capacity: {
+          max: config.maxConcurrent,
+          inUse: 0,
+          accepting: false,
+          light: { max: config.maxLight, inUse: 0 },
+        },
         activeJobs: [],
         rateLimitedUntil: null,
       });
@@ -373,35 +459,48 @@ async function doctor(args: string[]) {
 
 async function install(args: string[]) {
   const { values } = parseArgs({ args, options: { from: { type: "string" } } });
-  const here = dirname(realpathSync(new URL(import.meta.url).pathname));
-  const cli = values.from
-    ? resolve(values.from, "local/runner-host/src/cli.ts")
-    : join(here, "cli.ts");
+  const runnerHost = values.from
+    ? resolve(values.from, "local/runner-host")
+    : resolve(srcDir(), "..");
+  const wrapper = join(runnerHost, "bin", "sf-runner-service");
+  if (!existsSync(wrapper)) throw new Error(`No ${wrapper}: is that a software-factory checkout?`);
   const file = launchd.plistPath();
+  // The service starts Claude in tmux: both must be on its PATH, even from a shell without them
+  // (an SSH session, incident #9; `claude` is usually in ~/.local/bin).
+  const localBin = join(process.env.HOME ?? "", ".local", "bin");
+  const tools = ["tmux", "claude"].map((name) => ({
+    name,
+    path: findOnPath(name, process.env.PATH, undefined, [localBin]),
+  }));
+  for (const t of tools) {
+    if (!t.path)
+      console.log(`! ${t.name} wasn't found on PATH or in the usual places: jobs won't start.`);
+  }
   // Refuses Node < 24 and pins the service to this absolute Node (incident 2026-11-11-bootstrap).
-  const { node, path } = serviceNode({
+  const pinned = serviceNode({
     execPath: process.execPath,
     version: process.version,
     path: process.env.PATH,
-    // The service starts Claude in tmux: tmux's directory must be on its PATH.
-    tools: [findOnPath("tmux", process.env.PATH)].filter((p): p is string => !!p),
+    tools: tools.flatMap((t) => (t.path ? [t.path] : [])),
   });
+  const path = pinned.path;
   await mkdir(dirs.logDir, { recursive: true });
   await launchd.install(
     nodeExec,
     file,
     launchd.plist({
-      node,
-      cli,
-      workingDirectory: resolve(dirname(cli), ".."),
+      node: pinned.node,
+      wrapper,
+      workingDirectory: runnerHost,
       path,
       home: process.env.HOME ?? "",
       logFile: join(dirs.logDir, "runner.log"),
+      stateDir: dirs.stateDir,
       ...(process.env.SF_RUNNER_CONFIG ? { configFile: process.env.SF_RUNNER_CONFIG } : {}),
     }),
   );
   console.log(
-    `Installed ${launchd.LABEL} (${file}) running ${cli} on Node ${process.version} (${node})`,
+    `Installed ${launchd.LABEL} (${file}) running ${wrapper} on Node ${process.version} (${pinned.node})`,
   );
   console.log(`Logs: ${join(dirs.logDir, "runner.log")}`);
 }

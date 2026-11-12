@@ -376,3 +376,68 @@ describe("runners and the scheduler", () => {
     expect(preview.models.sameModel).toBe(false);
   });
 });
+
+describe("runner versions (ADR 0360)", () => {
+  const sha = (c: string) => c.repeat(40);
+  const version = (at: string, state = "current", reason: string | null = null) => ({
+    sha: at,
+    autoUpdate: true,
+    update: { state, target: state === "current" ? null : sha("b"), reason },
+  });
+
+  it("answers the deployed commit, and records what the runner reports for runner.list", async () => {
+    const { w, runner, actor } = await setup();
+    services.deployedSha = sha("b");
+    try {
+      const beat = await ok<{ desiredVersion: string | null }>(
+        "runner.heartbeat",
+        {
+          manifest: manifest(),
+          capacity: capacity(),
+          activeJobs: [],
+          version: version(sha("a"), "blocked", "the checkout has local changes"),
+        },
+        actor,
+      );
+      expect(beat.desiredVersion).toBe(sha("b"));
+      const listed = await ok<{
+        runners: {
+          id: string;
+          version: string | null;
+          desiredVersion: string | null;
+          autoUpdate: boolean | null;
+          update: { state: string; reason: string | null } | null;
+        }[];
+      }>("runner.list", {}, w.human);
+      expect(listed.runners.find((r) => r.id === runner.runnerId)).toMatchObject({
+        version: sha("a"),
+        desiredVersion: sha("b"),
+        autoUpdate: true,
+        update: { state: "blocked", reason: "the checkout has local changes" },
+      });
+    } finally {
+      delete services.deployedSha;
+    }
+  });
+
+  it("answers null on an engine that doesn't know its commit, and accepts an older runner's heartbeat", async () => {
+    const { w, runner, actor } = await setup();
+    services.deployedSha = "not-a-sha";
+    try {
+      const beat = await ok<{ desiredVersion: string | null }>(
+        "runner.heartbeat",
+        { manifest: manifest(), capacity: capacity(), activeJobs: [] },
+        actor,
+      );
+      expect(beat.desiredVersion).toBeNull();
+      const listed = await ok<{ runners: { id: string; version: string | null }[] }>(
+        "runner.list",
+        {},
+        w.human,
+      );
+      expect(listed.runners.find((r) => r.id === runner.runnerId)?.version).toBeNull();
+    } finally {
+      delete services.deployedSha;
+    }
+  });
+});

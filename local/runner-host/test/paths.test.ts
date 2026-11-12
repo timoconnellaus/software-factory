@@ -1,4 +1,4 @@
-// Incident 2026-11-12 #9: job worktrees lived under ~/.local/state/software-factory, which the
+// Incident 2026-11-11-bootstrap #10: job worktrees lived under ~/.local/state/software-factory, which the
 // harness denies reading, so every agent was refused its own prompt file and handed back at once.
 // What the agent must read (its worktree, its attachments) is never under a denied home path; what
 // it must not read (the key, other runs, the clones) still is, or is protected explicitly.

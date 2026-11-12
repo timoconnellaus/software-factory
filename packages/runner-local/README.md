@@ -1,6 +1,6 @@
 # @software-factory/runner-local
 
-The local runner adapter ([ADR 0350](../../docs/adr/0350-runner-local-tmux-and-hook-status.md),
+The local runner adapter ([ADR 0370](../../docs/adr/0370-runner-local-tmux-and-hook-status.md),
 spec [30](../../docs/specs/30-runner-local-without-orca.md)). It implements `RunnerAdapter` from
 `@software-factory/runner-contract` with plain git and tmux on the runner host. No desktop app is
 involved. The runner host (`local/runner-host`) wires it; nothing in the core imports it.

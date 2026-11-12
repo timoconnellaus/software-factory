@@ -1,4 +1,4 @@
-// Which checkout a job runs in (ADR 0260, amended by ADR 0350). A job runs as a worktree of the
+// Which checkout a job runs in (ADR 0260, amended by ADR 0370). A job runs as a worktree of the
 // checkout this machine already has for its GitHub repo, found by canonical remote identity
 // (`github.com/<owner>/<name>`) among the immediate git repos of the directories the owner listed
 // in `runner.json` `checkouts`. Only when none matches does the host use its own clone. Isolation

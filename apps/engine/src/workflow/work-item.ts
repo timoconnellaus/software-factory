@@ -68,7 +68,14 @@ export type WorkItemOutcome =
  *   update-branch), waits for CI on that head, then merges. A conflict or red CI there leaves the
  *   queue and goes back to build. A check-only incident fix queues before auto-merge is tried.
  */
-export const WORKFLOW_VERSION = 4;
+/**
+ * - v5 (spec 20, ADR 0300, 0350): the spec stage is a planning session on a runner instead of
+ *   one-shot spec runs with question rounds. `planning: start`, then per round `planning #k: await`,
+ *   a wait for the agent's `planning.ready` (escalating open blocking questions on each question
+ *   timeout, never auto-accepting), and the spec gate. Request changes goes into the same session
+ *   (`planning.note`); a decision ends it (`planning.end`).
+ */
+export const WORKFLOW_VERSION = 5;
 /** How long verify waits for a CI event before it reads CI again, and how many times. */
 export const CI_WAIT = "10 minutes";
 export const CI_ROUNDS = 12;
@@ -175,6 +182,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(3);
       case 4:
         return flow.runV1(4);
+      case 5:
+        return flow.runV1(5);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -194,7 +203,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 | 4 | 5 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       const meta = await this.meta();
@@ -227,7 +236,9 @@ class ItemFlow {
         await this.act("spec: enter", "workItem.enterStage", { workItemId: id, stage: "spec" });
         let note: string | null = null;
         let answers: { prompt: string; answer: string }[] = [];
-        for (let k = 1; ; k++) {
+        // v5: the planning session (spec 20) instead of v1–v4's spec rounds below.
+        if (version >= 5) criteria = await this.planningStage(meta);
+        for (let k = 1; version < 5; k++) {
           const mayAsk = k <= QUESTION_ROUNDS;
           const specRun = await this.runWithRetries(
             meta,
@@ -884,6 +895,8 @@ class ItemFlow {
     | {
         decision: Exclude<GateEventPayload["decision"], "approved"> | "refused";
         note: string | null;
+        /** Who decided (missing for a refused re-run). */
+        by?: string;
       }
   > {
     const first = await this.call(name, op, input);
@@ -908,7 +921,7 @@ class ItemFlow {
         continue;
       }
       if (decided.decision !== "approved")
-        return { decision: decided.decision, note: decided.note };
+        return { decision: decided.decision, note: decided.note, by: decided.by };
       // v4's merge: the approval is applied later, when the item is the head of the merge queue.
       if (options.apply === false)
         return { decision: "approved", output: {}, pendingActionId: first.pendingActionId };
@@ -1233,6 +1246,77 @@ class ItemFlow {
     });
     if (answer === NO_CI_STOP) {
       throw new Ended("failed", `stopped: no CI reported on ${headSha.slice(0, 7)}`);
+    }
+  }
+
+  /**
+   * v5's spec stage (spec 20): the planning session drafts the spec and asks questions on its own;
+   * each round waits for it to ask for the gate (`planning-ready-<item>-<k>`), escalating open
+   * blocking questions to the backup owner on each question timeout (never auto-accepting), then
+   * opens the spec gate. Changes requested go into the same session as the approver's message; a
+   * decision ends the session. Returns the approved spec's acceptance criteria.
+   */
+  async planningStage(meta: Meta): Promise<string[]> {
+    const id = this.workItemId;
+    await this.act("planning: start", "planning.start", { workItemId: id });
+    for (let k = 1; ; k++) {
+      const awaited = await this.act(`planning #${k}: await`, "planning.awaitReady", {
+        workItemId: id,
+      });
+      let specId = awaited.specId as string | null;
+      for (let i = 1; !awaited.ready && !specId; i++) {
+        const sfx = i === 1 ? "" : ` #${i}`;
+        try {
+          const event = await this.step.waitForEvent<{ specId: string }>(
+            `planning #${k}: ready${sfx}`,
+            { type: String(awaited.event), timeout: meta.questionTimeoutMs },
+          );
+          specId = event.payload.specId;
+        } catch (error) {
+          if (!isWaitTimeout(error)) throw error;
+          await this.call(`planning #${k}: escalate${sfx}`, "question.escalate", {
+            workItemId: id,
+          });
+        }
+      }
+      const decided = await this.gate(meta, `planning #${k}: gate`, "spec.accept", {
+        workItemId: id,
+        specId,
+      });
+      if (decided.decision === "approved") {
+        await this.act(`planning #${k}: end`, "planning.end", {
+          workItemId: id,
+          reason: "spec approved",
+        });
+        return this.step.do(`planning #${k}: criteria`, async () => {
+          const row = await this.env.DB.prepare(
+            "SELECT acceptance_criteria FROM core_specs WHERE id = ?",
+          )
+            .bind(specId)
+            .first<{ acceptance_criteria: string }>();
+          try {
+            return JSON.parse(row?.acceptance_criteria ?? "[]") as string[];
+          } catch {
+            return [];
+          }
+        });
+      }
+      if (decided.decision === "changes_requested") {
+        await this.act(`planning #${k}: note`, "planning.note", {
+          workItemId: id,
+          note: decided.note,
+          by: decided.by ?? "approver",
+        });
+        continue; // the same session revises (spec 20, criterion 10)
+      }
+      await this.act(`planning #${k}: end`, "planning.end", {
+        workItemId: id,
+        reason: `spec ${decided.decision}`,
+      });
+      throw new Ended(
+        "rejected",
+        `spec ${decided.decision}${decided.note ? `: ${decided.note}` : ""}`,
+      );
     }
   }
 

@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { FOREMAN } from "@software-factory/core";
 import {
   ChannelCallError,
   DEVICE_PATHS,
@@ -9,6 +10,7 @@ import {
 } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { EngineApi } from "../src/rpc.ts";
 import { all, first, MANIFEST, ok, uid, world } from "./helpers.ts";
 
 const base = "https://sf-engine.example";
@@ -35,7 +37,7 @@ describe("the signed runner channel", () => {
       capacity: { max: 2, inUse: 0, accepting: true },
       activeJobs: [],
     });
-    expect(beat).toEqual({ commands: [], leases: [] });
+    expect(beat).toEqual({ commands: [], leases: [], desiredVersion: null });
     const seen = await first<{ capacity_max: number; last_seen_at: string }>(
       "SELECT capacity_max, last_seen_at FROM core_runners WHERE id = ?",
       w.runner.runnerId,
@@ -306,7 +308,7 @@ describe("device login over the channel (ADR 0056)", () => {
         capacity: { max: 1, inUse: 0, accepting: true },
         activeJobs: [],
       }),
-    ).resolves.toEqual({ commands: [], leases: [] });
+    ).resolves.toEqual({ commands: [], leases: [], desiredVersion: null });
     expect(
       await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json(),
     ).toMatchObject({ status: "expired", key: null });
@@ -315,5 +317,104 @@ describe("device login over the channel (ADR 0056)", () => {
   it("answers bad input as a refusal", async () => {
     const r = await post(DEVICE_PATHS.poll, { deviceCode: "short" });
     expect(r.status).toBe(400);
+  });
+});
+
+describe("planning over the channel (spec 20, ADR 0350)", () => {
+  async function planningJob(w: Awaited<ReturnType<typeof world>>) {
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Plan me" },
+      w.human,
+    );
+    await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+    const c = await client(w.runner.runnerId);
+    for (let i = 0; i < 200; i++) {
+      const { job } = await c.claim({
+        claimId: uid("claim-"),
+        manifest: MANIFEST,
+        capacity: { max: 2, inUse: 0, accepting: true, light: { max: 6, inUse: 0 } },
+      });
+      if (job?.stage === "planning") return { c, job, item };
+      if (!job) await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error("no planning job");
+  }
+
+  it("runs the agent's operations as the runner, and holds a wait until a person writes", async () => {
+    const w = await world();
+    const { c, job, item } = await planningJob(w);
+    const call = (op: string, input: Record<string, unknown> = {}) =>
+      c.planning?.(job.jobId, {
+        fencingToken: job.lease.fencingToken,
+        op: op as "planning.news",
+        input,
+      });
+    const asked = (await call("question.ask", {
+      questions: [{ kind: "yes-no", prompt: "Respect filters?", default: "Yes" }],
+    })) as { numbers: number[] };
+    expect(asked.numbers).toEqual([1]);
+
+    const started = Date.now();
+    const waiting = call("planning.wait", { timeoutMs: 20_000 }) as Promise<{
+      due: boolean;
+      events: { type: string; text?: string }[];
+    }>;
+    await new Promise((r) => setTimeout(r, 300));
+    await ok("chat.send", { workItemId: item.workItemId, text: "Use UTC" }, w.human);
+    const woke = await waiting;
+    expect(woke.due).toBe(true);
+    expect(woke.events).toEqual([
+      expect.objectContaining({ type: "chat.message", text: "Use UTC" }),
+    ]);
+    expect(Date.now() - started).toBeLessThan(10_000);
+
+    // An operation off the allowlist is refused before it runs.
+    const off = await c
+      .planning?.(job.jobId, {
+        fencingToken: job.lease.fencingToken,
+        op: "spec.approve" as "planning.news",
+        input: {},
+      })
+      .catch((e) => e);
+    expect((off as ChannelCallError).status).toBe(400);
+    // Nothing a planning call answered is kept in the idempotency store.
+    const stored = await all<{ idempotency_key: string }>(
+      "SELECT idempotency_key FROM core_channel_requests WHERE runner_id = ? AND idempotency_key LIKE 'plan:%'",
+      w.runner.runnerId,
+    );
+    expect(stored).toEqual([]);
+  });
+
+  it("streams a change to an open Planning tab from the engine's RPC", async () => {
+    const w = await world();
+    const { c, job, item } = await planningJob(w);
+    const api = new EngineApi(
+      { waitUntil: () => {}, passThroughOnException: () => {}, props: {} } as never,
+      env,
+    );
+    const opened = await api.planningStream(item.workItemId, {
+      actor: w.human,
+      origin: { surface: "app" },
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const reader = opened.stream.getReader();
+    const decoder = new TextDecoder();
+    const first = decoder.decode((await reader.read()).value);
+    expect(first).toContain("event: changed");
+    await c.planning?.(job.jobId, {
+      fencingToken: job.lease.fencingToken,
+      op: "chat.reply",
+      input: { text: "Drafting now" },
+    });
+    const next = decoder.decode((await reader.read()).value);
+    expect(next).toContain("event: changed");
+    await reader.cancel();
+    // A stranger may not open it.
+    const stranger = await api.planningStream(item.workItemId, {
+      actor: { type: "human", id: "usr_nobody" },
+      origin: { surface: "app" },
+    });
+    expect(stranger.ok).toBe(false);
   });
 });

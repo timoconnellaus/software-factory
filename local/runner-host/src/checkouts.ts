@@ -1,4 +1,4 @@
-// Where this machine's checkouts are (`runner.json` `checkouts`, ADR 0260 amended by ADR 0350).
+// Where this machine's checkouts are (`runner.json` `checkouts`, ADR 0260 amended by ADR 0370).
 //
 // History: the factory used to run jobs in the Orca desktop app, which kept the list of the owner's
 // checkouts. When `checkouts` isn't set yet, `sf-runner login` and `sf-runner doctor --fix` fill it

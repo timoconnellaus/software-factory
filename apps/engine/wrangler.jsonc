@@ -36,6 +36,12 @@
   // One instance per work item; the instance id is the work item id (ADR 0006, 0053).
   // Work item attachments (ADR 0310): private, reached only through the attachment operations.
   "r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "sf-attachments" }],
+  // One PlanningHub per work item (spec 20, ADR 0350): live Planning tabs and the planning
+  // agent's held waits hear about changes here.
+  "durable_objects": {
+    "bindings": [{ "name": "PLANNING_HUB", "class_name": "PlanningHub" }]
+  },
+  "migrations": [{ "tag": "v1-planning-hub", "new_sqlite_classes": ["PlanningHub"] }],
   "workflows": [
     {
       "binding": "WORK_ITEM_WORKFLOW",
@@ -55,6 +61,9 @@
     // The global floor (ADR 0008): JSON, actor|"*" → risk|"*" → "allow"|"review"|"deny". It can only
     // tighten; anything malformed denies every call. Empty = no floor.
     "FACTORY_FLOOR": "",
+    // The default-branch commit this engine was deployed from (ADR 0360): the deploy sets it with
+    // `--var DEPLOYED_SHA:<sha>`, and runners update themselves to it. Empty: a dev engine (no updates).
+    "DEPLOYED_SHA": "",
     // "1" swaps the GitHub App for an in-D1 fake (tests and local dev only).
     "GITHUB_FAKE": ""
   }

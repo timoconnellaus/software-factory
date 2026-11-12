@@ -1,4 +1,4 @@
-// ADR 0260 (amended by ADR 0350) over real git and a scripted tmux: the real runner-local adapter
+// ADR 0260 (amended by ADR 0370) over real git and a scripted tmux: the real runner-local adapter
 // and the host's git. A job runs as a worktree of the owner's own checkout, found under the
 // `checkouts` dirs by canonical remote identity, and never changes that checkout; with none, the
 // host's clone, made once and kept. Incident 2026-11-11 (#5) was a second registration per job.

@@ -4,7 +4,7 @@
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Job } from "@software-factory/runner-contract";
+import type { Job, PlanningRelay } from "@software-factory/runner-contract";
 import {
   claudeArgv,
   type LaunchRecord,
@@ -13,6 +13,7 @@ import {
   launchUnsets,
   sha256,
 } from "./launch.ts";
+import { mergeHooks, planningHooks, writePlanningFiles } from "./planning/project.ts";
 import {
   type ClaudeSettings,
   EMPTY_DIRS,
@@ -50,29 +51,56 @@ export async function systemTempDirs(): Promise<string[]> {
 }
 
 export async function projectHarness(
-  job: Pick<Job, "stage" | "jobId" | "harness">,
+  job: Pick<Job, "stage" | "jobId" | "harness"> & Partial<Pick<Job, "planning" | "workItem">>,
   options: Omit<SettingsOptions, "statusHook"> & {
     identity?: { name: string; email: string };
     claudeBin?: string;
     /**
-     * Project the factory's status hook (ADR 0350): its script into the run dir, and the hook on
+     * Project the factory's status hook (ADR 0370): its script into the run dir, and the hook on
      * every status event, appending to `<runDir>/status.jsonl`. `node` is the absolute Node that
      * runs it (default: this process's).
      */
     statusHook?: boolean | { node?: string };
+    /**
+     * A planning job's relay (ADR 0350): the planning MCP server and hooks are projected, and the
+     * conversation started or resumed. `nodeBin` runs them (default: this process's Node).
+     */
+    planning?: { relay: PlanningRelay; nodeBin?: string };
   },
 ): Promise<ProjectedHarness> {
   const runTmp = options.runTmp ?? join(await realpath(tmpdir()), "software-factory", job.jobId);
+  await mkdir(options.runDir, { recursive: true, mode: 0o700 });
   const statusFile = options.statusHook ? join(options.runDir, STATUS_FILE) : undefined;
   const statusScript = join(options.runDir, STATUS_HOOK_SCRIPT);
   const node =
     typeof options.statusHook === "object" && options.statusHook.node
       ? options.statusHook.node
       : process.execPath;
-  const { statusHook: _statusHook, ...settingsOptions } = options;
+  const planning =
+    job.stage === "planning" && options.planning && job.planning && job.workItem
+      ? await writePlanningFiles(
+          { jobId: job.jobId, workItem: job.workItem, planning: job.planning },
+          options.runDir,
+          options.planning.relay,
+          options.planning.nodeBin ?? process.execPath,
+        )
+      : null;
+  if (job.stage === "planning" && !planning) {
+    throw new Error(`planning job ${job.jobId} needs its planning session and relay`);
+  }
+  const { statusHook: _statusHook, planning: _planning, ...settingsOptions } = options;
   const settings = runSettings(job, {
     ...settingsOptions,
     ...(statusFile ? { statusHook: statusHookCommand(node, statusScript, statusFile) } : {}),
+    ...(planning
+      ? {
+          hooks: mergeHooks(
+            options.hooks,
+            planningHooks(planning.relayFile, options.planning?.nodeBin ?? process.execPath),
+          ),
+          denyReadFiles: [...(options.denyReadFiles ?? []), planning.relayFile],
+        }
+      : {}),
     runTmp,
     tempDirs: options.tempDirs ?? (await systemTempDirs()),
     ...(job.harness.profile && !options.profile ? { profile: job.harness.profile } : {}),
@@ -98,6 +126,7 @@ export async function projectHarness(
       settingsPath: paths.runSettings,
       ...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
       ...(options.profile ? { profile: options.profile } : {}),
+      ...(planning ? { planning: planning.launch } : {}),
     }),
     settingsHash: sha256(text),
     settingsPaths: [paths.runSettings, paths.localSettings],

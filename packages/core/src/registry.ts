@@ -12,6 +12,7 @@ import * as github from "./operations/github.ts";
 import * as incidents from "./operations/incidents.ts";
 import * as mergeQueue from "./operations/merge-queue.ts";
 import * as onboarding from "./operations/onboarding.ts";
+import * as planning from "./operations/planning.ts";
 import * as projects from "./operations/projects.ts";
 import * as protection from "./operations/protection.ts";
 import * as questions from "./operations/questions.ts";
@@ -58,6 +59,24 @@ export const OPERATIONS: readonly AnyOperation[] = [
   questions.questionAnswer,
   questions.questionAcceptDefaults,
   questions.questionEscalate,
+  questions.questionUpdate,
+  questions.questionDelete,
+  questions.questionReorder,
+  questions.questionFocus,
+  planning.planningStart,
+  planning.planningAwaitReady,
+  planning.planningNote,
+  planning.planningEnd,
+  planning.specRevise,
+  planning.chatReply,
+  planning.planningNews,
+  planning.planningWait,
+  planning.planningYield,
+  planning.planningReady,
+  planning.chatSend,
+  planning.planningPresence,
+  planning.planningMove,
+  planning.planningGet,
   specs.specPropose,
   specs.specAccept,
   specs.specCommit,

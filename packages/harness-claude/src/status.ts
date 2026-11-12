@@ -1,4 +1,4 @@
-// The factory's status hook (ADR 0350). A runner that hosts Claude Code's TUI in a plain terminal
+// The factory's status hook (ADR 0370). A runner that hosts Claude Code's TUI in a plain terminal
 // (runner-local: tmux) learns what the agent is doing from Claude Code's own hooks, not the screen.
 // The projected settings run this hook on the status events below. It appends one JSON line per
 // event to `<runDir>/status.jsonl` (event, time, tool name, a clipped input), never answers a
@@ -54,7 +54,7 @@ export const STATUS_INPUT_MAX = 2_000;
  * status hook must never block or decide anything, even on input it can't read.
  */
 export function statusHookSource(): string {
-  return `// Written by the software factory runner: the run's status hook (ADR 0350). It records the
+  return `// Written by the software factory runner: the run's status hook (ADR 0370). It records the
 // event and never answers a permission decision: it always prints {} and exits 0.
 import { appendFileSync } from "node:fs";
 const file = process.argv[2];

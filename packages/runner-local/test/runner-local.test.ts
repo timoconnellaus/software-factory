@@ -309,6 +309,77 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     await w.runner.release(job(), ws, session);
   });
 
+  it("keeps a planning session (spec 20) in its session's worktree, through Stop and waiting, until the host stops it", async () => {
+    const w = await world(
+      {
+        onPrompt: (_s, append) => {
+          append({ event: "PreToolUse", tool: "mcp__planning__ask" });
+          append({ event: "Stop" });
+          append({ event: "Notification", type: "idle_prompt", message: "waiting" });
+        },
+      },
+      { waitingInputTimeoutMs: 5 },
+    );
+    const planningJob = job({
+      stage: "planning",
+      harness: { id: "claude-code", role: "triage", prompt: "plan it" },
+      planning: {
+        sessionId: "ps_0123456789abcdef0123456789abcdef",
+        sessionRef: "6f2c3a9e-1b2d-4c5e-8f90-123456789abc",
+        resume: true,
+      },
+    });
+    const controller = new AbortController();
+    await expect(w.runner.prepareWorkspace(planningJob, controller.signal)).rejects.toThrow(
+      /relay/,
+    );
+    const ws = await w.runner.prepareWorkspace(planningJob, controller.signal, {
+      planningRelay: { url: "http://127.0.0.1:1", token: "t" },
+    });
+    // The same path for every job of the session, so `claude --resume` finds the conversation.
+    expect(ws.path).toBe(
+      join(
+        await realpathOf(join(w.root, "worktrees")),
+        "sf-plan-ps-0123456789abcdef0123456789abcdef",
+      ),
+    );
+    expect(ws.launch.argv).toContain("--resume");
+    const session = await w.runner.startSession(planningJob, ws, controller.signal);
+    expect(session.name).toBe("sf-job_1");
+    // A reap while it runs leaves it alone: the worktree names its job.
+    const dirs = { worktreesDir: w.config.worktreesDir, runsDir: w.runsDir, exec: w.tmux.exec };
+    expect(await reapOrphans(dirs, new Set(["job_1"]))).toEqual([]);
+    expect(existsSync(ws.path)).toBe(true);
+    setTimeout(() => controller.abort(new Error("the planning session yielded its slot")), 80);
+    const events = await drain(w.runner.events(planningJob, session, controller.signal));
+    expect(events.filter((e) => e.type === "session.ended")).toEqual([
+      { type: "session.ended", outcome: "cancelled" },
+    ]);
+    expect(events).toContainEqual({ type: "agent.status", status: "idle" });
+    await w.runner.release(planningJob, ws, session);
+    expect(existsSync(ws.path)).toBe(false);
+  });
+
+  it("reaps a planning worktree whose job the host no longer runs", async () => {
+    const w = await world();
+    const planningJob = job({
+      stage: "planning",
+      planning: {
+        sessionId: "ps_1",
+        sessionRef: "6f2c3a9e-1b2d-4c5e-8f90-123456789abc",
+        resume: false,
+      },
+    });
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(planningJob, signal, {
+      planningRelay: { url: "http://127.0.0.1:1", token: "t" },
+    });
+    const dirs = { worktreesDir: w.config.worktreesDir, runsDir: w.runsDir, exec: w.tmux.exec };
+    expect(await reapOrphans(dirs, new Set())).toEqual(["job_1"]);
+    expect(existsSync(ws.path)).toBe(false);
+    expect(existsSync(join(w.runsDir, "job_1"))).toBe(false);
+  });
+
   it("waits on a permission prompt, then fails after the timeout", async () => {
     const w = await world(
       {

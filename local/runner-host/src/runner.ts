@@ -1,5 +1,5 @@
 // Wires a runner from its config: the signed channel client, the host's git, and the local adapter
-// (git worktrees + tmux, ADR 0350) with the Claude harness. This is the one place that names a
+// (git worktrees + tmux, ADR 0370) with the Claude harness. This is the one place that names a
 // runner adapter; the host loop and the job lifecycle only see the contract.
 
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import { checkoutDirs } from "./checkouts.ts";
 import type { Paths, RunnerConfig } from "./config.ts";
 import { hostGit } from "./git.ts";
 import { RunnerHost } from "./host.ts";
+import type { SelfUpdate } from "./self-update.ts";
 
 /** Where a running host records its live jobs (read by `status` and `doctor`). */
 export const liveJobsFile = (dirs: Paths) => join(dirs.stateDir, "live-jobs.json");
@@ -36,6 +37,9 @@ export function buildRunner(
     fetch?: typeof fetch;
     log?: (m: string) => void;
     local?: Partial<LocalRunnerConfig>;
+    /** The runner's self-update (ADR 0360), and what to do once it has updated. */
+    selfUpdate?: SelfUpdate;
+    onUpdated?: () => void;
   } = {},
 ) {
   const exec = options.exec ?? nodeExec;
@@ -55,7 +59,7 @@ export function buildRunner(
   const adapter = createLocalRunner({
     exec,
     maxConcurrent: config.maxConcurrent,
-    // ADR 0260 (amended by ADR 0350): jobs run as worktrees of the checkout this machine already
+    // ADR 0260 (amended by ADR 0370): jobs run as worktrees of the checkout this machine already
     // has for the remote, under the configured `checkouts` dirs; the host's clone only when none.
     checkouts: checkoutDirs(config),
     resolveRepoPath: (job) => git.clonePath(job),
@@ -76,6 +80,7 @@ export function buildRunner(
     cp,
     git,
     maxConcurrent: config.maxConcurrent,
+    maxLight: config.maxLight,
     heartbeatMs: config.heartbeatMs,
     reapOrphans: (running) =>
       reapOrphans(
@@ -87,6 +92,8 @@ export function buildRunner(
       ),
     liveJobsFile: liveJobsFile(dirs),
     log,
+    ...(options.selfUpdate ? { selfUpdate: options.selfUpdate } : {}),
+    ...(options.onUpdated ? { onUpdated: options.onUpdated } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {}),
   });
   return { host, cp, git, adapter };

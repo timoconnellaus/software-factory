@@ -85,7 +85,11 @@ export function serviceNode(input: {
 /** Homebrew's and the usual places, searched after PATH for the service's tools. */
 export const EXTRA_TOOL_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
 
-/** The absolute path of an executable on PATH (then the usual Homebrew dirs), or null. */
+/**
+ * The absolute path of an executable on PATH, then the usual Homebrew dirs, then `extraDirs`
+ * (`~/.local/bin`, where Claude Code's installer puts `claude`), or null. An install over SSH
+ * captures a shell PATH without them (incident 2026-11-11 #9, then Orca; now tmux and claude).
+ */
 export function findOnPath(
   name: string,
   path: string | undefined,
@@ -97,8 +101,9 @@ export function findOnPath(
       return false;
     }
   },
+  extraDirs: string[] = [],
 ): string | null {
-  for (const dir of [...(path ?? "").split(delimiter), ...EXTRA_TOOL_DIRS]) {
+  for (const dir of [...(path ?? "").split(delimiter), ...EXTRA_TOOL_DIRS, ...extraDirs]) {
     if (!dir || !isAbsolute(dir)) continue;
     const file = join(dir, name);
     if (isExecutable(file)) return file;

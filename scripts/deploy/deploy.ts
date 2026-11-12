@@ -11,7 +11,7 @@
 // Uses CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment (or a wrangler login).
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { findWorkers, migrationsOf, root, wrangler } from "./lib.ts";
+import { deployArgs, findWorkers, migrationsOf, root, wrangler } from "./lib.ts";
 
 const step = process.argv[2] ?? "all";
 const workers = findWorkers();
@@ -34,8 +34,19 @@ function migrate() {
   }
 }
 
+/** The commit being deployed (the deploy workflow checks out the commit CI passed on). */
+function deployedSha(): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+}
+
 function deployWorkers() {
-  for (const { dir } of workers) wrangler(dir, ["deploy"]);
+  const sha = deployedSha();
+  console.log(`Deploying commit ${sha ?? "(unknown)"}`);
+  for (const { dir, config } of workers) wrangler(dir, ["deploy", ...deployArgs(config, sha)]);
 }
 
 switch (step) {

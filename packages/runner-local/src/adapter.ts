@@ -1,4 +1,4 @@
-// runner-local: the runner contract over plain git and tmux (ADR 0014, 0350). A job becomes a git
+// runner-local: the runner contract over plain git and tmux (ADR 0014, 0370). A job becomes a git
 // worktree on the run branch, inside the checkout this machine already has for the repo (ADR 0260,
 // amended), and Claude Code runs harness-claude's own launch script (ADR 0270) in a tmux session on
 // the factory's own socket (`tmux -L software-factory`), so a person can `tmux attach` to take the
@@ -47,7 +47,14 @@ import {
 } from "@software-factory/runner-contract";
 import { exists, findCheckout, isUnder } from "./checkouts.ts";
 import { type Exec, nodeExec, run } from "./exec.ts";
-import { attachCommand, type PaneState, sessionName, type TmuxOptions, tmuxCli } from "./tmux.ts";
+import {
+  attachCommand,
+  type PaneState,
+  SESSION_PREFIX,
+  sessionName,
+  type TmuxOptions,
+  tmuxCli,
+} from "./tmux.ts";
 
 export interface LocalWorkspace extends WorkspaceHandle {
   /** The checkout the worktree hangs off (the owner's own, or the host's clone). */
@@ -109,6 +116,11 @@ export interface LocalRunnerConfig {
   claudeBin?: string;
   /** The absolute Node that runs the status hook (default: this process's). */
   node?: string;
+  /**
+   * The Node that runs a planning session's MCP server and hooks (default: `node`, else this
+   * process's).
+   */
+  nodeBin?: string;
   /** How long Claude may take to come up in its session before the job fails. */
   startTimeoutMs?: number;
   /** How long the prompt may take to be submitted (the hook's `UserPromptSubmit`). */
@@ -137,6 +149,21 @@ export const DEFAULT_CAPABILITIES: Capability[] = [
 /** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
 export function isRunBranch(branch: string): boolean {
   return /^factory\/[0-9]+-[a-z0-9-]+-run-[0-9]+$/.test(branch);
+}
+
+/** The file in a job worktree's private git dir that names the job (a planning worktree's name doesn't). */
+export const WORKTREE_JOB_FILE = "sf-job";
+
+/**
+ * A job's worktree directory name. A planning job's is its session's (ADR 0350): every job of the
+ * session gets the same path, so `claude --resume` finds the conversation, which Claude keeps by
+ * working directory. Its tmux session is still `sf-<jobId>`.
+ */
+export function worktreeName(jobId: string, planningSessionId?: string): string {
+  if (planningSessionId) {
+    return `${SESSION_PREFIX}plan-${planningSessionId.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 40)}`;
+  }
+  return sessionName(jobId);
 }
 
 /** A job failed because its live harness isn't configured as the factory set it (ADR 0270). */
@@ -294,13 +321,17 @@ export function createLocalRunner(
       return (await findCheckout(job, search))?.path ?? null;
     },
 
-    async prepareWorkspace(job): Promise<LocalWorkspace> {
+    async prepareWorkspace(job, _signal, options): Promise<LocalWorkspace> {
+      const planning = job.stage === "planning";
+      if (planning && !options?.planningRelay) {
+        throw new Error(`planning job ${job.jobId} came without its relay`);
+      }
       // ADR 0260 (amended): the owner's checkout of the job's remote, else the host's clone.
       const checkout = await checkoutFor(job);
       const name = sessionName(job.jobId);
       await mkdir(config.worktreesDir, { recursive: true });
       const worktreesDir = await realpath(config.worktreesDir);
-      const path = join(worktreesDir, name);
+      const path = join(worktreesDir, worktreeName(job.jobId, job.planning?.sessionId));
       const runDir = join(config.runsDir, job.jobId);
       const attachmentsDir = join(
         config.attachmentsDir ?? join(dirname(config.runsDir), "attachments"),
@@ -350,6 +381,13 @@ export function createLocalRunner(
       try {
         const baseSha = (await run(exec, "git", ["rev-parse", "HEAD"], { cwd: path })).trim();
         await excludePrivateFiles(path);
+        // Which job this worktree is, for reaping: a planning worktree's name is its session's.
+        const ownGitDir = (
+          await run(exec, "git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
+            cwd: path,
+          })
+        ).trim();
+        await writeFile(join(ownGitDir, WORKTREE_JOB_FILE), `${job.jobId}\n`);
         // A linked worktree keeps its objects and refs in the checkout's git dir, outside the
         // worktree: the harness's sandbox must let the run's own git write there (and only there).
         const [commonDir = "", gitDir = ""] = (
@@ -370,10 +408,20 @@ export function createLocalRunner(
           protectPaths: [...new Set([...(config.protectPaths ?? []), checkout])],
           ...(commonDir && gitDir ? { git: { commonDir, gitDir } } : {}),
           ...(capabilities.includes("work-item-attachments") ? { attachmentsDir } : {}),
-          // The factory's status hook: agent status from Claude Code's hooks (ADR 0350).
+          // The factory's status hook: agent status from Claude Code's hooks (ADR 0370).
           statusHook: config.node ? { node: config.node } : true,
           ...(config.identity ? { identity: config.identity } : {}),
           ...(config.claudeBin ? { claudeBin: config.claudeBin } : {}),
+          ...(planning && options?.planningRelay
+            ? {
+                planning: {
+                  relay: options.planningRelay,
+                  ...((config.nodeBin ?? config.node)
+                    ? { nodeBin: config.nodeBin ?? config.node }
+                    : {}),
+                },
+              }
+            : {}),
         });
         return {
           ...partial,
@@ -499,7 +547,10 @@ export function createLocalRunner(
       return session;
     },
 
-    async *events(_job, session, signal): AsyncIterable<AdapterEvent> {
+    async *events(job, session, signal): AsyncIterable<AdapterEvent> {
+      // A planning session (ADR 0300) idles in its Stop hook between turns: Stop and waiting are
+      // normal there. It ends when the host stops it (a yield, the gate decided) or Claude exits.
+      const planning = job.stage === "planning";
       let offset = 0;
       let emittedHistory = 0;
       let lastScreen = "";
@@ -604,6 +655,10 @@ export function createLocalRunner(
             case "Stop":
               // A Stop from before the prompt was submitted (nothing asked yet) is not the end.
               if (!submitted) break;
+              if (planning) {
+                yield* setStatus("idle");
+                break;
+              }
               yield* setStatus("done");
               yield* await finalLogs();
               {
@@ -627,7 +682,11 @@ export function createLocalRunner(
           yield await exited();
           return;
         }
-        if (waitingSince !== null && Date.now() - waitingSince > waitingInputTimeoutMs) {
+        if (
+          !planning &&
+          waitingSince !== null &&
+          Date.now() - waitingSince > waitingInputTimeoutMs
+        ) {
           yield {
             type: "session.ended",
             outcome: "failed",

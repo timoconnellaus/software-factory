@@ -26,7 +26,14 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   operations over the runner channel (a projected planning MCP server), and kim-style hooks
   (`PostToolUse`, `UserPromptSubmit`, `Stop`) bring answers and chat back from the planning log. It
   holds a light slot (ADR 0301). Mockups render on a sandboxed origin; kept artifacts land in `.kim/`
-  with the spec (ADR 0305). Specs 20–25.
+  with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
+  channel path, `/runner/v1/jobs/:id/planning`, scoped by the job and fenced by its lease; the
+  runner host relays them for the harness, so the runner key never leaves it. Every change is a row
+  in the **planning log** (`core_planning_events`, its id the agent's cursor) and a
+  `planning.changed` outbox message, which `sf-engine`'s **PlanningHub** Durable Object (one per work
+  item) turns into a Server-Sent Event for open Planning tabs (`EngineApi.planningStream`) and a
+  wake-up for the agent's held `planning.wait`. The scheduler places jobs by pool: light (triage,
+  spec, planning), heavy (build, verify); a resume is pinned to the session's runner.
 - **Connectors** are the only path to GitHub, Linear, Slack and other outside systems (ADR 0010).
   The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033). Its webhook
   (`software-factory.zerobsai.com/webhooks/github`, served by `sf-engine` through a Workers route)
@@ -63,12 +70,15 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   (`pr-head-<item>`). Closing the PR without merging cancels the item.
 - **Runners** execute jobs through the runner contract over a signed, outbound-only channel
   (ADR 0014–0016). A **runner host** on each machine loads **runner adapters** (`runner-local`:
-  a git worktree and a tmux session per job, ADR 0350), which drive **harnesses** (Claude Code
+  a git worktree and a tmux session per job, ADR 0370), which drive **harnesses** (Claude Code
   first). Agent status comes from the harness's own status hook, and a person takes a run over with
   `tmux -L software-factory attach -t sf-<jobId>`. Runners are owner-only unless shared through an
   allowlist (ADR 0038), each run pushes its own branch under a fencing token (ADR 0035), and the
   harness runs without the owner's git or cloud credentials (ADR 0033): the runner host, not the
   harness, pushes the run branch with the job token (ADR 0250).
+  A runner host keeps its own code on the commit `sf-engine` was deployed from (`DEPLOYED_SHA`,
+  sent in each heartbeat): it updates itself when idle and rolls back an update that doesn't start
+  (ADR 0360).
 - **The `sf` CLI** (`local/cli`, ADR 0340) is a surface for people and their agent sessions: it
   calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
   `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses
@@ -90,15 +100,16 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 ## Repository layout
 | Path | What |
 | --- | --- |
-| `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning, review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). Pinned next to D1; loaders fetch a page's reads in one batched request (ADR 0241). MCP later |
+| `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning (layout A: questions | spec | chat with the gate bar, full screen, phone tabs; live from `/api/work/<id>/planning/live`, spec 20), review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). Pinned next to D1; loaders fetch a page's reads in one batched request (ADR 0241). MCP later |
 | `packages/ui` | shadcn/ui components and the factory theme (zinc, Geist, status dots) |
+| `packages/timeline` | A work item's event log in words: `describeEntry` turns an audit entry into a label, detail, note, actor and dot. Pure, no dependencies; the dashboard's timeline and `sf timeline` both use it (spec wi-4) |
 | `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC |
 | `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, `.factory/policy.json` schema, model roles, Workflow event names, verify logic (`verify/`: CI, packet assembly, risk flags, the check-only rule, onboarding), incident classes (`incidents/`), a fake GitHub for tests (`/testing`) |
 | `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
 | `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |
 | `packages/harness-claude` | The Claude Code harness: the per-run settings (permission mode and allowlist per stage, the OS sandbox, deny rules, a credential-free environment), the exact launch command and the post-launch check (ADR 0270), the run's git config, transcript and stream-json parsing |
-| `packages/runner-local` | The local runner adapter (ADR 0350): a git worktree of the machine's checkout on the run branch, the harness's launch script in a tmux session on the factory's own socket (verified before the prompt, ADR 0270), status from the harness's hook file (`status.jsonl`), takeover by `tmux attach`, orphan reaping |
+| `packages/runner-local` | The local runner adapter (ADR 0370): a git worktree of the machine's checkout on the run branch, the harness's launch script in a tmux session on the factory's own socket (verified before the prompt, ADR 0270), status from the harness's hook file (`status.jsonl`), takeover by `tmux attach`, orphan reaping |
 | `packages/connector-webhook` | Inbound webhook connector, provider-neutral: signature check, delivery naming |
 | `packages/connector-github` | The GitHub App connector: App webhooks → operations |
 | `packages/config` | Shared tsconfig, Biome preset, Vitest preset |
@@ -108,5 +119,5 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `spikes/` | Throwaway spikes. Not in the workspace or Biome |
 
 The first adapter, `runner-orca` (Orca's worktrees and terminals), was replaced by `runner-local`
-and deleted (ADR 0350); `spikes/runner-orca` keeps the original spike. Build specs are in
+and deleted (ADR 0370); `spikes/runner-orca` keeps the original spike. Build specs are in
 [`specs/`](specs/).

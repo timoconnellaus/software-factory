@@ -1,4 +1,4 @@
-// @software-factory/runner-local: the local runner adapter (ADR 0014, 0350): git worktrees and tmux
+// @software-factory/runner-local: the local runner adapter (ADR 0014, 0370): git worktrees and tmux
 // on the runner host. The runner host (`local/runner-host`) loads it; nothing in the core or the
 // contract imports it.
 export * from "./adapter.ts";

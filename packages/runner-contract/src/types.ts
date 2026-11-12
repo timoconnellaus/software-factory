@@ -57,9 +57,21 @@ export type HarnessId = (typeof HARNESSES)[number];
 export const MODEL_ROLES = ["triage", "implement", "review", "summarise"] as const;
 export type ModelRole = (typeof MODEL_ROLES)[number];
 
-/** Stages that run on a runner. */
-export const JOB_STAGES = ["triage", "spec", "build", "verify"] as const;
+/**
+ * Stages that run on a runner. `spec` is V1's one-shot spec run (Workflow v1–v4); `planning` is the
+ * live, resumable planning session (ADR 0300, Workflow v5).
+ */
+export const JOB_STAGES = ["triage", "spec", "planning", "build", "verify"] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
+
+/** Runner capacity pools (ADR 0301): heavy runs the test suite, light mostly reads and waits. */
+export const POOLS = ["heavy", "light"] as const;
+export type Pool = (typeof POOLS)[number];
+
+/** The pool a stage's job takes a slot in (ADR 0301). */
+export function stagePool(stage: JobStage): Pool {
+  return stage === "build" || stage === "verify" ? "heavy" : "light";
+}
 
 /**
  * Permission modes a project may give a stage's harness (ADR 0270). No mode that prompts a person
@@ -86,6 +98,24 @@ export type Handback = z.infer<typeof handbackSchema>;
 export interface AttachmentFile {
   meta: AttachmentMeta;
   bytes: Uint8Array;
+}
+
+/**
+ * The runner host's local relay for a planning job (ADR 0350): the harness's planning MCP server
+ * and hooks call it with the bearer token, and the host signs the call onto the channel with the
+ * job's id and fencing token. The runner key never leaves the host.
+ */
+export interface PlanningRelay {
+  /** `http://127.0.0.1:<port>`. */
+  url: string;
+  /** Per-job secret; grants that job's planning operations and nothing else. */
+  token: string;
+}
+
+/** What the host gives an adapter beyond the job itself. */
+export interface PrepareOptions {
+  /** For a `planning` job: where its harness reaches the planning operations. */
+  planningRelay?: PlanningRelay;
 }
 
 /** What an adapter returns from prepareWorkspace. Adapters may extend it with private fields. */
@@ -152,7 +182,7 @@ export interface RunnerAdapter<
    * `resolveCheckout` named, or the host's clone when there was none. It never registers a second
    * checkout for a repo the runner already has, and never touches the checkout's own working tree.
    */
-  prepareWorkspace(job: Job, signal: AbortSignal): Promise<W>;
+  prepareWorkspace(job: Job, signal: AbortSignal, options?: PrepareOptions): Promise<W>;
   startSession(job: Job, workspace: W, signal: AbortSignal): Promise<S>;
   /** Yields until the session ends; the last event is `session.ended`. */
   events(job: Job, session: S, signal: AbortSignal): AsyncIterable<AdapterEvent>;

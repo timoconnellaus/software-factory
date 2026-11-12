@@ -30,3 +30,9 @@ reordering or removing a step breaks the replay.
 > **kind** of work item can get its own path (`runAttached` for `attached`), chosen after
 > `meta: item` without a version bump. This is allowed only when no running instance can reach the
 > new path and other kinds' step sequences are unchanged.
+
+> Amended 2026-11-12 (spec 20, [ADR 0350](0350-how-the-planning-loop-is-wired.md)): v5's spec stage
+> is a planning session (`planning: start`, `planning #k: await|ready|escalate|gate|note|end|criteria`)
+> instead of the spec rounds. It is the same `runV1` flow with the rounds switched off for v5 and
+> the planning steps switched off below it, so v1–v4 replay their step sequences unchanged;
+> `workflow-versions.test.ts` locks v5's names.

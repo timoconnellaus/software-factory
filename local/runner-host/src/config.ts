@@ -17,16 +17,23 @@ export const configSchema = z.object({
   key: z.string().min(20),
   name: z.string().max(80).optional(),
   maxConcurrent: z.number().int().min(1).max(16).default(2),
+  /** Light slots (triage, spec, planning sessions), ADR 0301. An idle planning session holds one. */
+  maxLight: z.number().int().min(0).max(32).default(6),
   heartbeatMs: z.number().int().min(2_000).max(120_000).default(20_000),
   /** Capabilities to declare (default: everything the adapter supports). */
   capabilities: z.array(z.enum(CAPABILITIES)).optional(),
   identity: z.object({ name: z.string(), email: z.string() }).optional(),
   /**
    * Directories whose immediate git repos are this machine's checkouts (ADR 0260, amended by ADR
-   * 0350): a job runs as a worktree of the one whose `origin` is the job's repo, else in the host's
+   * 0370): a job runs as a worktree of the one whose `origin` is the job's repo, else in the host's
    * own clone. Unset until `login` or `doctor --fix` fills it in once.
    */
   checkouts: z.array(z.string()).optional(),
+  /**
+   * Update the runner's own checkout to the commit the factory was deployed from (ADR 0360).
+   * `false` turns it off; the runner then reports `blocked` when it is behind.
+   */
+  autoUpdate: z.boolean().default(true),
   /** Test only: clone/push URL per canonical GitHub URL. */
   repoUrlMap: z.record(z.string(), z.string()).optional(),
 });
@@ -41,7 +48,7 @@ export interface Paths {
   /**
    * Job worktrees: `<worktreesDir>/sf-<jobId>`. Under the data dir, not the state dir: the harness
    * denies reads of `~/.local/state/software-factory` (harness-claude `DENY_HOME`), and the agent
-   * must read its own worktree (incident 2026-11-12 #9).
+   * must read its own worktree (incident 2026-11-11-bootstrap #10).
    */
   worktreesDir: string;
   /** Each run's attachments (`<attachmentsDir>/<jobId>`), which the agent reads: also not under state. */
@@ -52,11 +59,10 @@ export interface Paths {
 export function paths(env: NodeJS.ProcessEnv = process.env): Paths {
   const home = env.HOME ?? homedir();
   const configDir = join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "software-factory");
-  const stateDir = join(
-    env.XDG_STATE_HOME ?? join(home, ".local", "state"),
-    "software-factory",
-    "runner",
-  );
+  // The service gets SF_RUNNER_STATE_DIR from its plist, so the `sh` wrapper and Node agree on it.
+  const stateDir =
+    env.SF_RUNNER_STATE_DIR ??
+    join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "software-factory", "runner");
   const dataDir = join(
     env.XDG_DATA_HOME ?? join(home, ".local", "share"),
     "software-factory",

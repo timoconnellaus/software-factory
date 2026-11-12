@@ -6,7 +6,7 @@
 import { readdir, readFile, realpath, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { removeRunDir } from "@software-factory/harness-claude";
-import { isRunBranch } from "./adapter.ts";
+import { isRunBranch, WORKTREE_JOB_FILE } from "./adapter.ts";
 import { type CheckoutSearch, duplicateCheckouts, isUnder, scanCheckouts } from "./checkouts.ts";
 import { type Exec, nodeExec } from "./exec.ts";
 import { jobIdOfSession, type TmuxOptions, tmuxCli } from "./tmux.ts";
@@ -35,9 +35,18 @@ export async function jobWorktrees(dirs: LocalHostDirs): Promise<JobWorktree[]> 
   if (!root) return [];
   const out: JobWorktree[] = [];
   for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
-    const jobId = entry.isDirectory() ? jobIdOfSession(entry.name) : null;
-    if (!jobId) continue;
+    const named = entry.isDirectory() ? jobIdOfSession(entry.name) : null;
+    if (!named) continue;
     const path = join(root, entry.name);
+    // The job a worktree belongs to is in its private git dir (a planning worktree is named after
+    // its session, ADR 0350); worktrees from before the marker are named after their job.
+    const marker = await readFile(join(path, ".git"), "utf8")
+      .then((t) => t.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim())
+      .then((gitDir) =>
+        gitDir ? readFile(join(gitDir, WORKTREE_JOB_FILE), "utf8").then((t) => t.trim()) : "",
+      )
+      .catch(() => "");
+    const jobId = marker || named;
     // A linked worktree has a `.git` file; without one git would find whatever repo is above.
     const linked = await readFile(join(path, ".git"), "utf8").then(
       (t) => t.startsWith("gitdir:"),

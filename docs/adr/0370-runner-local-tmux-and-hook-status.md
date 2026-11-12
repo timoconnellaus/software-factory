@@ -1,4 +1,4 @@
-# ADR 0350: Runners run agents in tmux, without Orca; status comes from hooks
+# ADR 0370: Runners run agents in tmux, without Orca; status comes from hooks
 
 Status: accepted, 2026-11-12. Plan:
 [`.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`](../../.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md).

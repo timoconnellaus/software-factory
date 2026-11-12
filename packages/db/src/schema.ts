@@ -276,7 +276,21 @@ export interface CoreQuestionsTable {
   escalated_at: Iso | null;
   asked_by: string;
   created_at: Iso;
+  // 0120 (spec 20): the kim question model.
+  kind: Generated<QuestionKind>;
+  /** JSON array of default values (several only for multiple-choice), or null. */
+  default_values: JsonText | null;
+  /** The [Qn] of provenance tags, per work item. */
+  number: number | null;
+  position: Generated<number>;
+  revision: Generated<number>;
+  answer_revision: Generated<number>;
+  note: string | null;
+  planning_session_id: string | null;
+  updated_at: Iso | null;
 }
+
+export type QuestionKind = "text" | "single-choice" | "multiple-choice" | "yes-no" | "number";
 
 export interface CoreSpecsTable {
   id: string;
@@ -292,6 +306,10 @@ export interface CoreSpecsTable {
   created_at: Iso;
   approved_at: Iso | null;
   approved_by: string | null;
+  // 0120 (ADR 0302): the living spec's new sections, as JSON, and what a revision changed.
+  coverage: Generated<JsonText>;
+  clarifications: Generated<JsonText>;
+  summary: string | null;
 }
 
 export type PendingActionKind = "spec" | "merge" | "approval";
@@ -418,6 +436,16 @@ export interface CoreRunnersTable {
   last_seen_at: Iso | null;
   revoked_at: Iso | null;
   created_at: Iso;
+  /** 0120 (ADR 0301): the light pool; null when the runner reports none. */
+  light_max: number | null;
+  light_in_use: Generated<number>;
+  /** 0130 (ADR 0360): the commit the runner's code is at, as it last reported. */
+  version: string | null;
+  auto_update: Bool | null;
+  /** current | waiting | blocked | updating | rolled_back */
+  update_state: string | null;
+  update_target: string | null;
+  update_reason: string | null;
 }
 
 export interface CoreRunnerSharesTable {
@@ -427,7 +455,7 @@ export interface CoreRunnerSharesTable {
   created_at: Iso;
 }
 
-export type JobStage = "triage" | "spec" | "build" | "verify";
+export type JobStage = "triage" | "spec" | "planning" | "build" | "verify";
 export type JobStatus = "queued" | "claimed" | "done" | "failed" | "cancelled";
 
 export interface CoreJobsTable {
@@ -450,6 +478,10 @@ export interface CoreJobsTable {
   created_at: Iso;
   claimed_at: Iso | null;
   finished_at: Iso | null;
+  /** 0120 (ADR 0301). */
+  pool: Generated<"heavy" | "light">;
+  pinned_runner_id: string | null;
+  planning_session_id: string | null;
 }
 
 export type RunStatus =
@@ -635,6 +667,74 @@ export interface CoreMergeQueueTable {
   ended_at: Iso | null;
 }
 
+// ---- 0120: planning, the loop (spec 20, ADR 0300, 0350) ----
+
+export type PlanningSessionStatus =
+  | "starting"
+  | "working"
+  | "idle"
+  | "yielding"
+  | "yielded"
+  | "interrupted"
+  | "ended"
+  | "moved";
+
+export interface CorePlanningSessionsTable {
+  id: string;
+  work_item_id: string;
+  runner_id: string | null;
+  session_ref: string;
+  status: Generated<PlanningSessionStatus>;
+  current_job_id: string | null;
+  delivered_cursor: Generated<number>;
+  round: Generated<number>;
+  ready_spec_id: string | null;
+  ready_at: Iso | null;
+  at_gate: Generated<Bool>;
+  idle_since: Iso | null;
+  agent_seen_at: Iso | null;
+  yield_requested_at: Iso | null;
+  activity: string | null;
+  focused_question_id: string | null;
+  announced_at: Iso | null;
+  replaces_session_id: string | null;
+  created_by: string;
+  created_at: Iso;
+  updated_at: Iso;
+  ended_at: Iso | null;
+  end_reason: string | null;
+}
+
+export interface CorePlanningEventsTable {
+  id: Generated<number>;
+  work_item_id: string;
+  type: string;
+  actor_type: string;
+  actor_id: string;
+  payload: Generated<JsonText>;
+  at: Iso;
+}
+
+export interface CorePlanningMessagesTable {
+  id: string;
+  work_item_id: string;
+  author_kind: "person" | "agent";
+  author_id: string;
+  text: string;
+  question_id: string | null;
+  reply_to: string | null;
+  kind: Generated<"chat" | "gate">;
+  delivered_at: Iso | null;
+  created_at: Iso;
+}
+
+export interface CorePlanningPresenceTable {
+  work_item_id: string;
+  user_id: string;
+  seen_at: Iso;
+  left_at: Iso | null;
+}
+
 // ---- 0110: the sf CLI (ADR 0340) ----
 
 export type CliScope = "read" | "write";
@@ -707,6 +807,10 @@ export interface CoreDatabase {
   core_runner_device_codes: CoreRunnerDeviceCodesTable;
   core_attachments: CoreAttachmentsTable;
   core_merge_queue: CoreMergeQueueTable;
+  core_planning_sessions: CorePlanningSessionsTable;
+  core_planning_events: CorePlanningEventsTable;
+  core_planning_messages: CorePlanningMessagesTable;
+  core_planning_presence: CorePlanningPresenceTable;
   core_cli_device_codes: CoreCliDeviceCodesTable;
   core_cli_tokens: CoreCliTokensTable;
 }

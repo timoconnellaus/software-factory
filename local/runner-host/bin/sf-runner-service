@@ -1,0 +1,42 @@
+#!/bin/sh
+# What launchd runs (ADR 0360): checks the self-update record, then starts the runner on Node.
+# An update the runner applied is "pending" until its first successful heartbeat confirms it. Each
+# start here counts one try; after three starts without a confirmation it resets the checkout to the
+# commit before the update, reinstalls, marks the update rolled back and lists the commit so the
+# runner never retries it. Kept tiny on purpose: a broken wrapper is the one thing a person must fix.
+#
+# Env (from the plist): SF_RUNNER_NODE (the pinned Node), SF_RUNNER_STATE_DIR, optional
+# SF_RUNNER_PNPM. The record format is in src/self-update.ts.
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd -P)
+repo=$(cd "$here/../.." && pwd -P)
+state=${SF_RUNNER_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/software-factory/runner}
+u="$state/update"
+
+field() { cat "$u/$1" 2>/dev/null || true; }
+
+if [ "$(field status)" = pending ]; then
+  starts=$(field starts)
+  starts=$((${starts:-0} + 1))
+  echo "$starts" >"$u/starts"
+  if [ "$starts" -gt 3 ]; then
+    from=$(field from)
+    to=$(field to)
+    echo "sf-runner-service: the update to $to didn't confirm after 3 starts; rolling back to $from" >&2
+    if [ "$(field mode)" = detached ]; then
+      git -C "$repo" checkout --quiet --detach "$from"
+    else
+      git -C "$repo" reset --quiet --keep "$from"
+    fi
+    # A failure exits non-zero with the record still pending, so the next start tries again.
+    (cd "$repo" && CI=1 "${SF_RUNNER_PNPM:-pnpm}" install --frozen-lockfile)
+    echo "$to" >>"$state/update-rolled-back"
+    echo "the update to $to didn't start (3 starts without a heartbeat); rolled back to $from" >"$u/reason"
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$u/at"
+    echo rolled_back >"$u/status"
+  fi
+fi
+
+SF_RUNNER_SERVICE=1
+export SF_RUNNER_SERVICE
+exec "${SF_RUNNER_NODE:-node}" --experimental-transform-types --no-warnings "$here/src/cli.ts" run
