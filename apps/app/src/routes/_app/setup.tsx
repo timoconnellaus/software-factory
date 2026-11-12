@@ -5,12 +5,18 @@
 // syncs itself, and a runner logs in with a code.
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@software-factory/ui/components/collapsible";
 import { Input } from "@software-factory/ui/components/input";
 import { Label } from "@software-factory/ui/components/label";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { ChevronRightIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import { ago } from "#/lib/format";
@@ -140,9 +146,14 @@ function Banner({
       data-testid={`banner-${tone}`}
     >
       <div className="grow">{children}</div>
-      <button type="button" className="text-muted-foreground text-xs underline" onClick={onClose}>
+      <Button
+        variant="link"
+        size="sm"
+        className="h-auto p-0 text-muted-foreground text-xs underline"
+        onClick={onClose}
+      >
         Dismiss
-      </button>
+      </Button>
     </div>
   );
 }
@@ -575,33 +586,40 @@ function SendToAdmin({
   open: boolean;
 }) {
   return (
-    <details className="grid gap-1.5" open={open} data-testid="send-to-admin">
-      <summary className="cursor-pointer text-xs">
+    <Collapsible
+      className="group/collapsible grid gap-1.5"
+      defaultOpen={open}
+      data-testid="send-to-admin"
+    >
+      <CollapsibleTrigger className="flex items-center gap-1 text-left cursor-pointer text-xs">
+        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-[state=open]/collapsible:rotate-90" />
         {open
           ? "You're not an admin of this repo: send this to the repo admin"
           : "Not a repo admin? Send to the repo admin"}
-      </summary>
-      <div className="grid gap-2 pt-2">
-        <pre className="whitespace-pre-wrap rounded bg-muted px-3 py-2 font-mono text-xs">
-          {protection.adminMessage}
-        </pre>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() =>
-              navigator.clipboard
-                .writeText(protection.adminMessage)
-                .then(() => toast.success("Message copied"))
-            }
-            data-testid="copy-admin-message"
-          >
-            Copy message
-          </Button>
-          <DownloadLinks projectId={projectId} protection={protection} />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="grid gap-2 pt-2">
+          <pre className="whitespace-pre-wrap rounded bg-muted px-3 py-2 font-mono text-xs">
+            {protection.adminMessage}
+          </pre>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                navigator.clipboard
+                  .writeText(protection.adminMessage)
+                  .then(() => toast.success("Message copied"))
+              }
+              data-testid="copy-admin-message"
+            >
+              Copy message
+            </Button>
+            <DownloadLinks projectId={projectId} protection={protection} />
+          </div>
         </div>
-      </div>
-    </details>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -647,69 +665,74 @@ function ProjectDetails({ project }: { project: ProjectState }) {
           {project.repo.owner}/{project.repo.name}@{project.repo.defaultBranch}
         </a>
       </div>
-      <details className="text-sm">
-        <summary className="cursor-pointer text-muted-foreground text-xs">Details</summary>
-        <div className="grid gap-1.5 pt-2">
-          <div>
-            GitHub:{" "}
-            {project.connection.status === "connected"
-              ? `connected through ${project.connection.account}`
-              : project.connection.status === "missing"
-                ? "not reachable by a connected installation. Connect GitHub above, or add this repo under Manage repositories."
-                : `the installation is ${project.connection.status}`}
-            {project.connection.manageUrl && (
-              <>
-                {" "}
-                ·{" "}
-                <a
-                  href={project.connection.manageUrl}
-                  target="_blank"
-                  rel="noreferrer"
+      <Collapsible className="group/collapsible text-sm">
+        <CollapsibleTrigger className="flex items-center gap-1 text-left cursor-pointer text-muted-foreground text-xs">
+          <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-[state=open]/collapsible:rotate-90" />
+          Details
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="grid gap-1.5 pt-2">
+            <div>
+              GitHub:{" "}
+              {project.connection.status === "connected"
+                ? `connected through ${project.connection.account}`
+                : project.connection.status === "missing"
+                  ? "not reachable by a connected installation. Connect GitHub above, or add this repo under Manage repositories."
+                  : `the installation is ${project.connection.status}`}
+              {project.connection.manageUrl && (
+                <>
+                  {" "}
+                  ·{" "}
+                  <a
+                    href={project.connection.manageUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    Manage repositories on GitHub
+                  </a>
+                </>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span>
+                Config:{" "}
+                {project.configVersion !== null ? (
+                  <>
+                    <span className="font-mono text-xs">v{project.configVersion}</span>
+                    {project.policy.state !== "valid" ? ` (${project.policy.state})` : ""}
+                  </>
+                ) : (
+                  "none yet"
+                )}
+                {" · "}
+                <Link
+                  to="/projects/$projectId/settings"
+                  params={{ projectId: project.id }}
                   className="underline"
                 >
-                  Manage repositories on GitHub
-                </a>
-              </>
+                  Settings
+                </Link>
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy || project.connection.status !== "connected"}
+                onClick={resync}
+                data-testid="resync-policy"
+              >
+                {busy ? "Importing…" : "Import from repo"}
+              </Button>
+            </div>
+            {project.protection && project.protection.state !== "ok" && (
+              <div className="text-muted-foreground text-xs">
+                {project.repo.defaultBranch} not yet protected:{" "}
+                {project.protection.problems.join("; ")}
+              </div>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span>
-              Config:{" "}
-              {project.configVersion !== null ? (
-                <>
-                  <span className="font-mono text-xs">v{project.configVersion}</span>
-                  {project.policy.state !== "valid" ? ` (${project.policy.state})` : ""}
-                </>
-              ) : (
-                "none yet"
-              )}
-              {" · "}
-              <Link
-                to="/projects/$projectId/settings"
-                params={{ projectId: project.id }}
-                className="underline"
-              >
-                Settings
-              </Link>
-            </span>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy || project.connection.status !== "connected"}
-              onClick={resync}
-              data-testid="resync-policy"
-            >
-              {busy ? "Importing…" : "Import from repo"}
-            </Button>
-          </div>
-          {project.protection && project.protection.state !== "ok" && (
-            <div className="text-muted-foreground text-xs">
-              {project.repo.defaultBranch} not yet protected:{" "}
-              {project.protection.problems.join("; ")}
-            </div>
-          )}
-        </div>
-      </details>
+        </CollapsibleContent>
+      </Collapsible>
     </Card>
   );
 }
@@ -783,68 +806,71 @@ function PairByKey() {
     }
   }
   return (
-    <details className="text-sm" data-testid="pair-by-key">
-      <summary className="cursor-pointer text-muted-foreground text-xs">
+    <Collapsible className="group/collapsible text-sm" data-testid="pair-by-key">
+      <CollapsibleTrigger className="flex items-center gap-1 text-left cursor-pointer text-muted-foreground text-xs">
+        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-[state=open]/collapsible:rotate-90" />
         Can't use a login code? Pair with a key instead
-      </summary>
-      <div className="grid gap-3 pt-3">
-        <form onSubmit={register} className="flex flex-wrap items-end gap-2">
-          <div className="grid gap-1.5">
-            <Label htmlFor="runner-name">Runner name</Label>
-            <Input
-              id="runner-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-            />
-          </div>
-          <Button type="submit" variant="outline" disabled={busy || !name.trim()}>
-            Register runner
-          </Button>
-        </form>
-        {(runners.data?.runners ?? []).map((r) => (
-          <div key={r.id} className="flex items-center gap-2 text-xs">
-            <span>{r.name}</span>
-            <Button size="sm" variant="ghost" onClick={() => rotate(r.id)}>
-              Rotate key
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="grid gap-3 pt-3">
+          <form onSubmit={register} className="flex flex-wrap items-end gap-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="runner-name">Runner name</Label>
+              <Input
+                id="runner-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </div>
+            <Button type="submit" variant="outline" disabled={busy || !name.trim()}>
+              Register runner
             </Button>
-          </div>
-        ))}
-        {key && (
-          <div className="grid gap-1 rounded-md border px-3 py-2" data-testid="runner-key">
-            <div className="font-medium">Copy this now: it is shown once.</div>
-            <div className="text-muted-foreground text-xs">
-              Paste the command, copy the key, then press Enter (the command reads the key from the
-              clipboard).
-            </div>
-            <code className="break-all font-mono text-xs" data-testid="pair-command">
-              {pairCommand(key.runnerId)}
-            </code>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  navigator.clipboard
-                    .writeText(pairCommand(key.runnerId))
-                    .then(() => toast.success("Command copied"))
-                }
-              >
-                1. Copy command
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() =>
-                  navigator.clipboard.writeText(key.key).then(() => toast.success("Key copied"))
-                }
-              >
-                2. Copy key
+          </form>
+          {(runners.data?.runners ?? []).map((r) => (
+            <div key={r.id} className="flex items-center gap-2 text-xs">
+              <span>{r.name}</span>
+              <Button size="sm" variant="ghost" onClick={() => rotate(r.id)}>
+                Rotate key
               </Button>
             </div>
-          </div>
-        )}
-      </div>
-    </details>
+          ))}
+          {key && (
+            <div className="grid gap-1 rounded-md border px-3 py-2" data-testid="runner-key">
+              <div className="font-medium">Copy this now: it is shown once.</div>
+              <div className="text-muted-foreground text-xs">
+                Paste the command, copy the key, then press Enter (the command reads the key from
+                the clipboard).
+              </div>
+              <code className="break-all font-mono text-xs" data-testid="pair-command">
+                {pairCommand(key.runnerId)}
+              </code>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    navigator.clipboard
+                      .writeText(pairCommand(key.runnerId))
+                      .then(() => toast.success("Command copied"))
+                  }
+                >
+                  1. Copy command
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    navigator.clipboard.writeText(key.key).then(() => toast.success("Key copied"))
+                  }
+                >
+                  2. Copy key
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

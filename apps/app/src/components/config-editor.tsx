@@ -6,9 +6,11 @@ import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Input } from "@software-factory/ui/components/input";
 import { Label } from "@software-factory/ui/components/label";
+import { ToggleGroup, ToggleGroupItem } from "@software-factory/ui/components/toggle-group";
 import { cn } from "@software-factory/ui/lib/utils";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { op, read, submitKey } from "#/lib/op";
@@ -303,6 +305,7 @@ export function NumberInput({
   );
 }
 
+/** One-of-a-few picker: a shadcn ToggleGroup that can't be cleared. */
 export function Segmented({
   options,
   value,
@@ -313,21 +316,23 @@ export function Segmented({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="inline-flex overflow-hidden rounded-md border">
+    <ToggleGroup
+      type="single"
+      variant="outline"
+      size="sm"
+      value={value}
+      onValueChange={(v) => v && onChange(v)}
+    >
       {options.map((o) => (
-        <button
+        <ToggleGroupItem
           key={o}
-          type="button"
-          onClick={() => onChange(o)}
-          className={cn(
-            "border-r px-3 py-1.5 text-sm capitalize last:border-r-0",
-            value === o && "bg-primary text-primary-foreground",
-          )}
+          value={o}
+          className="px-3 capitalize data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
         >
           {o}
-        </button>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }
 
@@ -346,20 +351,18 @@ export function ListEditor({
   return (
     <div className="flex flex-wrap items-center gap-1.5" data-testid={testId}>
       {items.map((item) => (
-        <span
-          key={item}
-          className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs"
-        >
+        <Badge key={item} variant="outline" className="gap-0.5 pr-0.5 font-normal">
           {item}
-          <button
-            type="button"
+          <Button
+            size="icon"
+            variant="ghost"
             aria-label={`Remove ${item}`}
-            className="text-muted-foreground"
+            className="size-4 rounded-full text-muted-foreground"
             onClick={() => onChange(items.filter((i) => i !== item))}
           >
-            ✕
-          </button>
-        </span>
+            <XIcon className="size-3" />
+          </Button>
+        </Badge>
       ))}
       <form
         className="inline-flex gap-1"

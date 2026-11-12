@@ -180,14 +180,15 @@ function AttachmentRow({
         </div>
       </div>
       {canRemove && (
-        <button
-          type="button"
-          className="shrink-0 text-muted-foreground hover:text-foreground"
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-7 shrink-0 text-muted-foreground"
           aria-label={`Remove ${a.filename}`}
           onClick={onRemove}
         >
           <X className="size-4" />
-        </button>
+        </Button>
       )}
     </div>
   );

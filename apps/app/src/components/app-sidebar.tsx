@@ -167,31 +167,31 @@ function UserMenu() {
     window.location.assign("/sign-in");
   }
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 rounded-md p-2 text-left text-sm hover:bg-sidebar-accent"
-          data-testid="user-menu"
-        >
-          <Avatar className="size-6">
-            {user.image && <AvatarImage src={user.image} alt="" />}
-            <AvatarFallback>{user.name.slice(0, 1).toUpperCase()}</AvatarFallback>
-          </Avatar>
-          <span className="truncate">{user.name}</span>
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-56">
-        <DropdownMenuLabel className="font-normal">
-          <div className="font-medium">{user.name}</div>
-          <div className="text-muted-foreground text-xs">{user.githubLogin ?? user.email}</div>
-        </DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={signOut} data-testid="sign-out">
-          <LogOutIcon />
-          Sign out
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuButton data-testid="user-menu">
+              <Avatar className="size-6">
+                {user.image && <AvatarImage src={user.image} alt="" />}
+                <AvatarFallback>{user.name.slice(0, 1).toUpperCase()}</AvatarFallback>
+              </Avatar>
+              <span className="truncate">{user.name}</span>
+            </SidebarMenuButton>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuLabel className="font-normal">
+              <div className="font-medium">{user.name}</div>
+              <div className="text-muted-foreground text-xs">{user.githubLogin ?? user.email}</div>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={signOut} data-testid="sign-out">
+              <LogOutIcon />
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    </SidebarMenu>
   );
 }
