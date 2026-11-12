@@ -1,0 +1,22 @@
+{
+  "name": "tests-are-hermetic",
+  "description": "Incident inc_5a1729a24403429d87e22d72d6bc502c (work item #8). Every test in the repo runs inside the job's sandbox during build and verify, on whatever date and in whatever time zone the runner has. #8's test (apps/app/test/lib.test.ts) built two timestamps from the real clock and expected them on the same day, so it failed near midnight. The build's fix for it was committed, but the run still failed: the full suite failed inside the sandbox because two packages/harness-claude tests reached outside it, one reading the process table with `ps` (refused with EPERM) and one running a real `git push` to github.com (stopped by the network proxy, not by the credentials error it expects). So a test must not spawn `ps` or reach a real remote, and a test that reads the real clock and asserts on a local time or date must pin the clock. Two files are excluded, each with a reason. packages/harness-claude/test/harness.test.ts holds the two sandbox-blocked tests ('writes the same settings to the run dir and the worktree...' calls psCommand and a one-argument verifyLaunch; 'gives git no way to push...' pushes to https://github.com). apps/app/test/lib.test.ts is #8's own unfixed test. Changing either file is outside an add-only incident fix (ADR 0230), so a person (or #8's next run) fixes them and removes each exclude.",
+  "appliesTo": [
+    "apps/*/test/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "local/*/test/**/*.ts",
+    "presets/test/**/*.ts",
+    "evals/test/**/*.ts",
+    "scripts/**/*.test.ts"
+  ],
+  "exclude": ["packages/harness-claude/test/harness.test.ts", "apps/app/test/lib.test.ts"],
+  "forbid": [
+    "\\b(?:execFile|execFileSync|spawn|spawnSync|exec|execSync|execa)\\(\\s*[\"'`]ps[\"'`\\s]",
+    "\\bpsCommand\\b",
+    "\\b(?:verifyLaunch|inspectLaunch)\\(\\s*[^,()]*\\)",
+    "[\"'`](?:push|fetch|pull|clone|ls-remote)[\"'`]\\s*,\\s*[\"'`](?:https?://|git@|ssh://)",
+    "\\bgit (?:push|fetch|pull|clone|ls-remote) (?:[^\\n]*\\s)?(?:https?://|git@|ssh://)",
+    "(?<![\\s\\S])(?![\\s\\S]*\\bvi\\.(?:useFakeTimers|setSystemTime)\\()(?=[\\s\\S]*?(?:\\bnew Date\\(\\s*\\)|\\bDate\\.now\\(\\s*\\)))[\\s\\S]*?(?:\\\\d\\\\d?:\\\\d\\\\d|\\btoLocale(?:Date|Time)?String\\(|\\btoDateString\\(|\\btoTimeString\\(|\\.get(?:Hours|Minutes|Date|Day|Month|FullYear)\\(|\\bIntl\\.DateTimeFormat\\b|\\bclock\\(|\\bago\\()"
+  ],
+  "message": "Tests run inside the job sandbox, at any date and in any time zone. The sandbox refuses `ps` (EPERM) and sends network traffic through a filtering proxy. Don't spawn `ps` or call psCommand (or verifyLaunch/inspectLaunch without a readCommand): stub the process table by injecting a ReadCommand. Don't push, fetch or clone from a real remote: push to a local bare repo (`git init --bare` in a temp dir) or a file:// URL, or inject the dependency. If a test reads the real clock (`new Date()`, `Date.now()`) and checks a local time or date, pin the clock: vi.useFakeTimers() plus vi.setSystemTime(<a fixed local time>), and vi.useRealTimers() after each test. See .factory/checks/build-runs-and-sandbox-limits.md."
+}

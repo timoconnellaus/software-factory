@@ -1,0 +1,48 @@
+{
+  "incident": "inc_5a1729a24403429d87e22d72d6bc502c",
+  "rootCause": "runner",
+  "summary": "Work item #8's build committed a correct fix for a date-dependent test, then failed three times anyway: the full test suite it must run failed inside the job sandbox, where packages/harness-claude tests that exec `ps` (EPERM) and push to a real github.com remote (blocked by the network proxy) can never pass, and the run ended with no new commit. tests-are-hermetic now fails a test that spawns `ps`, calls the real process-table reader, or pushes to a real remote, and a test that asserts a local time from the unpinned real clock. The same tests using a stubbed process table, a local bare repo and a pinned clock pass.",
+  "check": "tests-are-hermetic",
+  "cases": [
+    {
+      "path": "packages/harness-claude/test/launch.test.ts",
+      "expect": "fail",
+      "content": "import { execFile } from \"node:child_process\";\nit(\"reads the live command\", async () => {\n  const cmd = await new Promise((r) => execFile(\"ps\", [\"-ww\", \"-o\", \"command=\", \"-p\", String(pid)], (_e, out) => r(out)));\n  expect(cmd).toContain(\"claude\");\n});\n"
+    },
+    {
+      "path": "packages/harness-claude/test/launch.test.ts",
+      "expect": "fail",
+      "content": "import { psCommand, verifyLaunch } from \"../src/launch.ts\";\nit(\"verifies the launch\", async () => {\n  expect(await verifyLaunch(record, psCommand)).toEqual([]);\n  expect(await verifyLaunch(record)).toEqual([]);\n});\n"
+    },
+    {
+      "path": "packages/harness-claude/test/git.test.ts",
+      "expect": "fail",
+      "content": "it(\"gives git no way to push\", () => {\n  const push = git(\"push\", \"https://github.com/timoconnellaus/software-factory.git\", \"HEAD:x\");\n  expect(push.stderr).toMatch(/could not read Username/);\n});\n"
+    },
+    {
+      "path": "apps/app/test/runner-label.test.ts",
+      "expect": "fail",
+      "content": "it(\"shows a rate-limited runner's until time\", () => {\n  const soon = new Date(Date.now() + 60_000).toISOString();\n  expect(runnerLabel({ ...base, state: \"rate-limited\", rateLimitedUntil: soon })).toMatch(\n    /^rate-limited until \\d\\d:\\d\\d$/,\n  );\n});\n"
+    },
+    {
+      "path": "packages/harness-claude/test/launch.test.ts",
+      "expect": "pass",
+      "content": "import { verifyLaunch } from \"../src/launch.ts\";\nit(\"verifies the launch against a stubbed process table\", async () => {\n  const table = new Map([[4242, record.argv.join(\" \")]]);\n  expect(await verifyLaunch(record, async (pid) => table.get(pid) ?? null)).toEqual([]);\n});\n"
+    },
+    {
+      "path": "packages/harness-claude/test/git.test.ts",
+      "expect": "pass",
+      "content": "it(\"gives git no way to push\", async () => {\n  const remote = join(await temp(\"sf-h-remote-\"), \"remote.git\");\n  expect(git(\"init\", \"-q\", \"--bare\", remote).status).toBe(0);\n  const push = git(\"push\", remote, \"HEAD:x\");\n  expect(push.status).toBe(0);\n});\n"
+    },
+    {
+      "path": "apps/app/test/runner-label.test.ts",
+      "expect": "pass",
+      "content": "afterEach(() => vi.useRealTimers());\nit(\"shows a rate-limited runner's until time\", () => {\n  vi.useFakeTimers();\n  vi.setSystemTime(new Date(2026, 10, 11, 12, 0));\n  const soon = new Date(Date.now() + 60_000).toISOString();\n  expect(runnerLabel({ ...base, state: \"rate-limited\", rateLimitedUntil: soon })).toMatch(\n    /^rate-limited until \\d\\d:\\d\\d$/,\n  );\n});\n"
+    },
+    {
+      "path": "packages/core/test/work.test.ts",
+      "expect": "pass",
+      "content": "it(\"stamps a work item\", () => {\n  const createdAt = new Date().toISOString();\n  expect(createWorkItem({ title: \"x\", createdAt }).createdAt).toBe(createdAt);\n});\n"
+    }
+  ]
+}
