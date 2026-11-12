@@ -1246,8 +1246,10 @@ screen needs).
    token): `reshape` shapes it again under the current workflow (the waiting Workflow instance is
    terminated and a new instance, `<item>_r…`, runs the current shaping stages), and `accept` records
    that the shaping done counts under the current version and releases it. Either way it is
-   delivered under the current workflow. Still to come in (d): the tightening re-pin at the next
-   boundary (Q3), and moving each project's slot workflow to the org.
+   delivered under the current workflow. (d4) The shadow pass compares an item on an org workflow
+   with the org workflow it pinned (`org_config_version`, resolved with the project's overrides by
+   `effectivePolicy`); before, such an item had no comparable definition. Still to come in (d): the
+   tightening re-pin at the next boundary (Q3), and moving each project's slot workflow to the org.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the
