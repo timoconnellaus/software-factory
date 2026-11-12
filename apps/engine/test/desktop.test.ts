@@ -6,6 +6,7 @@ import { canonicalJson, inputDigest, presenceMessage, rawSignature } from "@soft
 import { describe, expect, it } from "vitest";
 import { pruneChannelStore } from "../src/channel.ts";
 import worker from "../src/index.ts";
+import { notifyClients } from "../src/outbox.ts";
 import { first, ok, type World, world } from "./helpers.ts";
 
 const post = (path: string, body: unknown, token?: string, prefix = "/client/v1") =>
@@ -318,6 +319,62 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect(raw.length).toBe(64);
     expect([...raw.slice(0, 32)]).toEqual([...r]);
     expect(raw[63]).toBe(1);
+  });
+
+  it("pushes notifications to the person's open apps over the live socket (M2b)", async () => {
+    const w = await world();
+    const { token } = await signIn(w);
+    const refused = await worker.fetch(
+      new Request("https://sf-engine.example/client/v1/live", {
+        headers: { upgrade: "websocket" },
+      }),
+      env,
+    );
+    expect(refused.status).toBe(401);
+
+    const res = await worker.fetch(
+      new Request("https://sf-engine.example/client/v1/live", {
+        headers: { upgrade: "websocket", authorization: `Bearer ${token}` },
+      }),
+      env,
+    );
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error("no socket");
+    const got: unknown[] = [];
+    ws.addEventListener("message", (e) => got.push(JSON.parse(String(e.data))));
+    ws.accept();
+    const until = async (n: number) => {
+      for (let i = 0; i < 50 && got.length < n; i++) await new Promise((r) => setTimeout(r, 20));
+    };
+    await until(1);
+    expect(got[0]).toEqual({ type: "hello" });
+
+    // Assigned to this person.
+    await notifyClients(env, {
+      event: "gate.opened",
+      userId: w.userId,
+      title: "Ready to merge: x",
+    });
+    await until(2);
+    expect(got[1]).toMatchObject({
+      type: "notify",
+      event: "gate.opened",
+      title: "Ready to merge: x",
+    });
+
+    // Assigned to nobody: the org's owners and admins hear it.
+    const workItemId = await newItem(w, token);
+    const heard = await notifyClients(env, {
+      event: "gate.opened",
+      userId: null,
+      workItemId,
+      title: "Spec waiting: From the desktop",
+    });
+    expect(heard).toContain(w.userId);
+    await until(3);
+    expect(got[2]).toMatchObject({ type: "notify", workItemId });
+    ws.close();
   });
 
   it("caps waiting sign-ins and prunes old requests and challenges", async () => {

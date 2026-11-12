@@ -27,3 +27,11 @@ describe("sf:// links", () => {
     expect(parseDeepLink("not a url").kind).toBe("unknown");
   });
 });
+
+describe("the live socket's URL", async () => {
+  const { liveUrl } = await import("../src/bun/live.ts");
+  it("is the door's /live over wss (ws for a local engine), with no token in it", () => {
+    expect(liveUrl("https://sf-engine.example/")).toBe("wss://sf-engine.example/client/v1/live");
+    expect(liveUrl("http://localhost:8787")).toBe("ws://localhost:8787/client/v1/live");
+  });
+});

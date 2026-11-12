@@ -39,9 +39,16 @@
   // One PlanningHub per work item (spec 20, ADR 0350): live Planning tabs and the planning
   // agent's held waits hear about changes here.
   "durable_objects": {
-    "bindings": [{ "name": "PLANNING_HUB", "class_name": "PlanningHub" }]
+    "bindings": [
+      { "name": "PLANNING_HUB", "class_name": "PlanningHub" },
+      // One ClientHub per person (spec 40 M2b): their desktop apps' live connections.
+      { "name": "CLIENT_HUB", "class_name": "ClientHub" }
+    ]
   },
-  "migrations": [{ "tag": "v1-planning-hub", "new_sqlite_classes": ["PlanningHub"] }],
+  "migrations": [
+    { "tag": "v1-planning-hub", "new_sqlite_classes": ["PlanningHub"] },
+    { "tag": "v2-client-hub", "new_sqlite_classes": ["ClientHub"] }
+  ],
   "workflows": [
     {
       "binding": "WORK_ITEM_WORKFLOW",

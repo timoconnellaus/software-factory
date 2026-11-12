@@ -9,12 +9,13 @@ import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
 import { Door, UnauthenticatedError } from "./door.ts";
 import { acquireInstanceLock, watchParent } from "./instance.ts";
+import { Live, liveUrl } from "./live.ts";
 import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { Runner } from "./runner.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
-/** How often the inbox count is refreshed until the live socket (spec 40 M2b) replaces it. */
-const INBOX_POLL_MS = 15_000;
+/** The inbox count's fallback refresh; the live socket brings changes the moment they happen. */
+const INBOX_POLL_MS = 60_000;
 
 const dataDir = join(Utils.paths.appData, "com.software-factory.desktop");
 if (!acquireInstanceLock(dataDir)) {
@@ -100,6 +101,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         return auth.session();
       },
       signOut: async () => {
+        live.stop();
         await auth.signOut();
         setBadge(0);
         return auth.session();
@@ -232,7 +234,7 @@ function setBadge(count: number) {
 }
 
 /** The inbox count, and a notification for each gate or question that wasn't there before. */
-async function pollInbox() {
+async function pollInbox(opts: { notify?: boolean } = {}) {
   if (!auth.session().signedIn) return;
   const res = await guarded(() => door().call("inbox.list", {}), {
     ok: false,
@@ -250,7 +252,7 @@ async function pollInbox() {
   ];
   const fresh = waiting.filter((w) => !seenGates.has(w.id));
   // Not on the first poll after launch: those were waiting already.
-  if (seenGates.size > 0 || inboxCount > 0) {
+  if (opts.notify !== false && (seenGates.size > 0 || inboxCount > 0)) {
     for (const w of fresh.slice(0, 3))
       Utils.showNotification({ title: "Software Factory", body: w.title });
   }
@@ -260,11 +262,23 @@ async function pollInbox() {
 const gateLabel = (kind: string) =>
   kind === "spec" ? "Spec waiting" : kind === "merge" ? "Ready to merge" : "Approval needed";
 
+// The live socket (spec 40 M2b): a gate opening reaches the badge and a notification at once.
+const live = new Live(liveUrl(ENGINE_URL), () => auth.currentToken(), {
+  connected: () => void pollInbox(),
+  event: (e) => {
+    if (e.type !== "notify") return;
+    void pollInbox({ notify: false }).then(() => {
+      if (e.title) Utils.showNotification({ title: "Software Factory", body: e.title });
+    });
+  },
+});
+
 Electrobun.events.on("open-url", async (e: { data: { url: string } }) => {
   const link = parseDeepLink(e.data.url);
   if (link.kind === "auth") {
     await auth.finish(link.code, link.state);
     toView("sessionChanged", auth.session());
+    live.start();
     void pollInbox();
     openWindow();
   } else if (link.kind === "route") {
@@ -275,6 +289,7 @@ Electrobun.events.on("open-url", async (e: { data: { url: string } }) => {
 });
 
 async function quit() {
+  live.stop();
   await runner.stop();
   Utils.quit();
 }
@@ -286,6 +301,7 @@ watchParent(() => void quit());
 
 refreshTray();
 void runner.start();
+live.start();
 void pollInbox();
 setInterval(() => void pollInbox(), INBOX_POLL_MS);
 openWindow();

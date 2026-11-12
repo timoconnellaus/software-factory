@@ -16,6 +16,7 @@ import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
+export { ClientHub } from "./client-hub.ts";
 export { PlanningHub } from "./planning-hub.ts";
 export { EngineApi } from "./rpc.ts";
 export { WorkItemWorkflow } from "./workflow/work-item.ts";
