@@ -39,6 +39,7 @@ and the factory's own planning stage writes specs in this same format.
 | [24](24-planning-splits.md) | Planning splits a work item | 20 |
 | [25](25-verify-drift-check.md) | Verify checks drift from the spec | 04 |
 | [wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md) | Work item attachments (picker, drag-and-drop, paste; R2; runs read them) | 01, 03, 13 |
+| [wi-4](wi-4-let-s-improve-the-event-log-so-it-s-usef.md) | A readable event log: one pure module (`packages/timeline`) words each audit entry for the dashboard's timeline and `sf timeline` | 07, 13 |
 
 Specs 01–04 together are the **MVP backend slice**: CLI/chat intake → triage → implement (Claude
 Code via `runner-orca`) → verify (review packet) → PR in one repo. Specs 10–15 are UI release
