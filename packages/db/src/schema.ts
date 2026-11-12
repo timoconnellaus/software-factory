@@ -418,6 +418,15 @@ export interface CoreQuestionsTable {
   answer_delivered_at: Iso | null;
   /** Spec 27: the person's plan edit this answer was recorded from. */
   answered_via_edit: string | null;
+  /** Spec 21: the artifact this question is about, and its options as cards or bound values. */
+  artifact_id: string | null;
+  option_artifacts: string | null;
+  option_values: string | null;
+  control: string | null;
+  unit: string | null;
+  min: number | null;
+  max: number | null;
+  step: number | null;
   planning_session_id: string | null;
   updated_at: Iso | null;
 }
@@ -880,6 +889,8 @@ export interface CorePlanningSessionsTable {
   /** ADR 0470: who told the planner to finish alone, and when; null while it's off. */
   finish_alone_by: string | null;
   finish_alone_at: Iso | null;
+  /** Spec 21: the artifact the planner put on screen last. */
+  shown_artifact_id: string | null;
   /** Spec 26: the highest cursor handed to the harness; a hook's ack is clamped to it. */
   handed_cursor: Generated<number>;
   /** Spec 26: JSON `{ questionId: answer revision }` handed out, for read receipts. */
@@ -919,6 +930,33 @@ export interface CorePlanningMessagesTable {
   steer_id: string | null;
   /** Spec 27: a comment's anchor on plan lines, as JSON `{ specId, lineStart, lineEnd, quote }`. */
   anchor: string | null;
+  /** Spec 21: a comment pinned to a spot in an artifact, as JSON. */
+  pin: string | null;
+}
+
+/** A planning artifact (spec 21, ADR 0472): a mockup, diagram or document. */
+export interface CorePlanningArtifactsTable {
+  id: string;
+  work_item_id: string;
+  kind: "mockup" | "diagram" | "document";
+  title: string;
+  description: string | null;
+  revision: Generated<number>;
+  keep: Generated<Bool>;
+  created_by: string;
+  created_at: Iso;
+  updated_at: Iso;
+  deleted_at: Iso | null;
+}
+
+/** One revision of a planning artifact's content (spec 21). */
+export interface CorePlanningArtifactRevisionsTable {
+  artifact_id: string;
+  revision: number;
+  content: string;
+  size: number;
+  controls: Generated<string>;
+  created_at: Iso;
 }
 
 /** A person's edit to the plan's source lines (spec 27, ADR 0471). */
@@ -1124,6 +1162,8 @@ export interface CoreDatabase {
   core_planning_messages: CorePlanningMessagesTable;
   core_planning_presence: CorePlanningPresenceTable;
   core_spec_edits: CoreSpecEditsTable;
+  core_planning_artifacts: CorePlanningArtifactsTable;
+  core_planning_artifact_revisions: CorePlanningArtifactRevisionsTable;
   core_cli_device_codes: CoreCliDeviceCodesTable;
   core_cli_tokens: CoreCliTokensTable;
   core_desktop_auth_requests: CoreDesktopAuthRequestsTable;
