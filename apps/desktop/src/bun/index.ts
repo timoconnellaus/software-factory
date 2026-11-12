@@ -12,6 +12,7 @@ import { acquireInstanceLock, watchParent } from "./instance.ts";
 import { Live, liveUrl } from "./live.ts";
 import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { operationHandlers } from "./operations.ts";
+import { restartToUpdate as restartUpdate } from "./restart-update.ts";
 import { Runner } from "./runner.ts";
 import { liveJobs } from "./runner-jobs.ts";
 import { saveTo } from "./save.ts";
@@ -240,23 +241,53 @@ function updateItems() {
   ];
 }
 
+let restarting = false;
 /**
- * Stop the runner and the live socket, then restart into the update. If the update doesn't
- * happen (nothing staged, a refused signature, a quit handler said no) both come back.
+ * Drain the runner (unless the person chose to cancel its jobs), stop it and the live socket, then
+ * restart into the update (restart-update.ts). If a job turned up meanwhile, wait for idle. If the
+ * update doesn't happen (nothing staged, a refused signature, a quit handler said no, a throw) both
+ * come back.
  */
-async function restartToUpdate() {
+async function restartToUpdate(anyway = false) {
+  if (restarting) return;
+  restarting = true;
+  const wasWaiting = restartWhenIdle;
   restartWhenIdle = false;
-  live.stop();
-  await runner.stop();
-  await updates.apply();
-  // Still running: the update didn't start.
-  void runner.start();
-  live.start();
-  Utils.showNotification({
-    title: "Software Factory",
-    body: `The update didn't install: ${updates.state.error ?? "unknown error"}`,
-  });
-  refreshTray();
+  try {
+    const outcome = await restartUpdate(
+      {
+        drain: () => runner.drain(),
+        liveJobs: () => liveJobs(),
+        stopLive: () => live.stop(),
+        startLive: () => live.start(),
+        stopRunner: () => runner.stop(),
+        startRunner: () => void runner.start(),
+        apply: () => updates.apply(),
+      },
+      { anyway },
+    );
+    if (outcome === "deferred") {
+      restartWhenIdle = true;
+      if (!wasWaiting)
+        Utils.showNotification({
+          title: "Software Factory",
+          body: "The runner is busy: it takes no new jobs, and the app updates once it is idle.",
+        });
+    } else {
+      Utils.showNotification({
+        title: "Software Factory",
+        body: `The update didn't install: ${updates.state.error ?? "unknown error"}`,
+      });
+    }
+  } catch (error) {
+    Utils.showNotification({
+      title: "Software Factory",
+      body: `The update didn't install: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  } finally {
+    restarting = false;
+    refreshTray();
+  }
 }
 // The job count in the menu, and the deferred restart once the runner is idle.
 setInterval(() => {
@@ -314,7 +345,7 @@ tray.on("tray-clicked", async (e: unknown) => {
     refreshTray();
   }
   // The person was told how many jobs this cancels.
-  if (action === "update-anyway") await restartToUpdate();
+  if (action === "update-anyway") await restartToUpdate(true);
 });
 
 function setBadge(count: number) {

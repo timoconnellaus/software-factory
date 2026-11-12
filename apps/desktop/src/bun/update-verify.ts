@@ -9,6 +9,11 @@
 //   signature, never from the manifest or the bucket. An unsigned running build takes no updates.
 // - `spctl --assess`: Gatekeeper's verdict, which needs Apple's notarization.
 // Either failing refuses the update.
+// - Then the version and channel are read from the staged bundle's own
+//   `Contents/Resources/version.json`, which sits inside the seal just verified. The manifest's
+//   version (which Electrobun copies into its record) is the bucket's word; a genuine, older signed
+//   build served under a manifest saying 9.9.9 passes both checks above, so the bundle's own
+//   version must equal the manifest's and be newer than the running one (updates.ts).
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
@@ -58,6 +63,23 @@ export async function verifyBundle(
   const gk = await exec("/usr/sbin/spctl", ["--assess", "--type", "execute", staged]);
   if (gk.code !== 0) return `Gatekeeper rejects it: ${lastLine(gk.out)}`;
   return null;
+}
+
+/** The version and channel a bundle says it is, from its own Resources/version.json, or null. */
+export function bundleInfo(
+  app: string,
+  read: (p: string) => string = (p) => readFileSync(p, "utf8"),
+): { version: string; channel: string } | null {
+  try {
+    const doc = JSON.parse(read(join(app, "Contents", "Resources", "version.json"))) as Record<
+      string,
+      unknown
+    >;
+    const { version, channel } = doc;
+    return typeof version === "string" && typeof channel === "string" ? { version, channel } : null;
+  } catch {
+    return null;
+  }
 }
 
 const lastLine = (s: string) => s.trim().split("\n").at(-1)?.slice(0, 200) ?? "";

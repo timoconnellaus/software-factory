@@ -214,10 +214,14 @@ install. Create a bucket-scoped token instead:
 4. If `CLOUDFLARE_API_TOKEN` has *Workers R2 Storage: Edit* only for the desktop upload, take that
    permission off it (the deploy workflow's D1/Workers permissions stay).
 
-Until step 3 is done the canary upload fails (the build and signing still run).
+Until step 3 is done a push to `main` skips the release: the workflow checks for the two secrets
+first and, without them, builds, signs, notarizes and uploads nothing, leaving one notice in the
+job summary (it doesn't fail). A manual run without them fails.
 
 **What the upload does.** `apps/desktop/scripts/publish-release.ts` refuses, before building, a
 version that isn't higher than the channel's published one or that is already in the bucket. It
+fails closed: only a real 404 counts as "not published"; missing credentials, a 403 or a network
+error stop the run. It
 uploads the archive and the download under versioned names (`…-0.1.42.app.tar.zst`, `…-0.1.42.zip`,
 cached immutably and never overwritten), then the unversioned download, then the manifests last,
 rewritten to name the versioned archive. A client never sees a manifest whose archive or hash isn't
@@ -228,21 +232,20 @@ commit*, so anyone who can push a tag could run their own copy of it with the De
 Store Connect key and the upload token, and factory job tokens have `contents: write`. So stable is
 not tag-triggered: it will be a manual run of the workflow on `main` (channel `stable`, a version),
 which runs main's own file. It is refused until the variable `DESKTOP_STABLE_ENABLED` is `true`.
-**Stable releases are not safe to enable until all of these are done:**
-1. Settings → Environments → `release` → *Deployment branches and tags*: **Selected branches and
-   tags**, with `main` only. Remove the `v*` tag rule.
-2. Same page: *Required reviewers*: add yourself. Leave **Prevent self-review** unticked while you
-   are the only reviewer (you merge, so you trigger the runs you approve). Untick **Allow
-   administrators to bypass configured protection rules**.
-3. Settings → Rules → Rulesets → *New tag ruleset* "release tags": target `v*`, enforcement
-   *Active*, rules **Restrict creations**, **Restrict updates** and **Restrict deletions**, bypass
-   list **Repository admin** only. (Tags aren't used by the workflow any more; this stops a stray
-   `v*` tag from ever meaning anything.)
-4. Then set the repo variable `DESKTOP_STABLE_ENABLED` to `true`.
+**Where the `release` environment stands.**
 
-Step 2 also guards canary: with a required reviewer, each canary run waits for an approval. If
-that's too much friction for canary, keep step 1 (main only, so only a merged commit's workflow can
-reach the secrets) and add the reviewer before turning stable on.
+| | Step | Status | Needed before |
+| --- | --- | --- | --- |
+| 1 | Settings → Environments → `release` → *Deployment branches and tags*: **Selected branches and tags**, with the branch `main` only, no `v*` tag rule | **Done** (2026-11-12) | canary |
+| 2 | The bucket-scoped upload token, `DESKTOP_R2_ACCESS_KEY_ID` / `DESKTOP_R2_SECRET_ACCESS_KEY` in the environment ("The upload token" above) | Owner | **canary**: nothing is published without it |
+| 3 | Same page as 1: *Required reviewers*: add yourself. Leave **Prevent self-review** unticked while you are the only reviewer (you merge, so you trigger the runs you approve). Untick **Allow administrators to bypass configured protection rules** | Owner | stable |
+| 4 | Settings → Rules → Rulesets → *New tag ruleset* "release tags": target `v*`, enforcement *Active*, rules **Restrict creations**, **Restrict updates** and **Restrict deletions**, bypass list **Repository admin** only. (The workflow uses no tags; this stops a stray `v*` tag from ever meaning anything.) | Owner | stable |
+| 5 | Then set the repo variable `DESKTOP_STABLE_ENABLED` to `true` | Owner, last | stable |
+
+Canary needs 1 (done) and 2. Stable needs all five. Step 3 also guards canary: with a required
+reviewer, each canary run waits for an approval. If that's too much friction for canary, rely on
+step 1 (main only, so only a merged commit's workflow can reach the secrets) and add the reviewer
+just before turning stable on.
 
 First install: download `https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip`,
 unzip and move it to `/Applications`. After that the app updates itself; the app refuses an update

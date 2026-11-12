@@ -290,6 +290,8 @@ async function run() {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+  // The desktop app asks its runner to stop claiming before it restarts to update (spec 40 M4).
+  process.on("SIGUSR2", () => void host.drain());
   await host.start();
   // The host's timers keep the process alive.
 }
