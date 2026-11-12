@@ -62,6 +62,17 @@
     { "tag": "v2-client-hub", "new_sqlite_classes": ["ClientHub"] },
     { "tag": "v3-terminal-relay", "new_sqlite_classes": ["TerminalRelay"] }
   ],
+  // The phone's unsigned mobile/nonce (ADR 0541): ten a minute per caller (the keyed hash of its
+  // address, mobileCaller), counted at Cloudflare's edge location, so an over-limit caller is
+  // refused before the call reaches D1. The namespace id is ours to pick, not an account's: a
+  // unique positive integer keeps these counters apart from any other binding on the account.
+  "ratelimits": [
+    {
+      "name": "MOBILE_NONCE_LIMIT",
+      "namespace_id": "3110",
+      "simple": { "limit": 10, "period": 60 }
+    }
+  ],
   "workflows": [
     {
       "binding": "WORK_ITEM_WORKFLOW",
