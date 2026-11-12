@@ -35,6 +35,7 @@ export const APP_OPERATIONS = [
   "run.live",
   "run.steer",
   "run.takeover",
+  "run.reportArchiveMissing",
   "project.create",
   "project.list",
   "project.update",

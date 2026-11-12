@@ -28,15 +28,25 @@ function ArchiveNotice({
   state,
   loading,
   onRetry,
+  incident,
 }: {
   state: LiveView["archive"] | null;
   loading: boolean;
   onRetry?: (() => void) | undefined;
+  /** The incident opened for it (one per run), once there is one. */
+  incident: { workItemId: string; number: number } | null;
 }) {
   if (state === "missing") {
     return (
       <div role="alert" className="text-destructive text-sm" data-testid="live-archive-missing">
-        This run's log is missing from the archive.
+        This run's log is missing from the archive.{" "}
+        {incident ? (
+          <a href={`/work/${incident.workItemId}`} className="underline">
+            Reported as incident #{incident.number}.
+          </a>
+        ) : (
+          <span className="text-muted-foreground">Reporting it…</span>
+        )}
       </div>
     );
   }
@@ -165,7 +175,12 @@ export function LiveRunView({
           )}
         </ToggleGroup>
       </div>
-      <ArchiveNotice state={data.archive ?? null} loading={archiveLoading} onRetry={onRetry} />
+      <ArchiveNotice
+        state={data.archive ?? null}
+        loading={archiveLoading}
+        onRetry={onRetry}
+        incident={data.archiveMissing?.incident ?? null}
+      />
       {shown === "chat" ? (
         // The chat has its own composer and takeover (spec 37).
         <LiveChat data={data} me={me} onSteer={onSteer} onTakeover={onTakeover} />

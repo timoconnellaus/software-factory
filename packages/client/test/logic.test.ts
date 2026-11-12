@@ -42,6 +42,8 @@ function detail(
       body: "",
       specRequired: false,
       specDecisionReason: "sized small, below the spec threshold (medium)",
+      readinessHint: null,
+      needsInfo: null,
       domains: [],
       headSha: null,
       prNumber: null,

@@ -177,7 +177,8 @@ describe.skipIf(!hasDocker)(
       expect((await ours()).sort()).toEqual(["check", "egress"]);
       expect(await nets()).toHaveLength(1);
       // A sweep keeps what a running job holds...
-      expect(await reapCheckContainers(runtime, new Set([jobId]))).toEqual([]);
+      // (Only this job's: another test's leftovers may be reaped beside it.)
+      expect(await reapCheckContainers(runtime, new Set([jobId]))).not.toContain(jobId);
       expect(await ours()).toHaveLength(2);
       // ...and the next start-up (nothing running) removes all of it.
       expect(await reapCheckContainers(runtime, new Set())).toContain(jobId);
