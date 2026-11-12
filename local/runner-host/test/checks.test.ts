@@ -32,6 +32,7 @@ import {
   checkSandboxEnv,
   checkSandboxSettings,
   processesUnder,
+  SRT_VENDOR,
   sandboxAvailable,
   sandboxedExec,
   sandboxTrial,
@@ -234,6 +235,8 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       `${root}/empty`,
       `${root}/gitconfig`,
       "/r/s/c123",
+      // srt's own helpers (Linux runs apply-seccomp inside the sandbox).
+      ...(SRT_VENDOR ? [SRT_VENDOR] : []),
     ]);
     // Its own tree, home, temp and pnpm store: not the rest of its dir (the host's empty tool dirs
     // and git config), and no other check's.

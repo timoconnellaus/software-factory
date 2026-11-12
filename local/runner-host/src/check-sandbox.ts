@@ -93,6 +93,19 @@ export interface CheckDirs {
   sockets?: string;
 }
 
+/**
+ * The sandbox runtime's own helpers (Linux runs `vendor/seccomp/<arch>/apply-seccomp` inside the
+ * sandbox): read-only for the check, wherever the runner's checkout keeps them (under the home).
+ */
+export const SRT_VENDOR = (() => {
+  try {
+    const entry = realpathSync(fileURLToPath(import.meta.resolve("@anthropic-ai/sandbox-runtime")));
+    return join(dirname(dirname(entry)), "vendor");
+  } catch {
+    return null;
+  }
+})();
+
 /** The longest unix socket path the platform takes (`sun_path`, with its NUL). */
 const SOCKET_PATH_MAX: Partial<Record<NodeJS.Platform, number>> = { darwin: 104, linux: 108 };
 
@@ -227,6 +240,7 @@ export function checkSandboxSettings(
         own.gitconfig,
         // Linux binds srt's proxy sockets into the sandbox from here.
         ...(dirs.sockets ? [dirs.sockets] : []),
+        ...(SRT_VENDOR ? [SRT_VENDOR] : []),
         ...tools,
       ],
       // Write: only the check's own tree, home, temp and store (TMPDIR and the store point there).
