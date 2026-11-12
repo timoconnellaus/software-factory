@@ -264,7 +264,7 @@ const position = z.object({
    * When not queued: how its last babysitter delivery ended, and why (spec 53), so a Workflow that
    * missed the `delivered-<item>` event reads it back. Null otherwise.
    */
-  outcome: z.enum(["merged", "conflict", "failed", "withdrawn"]).nullable(),
+  outcome: z.enum(["merged", "conflict", "failed", "withdrawn", "reverify"]).nullable(),
   outcomeReason: z.string().nullable(),
 });
 
