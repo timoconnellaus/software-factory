@@ -32,6 +32,15 @@ export type Decision =
     }
   | { kind: "question.acceptDefaults"; workItemId: string }
   | {
+      /** A security, privacy or irreversible planning question: still Touch ID (spec 26). */
+      kind: "planning.answer";
+      workItemId: string;
+      questionId: string;
+      answer?: string;
+      note?: string;
+      skipped?: boolean;
+    }
+  | {
       kind: "approval.decide";
       workItemId?: string;
       pendingActionId: string;
@@ -45,6 +54,7 @@ const DONE: Record<Decision["kind"], string> = {
   "review.sendBack": "Sent back to build",
   "question.answer": "Answered",
   "question.acceptDefaults": "Accepted the remaining defaults",
+  "planning.answer": "Answered",
   "approval.decide": "Decided",
 };
 
@@ -87,6 +97,19 @@ export async function run(d: Decision): Promise<string> {
         key,
       );
       return r.revised ? "Answer changed" : r.answered ? DONE[d.kind] : "Already answered";
+    }
+    case "planning.answer": {
+      const r = await decideOp(
+        "planning.answer",
+        {
+          questionId: d.questionId,
+          ...(d.answer !== undefined ? { answer: d.answer } : {}),
+          ...(d.note ? { note: d.note } : {}),
+          ...(d.skipped ? { skipped: true } : {}),
+        },
+        key,
+      );
+      return r.revised ? "Answer changed" : d.skipped ? "Skipped" : DONE[d.kind];
     }
     case "question.acceptDefaults": {
       const r = await decideOp("question.acceptDefaults", { workItemId: d.workItemId }, key);
