@@ -173,7 +173,8 @@ All of it is operations, in `packages/core`, behind the door.
 - `core_desktop_auth_requests` gains `platform`, `attestation`, `offer_id`.
 - `core_cli_tokens` is rebuilt so that `kind` allows `mobile`.
 - New tables:
-  - `core_mobile_nonces` (hash, expiry);
+  - `core_mobile_nonces` (hash, expiry: spent nonces only; a nonce is stateless until used, ADR
+    0541 second amendment) and `core_mobile_nonce_asks` (the per-caller courtesy limit);
   - `core_pair_offers` (id, user, secret hash, typed-code hash, attempts, expiry, consumed);
   - `core_push_registrations` (device, encrypted token, updated);
   - `core_device_notification_settings` (device, types, summary time, time zone).
@@ -226,6 +227,17 @@ All of it is operations, in `packages/core`, behind the door.
   The checks are in ADR 0541 decision 3.
   `MOBILE_SIGNING_CERTS` (wrangler `vars`) lists the release key's certificate SHA-256 and, in dev
   only, the debug key's.
+- **The dev build flavour** (settled 2026-11-12, review of PR 1a). The emulator's Keystore attests
+  at the software level, under no Google root, and the production engine always refuses that: no
+  flag on it changes this (`DESKTOP_ALLOW_SOFTWARE_KEYS` is for a Mac's unsigned build only and
+  never lets a phone decide). So the app has a `dev` flavour with its own package id,
+  `com.zerobsai.factory.dev`, and its own launcher name, signed with the debug key. Only a
+  non-production engine accepts it: `wrangler dev` with a local entry point (PR 1b adds it beside
+  `apps/engine/src/index.ts`; the deploy never builds it) that sets `mobileTestSeams` to trust the
+  emulator's attestation root for the dev package alone. There a dev-flavour sign-in registers as
+  `software`, so it signs in and reads but can't decide. The production engine knows only
+  `MOBILE_PACKAGE` (`com.zerobsai.factory`), a constant, so a dev build never signs in to it, and
+  a release build never needs the dev path.
 - **The website** (`apps/app`, which keeps device pages under ADR 0392):
   - `/mobile/connect`;
   - Settings → Devices with **Add a phone** (the QR is drawn in the browser from the offer);
@@ -428,17 +440,28 @@ spec.
   tokens and theme; the door client; DeviceKeyPlugin; the screens `SignIn`, `Pair`, `PairConfirm`,
   `Inbox`, `InboxEmpty` (online part), `MergeGate`, `Fingerprint` and `SendBack`.
 - Acceptance:
-  1. On the emulator, against a local engine with `DESKTOP_ALLOW_SOFTWARE_KEYS=1`, it signs in by
-     the browser and by a QR from the website. The Inbox lists every org's waiting items, and the
+  1. On the emulator, the `dev` flavour against a local engine (see "The dev build flavour"), it
+     signs in by the browser and by a QR from the website, and registers as `software`. The Inbox lists every org's waiting items, and the
      chips filter.
-  2. Merging from the gate or the card opens the fingerprint sheet. Its text equals the engine's
+  2. Merging from the gate or the card opens the fingerprint sheet (on the emulator the engine then
+     refuses the software key's proof, and the app says "this phone can't approve"). Its text equals the engine's
      summary, with the short SHA. Merging records `openedFullDiff`.
   3. Send back requires a note and sends it in one tap.
   4. A stale head shows "A new push withdrew this approval" and re-reads.
   5. The Dart vectors match core's byte for byte. The generated file is fresh.
      `flutter analyze` is clean, and the `flutter test` widget tests cover the three decision paths.
-  6. On a real phone with a debug build (the owner, by hand), StrongBox or the TEE registers, and a
-     merge asks for the fingerprint once.
+  6. On a real phone with the `dev` flavour against a local engine (the owner, by hand), StrongBox
+     or the TEE registers, and a merge asks for the fingerprint once.
+- Notes from the second review of PR 1a, to check in this PR:
+  - **keyUsage on every issuer against a real device's chain.** The engine requires basicConstraints
+    `cA` and keyUsage `keyCertSign` on every issuer, and refuses unknown critical extensions. The
+    captured fixtures pass, but check it against the chain of a real phone signing in (StrongBox and
+    TEE, an RKP chain if the phone has one) before the release build ships, and record the result.
+  - **The dev flavour's local entry point must not be deployable.** It sets `mobileTestSeams`, so it
+    lives outside what `wrangler deploy` builds (not `apps/engine/src/index.ts`, not named in
+    `apps/engine/wrangler.jsonc`), with a test that the deployed entry never imports it.
+  - The pair screens show the one refusal the engine gives for every refused code; the website or
+    desktop showing the code is where its owner sees wrong tries.
 - Screenshots: SignIn, Pair, PairConfirm, Inbox, MergeGate, Fingerprint, SendBack.
 
 **PR 2: push and notification settings**

@@ -24,7 +24,14 @@ import {
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery } from "@tanstack/react-query";
 import { getRouteApi, Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { InboxIcon, ListIcon, LogOutIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import {
+  InboxIcon,
+  ListIcon,
+  LogOutIcon,
+  PlusIcon,
+  SettingsIcon,
+  SmartphoneIcon,
+} from "lucide-react";
 import { useEffect } from "react";
 import { authClient } from "#/lib/auth-client";
 import { inboxQuery, projectsQuery } from "#/lib/queries";
@@ -112,6 +119,14 @@ export function AppSidebar() {
                 <Link to="/setup">
                   <SettingsIcon />
                   <span>Setup</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={path === "/settings/devices"}>
+                <Link to="/settings/devices" data-testid="nav-devices">
+                  <SmartphoneIcon />
+                  <span>Devices</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>

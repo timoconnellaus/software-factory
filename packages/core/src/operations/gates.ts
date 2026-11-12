@@ -12,8 +12,18 @@ import { backupOwnerId } from "../scope.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
 import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
 import { openIncident } from "./incidents.ts";
-import { pendingActionId, workItemId } from "./shared.ts";
+import { pendingActionId, sha, workItemId } from "./shared.ts";
 import { applyApprovedOrgConfig, ORG_CONFIG_WRITES } from "./workflows.ts";
+
+/** The commit a merge gate is for: the head SHA in its `pr.merge` input (ADR 0041). */
+export function mergeGateHead(pa: PendingActionRow): string | null {
+  try {
+    const input = JSON.parse(pa.input) as { headSha?: unknown };
+    return typeof input.headSha === "string" ? input.headSha : null;
+  } catch {
+    return null;
+  }
+}
 
 const decisionOutput = z.object({
   pendingActionId: z.string(),
@@ -23,7 +33,22 @@ const decisionOutput = z.object({
 });
 
 /**
- * Decides a pending action once. A repeat of the same decision is a no-op that reports
+ * Whether the phone may decide this pending action, by any operation (ADR 0541 amendment,
+ * 2026-11-12). Not a config change (`config.save`, `config.rollback`) and nothing self-modify (a
+ * merge that touches `.factory/` included): the fingerprint prompt reads only "Approve config.save
+ * on #n", and binding it to the version's digest is spec 60 PR 8. Until then these are decided on
+ * the desktop app or the website. `decidePending` checks it, so every deciding operation does.
+ */
+export function phoneMayDecidePending(pa: { operation: string; risk: string }): boolean {
+  return !(CONFIG_WRITES as readonly string[]).includes(pa.operation) && pa.risk !== "self-modify";
+}
+
+export const PHONE_REFUSES_PENDING =
+  "this change is approved on the desktop app or the website, not the phone: approve this on the desktop app or the website";
+
+/**
+ * Decides a pending action once. Every operation that decides one goes through here, so the
+ * phone's limit (`phoneMayDecidePending`) holds whichever operation it calls. A repeat of the same decision is a no-op that reports
  * `alreadyDecided`; a contradicting one is a conflict (spec 12, criterion 3).
  */
 export function decidePending(
@@ -33,6 +58,9 @@ export function decidePending(
   note: string | null,
   openedFullDiff: boolean | null = null,
 ): z.input<typeof decisionOutput> {
+  if (ctx.actor.type === "human" && ctx.origin.surface === "mobile" && !phoneMayDecidePending(pa)) {
+    throw new OperationError("forbidden", PHONE_REFUSES_PENDING, { decideElsewhere: true });
+  }
   if (pa.status !== "pending") {
     const same = pa.decision === decision || (decision === "approved" && pa.status === "applied");
     if (same) return { pendingActionId: pa.id, decision, alreadyDecided: true };
@@ -108,6 +136,8 @@ export const approvalDecide = defineOperation({
   permission: "approver",
   browserOnly: true,
   presenceDecidable: true,
+  // On the phone, rejecting holds work back and is one tap; approving takes the fingerprint.
+  mobileDecidable: (input) => input.decision === "rejected",
   input: z.object({
     pendingActionId,
     decision: z.enum(["approved", "rejected"]),
@@ -190,6 +220,7 @@ export const specRequestChanges = defineOperation({
   permission: "approver",
   browserOnly: true,
   presenceDecidable: true,
+  mobileDecidable: true,
   input: z.object({ workItemId, note: z.string().min(1).max(8_000) }),
   output: decisionOutput,
   async handler(input, ctx) {
@@ -205,7 +236,7 @@ export const specRequestChanges = defineOperation({
 export const reviewMerge = defineOperation({
   name: "review.merge",
   description:
-    "Merge a work item from its review packet (the merge gate, ADR 0041). The factory merges through the GitHub App. Records whether the full diff was opened first. Approvers only.",
+    "Merge a work item from its review packet (the merge gate, ADR 0041). The factory merges through the GitHub App. Records whether the full diff was opened first. With `headSha` (the phone always sends it, spec 60), the approval is for that commit only: a gate whose head has moved refuses it with `conflict`. Approvers only.",
   risk: "write",
   actors: ["human"],
   permission: "approver",
@@ -214,17 +245,27 @@ export const reviewMerge = defineOperation({
   input: z.object({
     workItemId,
     openedFullDiff: z.boolean(),
+    /** The commit the person approves (spec 60): the proof binds to it through the input digest. */
+    headSha: sha.optional(),
     note: z.string().max(4_000).optional(),
   }),
   output: decisionOutput,
   async handler(input, ctx) {
-    return decidePending(
-      ctx,
-      await gateFor(ctx, input.workItemId, "merge"),
-      "approved",
-      input.note ?? null,
-      input.openedFullDiff,
-    );
+    if (ctx.origin.surface === "mobile" && !input.headSha) {
+      throw new OperationError(
+        "invalid_input",
+        "a merge from the phone names its commit (headSha)",
+      );
+    }
+    const pa = await gateFor(ctx, input.workItemId, "merge");
+    if (input.headSha && pa.status === "pending" && mergeGateHead(pa) !== input.headSha) {
+      throw new OperationError(
+        "conflict",
+        "A new push withdrew this approval: the merge gate is for another commit now",
+        { headSha: mergeGateHead(pa) },
+      );
+    }
+    return decidePending(ctx, pa, "approved", input.note ?? null, input.openedFullDiff);
   },
 });
 
@@ -237,6 +278,7 @@ export const reviewSendBack = defineOperation({
   permission: "approver",
   browserOnly: true,
   presenceDecidable: true,
+  mobileDecidable: true,
   input: z.object({ workItemId, note: z.string().min(1).max(8_000), openedFullDiff: z.boolean() }),
   output: decisionOutput.extend({ incidentId: z.string().nullable() }),
   async handler(input, ctx) {

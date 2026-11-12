@@ -15,7 +15,7 @@ import {
   toStatement,
 } from "@software-factory/db";
 import type { Compilable } from "kysely";
-import type { Actor, Origin } from "./actors.ts";
+import { type Actor, type DeviceSurface, isDeviceSurface, type Origin } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import { newId } from "./ids.ts";
 import type {
@@ -109,10 +109,32 @@ export function canonicalJson(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
 }
 
+/** Whether a device surface's presence proof may decide `op` at all (ADR 0391, 0541). */
+export function presenceSurfaceAllowed(op: AnyOperation, surface: DeviceSurface): boolean {
+  const surfaces = op.presenceSurfaces ?? (op.presenceDecidable ? ["desktop", "mobile"] : []);
+  return surfaces.includes(surface);
+}
+
 async function presenceAllows(op: AnyOperation, origin: Origin, rawInput: unknown) {
-  if (origin.surface !== "desktop" || !op.presenceDecidable || !origin.presence) return false;
+  if (!isDeviceSurface(origin.surface) || !origin.presence) return false;
+  if (!presenceSurfaceAllowed(op, origin.surface)) return false;
   if (origin.presence.op !== op.name) return false;
   return origin.presence.inputDigest === (await inputDigest(rawInput));
+}
+
+/**
+ * Whether a person on this device surface may run a browser-only operation with one tap, without a
+ * presence proof (ADR 0470 and 0541 decision 5; replaces the bare `desktopDecidable` check). On the
+ * desktop: `desktopDecidable`. On the phone: that, or `mobileDecidable` (for this input).
+ */
+export function deviceDecidable(
+  op: AnyOperation,
+  surface: DeviceSurface,
+  input: Record<string, unknown>,
+): boolean {
+  if (op.desktopDecidable) return true;
+  if (surface !== "mobile" || !op.mobileDecidable) return false;
+  return op.mobileDecidable === true || op.mobileDecidable(input);
 }
 
 export async function runOperation<O = unknown>(
@@ -241,15 +263,16 @@ export async function runOperation<O = unknown>(
 
   // 4c. Browser-only decisions (ADR 0340): a person decides gates in the app, never through a
   //     token another surface holds (the CLI, MCP), which an agent session might be using. A
-  //     desktop device may make a presence-decidable one with a Touch ID proof the client door
-  //     redeemed for exactly this operation and input (ADR 0391).
+  //     desktop or phone may make a presence-decidable one with a Touch ID or fingerprint proof the
+  //     client door redeemed for exactly this operation and input (ADR 0391, 0541), and a
+  //     device-decidable one with one tap (ADR 0470, 0541).
   if (
     actor.type === "human" &&
     origin.surface !== "app" &&
     origin.surface !== "test" &&
     op.browserOnly &&
     (op.browserOnly === true || op.browserOnly(input)) &&
-    !(origin.surface === "desktop" && op.desktopDecidable) &&
+    !(isDeviceSurface(origin.surface) && deviceDecidable(op, origin.surface, input)) &&
     !(await presenceAllows(op, origin, rawInput))
   ) {
     return refuse(
@@ -424,10 +447,7 @@ export async function runOperation<O = unknown>(
   const messages: OutboxMessage[] = [];
   const changes: Change[] = [];
   let subject: Partial<Scope> = { ...scope };
-  const presence =
-    origin.surface === "desktop" && op.desktopDecidable
-      ? await presenceAllows(op, origin, rawInput)
-      : false;
+  const presence = origin.presence ? await presenceAllows(op, origin, rawInput) : false;
   const ctx: HandlerContext = {
     db,
     d1,
@@ -482,7 +502,23 @@ export async function runOperation<O = unknown>(
   // 11. One batch: writes + guards + fence + approval consumed + audit + outbox. All or nothing.
   const auditId = newId("audit");
   const outboxIds = messages.map(() => newId("outbox"));
+  // A desktop's or phone's call holds only while the device does: removing it while a decision is
+  // on its way refuses the decision, in the same batch that would apply it (review of spec 60 PR
+  // 1a). First, so it reads the device as it was before this call's own writes.
+  const deviceGuard =
+    actor.type === "human" && isDeviceSurface(origin.surface) && origin.deviceId
+      ? origin.deviceId
+      : null;
   const batch = [
+    ...(deviceGuard
+      ? [
+          d1
+            .prepare(
+              "INSERT INTO core_batch_guard (name, ok) SELECT 'device', EXISTS (SELECT 1 FROM core_desktop_devices WHERE id = ? AND revoked_at IS NULL)",
+            )
+            .bind(deviceGuard),
+        ]
+      : []),
     ...statements,
     ...(fence
       ? [
@@ -534,6 +570,18 @@ export async function runOperation<O = unknown>(
       },
       subject,
     ).run();
+    if (guard && deviceGuard) {
+      const device = await db
+        .selectFrom("core_desktop_devices")
+        .select("revoked_at")
+        .where("id", "=", deviceGuard)
+        .executeTakeFirst();
+      if (!device || device.revoked_at) {
+        throw new OperationError("forbidden", "this device was removed: nothing was changed", {
+          deviceRemoved: true,
+        });
+      }
+    }
     if (guard || unique) {
       throw new OperationError("conflict", `${op.name}: the state changed underneath this call`);
     }
