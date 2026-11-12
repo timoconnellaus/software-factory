@@ -26,7 +26,7 @@ import type {
   PendingActionRow,
   Scope,
 } from "./operation.ts";
-import { type Decision, decide, parseFloor, type RiskClass, strictest } from "./policy/gate.ts";
+import { type Decision, operationGate, parseFloor, type RiskClass } from "./policy/gate.ts";
 import { getOperation } from "./registry.ts";
 import {
   activeKillSwitch,
@@ -309,7 +309,10 @@ export async function runOperation<O = unknown>(
   //    project (runner registration, the claim loop) are judged under Cautious + the floor, and so
   //    are calls that bring the policy in (`bootstrapsPolicy`).
   const scoped = scope.project !== null && !op.bootstrapsPolicy;
-  const current = decide({
+  // A work item stays at least as strict as the config version it started under (ADR 0370 §5), and
+  // an `alwaysReview` operation always asks a person (ADR 0371): `operationGate` does both.
+  const gate = operationGate({
+    op,
     actor: actor.type,
     risk,
     policy: scoped
@@ -319,32 +322,14 @@ export async function runOperation<O = unknown>(
       : { autonomyPolicy: "cautious", overrides: {} },
     ...(scope.policyError ? { policyError: scope.policyError } : {}),
     floor,
-  });
-  // A work item stays at least as strict as the config version it started under (ADR 0370 §5):
-  // tightening reaches running work, loosening never does.
-  const pinned =
-    scoped && scope.policy && scope.pinnedPolicy
-      ? decide({
-          actor: actor.type,
-          risk,
-          policy: {
+    pinnedPolicy:
+      scoped && scope.policy && scope.pinnedPolicy
+        ? {
             autonomyPolicy: scope.pinnedPolicy.autonomyPolicy,
             overrides: scope.pinnedPolicy.overrides,
-          },
-          floor,
-        })
-      : null;
-  let gate =
-    pinned && strictest(pinned.decision, current.decision) !== current.decision
-      ? {
-          decision: pinned.decision,
-          reason: `${pinned.reason} (the version this item started under)`,
-        }
-      : current;
-  // A workflow's gate step is enforced in code, never loosened by policy (ADR 0371).
-  if (op.alwaysReview && gate.decision === "allow") {
-    gate = { decision: "review", reason: `${op.name} always asks a person` };
-  }
+          }
+        : null,
+  });
 
   // An approved re-run must match its pending action. `deny` still refuses it.
   let approval: PendingActionRow | undefined;

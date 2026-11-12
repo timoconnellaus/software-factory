@@ -48,3 +48,5 @@ narrow, enforced in code, and impossible for an agent to widen.
 > Amends [ADR 0008](0008-autonomy-presets-and-floor.md): "merge, deploy and self-modify always need
 > a person" keeps holding for `pr.merge`, deploys and every `.factory/` change except this one, which
 > a person pre-approves per project in policy.
+
+> **Superseded** 2026-11-12 by [ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md) (spec 52, question 11): the owner wants this to work "optionally in dark factory mode. Where it merges too". An incident's check-only fix merges with no person only when the workflow's `autoApprove` is on and its conditions hold, like any change. `pr.autoMerge` stops being called from the Workflow version that adds the setting (spec 52 PR (e)); `check-merge` stays in `RISK_CLASSES` so old audit rows read, and no policy allows it.
