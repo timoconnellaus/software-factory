@@ -204,6 +204,8 @@ describe("migration 0261: backlog, ready, queued (ADR 0491)", () => {
     await expect(
       db.prepare("UPDATE core_work_items SET status = 'someday' WHERE id = 'wi_1'").run(),
     ).rejects.toThrow(/CHECK/);
+    // Stages are the workflow's, not the schema's: a workflow-defined stage needs no migration.
+    await db.prepare("UPDATE core_work_items SET stage = 'review' WHERE id = 'wi_1'").run();
     await expect(
       db
         .prepare(

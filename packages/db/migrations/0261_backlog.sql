@@ -27,9 +27,13 @@ CREATE TABLE core_work_items_0261 (
   kind TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change', 'incident', 'attached')),
   requester_user_id TEXT NOT NULL,
   source TEXT NOT NULL,
-  stage TEXT NOT NULL DEFAULT 'intake'
-    CHECK (stage IN ('intake', 'triage', 'spec', 'build', 'verify', 'merge', 'done')),
-  -- backlog → ready → queued before the pipeline (no Workflow instance yet); planning is part C's.
+  -- The workflow's stage (spec 50: stages belong to the workflow, not the fixed states). No CHECK
+  -- since 0261, so a workflow can define its own stages without a migration; the operations
+  -- validate it against the stages the engine's skeleton knows today (ADR 0371).
+  stage TEXT NOT NULL DEFAULT 'intake',
+  -- The fixed work-management states every item has, whatever its workflow (spec 50): backlog,
+  -- planning (part C), ready, queued, then running/waiting/paused while its workflow runs, and the
+  -- endings done/failed/rejected/cancelled. Which stage it is in is `stage`, the workflow's.
   status TEXT NOT NULL DEFAULT 'running'
     CHECK (status IN ('backlog', 'planning', 'ready', 'queued', 'running', 'waiting', 'paused',
                       'done', 'failed', 'rejected', 'cancelled')),

@@ -97,10 +97,41 @@ Nothing changes for a user.
   are offered in the UI; until then `repository.add` on a project that already has one is allowed
   through the API only, and the spec's tests cover it.
 
+## States and stages: what is fixed and what belongs to the workflow
+Two separate things, which the schema and the operations keep apart:
+
+1. **Work-management states**, fixed, the same for every item whatever its workflow:
+   `backlog` → `planning` → `ready` → `queued` → *(the workflow runs)* → `done`, with the endings
+   `failed`, `rejected` and `cancelled`. While the workflow runs the item's status says only whether
+   it is moving: `running`, `waiting` (on a person or an event) or `paused` (a kill switch). These
+   are `core_work_items.status` (a CHECK), `ITEM_STATUSES`, the board read's states and counts, and
+   the operations that move between them (`workItem.create/update/move/release/link`,
+   `queue.pull`, `workItem.cancel`). None of them names a software stage.
+2. **Stages**, between queued and done, which belong to the **workflow**. Triage, spec, build,
+   verify, review and merge are the **Software** workflow's stages, not universal ones: a Marketing
+   workflow might draft, review and publish. They are `core_work_items.stage` (free text since
+   0261), `core_stages` (free text) and the board's `stage` field (a string).
+   - **How planning runs is the workflow's setting**: whether it is required and from what size
+     (today `spec.requiredFrom`), which agent runs it, and who approves the plan (today the spec gate
+     and its approvers). Planning as a fixed *state* (part C) is when it happens; *how* is the
+     workflow's.
+
+**Known limits** (because the engine's skeleton is fixed code, ADR 0371): the stages a workflow can
+use today are the skeleton's (`intake`, `triage`, `spec`, `build`, `verify`, `merge`, `done`; the
+operations validate against `STAGES`); `core_jobs.stage` and the planning tables keep CHECKs on the
+job kinds the runner contract knows (`triage`, `spec`, `planning`, `build`, `verify`); planning's
+settings live in config fields the skeleton reads (`spec.requiredFrom`, approvers) rather than in a
+workflow definition; and every workflow is assumed to need a repository
+(`workflowNeedsRepository`). Workflow-defined stages and per-workflow planning settings are the
+same follow-up as org-level workflows (out of scope below): the work-management states and the
+operations in this spec don't change for them, and only the job-kind CHECKs would need a migration.
+
 ## Part B: backlog, ready, queued (PR B)
 - **Migration 0261** (`0261_backlog.sql`):
   - `core_work_items.status` gains `backlog`, `ready`, `queued` and `planning` (the CHECK is
-    rebuilt, as in 0080; `planning` is used from part C). `stage` stays `intake` until the item is pulled.
+    rebuilt, as in 0080; `planning` is used from part C). `stage` stays `intake` until the item is
+    pulled. The rebuild drops `stage`'s CHECK: stages are the workflow's (below), so a
+    workflow-defined stage needs no migration; the operations still validate it.
   - New columns: `priority` (0 urgent, 1 high, 2 normal, 3 low; default 2), `rank` (REAL, the
     order within a priority; lower first), `acceptance_criteria` (JSON, set while shaping),
     `released_at`, `released_by`, `pulled_at`. Existing items are left as they are: they are
