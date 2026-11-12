@@ -1,0 +1,30 @@
+{
+  "name": "spike-electrobun",
+  "private": true,
+  "type": "module",
+  "description": "Spike: the factory desktop app on Electrobun 2.x (Hutch toolchain). Outside the workspace.",
+  "scripts": {
+    "vendor:node": "node scripts/vendor-node.mjs",
+    "build:view": "vite build",
+    "build:runner": "node scripts/bundle-runner.mjs",
+    "dev": "pnpm build:view && hutch electrobun prepare && hutch electrobun dev",
+    "build": "pnpm build:view && hutch electrobun prepare && hutch electrobun build --env=canary"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "5.105.3",
+    "@tanstack/react-router": "1.170.46",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.4",
+    "@types/bun": "1.4.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.2.1",
+    "esbuild": "0.28.2",
+    "tailwindcss": "4.3.4",
+    "typescript": "6.0.3",
+    "vite": "8.3.5"
+  }
+}

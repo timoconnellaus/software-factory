@@ -79,6 +79,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.
+- **Desktop app** (`electrobun`, spike block S 0130–0139): plan `.kim/plans/2026-11-11-software-factory-desktop-app-electrobun.md`,
+  spike `spikes/electrobun` (proposed ADR 0130). The spike found the desktop token can't prove a person
+  (any same-user process can drive the app's `bun`), so gate decisions in the app need a Secure Enclave
+  presence proof. That needs the owner's sign-off before the spec.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
