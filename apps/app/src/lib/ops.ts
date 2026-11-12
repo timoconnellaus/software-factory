@@ -46,6 +46,7 @@ export interface OpMap {
   "config.export": Def<typeof operations.configExport>;
   "config.trials": Def<typeof operations.configTrials>;
   "config.trial.resolve": Def<typeof operations.configTrialResolve>;
+  "adjudicator.stats": Def<typeof operations.adjudicatorStatsOp>;
   "setup.status": Def<typeof operations.setupStatus>;
   "protection.check": Def<typeof operations.protectionCheck>;
   "runner.deviceLookup": Def<typeof operations.runnerDeviceLookup>;
@@ -103,6 +104,7 @@ export const APP_OPERATIONS = [
   "config.export",
   "config.trials",
   "config.trial.resolve",
+  "adjudicator.stats",
   "setup.status",
   "protection.check",
   "runner.deviceLookup",
@@ -135,6 +137,7 @@ export const APP_READ_OPERATIONS = [
   "config.get",
   "config.preview",
   "config.trials",
+  "adjudicator.stats",
 ] as const satisfies readonly OpName[];
 export type ReadOpName = (typeof APP_READ_OPERATIONS)[number];
 

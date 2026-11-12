@@ -2,6 +2,7 @@
 // available to every surface (the engine RPC the app calls, the runner channel, MCP later).
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
+import * as adjudicator from "./operations/adjudicator.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
 import * as cli from "./operations/cli.ts";
@@ -39,6 +40,9 @@ export const OPERATIONS: readonly AnyOperation[] = [
   improve.configTrialStart,
   improve.configTrialResolve,
   improve.configTrials,
+  adjudicator.adjudicatorRequest,
+  adjudicator.adjudicatorRecord,
+  adjudicator.adjudicatorStatsOp,
   onboarding.githubConnectStart,
   onboarding.githubConnectInstallation,
   onboarding.githubRepos,

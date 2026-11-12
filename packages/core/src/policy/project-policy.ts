@@ -194,6 +194,17 @@ export const projectPolicySchema = z
       })
       .strict()
       .default({ enabled: false, trialSize: 5, weeklyCap: 3 }),
+    /**
+     * The adjudicator per gate kind (ADR 0374): `shadow` records the verdict it would give,
+     * `active` approves (never rejects) once it has earned it. Never merge, deploy or self-modify.
+     */
+    adjudicator: z
+      .object({
+        spec: z.enum(["off", "shadow", "active"]).default("off"),
+        step: z.enum(["off", "shadow", "active"]).default("off"),
+      })
+      .strict()
+      .default({ spec: "off", step: "off" }),
   })
   .strict()
   .superRefine((policy, ctx) => {

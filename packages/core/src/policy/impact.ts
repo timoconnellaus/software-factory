@@ -51,6 +51,7 @@ const KNOWN = new Set([
   "agents",
   "workflows",
   "improve",
+  "adjudicator",
 ]);
 
 /**
@@ -242,6 +243,19 @@ export function policyImpact(
       "improve",
       "neutral",
       `Trials of ${after.improve.trialSize} items, at most ${after.improve.weeklyCap} a week.`,
+    );
+  }
+
+  // The adjudicator (ADR 0374): letting it approve gates loosens; shadow only watches.
+  const RANKED = { off: 0, shadow: 0, active: 1 } as const;
+  for (const kind of ["spec", "step"] as const) {
+    const was = before.adjudicator[kind];
+    const now = after.adjudicator[kind];
+    if (was === now) continue;
+    add(
+      `adjudicator.${kind}`,
+      RANKED[now] > RANKED[was] ? "loosens" : RANKED[now] < RANKED[was] ? "tightens" : "neutral",
+      `Adjudicator for ${kind === "spec" ? "spec gates" : "gate steps"}: ${was} → ${now}.`,
     );
   }
 
