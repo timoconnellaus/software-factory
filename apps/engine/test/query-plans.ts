@@ -77,10 +77,6 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
     why: "sorts one row per project with queued work (core_work_items_status_idx)",
   },
   {
-    match: /WITH q AS \(\s*SELECT j\.\*,[\s\S]*FROM core_jobs j WHERE j\.status = 'queued'/,
-    why: "job.claim's candidates: queued jobs only (core_jobs_status_idx), at most 50",
-  },
-  {
     match: /from "core_pending_actions".*"core_pending_actions"\."status" = \?/,
     why: "pending gates only (core_pending_actions_status_idx)",
   },

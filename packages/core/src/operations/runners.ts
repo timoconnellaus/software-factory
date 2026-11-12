@@ -544,6 +544,8 @@ export const jobEnqueue = defineOperation({
         session_timeout_ms: input.sessionTimeoutMs,
         created_at: ctx.now,
         pool: stagePool(input.stage),
+        // Shaping work is claimed after released work (ADR 0493, migration 0363).
+        shaping: w.status === "shaping" ? 1 : 0,
         tier: input.tier === "standard" ? null : input.tier,
       }),
     );
@@ -717,7 +719,6 @@ async function claimCandidates(
 ): Promise<ClaimCandidate[]> {
   if (pools.length === 0) return [];
   type Row = JobRow & {
-    shaping_last: number | null;
     item_org_id: string;
     item_project_id: string;
     item_requester_user_id: string;
@@ -735,10 +736,9 @@ async function claimCandidates(
   };
   const { rows } = await sql<Row>`
     WITH q AS (
-      SELECT j.*,
-        (SELECT x.status = 'shaping' FROM core_work_items x WHERE x.id = j.work_item_id) AS shaping_last
-      FROM core_jobs j WHERE j.status = 'queued'
-      ORDER BY shaping_last, j.created_at LIMIT 50
+      -- INDEXED BY: without it the planner may pick core_jobs_status_idx and sort the whole queue.
+      SELECT j.* FROM core_jobs j INDEXED BY core_jobs_queue_idx WHERE j.status = 'queued'
+      ORDER BY j.shaping, j.created_at LIMIT 50
     ),
     c AS (
       SELECT q.*,
@@ -771,10 +771,9 @@ async function claimCandidates(
     )
     SELECT * FROM c
     WHERE has_repository = 0 OR (shared AND NOT killed)
-    ORDER BY shaping_last, created_at`.execute(ctx.db);
+    ORDER BY shaping, created_at`.execute(ctx.db);
   return rows.map((r) => {
     const {
-      shaping_last: _s,
       item_org_id,
       item_project_id,
       item_requester_user_id,
