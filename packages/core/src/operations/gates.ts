@@ -7,6 +7,7 @@ import type { GateDecisionKind } from "@software-factory/db";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
+import { assertSpecGateCurrent } from "../planning.ts";
 import { backupOwnerId } from "../scope.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
 import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
@@ -123,6 +124,9 @@ export const approvalDecide = defineOperation({
       // Merge is decided on the review packet (ADR 0041), which records whether the diff was opened.
       throw new OperationError("forbidden", "approve a merge with review.merge");
     }
+    if (pa.kind === "spec" && pa.status === "pending" && input.decision === "approved") {
+      await assertSpecGateCurrent(ctx, pa.work_item_id);
+    }
     const decided = decidePending(ctx, pa, input.decision, input.note ?? null);
     // A project-level config proposal has no Workflow to re-run it: apply it here (ADR 0370).
     if (
@@ -148,12 +152,10 @@ export const specApprove = defineOperation({
   input: z.object({ workItemId, note: z.string().max(4_000).optional() }),
   output: decisionOutput,
   async handler(input, ctx) {
-    return decidePending(
-      ctx,
-      await gateFor(ctx, input.workItemId, "spec"),
-      "approved",
-      input.note ?? null,
-    );
+    const pa = await gateFor(ctx, input.workItemId, "spec");
+    // A gate the planner no longer stands behind (a person wrote after it asked) can't be approved.
+    if (pa.status === "pending") await assertSpecGateCurrent(ctx, pa.work_item_id);
+    return decidePending(ctx, pa, "approved", input.note ?? null);
   },
 });
 

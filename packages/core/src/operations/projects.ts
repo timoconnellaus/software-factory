@@ -32,6 +32,11 @@ const policyView = z.object({
   error: z.string().nullable(),
   /** The open PR that adds a template policy, when one was opened from Setup. */
   prUrl: z.string().nullable(),
+  /**
+   * The config defines workflows but names none for the project's items (ADR 0492): nothing can be
+   * released until a person chooses one in Settings.
+   */
+  workflowUnchosen: z.boolean().optional(),
 });
 
 /** A repository of a project (ADR 0490) with its connection to GitHub. */
@@ -184,9 +189,16 @@ export async function projectViews(db: Db, rows: ProjectRow[]): Promise<ProjectV
               : "invalid",
         error: policy && !policy.valid ? policy.error : null,
         prUrl: firstRow?.policy_pr_url ?? null,
+        workflowUnchosen: policy?.valid ? workflowUnchosenIn(policy.raw) : false,
       },
     };
   });
+}
+
+/** Whether a stored config defines workflows but names none (ADR 0492). */
+function workflowUnchosenIn(raw: string): boolean {
+  const parsed = parseProjectPolicy(raw);
+  return parsed.ok && parsed.policy.workflows.length > 0 && !parsed.policy.workflow;
 }
 
 /** Asks GitHub, as the App, for its installation on the repo. Never throws: a failure is the reason. */

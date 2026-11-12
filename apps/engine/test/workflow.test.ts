@@ -23,7 +23,7 @@ import {
 async function create(w: Awaited<ReturnType<typeof world>>, title = "Add dark mode") {
   return ok<{ workItemId: string; branch: string }>(
     "workItem.create",
-    { projectId: w.projectId, title },
+    { state: "queued", projectId: w.projectId, title },
     w.human,
   );
 }

@@ -5,6 +5,7 @@ import {
   DEVICE_PATHS,
   httpControlPlane,
   PATHS,
+  RUNNER_COMPAT,
   runnerChannelKey,
   signRunnerRequest,
 } from "@software-factory/runner-contract";
@@ -37,7 +38,12 @@ describe("the signed runner channel", () => {
       capacity: { max: 2, inUse: 0, accepting: true },
       activeJobs: [],
     });
-    expect(beat).toEqual({ commands: [], leases: [], desiredVersion: null });
+    expect(beat).toEqual({
+      commands: [],
+      leases: [],
+      desiredVersion: null,
+      minRunnerCompat: RUNNER_COMPAT,
+    });
     const seen = await first<{ capacity_max: number; last_seen_at: string }>(
       "SELECT capacity_max, last_seen_at FROM core_runners WHERE id = ?",
       w.runner.runnerId,
@@ -142,7 +148,7 @@ describe("the signed runner channel", () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Channel item" },
+      { state: "queued", projectId: w.projectId, title: "Channel item" },
       w.human,
     );
     const c = await client(w.runner.runnerId);
@@ -218,12 +224,12 @@ describe("attachments over the channel (ADR 0310)", () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Attachment item" },
+      { state: "queued", projectId: w.projectId, title: "Attachment item" },
       w.human,
     );
     const other = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Someone else's" },
+      { state: "queued", projectId: w.projectId, title: "Someone else's" },
       w.human,
     );
     const mine = await ok<{ attachment: { id: string } }>(
@@ -308,7 +314,12 @@ describe("device login over the channel (ADR 0056)", () => {
         capacity: { max: 1, inUse: 0, accepting: true },
         activeJobs: [],
       }),
-    ).resolves.toEqual({ commands: [], leases: [], desiredVersion: null });
+    ).resolves.toEqual({
+      commands: [],
+      leases: [],
+      desiredVersion: null,
+      minRunnerCompat: RUNNER_COMPAT,
+    });
     expect(
       await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json(),
     ).toMatchObject({ status: "expired", key: null });
@@ -324,7 +335,7 @@ describe("planning over the channel (spec 20, ADR 0350)", () => {
   async function planningJob(w: Awaited<ReturnType<typeof world>>) {
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Plan me" },
+      { state: "queued", projectId: w.projectId, title: "Plan me" },
       w.human,
     );
     await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
@@ -424,7 +435,7 @@ describe("steering over the channel (spec 31, ADR 0400)", () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
-      { projectId: w.projectId, title: "Steer me" },
+      { state: "queued", projectId: w.projectId, title: "Steer me" },
       w.human,
     );
     const c = await client(w.runner.runnerId);

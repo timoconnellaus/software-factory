@@ -6,8 +6,8 @@
 //
 // Any channel call refused with 409 `fenced` or `killed`, or a cancel command from the heartbeat,
 // stops the session at once; a fenced run hands nothing back and pushes nothing (ADR 0035).
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { join, relative } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   type AdapterEvent,
@@ -157,6 +157,8 @@ export async function steerLoop(options: {
   job: Job;
   signal: AbortSignal;
   steer: (text: string) => Promise<void>;
+  /** Stop the current step, then submit the line (ADR 0470); absent when the adapter can't. */
+  interrupt?: (text: string) => Promise<void>;
   /**
    * Stops the stream session for a person (ADR 0450): a `takeover` row from `run.takeover`. The
    * adapter's events then report the resume command and follow the resumed session.
@@ -174,7 +176,12 @@ export async function steerLoop(options: {
   const take = cp.steers.bind(cp);
   let failures = 0;
   while (!signal.aborted) {
-    let steers: { id: string; text: string; kind?: "message" | "takeover" }[];
+    let steers: {
+      id: string;
+      text: string;
+      interrupt?: boolean;
+      kind?: "message" | "takeover";
+    }[];
     try {
       ({ steers } = await take(
         job.jobId,
@@ -219,8 +226,13 @@ export async function steerLoop(options: {
       const text = steerText(s.text);
       if (!text) continue;
       try {
-        await options.steer(text);
-        log(`${job.jobId}: typed a message from the dashboard (${s.id})`);
+        if (s.interrupt && options.interrupt) {
+          await options.interrupt(text);
+          log(`${job.jobId}: interrupted the agent for a person (${s.id})`);
+        } else {
+          await options.steer(text);
+          log(`${job.jobId}: typed a message from the dashboard (${s.id})`);
+        }
       } catch (error) {
         const why = error instanceof Error ? error.message : String(error);
         await options
@@ -263,6 +275,31 @@ export interface RunJobOptions<W extends WorkspaceHandle, S extends SessionHandl
    * harness's protectPaths (read and write denied).
    */
   checksDir?: string;
+}
+
+/**
+ * The stage result, only as a regular file directly in the worktree. A symlink (which the agent
+ * can leave there, in any isolation mode) would let it hand any file on the host back as the
+ * result: it is refused and removed.
+ */
+export async function readResultFile(
+  worktree: string,
+  path: string,
+  notes: string[],
+): Promise<string | null> {
+  const stat = await lstat(path).catch(() => null);
+  if (!stat) return null;
+  const root = await realpath(worktree).catch(() => worktree);
+  const dir = await realpath(join(path, "..")).catch(() => null);
+  if (!stat.isFile() || stat.isSymbolicLink() || !dir || relative(root, dir) !== "") {
+    notes.push(`${RESULT_FILE} was not a regular file in the worktree; ignored`);
+    return null;
+  }
+  if (stat.size > 8 << 20) {
+    notes.push(`${RESULT_FILE} is over 8 MiB; ignored`);
+    return null;
+  }
+  return readFile(path, "utf8").catch(() => null);
 }
 
 export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>(
@@ -589,6 +626,12 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         job,
         signal: AbortSignal.any([signal, steerStop.signal]),
         steer: (text) => (adapter.steer as NonNullable<typeof adapter.steer>)(live, text),
+        ...(adapter.interrupt
+          ? {
+              interrupt: (text: string) =>
+                (adapter.interrupt as NonNullable<typeof adapter.interrupt>)(live, text),
+            }
+          : {}),
         ...(adapter.takeover
           ? { takeover: () => (adapter.takeover as NonNullable<typeof adapter.takeover>)(live) }
           : {}),
@@ -648,7 +691,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       // The stage result: read it, pass it through untouched, delete it. Never committed. A
       // planning session has none: its record is in the factory (ADR 0300).
       const resultPath = join(workspace.path, RESULT_FILE);
-      const raw = planning ? null : await readFile(resultPath, "utf8").catch(() => null);
+      const raw = planning ? null : await readResultFile(workspace.path, resultPath, notes);
       await rm(resultPath, { force: true });
       if (planning) {
         result = { planning: yielded ? "yielded" : "stopped" };
@@ -799,12 +842,17 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       await rm(checksRoot, { recursive: true, force: true }).catch(() => {});
       await rm(`${checksRoot}.index`, { force: true }).catch(() => {});
     }
+    let releaseFailed = false;
     await adapter.release(job, workspace, session).catch((err) => {
+      releaseFailed = true;
       error = `${error ? `${error}; ` : ""}release: ${err instanceof Error ? err.message : err}`;
     });
     for (const token of tokens) await revokeToken(token, options.fetch);
     if (!stopped || !(stopped as StopJob).fenced) {
-      await stream.push({ type: "job.state", state: "released" }).catch(() => {});
+      // A release that failed may have left something running (a sprite, ADR 0480): not "released".
+      if (!releaseFailed) {
+        await stream.push({ type: "job.state", state: "released" }).catch(() => {});
+      }
       await stream.flush().catch(() => {});
       await cp
         .release({

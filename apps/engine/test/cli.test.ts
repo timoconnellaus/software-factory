@@ -70,6 +70,7 @@ describe("the sf CLI door (/cli/v1)", () => {
     expect(orgs.result.orgs).toEqual([expect.objectContaining({ id: w.orgId, role: "owner" })]);
 
     const create = await callOp(token, "workItem.create", {
+      state: "queued",
       projectId: w.projectId,
       title: "From the terminal",
       body: "x",
@@ -93,6 +94,7 @@ describe("the sf CLI door (/cli/v1)", () => {
     expect(listed.operations.find((o) => o.name === "review.merge")?.browserOnly).toBe(true);
 
     const created = await callOp(token, "workItem.create", {
+      state: "queued",
       projectId: w.projectId,
       title: "From the terminal",
       source: "app",

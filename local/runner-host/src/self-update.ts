@@ -1,10 +1,18 @@
 // The runner updates itself to the commit the factory was deployed from (ADR 0360, spec 08).
 //
-// The heartbeat answers with `desiredVersion`. When the runner's checkout is behind it, the runner
+// The heartbeat answers with `desiredVersion`: the last commit on main that changed runner code
+// (ADR 0520). A checkout at it or ahead of it is current. When the checkout is behind it, the runner
 // checks it can move (auto-update on, a clean checkout on `main` or detached, the commit on
-// `origin/main`, forward only), stops claiming until its jobs end, then fast-forwards to exactly
-// that commit, reinstalls with the frozen lockfile and exits non-zero so the service starts the new
-// code. The first successful heartbeat on the new code confirms the update.
+// `origin/main`, a fast-forward), then fast-forwards to exactly that commit at the first heartbeat
+// where no job is running, reinstalls with the frozen lockfile and exits non-zero so the service
+// starts the new code. The first successful heartbeat on the new code confirms the update.
+//
+// Until then it keeps claiming on its current code (ADR 0520: the engine keeps serving older
+// runners within a RUNNER_COMPAT level). An update that has waited `heavyAfterMs` (default 30 min)
+// takes light jobs only, so the heavy pool empties; one that has waited `allAfterMs` (default
+// 60 min) takes nothing, so light jobs can't hold it off forever. A heartbeat whose
+// `minRunnerCompat` is above this code's RUNNER_COMPAT claims nothing at once: the engine has made
+// a change this code can't follow.
 //
 // Only the service (launchd or systemd: `bin/sf-runner-service` sets SF_RUNNER_SERVICE=1) applies
 // an update; a runner started in a terminal reports where it stands but leaves its checkout alone.
@@ -21,11 +29,24 @@
 //   update/reason      why it failed or was rolled back
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { RunnerVersion } from "@software-factory/runner-contract";
+import { RUNNER_COMPAT, type RunnerVersion } from "@software-factory/runner-contract";
 import type { Exec } from "@software-factory/runner-local";
 
 /** The exit code that asks the service (launchd or systemd) to start the new code (EX_TEMPFAIL). */
 export const UPDATE_EXIT_CODE = 75;
+
+/** A pending update stops heavy claims after this long (ADR 0520). */
+export const UPDATE_HEAVY_CAP_MS = 30 * 60_000;
+/** ...and every claim after this long, so light jobs can't hold it off forever. */
+export const UPDATE_ALL_CAP_MS = 60 * 60_000;
+
+/**
+ * What the host does after a heartbeat (ADR 0360, 0520): `claim` as usual; `light`, claim light
+ * jobs only (a pending update has waited past the first cap); `drain`, claim nothing (past the
+ * second cap, or the engine needs a newer runner); `restart`, updated: stop and exit so the
+ * service starts the new code.
+ */
+export type UpdateDecision = "claim" | "light" | "drain" | "restart";
 
 export type UpdateState = RunnerVersion["update"]["state"];
 
@@ -54,12 +75,15 @@ export interface VersionStatus {
 export type Check =
   | { kind: "current" }
   | { kind: "ready"; from: string; mode: "branch" | "detached" }
-  | { kind: "blocked"; reason: string }
+  /** `transient`: a fetch that failed, which doesn't restart a pending update's caps. */
+  | { kind: "blocked"; reason: string; transient?: true }
   | { kind: "rolled_back"; reason: string };
 
 export const recordDir = (stateDir: string) => join(stateDir, "update");
 export const rolledBackFile = (stateDir: string) => join(stateDir, "update-rolled-back");
 export const versionStatusFile = (stateDir: string) => join(stateDir, "version.json");
+/** When the update now pending was first seen (ISO), so a restart doesn't restart the caps. */
+export const pendingSinceFile = (stateDir: string) => join(stateDir, "update-pending-since");
 
 const FIELDS = ["status", "from", "to", "mode", "starts", "at", "reason"] as const;
 
@@ -137,6 +161,12 @@ export interface SelfUpdaterOptions {
   fetchEveryMs?: number;
   /** A failed (not rolled back) update to the same commit is retried after this long (default 1 h). */
   retryFailedAfterMs?: number;
+  /** This code's RUNNER_COMPAT (tests override it). */
+  compat?: number;
+  /** A pending update claims light jobs only after this long (default UPDATE_HEAVY_CAP_MS). */
+  heavyAfterMs?: number;
+  /** ...and nothing after this long (default UPDATE_ALL_CAP_MS; never before `heavyAfterMs`). */
+  allAfterMs?: number;
 }
 
 /** What the host loop needs from the updater; it knows nothing about git. */
@@ -144,10 +174,14 @@ export interface SelfUpdate {
   /** The `version` field of the next heartbeat. */
   report(): RunnerVersion;
   /**
-   * After each heartbeat: `claim` as usual, `drain` (claim nothing this turn, the update waits
-   * for the running jobs) or `restart` (updated: stop and exit so the service starts the new code).
+   * After each heartbeat, with what it answered: what to claim this turn, or `restart`. `idle`: no
+   * job is running, so an update can go ahead now. `minCompat`: the heartbeat's `minRunnerCompat`.
    */
-  consider(desired: string | null, idle: boolean): Promise<"claim" | "drain" | "restart">;
+  consider(
+    desired: string | null,
+    idle: boolean,
+    minCompat?: number | null,
+  ): Promise<UpdateDecision>;
   /** The first successful heartbeat since start: an update that got this far worked. */
   confirm(): Promise<void>;
 }
@@ -189,6 +223,9 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
   const log = options.log ?? (() => {});
   const fetchEveryMs = options.fetchEveryMs ?? 60_000;
   const retryFailedAfterMs = options.retryFailedAfterMs ?? 3_600_000;
+  const compat = options.compat ?? RUNNER_COMPAT;
+  const heavyAfterMs = options.heavyAfterMs ?? UPDATE_HEAVY_CAP_MS;
+  const allAfterMs = Math.max(heavyAfterMs, options.allAfterMs ?? UPDATE_ALL_CAP_MS);
   const gitEnv = { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" };
   const git = (...args: string[]) =>
     exec("git", args, { cwd: repo, timeoutMs: 120_000, env: gitEnv });
@@ -202,6 +239,28 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
   let sha = await current();
   let lastFetch = 0;
   let lastLogged = "";
+  /**
+   * When the update now pending was first seen (ms); null while none is. Kept in a file, so a crash
+   * or a restart by hand doesn't restart the caps (ADR 0520).
+   */
+  let pendingSince: number | null = await readFile(pendingSinceFile(stateDir), "utf8").then(
+    (text) => {
+      const at = Date.parse(text.trim());
+      return Number.isNaN(at) ? null : at;
+    },
+    () => null,
+  );
+  const startPending = async () => {
+    if (pendingSince !== null) return;
+    pendingSince = now().getTime();
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(pendingSinceFile(stateDir), `${new Date(pendingSince).toISOString()}\n`);
+  };
+  const clearPending = async () => {
+    if (pendingSince === null) return;
+    pendingSince = null;
+    await rm(pendingSinceFile(stateDir), { force: true });
+  };
 
   // Before the first `consider`: say what the last update did, if it was rolled back.
   const initial = await readUpdateRecord(stateDir);
@@ -218,6 +277,15 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
   const check = async (desired: string | null): Promise<Check> => {
     sha = await current();
     if (!desired || desired === sha) return { kind: "current" };
+    // At or ahead of the desired commit, on origin/main: current (ADR 0520). The desired commit is
+    // the last one that changed runner code, so a runner on a later commit of main (the deployed
+    // one, say) already runs it. A checkout with commits of its own isn't: it is blocked below.
+    if (
+      (await git("merge-base", "--is-ancestor", desired, sha)).code === 0 &&
+      (await git("merge-base", "--is-ancestor", sha, "refs/remotes/origin/main")).code === 0
+    ) {
+      return { kind: "current" };
+    }
     if (!options.autoUpdate) return { kind: "blocked", reason: "auto-update is off" };
     if ((await readRolledBack(stateDir)).includes(desired)) {
       const record = await readUpdateRecord(stateDir);
@@ -263,6 +331,7 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
           return {
             kind: "blocked",
             reason: `can't fetch origin: ${fetched.stderr.trim().slice(0, 200)}`,
+            transient: true,
           };
         }
       }
@@ -271,12 +340,9 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
       }
     }
     if ((await git("merge-base", "--is-ancestor", sha, desired)).code !== 0) {
-      const back = (await git("merge-base", "--is-ancestor", desired, sha)).code === 0;
       return {
         kind: "blocked",
-        reason: back
-          ? `updating to ${short(desired)} would go backwards from ${short(sha)}`
-          : `${short(sha)} has commits that aren't in ${short(desired)}: not a fast-forward`,
+        reason: `${short(sha)} has commits that aren't in ${short(desired)}: not a fast-forward`,
       };
     }
     return { kind: "ready", from: sha, mode };
@@ -363,39 +429,100 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
     check,
     apply,
     report: () => ({ sha, autoUpdate: options.autoUpdate, update: state }),
-    async consider(desired, idle) {
-      let decision: "claim" | "drain" | "restart" = "claim";
+    async consider(desired, idle, minCompat) {
+      // The engine made a change this code can't follow (ADR 0520): claim nothing, whatever else
+      // holds. Jobs already running finish; the update goes ahead once they have, if it can.
+      const incompatible = typeof minCompat === "number" && minCompat > compat;
+      const tooOld = `the engine needs runner compat ${minCompat}, this code is ${compat}`;
+      // Not updating now: claim as usual, or nothing at all when incompatible. A transient failure
+      // (a fetch, a git error) keeps a pending update's timer; anything else settles it.
+      const stay = async (
+        next: RunnerVersion["update"],
+        transient = false,
+      ): Promise<UpdateDecision> => {
+        if (!transient) await clearPending();
+        if (!incompatible) {
+          set(next);
+          return "claim";
+        }
+        set({
+          state: "blocked",
+          target: next.target,
+          reason: `${tooOld}, so it claims nothing${next.reason ? `; ${next.reason}` : ""}`,
+        });
+        return "drain";
+      };
+      let decision: UpdateDecision = "claim";
       try {
         const c = await check(desired);
         if (c.kind === "current") {
-          set({ state: "current", target: desired, reason: null });
+          decision = await stay({
+            state: "current",
+            target: desired,
+            reason: incompatible ? "it is already at the desired commit" : null,
+          });
         } else if (c.kind === "blocked") {
-          set({ state: "blocked", target: desired, reason: c.reason });
+          decision = await stay(
+            { state: "blocked", target: desired, reason: c.reason },
+            c.transient === true,
+          );
         } else if (c.kind === "rolled_back") {
-          set({ state: "rolled_back", target: desired, reason: c.reason });
+          decision = await stay({ state: "rolled_back", target: desired, reason: c.reason });
         } else if (options.canRestart === false) {
-          set({
+          decision = await stay({
             state: "blocked",
             target: desired,
             reason: "not running as the service (sf-runner install), so nothing would restart it",
           });
         } else if (!idle) {
-          set({ state: "waiting", target: desired, reason: "waiting for running jobs to finish" });
-          decision = "drain";
+          await startPending();
+          const waited = now().getTime() - (pendingSince ?? now().getTime());
+          const minutes = `${Math.round(waited / 60_000)} min`;
+          const waiting = (reason: string, next: UpdateDecision): UpdateDecision => {
+            set({ state: "waiting", target: desired, reason });
+            return next;
+          };
+          decision = incompatible
+            ? waiting(`${tooOld}: claiming nothing, updating once its jobs end`, "drain")
+            : waited >= allAfterMs
+              ? waiting(
+                  `update pending ${minutes}: claiming nothing, updating once its jobs end`,
+                  "drain",
+                )
+              : waited >= heavyAfterMs
+                ? waiting(
+                    `update pending ${minutes}: light jobs only, updating once its jobs end`,
+                    "light",
+                  )
+                : waiting(
+                    "update pending: claiming as usual, updating once no job is running",
+                    "claim",
+                  );
         } else if (desired) {
           set({ state: "updating", target: desired, reason: null });
           log(`self-update: ${short(c.from)} → ${short(desired)}`);
           const failed = await apply(desired, c.from, c.mode);
-          if (failed) set({ state: "blocked", target: desired, reason: failed });
-          else decision = "restart";
+          if (failed) decision = await stay({ state: "blocked", target: desired, reason: failed });
+          else {
+            await clearPending();
+            decision = "restart";
+          }
         }
       } catch (err) {
-        set({
-          state: "blocked",
-          target: desired,
-          reason: `self-update check failed: ${err instanceof Error ? err.message : String(err)}`,
-        });
+        decision = await stay(
+          {
+            state: "blocked",
+            target: desired,
+            reason: `self-update check failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+          true,
+        );
       }
+      // What it claims, for the engine (ADR 0520): on `none` it asks idle planning sessions to yield.
+      state = {
+        ...state,
+        claims: decision === "claim" ? "all" : decision === "light" ? "light" : "none",
+      };
       await persist(desired).catch((err) => log(`version status file: ${err}`));
       return decision;
     },
