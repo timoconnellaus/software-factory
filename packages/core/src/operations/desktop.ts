@@ -166,7 +166,7 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
       ? await ctx.db
           .selectFrom("core_work_items as w")
           .leftJoin("core_repositories as r", "r.id", "w.repository_id")
-          .select(["w.number", "w.title", "r.default_branch"])
+          .select(["w.number", "w.title", "r.default_branch", "r.owner", "r.name"])
           .where("w.id", "=", id)
           .executeTakeFirst()
       : undefined;
@@ -180,13 +180,16 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     case "spec.requestChanges":
       return `Request changes to the spec for ${await named(input.workItemId)}`;
     case "review.merge": {
-      // With a head SHA the prompt names the commit (spec 60): `Merge 3f2a91c "…" into main`.
+      // The prompt names the commit, the repository and a merge without checks (spec 40 M4b,
+      // spec 60): `Merge 3f2a91c "…" into main of acme/widgets, without its checks`. Every client
+      // sends the head SHA; without one it falls back to the work item's number.
       const w = await item(input.workItemId);
+      if (!w) return "Merge a work item";
       const commit =
-        typeof input.headSha === "string" ? `${input.headSha.slice(0, 7)} ` : `#${w?.number} `;
-      return w
-        ? `Merge ${commit}${quoted(w.title)} into ${w.default_branch ?? "the default branch"}`
-        : "Merge a work item";
+        typeof input.headSha === "string" ? `${input.headSha.slice(0, 7)} ` : `#${w.number} `;
+      const into = `${w.default_branch ?? "the default branch"}${w.owner ? ` of ${w.owner}/${w.name}` : ""}`;
+      const without = input.mergeWithoutChecks === true ? ", without its checks" : "";
+      return `Merge ${commit}${quoted(w.title)} into ${into}${without}`;
     }
     case "mobile.pairOffer":
       return "Add a phone to your account";

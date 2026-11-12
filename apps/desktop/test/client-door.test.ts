@@ -19,7 +19,11 @@ let prompts: string[];
 let touchId: "approve" | "cancel";
 let held: boolean;
 
-const SUMMARY = 'Merge #7 "Fix the inbox count" into main';
+const SUMMARY = 'Merge 3f2a91c "Fix the inbox count" into main of acme/widgets';
+const HEAD = "3f2a91c".padEnd(40, "0");
+const PUSHED_OVER = "1".repeat(40);
+const STALE =
+  "A new push withdrew this approval: the merge gate is for 9b1e004 now, not 1111111. Review the new commit.";
 
 const fakeFetch: Fetch = async (url, init) => {
   const path = url.replace(/^.*\/client\/v1\//, "");
@@ -44,6 +48,9 @@ const fakeFetch: Fetch = async (url, init) => {
   if (held) return reply({ pending: true, pendingActionId: "pa_1" }, 202);
   if (body.op === "review.merge" || body.op === "review.sendBack") {
     if (!body.presence) return reply({ error: "browser only", code: "forbidden" }, 403);
+    if ((body.input as { headSha?: string }).headSha === PUSHED_OVER) {
+      return reply({ error: STALE, code: "conflict", details: { headSha: null } }, 409);
+    }
     return reply({ result: { alreadyDecided: false, incidentId: null } });
   }
   return reply({ result: { workItemId: "wi_1" } });
@@ -88,10 +95,11 @@ describe("the screens through the client door", () => {
   });
 
   it("approving a merge asks for Touch ID once and sends the proof with the call", async () => {
-    expect(await run({ kind: "review.merge", workItemId: "wi_1", openedFullDiff: true })).toBe(
-      "Merging",
-    );
-    const input = { workItemId: "wi_1", openedFullDiff: true };
+    expect(
+      await run({ kind: "review.merge", workItemId: "wi_1", openedFullDiff: true, headSha: HEAD }),
+    ).toBe("Merging");
+    // The commit is in the signed input, so the proof is for that commit only.
+    const input = { workItemId: "wi_1", openedFullDiff: true, headSha: HEAD };
     expect(prompts).toEqual([`n0nce\nreview.merge\n${await inputDigest(input)}\n${SUMMARY}`]);
     expect(seen.map((s) => s.body.op)).toEqual(["presence.challenge", "review.merge"]);
     expect(seen[1]?.body).toMatchObject({
@@ -99,6 +107,18 @@ describe("the screens through the client door", () => {
       presence: { challengeId: "prc_1", nonce: "n0nce", signature: "c2ln" },
     });
     expect(String(seen[1]?.body.idempotencyKey)).toMatch(/^desktop:/);
+  });
+
+  it("a push between opening the gate and approving is refused, and says so", async () => {
+    const refused = run({
+      kind: "review.merge",
+      workItemId: "wi_1",
+      openedFullDiff: true,
+      headSha: PUSHED_OVER,
+    });
+    await expect(refused).rejects.toBeInstanceOf(OpError);
+    await expect(refused).rejects.toMatchObject({ code: "conflict", message: STALE });
+    expect(seen[1]?.body.input).toMatchObject({ headSha: PUSHED_OVER });
   });
 
   it("send back goes through Touch ID too, with its note", async () => {
@@ -120,7 +140,7 @@ describe("the screens through the client door", () => {
   it("a cancelled Touch ID decides nothing", async () => {
     touchId = "cancel";
     await expect(
-      run({ kind: "review.merge", workItemId: "wi_1", openedFullDiff: true }),
+      run({ kind: "review.merge", workItemId: "wi_1", openedFullDiff: true, headSha: HEAD }),
     ).rejects.toMatchObject({ code: "cancelled" });
     expect(seen.map((s) => s.body.op)).toEqual(["presence.challenge"]);
   });

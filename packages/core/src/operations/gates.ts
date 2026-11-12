@@ -313,11 +313,24 @@ export const specRequestChanges = defineOperation({
   },
 });
 
+/**
+ * A merge approval names the commit the person saw (`headSha`) on every surface: without it the
+ * approval would be for whichever commit the gate is open for now, possibly one never shown. A
+ * desktop build that doesn't send it is older than door protocol 2 (ADR 0393), so it is told to
+ * update; the phone has always sent it (spec 60).
+ */
+export const MERGE_NEEDS_COMMIT = {
+  desktop:
+    "This version of the Software Factory app can't approve a merge: it doesn't say which commit you reviewed. Update the app (menu bar, Restart to update), then approve again.",
+  mobile: "a merge from the phone names its commit (headSha)",
+  app: "A merge approval names the commit you reviewed, and this one didn't. Reload the page, review the current commit and approve again.",
+} as const;
+
 export const reviewMerge = defineOperation({
   name: "review.merge",
   decidesPending: true,
   description:
-    "Merge a work item from its review packet (the merge gate, ADR 0041). The factory merges through the GitHub App. Records whether the full diff was opened first. With `headSha` (the phone always sends it, spec 60), the approval is for that commit only: a gate whose head has moved refuses it with `conflict`. When declared checks could not be run on the commit (ADR 0501, fourth review), it is refused with `conflict` unless `mergeWithoutChecks` is true: that decision is recorded with the packet and `factory/verify` is then posted as success, saying so. Approvers only.",
+    "Merge a work item from its review packet (the merge gate, ADR 0041). The factory merges through the GitHub App. Records whether the full diff was opened first. `headSha` (required on every surface) is the commit the person reviewed: the approval is for that commit only, and a gate whose head has moved refuses it with `conflict`. When declared checks could not be run on the commit (ADR 0501, fourth review), it is refused with `conflict` unless `mergeWithoutChecks` is true: that decision is recorded with the packet and `factory/verify` is then posted as success, saying so. Approvers only.",
   risk: "write",
   actors: ["human"],
   permission: "approver",
@@ -329,7 +342,11 @@ export const reviewMerge = defineOperation({
   input: z.object({
     workItemId,
     openedFullDiff: z.boolean(),
-    /** The commit the person approves (spec 60): the proof binds to it through the input digest. */
+    /**
+     * The commit the person approves (spec 60): the proof binds to it through the input digest.
+     * Required: optional in the schema only so the handler can refuse it in plain words per surface
+     * (an old desktop build is told to update, MERGE_NEEDS_COMMIT).
+     */
     headSha: sha.optional(),
     note: z.string().max(4_000).optional(),
     /**
@@ -340,18 +357,31 @@ export const reviewMerge = defineOperation({
   }),
   output: decisionOutput,
   async handler(input, ctx) {
-    if (ctx.origin.surface === "mobile" && !input.headSha) {
+    if (!input.headSha) {
       throw new OperationError(
         "invalid_input",
-        "a merge from the phone names its commit (headSha)",
+        ctx.origin.surface === "desktop" || ctx.origin.surface === "mobile"
+          ? MERGE_NEEDS_COMMIT[ctx.origin.surface]
+          : MERGE_NEEDS_COMMIT.app,
       );
     }
     const pa = await gateFor(ctx, input.workItemId, "merge");
     if (input.headSha && pa.status === "pending" && mergeGateHead(pa) !== input.headSha) {
+      const now = mergeGateHead(pa);
       throw new OperationError(
         "conflict",
-        "A new push withdrew this approval: the merge gate is for another commit now",
-        { headSha: mergeGateHead(pa) },
+        `A new push withdrew this approval: the merge gate is for ${now ? now.slice(0, 7) : "another commit"} now, not ${input.headSha.slice(0, 7)}. Review the new commit.`,
+        { headSha: now },
+      );
+    }
+    if (pa.status !== "pending" && pa.decision === "withdrawn") {
+      // A push withdrew the gate and the factory is verifying the new commit (verify.ts): say so,
+      // rather than "already decided: withdrawn".
+      const was = input.headSha ?? mergeGateHead(pa);
+      throw new OperationError(
+        "conflict",
+        `A new push withdrew this approval: ${was ? `${was.slice(0, 7)} is` : "the commit you reviewed is"} no longer the head. The factory verifies the new commit and asks again.`,
+        { headSha: null },
       );
     }
     let note = input.note ?? null;

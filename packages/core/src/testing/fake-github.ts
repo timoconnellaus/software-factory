@@ -478,7 +478,8 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const pull = state.pulls.find((p) => p.number === number);
       if (!pull) return { merged: false, reason: "no such pull request" };
       if (pull.state === "merged") return { merged: true, sha: state.refs[pull.base] ?? expected };
-      if (state.refs[pull.head] !== expected) return { merged: false, reason: "head moved" };
+      if (state.refs[pull.head] !== expected)
+        return { merged: false, reason: "head moved", headMoved: true };
       const merge = await commit(state, expected, `merge-${number}`);
       state.refs[pull.base] = merge;
       pull.state = "merged";

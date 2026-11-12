@@ -12,6 +12,7 @@ import {
   build,
   call,
   first,
+  gateHead,
   gateOpen,
   github,
   itemStatus,
@@ -161,7 +162,11 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     // A person merges only by deciding to merge without them, never by the plain merge.
     const plain = await call(
       "review.merge",
-      { workItemId: item.workItemId, openedFullDiff: true },
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+        headSha: await gateHead(item.workItemId),
+      },
       w.human,
     ).catch((e: unknown) => e);
     expect(String((plain as { message?: string }).message ?? JSON.stringify(plain))).toMatch(
@@ -169,7 +174,12 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     );
     await ok(
       "review.merge",
-      { workItemId: item.workItemId, openedFullDiff: true, mergeWithoutChecks: true },
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+        mergeWithoutChecks: true,
+        headSha: await gateHead(item.workItemId),
+      },
       w.human,
     );
     const decided = await first<{ sections: string }>(
@@ -237,7 +247,12 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     for (const mergeWithoutChecks of [false, true]) {
       const refused = await call(
         "review.merge",
-        { workItemId: item.workItemId, openedFullDiff: true, mergeWithoutChecks },
+        {
+          workItemId: item.workItemId,
+          openedFullDiff: true,
+          mergeWithoutChecks,
+          headSha: await gateHead(item.workItemId),
+        },
         w.human,
       ).catch((e: unknown) => e);
       expect(String((refused as { message?: string }).message ?? JSON.stringify(refused))).toMatch(
@@ -479,7 +494,15 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     await github.setCiDefault(w.repo, [
       { name: "ci", status: "in_progress", conclusion: null, appSlug: "github-actions", url: null },
     ]);
-    await ok("review.merge", { workItemId: item.workItemId, openedFullDiff: true }, w.human);
+    await ok(
+      "review.merge",
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: true,
+        headSha: await gateHead(item.workItemId),
+      },
+      w.human,
+    );
     const queued = await waitFor("brought up to date", () =>
       first<{ head_sha: string; approved_sha: string }>(
         "SELECT head_sha, approved_sha FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued' AND head_sha != approved_sha",
