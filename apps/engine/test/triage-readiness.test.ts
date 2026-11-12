@@ -4,6 +4,7 @@
 // requester (no slot, no Workflow) and runs again on a new Workflow once answered.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { deliverOutbox } from "../src/outbox.ts";
 import { pullQueuedWork } from "../src/pull.ts";
 import { all, first, itemStatus, ok, runStage, triage, waitFor, world } from "./helpers.ts";
 
@@ -95,5 +96,33 @@ describe("triage's readiness (spec 23 part B)", () => {
     await waitFor("a build job", () =>
       first("SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'build'", item.workItemId),
     );
+  });
+
+  it("fails a dead release on a later Workflow generation, freeing its slot (review of #125, 1)", async () => {
+    const w = await world();
+    const item = await queued(w, "Generation two");
+    await env.DB.prepare(
+      "UPDATE core_work_items SET status = 'running', workflow_id = ? WHERE id = ?",
+    )
+      .bind(`${item.workItemId}-r2`, item.workItemId)
+      .run();
+    const id = `obx_dead_${item.workItemId}`;
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      "INSERT INTO core_outbox (id, at, kind, payload, attempts, next_at) VALUES (?, ?, 'workflow.event', ?, 0, ?)",
+    )
+      .bind(
+        id,
+        now,
+        JSON.stringify({
+          instanceId: `${item.workItemId}-r2`,
+          type: `release-${item.workItemId}`,
+          payload: {},
+        }),
+        now,
+      )
+      .run();
+    await deliverOutbox(env, [id]);
+    await itemStatus(item.workItemId, "failed");
   });
 });
