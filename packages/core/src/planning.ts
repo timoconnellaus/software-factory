@@ -809,7 +809,8 @@ function withdrawOne(
   gate: { id: string; workflow_id: string | null },
   note: string,
 ) {
-  ctx.write(
+  ctx.writePendingStatus(
+    "close",
     ctx.db
       .updateTable("core_pending_actions")
       .set({
@@ -993,6 +994,9 @@ export async function interruptPlanning(
 
 // ---- people's edits to the plan (spec 27, ADR 0471) ----
 
+/** The most standing edits a plan holds: a person's edit beyond it is refused (spec.edit). */
+export const STANDING_EDITS_MAX = 200;
+
 /** A work item's standing plan edits: not retired by a later person's edit, not released. */
 export async function standingEdits(ctx: Pick<HandlerContext, "db">, workItemId: string) {
   const rows = await ctx.db
@@ -1003,6 +1007,8 @@ export async function standingEdits(ctx: Pick<HandlerContext, "db">, workItemId:
     .where("released_at", "is", null)
     .orderBy("created_at")
     .orderBy("id")
+    // By core_spec_edits_item_idx (0242); bounded, as a plan has few standing edits.
+    .limit(STANDING_EDITS_MAX)
     .execute();
   return rows.map((e) => ({ ...e, footprint: footprintOf(e.footprint) }));
 }

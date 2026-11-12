@@ -1,5 +1,6 @@
 // The toolbar (spec 41): under the traffic lights, the window's drag region. Back and forward, the
-// sidebar toggle, the tabs, search (⌘K) and New item. Its controls opt out of dragging.
+// sidebar toggle, the tabs, search (⌘K) and New item. Its controls opt out of dragging. Every
+// control in it is 28px high with the same 7px radius (spec 41, criterion 14).
 import { Kbd } from "@software-factory/ui/components/kbd";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,7 +16,7 @@ import {
 import { useEffect } from "react";
 import { type ItemRef, tabTitle } from "../lib/places.ts";
 import { workListsQuery } from "../lib/queries.ts";
-import { useSession } from "../lib/session.ts";
+import { useProjects, useSession } from "../lib/session.ts";
 import { shortcutLabel } from "../lib/shortcuts.ts";
 import { DRAG, NO_DRAG } from "../lib/title-bar.ts";
 import {
@@ -86,6 +87,8 @@ export function Toolbar({ onSearch }: { onSearch: () => void }) {
   const activeTab = useViewState((s) => s.activeTab);
   const sidebar = useViewState((s) => s.sidebar);
   const lookup = useItemLookup();
+  const projects = useProjects();
+  const projectName = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? null;
   const { newTab, close, activate } = useTabs();
   const canBack = useRouterState({ select: (s) => (s.location.state.__TSR_index ?? 0) > 0 });
 
@@ -137,13 +140,13 @@ export function Toolbar({ onSearch }: { onSearch: () => void }) {
               }}
               className={cn(
                 NO_DRAG,
-                "group flex h-[30px] min-w-0 max-w-[240px] flex-none cursor-default items-center gap-2 rounded-lg px-2.5 text-ink-3",
+                "group flex h-7 min-w-0 max-w-[240px] flex-none cursor-default items-center gap-2 rounded-[7px] px-2.5 text-ink-3",
                 active ? "bg-panel font-medium text-ink shadow-panel" : "hover:bg-field/60",
               )}
               data-testid="tab"
             >
               {dot && <span className={cn("size-[7px] flex-none rounded-full", dot)} />}
-              <span className="truncate">{tabTitle(t.path, lookup)}</span>
+              <span className="truncate">{tabTitle(t.path, lookup, projectName)}</span>
               {(active || tabs.length > 1) && (
                 <button
                   type="button"
@@ -218,7 +221,7 @@ function ToolButton({
       onClick={onClick}
       className={cn(
         NO_DRAG,
-        "flex size-7 flex-none items-center justify-center rounded-md text-ink-3 hover:bg-field [&_svg]:size-4",
+        "flex size-7 flex-none items-center justify-center rounded-[7px] text-ink-3 hover:bg-field [&_svg]:size-4",
       )}
     >
       {children}

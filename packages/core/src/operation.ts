@@ -12,7 +12,7 @@ import type {
 } from "@software-factory/db";
 import type { Compilable, Selectable } from "kysely";
 import type { z } from "zod";
-import type { Actor, ActorType, Origin } from "./actors.ts";
+import type { Actor, ActorType, DeviceSurface, Origin } from "./actors.ts";
 import type { FloorParse, RiskClass } from "./policy/gate.ts";
 import type { ProjectPolicy } from "./policy/project-policy.ts";
 import type { FactoryServices } from "./services.ts";
@@ -51,6 +51,8 @@ export type OutboxMessage =
    * host's held steer call answers at once.
    */
   | { kind: "run.steered"; payload: { workItemId: string } }
+  /** A device was revoked (ADR 0541): sf-engine closes its live socket in the person's ClientHub. */
+  | { kind: "device.revoked"; payload: { userId: string; deviceId: string } }
   /** A notification for a person (web push in spec 15). `url` is the deep link. */
   | {
       kind: "notify";
@@ -116,6 +118,9 @@ export interface Change {
   after?: Record<string, unknown> | null;
 }
 
+/** Why a handler writes a pending action's status (`HandlerContext.writePendingStatus`). */
+export type PendingStatusWrite = "decide" | "close" | "apply";
+
 export interface HandlerContext {
   /** Typed reads. Writes go through `write()`: they commit in one batch after the handler. */
   db: Db;
@@ -131,12 +136,22 @@ export interface HandlerContext {
   /** Set when this call is the approved re-run of a pending action. */
   approval?: PendingActionRow;
   /**
-   * The desktop sent a valid presence proof for exactly this call (ADR 0391). Lets a
-   * `desktopDecidable` operation still ask for one for some inputs (spec 26).
+   * The device sent a valid presence proof for exactly this call (ADR 0391, 0541). Lets a
+   * `desktopDecidable` or `mobileDecidable` operation still ask for one for some inputs (spec 26).
    */
   presence?: boolean;
-  /** Queue a write. Writes, guards, the audit row and outbox rows commit in one D1 batch. */
+  /**
+   * Queue a write. Writes, guards, the audit row and outbox rows commit in one D1 batch. It refuses
+   * a write to a pending action's `status`: that goes through `writePendingStatus`.
+   */
   write(statement: Compilable | D1PreparedStatement): void;
+  /**
+   * Queue the one kind of write `write` refuses: a pending action's `status` (ADR 0541 amendment,
+   * 2026-11-12, third review). `decide` is `decidePending`'s, and only an operation that declares
+   * `decidesPending` may make it; `close` withdraws or cancels one without deciding it (a take-back,
+   * a moved head, a cancelled item); `apply` marks an approved one carried out.
+   */
+  writePendingStatus(how: PendingStatusWrite, statement: Compilable | D1PreparedStatement): void;
   /** Abort the whole batch unless the previous write changed at least one row (ADR 0050). */
   guardChanged(name: string): void;
   /** Abort the whole batch unless `query` returns a row when the batch runs. */
@@ -195,6 +210,14 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    */
   presenceDecidable?: true;
   /**
+   * The device surfaces whose presence proof the operation takes (ADR 0541). Defaults to both for
+   * a `presenceDecidable` gate decision, and to none otherwise. Set on its own, it marks an
+   * operation that isn't a gate decision but takes a proof on those devices: adding a phone from
+   * the desktop (`mobile.pairOffer`), renewing a phone's token (`mobile.renew`), turning a device's
+   * approvals back on (`device.update`).
+   */
+  presenceSurfaces?: readonly DeviceSurface[];
+  /**
    * A person-only operation (browser-only) that a desktop device may also run *without* a presence
    * proof. The CLI and MCP surfaces stay refused, so an agent holding a token can't; gates keep their
    * presence proof. It covers (spec 26; ADR 0042, 0391 and 0470 as amended):
@@ -207,6 +230,23 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    *   the planner, which changes nothing it has decided.
    */
   desktopDecidable?: true;
+  /**
+   * A person-only operation the phone may run with one tap, without a fingerprint (ADR 0541
+   * decision 5, the owner's rule "ordinary answers are one tap"): everything `desktopDecidable`,
+   * and these, which only ever hold work back or answer: `question.answer` (security, privacy and
+   * irreversible questions still ask for the fingerprint, through `ctx.presence`),
+   * `question.acceptDefaults`, `review.sendBack`, `spec.requestChanges`, and `approval.decide`
+   * when rejecting. A function decides per input. `deviceDecidable()` combines the two.
+   */
+  mobileDecidable?: true | ((input: z.output<I>) => boolean);
+  /**
+   * The operation decides a pending action (approves, rejects or sends one back), through
+   * `decidePending` (gates.ts), which checks who may decide what: the phone may not decide a config
+   * change or anything self-modify (ADR 0541). `decidePending` refuses an operation that doesn't
+   * declare this, and a test runs every operation that does from the phone. Withdrawing,
+   * cancelling and applying aren't deciding (`HandlerContext.writePendingStatus`).
+   */
+  decidesPending?: true;
   /**
    * The gate always asks a person, whatever the autonomy policy or overrides say (a workflow's gate
    * step, ADR 0371). `deny` still refuses.
