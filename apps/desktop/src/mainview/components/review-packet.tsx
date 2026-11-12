@@ -432,20 +432,24 @@ function TestsIntact({
         {currentHead && currentHead !== packet.headSha && (
           <div className="flex items-start gap-2 text-xs" data-testid="tests-intact-stale">
             <StatusDot status="waiting" className="mt-1" />
-            This was checked on <span className="font-mono">{sha}</span>, but the branch is now at{" "}
-            <span className="font-mono">{currentHead.slice(0, 7)}</span>, which hasn't been checked
-            yet.
+            <span>
+              This was checked on <span className="font-mono">{sha}</span>, but the branch is now at{" "}
+              <span className="font-mono">{currentHead.slice(0, 7)}</span>, which hasn't been
+              checked yet.
+            </span>
           </div>
         )}
         {!t ? (
           <Empty>Not checked: this packet is from before the guard.</Empty>
         ) : t.intact ? (
           <div className="grid gap-1" data-testid="tests-intact">
-            <div className="flex items-center gap-2">
-              <StatusDot status="done" />
-              No findings on <span className="font-mono">{sha}</span>: no test deleted, removed,
-              skipped or commented out, no suppression added, no threshold lowered, no gate file
-              changed.
+            <div className="flex items-start gap-2">
+              <StatusDot status="done" className="mt-1.5" />
+              <span>
+                No findings on <span className="font-mono">{sha}</span>: no test deleted, removed,
+                skipped or commented out, no suppression added, no threshold lowered, no gate file
+                changed.
+              </span>
             </div>
             <div className="text-muted-foreground text-xs">
               This checks the diff's shape only. It can't see a test weakened from inside, such as
