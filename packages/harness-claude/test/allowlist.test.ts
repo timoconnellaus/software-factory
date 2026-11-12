@@ -8,6 +8,7 @@ import { stageAllow } from "../src/settings.ts";
 /** Commands that can execute another program through an argument, a flag or a script. */
 const EXEC_CAPABLE = [
   "find",
+  "rg",
   "xargs",
   "sort",
   "env",
@@ -51,6 +52,25 @@ const bashCommands = (rules: string[]) =>
   });
 
 describe("read-only stage allowlists", () => {
+  it("leaves ripgrep out (`rg --pre <cmd>` and `--hostname-bin <cmd>` run programs)", () => {
+    for (const stage of ["triage", "spec", "planning", "verify", "build"] as const) {
+      expect(bashCommands(stageAllow(stage, "/w"))).not.toContain("rg");
+    }
+  });
+
+  it("git reads can't page through a program, and no git rule can take -c or --exec-path", async () => {
+    const { harnessEnv } = await import("../src/settings.ts");
+    const env = harnessEnv("/r");
+    expect(env.GIT_PAGER).toBe("cat");
+    expect(env.PAGER).toBe("cat");
+    for (const stage of ["triage", "spec", "planning"] as const) {
+      for (const c of bashCommands(stageAllow(stage, "/w")).filter((c) => c.startsWith("git"))) {
+        // `-c`/`--exec-path` go before the subcommand, so a `git <subcommand>` prefix can't match them.
+        expect(c).toMatch(/^git [a-z-]+( [a-z-]+)*$/);
+      }
+    }
+  });
+
   for (const stage of ["triage", "spec", "planning"] as const) {
     it(`${stage}: no allowlisted command can start another program`, () => {
       const commands = bashCommands(stageAllow(stage, "/w"));

@@ -147,3 +147,13 @@ With that, `runner-orca` can go back to `agent launch`. The post-launch check st
 > execute (for example the desktop app's `bun`) can be read from inside the sandbox. Secrets like
 > that need an access list limited to the signed app (or the data-protection keychain with an
 > access group), or the runner on that Mac needs `isolation: "container"` (ADR 0430) or Sprites.
+>
+> Same day, after review: `rg` left too (`--pre <cmd>`, `--hostname-bin <cmd>`). Git reads get
+> `GIT_PAGER=cat` and `PAGER=cat`, so a forced pager is never a program. `-c`/`--exec-path` sit
+> before the subcommand, so a `git <subcommand>` rule can't match them. Diff and textconv drivers
+> come only from config: the run's own global config defines none, the system config is off, and
+> the checkout's config is the owner's (denied for writing). Composition was checked against Claude
+> Code 2.1.322 by `local/runner-host/e2e/probe-permissions.ts`, a triage run in `dontAsk`. It refuses
+> `$()`, backticks, `| sh`, `;`/`&&`/`||` chains into `sh`/`python3`/`env`/`node`, `<()`,
+> redirection, an env-var prefix and `find -exec`. Claude Code checks each part of a chain, and
+> allows a few read-only commands of its own (`id`) without a rule.

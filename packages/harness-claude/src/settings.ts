@@ -159,7 +159,7 @@ const READ_TOOLS = ["Read", "Glob", "Grep", "LS", "TodoWrite", "Task", "WebSearc
 /**
  * Shell commands the read-only stages (triage, spec, planning) may run without a prompt. None of them
  * may start another program: `find -exec`/`-execdir`/`-ok`, `xargs`, `sort --compress-program`,
- * `git grep -O` (open in a pager), `env`, `nice`, `time`, `awk system()`, `sed e`, `tar
+ * `git grep -O` (open in a pager), `rg --pre`/`--hostname-bin`, `env`, `nice`, `time`, `awk system()`, `sed e`, `tar
  * --to-command` all can, so they are left out (the Glob and Grep tools cover finding and searching),
  * and `test/allowlist.test.ts` keeps them out. This is a convenience list, not the
  * boundary: verify and build run the project's toolchain (`node`, `pnpm`, …), which runs anything,
@@ -174,7 +174,6 @@ const SHELL_READ = [
   "tail",
   "wc",
   "grep",
-  "rg",
   "uniq",
   "diff",
   "pwd",
@@ -349,6 +348,9 @@ export function harnessEnv(runDir: string, runTmp = `${runDir}/tmp`): Record<str
     GIT_ASKPASS: "",
     SSH_ASKPASS: "",
     GIT_SSH_COMMAND: "false",
+    // No pager can be a program: git's `-p`/`--paginate` and anything honouring PAGER get `cat`.
+    GIT_PAGER: "cat",
+    PAGER: "cat",
     SSH_AUTH_SOCK: "",
     // Cloud CLIs
     AWS_ACCESS_KEY_ID: "",
