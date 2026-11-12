@@ -105,3 +105,5 @@ mockups. The three planning screens show the ways a person steers the planner:
 Docked, the Plan tab shows questions and the plan with chat collapsed. **Focus** (F, Esc to leave)
 gives planning the whole window: the org rail, sidebar and nested list go, the toolbar becomes the
 session bar, and the status bar stays.
+
+The plan is a plain document in its pane, not a page placed on a canvas. Only the Canvas tab is a canvas.
