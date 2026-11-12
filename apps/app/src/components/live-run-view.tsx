@@ -1,7 +1,8 @@
 // The Live tab's view (spec 31, ADR 0400; mockup live-run): a run as it goes. Transcript (what the
 // agent says, the tools it calls, status changes, the messages people sent) and Terminal
 // (scrolled-off lines, then the latest screen). The runner's owner gets a message box; everyone
-// else watches read-only. Pure presentation: `live-run.tsx` polls and sends.
+// else watches read-only. Pure presentation: `live-run.tsx` polls and sends. While the run is
+// active on a runner that shares its terminal, Web terminal is the real pane (spec 35, ADR 0440).
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Input } from "@software-factory/ui/components/input";
@@ -13,8 +14,9 @@ import { toast } from "sonner";
 import { capitalise, clock, errorMessage } from "#/lib/format";
 import { latestStatus, type TranscriptItem, terminalText, transcriptItems } from "#/lib/live";
 import type { LiveView } from "#/lib/ops";
+import { WebTerminal } from "./web-terminal";
 
-export type View = "transcript" | "terminal";
+export type View = "transcript" | "terminal" | "web";
 
 /** The live view itself, from a `run.live` answer (rendered on its own in tests). */
 export function LiveRunView({
@@ -22,9 +24,12 @@ export function LiveRunView({
   me,
   onSteer,
   initialView = "transcript",
+  workItemId,
 }: {
   data: LiveView;
   me: string;
+  /** For the web terminal's socket; without it the view isn't offered. */
+  workItemId?: string;
   /** Sends a message into the run (the runner's owner only; the operation checks). */
   onSteer: (runId: string, text: string) => Promise<void>;
   initialView?: View;
@@ -35,6 +40,9 @@ export function LiveRunView({
     return <Card className="px-5 py-6 text-muted-foreground text-sm">No runs yet.</Card>;
   }
   const status = latestStatus(events);
+  // The real pane, while there is one to show (ADR 0440).
+  const web = !!workItemId && run.active && !!data.terminal?.allowed;
+  const shown: View = view === "web" && !web ? "terminal" : view;
   return (
     <Card className="gap-3 px-5 py-4" data-testid="live-run">
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -62,7 +70,7 @@ export function LiveRunView({
           type="single"
           variant="outline"
           size="sm"
-          value={view}
+          value={shown}
           onValueChange={(v) => v && setView(v as View)}
           aria-label="Live view"
         >
@@ -72,10 +80,25 @@ export function LiveRunView({
           <ToggleGroupItem value="terminal" data-testid="live-terminal-tab">
             Terminal
           </ToggleGroupItem>
+          {web && (
+            <ToggleGroupItem
+              value="web"
+              data-testid="live-web-terminal-tab"
+              title={
+                data.terminal.mode === "type"
+                  ? "The live terminal: you can type"
+                  : "The live terminal, read-only"
+              }
+            >
+              Web terminal
+            </ToggleGroupItem>
+          )}
         </ToggleGroup>
       </div>
-      {view === "transcript" ? (
+      {shown === "transcript" ? (
         <Transcript items={transcriptItems(events, steers)} me={me} truncated={data.truncated} />
+      ) : shown === "web" && workItemId ? (
+        <WebTerminal workItemId={workItemId} runId={run.id} />
       ) : (
         <Terminal text={terminalText(events)} />
       )}
