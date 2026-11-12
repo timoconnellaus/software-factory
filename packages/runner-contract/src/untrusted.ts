@@ -49,3 +49,19 @@ export function untrustedData(label: string, content: string, max = DEFAULT_MAX)
     `</${UNTRUSTED_TAG}>`,
   ].join("\n");
 }
+
+/** Most characters of one steer (ADR 0400). */
+export const STEER_MAX = 2_000;
+
+/**
+ * A person's steer, ready to type into a live session (ADR 0400): sanitised like any
+ * person-supplied text, on one line (a newline typed into a TUI would submit early), capped at
+ * STEER_MAX. Not wrapped in a block: it is the runner owner's own instruction.
+ */
+export function steerText(text: string): string {
+  const one = sanitiseUntrusted(text, Number.POSITIVE_INFINITY)
+    .replace(/[\n\t]+/g, " ")
+    .replace(/ {2,}/g, " ")
+    .trim();
+  return one.length > STEER_MAX ? one.slice(0, STEER_MAX) : one;
+}

@@ -365,6 +365,8 @@ export function createContainerRunner(
           statusHook: { node: IMAGE_NODE },
           claudeBin: options.claudeBin ?? "claude",
           isolation: "container",
+          // The agent runs on the image's Linux, whatever the host is.
+          platform: "linux",
           ...(config.identity ? { identity: config.identity } : {}),
         });
         // The two files the container writes into the (read-only) run dir must exist to be mounted.

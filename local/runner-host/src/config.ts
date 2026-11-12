@@ -1,6 +1,7 @@
 // The runner's configuration and its key (ADR 0016). The key is the runner's only secret: it signs
 // every channel call. It lives in a 0600 file in a 0700 directory, and the harness's settings deny
-// reading it. Paths follow XDG on every platform so the launchd service and a shell agree.
+// reading it. Paths follow XDG on every platform so the service (launchd or systemd) and a shell
+// agree; only the log moves to ~/Library/Logs on macOS.
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -93,16 +94,22 @@ export interface Paths {
    * credential env files (ADR 0430). Under the data dir: Docker Desktop shares the home dir.
    */
   containersDir: string;
+  /**
+   * The service's log (`runner.log`): `~/Library/Logs/software-factory` on macOS, else
+   * `$XDG_STATE_HOME/software-factory/logs` (ADR 0420), under the state root the harness denies.
+   */
   logDir: string;
 }
 
-export function paths(env: NodeJS.ProcessEnv = process.env): Paths {
+export function paths(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Paths {
   const home = env.HOME ?? homedir();
   const configDir = join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "software-factory");
-  // The service gets SF_RUNNER_STATE_DIR from its plist, so the `sh` wrapper and Node agree on it.
-  const stateDir =
-    env.SF_RUNNER_STATE_DIR ??
-    join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "software-factory", "runner");
+  const stateRoot = join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "software-factory");
+  // The service gets SF_RUNNER_STATE_DIR from its definition, so the `sh` wrapper and Node agree.
+  const stateDir = env.SF_RUNNER_STATE_DIR ?? join(stateRoot, "runner");
   const dataDir = join(
     env.XDG_DATA_HOME ?? join(home, ".local", "share"),
     "software-factory",
@@ -117,7 +124,10 @@ export function paths(env: NodeJS.ProcessEnv = process.env): Paths {
     worktreesDir: join(dataDir, "worktrees"),
     attachmentsDir: join(dataDir, "attachments"),
     containersDir: join(dataDir, "containers"),
-    logDir: join(home, "Library", "Logs", "software-factory"),
+    logDir:
+      platform === "darwin"
+        ? join(home, "Library", "Logs", "software-factory")
+        : join(stateRoot, "logs"),
   };
 }
 

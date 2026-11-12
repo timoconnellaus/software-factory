@@ -20,6 +20,9 @@ importers:
 
   apps/app:
     dependencies:
+      '@software-factory/client':
+        specifier: workspace:*
+        version: link:../../packages/client
       '@software-factory/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -105,6 +108,15 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@software-factory/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@software-factory/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@software-factory/timeline':
+        specifier: workspace:*
+        version: link:../../packages/timeline
       '@software-factory/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -114,16 +126,28 @@ importers:
       '@tanstack/react-router':
         specifier: 1.170.46
         version: 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      lucide-react:
+        specifier: 1.67.0
+        version: 1.67.0(@types/react@19.3.0)(react@19.3.1)
       react:
         specifier: 19.3.1
         version: 19.3.1
       react-dom:
         specifier: 19.3.1
         version: 19.3.1(react@19.3.1)
+      react-markdown:
+        specifier: 10.1.0
+        version: 10.1.0(@types/react@19.3.0)(react@19.3.1)
       sonner:
         specifier: 2.0.8
         version: 2.0.8(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20261104.1
+        version: 5.20261104.1
       '@software-factory/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -263,6 +287,34 @@ importers:
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: 5.1.0
+        version: 5.1.0(@types/node@24.19.2)(vite@8.3.7(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0))
+
+  packages/client:
+    dependencies:
+      '@software-factory/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: 1.5.1
+        version: 1.5.1(@cloudflare/workers-types@5.20261104.1)(@types/node@24.19.2)(vitest@5.1.0(@types/node@24.19.2)(vite@8.3.7(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)))
+      '@cloudflare/workers-types':
+        specifier: 5.20261104.1
+        version: 5.20261104.1
+      '@software-factory/config':
+        specifier: workspace:*
+        version: link:../config
+      '@software-factory/ui':
+        specifier: workspace:*
+        version: link:../ui
       typescript:
         specifier: 6.0.3
         version: 6.0.3

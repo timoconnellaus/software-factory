@@ -1,5 +1,16 @@
 // Work item detail (spec 13, mockups work-item and planning): stage steps, then Timeline, Planning,
-// Runs and Review packet tabs, with acceptance criteria and details beside them.
+// Live (spec 31: the run as it goes, and steering), Runs and Review packet tabs, with acceptance
+// criteria and details beside them.
+
+import {
+  ago,
+  capitalise,
+  duration,
+  errorMessage,
+  STAGE_LABEL,
+} from "@software-factory/client/format";
+import { parsePacket } from "@software-factory/client/packet";
+import { agentTime, stageSteps, statusOf, yourTime } from "@software-factory/client/work-item";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import {
@@ -27,16 +38,16 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Attachments } from "#/components/attachments";
+import { LiveRun } from "#/components/live-run";
 import { OptionSelect } from "#/components/option-select";
 import { Planning } from "#/components/planning";
 import { ReviewPacket } from "#/components/review-packet";
 import { Timeline } from "#/components/timeline";
-import { ago, capitalise, duration, errorMessage, STAGE_LABEL } from "#/lib/format";
 import { op } from "#/lib/op";
 import { OpError, type WorkItemDetail } from "#/lib/ops";
-import { parsePacket } from "#/lib/packet";
 import {
   attachmentsQuery,
+  liveQuery,
   planningQuery,
   runnersQuery,
   timelineQuery,
@@ -44,16 +55,16 @@ import {
   workItemQuery,
 } from "#/lib/queries";
 import { useProjects, useSession } from "#/lib/session";
-import { agentTime, stageSteps, statusOf, yourTime } from "#/lib/work-item";
 
-const TABS = ["timeline", "planning", "runs", "review"] as const;
+const TABS = ["timeline", "planning", "live", "runs", "review"] as const;
 type Tab = (typeof TABS)[number];
 
 export const Route = createFileRoute("/_app/work/$id/")({
   validateSearch: (s: Record<string, unknown>): { tab?: Tab } =>
     TABS.includes(s.tab as Tab) ? { tab: s.tab as Tab } : {},
   // Everything the page renders, in one request: the item (with its spec, questions, gates, runs
-  // and packet), its timeline, the runners (for runner names), and the planning view (spec 20).
+  // and packet), its timeline, the runners (for runner names), the planning view (spec 20) and the
+  // latest run's live view (spec 31).
   loader: ({ context: { queryClient }, params }) =>
     Promise.all([
       queryClient.ensureQueryData(workItemQuery(params.id)),
@@ -61,6 +72,7 @@ export const Route = createFileRoute("/_app/work/$id/")({
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
       queryClient.ensureQueryData(attachmentsQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(planningQuery(params.id)).catch(() => null),
+      queryClient.ensureQueryData(liveQuery(queryClient, params.id)).catch(() => null),
     ]),
   pendingComponent: () => (
     <Page>
@@ -103,13 +115,16 @@ function WorkItemPage() {
   const hasQuestions =
     d.questions.some((q) => q.status === "open") ||
     d.gates.some((g) => g.kind === "spec" && g.status === "pending");
+  const running = d.runs.some((r) => !r.endedAt);
   const current: Tab =
     tab ??
     (d.reviewPacket && d.item.stage === "merge"
       ? "review"
       : hasQuestions
         ? "planning"
-        : "timeline");
+        : running
+          ? "live"
+          : "timeline");
 
   return (
     <Page>
@@ -128,6 +143,10 @@ function WorkItemPage() {
               Planning
               {hasQuestions && <StatusDot status="waiting" className="ml-1" />}
             </TabsTrigger>
+            <TabsTrigger value="live" data-testid="live-tab">
+              Live
+              {running && <StatusDot status="running" className="ml-1" />}
+            </TabsTrigger>
             <TabsTrigger value="runs">Runs</TabsTrigger>
             <TabsTrigger value="review">Review packet</TabsTrigger>
           </TabsList>
@@ -143,6 +162,7 @@ function WorkItemPage() {
           <TabsContent value="planning">
             <Planning detail={d} />
           </TabsContent>
+          <TabsContent value="live">{current === "live" && <LiveRun detail={d} />}</TabsContent>
           <TabsContent value="runs">
             <Runs detail={d} />
           </TabsContent>

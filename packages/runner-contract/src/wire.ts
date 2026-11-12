@@ -14,6 +14,9 @@ import {
 } from "./types.ts";
 
 const iso = z.iso.datetime({ offset: true });
+
+/** Most characters of one `message` event's text; the runner clips longer ones. */
+export const MESSAGE_MAX = 8_000;
 const sha = z.string().regex(/^[0-9a-f]{7,64}$/);
 const fencingToken = z.number().int().nonnegative();
 const id = z.string().min(1).max(100);
@@ -158,6 +161,18 @@ export const runnerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("log"),
     stream: z.enum(["terminal", "stdout", "stderr"]),
     text: z.string().max(64_000),
+    /** The visible screen rather than lines that scrolled off (ADR 0400). Optional, additive. */
+    screen: z.boolean().optional(),
+  }),
+  /**
+   * What the agent said or was told, from the harness's transcript (ADR 0400). Additive: only a
+   * runner at the engine's deployed commit sends it.
+   */
+  z.object({
+    ...eventBase,
+    type: z.literal("message"),
+    role: z.enum(["assistant", "user"]),
+    text: z.string().max(MESSAGE_MAX),
   }),
   z.object({
     ...eventBase,
@@ -366,6 +381,20 @@ export const attachmentResponseSchema = z.object({
   /** The file's bytes, base64. */
   base64: z.string(),
 });
+
+/**
+ * The held steer call (ADR 0400): the run's queued messages, at once if there are any, else when one
+ * arrives or after about `waitMs` (at most STEER_WAIT_MAX_MS) with none.
+ */
+export const steersRequestSchema = z.object({
+  fencingToken,
+  waitMs: z.number().int().min(0).max(60_000).optional(),
+});
+export const steersResponseSchema = z.object({
+  steers: z.array(z.object({ id: z.string(), text: z.string(), at: iso })),
+});
+export type SteersRequest = z.infer<typeof steersRequestSchema>;
+export type SteersResponse = z.infer<typeof steersResponseSchema>;
 
 /** Every non-2xx answer from the channel carries this body. */
 export const channelErrorSchema = z.object({

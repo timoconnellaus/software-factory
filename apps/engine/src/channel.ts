@@ -23,6 +23,8 @@ import {
   parseJobPath,
   planningCallRequestSchema,
   runnerChannelKey,
+  STEER_WAIT_MAX_MS,
+  steersRequestSchema,
 } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
 import { planningHub } from "./planning-hub.ts";
@@ -97,6 +99,7 @@ async function route(env: Env, runner: string, path: string, body: unknown): Pro
       return attachmentReply(env, runner, job.call, input as Record<string, unknown>);
     }
     if (job.call === "planning") return planningReply(env, runner, job.jobId, record);
+    if (job.call === "steer") return steerReply(env, runner, job.jobId, record);
     op = {
       token: "run.issueToken",
       events: "run.reportEvents",
@@ -213,6 +216,47 @@ async function planningReply(
     }
     const recheck = body.recheckAt ? Date.parse(body.recheckAt) - Date.now() : left;
     const changed = await hub.waitForChange(seen, Math.max(0, Math.min(left, recheck)));
+    if (changed) seen = await hub.current();
+  }
+}
+
+/**
+ * The runner host's held steer call (spec 31, ADR 0400): `run.takeSteers` as the runner, and while
+ * nothing is queued the call waits on the work item's hub, which `run.steer`'s outbox message
+ * wakes, until a steer comes or the wait's time is up. Taking steers marks them delivered.
+ */
+async function steerReply(
+  env: Env,
+  runner: string,
+  jobId: string,
+  record: Record<string, unknown>,
+): Promise<ChannelReply> {
+  const parsed = steersRequestSchema.safeParse(record);
+  if (!parsed.success) {
+    return {
+      status: 400,
+      body: { error: parsed.error.message, code: "invalid_input", details: parsed.error.issues },
+    };
+  }
+  const { fencingToken } = parsed.data;
+  const timeout = Math.min(parsed.data.waitMs ?? STEER_WAIT_MAX_MS, STEER_WAIT_MAX_MS);
+  const deadline = Date.now() + timeout;
+  const actor: Actor = { type: "runner", id: runner };
+  let hub: ReturnType<typeof planningHub> | null = null;
+  let seen = 0;
+  for (;;) {
+    const reply = await invokeReply(env, "run.takeSteers", { jobId, fencingToken }, actor);
+    if (reply.status && reply.status !== 200) return reply;
+    const body = reply.body as { workItemId: string; steers: unknown[] };
+    const left = deadline - Date.now();
+    if (body.steers.length > 0 || left <= 0) return { body: { steers: body.steers } };
+    if (!hub) {
+      hub = planningHub(env, body.workItemId);
+      // A steer sent between the read above and taking the sequence is seen by one more read.
+      seen = await hub.current();
+      continue;
+    }
+    const changed = await hub.waitForChange(seen, left);
     if (changed) seen = await hub.current();
   }
 }

@@ -1,6 +1,8 @@
 // A project's factory config (ADR 0370, spec 09 M1): a form over the current config version.
 // Edits are batched; the save bar shows the server's impact summary (config.preview) before Save.
 // A save that loosens the config waits for an approver; History rolls back to any version.
+
+import { ago } from "@software-factory/client/format";
 import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
@@ -38,7 +40,6 @@ import {
   useConfigDraft,
 } from "#/components/config-editor";
 import { OptionSelect } from "#/components/option-select";
-import { ago } from "#/lib/format";
 import { op, submitKey } from "#/lib/op";
 import { OpError } from "#/lib/ops";
 import { adjudicatorQuery, configQuery, trialsQuery } from "#/lib/queries";

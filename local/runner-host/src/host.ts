@@ -1,7 +1,8 @@
 // The runner host daemon (ADR 0014, 0016, 0100). Outbound only: every ~20 s it heartbeats (manifest,
 // capacity, the jobs it holds with their fencing tokens, which renews their leases), applies the
-// commands that come back (cancel, drain, steer), and claims jobs while it has room. Each job runs
-// concurrently through `runJob`. Nothing here knows which runner adapter it drives.
+// commands that come back (cancel, drain), and claims jobs while it has room. Each job runs
+// concurrently through `runJob`, which also takes the dashboard's steers for its session on a held
+// channel call (ADR 0400). Nothing here knows which runner adapter it drives.
 import {
   ChannelCallError,
   type ControlPlaneClient,
@@ -47,7 +48,7 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
   selfUpdate?: SelfUpdate;
   /**
    * Called once the host has stopped after an update (no jobs running), so the process exits
-   * non-zero and launchd starts the new code.
+   * non-zero and the service (launchd or systemd) starts the new code.
    */
   onUpdated?: () => void;
 }
@@ -191,7 +192,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     this.schedule(this.failures ? Math.min(every * 2 ** (this.failures - 1), 300_000) : every);
   }
 
-  /** Updated and idle: stop the loop and let the process exit for launchd to restart it. */
+  /** Updated and idle: stop the loop and let the process exit for the service to restart it. */
   private async stopForUpdate() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
