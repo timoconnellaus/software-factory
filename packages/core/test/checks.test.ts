@@ -3,11 +3,13 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
   assemblePacket,
+  checkLines,
   declaredChecks,
   executedChecks,
   FOREMAN,
   isStaticCheck,
   notRunLines,
+  notRunTitle,
   parseFloor,
   parseProjectPolicy,
   policyImpact,
@@ -205,6 +207,29 @@ describe("executed checks and proof (pure)", () => {
     expect(proof.map((p) => [p.proven, p.unproven])).toEqual([
       [false, ["tests"]],
       [false, ["e2e"]],
+    ]);
+  });
+
+  it("says a check stopped by a runner limit failed on that limit, and a person decides", () => {
+    const reason = "failed: the check ran out of memory (limit 4 GB)";
+    const executed = executedChecks(
+      SHA,
+      [{ name: "tests", run: "pnpm tests" }],
+      [{ ...ran("tests", 137), notRun: reason }],
+    );
+    // Never a pass, never a verdict reason a fix round chases: a person decides.
+    expect(executed.notRun).toEqual([{ name: "tests", reason }]);
+    expect(executed.reasons).toEqual([]);
+    expect(notRunLines(executed.notRun)).toEqual([
+      expect.stringMatching(
+        /^these checks were stopped by a runner limit, not by the code under check: the check ran out of memory \(limit 4 GB\) \(tests\)\. No fix round was spent on it: a person decides/,
+      ),
+    ]);
+    expect(notRunTitle(executed.notRun)).toBe(
+      "1 declared check hit a runner limit: the check ran out of memory (limit 4 GB)",
+    );
+    expect(checkLines(executed)).toEqual([
+      "tests: failed: the check ran out of memory (limit 4 GB)",
     ]);
   });
 

@@ -41,7 +41,7 @@ import {
   spawnCheck,
   toolchainPaths,
 } from "../src/check-sandbox.ts";
-import { checkLoop, type Exec, GuardTripped, runChecks } from "../src/checks.ts";
+import { checkLoop, duBytes, type Exec, GuardTripped, runChecks } from "../src/checks.ts";
 import { paths } from "../src/config.ts";
 import { runJob } from "../src/job.ts";
 import { controlPlane, fakeAdapter, fakeCloud, git, job, scratchRepo } from "./helpers.ts";
@@ -1088,6 +1088,75 @@ describe("the host's checks (ADR 0501)", () => {
     expect(out.final[1]).toMatchObject({ name: "tests", exitCode: null });
     expect(out.final[1]?.notRun).toMatch(/12\.0 GB, over this runner's bound of 10\.0 GB/);
     expect(await readdir(root)).toEqual([]);
+  });
+
+  it("stops a check whose dir grows past the disk bound while it runs, and reports the limit", async () => {
+    const root = await scratch();
+    let killed = false;
+    const out = await checkLoop({
+      ...loopBase(root),
+      checks: { commands: [{ name: "tests", run: "fill", timeoutMs: 60_000 }], fixRounds: 2 },
+      maxTreeBytes: 10 * 1024 ** 3,
+      treeWatchMs: 5,
+      // The check's own dir, measured while it runs: over the bound on the second look.
+      treeBytes: (() => {
+        let n = 0;
+        return async (dir: string) => {
+          expect(dir).toBe(join(root, "r0-0"));
+          return ++n > 1 ? 11 * 1024 ** 3 : 1024;
+        };
+      })(),
+      exec: () => (_c, signal) =>
+        new Promise((resolve) => {
+          signal.addEventListener("abort", () => {
+            killed = true;
+            resolve({ exitCode: null, timedOut: false, output: "writing…" });
+          });
+        }),
+      commit: async () => SHA,
+      continueSession: async () => {
+        throw new Error("a runner limit must never go to a fix round");
+      },
+    });
+    expect(killed).toBe(true);
+    expect(out.rounds).toBe(0);
+    expect(out.final[0]?.notRun).toBe(
+      "failed: the check ran out of disk (limit 10.0 GB, runner.json checks.maxTreeGb): its files reached 11.0 GB while it ran",
+    );
+    expect(out.final[0]?.logTail).toMatch(/^failed: the check ran out of disk[^\n]*\nwriting…$/);
+    expect(out.notes.join("\n")).toMatch(/hit a runner limit, which no fix round can win/);
+  });
+
+  it("sends a check stopped by a container limit to a person with the limit named, not to a fix round", async () => {
+    const root = await scratch();
+    const out = await checkLoop({
+      ...loopBase(root),
+      checks: { commands: [{ name: "tests", run: "pnpm test", timeoutMs: 1_000 }], fixRounds: 2 },
+      exec: () => async () => ({
+        exitCode: 137,
+        timedOut: false,
+        output: "Killed",
+        isolation: "container",
+        limit: "the check ran out of memory (limit 4 GB)",
+      }),
+      commit: async () => SHA,
+      continueSession: async () => {
+        throw new Error("a runner limit must never go to a fix round");
+      },
+    });
+    expect(out.rounds).toBe(0);
+    expect(out.final[0]).toMatchObject({
+      exitCode: 137,
+      notRun: "failed: the check ran out of memory (limit 4 GB)",
+    });
+    expect(checkPassed(out.final[0] as ExecutedCheck)).toBe(false);
+    expect(out.notes[0]).toContain("tests failed: the check ran out of memory (limit 4 GB)");
+  });
+
+  it("measures a tree with du", async () => {
+    const root = await scratch();
+    await writeFile(join(root, "f"), "x".repeat(10_000));
+    expect(await duBytes(root)).toBeGreaterThan(8_000);
   });
 
   it("stops on a tripped guard", async () => {

@@ -82,6 +82,18 @@ export const NOT_RUN_NO_ISOLATION = "not run: no isolated exec on this runner";
 /** The `notRun` reason for a runner with no isolated exec. */
 export const NO_ISOLATION = NOT_RUN_NO_ISOLATION.slice("not run: ".length);
 
+/**
+ * How a check stopped by a runner limit is reported (its memory, processes, /tmp or disk): in
+ * `notRun`, so it is never a pass and never goes to a fix round, with this prefix so the gate says
+ * "failed: the check ran out of memory (limit 4 GB)" rather than "not run". Additive: an older
+ * reader shows it as a check not run, which is also never a pass.
+ */
+export const RUNNER_LIMIT = "failed: ";
+
+/** Whether a `notRun` reason is a runner limit the check hit (`RUNNER_LIMIT`), not a check not run. */
+export const hitRunnerLimit = (notRun: string | null | undefined): boolean =>
+  !!notRun?.startsWith(RUNNER_LIMIT);
+
 /** Token shapes a log tail may carry (a test that dumps its env), each with what replaces it. */
 const SECRET_SHAPES: readonly [RegExp, string][] = [
   [/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, "[redacted]"],

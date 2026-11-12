@@ -365,6 +365,13 @@ export interface ExecResult {
    */
   notRun?: string;
   /**
+   * Set when the check was stopped by one of the runner's own limits, with which and the limit
+   * ("the check ran out of memory (limit 4 GB)"): its memory, its process count, its /tmp, its
+   * disk. Reported failed with that reason (`RUNNER_LIMIT`): never a pass, and never sent to a fix
+   * round the agent can't win; a person decides, as for a check not run.
+   */
+  limit?: string;
+  /**
    * Where it ran (ADR 0501, fourth review): a check container, the OS sandbox, or the weaker OS
    * sandbox of a Mac runner whose owner opted in. Reported with the check; the gate names the last.
    */
