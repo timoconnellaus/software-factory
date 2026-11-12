@@ -242,7 +242,17 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
   **Update required** screen instead of everything else: *Restart to update* when a verified update
   is staged (waiting for the runner's jobs, or naming what restarting now cancels), otherwise the
   download link and *Try again*. Recovery from a wrong floor is on the engine (ADR 0393). Tested in
-  `apps/engine/test/desktop.test.ts` and `apps/desktop/test` (`update-required.test.ts`).
+  `apps/engine/test/desktop.test.ts` and `apps/desktop/test` (`update-required.test.ts`,
+  `live.test.ts`).
+  - The live socket: the WebSocket API hides a refused upgrade's status, so a socket that closes
+    without ever opening asks the same URL over plain HTTPS once; a 426 `update_required` there
+    shows the screen and stops reconnecting (*Try again* starts it again). Any other failure
+    reconnects with backoff as before.
+  - A floor can't outrun the builds: each release writes `<channel>-macos-arm64-protocol.json`
+    (the live build's version and `DOOR_PROTOCOL`) after its manifests, and
+    `scripts/deploy/desktop-floor.ts`, in CI and before the deploy, refuses a
+    `DESKTOP_MIN_PROTOCOL` above the protocol of the newest build on any channel that has
+    published, failing closed (no protocol file for the live version, an unreadable bucket).
 - **Not yet:**
   - **M4b, the Secure Enclave key.** Tested on the M5 with the real Developer ID: a command-line
     `sf-keys` signed with `keychain-access-groups` is killed by macOS (restricted entitlement, no

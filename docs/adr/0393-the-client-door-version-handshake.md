@@ -49,3 +49,16 @@ channels don't order against each other, and a local build is `0.0.1`.
   `apps/engine/wrangler.jsonc` and deploy (a PR, as usual), or, faster, roll sf-engine back to the
   previous version (`wrangler rollback` from `apps/engine`, or the dashboard's Deployments tab).
   The apps then recover with *Try again*; nothing on the Macs needs changing.
+
+## Amendment (2026-11-12): a floor can't outrun the builds, and the live socket shows it
+Review found two ways around the decision above. (1) An engine change could raise
+`DESKTOP_PROTOCOL_LATEST` and the floor together before any build speaking that protocol shipped,
+and every app would see *Update required* with no update to take. Each release now writes
+`desktop/<channel>-macos-arm64-protocol.json` (`{ channel, version, protocol }`) after its
+manifests, and `scripts/deploy/desktop-floor.ts` runs in CI and in the deploy before anything is
+changed: it refuses a `DESKTOP_MIN_PROTOCOL` above the protocol of the newest build on every channel
+that has published one, and fails closed when it can't tell. (2) The live socket reconnected with
+backoff on a 426 and never showed the screen. A WebSocket can't read a refused upgrade's status,
+so a socket that never opened asks the same URL over HTTPS once; a 426 `update_required` calls the
+same handler as the door client and stops reconnecting. Spec 42's terminal socket does the same
+when it lands.

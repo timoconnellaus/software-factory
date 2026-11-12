@@ -124,9 +124,12 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         if (action === "restart" && liveJobs().length === 0) await restartToUpdate();
         if (action === "restart-when-idle") restartWhenIdle = true;
         // The view named the jobs this cancels.
-        if (action === "restart-anyway") await restartToUpdate();
+        if (action === "restart-anyway") await restartToUpdate(true);
         if (action === "download") Utils.openExternal(downloadUrl);
-        if (action === "retry") updateRequired = false;
+        if (action === "retry") {
+          updateRequired = false;
+          live.start();
+        }
         pushUpdate();
         return updateStatus();
       },
@@ -433,6 +436,7 @@ const gateLabel = (kind: string) =>
 // The live socket (spec 40 M2b): a gate opening reaches the badge and a notification at once.
 const live = new Live(liveUrl(ENGINE_URL), () => auth.currentToken(), {
   connected: () => void pollInbox(),
+  updateRequired: () => doorSaysUpdate(),
   event: (e) => {
     if (e.type !== "notify") return;
     void pollInbox({ notify: false }).then(() => {
