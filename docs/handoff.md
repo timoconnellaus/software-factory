@@ -69,6 +69,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   `brew install tmux` if missing, `git pull`, `sf-runner doctor --fix` (sets `checkouts` once from
   Orca's repos), then `sf-runner install` with no jobs running. Job worktrees the old runner left in
   Orca (`sf-job:` comments) are removed in Orca by hand. Pieces 2–8 get their own specs.
+  Piece 2, [spec 31](specs/31-watch-and-steer-runs.md) / [ADR 0400](adr/0400-watch-and-steer-runs-from-the-dashboard.md)
+  (block X, migration 0170), is built on `timoconnellaus/hosts-watch-steer`: the Live tab (transcript
+  and terminal from `run.live`, polled), `run.steer` for the runner's owner, the held `steer` call
+  on the channel, `message` events from the transcript. Criteria 1 and 2 need a live run on the M5.
 - **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
   versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals
