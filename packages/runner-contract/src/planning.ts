@@ -18,6 +18,7 @@ export const PLANNING_OPS = [
   "artifact.delete",
   "artifact.show",
   "artifact.read",
+  "design.pull",
   "spec.revise",
   "chat.reply",
   "planning.news",
@@ -208,9 +209,48 @@ export const questionAnswerFromEditInputSchema = z.object({
 });
 
 /** Spec 21: the planner's artifacts (ADR 0472). Content is the whole document each time. */
-export const ARTIFACT_KINDS = ["mockup", "diagram", "document"] as const;
+export const ARTIFACT_KINDS = ["mockup", "diagram", "document", "design"] as const;
+
+/**
+ * System designs (spec 22, kim): reviewable text, one notation per type. A `design` artifact names
+ * its type; its content is that notation.
+ */
+export const DESIGN_TYPES = [
+  "data-model",
+  "architecture",
+  "data-flow",
+  "sequence",
+  "state",
+  "api",
+] as const;
+export type DesignType = (typeof DESIGN_TYPES)[number];
+
+/** Each design type's notation and the file extension it lands under `.kim/designs/` with. */
+export const DESIGN_NOTATION: Record<DesignType, { notation: string; ext: string }> = {
+  "data-model": { notation: "DBML", ext: "dbml" },
+  architecture: { notation: "D2", ext: "d2" },
+  "data-flow": { notation: "D2", ext: "d2" },
+  sequence: { notation: "Mermaid", ext: "mmd" },
+  state: { notation: "Mermaid", ext: "mmd" },
+  api: { notation: "OpenAPI 3 YAML", ext: "yaml" },
+};
+
+/** The design type a `.kim/designs/` file is, from its extension and (for Mermaid) its first line. */
+export function designTypeOf(path: string, content: string): DesignType | null {
+  const ext = path.split(".").pop()?.toLowerCase();
+  if (ext === "dbml") return "data-model";
+  if (ext === "d2") return "architecture";
+  if (ext === "yaml" || ext === "yml") return "api";
+  if (ext === "mmd" || ext === "mermaid") {
+    return /^\s*stateDiagram/m.test(content) ? "state" : "sequence";
+  }
+  return null;
+}
+
 export const artifactAddInputSchema = z.object({
   kind: z.enum(ARTIFACT_KINDS).default("mockup"),
+  /** For a `design`: which kind of system design (its notation follows from it). */
+  designType: z.enum(DESIGN_TYPES).optional(),
   title: z.string().trim().min(1).max(200),
   /**
    * Self-contained HTML (inline CSS; CDN scripts and Google Fonts work) for a mockup or diagram, or
@@ -234,6 +274,39 @@ export const artifactUpdateInputSchema = z.object({
   show: z.boolean().optional(),
   keep: z.boolean().optional(),
 });
+/** The file types each `.kim/` folder holds (review of #130). */
+export const KIM_EXTENSIONS = {
+  designs: ["dbml", "d2", "mmd", "yaml", "yml"],
+  mockups: ["html"],
+  plans: ["md"],
+} as const;
+/**
+ * Brings a file from the repository's `.kim/` folder (on the default branch) in as an artifact the
+ * planner can revise (spec 22). Its content there is kept as the base the app compares against.
+ */
+export const designPullInputSchema = z.object({
+  path: z
+    .string()
+    .max(200, "a path of at most 200 characters")
+    .regex(
+      /^\.kim\/(designs|mockups|plans)\/[\w./-]+$/,
+      "a path under .kim/designs, .kim/mockups or .kim/plans",
+    )
+    .refine((p) => !p.includes(".."), "no .. in the path")
+    // The tree API refuses `.` and empty segments (review of #130): refused here, not at commit.
+    .refine(
+      (p) => p.split("/").every((seg) => seg !== "" && seg !== "."),
+      "no empty or . segments in the path",
+    )
+    .refine((p) => {
+      const [, folder] = p.split("/");
+      const ext = p.slice(p.lastIndexOf(".") + 1).toLowerCase();
+      const allowed: readonly string[] =
+        KIM_EXTENSIONS[folder as keyof typeof KIM_EXTENSIONS] ?? [];
+      return allowed.includes(ext);
+    }, "a design is .dbml, .d2, .mmd, .yaml or .yml; a mockup .html; a plan .md"),
+});
+
 export const artifactDeleteInputSchema = z.object({ artifactId: z.string().min(1) });
 export const artifactShowInputSchema = z.object({ artifactId: z.string().min(1) });
 export const artifactReadInputSchema = z.object({
@@ -333,6 +406,7 @@ export const PLANNING_TOOL_INPUTS = {
   "artifact.delete": artifactDeleteInputSchema,
   "artifact.show": artifactShowInputSchema,
   "artifact.read": artifactReadInputSchema,
+  "design.pull": designPullInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema.omit({ cursor: true, ack: true, hold: true }),
@@ -355,6 +429,7 @@ export const PLANNING_INPUTS = {
   "artifact.delete": artifactDeleteInputSchema,
   "artifact.show": artifactShowInputSchema,
   "artifact.read": artifactReadInputSchema,
+  "design.pull": designPullInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema,
@@ -373,7 +448,7 @@ export const PLANNING_TOOL_DESCRIPTIONS: Record<PlanningOp, string> = {
   "question.delete": "Withdraw a question that no longer matters. Say why.",
   "question.reorder": "Put the open questions in a new order, most important first.",
   "artifact.add":
-    "Add a mockup (self-contained HTML), a diagram (HTML or SVG) or a document (Markdown) beside the plan. People see it in the Mockups tab and on the canvas, and can pin comments to its elements. Put data-name on meaningful elements. For a choice between layouts, add one per option and name them in a question's optionArtifacts; for fonts, colours, spacing and copy, declare controls in one mockup (--var, data-plan-<attr>, data-plan-text) and bind a question to them.",
+    "Add a mockup (self-contained HTML), a diagram (HTML or SVG), a document (Markdown) or a system design (kind design, with designType: data-model in DBML, architecture or data-flow in D2, sequence or state in Mermaid, api in OpenAPI 3 YAML) beside the plan. Kept artifacts land in the repo's .kim/ folder with the approved spec. People see it in the Mockups tab and on the canvas, and can pin comments to its elements. Put data-name on meaningful elements. For a choice between layouts, add one per option and name them in a question's optionArtifacts; for fonts, colours, spacing and copy, declare controls in one mockup (--var, data-plan-<attr>, data-plan-text) and bind a question to them.",
   "artifact.update":
     "Replace an artifact's content or title (a new revision; the old ones are kept). When a bound answer arrives with `applied` values, write them into the mockup's defaults here. A revision that drops a control a question binds answers with warnings.",
   "artifact.delete":
@@ -381,6 +456,8 @@ export const PLANNING_TOOL_DESCRIPTIONS: Record<PlanningOp, string> = {
   "artifact.show": "Bring an artifact on everyone's screen (not while someone is mid-question).",
   "artifact.read":
     "Read an artifact's content (the latest revision, or one named), e.g. after resuming on another runner.",
+  "design.pull":
+    "Bring a file from the repository's .kim/ folder (designs, mockups or plans, on the default branch) in as an artifact to revise. Pulling it again takes the default branch's current copy as the new base: do that, and merge your changes into it, when the gate says the file changed there.",
   "question.answerFromEdit":
     "A person's edit to the plan settled a question: record the answer it implies, as theirs (it shows as coming from their edit). Not for security, privacy or irreversible questions: ask the person instead.",
   "question.focus":

@@ -352,6 +352,26 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       await save(r, state);
       return { commitSha: next };
     },
+    async commitFiles(r, { branch, files }) {
+      const state = await load(r);
+      const parent = state.refs[branch] ?? null;
+      const next = await commit(state, parent, files.map((f) => f.path).join(","));
+      state.refs[branch] = next;
+      const before = state.files[branch] ?? {};
+      state.touched = {
+        ...(state.touched ?? {}),
+        [next]: files.map((f) => ({
+          path: f.path,
+          status: before[f.path] !== undefined ? "modified" : "added",
+        })),
+      };
+      state.files[branch] = {
+        ...before,
+        ...Object.fromEntries(files.map((f) => [f.path, f.content])),
+      };
+      await save(r, state);
+      return { commitSha: next };
+    },
     async openPullRequest(r, { head, base, title }) {
       const state = await load(r);
       const open = state.pulls.find((p) => p.head === head && p.state === "open");

@@ -110,6 +110,7 @@ function unavailableGitHub(): FactoryServices["github"] {
     createBranch: no,
     fastForward: no,
     commitFile: no,
+    commitFiles: no,
     openPullRequest: no,
     changedFiles: no,
     mergePullRequest: no,
