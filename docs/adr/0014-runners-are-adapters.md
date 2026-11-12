@@ -26,7 +26,7 @@ and a colleague's Codex Cloud should all be able to run jobs. The core must not 
 > runner can run a session with no terminal or UI attached, like `claude -p`). Spike ADR 0100
 > (`spikes/runner-orca`) has the contract's types.
 
-> Amended 2026-11-12 ([ADR 0370](0370-runner-local-tmux-and-hook-status.md), spec
+> Amended 2026-11-12 ([ADR 0380](0380-runner-local-tmux-and-hook-status.md), spec
 > [30](../specs/30-runner-local-without-orca.md)): `runner-local` is now the adapter and
 > `runner-orca` is deleted. runner-local is a git worktree plus Claude Code's TUI in a tmux session
 > on the factory's own socket (`tmux -L software-factory`), not the headless `claude -p` sketched

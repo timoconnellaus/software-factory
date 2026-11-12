@@ -140,34 +140,28 @@ describe("push validation (ADR 0052 item 4)", () => {
     expect((await push(repo, job.branch, sha40("e2"), false)).outcome).toBe("ignored");
   });
 
-  it("mirrors .factory/policy.json from a default-branch push, even into a project with no policy yet", async () => {
-    const w = await world(null);
+  it("never changes the config from a default-branch push: config lives in the app (ADR 0370)", async () => {
+    const w = await world();
     const repo = { owner: w.repo.owner, name: w.repo.repo };
     const at = sha40(uid("f"));
     await github.setFile(
       w.repo,
       at,
       ".factory/policy.json",
-      JSON.stringify({ version: 1, autonomyPolicy: "cautious" }),
+      JSON.stringify({ version: 1, autonomyPolicy: "autonomous" }),
     );
     const out = await push(repo, "main", at, false);
-    expect(out.outcome).toBe("policy");
+    expect(out.outcome).toBe("ok");
     const project = await first<{ policy_sha: string }>(
       "SELECT policy_sha FROM core_projects WHERE id = ?",
       w.projectId,
     );
-    expect(project.policy_sha).toBe(at);
-    // A malformed one lands too, and fails closed.
+    expect(project.policy_sha).toBe(w.policySha);
+    // A malformed file pushed to main doesn't halt the project either.
     const bad = sha40(uid("g"));
     await github.setFile(w.repo, bad, ".factory/policy.json", "{ nope");
-    const out2 = await ok<{ policy: { valid: boolean } }>(
-      "push.observe",
-      { repo, ref: "refs/heads/main", before: at, after: bad, pusher: "tim", pusherIsApp: false },
-      INTAKE,
-    );
-    expect(out2.policy.valid).toBe(false);
-    const e = await refusal(newItem(w));
-    expect(e.code).toBeDefined();
+    await push(repo, "main", bad, false);
+    await newItem(w);
   });
 
   it("refuses a push for a repo that is no project", async () => {

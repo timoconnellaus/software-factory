@@ -5,7 +5,7 @@ factory over the signed channel (`https://sf-engine.zerobsai.com/runner/v1/*`, A
 runner adapter. It wires `runner-local` (git worktrees + tmux, no desktop app) with the
 `harness-claude` harness. Decisions:
 [ADR 0250](../../docs/adr/0250-runner-host-pushes-and-harness-projection.md),
-[ADR 0370](../../docs/adr/0370-runner-local-tmux-and-hook-status.md).
+[ADR 0380](../../docs/adr/0380-runner-local-tmux-and-hook-status.md).
 
 ## What it does
 Every ~20 s it heartbeats: the manifest, capacity, and the jobs it holds with their fencing tokens.

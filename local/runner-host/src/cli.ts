@@ -107,7 +107,7 @@ async function pair(args: string[]) {
   await adopt(config);
 }
 
-/** Fills in `checkouts` once, when it isn't set yet (ADR 0370), and says what it chose. */
+/** Fills in `checkouts` once, when it isn't set yet (ADR 0380), and says what it chose. */
 async function withCheckouts(config: RunnerConfig): Promise<RunnerConfig> {
   const { config: next, chosen } = await migrateCheckouts(config, nodeExec, [
     dirs.reposDir,

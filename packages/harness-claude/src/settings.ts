@@ -124,7 +124,7 @@ export interface SettingsOptions {
    */
   hooks?: ClaudeHooks;
   /**
-   * The factory's own status hook command (`statusHookCommand`, ADR 0370), run on every status
+   * The factory's own status hook command (`statusHookCommand`, ADR 0380), run on every status
    * event. It is the harness's, not the runner's: it only records the event and always answers
    * `{}`, so it may run on `PreToolUse`, where a runner's own hooks may not.
    */

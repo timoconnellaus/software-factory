@@ -2,13 +2,16 @@
 // available to every surface (the engine RPC the app calls, the runner channel, MCP later).
 import { OperationError } from "./errors.ts";
 import type { AnyOperation } from "./operation.ts";
+import * as adjudicator from "./operations/adjudicator.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
 import * as cli from "./operations/cli.ts";
+import * as config from "./operations/config.ts";
 import * as connector from "./operations/connector.ts";
 import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
 import * as github from "./operations/github.ts";
+import * as improve from "./operations/improve.ts";
 import * as incidents from "./operations/incidents.ts";
 import * as mergeQueue from "./operations/merge-queue.ts";
 import * as onboarding from "./operations/onboarding.ts";
@@ -28,11 +31,22 @@ export const OPERATIONS: readonly AnyOperation[] = [
   projects.projectUpdate,
   projects.policySync,
   projects.killSwitchSet,
+  config.configGet,
+  config.configPreview,
+  config.configSave,
+  config.configRollback,
+  config.configExport,
+  improve.improveScan,
+  improve.configTrialStart,
+  improve.configTrialResolve,
+  improve.configTrials,
+  adjudicator.adjudicatorRequest,
+  adjudicator.adjudicatorRecord,
+  adjudicator.adjudicatorStatsOp,
   onboarding.githubConnectStart,
   onboarding.githubConnectInstallation,
   onboarding.githubRepos,
   onboarding.policyResync,
-  onboarding.policyProposeTemplate,
   onboarding.setupStatus,
   protection.protectionRuleset,
   protection.protectionCheck,
@@ -43,6 +57,9 @@ export const OPERATIONS: readonly AnyOperation[] = [
   workItems.workItemTimeline,
   workItems.workItemCancel,
   workItems.workItemTriage,
+  workItems.workItemSetWorkflow,
+  workItems.workflowGate,
+  workItems.workflowRecord,
   workItems.workItemEnterStage,
   workItems.workItemFinish,
   attach.workItemAttachPr,

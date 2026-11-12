@@ -5,7 +5,7 @@
 // hooks off, and a credential helper that answers only github.com with the job token. The token is
 // passed in the environment of that one git process, never in its arguments or on disk.
 //
-// The checkout is the one the adapter resolved (ADR 0260, amended by ADR 0370): usually the owner's
+// The checkout is the one the adapter resolved (ADR 0260, amended by ADR 0380): usually the owner's
 // own (found under the `checkouts` dirs), else the host's clone. In the owner's checkout the host only fetches, by explicit URL,
 // into its own ref namespace (`refs/software-factory/…`): it never changes their remotes, config,
 // FETCH_HEAD, branches or working tree, and never pushes from or checks out in it.

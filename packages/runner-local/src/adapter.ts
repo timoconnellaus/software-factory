@@ -1,4 +1,4 @@
-// runner-local: the runner contract over plain git and tmux (ADR 0014, 0370). A job becomes a git
+// runner-local: the runner contract over plain git and tmux (ADR 0014, 0380). A job becomes a git
 // worktree on the run branch, inside the checkout this machine already has for the repo (ADR 0260,
 // amended), and Claude Code runs harness-claude's own launch script (ADR 0270) in a tmux session on
 // the factory's own socket (`tmux -L software-factory`), so a person can `tmux attach` to take the
@@ -408,7 +408,7 @@ export function createLocalRunner(
           protectPaths: [...new Set([...(config.protectPaths ?? []), checkout])],
           ...(commonDir && gitDir ? { git: { commonDir, gitDir } } : {}),
           ...(capabilities.includes("work-item-attachments") ? { attachmentsDir } : {}),
-          // The factory's status hook: agent status from Claude Code's hooks (ADR 0370).
+          // The factory's status hook: agent status from Claude Code's hooks (ADR 0380).
           statusHook: config.node ? { node: config.node } : true,
           ...(config.identity ? { identity: config.identity } : {}),
           ...(config.claudeBin ? { claudeBin: config.claudeBin } : {}),
@@ -722,6 +722,15 @@ export function createLocalRunner(
               kind: "log",
               name: "agent-final-message",
               text: summary.lastAssistantText,
+            });
+          }
+          // What the run used, per model (spec 09 M3): counts only, never keys or bills.
+          if (summary && summary.usage.length > 0) {
+            artifacts.push({
+              kind: "usage",
+              harness: "claude-code",
+              entries: summary.usage,
+              ...(summary.wallMs !== null ? { wallMs: summary.wallMs } : {}),
             });
           }
         }

@@ -1,7 +1,7 @@
 # Spec 30: runner-local, the factory runs agents without Orca
 
 Read first: the plan ([`.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`](../../.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md)),
-ADRs [0370](../adr/0370-runner-local-tmux-and-hook-status.md), [0014](../adr/0014-runners-are-adapters.md),
+ADRs [0380](../adr/0380-runner-local-tmux-and-hook-status.md), [0014](../adr/0014-runners-are-adapters.md),
 [0250](../adr/0250-runner-host-pushes-and-harness-projection.md),
 [0260](../adr/0260-runners-attach-to-the-existing-checkout.md) and
 [0270](../adr/0270-the-factory-launches-the-harness-and-verifies-it.md); `packages/runner-orca` (what

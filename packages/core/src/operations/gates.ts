@@ -9,6 +9,7 @@ import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
 import { backupOwnerId } from "../scope.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
+import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
 import { openIncident } from "./incidents.ts";
 import { pendingActionId, workItemId } from "./shared.ts";
 
@@ -121,7 +122,16 @@ export const approvalDecide = defineOperation({
       // Merge is decided on the review packet (ADR 0041), which records whether the diff was opened.
       throw new OperationError("forbidden", "approve a merge with review.merge");
     }
-    return decidePending(ctx, pa, input.decision, input.note ?? null);
+    const decided = decidePending(ctx, pa, input.decision, input.note ?? null);
+    // A project-level config proposal has no Workflow to re-run it: apply it here (ADR 0370).
+    if (
+      input.decision === "approved" &&
+      !decided.alreadyDecided &&
+      (CONFIG_WRITES as readonly string[]).includes(pa.operation)
+    ) {
+      await applyApprovedConfig(ctx, pa);
+    }
+    return decided;
   },
 });
 

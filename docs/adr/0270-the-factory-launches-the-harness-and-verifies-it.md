@@ -123,7 +123,7 @@ With that, `runner-orca` can go back to `agent launch`. The post-launch check st
 > `.factory-prompt.md` in the worktree (excluded from git) and, after the live-process check, sends
 > harness-claude's one-line `PROMPT_POINTER` to it.
 
-> Amended 2026-11-12 ([ADR 0370](0370-runner-local-tmux-and-hook-status.md)): the terminal is now a
+> Amended 2026-11-12 ([ADR 0380](0380-runner-local-tmux-and-hook-status.md)): the terminal is now a
 > tmux session on the factory's own socket (`runner-local`), not an Orca terminal. The launch script,
 > the launch record and the post-launch check are unchanged: the session runs
 > `exec /bin/sh <runDir>/launch.sh`, the adapter waits for the pid file and the status hook's

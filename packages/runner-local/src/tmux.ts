@@ -1,4 +1,4 @@
-// A thin wrapper over the `tmux` CLI on the factory's own socket (ADR 0370). Every call goes to
+// A thin wrapper over the `tmux` CLI on the factory's own socket (ADR 0380). Every call goes to
 // `tmux -L software-factory -f /dev/null`: a server of the factory's alone, started without the
 // owner's `~/.tmux.conf`, so the owner's own tmux server, sessions and config are never touched.
 // A job's session is `sf-<jobId>`; targets use tmux's exact-match form (`=name`) so `sf-job_1`

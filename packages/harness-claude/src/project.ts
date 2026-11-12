@@ -56,7 +56,7 @@ export async function projectHarness(
     identity?: { name: string; email: string };
     claudeBin?: string;
     /**
-     * Project the factory's status hook (ADR 0370): its script into the run dir, and the hook on
+     * Project the factory's status hook (ADR 0380): its script into the run dir, and the hook on
      * every status event, appending to `<runDir>/status.jsonl`. `node` is the absolute Node that
      * runs it (default: this process's).
      */

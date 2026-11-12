@@ -2,7 +2,7 @@
 
 From incident [2026-11-11 bootstrap #5](../../docs/incidents/2026-11-11-bootstrap.md#5-the-runner-added-a-second-orca-repo)
 and [ADR 0260](../../docs/adr/0260-runners-attach-to-the-existing-checkout.md) (amended by
-[ADR 0370](../../docs/adr/0370-runner-local-tmux-and-hook-status.md)). Applies to any change
+[ADR 0380](../../docs/adr/0380-runner-local-tmux-and-hook-status.md)). Applies to any change
 to `packages/runner-*`, `packages/harness-*` or `local/runner-host`.
 
 - **Resolve existing workspaces by canonical identity.** A runner adapter finds the checkout its
@@ -26,7 +26,7 @@ parts a regex can see.
 
 ## Sessions run on the factory's own tmux socket
 
-From [ADR 0370](../../docs/adr/0370-runner-local-tmux-and-hook-status.md).
+From [ADR 0380](../../docs/adr/0380-runner-local-tmux-and-hook-status.md).
 
 - **Never touch the owner's tmux.** Every tmux call goes through runner-local's `tmuxCli`, which
   targets `tmux -L software-factory -f /dev/null`: the factory's own server, without the owner's

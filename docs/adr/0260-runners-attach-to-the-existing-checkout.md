@@ -76,7 +76,7 @@ Runner adapters resolve existing workspaces by canonical identity and never crea
 registration of a repo the runner's machine already has. Registration is once and permanent; per-job
 state is a worktree and a branch. This is in `.factory/checks/runner-adapters.md`.
 
-> Amended 2026-11-12 ([ADR 0370](0370-runner-local-tmux-and-hook-status.md), spec
+> Amended 2026-11-12 ([ADR 0380](0380-runner-local-tmux-and-hook-status.md), spec
 > [30](../specs/30-runner-local-without-orca.md)): with Orca gone (`runner-orca` deleted), the
 > checkouts no longer come from Orca's repo list. Point 2 now reads: `runner-local` scans the
 > directories listed in `runner.json` `checkouts` and takes the git repo directly under one of them

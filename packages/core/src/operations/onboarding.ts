@@ -436,7 +436,7 @@ export const githubRepos = defineOperation({
 
 export const policyResync = defineOperation({
   name: "policy.resync",
-  description: `Read the project's ${POLICY_PATH} again from its default branch's head, through the GitHub App, and record it (policy.sync). The push webhook does this on every push to the default branch; this is the manual "Re-sync". Needs an org owner or admin.`,
+  description: `Import the project's ${POLICY_PATH} from its default branch's head, through the GitHub App, as a new config version (ADR 0370; source \`import\`). Refuses when the repo has no such file or it isn't valid, and nothing changes. Config otherwise lives in the app: pushes never change it. Needs an org owner or admin.`,
   risk: "write",
   actors: ["human"],
   permission: "admin",
@@ -449,96 +449,16 @@ export const policyResync = defineOperation({
   }),
   async handler(_input, ctx) {
     const project = requireProject(ctx);
-    const synced = await syncPolicyFromGitHub(ctx, project, await repoRef(ctx, project));
+    const synced = await syncPolicyFromGitHub(ctx, project, await repoRef(ctx, project), {
+      importOnly: true,
+    });
     if (!synced) {
       throw new OperationError(
         "unavailable",
         `${project.repo_owner}/${project.repo_name} has no ${project.default_branch} branch yet`,
       );
     }
-    return synced;
-  },
-});
-
-/** The policy a new project starts from: Balanced, the person opening the PR as its approver. */
-export function templatePolicy(approverLogin: string): string {
-  return `${JSON.stringify(
-    {
-      version: 1,
-      autonomyPolicy: "balanced",
-      spec: { requiredFrom: "medium" },
-      timeouts: { gateHours: 72, questionHours: 48 },
-      wipLimit: 5,
-      retryLimit: 2,
-      approvers: [approverLogin],
-      backupOwner: approverLogin,
-    },
-    null,
-    2,
-  )}\n`;
-}
-
-export const policyProposeTemplate = defineOperation({
-  name: "policy.proposeTemplate",
-  description: `Open a pull request, as the GitHub App, that adds a template ${POLICY_PATH} to a project that has none: autonomy policy Balanced, the person asking as approver and backup owner. Human only (it proposes the project's own policy). Refuses when the default branch already has the file. Merging it is up to a person on GitHub; the push webhook then syncs it.`,
-  risk: "outbound",
-  actors: ["human"],
-  permission: "admin",
-  input: z.object({ projectId }),
-  output: z.object({ url: z.string(), number: z.number(), branch: z.string() }),
-  async handler(_input, ctx) {
-    const project = requireProject(ctx);
-    const user = await ctx.db
-      .selectFrom("core_user")
-      .select("github_login")
-      .where("id", "=", ctx.actor.id)
-      .executeTakeFirst();
-    if (!user?.github_login) {
-      throw new OperationError("conflict", "your account has no GitHub login to name as approver");
-    }
-    const repo = await repoRef(ctx, project);
-    const gh = ctx.services.github;
-    const head = await gh.getBranchSha(repo, project.default_branch);
-    if (!head) {
-      throw new OperationError(
-        "unavailable",
-        `no ${project.default_branch} branch to propose against`,
-      );
-    }
-    if ((await gh.readFile(repo, POLICY_PATH, head)) !== null) {
-      throw new OperationError(
-        "conflict",
-        `${project.default_branch} already has ${POLICY_PATH}: fix that file instead (Re-sync shows its error)`,
-      );
-    }
-    await gh.createBranch(repo, POLICY_PR_BRANCH, head);
-    await gh.commitFile(repo, {
-      branch: POLICY_PR_BRANCH,
-      path: POLICY_PATH,
-      content: templatePolicy(user.github_login),
-      message: "Add the factory policy (.factory/policy.json)",
-    });
-    const pr = await gh.openPullRequest(repo, {
-      head: POLICY_PR_BRANCH,
-      base: project.default_branch,
-      title: "Add the factory policy",
-      body: [
-        `Adds \`${POLICY_PATH}\`, the project's autonomy policy (ADR 0054), opened from the factory's Setup by @${user.github_login}.`,
-        "",
-        `- Autonomy policy: **Balanced**`,
-        `- Approver and backup owner: \`${user.github_login}\``,
-        "",
-        "Until a valid policy is on the default branch, agents and runners can do nothing on this project (fail closed). Merging this syncs it automatically.",
-      ].join("\n"),
-    });
-    ctx.write(
-      ctx.db
-        .updateTable("core_projects")
-        .set({ policy_pr_url: pr.url })
-        .where("id", "=", project.id),
-    );
-    ctx.change({ entity: "project", id: project.id, after: { policyPr: pr.url } });
-    return { url: pr.url, number: pr.number, branch: POLICY_PR_BRANCH };
+    return { applied: synced.applied, valid: synced.valid, error: synced.error, sha: synced.sha };
   },
 });
 
@@ -621,15 +541,15 @@ export const setupStatus = defineOperation({
         key: "policy" as const,
         done: connected.length > 0 && withPolicy.length === connected.length,
         detail: !connected.length
-          ? "Comes from the project's .factory/policy.json"
+          ? "Created with the project, in Settings"
           : withPolicy.length === connected.length
-            ? "Valid .factory/policy.json on the default branch"
+            ? connected.map((p) => `${p.name}: config v${p.configVersion ?? "?"}`).join(", ")
             : connected
                 .filter((p) => p.policy.state !== "valid")
                 .map((p) =>
                   p.policy.state === "missing" || p.policy.state === "none"
-                    ? `${p.name} has no factory policy`
-                    : `${p.name}: ${p.policy.error}`,
+                    ? `${p.name} has no factory config: open its Settings`
+                    : `${p.name}: ${p.policy.error} (fix it in Settings)`,
                 )
                 .join("; "),
       },

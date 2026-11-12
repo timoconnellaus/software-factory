@@ -25,7 +25,7 @@ export const configSchema = z.object({
   identity: z.object({ name: z.string(), email: z.string() }).optional(),
   /**
    * Directories whose immediate git repos are this machine's checkouts (ADR 0260, amended by ADR
-   * 0370): a job runs as a worktree of the one whose `origin` is the job's repo, else in the host's
+   * 0380): a job runs as a worktree of the one whose `origin` is the job's repo, else in the host's
    * own clone. Unset until `login` or `doctor --fix` fills it in once.
    */
   checkouts: z.array(z.string()).optional(),

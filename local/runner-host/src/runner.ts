@@ -1,5 +1,5 @@
 // Wires a runner from its config: the signed channel client, the host's git, and the local adapter
-// (git worktrees + tmux, ADR 0370) with the Claude harness. This is the one place that names a
+// (git worktrees + tmux, ADR 0380) with the Claude harness. This is the one place that names a
 // runner adapter; the host loop and the job lifecycle only see the contract.
 
 import { join } from "node:path";
@@ -59,7 +59,7 @@ export function buildRunner(
   const adapter = createLocalRunner({
     exec,
     maxConcurrent: config.maxConcurrent,
-    // ADR 0260 (amended by ADR 0370): jobs run as worktrees of the checkout this machine already
+    // ADR 0260 (amended by ADR 0380): jobs run as worktrees of the checkout this machine already
     // has for the remote, under the configured `checkouts` dirs; the host's clone only when none.
     checkouts: checkoutDirs(config),
     resolveRepoPath: (job) => git.clonePath(job),
