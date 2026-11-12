@@ -193,6 +193,26 @@ export const planningReadyInputSchema = z.object({
   note: z.string().max(2_000).optional(),
 });
 
+/**
+ * What the agent may send, as MCP tool schemas (spec 26, review of #67): the cursor and delivery
+ * fields belong to the hooks, which the model can't call, so its tools don't carry them. The
+ * harness adds `ack` to `planning.ready` itself.
+ */
+export const PLANNING_TOOL_INPUTS = {
+  "question.ask": questionAskInputSchema,
+  "question.update": questionUpdateInputSchema,
+  "question.delete": questionDeleteInputSchema,
+  "question.reorder": questionReorderInputSchema,
+  "question.focus": questionFocusInputSchema,
+  "spec.revise": specReviseInputSchema,
+  "chat.reply": chatReplyInputSchema,
+  "planning.news": planningNewsInputSchema.omit({ cursor: true, ack: true, hold: true }),
+  "planning.peek": z.object({}),
+  "planning.wait": z.object({}),
+  "planning.yield": planningYieldInputSchema,
+  "planning.ready": planningReadyInputSchema.omit({ ack: true }),
+} as const satisfies Record<PlanningOp, z.ZodType>;
+
 /** Inputs by operation, without the job fields the relay adds. */
 export const PLANNING_INPUTS = {
   "question.ask": questionAskInputSchema,
@@ -244,6 +264,8 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     prompt: z.string(),
     /** Null when the person skipped it: decide it yourself. */
     answer: z.string().nullable(),
+    /** The answer's revision: a receipt is stamped for exactly this one. */
+    revision: z.number(),
     skipped: z.boolean(),
     note: z.string().nullable(),
     acceptedDefault: z.boolean(),
