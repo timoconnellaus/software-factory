@@ -43,4 +43,30 @@ on them), and sf-app's tab.
    before and after screenshots.
 
 ## As built
-(Filled in by the PR.)
+- Migration 0242: `core_spec_edits`, `core_planning_messages.anchor`, and
+  `core_questions.answered_via_edit`.
+- `spec.edit` (in `operations/planning.ts`) is `browserOnly` and `desktopDecidable`, like the
+  other steering. It checks that the plan is still `specId` and that lines `lineStart..lineEnd`
+  (0-based, inclusive) still read `before`, both now and guarded in the batch. It writes a new
+  version by the person and a `core_spec_edits` row, replacing an earlier edit whose `after` was
+  these lines. It logs `spec.edited` (a user event, so it wakes the planner and must be read before
+  `planning.ready`), takes the spec back from the gate and resumes a yielded session.
+- `spec.revise` refuses a body that drops a standing edit (`droppedEdits`: the edit's `after` must
+  still appear, spaces aside; a deletion's `before` must stay gone).
+- `question.answerFromEdit` (in `operations/questions.ts`, a planning tool) answers as the editor
+  with the note "from their edit to the plan". It is logged as `answer.fromEdit`, which isn't news
+  to the planner. It is refused for sensitive questions (the shared `isSensitiveQuestion`) and for
+  another work item's edit.
+- `chat.send { anchor }`. News carries `anchor { lineStart, lineEnd, quote }` on chat messages and
+  `spec.edited` events. `planning.get` returns `edits` and each message's `anchor`.
+- The Planning tab (desktop) hangs Edit and Comment on each plan block, from the block's source
+  position in the markdown (a paragraph inside a list item belongs to the item).
+  - Edit opens the lines in place; ⌘-Enter saves.
+  - An edited block shows who edited it and that the planner keeps the wording, and which questions
+    it updated.
+  - A commented block shows a count that opens the chat with the anchor. Chat messages say "on the
+    plan".
+  - An answered question recorded from an edit reads "from your edit".
+- Screenshots: `docs/screenshots/planning/edits-*.png`.
+- Deferred: resolving comments, editing the structured lists (acceptance criteria, assumptions,
+  coverage), and sf-app.

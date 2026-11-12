@@ -459,7 +459,11 @@ export const specRevise = defineOperation({
       throw new OperationError(
         "conflict",
         `a person edited the plan, and this revision doesn't keep their wording: ${dropped
-          .map((e) => (e.after.trim() ? JSON.stringify(e.after.trim()) : `(removed ${JSON.stringify(e.before.trim())})`))
+          .map((e) =>
+            e.after.trim()
+              ? JSON.stringify(e.after.trim())
+              : `(removed ${JSON.stringify(e.before.trim())})`,
+          )
           .join("; ")}. Keep it word for word, or ask them in the chat.`,
         { editIds: dropped.map((e) => e.id) },
       );
@@ -1176,7 +1180,10 @@ export const specEdit = defineOperation({
     const session = await openSession(ctx, w.id);
     if (!session) throw new OperationError("conflict", "no open planning session");
     if (w.current_spec_id !== input.specId) {
-      throw new OperationError("conflict", "the plan changed since you started editing: look again");
+      throw new OperationError(
+        "conflict",
+        "the plan changed since you started editing: look again",
+      );
     }
     const spec = await ctx.db
       .selectFrom("core_specs")
@@ -1190,7 +1197,10 @@ export const specEdit = defineOperation({
     }
     const current = lines.slice(input.lineStart, input.lineEnd + 1).join("\n");
     if (current !== input.before) {
-      throw new OperationError("conflict", "those lines changed since you started editing: look again");
+      throw new OperationError(
+        "conflict",
+        "those lines changed since you started editing: look again",
+      );
     }
     if (input.after === input.before) {
       throw new OperationError("invalid_input", "nothing changed");

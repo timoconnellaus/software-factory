@@ -355,7 +355,9 @@ export async function readNews(
         .execute()
     : [];
   const aboutById = new Map(aboutRows.map((q) => [q.id, q]));
-  const editIds = news.filter((r) => r.type === "spec.edited").map((r) => String(payloadOf(r).editId));
+  const editIds = news
+    .filter((r) => r.type === "spec.edited")
+    .map((r) => String(payloadOf(r).editId));
   const edits = editIds.length
     ? await ctx.db.selectFrom("core_spec_edits").selectAll().where("id", "in", editIds).execute()
     : [];
@@ -980,4 +982,3 @@ export function droppedEdits(
     return after ? !text.includes(after) : text.includes(normalizePlanText(e.before));
   });
 }
-

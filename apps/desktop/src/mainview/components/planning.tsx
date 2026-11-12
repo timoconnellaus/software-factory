@@ -476,9 +476,11 @@ function AnsweredRow({
   }
   const tag = q.skipped
     ? { label: "skipped · the planner decides", changed: true }
-    : q.acceptedAlone
-      ? { label: "default · finish alone", changed: false }
-      : answeredTag(q, me);
+    : q.answeredViaEdit
+      ? { label: q.answeredBy === me ? "from your edit" : "from an edit", changed: true }
+      : q.acceptedAlone
+        ? { label: "default · finish alone", changed: false }
+        : answeredTag(q, me);
   return (
     <button
       type="button"

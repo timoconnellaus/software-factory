@@ -202,7 +202,11 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
       w.human,
     );
     const crossed = await refusal(
-      agent("question.answerFromEdit", { questionId: where, answer: "Backlog", editId: foreign.editId }),
+      agent("question.answerFromEdit", {
+        questionId: where,
+        answer: "Backlog",
+        editId: foreign.editId,
+      }),
     );
     expect(crossed.code).toBe("forbidden");
   });
