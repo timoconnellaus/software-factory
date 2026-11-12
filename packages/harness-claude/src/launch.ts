@@ -20,7 +20,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HarnessProfile, Job, JobStage } from "@software-factory/runner-contract";
 import type { PlanningLaunch } from "./planning/project.ts";
-import { type PermissionMode, RUN_SETTINGS_FILE, SETTINGS_FILE, stageMode } from "./settings.ts";
+import {
+  type Isolation,
+  type PermissionMode,
+  RUN_SETTINGS_FILE,
+  SETTINGS_FILE,
+  stageMode,
+} from "./settings.ts";
 
 /** The setting sources a run loads: the repo's and the projected local file, never the user's. */
 export const SETTING_SOURCES = "project,local";
@@ -35,6 +41,8 @@ export interface LaunchRecord {
   jobId: string;
   stage: JobStage;
   mode: PermissionMode;
+  /** Where the run is confined (ADR 0430); absent in records from before it (the sandbox). */
+  isolation?: Isolation;
   /** The exact argv, `argv[0]` included. */
   argv: string[];
   /** sha256 of the projected settings (both copies have the same bytes). */
@@ -42,6 +50,12 @@ export interface LaunchRecord {
   settingsPaths: string[];
   pidFile: string;
   worktree: string;
+  /**
+   * The Claude account the run uses (ADR 0410), and its config dir (absent for `default`). Names and
+   * paths only, never a token. Older records have neither.
+   */
+  account?: string;
+  configDir?: string;
 }
 
 /** The exact argv for a run's Claude. */
@@ -53,13 +67,15 @@ export function claudeArgv(
     profile?: HarnessProfile;
     /** A planning session (ADR 0350): its MCP server, and the conversation to start or resume. */
     planning?: PlanningLaunch;
+    /** A container per job changes the stage's default mode (ADR 0430). */
+    isolation?: Isolation;
   },
 ): string[] {
   const planning = options.planning;
   return [
     options.claudeBin ?? "claude",
     "--permission-mode",
-    stageMode(job.stage, options.profile ?? job.harness.profile),
+    stageMode(job.stage, options.profile ?? job.harness.profile, options.isolation),
     "--setting-sources",
     SETTING_SOURCES,
     "--settings",
@@ -98,15 +114,21 @@ export function launchUnsets(env: Record<string, string>): string[] {
 
 /**
  * The launch script a runner runs (with `/bin/sh`) in the job's terminal: it records its pid,
- * which `exec` hands to Claude, so the check can find the process without guessing.
+ * which `exec` hands to Claude, so the check can find the process without guessing. `account` is
+ * the lines that give Claude its account (`accountLaunchLines`, ADR 0410).
  */
-export function launchScript(record: LaunchRecord, unset: readonly string[]): string {
+export function launchScript(
+  record: LaunchRecord,
+  unset: readonly string[],
+  account: readonly string[] = [],
+): string {
   return [
     "#!/bin/sh",
     `# Written by the software factory runner for job ${record.jobId} (${record.stage}).`,
     "# The harness's own invocation (ADR 0270); the runner checks the live process against",
     `# ${LAUNCH_RECORD} before it sends the prompt.`,
     ...(unset.length ? [`unset ${unset.map(shellQuote).join(" ")}`] : []),
+    ...account,
     `cd ${shellQuote(record.worktree)} || exit 97`,
     `echo $$ > ${shellQuote(record.pidFile)} || exit 98`,
     `exec ${record.argv.map(shellQuote).join(" ")}`,
