@@ -246,6 +246,11 @@ const gateLabel = (kind: string) =>
 const live = new Live(liveUrl(ENGINE_URL), () => auth.currentToken(), {
   connected: () => void pollInbox(),
   event: (e) => {
+    // A Planning view this person has open changed (spec 26): the view re-reads it.
+    if (e.type === "planning.changed" && e.workItemId) {
+      toView("planningChanged", { workItemId: e.workItemId });
+      return;
+    }
     if (e.type !== "notify") return;
     void pollInbox({ notify: false }).then(() => {
       if (e.title) Utils.showNotification({ title: "Software Factory", body: e.title });

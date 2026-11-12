@@ -40,6 +40,7 @@ const none = () => () => undefined;
 export const onSession = none;
 export const onRunner = none;
 export const onInbox = none;
+export const onPlanningChanged = none;
 export const onNavigate = none;
 
 const lights = document.createElement("div");
