@@ -6,6 +6,7 @@ import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
 import * as cli from "./operations/cli.ts";
 import * as connector from "./operations/connector.ts";
+import * as desktop from "./operations/desktop.ts";
 import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
 import * as github from "./operations/github.ts";
@@ -88,6 +89,15 @@ export const OPERATIONS: readonly AnyOperation[] = [
   cli.cliDenyDevice,
   cli.cliTokenList,
   cli.cliTokenRevoke,
+  desktop.desktopAuthStart,
+  desktop.desktopAuthLookup,
+  desktop.desktopApproveDevice,
+  desktop.desktopDenyDevice,
+  desktop.desktopAuthExchange,
+  desktop.desktopDeviceList,
+  desktop.desktopDeviceRevoke,
+  desktop.presenceChallenge,
+  desktop.presenceRedeem,
   gates.specApprove,
   gates.specRequestChanges,
   gates.reviewMerge,

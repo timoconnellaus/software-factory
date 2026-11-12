@@ -15,7 +15,9 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAttachRouteImport } from './routes/_app/attach'
 import { Route as AppNewRouteImport } from './routes/_app/new'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
+import { Route as OpenSplatRouteImport } from './routes/open.$'
 import { Route as AppCliConnectRouteImport } from './routes/_app/cli.connect'
+import { Route as AppDesktopConnectRouteImport } from './routes/_app/desktop.connect'
 import { Route as AppRunnersConnectRouteImport } from './routes/_app/runners.connect'
 import { Route as AppWorkIndexRouteImport } from './routes/_app/work.index'
 import { Route as AppWorkIdIndexRouteImport } from './routes/_app/work.$id.index'
@@ -50,9 +52,19 @@ const AppSetupRoute = AppSetupRouteImport.update({
   path: '/setup',
   getParentRoute: () => AppRoute,
 } as any)
+const OpenSplatRoute = OpenSplatRouteImport.update({
+  id: '/open/$',
+  path: '/open/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppCliConnectRoute = AppCliConnectRouteImport.update({
   id: '/cli/connect',
   path: '/cli/connect',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDesktopConnectRoute = AppDesktopConnectRouteImport.update({
+  id: '/desktop/connect',
+  path: '/desktop/connect',
   getParentRoute: () => AppRoute,
 } as any)
 const AppRunnersConnectRoute = AppRunnersConnectRouteImport.update({
@@ -82,7 +94,9 @@ export interface FileRoutesByFullPath {
   '/attach': typeof AppAttachRoute
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
+  '/open/$': typeof OpenSplatRoute
   '/cli/connect': typeof AppCliConnectRoute
+  '/desktop/connect': typeof AppDesktopConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
   '/work/': typeof AppWorkIndexRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
@@ -93,8 +107,10 @@ export interface FileRoutesByTo {
   '/attach': typeof AppAttachRoute
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
+  '/open/$': typeof OpenSplatRoute
   '/': typeof AppIndexRoute
   '/cli/connect': typeof AppCliConnectRoute
+  '/desktop/connect': typeof AppDesktopConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
   '/work': typeof AppWorkIndexRoute
   '/work/$id/review': typeof AppWorkIdReviewRoute
@@ -107,8 +123,10 @@ export interface FileRoutesById {
   '/_app/attach': typeof AppAttachRoute
   '/_app/new': typeof AppNewRoute
   '/_app/setup': typeof AppSetupRoute
+  '/open/$': typeof OpenSplatRoute
   '/_app/': typeof AppIndexRoute
   '/_app/cli/connect': typeof AppCliConnectRoute
+  '/_app/desktop/connect': typeof AppDesktopConnectRoute
   '/_app/runners/connect': typeof AppRunnersConnectRoute
   '/_app/work/': typeof AppWorkIndexRoute
   '/_app/work/$id/review': typeof AppWorkIdReviewRoute
@@ -122,7 +140,9 @@ export interface FileRouteTypes {
     | '/attach'
     | '/new'
     | '/setup'
+    | '/open/$'
     | '/cli/connect'
+    | '/desktop/connect'
     | '/runners/connect'
     | '/work/'
     | '/work/$id/review'
@@ -133,8 +153,10 @@ export interface FileRouteTypes {
     | '/attach'
     | '/new'
     | '/setup'
+    | '/open/$'
     | '/'
     | '/cli/connect'
+    | '/desktop/connect'
     | '/runners/connect'
     | '/work'
     | '/work/$id/review'
@@ -146,8 +168,10 @@ export interface FileRouteTypes {
     | '/_app/attach'
     | '/_app/new'
     | '/_app/setup'
+    | '/open/$'
     | '/_app/'
     | '/_app/cli/connect'
+    | '/_app/desktop/connect'
     | '/_app/runners/connect'
     | '/_app/work/'
     | '/_app/work/$id/review'
@@ -157,6 +181,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   SignInRoute: typeof SignInRoute
+  OpenSplatRoute: typeof OpenSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -203,11 +228,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSetupRouteImport
       parentRoute: typeof AppRoute
     }
+    '/open/$': {
+      id: '/open/$'
+      path: '/open/$'
+      fullPath: '/open/$'
+      preLoaderRoute: typeof OpenSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app/cli/connect': {
       id: '/_app/cli/connect'
       path: '/cli/connect'
       fullPath: '/cli/connect'
       preLoaderRoute: typeof AppCliConnectRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/desktop/connect': {
+      id: '/_app/desktop/connect'
+      path: '/desktop/connect'
+      fullPath: '/desktop/connect'
+      preLoaderRoute: typeof AppDesktopConnectRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/runners/connect': {
@@ -247,6 +286,7 @@ interface AppRouteChildren {
   AppSetupRoute: typeof AppSetupRoute
   AppIndexRoute: typeof AppIndexRoute
   AppCliConnectRoute: typeof AppCliConnectRoute
+  AppDesktopConnectRoute: typeof AppDesktopConnectRoute
   AppRunnersConnectRoute: typeof AppRunnersConnectRoute
   AppWorkIndexRoute: typeof AppWorkIndexRoute
   AppWorkIdReviewRoute: typeof AppWorkIdReviewRoute
@@ -259,6 +299,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppSetupRoute: AppSetupRoute,
   AppIndexRoute: AppIndexRoute,
   AppCliConnectRoute: AppCliConnectRoute,
+  AppDesktopConnectRoute: AppDesktopConnectRoute,
   AppRunnersConnectRoute: AppRunnersConnectRoute,
   AppWorkIndexRoute: AppWorkIndexRoute,
   AppWorkIdReviewRoute: AppWorkIdReviewRoute,
@@ -270,6 +311,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   SignInRoute: SignInRoute,
+  OpenSplatRoute: OpenSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

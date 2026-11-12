@@ -18,6 +18,15 @@ export {
   CLI_TOKEN_PREFIX,
   resolveCliToken,
 } from "./operations/cli.ts";
+export {
+  DESKTOP_APPROVE_PATH,
+  DESKTOP_CALLBACK_URL,
+  DESKTOP_DEVICE_ACTOR,
+  DESKTOP_TOKEN_PREFIX,
+  presenceMessage,
+  rawSignature,
+  resolveDesktopToken,
+} from "./operations/desktop.ts";
 export { DEVICE_LOGIN_ACTOR, normalizeUserCode } from "./operations/devices.ts";
 export * as operations from "./operations/index.ts";
 export { PROTECTION_RECHECK_MS } from "./operations/protection.ts";

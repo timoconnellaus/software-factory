@@ -1,38 +1,59 @@
-// The sf CLI's door (ADR 0340, spec 07): `/cli/v1` on sf-engine, next to the runner channel.
-// - `device/start` and `device/poll` are the unsigned device login (as CLI_DEVICE_ACTOR).
-// - `call` runs one operation as the person behind the bearer token, on the `cli` surface: the
-//   token sets the actor, nothing in the request does. A `read` token reaches only `read`-risk
-//   operations. Browser-only decisions are refused by `invoke()` itself, whatever the scope.
+// The client door (ADR 0340, ADR 0371, specs 07 and 30): `/client/v1` on sf-engine, next to the
+// runner channel; `/cli/v1` is the same door under its first name, which `sf` uses.
+// - `device/start` and `device/poll` are the CLI's unsigned device login (as CLI_DEVICE_ACTOR).
+// - `desktop/start` and `desktop/exchange` are the desktop app's unsigned sign-in (as
+//   DESKTOP_DEVICE_ACTOR).
+// - `call` runs one operation as the person behind the bearer token. The token's kind sets the
+//   surface (`cli` or `desktop`); nothing in the request does. A `read` CLI token reaches only
+//   `read`-risk operations. A desktop call may carry a presence proof, which the door redeems
+//   (presence.redeem) before it runs the call with `origin.presence` set to exactly that decision.
+// - `batch` runs up to 20 `read`-risk calls in parallel (the desktop app's page loads).
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
 // MCP is meant to come through the same door.
 import {
   type Actor,
   CLI_DEVICE_ACTOR,
+  DESKTOP_DEVICE_ACTOR,
   describeOperations,
   getOperation,
+  inputDigest,
   invoke,
   OperationError,
+  type Origin,
   resolveCliToken,
+  resolveDesktopToken,
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
 import { STATUS } from "./channel.ts";
 import { invokeDeps } from "./deps.ts";
 
 export const CLI_PREFIX = "/cli/v1/";
+export const CLIENT_PREFIX = "/client/v1/";
+/** The most calls one `batch` may carry. */
+export const BATCH_LIMIT = 20;
 
 const NO_STORE = { "cache-control": "no-store" };
 const reply = (body: unknown, status = 200) => Response.json(body, { status, headers: NO_STORE });
 const unauthenticated = () =>
   reply(
     {
-      error: "not signed in, or the token expired or was revoked: run `sf login`",
+      error:
+        "not signed in, or the token expired or was revoked: run `sf login` (or sign in to the app again)",
       code: "unauthenticated",
     },
     401,
   );
 
+/** Who a bearer token is: a CLI token (with its scope) or a desktop device's token. */
+type Caller =
+  | { kind: "cli"; userId: string; scope: "read" | "write" }
+  | { kind: "desktop"; userId: string; deviceId: string };
+
 export async function handleCli(request: Request, env: Env): Promise<Response> {
-  const path = new URL(request.url).pathname.slice(CLI_PREFIX.length);
+  const pathname = new URL(request.url).pathname;
+  const path = pathname.slice(
+    pathname.startsWith(CLIENT_PREFIX) ? CLIENT_PREFIX.length : CLI_PREFIX.length,
+  );
   if (path === "ops" && request.method === "GET") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
@@ -52,38 +73,121 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (path === "device/start" || path === "device/poll") {
     const op = path === "device/start" ? "cli.deviceStart" : "cli.devicePoll";
     // The device login answers with the output itself (the runner's login does the same).
-    return run(env, op, body, CLI_DEVICE_ACTOR, undefined, true);
+    return respond(() => run(env, op, body, CLI_DEVICE_ACTOR, { surface: "cli" }), true);
+  }
+  if (path === "desktop/start" || path === "desktop/exchange") {
+    const op = path === "desktop/start" ? "desktop.authStart" : "desktop.authExchange";
+    return respond(() => run(env, op, body, DESKTOP_DEVICE_ACTOR, { surface: "desktop" }), true);
   }
   if (path === "call") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
-    const name = typeof body.op === "string" ? body.op : "";
-    const op = getOperation(name);
-    if (!op)
-      return reply({ error: `no operation ${name || "(none)"}`, code: "unknown_operation" }, 404);
-    if (who.scope === "read" && op.risk !== "read") {
-      return reply(
-        {
-          error: `${name} changes things (risk ${op.risk}); this CLI token is read-only. Run \`sf login --write\` for a token that can.`,
-          code: "forbidden",
-        },
-        403,
-      );
-    }
     const idempotencyKey =
       typeof body.idempotencyKey === "string" && body.idempotencyKey.length <= 200
         ? body.idempotencyKey
         : undefined;
-    return run(env, name, body.input ?? {}, { type: "human", id: who.user_id }, idempotencyKey);
+    return respond(() =>
+      callAs(env, who, body.op, body.input ?? {}, body.presence, idempotencyKey),
+    );
+  }
+  if (path === "batch") {
+    const who = await authenticate(request, env);
+    if (!who) return unauthenticated();
+    const calls = body.calls;
+    if (!Array.isArray(calls) || calls.length === 0 || calls.length > BATCH_LIMIT) {
+      return reply(
+        {
+          error: `calls must be an array of 1 to ${BATCH_LIMIT} { op, input }`,
+          code: "invalid_input",
+        },
+        400,
+      );
+    }
+    const results = await Promise.all(
+      calls.map(async (c: unknown) => {
+        const { op, input } = (c && typeof c === "object" ? c : {}) as Record<string, unknown>;
+        const name = typeof op === "string" ? op : "";
+        if (getOperation(name)?.risk !== "read") {
+          return {
+            ok: false,
+            code: "forbidden",
+            error: `batch runs read operations only (${name || "none"})`,
+          };
+        }
+        try {
+          return { ok: true, result: (await callAs(env, who, name, input ?? {})).output };
+        } catch (error) {
+          if (error instanceof OperationError)
+            return { ok: false, code: error.code, error: error.message };
+          throw error;
+        }
+      }),
+    );
+    return reply({ results });
   }
   return reply({ error: "not found", code: "not_found" }, 404);
 }
 
-async function authenticate(request: Request, env: Env) {
+async function authenticate(request: Request, env: Env): Promise<Caller | null> {
   const header = request.headers.get("authorization") ?? "";
   const match = /^Bearer\s+(\S+)$/i.exec(header);
-  if (!match?.[1]) return null;
-  return resolveCliToken(createDb(env.DB), match[1], new Date().toISOString());
+  const token = match?.[1];
+  if (!token) return null;
+  const db = createDb(env.DB);
+  const now = new Date().toISOString();
+  const desktop = await resolveDesktopToken(db, token, now);
+  if (desktop) return { kind: "desktop", userId: desktop.user_id, deviceId: desktop.device_id };
+  const cli = await resolveCliToken(db, token, now);
+  if (cli) return { kind: "cli", userId: cli.user_id, scope: cli.scope };
+  return null;
+}
+
+/** One operation as the caller, on the caller's surface, redeeming a presence proof first. */
+async function callAs(
+  env: Env,
+  who: Caller,
+  opName: unknown,
+  input: unknown,
+  presence?: unknown,
+  idempotencyKey?: string,
+) {
+  const name = typeof opName === "string" ? opName : "";
+  const op = getOperation(name);
+  if (!op) throw new OperationError("unknown_operation", `no operation ${name || "(none)"}`);
+  const actor: Actor = { type: "human", id: who.userId };
+  if (who.kind === "cli") {
+    if (who.scope === "read" && op.risk !== "read") {
+      throw new OperationError(
+        "forbidden",
+        `${name} changes things (risk ${op.risk}); this CLI token is read-only. Run \`sf login --write\` for a token that can.`,
+      );
+    }
+    return run(env, name, input, actor, { surface: "cli" }, idempotencyKey);
+  }
+  const origin: Origin = { surface: "desktop", deviceId: who.deviceId };
+  if (presence !== undefined) {
+    const proof = (presence && typeof presence === "object" ? presence : {}) as Record<
+      string,
+      unknown
+    >;
+    const digest = await inputDigest(input);
+    // Spend the proof first, so it can't be replayed even if the decision then fails.
+    await run(
+      env,
+      "presence.redeem",
+      {
+        challengeId: proof.challengeId,
+        nonce: proof.nonce,
+        signature: proof.signature,
+        op: name,
+        inputDigest: digest,
+      },
+      actor,
+      origin,
+    );
+    origin.presence = { op: name, inputDigest: digest, challengeId: String(proof.challengeId) };
+  }
+  return run(env, name, input, actor, origin, idempotencyKey);
 }
 
 async function run(
@@ -91,19 +195,29 @@ async function run(
   op: string,
   input: unknown,
   actor: Actor,
+  origin: Omit<Origin, "requestId">,
   idempotencyKey?: string,
+) {
+  const result = await invoke(invokeDeps(env), op, input, {
+    actor,
+    origin: { ...origin, requestId: crypto.randomUUID() },
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  });
+  return result.status === "pending"
+    ? { pending: true as const, pendingActionId: result.pendingActionId }
+    : { pending: false as const, output: result.output };
+}
+
+async function respond(
+  call: () => Promise<
+    { pending: true; pendingActionId: string } | { pending: false; output: unknown }
+  >,
   bare = false,
 ): Promise<Response> {
   try {
-    const result = await invoke(invokeDeps(env), op, input, {
-      actor,
-      origin: { surface: "cli", requestId: crypto.randomUUID() },
-      ...(idempotencyKey ? { idempotencyKey } : {}),
-    });
-    if (result.status === "pending") {
-      return reply({ pending: true, pendingActionId: result.pendingActionId }, 202);
-    }
-    return reply(bare ? result.output : { result: result.output });
+    const r = await call();
+    if (r.pending) return reply({ pending: true, pendingActionId: r.pendingActionId }, 202);
+    return reply(bare ? r.output : { result: r.output });
   } catch (error) {
     if (error instanceof OperationError) {
       return reply(

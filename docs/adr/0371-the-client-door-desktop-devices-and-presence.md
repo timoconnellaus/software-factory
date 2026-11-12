@@ -57,5 +57,8 @@ exactly what ADR 0340 refused to treat as a person.
 - An agent on the same Mac with the desktop token can do what a CLI `write` token can do, and no
   more. It can't produce the presence signature.
 - The Secure Enclave key needs a signed app, with `keychain-access-groups` under the Developer ID
-  team. Unsigned dev builds use a software key and are refused for decisions unless the engine
-  runs with `DESKTOP_DEV_PRESENCE=1` (local only).
+  team. The server can't tell a Secure Enclave key from a software one: macOS has no attestation for
+  it. So the app declares where its key lives (`keyStorage`), the approval page shows that with the
+  key's fingerprint, and the device list marks software keys. An unsigned dev build has a software
+  key that a local process could read. The trust anchor is the person approving the device on the
+  website, as for a CLI login.

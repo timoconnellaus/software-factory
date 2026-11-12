@@ -81,6 +81,7 @@ export async function resolveCliToken(
     .selectFrom("core_cli_tokens")
     .select(["id", "user_id", "scope", "expires_at", "revoked_at"])
     .where("token_hash", "=", await sha256Hex(token))
+    .where("kind", "=", "cli")
     .executeTakeFirst();
   if (!row || row.revoked_at || Date.parse(row.expires_at) <= Date.parse(now)) return null;
   return row;
@@ -199,6 +200,7 @@ export const cliDevicePoll = defineOperation({
         created_at: ctx.now,
         expires_at: expiresAt,
         revoked_at: null,
+        device_id: null,
       }),
     );
     ctx.change({

@@ -50,6 +50,11 @@ export interface OpMap {
   "cli.deviceLookup": Def<typeof operations.cliDeviceLookup>;
   "cli.approveDevice": Def<typeof operations.cliApproveDevice>;
   "cli.denyDevice": Def<typeof operations.cliDenyDevice>;
+  "desktop.authLookup": Def<typeof operations.desktopAuthLookup>;
+  "desktop.approveDevice": Def<typeof operations.desktopApproveDevice>;
+  "desktop.denyDevice": Def<typeof operations.desktopDenyDevice>;
+  "desktopDevice.list": Def<typeof operations.desktopDeviceList>;
+  "desktopDevice.revoke": Def<typeof operations.desktopDeviceRevoke>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
 }
 
@@ -100,6 +105,11 @@ export const APP_OPERATIONS = [
   "cli.deviceLookup",
   "cli.approveDevice",
   "cli.denyDevice",
+  "desktop.authLookup",
+  "desktop.approveDevice",
+  "desktop.denyDevice",
+  "desktopDevice.list",
+  "desktopDevice.revoke",
   "killSwitch.set",
 ] as const satisfies readonly OpName[];
 
@@ -118,6 +128,7 @@ export const APP_READ_OPERATIONS = [
   "github.repos",
   "setup.status",
   "runner.list",
+  "desktopDevice.list",
 ] as const satisfies readonly OpName[];
 export type ReadOpName = (typeof APP_READ_OPERATIONS)[number];
 

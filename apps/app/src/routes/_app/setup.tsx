@@ -114,6 +114,7 @@ function SetupPage() {
         <ProjectDetails key={p.id} project={p} />
       ))}
       <Runners />
+      <DesktopDevices />
     </main>
   );
 }
@@ -737,6 +738,59 @@ function ProjectDetails({ project }: { project: ProjectState }) {
           )}
         </div>
       </details>
+    </Card>
+  );
+}
+
+/** Desktop devices (ADR 0371): each Mac signed in to the desktop app, revocable here. */
+function DesktopDevices() {
+  const devices = useQuery({
+    queryKey: ["desktop-devices"],
+    queryFn: () => op("desktopDevice.list", {}),
+  });
+  const [busy, setBusy] = useState<string | null>(null);
+  async function revoke(deviceId: string) {
+    setBusy(deviceId);
+    try {
+      await op("desktopDevice.revoke", { deviceId }, { idempotencyKey: submitKey() });
+      await devices.refetch();
+    } catch (error) {
+      toast.error(errorText(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+  const list = devices.data?.devices ?? [];
+  return (
+    <Card className="gap-3 px-5 py-4" data-testid="desktop-devices">
+      <div className="font-semibold">Desktop app devices</div>
+      <div className="grid gap-2">
+        {list.map((d) => (
+          <div key={d.id} className="flex flex-wrap items-center gap-2 text-sm">
+            <StatusDot status={d.revokedAt ? "idle" : "done"} />
+            <span className="font-medium">{d.name}</span>
+            <span className="text-muted-foreground text-xs">
+              {d.revokedAt ? "revoked" : `seen ${ago(d.lastSeenAt)}`}
+              {d.keyStorage === "software" ? " · software key" : ""}
+            </span>
+            {!d.revokedAt && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy === d.id}
+                onClick={() => revoke(d.id)}
+              >
+                Revoke
+              </Button>
+            )}
+          </div>
+        ))}
+        {devices.data && list.length === 0 && (
+          <div className="text-muted-foreground text-sm">
+            None yet. Sign in from the desktop app to add this Mac.
+          </div>
+        )}
+      </div>
     </Card>
   );
 }

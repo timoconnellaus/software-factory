@@ -151,6 +151,12 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    * decides per input (a kill switch may be turned on from a terminal, not off).
    */
   browserOnly?: true | ((input: z.output<I>) => boolean);
+  /**
+   * A browser-only decision a person may also make from a desktop device with a presence proof for
+   * this exact call (ADR 0371): spec, merge, approval and question decisions. Never set on
+   * operations that grant authority (device logins, runner registration, kill switch off).
+   */
+  presenceDecidable?: true;
   /** Which inbox card a `review` answer becomes. Default `approval`. */
   gateKind?: "spec" | "merge" | "approval";
   /**

@@ -67,7 +67,8 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   (`spikes/electrobun`, #44) showed a Keychain token can't prove a person, so gate decisions from the
   desktop need a Secure Enclave presence proof (ADR 0371, amends 0340). Five milestones: M1 the client
   door + desktop devices + presence (cloud), M2 `apps/desktop` shell + runner, M3 screens, M4 signing
-  and updates, M5 the website strip-down.
+  and updates, M5 the website strip-down. **M1 is built** (`desktop-m1`, migration 0140): `/client/v1`,
+  `desktop.*`, `desktopDevice.*`, `presence.*`, `/desktop/connect`, `/open/*`, Setup's devices card.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

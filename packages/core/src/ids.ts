@@ -22,6 +22,9 @@ export const ID_PREFIXES = {
   planningMessage: "pm",
   cliDeviceCode: "cdc",
   cliToken: "cli",
+  desktopAuthRequest: "dar",
+  desktopDevice: "dsk",
+  presenceChallenge: "prc",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
