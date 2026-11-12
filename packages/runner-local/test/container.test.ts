@@ -468,6 +468,18 @@ describe("the egress proxy's private-address filter (fifth review)", () => {
       "fd7a:115c:a1e0::1",
       "::ffff:127.0.0.1",
       "::ffff:7f00:1",
+      "0:0:0:0:0:ffff:7f00:1",
+      "::ffff:10.0.0.1",
+      // IPv4-compatible, NAT64, SIIT, 6to4 and Teredo: every form with an IPv4 address inside.
+      "::127.0.0.1",
+      "::7f00:1",
+      "[::127.0.0.1]",
+      "64:ff9b::127.0.0.1",
+      "64:ff9b:1::a00:1",
+      "::ffff:0:127.0.0.1",
+      "2002:7f00:1::",
+      "2002:6810:101::1", // 6to4 of a public address: refused whole
+      "2001:0:4136:e378::1", // Teredo
       "not-an-ip",
     ]) {
       expect(notPublic(a), a).toBe(true);
