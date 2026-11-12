@@ -17,6 +17,7 @@ import {
 import { mergeHooks, planningHooks, writePlanningFiles } from "./planning/project.ts";
 import {
   type ClaudeSettings,
+  defaultTempDirs,
   EMPTY_DIRS,
   EMPTY_FILES,
   runGitConfig,
@@ -45,8 +46,10 @@ export interface ProjectedHarness {
 }
 
 /** The temp directories a run may write: the system's (symlinks resolved) and `/tmp`. */
-export async function systemTempDirs(): Promise<string[]> {
-  const dirs = new Set(["/tmp", "/private/tmp", tmpdir()]);
+export async function systemTempDirs(
+  platform: NodeJS.Platform = process.platform,
+): Promise<string[]> {
+  const dirs = new Set([...defaultTempDirs(platform), tmpdir()]);
   dirs.add(await realpath(tmpdir()).catch(() => tmpdir()));
   return [...dirs];
 }

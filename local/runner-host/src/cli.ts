@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// `sf-runner`: connect this machine to the factory, run the runner, install it as a launchd service.
+// `sf-runner`: connect this machine to the factory, run the runner, install it as a service
+// (launchd on macOS, a systemd user service on Linux: ADR 0420).
 //
 //   sf-runner login [--name m5] [--url https://sf-engine.zerobsai.com] [--app https://…] [--no-install]
 //                                  print a code, wait for approval in the app, save the key, install
@@ -10,8 +11,10 @@
 //   sf-runner doctor [--fix]       check node, git, tmux, claude, the channel, the checkouts (one
 //                                  per remote, no job worktree or tmux session without a job),
 //                                  and that each running job's Claude runs exactly as the
-//                                  harness launched it (ADR 0270)
-//   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
+//                                  harness launched it (ADR 0270); on Linux also bubblewrap,
+//                                  socat, the user systemd and linger
+//   sf-runner install | uninstall  the service: ~/Library/LaunchAgents on macOS,
+//                                  ~/.config/systemd/user on Linux
 //   sf-runner account list | add <name> [--token-stdin [--oauth|--api-key]] [--no-login]
 //                     | use <name> | remove <name>
 //                                  Claude accounts on this host (ADR 0410): new jobs use the
@@ -19,7 +22,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile } from "node:fs/promises";
-import { hostname } from "node:os";
+import { hostname, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
@@ -47,7 +50,7 @@ import {
 } from "./config.ts";
 import { deviceLogin } from "./device-login.ts";
 import { acquireHostLock, HostLockedError } from "./host-lock.ts";
-import * as launchd from "./launchd.ts";
+import { installHint, linuxChecks } from "./linux.ts";
 import { readLiveJobs } from "./live-jobs.ts";
 import { findOnPath, parsePairingInput, serviceNode } from "./pairing.ts";
 import { buildRunner, hostDirs, liveJobsFile } from "./runner.ts";
@@ -60,8 +63,13 @@ import {
   type SelfUpdate,
   UPDATE_EXIT_CODE,
 } from "./self-update.ts";
+import { serviceFor, unsupported } from "./service.ts";
+import { linger, lingerHint } from "./systemd.ts";
 
 const dirs = paths();
+/** launchd on macOS, systemd on Linux, null elsewhere (ADR 0420). */
+const service = serviceFor();
+const user = () => process.env.USER ?? userInfo().username;
 /** `local/runner-host/src` of the checkout this CLI runs from. */
 const srcDir = () => dirname(realpathSync(new URL(import.meta.url).pathname));
 
@@ -77,7 +85,7 @@ async function requireConfig() {
     console.error(
       `Not connected: no ${dirs.configFile}. Run\n  local/runner-host/bin/sf-runner login`,
     );
-    // A clean exit, so launchd doesn't restart an unpaired runner in a loop.
+    // A clean exit, so the service (launchd or systemd) doesn't restart an unpaired runner in a loop.
     process.exit(0);
   }
   return config;
@@ -158,7 +166,8 @@ async function adopt(config: RunnerConfig) {
   }
   await saveConfig(dirs.configFile, config);
   console.log(`Paired ${config.runnerId} with ${config.baseUrl}; config in ${dirs.configFile}`);
-  if (await launchd.kickstart(nodeExec)) console.log("Restarted the launchd service.");
+  if (service && (await service.kickstart(nodeExec)))
+    console.log(`Restarted the ${service.kind} service.`);
 }
 
 /**
@@ -188,11 +197,14 @@ async function login(args: string[]) {
     baseUrl,
     appUrl: values.app ?? DEFAULT_APP_URL,
     name: suggested.slice(0, 80),
-    ...(values["no-open"] || process.platform !== "darwin"
+    ...(values["no-open"] || !opener()
       ? {}
       : {
           open: (url: string) => {
-            spawn("open", [url], { stdio: "ignore", detached: true }).on("error", () => {});
+            spawn(opener() as string, [url], { stdio: "ignore", detached: true }).on(
+              "error",
+              () => {},
+            );
           },
         }),
   });
@@ -231,9 +243,10 @@ async function run() {
   const { host } = buildRunner(config, dirs, {
     log,
     ...(selfUpdate ? { selfUpdate } : {}),
-    // Updated and idle: exit non-zero so launchd (KeepAlive, SuccessfulExit=false) starts the new code.
+    // Updated and idle: exit non-zero so the service (launchd KeepAlive with SuccessfulExit=false,
+    // systemd Restart=on-failure) starts the new code.
     onUpdated: () => {
-      log(`exiting ${UPDATE_EXIT_CODE} so launchd starts the updated runner`);
+      log(`exiting ${UPDATE_EXIT_CODE} so the service starts the updated runner`);
       process.exit(UPDATE_EXIT_CODE);
     },
   });
@@ -290,8 +303,10 @@ async function status() {
   console.log(
     config ? JSON.stringify(redacted(config), null, 2) : `not paired (${dirs.configFile})`,
   );
-  const service = await launchd.status(nodeExec);
-  console.log(`service: ${service ?? "not installed"}`);
+  const state = service ? await service.status(nodeExec) : null;
+  console.log(
+    `service: ${service ? `${state ?? "not installed"} (${service.kind}, ${service.file})` : `none on ${process.platform}`}`,
+  );
   const accounts = await listAccounts(accountPaths(dirs)).catch(() => null);
   const active = accounts?.find((a) => a.active);
   console.log(
@@ -303,7 +318,7 @@ async function status() {
   console.log(
     live
       ? `jobs running: ${live.jobs.length ? live.jobs.join(", ") : "none"} (host pid ${live.pid}, ${live.updatedAt})`
-      : service && /state = running/.test(service)
+      : state && /state = running/.test(state)
         ? "jobs running: unknown (the service predates the live-jobs file)"
         : "jobs running: none (no host running)",
   );
@@ -346,8 +361,8 @@ async function status() {
 async function liveJobs(): Promise<Set<string> | null> {
   const live = await readLiveJobs(liveJobsFile(dirs));
   if (live) return new Set(live.jobs);
-  const service = await launchd.status(nodeExec);
-  return service && /state = running/.test(service) ? null : new Set();
+  const state = service ? await service.status(nodeExec) : null;
+  return state && /state = running/.test(state) ? null : new Set();
 }
 
 async function doctor(args: string[]) {
@@ -373,10 +388,22 @@ async function doctor(args: string[]) {
   await check("git", () => version("git"));
   await check("tmux ≥ 3.2", async () => {
     const v = await version("tmux", ["-V"]);
-    if (!tmuxAtLeast(v)) throw new Error(`${v}; install a newer one (brew install tmux)`);
+    if (!tmuxAtLeast(v)) throw new Error(`${v}; install a newer one (${installHint("tmux")})`);
     return v;
   });
   await check("claude", () => version("claude"));
+  if (process.platform === "linux") {
+    const lines = await linuxChecks({
+      exec: nodeExec,
+      user: user(),
+      which: (name) => findOnPath(name, process.env.PATH),
+    });
+    for (const line of lines) {
+      if (line.level === "fail") ok = false;
+      const mark = line.level === "ok" ? "✓" : line.level === "warn" ? "!" : "✗";
+      console.log(`${mark} ${line.what}: ${line.detail}`);
+    }
+  }
   await check("checkouts (runner.json)", async () => {
     let config = await loadConfig(dirs.configFile).catch(() => null);
     if (config && config.checkouts === undefined) {
@@ -491,11 +518,14 @@ async function install(args: string[]) {
     : resolve(srcDir(), "..");
   const wrapper = join(runnerHost, "bin", "sf-runner-service");
   if (!existsSync(wrapper)) throw new Error(`No ${wrapper}: is that a software-factory checkout?`);
-  const file = launchd.plistPath();
+  if (!service) throw unsupported(process.platform);
+  const file = service.file;
   // The service starts Claude in tmux: both must be on its PATH, even from a shell without them
   // (an SSH session, incident #9; `claude` is usually in ~/.local/bin).
   const localBin = join(process.env.HOME ?? "", ".local", "bin");
-  const tools = ["tmux", "claude"].map((name) => ({
+  // On Linux Claude Code's sandbox runs bubblewrap and socat (ADR 0420): their dirs go on PATH too.
+  const needed = ["tmux", "claude", ...(process.platform === "linux" ? ["bwrap", "socat"] : [])];
+  const tools = needed.map((name) => ({
     name,
     path: findOnPath(name, process.env.PATH, undefined, [localBin]),
   }));
@@ -512,10 +542,10 @@ async function install(args: string[]) {
   });
   const path = pinned.path;
   await mkdir(dirs.logDir, { recursive: true });
-  await launchd.install(
+  await service.install(
     nodeExec,
     file,
-    launchd.plist({
+    service.definition({
       node: pinned.node,
       wrapper,
       workingDirectory: runnerHost,
@@ -527,9 +557,25 @@ async function install(args: string[]) {
     }),
   );
   console.log(
-    `Installed ${launchd.LABEL} (${file}) running ${wrapper} on Node ${process.version} (${pinned.node})`,
+    `Installed ${service.name} (${file}) running ${wrapper} on Node ${process.version} (${pinned.node})`,
   );
   console.log(`Logs: ${join(dirs.logDir, "runner.log")}`);
+  if (service.kind === "systemd") {
+    const lingers = await linger(nodeExec, user());
+    console.log(
+      lingers
+        ? `Linger is on for ${user()}: the service runs without a login session and starts at boot.`
+        : `! ${lingers === false ? lingerHint(user()) : `couldn't tell whether linger is on for ${user()} (loginctl failed)`}`,
+    );
+  }
+}
+
+/** What opens the login link: `open` on macOS, `xdg-open` on a Linux desktop, else nothing. */
+function opener(): string | null {
+  if (process.platform === "darwin") return "open";
+  if (process.platform === "linux" && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY))
+    return "xdg-open";
+  return null;
 }
 
 const [command, ...rest] = process.argv.slice(2);
@@ -541,8 +587,9 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
   doctor,
   install,
   uninstall: async () => {
-    await launchd.uninstall(nodeExec, launchd.plistPath());
-    console.log(`Removed ${launchd.LABEL}`);
+    if (!service) throw unsupported(process.platform);
+    await service.uninstall(nodeExec, service.file);
+    console.log(`Removed ${service.name} (${service.file})`);
   },
   account: async (args) => {
     const code = await accountCommand(args, {

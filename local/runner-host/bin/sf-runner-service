@@ -1,11 +1,12 @@
 #!/bin/sh
-# What launchd runs (ADR 0360): checks the self-update record, then starts the runner on Node.
+# What the service runs, launchd or systemd (ADR 0360, 0420): checks the self-update record, then
+# starts the runner on Node.
 # An update the runner applied is "pending" until its first successful heartbeat confirms it. Each
 # start here counts one try; after three starts without a confirmation it resets the checkout to the
 # commit before the update, reinstalls, marks the update rolled back and lists the commit so the
 # runner never retries it. Kept tiny on purpose: a broken wrapper is the one thing a person must fix.
 #
-# Env (from the plist): SF_RUNNER_NODE (the pinned Node), SF_RUNNER_STATE_DIR, optional
+# Env (from the plist or the unit): SF_RUNNER_NODE (the pinned Node), SF_RUNNER_STATE_DIR, optional
 # SF_RUNNER_PNPM. The record format is in src/self-update.ts.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd -P)

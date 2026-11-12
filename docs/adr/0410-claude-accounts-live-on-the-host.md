@@ -14,7 +14,7 @@ and the run's environment must stay credential-free apart from the model credent
 
 ## Decision
 1. **Accounts are a host thing.** A host holds named accounts. A **login** account is a Claude
-   Code config dir of its own (`~/.local/share/software-factory/accounts/<name>/`, used as
+   Code config dir of its own (`~/.local/share/software-factory/runner/accounts/<name>/`, used as
    `CLAUDE_CONFIG_DIR`), logged into by running `claude` there. A **token** account is a
    `claude setup-token` OAuth token or an API key in a 0600 file
    (`~/.config/software-factory/accounts/<name>.token`), plus a config dir of its own. The registry

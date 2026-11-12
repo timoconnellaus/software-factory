@@ -16,7 +16,7 @@ from the dashboard. Credentials never leave the host: the factory sees account n
 ## Scope
 - **Accounts on the host** (`local/runner-host`, `accounts.ts`). Two kinds:
   - **login**: a Claude Code login in its own config dir,
-    `~/.local/share/software-factory/accounts/<name>/`, used as `CLAUDE_CONFIG_DIR`.
+    `~/.local/share/software-factory/runner/accounts/<name>/`, used as `CLAUDE_CONFIG_DIR`.
     `sf-runner account add <name>` creates the dir (0700) and runs `claude` there so the owner logs
     in (`--no-login` skips that).
   - **token**: a `claude setup-token` OAuth token or an Anthropic API key, read from stdin by
@@ -86,7 +86,7 @@ from the dashboard. Credentials never leave the host: the factory sees account n
 ## Acceptance criteria
 1. A host with no accounts runs jobs exactly as before: the launch script sets no account variable
    and `sf-runner account list` shows `default` active.
-2. `sf-runner account add work` makes `~/.local/share/software-factory/accounts/work/` (0700) and runs
+2. `sf-runner account add work` makes `~/.local/share/software-factory/runner/accounts/work/` (0700) and runs
    `claude` with `CLAUDE_CONFIG_DIR` set to it. `sf-runner account add ci --token-stdin` stores the
    token 0600, outside any config dir, and nothing else on disk or on the wire carries it (bar
    Claude's own approval record of an API key's last 20 characters).

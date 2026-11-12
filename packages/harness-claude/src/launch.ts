@@ -11,7 +11,7 @@
 // it once the launch is verified, so nothing runs before the check passes.
 //
 // After launch, `inspectLaunch` reads the pid the launch script recorded, the live process's
-// command line (`ps`), and both copies of the settings file, and `launchProblems` compares them with
+// command line (`/proc/<pid>/cmdline` on Linux, `ps` elsewhere), and both copies of the settings file, and `launchProblems` compares them with
 // the launch record. Any difference is `harness-config-mismatch`: the adapter kills the session and
 // the job fails, which opens a factory incident.
 import { execFile } from "node:child_process";
@@ -175,8 +175,22 @@ export function launchProblems(record: LaunchRecord, observed: ObservedLaunch): 
 
 export type ReadCommand = (pid: number) => Promise<string | null>;
 
-/** `ps -ww -o command= -p <pid>`: the process's argv, or null when it is gone. */
+/**
+ * The live process's argv joined with spaces (what `ps -o command=` prints), or null when it is
+ * gone. On Linux it reads `/proc/<pid>/cmdline`, so a host without procps (a slim image) can still
+ * run the ADR 0270 check (ADR 0420); elsewhere it runs `ps -ww -o command= -p <pid>`.
+ */
 export const psCommand: ReadCommand = (pid) =>
+  process.platform === "linux" ? procCommand(pid) : bsdPsCommand(pid);
+
+/** `/proc/<pid>/cmdline`: NUL-separated argv. Empty for a zombie or kernel thread (null). */
+export const procCommand: ReadCommand = async (pid) => {
+  const raw = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
+  const argv = raw.replace(/\0$/, "").split("\0");
+  return raw === "" ? null : argv.join(" ");
+};
+
+const bsdPsCommand: ReadCommand = (pid) =>
   new Promise((resolve) => {
     execFile("ps", ["-ww", "-o", "command=", "-p", String(pid)], (error, stdout) => {
       const line = String(stdout).replace(/\n$/, "");
