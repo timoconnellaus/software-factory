@@ -12,6 +12,10 @@
 //                                  and that each running job's Claude runs exactly as the
 //                                  harness launched it (ADR 0270)
 //   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
+//   sf-runner account list | add <name> [--token-stdin [--oauth|--api-key]] [--no-login]
+//                     | use <name> | remove <name>
+//                                  Claude accounts on this host (ADR 0410): new jobs use the
+//                                  active one; credentials never leave this machine
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile } from "node:fs/promises";
@@ -28,6 +32,8 @@ import {
   tmuxAtLeast,
   tmuxCli,
 } from "@software-factory/runner-local";
+import { accountCommand } from "./account-cli.ts";
+import { AccountError, accountPaths, listAccounts } from "./accounts.ts";
 import { checkoutDirs, migrateCheckouts } from "./checkouts.ts";
 import type { RunnerConfig } from "./config.ts";
 import {
@@ -40,19 +46,6 @@ import {
   saveConfig,
 } from "./config.ts";
 import { deviceLogin } from "./device-login.ts";
-// `sf-runner`: connect this machine to the factory, run the runner, install it as a launchd service.
-//
-//   sf-runner login [--name m5] [--url https://sf-engine.zerobsai.com] [--app https://…] [--no-install]
-//                                  print a code, wait for approval in the app, save the key, install
-//   sf-runner pair --runner-id r_… --key-stdin   (fallback: a key registered in Setup)
-//   sf-runner run                  run in the foreground (what the service runs)
-//   sf-runner status               config (key redacted), service state, the jobs it is running,
-//                                  and its version against the desired one (self-update, ADR 0360)
-//   sf-runner doctor [--fix]       check node, git, orca, claude, the channel, Orca's repos
-//                                  (duplicate source repos for one remote, job worktrees with no
-//                                  job), and that each running job's Claude runs exactly as the
-//                                  harness launched it (ADR 0270)
-//   sf-runner install | uninstall  the launchd service (~/Library/LaunchAgents)
 import { acquireHostLock, HostLockedError } from "./host-lock.ts";
 import * as launchd from "./launchd.ts";
 import { readLiveJobs } from "./live-jobs.ts";
@@ -299,6 +292,13 @@ async function status() {
   );
   const service = await launchd.status(nodeExec);
   console.log(`service: ${service ?? "not installed"}`);
+  const accounts = await listAccounts(accountPaths(dirs)).catch(() => null);
+  const active = accounts?.find((a) => a.active);
+  console.log(
+    active
+      ? `Claude account for new jobs: ${active.name} (${accounts?.length} on this host; sf-runner account list)`
+      : "Claude account: unknown (accounts.json unreadable)",
+  );
   const live = await readLiveJobs(liveJobsFile(dirs));
   console.log(
     live
@@ -544,13 +544,33 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     await launchd.uninstall(nodeExec, launchd.plistPath());
     console.log(`Removed ${launchd.LABEL}`);
   },
+  account: async (args) => {
+    const code = await accountCommand(args, {
+      paths: accountPaths(dirs),
+      runsDir: dirs.runsDir,
+      liveJobs,
+      allRuns: () => readdir(dirs.runsDir).catch(() => [] as string[]),
+      readStdin,
+      runClaude: (env) =>
+        new Promise((resolve) => {
+          const child = spawn("claude", [], { stdio: "inherit", env });
+          child.on("error", (err) => {
+            console.error(`couldn't start claude: ${err.message}`);
+            resolve(null);
+          });
+          child.on("exit", (code) => resolve(code));
+        }),
+      log: (line) => console.log(line),
+    });
+    if (code !== 0) process.exit(code);
+  },
 };
 const fn = command ? commands[command] : undefined;
 if (!fn) {
-  console.log("usage: sf-runner login|run|status|doctor [--fix]|install|uninstall");
+  console.log("usage: sf-runner login|run|status|doctor [--fix]|install|uninstall|account");
   process.exit(command ? 2 : 0);
 }
 fn(rest).catch((err) => {
   console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
+  process.exit(err instanceof AccountError ? 2 : 1);
 });
