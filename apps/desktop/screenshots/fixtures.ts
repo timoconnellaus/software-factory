@@ -499,6 +499,8 @@ function question(n: number, prompt: string, extra: Partial<PlanningQ>): Plannin
     answer: null,
     note: null,
     acceptedDefault: false,
+    skipped: false,
+    answerDeliveredAt: ago(29),
     answeredBy: ME,
     answeredAt: ago(30),
     answerRevision: 1,

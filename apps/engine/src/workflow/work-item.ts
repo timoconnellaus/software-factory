@@ -79,7 +79,8 @@ export type WorkItemOutcome =
  *   one-shot spec runs with question rounds. `planning: start`, then per round `planning #k: await`,
  *   a wait for the agent's `planning.ready` (escalating open blocking questions on each question
  *   timeout, never auto-accepting), and the spec gate. Request changes goes into the same session
- *   (`planning.note`); a decision ends it (`planning.end`).
+ *   (`planning.note`); a decision ends it (`planning.end`). A person's word at the gate withdraws
+ *   it (ADR 0470) and the next round starts, in the same version.
  */
 /**
  * - v6 (spec 09 M2, ADR 0371): the item's workflow fills the skeleton's three slots. Triage is told
@@ -1482,6 +1483,10 @@ class ItemFlow {
         });
         continue; // the same session revises (spec 20, criterion 10)
       }
+      // A person's word took the spec back (ADR 0470): the message is in the chat already and the
+      // round moved on, so the planner revises and asks again. No version bump: nothing emitted
+      // `withdrawn` for a spec gate before this release.
+      if (decided.decision === "withdrawn") continue;
       await this.act(`planning #${k}: end`, "planning.end", {
         workItemId: id,
         reason: `spec ${decided.decision}`,

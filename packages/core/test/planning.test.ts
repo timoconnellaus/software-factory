@@ -325,6 +325,9 @@ describe("planning sessions (spec 20)", () => {
     // Not ready while a blocking question is open.
     expect((await refusal(agent(m5, job, "planning.ready", {}))).code).toBe("conflict");
     await ok("question.answer", { questionId: asked.questionIds[0], answer: "Yes" }, w.human);
+    // Not ready while the answer is unread (spec 26, criterion 2).
+    expect((await refusal(agent(m5, job, "planning.ready", {}))).code).toBe("conflict");
+    await agent(m5, job, "planning.news", {});
     const ready = await agent<{ specId: string; round: number }>(m5, job, "planning.ready", {});
     expect(ready).toEqual({ specId: revised.specId, round: 1 });
     const awaited = await ok<{ ready: boolean; specId: string; event: string }>(

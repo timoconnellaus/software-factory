@@ -46,6 +46,11 @@ export interface InvokeDeps {
   /** Delivers outbox rows right after commit. Failures are left for the cron. */
   deliver?: (outboxIds: string[]) => Promise<void>;
   now?: () => Date;
+  /**
+   * Test seam only: called after an operation's reads and before its batch commits, so a test can
+   * hold one call there while another runs (deterministic races, spec 26).
+   */
+  beforeCommit?: (operation: string) => Promise<void>;
 }
 
 export interface InvokeOptions {
@@ -507,6 +512,7 @@ export async function runOperation<O = unknown>(
     clearGuards(d1),
   ];
   try {
+    await deps.beforeCommit?.(op.name);
     await d1.batch(batch);
   } catch (error) {
     const guard = failedGuard(error);

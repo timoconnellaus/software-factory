@@ -15,6 +15,7 @@ import type { Selectable } from "kysely";
 import { OperationError } from "./errors.ts";
 import { newId } from "./ids.ts";
 import type { HandlerContext, WorkItemRow } from "./operation.ts";
+import { approvalEvent } from "./workflow-events.ts";
 
 export type PlanningSessionRow = Selectable<CorePlanningSessionsTable>;
 
@@ -256,16 +257,31 @@ export async function openQuestionCount(
  * message, and presence changes, in order (kim's batch summary). The agent's own events move the
  * cursor but aren't news.
  */
+/** What a piece of news carries, for read receipts: each answer at its revision, and messages. */
+export interface Delivered {
+  answers: { questionId: string; revision: number }[];
+  messageIds: string[];
+}
+
 export async function readNews(
   ctx: Pick<HandlerContext, "db" | "now">,
   workItemId: string,
   cursor: number,
-): Promise<{ cursor: number; events: PlanningNewsEvent[]; userEvents: LogRow[] }> {
+  /** Only events up to this cursor (a range the agent was shown, spec 26). */
+  upTo?: number,
+): Promise<{
+  cursor: number;
+  events: PlanningNewsEvent[];
+  userEvents: LogRow[];
+  /** The answered questions and people's messages this news carries (their read receipts). */
+  delivered: Delivered;
+}> {
   const rows = (await ctx.db
     .selectFrom("core_planning_events")
     .select(["id", "type", "actor_id", "payload", "at"])
     .where("work_item_id", "=", workItemId)
     .where("id", ">", cursor)
+    .$if(upTo !== undefined, (q) => q.where("id", "<=", upTo as number))
     .orderBy("id")
     .limit(500)
     .execute()) as LogRow[];
@@ -288,6 +304,8 @@ export async function readNews(
           "prompt",
           "answer",
           "note",
+          "skipped",
+          "answer_revision",
           "accepted_default",
           "answered_by",
           "status",
@@ -307,6 +325,18 @@ export async function readNews(
         .execute()
     : [];
   const byMessage = new Map(messages.map((m) => [m.id, m]));
+  // What each message is about (kim's `about`), so the agent needn't look the question up.
+  const aboutIds = [
+    ...new Set(messages.map((m) => m.question_id).filter((id): id is string => !!id)),
+  ];
+  const aboutRows = aboutIds.length
+    ? await ctx.db
+        .selectFrom("core_questions")
+        .select(["id", "number", "prompt"])
+        .where("id", "in", aboutIds)
+        .execute()
+    : [];
+  const aboutById = new Map(aboutRows.map((q) => [q.id, q]));
   const people = await names(ctx, [
     ...questions.map((q) => q.answered_by ?? ""),
     ...messages.map((m) => m.author_id),
@@ -326,7 +356,7 @@ export async function readNews(
       const qid = String(p.questionId);
       if (lastAnswerRow.get(qid) !== r) continue;
       const q = byQuestion.get(qid);
-      if (q?.status !== "answered" || q.answer === null) continue;
+      if (q?.status !== "answered" || (q.answer === null && q.skipped !== 1)) continue;
       events.push({
         type: revised.has(qid) ? "answer.revised" : "answer.submitted",
         cursor: r.id,
@@ -334,7 +364,9 @@ export async function readNews(
         questionId: qid,
         number: q.number,
         prompt: q.prompt,
-        answer: q.answer,
+        answer: q.skipped === 1 ? null : q.answer,
+        revision: q.answer_revision,
+        skipped: q.skipped === 1,
         note: q.note,
         acceptedDefault: q.accepted_default === 1,
         by: people.get(q.answered_by ?? "") ?? q.answered_by ?? "",
@@ -350,6 +382,13 @@ export async function readNews(
         text: m.text,
         from: people.get(m.author_id) ?? m.author_id,
         questionId: m.question_id,
+        about: m.question_id
+          ? {
+              questionId: m.question_id,
+              number: aboutById.get(m.question_id)?.number ?? null,
+              prompt: aboutById.get(m.question_id)?.prompt ?? "",
+            }
+          : null,
         kind: m.kind,
       });
     } else if (r.type === "presence.changed") {
@@ -361,7 +400,19 @@ export async function readNews(
       });
     }
   }
-  return { cursor: last, events, userEvents };
+  return {
+    cursor: last,
+    events,
+    userEvents,
+    delivered: {
+      answers: events.flatMap((e) =>
+        e.type === "answer.submitted" || e.type === "answer.revised"
+          ? [{ questionId: e.questionId, revision: e.revision }]
+          : [],
+      ),
+      messageIds: events.flatMap((e) => (e.type === "chat.message" ? [e.messageId] : [])),
+    },
+  };
 }
 
 /**
@@ -556,4 +607,186 @@ export function endPlanningSessions(ctx: HandlerContext, workItemId: string, rea
       .where("status", "in", ["queued", "claimed"]),
   );
   emitChanged(ctx, workItemId);
+}
+
+// ---- a person's word takes the spec back from the gate (spec 26, ADR 0470) ----
+
+/**
+ * Withdraws the work item's open spec gate, if any (`decision: "withdrawn"`, as verify withdraws a
+ * merge gate): the Workflow's planning stage moves to the next round. Write-only.
+ */
+export async function withdrawSpecGate(ctx: HandlerContext, workItemId: string, note: string) {
+  const pending = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select(["id", "workflow_id"])
+    .where("work_item_id", "=", workItemId)
+    .where("kind", "=", "spec")
+    .where("status", "=", "pending")
+    .execute();
+  for (const gate of pending) withdrawOne(ctx, gate, note);
+}
+
+/**
+ * A person answered or wrote while the spec waits at the gate: the planner must see it, so the spec
+ * leaves the gate and the next round starts (ADR 0470). Every branch is guarded in the operation's
+ * batch, so a concurrent `planning.ready` or gate decision can't slip past it (the loser of the race
+ * is refused as `conflict` and retried by the person):
+ * - not at the gate: the batch requires it still isn't, so a gate asked for meanwhile fails this call;
+ * - at the gate and its spec gate already decided (approved a moment ago): the decision stands;
+ * - at the gate, the gate open: the gate is withdrawn, guarded on it still being pending;
+ * - at the gate, the gate not opened yet: only the session moves on; the gate the Workflow opens
+ *   next is stale (approving it is refused, and the planner's next `planning.ready` withdraws it).
+ * Returns `taken` (the spec left the gate), `decided` (its gate was decided a moment ago: what the
+ * person wrote won't reach the planner, so the caller says so), or `none` (not at the gate).
+ */
+export async function takeBackFromGate(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  why: string,
+): Promise<"taken" | "decided" | "none"> {
+  const session = await openSession(ctx, w.id);
+  if (!session) return "none";
+  if (!session.at_gate) {
+    ctx.guardExists(
+      "the spec isn't at the gate",
+      ctx.db
+        .selectFrom("core_planning_sessions")
+        .select("id")
+        .where("id", "=", session.id)
+        .where("at_gate", "=", 0),
+    );
+    return "none";
+  }
+  const gate = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select(["id", "status", "workflow_id"])
+    .where("work_item_id", "=", w.id)
+    .where("kind", "=", "spec")
+    .where("created_at", ">=", session.ready_at ?? session.created_at)
+    .orderBy("created_at", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  if (gate && gate.status !== "pending") return "decided";
+  const note = `withdrawn: ${why}, so the planner revises before the gate`;
+  ctx.write(
+    ctx.db
+      .updateTable("core_planning_sessions")
+      .set({
+        round: session.round + 1,
+        ready_spec_id: null,
+        ready_at: null,
+        at_gate: 0,
+        updated_at: ctx.now,
+      })
+      .where("id", "=", session.id)
+      .where("at_gate", "=", 1)
+      .where("round", "=", session.round),
+  );
+  ctx.guardChanged("the spec still waits at the gate");
+  if (gate) withdrawOne(ctx, gate, note);
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({ status: "running", updated_at: ctx.now })
+      .where("id", "=", w.id)
+      .where("status", "=", "waiting"),
+  );
+  logPlanning(ctx, w.id, "gate.withdrawn", { round: session.round + 1, why });
+  return "taken";
+}
+
+/** Withdraws one pending spec gate, guarded on it still being pending (else the batch fails). */
+function withdrawOne(
+  ctx: HandlerContext,
+  gate: { id: string; workflow_id: string | null },
+  note: string,
+) {
+  ctx.write(
+    ctx.db
+      .updateTable("core_pending_actions")
+      .set({
+        status: "rejected",
+        decision: "withdrawn",
+        decided_at: ctx.now,
+        decided_by: ctx.actor.id,
+        note,
+      })
+      .where("id", "=", gate.id)
+      .where("status", "=", "pending"),
+  );
+  ctx.guardChanged("the spec gate is still undecided");
+  if (gate.workflow_id) {
+    ctx.emit({
+      kind: "workflow.event",
+      payload: {
+        instanceId: gate.workflow_id,
+        type: approvalEvent(gate.id),
+        payload: { decision: "withdrawn", note, by: ctx.actor.id },
+      },
+    });
+  }
+}
+
+/**
+ * Refuses a decision on a spec gate the planner no longer stands behind: its session is open but
+ * not at the gate (a person wrote after it asked, ADR 0470). Guarded, so a take-back committing
+ * first fails the decision instead of being overtaken by it.
+ */
+export async function assertSpecGateCurrent(ctx: HandlerContext, workItemId: string | null) {
+  if (!workItemId) return;
+  const session = await openSession(ctx, workItemId);
+  if (!session) return;
+  if (!session.at_gate) {
+    throw new OperationError(
+      "conflict",
+      "a person wrote after the planner asked for the gate: it is revising, and asks again when it's done",
+    );
+  }
+  ctx.guardExists(
+    "the planner still stands behind the gate",
+    ctx.db
+      .selectFrom("core_planning_sessions")
+      .select("id")
+      .where("id", "=", session.id)
+      .where("at_gate", "=", 1)
+      .where("round", "=", session.round),
+  );
+}
+
+/** Whether a person did anything the agent must read after `cursor` (no page limit). */
+export async function hasUnreadPersonNews(
+  ctx: Pick<HandlerContext, "db">,
+  workItemId: string,
+  cursor: number,
+): Promise<number> {
+  const row = await ctx.db
+    .selectFrom("core_planning_events")
+    .select((eb) => eb.fn.countAll().as("n"))
+    .where("work_item_id", "=", workItemId)
+    .where("id", ">", cursor)
+    .where("type", "in", [...USER_EVENTS])
+    .executeTakeFirst();
+  return Number(row?.n ?? 0);
+}
+
+/** Guards the batch on a person having done nothing the agent hasn't read since `cursor`. */
+export function guardNoUnreadPersonNews(ctx: HandlerContext, workItemId: string, cursor: number) {
+  ctx.guardExists(
+    "nothing from a person is unread",
+    ctx.db
+      .selectFrom("core_work_items")
+      .select("id")
+      .where("id", "=", workItemId)
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom("core_planning_events")
+              .select("id")
+              .where("work_item_id", "=", workItemId)
+              .where("id", ">", cursor)
+              .where("type", "in", [...USER_EVENTS]),
+          ),
+        ),
+      ),
+  );
 }

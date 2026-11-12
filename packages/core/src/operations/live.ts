@@ -13,6 +13,7 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { logPlanning, takeBackFromGate } from "../planning.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 
 /** Runs whose session may still be steered (core_runs.status). */
@@ -449,6 +450,26 @@ export const runSteer = defineOperation({
       }),
     );
     ctx.change({ entity: "run_steer", id, after: { runId: run.id, text } });
+    // A steer on a planning run is part of the planning record (ADR 0470): the chat shows it and a
+    // session rebuilt on another runner reads it. It reaches the agent as typed, so it is logged as
+    // `chat.steered`, which isn't news, and marked read when the runner host takes the steer. Like
+    // any person's word, it takes the spec back from the gate.
+    if (run.stage === "planning") {
+      const messageId = newId("planningMessage");
+      ctx.write(
+        ctx.db.insertInto("core_planning_messages").values({
+          id: messageId,
+          work_item_id: item.id,
+          author_kind: "person",
+          author_id: ctx.actor.id,
+          text,
+          steer_id: id,
+          created_at: ctx.now,
+        }),
+      );
+      logPlanning(ctx, item.id, "chat.steered", { messageId, steerId: id });
+      await takeBackFromGate(ctx, item, "a person steered the planner");
+    }
     // Wakes the runner host's held steer call (sf-engine: the work item's hub).
     ctx.emit({ kind: "run.steered", payload: { workItemId: item.id } });
     return { steerId: id, text, status: "queued" as const };
@@ -501,6 +522,18 @@ export const runTakeSteers = defineOperation({
           .set({ delivered_at: ctx.now })
           .where(
             "id",
+            "in",
+            queued.map((s) => s.id),
+          )
+          .where("delivered_at", "is", null),
+      );
+      // A steer typed into a planning session is its chat message's delivery (spec 26).
+      ctx.write(
+        ctx.db
+          .updateTable("core_planning_messages")
+          .set({ delivered_at: ctx.now })
+          .where(
+            "steer_id",
             "in",
             queued.map((s) => s.id),
           )

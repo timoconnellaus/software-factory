@@ -375,6 +375,10 @@ export interface CoreQuestionsTable {
   revision: Generated<number>;
   answer_revision: Generated<number>;
   note: string | null;
+  /** Spec 26: the person skipped it; the planning agent decides. */
+  skipped: Generated<Bool>;
+  /** Spec 26: when this answer revision reached the planning agent. */
+  answer_delivered_at: Iso | null;
   planning_session_id: string | null;
   updated_at: Iso | null;
 }
@@ -821,6 +825,12 @@ export interface CorePlanningSessionsTable {
   activity: string | null;
   focused_question_id: string | null;
   announced_at: Iso | null;
+  /** Spec 26: the highest cursor handed to the harness; a hook's ack is clamped to it. */
+  handed_cursor: Generated<number>;
+  /** Spec 26: JSON `{ questionId: answer revision }` handed out, for read receipts. */
+  handed_answers: string | null;
+  /** Spec 26: the last "away" notice, so questions and replies notify once per burst. */
+  notified_at: Iso | null;
   replaces_session_id: string | null;
   created_by: string;
   created_at: Iso;
@@ -850,6 +860,8 @@ export interface CorePlanningMessagesTable {
   kind: Generated<"chat" | "gate">;
   delivered_at: Iso | null;
   created_at: Iso;
+  /** Spec 26: the steer this message was typed as; delivered when the host takes it. */
+  steer_id: string | null;
 }
 
 export interface CorePlanningPresenceTable {
