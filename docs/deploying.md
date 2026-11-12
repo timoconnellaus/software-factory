@@ -12,7 +12,7 @@ Today that is:
 
 | Worker | Folder | Public | Notes |
 | --- | --- | --- | --- |
-| `sf-engine` | `apps/engine` | `sf-engine.zerobsai.com` (runner channel + `/health` only) | Every operation (RPC for `sf-app`), work-item Workflows, the runner channel, cron (`* * * * *`). D1 `software-factory`, migrations from `packages/db/migrations`. Secrets `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY` |
+| `sf-engine` | `apps/engine` | `sf-engine.zerobsai.com` (runner channel + `/health` only) | Every operation (RPC for `sf-app`), work-item Workflows, the runner channel, cron (`* * * * *`). D1 `software-factory`, migrations from `packages/db/migrations`. The rate limiting binding `MOBILE_NONCE_LIMIT` (in `wrangler.jsonc`, nothing to provision). Secrets `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY` |
 | `sf-app` | `apps/app` | `software-factory.zerobsai.com` | Dashboard (TanStack Start, built with `vite build` before `wrangler deploy`), GitHub sign-in. D1 `software-factory` (Better Auth tables), service binding `ENGINE` → `sf-engine#EngineApi`. Secrets `BETTER_AUTH_SECRET`, `GH_APP_CLIENT_SECRET`; var `ALLOWED_GITHUB_LOGINS` |
 
 A new Worker (a connector, say) is picked up automatically: add its `wrangler.jsonc` and it
