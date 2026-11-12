@@ -184,7 +184,8 @@ describe("shaping before release (ADR 0493)", () => {
     // The compiled definition (spec 52 PR (a)): spec runs for a medium item, and exactly its
     // shaping stages ran before release.
     const { def } = definitionFor(policy, "change");
-    await expectStagesAsDefined(item.workItemId, def, "medium");
+    // The test stops once build has run: the stages up to build, exactly.
+    await expectStagesAsDefined(item.workItemId, def, "medium", { until: "build" });
     await expectPhasesAsDefined(item.workItemId, def, "medium");
     expect(
       await first<{ n: number }>(

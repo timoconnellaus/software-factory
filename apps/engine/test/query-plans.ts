@@ -53,7 +53,7 @@ export function recordingEnv(env: Env, seen: Recorded[]): Env {
 function tableAliases(sql: string): Map<string, string> {
   const names = new Map<string, string>();
   const re =
-    /\b(?:from|join|update|into)\s+"?(core_\w+)"?(?:\s+(?:as\s+)?"?(?!(?:on|where|join|left|inner|cross|set|values|group|order|limit|using|natural)\b)(\w+)"?)?/gi;
+    /\b(?:from|join|update|into)\s+"?(core_\w+)"?(?:\s+(?:as\s+)?"?(?!(?:on|where|join|left|inner|cross|set|values|group|order|limit|using|natural|indexed)\b)(\w+)"?)?/gi;
   for (const m of sql.matchAll(re)) {
     const table = m[1] as string;
     names.set(table, table);

@@ -11,6 +11,7 @@ import {
   VERDICT_KEEP_MS,
 } from "../src/reconcile-shadow.ts";
 import { all, first, ok, world } from "./helpers.ts";
+import { type Recorded, recordingEnv } from "./query-plans.ts";
 
 const later = () => new Date(Date.now() + SHADOW_LAG_MS + 60_000);
 
@@ -69,7 +70,11 @@ describe("the shadow reconciler", () => {
       SHADOW_CURSOR,
     );
     expect(before?.value ?? "").not.toContain(item.workItemId);
-    while ((await shadowPass(env, later())) > 0);
+    const seen: Recorded[] = [];
+    while ((await shadowPass(recordingEnv(env, seen), later())) > 0);
+    // The audit table is the hottest write table, with no index to find ends by: never read here.
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.filter((r) => /core_audit/.test(r.sql))).toEqual([]);
     const cursor = await first<{ value: string }>(
       "SELECT value FROM core_meta WHERE key = ?",
       SHADOW_CURSOR,
