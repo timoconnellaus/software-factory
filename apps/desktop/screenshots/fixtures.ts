@@ -113,6 +113,59 @@ export const FACTORY_ITEMS: Summary[] = [
   }),
 ];
 
+/** The Factory project's config (spec 41, slice 5): a version as `config.get` returns it. */
+export const POLICY_DOC = {
+  version: 1,
+  autonomyPolicy: "balanced",
+  spec: { requiredFrom: "medium" },
+  wipLimit: 3,
+  retryLimit: 2,
+  approvers: ["owner"],
+  agents: [
+    {
+      name: "Builder",
+      role: "implement",
+      tier: "standard",
+      instructions:
+        "Work one task at a time and commit when its checks pass.\nWrite the failing test before the fix.\nNever edit, skip or delete an existing test to make a check pass.\nIf a criterion cannot be proven by a check, say so in your notes.",
+      requires: [],
+    },
+    {
+      name: "Spec critic",
+      role: "review",
+      tier: "light",
+      instructions: "Challenge the spec before a person approves it.\nName what isn't testable.",
+      requires: [],
+    },
+  ],
+  workflows: [
+    {
+      name: "Software",
+      description: "Code changes: a spec, a build, verify and review.",
+      slots: {
+        afterSpec: [{ id: "critic", kind: "work", name: "Spec critic", agent: "Spec critic" }],
+        beforeVerify: [],
+        afterVerify: [
+          {
+            id: "ui-check",
+            kind: "gate",
+            name: "Browser walk-through",
+            when: { domain: "ui" },
+          },
+        ],
+      },
+      core: { build: "Builder" },
+    },
+    {
+      name: "Docs",
+      description: "Writing only: no build, a person reads it.",
+      slots: { afterSpec: [], beforeVerify: [], afterVerify: [] },
+      core: {},
+    },
+  ],
+  workflow: "Software",
+};
+
 const project = (id: string, orgId: string, name: string, slug: string) => ({
   id,
   orgId,
@@ -783,6 +836,35 @@ export const ANSWERS: Answers = {
         accounts: { names: ["work", "personal"], active: "work", requested: null, limits: [] },
       },
     ],
+  }),
+  "config.get": (input) => ({
+    projectId: input.projectId,
+    current: {
+      version: 12,
+      sha: "5da8988",
+      source: "app",
+      note: "Two agents and the Software workflow",
+      createdBy: "owner",
+      createdAt: ago(60 * 24 * 3),
+      valid: true,
+      impact: "neutral",
+      policy: POLICY_DOC,
+    },
+    error: null,
+    history: [],
+    pending:
+      input.projectId === FACTORY
+        ? [
+            {
+              pendingActionId: "pa_cfg_1",
+              operation: "config.save",
+              note: "Retries per item, 2 to 3",
+              by: "owner",
+              createdAt: ago(30),
+              baseVersion: 12,
+            },
+          ]
+        : [],
   }),
   "mergeQueue.list": (input) => ({
     entries:

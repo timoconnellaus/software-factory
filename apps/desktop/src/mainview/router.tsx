@@ -9,9 +9,12 @@ import { factoryLayout } from "./routes/_factory.tsx";
 import { settingsLayout } from "./routes/_settings.tsx";
 import { workLayout } from "./routes/_work.tsx";
 import { Route as attach } from "./routes/attach.tsx";
+import { Route as factoryAgents } from "./routes/factory.agents.tsx";
 import { Route as factoryIncidents } from "./routes/factory.incidents.tsx";
 import { Route as factoryOverview } from "./routes/factory.index.tsx";
+import { Route as factoryPolicy } from "./routes/factory.policy.tsx";
 import { Route as factoryRunners } from "./routes/factory.runners.tsx";
+import { Route as factoryWorkflows } from "./routes/factory.workflows.tsx";
 import { Route as inbox } from "./routes/index.tsx";
 import { Route as newWork } from "./routes/new.tsx";
 import { rootRoute } from "./routes/root.tsx";
@@ -25,7 +28,14 @@ export const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     inbox,
     workLayout.addChildren([newWork, attach, workList, workItem, review]),
-    factoryLayout.addChildren([factoryOverview, factoryRunners, factoryIncidents]),
+    factoryLayout.addChildren([
+      factoryOverview,
+      factoryRunners,
+      factoryIncidents,
+      factoryPolicy,
+      factoryAgents,
+      factoryWorkflows,
+    ]),
     settingsLayout.addChildren([setup, settings]),
   ]),
 ]);

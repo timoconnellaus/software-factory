@@ -23,7 +23,14 @@ import {
 import { bun } from "../bridge.ts";
 import { sectionOf } from "../lib/places.ts";
 import { inboxQuery, projectsQuery, workListsQuery } from "../lib/queries.ts";
-import { orgInitial, orgOfProject, orgsWaiting, scopeInbox, waitingCount } from "../lib/scope.ts";
+import {
+  orgInitial,
+  orgOfProject,
+  orgScope,
+  orgsWaiting,
+  scopeInbox,
+  waitingCount,
+} from "../lib/scope.ts";
 import { useSession } from "../lib/session.ts";
 import { chooseOrg, updateViewState, useViewState } from "../lib/view-state.ts";
 
@@ -31,10 +38,7 @@ import { chooseOrg, updateViewState, useViewState } from "../lib/view-state.ts";
 export function useOrgScope(): string | null {
   const session = useSession();
   const chosen = useViewState((s) => s.orgId);
-  if (chosen === undefined) return session.personalOrgId;
-  // An org you've since left: show All rather than nothing.
-  if (chosen !== null && !session.orgs.some((o) => o.id === chosen)) return null;
-  return chosen;
+  return orgScope(session, chosen);
 }
 
 /** The inbox as the chosen org sees it, and the org-of-project lookup. */
