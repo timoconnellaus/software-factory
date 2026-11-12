@@ -62,6 +62,7 @@ export const CAPABILITIES = [
   "chat",
   "container-isolation",
   "terminal",
+  "cloud-sandbox",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 

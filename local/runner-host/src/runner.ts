@@ -10,6 +10,7 @@ import {
   type ContainerOptions,
   createContainerRunner,
   createLocalRunner,
+  createSpritesRunner,
   credentialForAccount,
   credentialFrom,
   dockerRuntime,
@@ -17,8 +18,14 @@ import {
   type LocalRunnerConfig,
   type ModelCredential,
   nodeExec,
+  readSpritesToken,
   reapContainers,
   reapOrphans,
+  reapSprites,
+  type SandboxApi,
+  type SpritesOptions,
+  spritePrefix,
+  spritesApi,
 } from "@software-factory/runner-local";
 import {
   accountConfigDirs,
@@ -86,6 +93,25 @@ export const containerDirs = (
   runtime: dockerRuntime({ exec, bin: dockerBin(config) }),
 });
 
+/** A sprites runner's dirs and API, for reaping and `doctor` (ADR 0460). */
+export async function spriteDirs(
+  config: Pick<RunnerConfig, "sprites" | "runnerId">,
+  dirs: Paths,
+  api?: SandboxApi,
+) {
+  return {
+    spritesDir: dirs.spritesDir,
+    runsDir: dirs.runsDir,
+    namePrefix: spritePrefix(config.runnerId),
+    api:
+      api ??
+      spritesApi({
+        token: await readSpritesToken(dirs.spritesTokenFile),
+        ...(config.sprites?.apiUrl ? { apiUrl: config.sprites.apiUrl } : {}),
+      }),
+  };
+}
+
 export function buildRunner(
   config: RunnerConfig,
   dirs: Paths,
@@ -96,6 +122,8 @@ export function buildRunner(
     local?: Partial<LocalRunnerConfig>;
     /** Container isolation's overrides (tests: a scripted runtime, a credential). */
     container?: Partial<ContainerOptions>;
+    /** Sprites isolation's overrides (tests: the fake API, a credential). */
+    sprites?: Partial<SpritesOptions>;
     /** The runner's self-update (ADR 0360), and what to do once it has updated. */
     selfUpdate?: SelfUpdate;
     onUpdated?: () => void;
@@ -118,10 +146,11 @@ export function buildRunner(
   });
   const accounts = accountPaths(dirs);
   const containers = config.isolation === "container";
-  // A stream-json session (ADR 0450) runs on the host only: a container job keeps tmux.
-  const sessionMode = containers ? "tmux" : config.session;
-  if (containers && config.session === "stream-json") {
-    log("session: stream-json is not available with container isolation yet; using tmux");
+  const sprites = config.isolation === "sprites";
+  // A stream-json session (ADR 0450) runs on the host only: a container or sprite job keeps tmux.
+  const sessionMode = containers || sprites ? "tmux" : config.session;
+  if ((containers || sprites) && config.session === "stream-json") {
+    log(`session: stream-json is not available with ${config.isolation} isolation yet; using tmux`);
   }
   const localConfig: LocalRunnerConfig = {
     exec,
@@ -152,26 +181,42 @@ export function buildRunner(
     session: sessionMode,
     ...options.local,
   };
-  // ADR 0430: a container per job when the owner opts in; else the worktree and Claude's sandbox.
-  const adapter = containers
-    ? createContainerRunner({
+  // ADR 0430: a container per job when the owner opts in; ADR 0460: a sprite per job; else the
+  // worktree and Claude's sandbox.
+  const adapter = sprites
+    ? createSpritesRunner({
         ...localConfig,
-        container: {
-          containersDir: dirs.containersDir,
-          bin: dockerBin(config),
+        sprites: {
+          tokenFile: dirs.spritesTokenFile,
+          spritesDir: dirs.spritesDir,
+          namePrefix: spritePrefix(config.runnerId),
           modelCredential: hostModelCredential(config),
           fetchNamespace: FETCH_NAMESPACE,
-          ...(config.container?.allowedHosts
-            ? { allowedHosts: config.container.allowedHosts }
-            : {}),
-          ...(config.container?.cpus ? { cpus: config.container.cpus } : {}),
-          ...(config.container?.memory ? { memory: config.container.memory } : {}),
-          ...(config.container?.pids ? { pidsLimit: config.container.pids } : {}),
+          ...(config.sprites?.apiUrl ? { apiUrl: config.sprites.apiUrl } : {}),
+          ...(config.sprites?.allowedHosts ? { allowedHosts: config.sprites.allowedHosts } : {}),
           log,
-          ...options.container,
+          ...options.sprites,
         },
       })
-    : createLocalRunner(localConfig);
+    : containers
+      ? createContainerRunner({
+          ...localConfig,
+          container: {
+            containersDir: dirs.containersDir,
+            bin: dockerBin(config),
+            modelCredential: hostModelCredential(config),
+            fetchNamespace: FETCH_NAMESPACE,
+            ...(config.container?.allowedHosts
+              ? { allowedHosts: config.container.allowedHosts }
+              : {}),
+            ...(config.container?.cpus ? { cpus: config.container.cpus } : {}),
+            ...(config.container?.memory ? { memory: config.container.memory } : {}),
+            ...(config.container?.pids ? { pidsLimit: config.container.pids } : {}),
+            log,
+            ...options.container,
+          },
+        })
+      : createLocalRunner(localConfig);
   const host = new RunnerHost({
     accounts: {
       report: () => accountsReport(accounts),
@@ -193,7 +238,11 @@ export function buildRunner(
             },
             running,
           ).catch(() => [] as string[])
-        : [];
+        : sprites
+          ? await spriteDirs(config, dirs, options.sprites?.api)
+              .then((d) => reapSprites(d, running))
+              .catch(() => [] as string[])
+          : [];
       const local = await reapOrphans(
         {
           ...hostDirs(dirs, exec),
