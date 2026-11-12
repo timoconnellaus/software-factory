@@ -38,8 +38,10 @@ export function tabTitle(
     case "/work": {
       const q = new URLSearchParams(path.split("?")[1] ?? "");
       const view = q.get("view");
-      if (view && view in WORK_VIEW_TITLE) return WORK_VIEW_TITLE[view] as string;
       const project = q.get("project");
+      // A project's board is the project's, as its header says.
+      if (project && view === "active") return findProject(project) ?? "Project";
+      if (view && view in WORK_VIEW_TITLE) return WORK_VIEW_TITLE[view] as string;
       return project ? (findProject(project) ?? "Project") : "In the factory";
     }
     case "/new":
@@ -80,7 +82,6 @@ const WORK_VIEW_TITLE: Record<string, string> = {
   ready: "Ready",
   active: "In the factory",
   done: "Done",
-  stopped: "Stopped",
 };
 
 export interface PlaceCommand {

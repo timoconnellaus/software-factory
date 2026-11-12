@@ -83,6 +83,17 @@ export const SCREENS = [
   // A project whose config defines workflows and names none: captured, never released.
   { name: "work-new-no-workflow", path: "/new?project=prj_crm", design: "WorkNew.html" },
   { name: "project", path: "/work?project=prj_factory", design: "WorkProject.html" },
+  // In the factory and Done (spec 41 slice 2).
+  { name: "board", path: "/work?view=active&project=prj_factory", design: "WorkActive.html" },
+  {
+    name: "board-list",
+    path: "/work?view=active&project=prj_factory&layout=list",
+    design: "WorkActive.html",
+  },
+  { name: "board-empty", path: "/work?view=active&project=prj_site", design: "WorkActive.html" },
+  { name: "active-all", path: "/work", design: "WorkActiveAll.html" },
+  { name: "active-all-list", path: "/work?layout=list", design: "WorkActiveAll.html" },
+  { name: "done", path: "/work?view=done", design: "WorkDone.html" },
   { name: "factory-overview", path: "/factory", design: "FactoryOverview.html" },
   { name: "factory-runners", path: "/factory/runners", design: "FactoryRunners.html" },
   { name: "factory-incidents", path: "/factory/incidents", design: "FactoryIncidents.html" },

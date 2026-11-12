@@ -2,6 +2,7 @@
 // org scoping, the status bar's wording, the Inbox's list and selection, the tab titles and search,
 // the Work views and board, and how the merge gate words a packet. Fixtures come from the
 // screenshot harness's door, so the screens and the tests see the same data.
+
 import type { Inbox } from "@software-factory/client/ops";
 import { parsePacket } from "@software-factory/client/packet";
 import { describe, expect, it } from "vitest";
@@ -30,10 +31,16 @@ import {
   togglePin,
 } from "../src/mainview/lib/view-state.ts";
 import {
+  boardLanes,
   cardState,
   countsByView,
-  lanes,
+  cutList,
+  laneLabel,
+  outcomeOf,
+  PHASE_COLUMNS,
+  phaseColumn,
   viewOf,
+  waitingOn,
   workItemsFor,
 } from "../src/mainview/lib/work-board.ts";
 
@@ -263,6 +270,12 @@ describe("places and search", () => {
         id === "prj_factory" ? "Factory" : null,
       ),
     ).toBe("Factory");
+    // A project's board is the project's, as its header says.
+    expect(
+      tabTitle("/work?view=active&project=prj_factory", find, (id) =>
+        id === "prj_factory" ? "Factory" : null,
+      ),
+    ).toBe("Factory");
     expect(tabTitle("/work", find)).toBe("In the factory");
     expect(tabTitle("/work/wi_13?tab=review", find)).toBe("#13 Guard the tests in verify");
     expect(tabTitle("/work/unknown", find)).toBe("Work item");
@@ -289,7 +302,8 @@ describe("Work views and the board", () => {
   it("sorts statuses into views", () => {
     expect(viewOf("waiting")).toBe("active");
     expect(viewOf("done")).toBe("done");
-    expect(viewOf("cancelled")).toBe("stopped");
+    // Done shows every way out of the factory, with its outcome.
+    expect(viewOf("cancelled")).toBe("done");
     expect(viewOf("backlog")).toBe("backlog");
     expect(viewOf("shaping")).toBe("planning");
     expect(viewOf("ready")).toBe("ready");
@@ -309,21 +323,102 @@ describe("Work views and the board", () => {
       planning: 0,
       ready: 3,
       active: 7,
-      done: 3,
-      stopped: 0,
+      done: 5,
     });
   });
 
-  it("puts each active item in its stage's lane, in the factory's order", () => {
-    const board = lanes(workItemsFor(ITEMS, { view: "active", orgId: "org_personal" }));
-    expect(board.map((l) => `${l.stage}:${l.items.map((i) => i.number).join(",")}`)).toEqual([
-      "intake:28",
-      "triage:",
-      "spec:12",
-      "build:9,11",
-      "verify:26",
-      "merge:13",
+  // biome-ignore lint/style/noNonNullAssertion: the fixtures define these answers.
+  const stagesOf = (projectId: string) => ANSWERS["project.workflow"]!({ projectId }).stages;
+  const inFactory = () =>
+    (ANSWERS["workItem.board"]?.({ orgId: "org_personal" }).items ?? [])
+      .filter((i) => ["queued", "running", "waiting", "paused"].includes(i.status))
+      .map((i) => ({ ...i, orgId: "org_personal" }));
+
+  it("gives a project's board Queued then every stage of its workflow, in the read's order", () => {
+    const board = boardLanes(inFactory(), stagesOf("prj_factory"));
+    expect(board.map((l) => `${l.label}:${l.items.map((i) => i.number).join(",")}`)).toEqual([
+      "Queued:28",
+      // Empty lanes stay, so columns don't move as items do.
+      "Triage:",
+      // A released item in its spec stage is in the Spec lane; nothing calls it shaping.
+      "Spec:12",
+      "Build:9,11",
+      "Verify:26",
+      "Merge:13",
     ]);
+    // Another workflow's stages come out in its own order, labelled by the read.
+    const other = boardLanes(
+      [{ ...(inFactory()[1] as ReturnType<typeof inFactory>[number]), stage: "publish" }],
+      [
+        { stage: "draft", label: "Draft" },
+        { stage: "publish", label: "Publish" },
+      ],
+    );
+    expect(other.map((l) => `${l.label}:${l.items.length}`)).toEqual([
+      "Queued:0",
+      "Draft:0",
+      "Publish:1",
+    ]);
+    expect(laneLabel({ status: "running", stage: "intake" }, stagesOf("prj_factory"))).toBe(
+      "Triage",
+    );
+  });
+
+  it("puts every item in one of six phase columns, never by its stage", () => {
+    const col = (status: string, phase?: string) => phaseColumn({ status, phase });
+    expect(
+      ["backlog", "shaping", "ready", "queued", "running", "waiting", "paused"].map((s) =>
+        col(s, ["backlog", "shaping", "ready"].includes(s) ? "shaping" : "delivery"),
+      ),
+    ).toEqual(["backlog", "shaping", "ready", "queued", "delivery", "delivery", "delivery"]);
+    expect(["done", "failed", "rejected", "cancelled"].map((s) => col(s))).toEqual([
+      "done",
+      "done",
+      "done",
+      "done",
+    ]);
+    expect(PHASE_COLUMNS.map((c) => c.label)).toEqual([
+      "Backlog",
+      "Shaping",
+      "Ready",
+      "Queued",
+      "Delivery",
+      "Done",
+    ]);
+  });
+
+  it("says when the board's read was cut, by its counts", () => {
+    const counts = [
+      { orgId: "o", projectId: "p", status: "backlog", n: 450 },
+      { orgId: "o", projectId: "p", status: "running", n: 112 },
+      { orgId: "o", projectId: "p", status: "done", n: 900 },
+    ];
+    const opts = { states: ["backlog", "running"], orgId: null, projectId: "p" };
+    expect(cutList(counts, 500, opts)).toEqual({ shown: 500, of: 562 });
+    expect(cutList(counts.slice(0, 1), 450, opts)).toBeNull();
+  });
+
+  it("says who an item waits on, and words its outcome", () => {
+    const needs = new Set(["wi_13"]);
+    expect(waitingOn({ id: "wi_13", status: "waiting", blockedBy: [] }, needs).label).toBe(
+      "Waiting on you",
+    );
+    expect(waitingOn({ id: "x", status: "running", blockedBy: [] }, needs).label).toBe(
+      "Agent working",
+    );
+    expect(
+      waitingOn({ id: "x", status: "queued", blockedBy: [{ number: 26 } as never] }, needs).label,
+    ).toBe("Waiting for #26");
+    expect(waitingOn({ id: "x", status: "queued", blockedBy: [] }, needs).label).toBe(
+      "Waiting for a slot",
+    );
+    expect(outcomeOf({ status: "done", statusReason: null })).toEqual({
+      label: "Done",
+      status: "done",
+    });
+    expect(outcomeOf({ status: "cancelled", statusReason: "cancelled from the app" }).label).toBe(
+      "Cancelled: cancelled from the app",
+    );
   });
 
   it("marks a card that needs you", () => {

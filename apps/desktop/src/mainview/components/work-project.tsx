@@ -1,7 +1,6 @@
 // A project's page (spec 50, design WorkProject): its work by state, what is in the factory and who
 // it waits on, and the project itself (its workflow, repositories and approvers). A project is a
 // body of work, not a repository (ADR 0490): it may have none. Board opens its board.
-import { STAGE_LABEL } from "@software-factory/client/format";
 import { Button } from "@software-factory/ui/components/button";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery } from "@tanstack/react-query";
@@ -10,26 +9,19 @@ import { itemsIn } from "../lib/backlog.ts";
 import { openItem } from "../lib/places.ts";
 import { boardsQuery, configQuery, workflowQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
-import { viewCounts } from "../lib/work-board.ts";
+import { laneLabel, viewCounts, viewOf, waitingOn } from "../lib/work-board.ts";
 import { PageArea, PageHeader, Panel, SectionTitle } from "./shell-list.tsx";
 import { useScopedInbox } from "./shell-sidebar.tsx";
-
-/** Who an item in the factory waits on, in the design's words. */
-function waitingOn(
-  item: { id: string; status: string },
-  needsYou: Set<string>,
-): { label: string; status: "waiting" | "running" | "idle" } {
-  if (needsYou.has(item.id)) return { label: "You", status: "waiting" };
-  if (item.status === "queued") return { label: "A free slot", status: "idle" };
-  if (item.status === "running") return { label: "Agent", status: "running" };
-  if (item.status === "paused") return { label: "Paused", status: "idle" };
-  return { label: "An event", status: "idle" };
-}
 
 export function ProjectPage({ projectId }: { projectId: string }) {
   const session = useSession();
   const projects = useProjects();
-  const board = useQuery(boardsQuery(session.orgs.map((o) => o.id)));
+  const board = useQuery(
+    boardsQuery(
+      session.orgs.map((o) => o.id),
+      projectId,
+    ),
+  );
   const config = useQuery(configQuery(projectId));
   const workflow = useQuery(workflowQuery(projectId));
   const { inbox } = useScopedInbox();
@@ -102,7 +94,17 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           "count-ready",
         )}
         {card("In the factory", counts.active, `${waitingOnYou} waiting on you`, "count-active")}
-        {card("Done", counts.done, `${counts.stopped} stopped`, "count-done")}
+        {card(
+          "Done",
+          counts.done,
+          `${(board.data?.counts ?? [])
+            .filter(
+              (c) =>
+                c.projectId === projectId && c.status !== "done" && viewOf(c.status) === "done",
+            )
+            .reduce((n, c) => n + c.n, 0)} cancelled or failed`,
+          "count-done",
+        )}
       </div>
       <div className="flex flex-wrap items-start gap-[18px]">
         <section className="flex min-w-0 flex-[999_1_420px] flex-col gap-2">
@@ -144,9 +146,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
                           </Link>
                         </td>
                         <td className="whitespace-nowrap py-2.5 pr-3 text-ink-3">
-                          {i.status === "queued"
-                            ? "Queued"
-                            : (STAGE_LABEL[i.stage as keyof typeof STAGE_LABEL] ?? i.stage)}
+                          {laneLabel(i, workflow.data?.stages ?? [])}
                         </td>
                         <td className="whitespace-nowrap py-2.5 pr-3.5">
                           <span className="inline-flex items-center gap-1.5">

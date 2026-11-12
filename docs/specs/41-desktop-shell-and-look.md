@@ -236,6 +236,54 @@ rather than shown empty:
 - **The title bar**: every toolbar control (back, forward, sidebar, tabs, new tab, search, New
   item) is 28px with the 7px radius. Double-clicking its empty space zooms and unzooms the window;
   checked in the dev build's real window (`window/titlebar-before.png`, `titlebar-zoomed.png`).
+
+## As built (slice 2, part 2: In the factory and Done)
+*Amended 2026-11-12.* Screenshots are in [`docs/screenshots/desktop-work/`](../screenshots/desktop-work/)
+(`board`, `board-list`, `board-empty`, `active-all`, `done`).
+- **A project's board** (`?view=active&project=`, design `WorkActive`) reads `workItem.board`. Its
+  lanes are **Queued** (the one lane spec 50 makes universal: released, not yet pulled) and then
+  the stages the server reports on the items, shaping stages before delivery ones (each item's
+  `phase`). Within a phase the order follows the stages `STAGE_LABEL` knows; a stage it doesn't
+  know still gets its lane, after them. No stage list is fixed in the view. Each card shows its
+  number, title, live state (Working, Needs you, Waiting, Paused, Queued), who it waits on (you, an
+  agent, someone else, a slot, or the items it waits for) or the server's status reason, and how
+  long since it changed; the board re-reads every 15 seconds. Board and List switch layouts.
+- **Needs server work**: a read of a project's workflow stages (with each one's phase and who
+  decides it). Without it, a stage with no items has no lane (Queued excepted), and the design's
+  "Code decides / You decide" per lane and the lane's one-line description are left out. The
+  design's Edit workflow and Filter are left out with it. The card's progress bar (build plan
+  tasks) and agent name need the run's plan on the board read.
+- **All projects** (`/work`, design `WorkActiveAll`) is a list, since stages differ by workflow:
+  counts (waiting on you, agent working, waiting, queued) and every released item sorted by who it
+  waits on, with its stage, project and time. The design's Workflow column needs the item's
+  workflow on `workItem.board` (needs server work); Shipping and Held need the merge queue and WIP
+  holds per item.
+- **Done** (`?view=done`, design `WorkDone`) is every finished item (done, failed, rejected,
+  cancelled) with its outcome and reason, finished when, and its pull request; the separate Stopped
+  view is gone and `?view=stopped` lands on Done. It lists each org's 100 most recent items
+  (`workItem.list`). Rounds and Usage need runs and usage on a list read; Last 30 days and Export are
+  left out.
+
+### Review fixes to the board, All projects and Done (2026-11-12)
+- **Phases are the item's, never a stage's.** `workItem.board`'s `phase` is now the item's: shaping
+  before release (backlog, shaping, ready), delivery from release on (the owner's decision: triage
+  and planning are shaping stages that run before release). A released item in its spec stage sits
+  in the Spec lane; no lane is labelled "shaping".
+- **A project's board** has Queued, then every stage of the project's workflow in the order
+  `project.workflow` reports them, labelled from the read; empty lanes stay, collapsed, so columns
+  don't move. An item at intake (the moment after the pull) shows in the first stage's lane. Lanes
+  share the width (about 160px each, four fit at 1200 wide), and the row scrolls sideways with a
+  fade and an arrow button at the edge that has more.
+- **All projects** is a board of six phase columns: Backlog, Shaping, Ready, Queued, Delivery,
+  Done (counts from the board's counts, at most 20 cards a column with a link to the rest), or a
+  list sorted by who each item waits on.
+- **One project's board reads one project** (`workItem.board` with `projectId`). When the server's
+  500-item cap cut the list, the board says "Showing 500 of N".
+- **Live refresh**: the live socket's events (through the inbox count) refresh the Work queries;
+  the board's poll is a 60 s fallback. After a release the view refetches once more when the
+  server's pull has run, so the card leaves Queued.
+- Done's column is **Last updated** (work items have no finish time). Who an item waits on is one
+  function (`waitingOn`). A project's board tab is the project's name.
 ## As built (slice 5: the Factory section)
 *Added 2026-11-12.* Built over the operations the client door already serves; nothing on the server
 changed. Screenshots (light and dark, at the default 1200×800 window and a narrow 900×700 one, with

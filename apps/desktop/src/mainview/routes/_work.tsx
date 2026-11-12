@@ -1,5 +1,5 @@
 // The Work section (spec 41, design WorkActive; spec 50, WorkBacklog): its nested list (Backlog,
-// Planning, Ready, In the factory, Done, Stopped, then each project) beside the page. Counts are
+// Planning, Ready, In the factory, Done, then each project) beside the page. Counts are
 // `workItem.board`'s, per project and state across each org.
 import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
@@ -60,10 +60,10 @@ function WorkNav() {
   const counts = viewCounts(board.data?.counts ?? [], { orgId });
   const scopedProjects = (projects.data ?? []).filter((p) => orgId === null || p.orgId === orgId);
   const perProject = (id: string) => (board.data ? openCount(board.data.counts, id) : null);
-  // Planning and Stopped show only when something is in them.
-  const views = (
-    ["backlog", "planning", "ready", "active", "done", "stopped"] as WorkView[]
-  ).filter((v) => (v !== "planning" && v !== "stopped") || counts[v] > 0);
+  // Planning shows only while something is being shaped.
+  const views = (["backlog", "planning", "ready", "active", "done"] as WorkView[]).filter(
+    (v) => v !== "planning" || counts[v] > 0,
+  );
   return (
     <NestedList
       title="Work"

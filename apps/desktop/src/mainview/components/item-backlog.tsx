@@ -108,6 +108,8 @@ export function NextStep({ detail }: { detail: WorkItemDetail }) {
       if (r.plan?.behindBy) {
         toast(`Its plan was written ${r.plan.behindBy} commits ago on the default branch`);
       }
+      // Once more when the server's pull has run, so the page leaves Queued without a poll.
+      setTimeout(() => void refresh(), 2_500);
     }, "Couldn't release it");
 
   return (
