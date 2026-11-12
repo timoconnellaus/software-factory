@@ -1,4 +1,4 @@
-# ADR 0451: The factory runs the checks, and only executed evidence proves a criterion
+# ADR 0501: The factory runs the checks, and only executed evidence proves a criterion
 
 Status: accepted, 2026-11-12 ([spec 51](../specs/51-verify-from-the-factorys-own-evidence.md), PR B).
 Amends [ADR 0020](0020-verification-and-review-packet.md), [ADR 0231](0231-verify-verdict-and-the-github-connector.md)

@@ -141,7 +141,7 @@ export function ReviewPacket({ detail, full = false }: { detail: WorkItemDetail;
         </div>
       </div>
 
-      {/* Always shown, whatever sections the project picks: it's for a person (ADR 0450). */}
+      {/* Always shown, whatever sections the project picks: it's for a person (ADR 0500). */}
       <TestsIntact packet={packet} />
 
       {packetSections(detail.policy?.reviewPacketSections).map((section) => (
@@ -411,7 +411,7 @@ function Section({
   }
 }
 
-/** The tests-intact guard (ADR 0450): found in code from the diff, for a person, not the reviewer. */
+/** The tests-intact guard (ADR 0500): found in code from the diff, for a person, not the reviewer. */
 function TestsIntact({ packet }: { packet: ParsedPacket }) {
   const t = packetTestsIntact(packet);
   return (

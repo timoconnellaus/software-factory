@@ -62,6 +62,31 @@ involved. The runner host (`local/runner-host`) wires it; nothing in the core im
   sessions and worktrees without a live job, and two checkouts of one remote.
 - `checkRunningHarness(runDir)`: the launch check for a running job, for `sf-runner doctor`.
 
+## Stream-json sessions (`session: "stream-json"`, ADR 0450)
+A second session mode beside tmux, in `src/stream.ts` (spec 37). The manifest adds `chat`.
+- **prepareWorkspace**: the same, with the harness projected for a stream session: the launch
+  argv ends in `-p --input-format stream-json --output-format stream-json --verbose
+  --permission-prompts none`, and a non-planning run gets its own `--session-id <uuid>`.
+- **startSession**: spawns `/bin/sh <runDir>/launch.sh` with piped stdio in its own process group
+  (environment: the host's, credentials dropped). Once the pid file is written and the process is
+  no longer the shell, `verifyLaunch` as in tmux (a mismatch kills it). Then `.factory-prompt.md`
+  and `PROMPT_POINTER` as the first JSON user message.
+- **events**: each stdout line through harness-claude's `streamLineEvents`: `message`, `tool` (with
+  `id`), `tool.result`, `turn`, status. A permission request (none should come) is denied. A
+  non-planning job ends at the `result` that answers its last user message (a 15 s grace if Claude
+  folded queued messages into one turn); a planning one goes `idle` and stays open. The process
+  exiting ends it (`completed` with the result file, else `failed`).
+- **steer**: one JSON user message on stdin.
+- **takeover** (`run.takeover`): an `interrupt` control request, then stdin closed, the process
+  waited for and killed if it lingers. `events()` yields `takeover` with `resumeCommand` (`cd
+  <worktree> && env -u … claude … --resume <id>`), then follows the resumed session through the
+  status hook and the transcript, and ends at its `SessionEnd` (`completed`), or fails if nobody
+  resumes within the waiting-input timeout.
+- **release** kills the process group; **capacity** counts live stream processes too.
+- Not with container isolation yet: the runner host keeps a container runner in tmux.
+- `fakeStreamClaude` (`@software-factory/runner-local/testing`) is a stand-in `claude` that speaks
+  stream-json, for `test/stream.test.ts` and the runner host's tests.
+
 ## A container per job (`src/container/`, ADR 0430, spec 33)
 `createContainerRunner(config)` is a second `RunnerAdapter` over the same tmux session, status hook,
 events and steering. A planning job goes to runner-local unchanged. For every other stage it changes:

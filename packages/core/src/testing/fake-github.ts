@@ -268,7 +268,7 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
     }
     return files;
   };
-  /** The patches and renames the commits between base and head carry, last one wins (ADR 0450). */
+  /** The patches and renames the commits between base and head carry, last one wins (ADR 0500). */
   const detailsBetween = (state: RepoState, base: string, head: string) => {
     const touched = touchesBetween(state, base, head);
     const out = new Map<string, Omit<ChangedFile, "path" | "status">>();

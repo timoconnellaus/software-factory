@@ -186,14 +186,14 @@ What a person reviews at a gate: a verdict row, what changed, criteria with evid
 notes, screenshots, risk flags, the diff and a preview link. Sections are set per project in
 `.factory/` (`reviewPacket.sections`). It also backs the `factory/verify` check. The packet in the
 app **is the merge gate** (ADR 0041); it links to the GitHub PR for line comments. Its **Tests
-intact** section is always shown (ADR 0450).
+intact** section is always shown (ADR 0500).
 _Avoid_: PR summary, report
 
 **Tests intact**
 The factory's own check, in code, that a diff doesn't weaken the tests the build is judged by:
 deleted, removed, skipped or commented-out tests, new lint or type suppressions, lowered thresholds
 and edits to gate files (`.factory/`, CI workflows, test and lint config), read from GitHub's diff at
-the head SHA (ADR 0450). A **finding** is for a person: it never fails the verdict, no agent judges
+the head SHA (ADR 0500). A **finding** is for a person: it never fails the verdict, no agent judges
 it, and it blocks the check-only auto-merge. Findings belong to one SHA's review packet.
 _Avoid_: test tampering check, reviewer finding
 
@@ -302,12 +302,37 @@ the factory's own tmux socket (`tmux -L software-factory`), in the job's worktre
 from the harness's status hook (`<runDir>/status.jsonl`), not the screen (ADR 0380). What the agent
 says comes from its transcript, as `message` events. People watch it on the work item page's
 **Live** tab (spec 31). On a container runner, the tmux session runs the job's container, and
-Claude runs inside it (ADR 0430).
+Claude runs inside it (ADR 0430). In a runner's **stream-json** session mode it is instead Claude
+Code headless as a child process of the runner host, a two-way JSON stream (see Session mode).
 _Avoid_: terminal (the session may have no terminal attached), pane
+
+**Session mode**
+How a runner runs its job sessions (ADR 0450), set per runner in `runner.json` `session`: `tmux`
+(the default: Claude Code's TUI in tmux; takeover by `tmux attach`) or `stream-json` (Claude Code
+headless, `claude -p --input-format stream-json --output-format stream-json`: the prompt pointer
+and steers go in as JSON user messages, its events come from the structured output, and takeover is
+by `claude --resume`). Both run the harness's launch script and are verified the same way (ADR
+0270). On the wire a session's mode is `terminal` or `stream` (`session.started`), and a runner in
+stream mode declares `chat`.
+_Avoid_: headless mode (`headless` is a capability), chat mode
+
+**Chat view**
+The Live tab's view of a stream-json run (spec 37): the agent's text as Markdown, each tool call
+with its input and output, a line per turn with its tokens and time, and the owner's messages, with
+a composer and **Take over in a terminal** for the runner's owner. Not the planning chat.
+_Avoid_: chat (alone: that is planning's), transcript (the terminal run's view)
+
+**Takeover by resume**
+Handing a stream-json run to a person (ADR 0450): `run.takeover` (the runner's owner only) asks the
+host to stop the session cleanly, and the run then shows the exact `claude --resume <session-id>`
+command (its worktree, settings, mode and model) to run on that machine. The job keeps its worktree
+and lease and follows the resumed session through the status hook; quitting it hands the run back.
+_Avoid_: attach (that is tmux), take over (alone: the lease takeover of ADR 0021 cancels the run)
 
 **Steer**
 A person's message into a live job session, sent from the Live tab with `run.steer` (ADR 0400) and
-typed into the session as if at its terminal. Only the owner of the run's runner may steer (it runs
+typed into the session as if at its terminal (a stream-json session gets it as a JSON user message,
+ADR 0450). Only the owner of the run's runner may steer (it runs
 on their machine with their model credential); others watch read-only. Every steer is journalled;
 the runner host takes it over a held `steer` call on the signed channel, at most once.
 _Avoid_: chat (planning has its own chat), prompt (the job's prompt is set at launch), command
@@ -374,6 +399,8 @@ restrict them. The known ones:
 - `container-isolation`: each job's harness runs in its own container (ADR 0430); planning sessions
   still run on the host;
 - `steer`: a person can message the live session from the dashboard (a **steer**, ADR 0400);
+- `chat`: sessions run as a structured stream (the stream-json **session mode**): the dashboard
+  shows them in the **Chat view** and the owner can take one over by resume (ADR 0450);
 - `terminal`: the live session's terminal can be bridged to the dashboard's **web terminal**
   (runner-local: a tmux control-mode client, ADR 0440).
 _Avoid_: feature, permission (that is the operation's), skill

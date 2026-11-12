@@ -50,7 +50,7 @@ export interface AssembledPacket {
   /** Flags for the packet's `risk_flags` column: the computed ones, then the reviewer's. */
   riskFlags: string[];
   /**
-   * Whether the diff weakens the tests (ADR 0450). Never part of the verdict and never from an
+   * Whether the diff weakens the tests (ADR 0500). Never part of the verdict and never from an
    * agent: a person looks at the findings at the merge gate, and they block the auto-merge.
    */
   testsIntact: TestsIntact;
@@ -148,7 +148,7 @@ export function verifyCheckOutput(args: {
   riskFlags: string[];
   ci: CiSummary;
   workItem: { number: number; title: string };
-  /** The tests-intact findings for this SHA (ADR 0450): shown first, for a person. */
+  /** The tests-intact findings for this SHA (ADR 0500): shown first, for a person. */
   testFindings?: string[];
 }): {
   status: "in_progress" | "completed";
@@ -168,7 +168,7 @@ export function verifyCheckOutput(args: {
   const summary = [
     `Work item #${args.workItem.number}: ${args.workItem.title}`,
     "",
-    ...list("Tests not intact: a person must look at these (ADR 0450)", findings),
+    ...list("Tests not intact: a person must look at these (ADR 0500)", findings),
     ...list("What fails", args.evidencePass ? [] : args.evidenceReasons),
     ...list("Warnings", args.warnings),
     ...list("Risk flags", args.riskFlags),

@@ -201,7 +201,7 @@ const testsIntactSection = z.object({
 export type TestsIntactSection = z.infer<typeof testsIntactSection>;
 
 /**
- * The tests-intact guard's result for the packet's SHA (ADR 0450), or null for a packet from before
+ * The tests-intact guard's result for the packet's SHA (ADR 0500), or null for a packet from before
  * the guard (which reads as "not checked", never as intact).
  */
 export function packetTestsIntact(p: ParsedPacket): TestsIntactSection | null {

@@ -47,6 +47,8 @@ const steerView = z.object({
   /** `undelivered`: the run ended before the host took it. */
   status: z.enum(["queued", "delivered", "undelivered"]),
   deliveredAt: z.string().nullable(),
+  /** `takeover`: a request to stop the stream session for a person (ADR 0450), no text. */
+  kind: z.enum(["message", "takeover"]),
 });
 
 const eventView = z.object({
@@ -120,6 +122,14 @@ export function terminalVerdict(
       };
 }
 
+function runnerManifest(run: LiveRun): CapabilityManifest | null {
+  try {
+    return run.runner_manifest ? (JSON.parse(run.runner_manifest) as CapabilityManifest) : null;
+  } catch {
+    return null;
+  }
+}
+
 function canSteer(run: LiveRun, viewer: string): { allowed: boolean; reason: string | null } {
   if (run.runner_owner !== viewer) {
     return {
@@ -132,6 +142,75 @@ function canSteer(run: LiveRun, viewer: string): { allowed: boolean; reason: str
     return { allowed: false, reason: "This runner can't take messages: update it to steer." };
   }
   return { allowed: true, reason: null };
+}
+
+/** How the run's session runs (ADR 0450): its `session.started` says; null before it starts. */
+async function sessionMode(
+  ctx: HandlerContext,
+  runId: string,
+): Promise<"terminal" | "stream" | null> {
+  const row = await ctx.db
+    .selectFrom("core_run_events")
+    .select("payload")
+    .where("run_id", "=", runId)
+    .where("type", "=", "session.started")
+    .orderBy("seq", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  if (!row) return null;
+  const mode = parsePayload(row.payload).mode;
+  return mode === "stream" ? "stream" : "terminal";
+}
+
+/** Whether a run has a takeover request queued or taken (ADR 0450). */
+async function takeoverRequested(ctx: HandlerContext, runId: string): Promise<boolean> {
+  const row = await ctx.db
+    .selectFrom("core_run_steers")
+    .select("id")
+    .where("run_id", "=", runId)
+    .where("kind", "=", "takeover")
+    .limit(1)
+    .executeTakeFirst();
+  return !!row;
+}
+
+type TakeoverVerdict = {
+  allowed: boolean;
+  reason: string | null;
+  code: "forbidden" | "conflict" | "unavailable" | null;
+};
+
+/** Whether the viewer may take the run's stream session over by resume (ADR 0450). */
+function canTakeOver(
+  run: LiveRun,
+  viewer: string,
+  mode: "terminal" | "stream" | null,
+  requested: boolean,
+): TakeoverVerdict {
+  if (run.runner_owner !== viewer) {
+    return {
+      allowed: false,
+      code: "forbidden",
+      reason: "Only the runner's owner can take the session over: it runs on their machine.",
+    };
+  }
+  if (!ACTIVE.includes(run.status)) {
+    return { allowed: false, code: "conflict", reason: "The run has ended." };
+  }
+  if (requested) {
+    return { allowed: false, code: "conflict", reason: "The session is already being taken over." };
+  }
+  if (mode !== "stream" || !runnerManifest(run)?.capabilities.includes("chat")) {
+    return {
+      allowed: false,
+      code: "unavailable",
+      reason:
+        mode === "terminal"
+          ? "This run is in a terminal: attach to it on the runner instead."
+          : "This run's session can't be taken over from here.",
+    };
+  }
+  return { allowed: true, code: null, reason: null };
 }
 
 export const runLive = defineOperation({
@@ -161,6 +240,11 @@ export const runLive = defineOperation({
         startedAt: z.string(),
         endedAt: z.string().nullable(),
         takeover: z.object({ label: z.string(), hint: z.string() }).nullable(),
+        /**
+         * How its session runs (ADR 0450): `stream` is shown as a chat. Null before the session
+         * has started.
+         */
+        mode: z.enum(["terminal", "stream"]).nullable(),
       })
       .nullable(),
     events: z.array(eventView),
@@ -170,6 +254,13 @@ export const runLive = defineOperation({
     truncated: z.boolean(),
     steers: z.array(steerView),
     steer: z.object({ allowed: z.boolean(), reason: z.string().nullable(), max: z.number() }),
+    /** Whether the viewer may take a stream session over by resume (ADR 0450). */
+    takeover: z.object({
+      allowed: z.boolean(),
+      reason: z.string().nullable(),
+      /** A takeover was asked for (queued or taken by the host). */
+      requested: z.boolean(),
+    }),
     /** Whether the viewer may open the run's web terminal, and whether they could type (ADR 0440). */
     terminal: z.object({
       allowed: z.boolean(),
@@ -189,10 +280,11 @@ export const runLive = defineOperation({
         truncated: false,
         steers: [],
         steer: { allowed: false, reason: "No run yet.", max: STEER_MAX },
+        takeover: { allowed: false, reason: "No run yet.", requested: false },
         terminal: { allowed: false, mode: null, reason: "No run yet." },
       };
     }
-    const [rows, steers] = await Promise.all([
+    const [rows, steers, mode] = await Promise.all([
       input.afterSeq === undefined
         ? ctx.db
             .selectFrom("core_run_events")
@@ -219,6 +311,7 @@ export const runLive = defineOperation({
           "core_run_steers.created_at",
           "core_run_steers.delivered_at",
           "core_run_steers.author_user_id",
+          "core_run_steers.kind",
           "core_user.name as author_name",
           "core_user.github_login as author_login",
         ])
@@ -226,7 +319,9 @@ export const runLive = defineOperation({
         .orderBy("core_run_steers.created_at", "asc")
         .limit(200)
         .execute(),
+      sessionMode(ctx, run.id),
     ]);
+    const requested = steers.some((s) => s.kind === "takeover");
     const active = ACTIVE.includes(run.status);
     // At most LIVE_BYTES_MAX of payload: the newest events for a first read, the oldest new ones
     // after a cursor (the next poll carries on from the last one returned).
@@ -247,6 +342,7 @@ export const runLive = defineOperation({
         startedAt: run.started_at,
         endedAt: run.ended_at,
         takeover: parseTakeover(run.takeover),
+        mode,
       },
       events: events.map((e) => ({
         seq: e.seq,
@@ -267,8 +363,12 @@ export const runLive = defineOperation({
           | "delivered"
           | "undelivered",
         deliveredAt: s.delivered_at,
+        kind: s.kind === "takeover" ? ("takeover" as const) : ("message" as const),
       })),
       steer: { ...canSteer(run, ctx.actor.id), max: STEER_MAX },
+      takeover: (({ allowed, reason }) => ({ allowed, reason, requested }))(
+        canTakeOver(run, ctx.actor.id, mode, requested),
+      ),
       terminal: terminalVerdict(run, ctx.actor.id),
     };
   },
@@ -366,7 +466,14 @@ export const runTakeSteers = defineOperation({
   input: z.object({ jobId, fencingToken }),
   output: z.object({
     workItemId: z.string(),
-    steers: z.array(z.object({ id: z.string(), text: z.string(), at: z.string() })),
+    steers: z.array(
+      z.object({
+        id: z.string(),
+        text: z.string(),
+        at: z.string(),
+        kind: z.enum(["message", "takeover"]),
+      }),
+    ),
   }),
   async handler(input, ctx) {
     const run = await ctx.db
@@ -381,7 +488,7 @@ export const runTakeSteers = defineOperation({
     if (!ACTIVE.includes(run.status)) throw new OperationError("conflict", `run is ${run.status}`);
     const queued = await ctx.db
       .selectFrom("core_run_steers")
-      .select(["id", "text", "created_at"])
+      .select(["id", "text", "created_at", "kind"])
       .where("run_id", "=", run.id)
       .where("delivered_at", "is", null)
       .orderBy("created_at", "asc")
@@ -402,7 +509,53 @@ export const runTakeSteers = defineOperation({
     }
     return {
       workItemId: run.work_item_id,
-      steers: queued.map((s) => ({ id: s.id, text: s.text, at: s.created_at })),
+      steers: queued.map((s) => ({
+        id: s.id,
+        text: s.text,
+        at: s.created_at,
+        kind: s.kind === "takeover" ? ("takeover" as const) : ("message" as const),
+      })),
     };
+  },
+});
+
+export const runTakeover = defineOperation({
+  name: "run.takeover",
+  description:
+    "Take a live run's stream-json session over in a terminal (spec 37, ADR 0450): the runner host stops the session cleanly and the run then shows the exact `claude --resume <session-id>` command to run on that machine. The job keeps its worktree and lease; quitting the resumed session hands the run back as usual. Only the owner of the run's runner may, once per run, and only for a stream session on a runner with `chat`.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ workItemId, runId }),
+  output: z.object({ requestId: z.string(), status: z.literal("queued") }),
+  async handler(input, ctx) {
+    const item = requireWorkItem(ctx);
+    const run = await loadRunForItem(ctx, item.id, input.runId);
+    if (!run) throw new OperationError("not_found", "no such run on this work item");
+    const [mode, requested] = await Promise.all([
+      sessionMode(ctx, run.id),
+      takeoverRequested(ctx, run.id),
+    ]);
+    const verdict = canTakeOver(run, ctx.actor.id, mode, requested);
+    if (!verdict.allowed) {
+      throw new OperationError(verdict.code ?? "conflict", verdict.reason ?? "can't take over");
+    }
+    const id = newId("runSteer");
+    ctx.write(
+      ctx.db.insertInto("core_run_steers").values({
+        id,
+        run_id: run.id,
+        work_item_id: item.id,
+        author_user_id: ctx.actor.id,
+        text: "",
+        created_at: ctx.now,
+        delivered_at: null,
+        kind: "takeover",
+      }),
+    );
+    ctx.change({ entity: "run_steer", id, after: { runId: run.id, kind: "takeover" } });
+    // The same wake as a steer: the host's held steer call takes it at once.
+    ctx.emit({ kind: "run.steered", payload: { workItemId: item.id } });
+    return { requestId: id, status: "queued" as const };
   },
 });

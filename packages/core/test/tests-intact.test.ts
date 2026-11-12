@@ -7,7 +7,7 @@ const patch = (...lines: string[]) => ["@@ -10,4 +10,4 @@", ...lines].join("\n")
 const mod = (path: string, p: string): ChangedFile => ({ path, status: "modified", patch: p });
 const kinds = (files: ChangedFile[]) => testsIntact(SHA, files).findings.map((f) => f.kind);
 
-describe("tests intact (ADR 0450)", () => {
+describe("tests intact (ADR 0500)", () => {
   it("finds nothing when a diff only adds code and tests", () => {
     const out = testsIntact(SHA, [
       {

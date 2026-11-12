@@ -128,7 +128,7 @@ const reviewerSchema = z.object({
 export const reviewPacketRecord = defineOperation({
   name: "reviewPacket.record",
   description:
-    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041), and post `factory/verify` for that SHA from the App (ADR 0037). The runner's report (criteria with evidence, its checks, the reviewer's verdict, risk flags) is evidence; the verdict passes only when CI on GitHub is green for the SHA AND the packet is complete (every criterion met with evidence, the reviewer approves, no runner check failing). Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0450): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
+    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041), and post `factory/verify` for that SHA from the App (ADR 0037). The runner's report (criteria with evidence, its checks, the reviewer's verdict, risk flags) is evidence; the verdict passes only when CI on GitHub is green for the SHA AND the packet is complete (every criterion met with evidence, the reviewer approves, no runner check failing). Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0500): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -155,7 +155,7 @@ export const reviewPacketRecord = defineOperation({
     reasons: z.array(z.string()),
     checkRunId: z.string().nullable(),
     checkError: z.string().nullable(),
-    /** The tests-intact guard's findings for this SHA (ADR 0450), one line each. */
+    /** The tests-intact guard's findings for this SHA (ADR 0500), one line each. */
     testFindings: z.array(z.string()).default([]),
   }),
   async handler(input, ctx) {
@@ -667,7 +667,7 @@ export async function carryReviewPacket(
 export const prAutoMerge = defineOperation({
   name: "pr.autoMerge",
   description:
-    "Merge a factory incident's fix without a person, under the narrow check-only rule (ADR 0230): the item is a factory incident, GitHub's compare shows it only ADDS files under `.factory/checks/` and `evals/regressions/` (with at least one regression case), CI is green on the head SHA (the regression eval runs there), the review packet for that SHA passed, and its tests-intact guard found nothing (ADR 0450). Risk `check-merge`, which every autonomy policy denies unless the project's `.factory/policy.json` opts in. Anything else is refused: use pr.merge and the merge gate.",
+    "Merge a factory incident's fix without a person, under the narrow check-only rule (ADR 0230): the item is a factory incident, GitHub's compare shows it only ADDS files under `.factory/checks/` and `evals/regressions/` (with at least one regression case), CI is green on the head SHA (the regression eval runs there), the review packet for that SHA passed, and its tests-intact guard found nothing (ADR 0500). Risk `check-merge`, which every autonomy policy denies unless the project's `.factory/policy.json` opts in. Anything else is refused: use pr.merge and the merge gate.",
   risk: "check-merge",
   actors: ["agent"],
   permission: "approver",
@@ -704,7 +704,7 @@ export const prAutoMerge = defineOperation({
       .orderBy("created_at", "desc")
       .executeTakeFirst();
     if (packet?.verdict !== "pass") refuse("the review packet for this commit didn't pass");
-    // The tests-intact guard (ADR 0450): any finding goes to a person, never auto-merges. A packet
+    // The tests-intact guard (ADR 0500): any finding goes to a person, never auto-merges. A packet
     // from before the guard has no section, and is treated as not known to be intact.
     const intact = parseObject(packet?.sections ?? null).testsIntact as
       | { intact?: unknown; findings?: unknown[] }

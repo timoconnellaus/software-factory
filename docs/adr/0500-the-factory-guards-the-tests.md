@@ -1,4 +1,4 @@
-# ADR 0450: The factory guards the tests the build is judged by
+# ADR 0500: The factory guards the tests the build is judged by
 
 Status: accepted, 2026-11-12 ([spec 51](../specs/51-verify-from-the-factorys-own-evidence.md), PR A).
 Amends [ADR 0020](0020-verification-and-review-packet.md) (a new review packet section) and

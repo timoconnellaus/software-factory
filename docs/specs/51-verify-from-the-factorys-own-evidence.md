@@ -1,7 +1,7 @@
 # Spec 51: Verify decides from evidence the factory produced itself
 
-Read first: ADRs [0450](../adr/0450-the-factory-guards-the-tests.md),
-[0451](../adr/0451-the-factory-runs-the-checks-and-only-executed-evidence-proves-a-criterion.md),
+Read first: ADRs [0500](../adr/0500-the-factory-guards-the-tests.md),
+[0501](../adr/0501-the-factory-runs-the-checks-and-only-executed-evidence-proves-a-criterion.md),
 [0020](../adr/0020-verification-and-review-packet.md),
 [0037](../adr/0037-factory-verify-pinned-and-sha-bound.md),
 [0230](../adr/0230-check-only-incident-fixes-auto-merge.md),

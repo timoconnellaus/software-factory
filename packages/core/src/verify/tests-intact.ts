@@ -1,4 +1,4 @@
-// Tests intact (ADR 0450, spec 51): does a diff weaken the tests the build is judged by? Read from
+// Tests intact (ADR 0500, spec 51): does a diff weaken the tests the build is judged by? Read from
 // GitHub's compare of the default branch with the head SHA, with each file's patch, never from the
 // runner or an agent. A finding is never judged by an agent: it goes on the review packet for that
 // SHA and to a person, and it blocks the check-only auto-merge (ADR 0230).

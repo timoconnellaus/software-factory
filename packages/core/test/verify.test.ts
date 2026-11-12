@@ -392,7 +392,7 @@ describe("the check-only auto-merge (ADR 0230)", () => {
     expect((await github.state(w.repo)).pulls[0]?.state).toBe("merged");
   });
 
-  it("refuses a check-only fix whose packet has a tests-intact finding (ADR 0450)", async () => {
+  it("refuses a check-only fix whose packet has a tests-intact finding (ADR 0500)", async () => {
     // A check-only diff can't carry a finding today, so the packet's section is set directly: the
     // refusal must hold whatever the patterns become, and for a packet from before the guard.
     for (const [section, reason] of [
@@ -486,7 +486,7 @@ describe("the check-only auto-merge (ADR 0230)", () => {
   });
 });
 
-describe("tests intact (ADR 0450)", () => {
+describe("tests intact (ADR 0500)", () => {
   const SKIP = {
     path: "src/theme.test.ts",
     status: "modified" as const,

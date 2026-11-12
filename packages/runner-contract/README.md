@@ -34,7 +34,11 @@ a worktree and a branch; `release` never unregisters or deletes a checkout.
    `steers(jobId, { fencingToken, waitMs })` open while the session runs: the cloud holds it until
    the runner's owner sends a message from the dashboard (or ~25 s), and the host types each one
    with `adapter.steer(session, steerText(text))`. Not stored by the cloud; at most once. A 404 (an
-   older engine) means stop asking.
+   older engine) means stop asking. A steer of `kind: "takeover"` (from `run.takeover`, ADR 0450)
+   is not typed: the host calls `adapter.takeover(session)`.
+   A runner with `chat` (a stream-json session, ADR 0450) also sends `tool` with an `id`,
+   `tool.result` (output ≤ 4,000), `turn` (outcome, time, token counts) and, after a takeover,
+   `takeover` (the resume command); its `session.started` says `mode: "stream"`.
    With the `terminal` capability and `adapter.openTerminal` (ADR 0440), also keep
    `terminal(jobId, { fencingToken, waitMs })` open: when someone opens the run's web terminal it
    answers `{ connect: { url } }`, the job relay's socket with a one-use ticket (60 s). Connect to
