@@ -102,6 +102,25 @@ export const workListQuery = (orgId: string) =>
     refetchInterval: 15_000,
   });
 
+/**
+ * Every org's recent work items, merged newest first: the shell's lists, pins and search (ADR 0460).
+ * The rail's org scope filters this on the client.
+ */
+export const workListsQuery = (orgIds: string[]) =>
+  queryOptions({
+    queryKey: ["work", "all", orgIds],
+    queryFn: async () => {
+      const lists = await Promise.all(
+        orgIds.map((orgId) => read("workItem.list", { orgId, limit: 100 })),
+      );
+      return lists
+        .flatMap((l) => l.items)
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    },
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
+
 export const runnersQuery = () =>
   queryOptions({
     queryKey: ["runners"],

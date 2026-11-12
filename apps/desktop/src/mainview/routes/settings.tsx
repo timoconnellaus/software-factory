@@ -8,10 +8,10 @@ import { useEffect } from "react";
 import type { RunnerState } from "../../shared/rpc.ts";
 import { bun, onRunner } from "../bridge.ts";
 import { useDesktopSession } from "../lib/desktop-session.ts";
-import { appRoute } from "./_app.tsx";
+import { settingsLayout } from "./_settings.tsx";
 
 export const Route = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayout,
   path: "/settings",
   component: SettingsPage,
 });

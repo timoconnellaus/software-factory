@@ -13,7 +13,7 @@ import { AttachButton, parseRepo } from "../components/attach-button.tsx";
 import { ExternalLink } from "../lib/external.tsx";
 import { OpError } from "../lib/op.ts";
 import { attachPreviewQuery } from "../lib/queries.ts";
-import { appRoute } from "./_app.tsx";
+import { workLayout } from "./_work.tsx";
 
 interface AttachSearch {
   repo?: string;
@@ -21,7 +21,7 @@ interface AttachSearch {
 }
 
 export const Route = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => workLayout,
   path: "/attach",
   validateSearch: (s: Record<string, unknown>): AttachSearch => {
     const pr = Number(s.pr);

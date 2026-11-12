@@ -6,10 +6,10 @@ import { createRoute, Link } from "@tanstack/react-router";
 import { ReviewPacket } from "../components/review-packet.tsx";
 import { workItemQuery } from "../lib/queries.ts";
 import { useProjects } from "../lib/session.ts";
-import { appRoute } from "./_app.tsx";
+import { workLayout } from "./_work.tsx";
 
 export const Route = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => workLayout,
   path: "/work/$id/review",
   // The packet lives on the work item; project names come from the shell's loader.
   loader: ({ context, params }) => context.queryClient.ensureQueryData(workItemQuery(params.id)),

@@ -45,13 +45,13 @@ import {
   workItemQuery,
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
-import { appRoute } from "./_app.tsx";
+import { workLayout } from "./_work.tsx";
 
 const TABS = ["timeline", "planning", "runs", "review"] as const;
 type Tab = (typeof TABS)[number];
 
 export const Route = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => workLayout,
   path: "/work/$id",
   validateSearch: (s: Record<string, unknown>): { tab?: Tab } =>
     TABS.includes(s.tab as Tab) ? { tab: s.tab as Tab } : {},

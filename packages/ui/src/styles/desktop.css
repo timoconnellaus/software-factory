@@ -1,0 +1,121 @@
+/* The desktop look (ADR 0460, docs/design/factory-ui): shadcn's base tokens mapped onto the
+   factory tokens in globals.css. Only apps/desktop imports this, after globals.css, so the web app
+   keeps its look. Light and dark follow the system. */
+
+:root {
+  --radius: 0.4375rem; /* 7px: the design's buttons and fields */
+  --background: var(--page);
+  --foreground: var(--ink);
+  --card: var(--panel);
+  --card-foreground: var(--ink);
+  --popover: var(--panel);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: #fafafa;
+  --secondary: var(--selected);
+  --secondary-foreground: var(--ink);
+  --muted: var(--selected);
+  --muted-foreground: var(--ink-muted);
+  --accent: var(--selected);
+  --accent-foreground: var(--ink);
+  --destructive: #c62828;
+  --border: var(--line);
+  --input: #d6d6d2;
+  --ring: var(--ink-faint);
+  --sidebar: var(--window);
+  --sidebar-foreground: var(--ink-2);
+  --sidebar-accent: var(--panel);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--line);
+
+  --status-waiting: #f59e0b;
+  --status-running: #2563eb;
+  --status-done: #22a55a;
+  --status-failed: #dc2626;
+  --status-idle: #a3a3a0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --primary: var(--ink);
+    --primary-foreground: #18181a;
+    --destructive: #f06a6a;
+    --input: #3d3d43;
+    --status-waiting: #f2a93b;
+    --status-running: #5b8cff;
+    --status-done: #3cbf73;
+    --status-failed: #f06a6a;
+    --status-idle: #6e6e75;
+  }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden; /* a window, not a page: only the list and the page scroll */
+  }
+  body {
+    background: var(--window);
+    font-size: 13px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    cursor: default;
+  }
+}
+
+/* The components in the desktop look. Unlayered, so they apply over the components' own utility
+   classes for these few properties (shape, ring, size); layout classes a screen sets still apply. */
+[data-slot="card"] {
+  border: 0;
+  border-radius: 10px;
+  box-shadow: var(--shadow-panel);
+}
+[data-slot="button"] {
+  font-size: 13px;
+  border-radius: 7px;
+}
+[data-slot="button"][data-size="default"],
+[data-slot="button"][data-size="sm"] {
+  height: 28px;
+  padding-inline: 10px;
+}
+[data-slot="button"][data-size="lg"] {
+  height: 32px;
+}
+[data-slot="button"][data-variant="outline"] {
+  border: 0;
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
+}
+[data-slot="button"][data-variant="outline"]:hover {
+  background: var(--selected);
+}
+[data-slot="input"],
+[data-slot="textarea"],
+[data-slot="select-trigger"] {
+  font-size: 13px;
+  border-radius: 7px;
+  background: var(--panel);
+}
+[data-slot="input"],
+[data-slot="select-trigger"] {
+  height: 32px;
+}
+[data-slot="status-dot"] {
+  width: 7px;
+  height: 7px;
+}
+[data-slot="status-badge"] {
+  border: 0;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 11px;
+  background: var(--panel);
+  box-shadow: var(--shadow-ring);
+  color: var(--ink-3);
+}
+[data-slot="badge"] {
+  border-radius: 999px;
+}

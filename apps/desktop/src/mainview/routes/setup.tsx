@@ -32,7 +32,7 @@ import { ExternalLink, openExternal, saveFile, WEBSITE_URL } from "../lib/extern
 import { OpError, op, read, submitKey } from "../lib/op.ts";
 import { reposQuery, runnersQuery, setupStatusQuery } from "../lib/queries.ts";
 import { useSession } from "../lib/session.ts";
-import { appRoute } from "./_app.tsx";
+import { settingsLayout } from "./_settings.tsx";
 
 /** Desktop devices (ADR 0381), the same key as sf-app's Setup. */
 const desktopDevicesQuery = () =>
@@ -42,7 +42,7 @@ const desktopDevicesQuery = () =>
   });
 
 export const Route = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => settingsLayout,
   path: "/setup",
   // Everything the page shows, in one batch. The checklist reads GitHub, so it isn't awaited: the
   // page shows its skeleton until it comes.

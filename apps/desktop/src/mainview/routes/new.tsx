@@ -19,10 +19,10 @@ import { StagedAttachments, uploadStaged } from "../components/staged-attachment
 import { OpError, op } from "../lib/op.ts";
 import { openPullsQuery, projectsQuery, routingQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
-import { appRoute } from "./_app.tsx";
+import { workLayout } from "./_work.tsx";
 
 export const Route = createRoute({
-  getParentRoute: () => appRoute,
+  getParentRoute: () => workLayout,
   path: "/new",
   validateSearch: (s: Record<string, unknown>): { project?: string } =>
     typeof s.project === "string" ? { project: s.project } : {},

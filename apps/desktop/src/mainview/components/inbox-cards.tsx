@@ -1,382 +1,390 @@
-// Inbox cards (spec 12, mockup home-inbox; ported from sf-app for spec 40 M3): spec approval, ready
-// to merge, a question, and any other gate. Cards that need you get the waiting ring; status is a
-// dot. Every decision goes through the desktop `useDecide()`, so Touch ID confirms it (ADR 0381).
+// The Inbox's pages (spec 12; restyled for spec 41, design InboxMerge/InboxQuestion): what the
+// selected entry in the Inbox list is, and the decision it waits for. Every decision goes through
+// `useDecide()`, so Touch ID confirms it (ADR 0391); only the look changed.
 
 import { ago } from "@software-factory/client/format";
 import type { Inbox } from "@software-factory/client/ops";
-import { checkCounts, packetCounts, parsePacket } from "@software-factory/client/packet";
+import { parsePacket } from "@software-factory/client/packet";
 import { answerChoices } from "@software-factory/client/questions";
-import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
-import { Card } from "@software-factory/ui/components/card";
-import { StatusBadge } from "@software-factory/ui/components/status-dot";
+import { Label } from "@software-factory/ui/components/label";
+import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
+import { Skeleton } from "@software-factory/ui/components/skeleton";
+import { StatusDot } from "@software-factory/ui/components/status-dot";
+import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { workItemQuery } from "../lib/queries.ts";
+import { CriteriaList, MergeDecision, useOpenedFullDiff, VerdictPanel } from "./review-parts.tsx";
+import { Chip, PageHeader, Panel, SectionTitle } from "./shell-list.tsx";
 
 type Gate = Inbox["gates"][number];
 type Question = Inbox["questions"][number];
+type Planning = Inbox["planning"][number];
 
-function CardShell({
-  highlighted,
-  testId,
-  children,
-}: {
-  highlighted: boolean;
-  testId: string;
-  children: React.ReactNode;
-}) {
+/** The line above a decision's title: its kind as a chip, then the item and project in mono. */
+function Above({ kind, meta }: { kind: string; meta: string }) {
   return (
-    <Card
-      className={cn(
-        "gap-0 py-0 shadow-waiting transition-colors",
-        highlighted && "bg-accent/60 ring-2 ring-status-waiting",
-      )}
-      data-testid={testId}
-    >
-      {children}
-    </Card>
+    <>
+      <Chip>{kind}</Chip>
+      &nbsp;{" "}
+      <span className="font-mono text-[11.5px] text-ink-muted">{meta}</span>
+    </>
   );
 }
 
-function Head({
-  label,
-  meta,
-  title,
-  workItemId,
-  incident,
-  children,
-}: {
-  label: string;
-  meta: string;
-  title: string;
-  workItemId: string | null;
-  incident?: boolean;
-  children?: React.ReactNode;
-}) {
+function TwoColumns({ main, side }: { main: React.ReactNode; side: React.ReactNode }) {
   return (
-    <div className="px-5 pt-5">
-      <div className="flex flex-wrap items-center gap-2">
-        <StatusBadge status="waiting">{label}</StatusBadge>
-        {incident && <Badge variant="outline">Factory incident</Badge>}
-        <span className="text-muted-foreground text-xs">{meta}</span>
-      </div>
-      <div className="mt-2 font-semibold text-[15px] tracking-tight">
-        {workItemId ? (
-          <Link to="/work/$id" params={{ id: workItemId }} className="hover:underline">
-            {title}
-          </Link>
-        ) : (
-          title
-        )}
-      </div>
-      {children}
+    <div className="flex flex-wrap items-start gap-[18px]">
+      <div className="flex min-w-0 flex-[999_1_400px] flex-col gap-[18px]">{main}</div>
+      <aside className="flex min-w-[260px] flex-[1_1_272px] flex-col gap-3">{side}</aside>
     </div>
   );
 }
 
-export function GateCard({
-  gate,
-  projectName,
-  highlighted,
-}: {
-  gate: Gate;
-  projectName: string;
-  highlighted: boolean;
-}) {
-  if (gate.kind === "spec" && gate.workItemId)
-    return <SpecGateCard gate={gate} projectName={projectName} highlighted={highlighted} />;
+export function GateDetail({ gate, projectName }: { gate: Gate; projectName: string }) {
   if (gate.kind === "merge" && gate.workItemId)
-    return <MergeGateCard gate={gate} projectName={projectName} highlighted={highlighted} />;
-  return <ApprovalCard gate={gate} projectName={projectName} highlighted={highlighted} />;
+    return <MergeDetail gate={gate} workItemId={gate.workItemId} projectName={projectName} />;
+  if (gate.kind === "spec" && gate.workItemId)
+    return <SpecDetail gate={gate} workItemId={gate.workItemId} projectName={projectName} />;
+  return <ApprovalDetail gate={gate} projectName={projectName} />;
 }
 
-function SpecGateCard({
+function MergeDetail({
   gate,
+  workItemId,
   projectName,
-  highlighted,
 }: {
   gate: Gate;
+  workItemId: string;
   projectName: string;
-  highlighted: boolean;
 }) {
-  const id = gate.workItemId as string;
-  const item = useQuery(workItemQuery(id));
+  const item = useQuery(workItemQuery(workItemId));
+  const d = item.data;
+  const packet = d?.reviewPacket ? parsePacket(d.reviewPacket) : null;
+  const [opened] = useOpenedFullDiff(workItemId, packet?.headSha);
+  const meta = [
+    d?.item.prNumber ? `PR #${d.item.prNumber}` : null,
+    packet ? `head ${packet.headSha.slice(0, 7)}` : null,
+    projectName,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <div className="flex flex-col gap-4" data-testid={`card-${workItemId}`}>
+      <PageHeader
+        above={<Above kind="Merge" meta={meta} />}
+        title={`${d ? `#${d.item.number} ` : ""}${gate.title}`}
+        sub="Everything below was checked at this commit. A new push withdraws it."
+        testId="inbox-title"
+      />
+      {!d ? (
+        <Skeleton className="h-48 w-full" />
+      ) : !packet ? (
+        <Panel className="text-ink-muted">The review packet isn't ready yet.</Panel>
+      ) : (
+        <TwoColumns
+          main={
+            <>
+              <VerdictPanel packet={packet} />
+              <section className="flex flex-col gap-2">
+                <SectionTitle>Acceptance criteria</SectionTitle>
+                <CriteriaList packet={packet} />
+              </section>
+              <div className="flex flex-wrap items-baseline gap-2.5">
+                <Link
+                  to="/work/$id"
+                  params={{ id: workItemId }}
+                  search={{ tab: "review" }}
+                  className="font-medium underline"
+                >
+                  Open the full review
+                </Link>
+                <span className="text-ink-muted text-xs">
+                  checks, reviewer notes, what changed and the diff
+                </span>
+              </div>
+            </>
+          }
+          side={<MergeDecision detail={d} packet={packet} opened={opened} />}
+        />
+      )}
+    </div>
+  );
+}
+
+function SpecDetail({
+  gate,
+  workItemId,
+  projectName,
+}: {
+  gate: Gate;
+  workItemId: string;
+  projectName: string;
+}) {
+  const item = useQuery(workItemQuery(workItemId));
   const { decide, pending } = useDecide();
   const [changes, setChanges] = useState(false);
   const d = item.data;
-  const facts = d
-    ? [
-        `${d.spec?.acceptanceCriteria.length ?? 0} acceptance criteria`,
-        d.item.size ? `sized ${d.item.size}` : null,
-        d.item.domains.length ? `touches ${d.item.domains.join(", ")}` : null,
-      ].filter(Boolean)
-    : [];
+  const criteria = d?.spec?.acceptanceCriteria ?? [];
   return (
-    <CardShell highlighted={highlighted} testId={`card-${id}`}>
-      <Head
-        label="Spec approval"
-        meta={`${projectName} · from ${d?.item.source ?? "app"} · ${ago(gate.createdAt)}${gate.escalated ? " · escalated" : ""}`}
-        title={gate.title}
-        workItemId={id}
-        incident={d?.item.kind === "incident"}
-      >
-        <div className="mt-1 text-muted-foreground text-sm">{facts.join(" · ")}</div>
-        {d?.item.specDecisionReason && (
-          <div className="mt-1 text-muted-foreground text-xs">
-            Triage: {d.item.specDecisionReason}
-          </div>
-        )}
-      </Head>
-      <div className="flex flex-wrap gap-2 px-5 pt-4 pb-5">
-        <Button
-          size="sm"
-          disabled={pending !== null}
-          onClick={() => decide({ kind: "spec.approve", workItemId: id })}
-          data-testid="approve-spec"
-        >
-          Approve spec
-        </Button>
-        <Button size="sm" variant="outline" asChild>
-          <Link to="/work/$id" params={{ id }} search={{ tab: "planning" }}>
-            Read spec
-          </Link>
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={pending !== null}
-          onClick={() => setChanges(true)}
-        >
-          Request changes
-        </Button>
-      </div>
+    <div className="flex flex-col gap-4" data-testid={`card-${workItemId}`}>
+      <PageHeader
+        above={<Above kind="Spec" meta={`${d ? `#${d.item.number} · ` : ""}${projectName}`} />}
+        title={`${d ? `#${d.item.number} ` : ""}${gate.title}`}
+        sub={
+          d?.item.specDecisionReason
+            ? `Triage: ${d.item.specDecisionReason}`
+            : "The plan is ready for your approval."
+        }
+        testId="inbox-title"
+      />
+      <TwoColumns
+        main={
+          <section className="flex flex-col gap-2">
+            <SectionTitle note="Set in the spec, proven in verify">Acceptance criteria</SectionTitle>
+            {criteria.length === 0 ? (
+              <Panel className="text-ink-muted">The spec has no criteria yet.</Panel>
+            ) : (
+              <div className="overflow-hidden rounded-[10px] bg-panel shadow-panel">
+                {criteria.map((c) => (
+                  <div key={c} className="border-line-soft border-t px-3.5 py-3 first:border-t-0">
+                    {c}
+                  </div>
+                ))}
+              </div>
+            )}
+            <Link
+              to="/work/$id"
+              params={{ id: workItemId }}
+              search={{ tab: "plan" }}
+              className="w-fit font-medium underline"
+            >
+              Read the plan
+            </Link>
+          </section>
+        }
+        side={
+          <Panel needsYou className="gap-2.5" data-testid="decision">
+            <h2 className="m-0 font-semibold text-[13px]">Your decision</h2>
+            <Button
+              disabled={pending !== null}
+              onClick={() => decide({ kind: "spec.approve", workItemId })}
+              data-testid="approve-spec"
+            >
+              Approve the spec
+            </Button>
+            <Button variant="outline" disabled={pending !== null} onClick={() => setChanges(true)}>
+              Request changes
+            </Button>
+            <p className="m-0 text-ink-3 leading-normal">
+              Approving lets the build start. Changes go back to planning with your note.
+            </p>
+          </Panel>
+        }
+      />
       <NoteDialog
         open={changes}
         onOpenChange={setChanges}
         title="Request changes to the spec"
         description="The spec goes back to planning with your note, and comes back to you for approval."
         confirm="Send back to planning"
-        onConfirm={(note) => decide({ kind: "spec.requestChanges", workItemId: id, note })}
+        onConfirm={(note) => decide({ kind: "spec.requestChanges", workItemId, note })}
       />
-    </CardShell>
+    </div>
   );
 }
 
-function MergeGateCard({
-  gate,
-  projectName,
-  highlighted,
-}: {
-  gate: Gate;
-  projectName: string;
-  highlighted: boolean;
-}) {
-  const id = gate.workItemId as string;
-  const item = useQuery(workItemQuery(id));
+function ApprovalDetail({ gate, projectName }: { gate: Gate; projectName: string }) {
   const { decide, pending } = useDecide();
-  const [sendBack, setSendBack] = useState(false);
-  const d = item.data;
-  const packet = d?.reviewPacket ? parsePacket(d.reviewPacket) : null;
-  const counts = packet ? packetCounts(packet) : null;
-  const checks = packet ? checkCounts(packet) : null;
-  const canMerge = d?.viewer.isApprover ?? false;
+  const decideAs = (decision: "approved" | "rejected") =>
+    decide({
+      kind: "approval.decide",
+      pendingActionId: gate.id,
+      decision,
+      ...(gate.workItemId ? { workItemId: gate.workItemId } : {}),
+    });
   return (
-    <CardShell highlighted={highlighted} testId={`card-${id}`}>
-      <Head
-        label="Ready to merge"
-        meta={`${projectName}${d?.item.prNumber ? ` · PR #${d.item.prNumber}` : ""} · ${ago(gate.createdAt)}`}
+    <div className="flex flex-col gap-4" data-testid={`card-${gate.workItemId ?? gate.id}`}>
+      <PageHeader
+        above={<Above kind="Approval" meta={`${gate.operation} · ${projectName}`} />}
         title={gate.title}
-        workItemId={id}
-        incident={d?.item.kind === "incident"}
-      >
-        {packet && counts && (
-          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
-            <span className={checks?.failed ? "text-destructive" : undefined}>
-              {checks?.failed ? "✗" : "✓"} {checks?.source === "ci" ? "CI" : "Checks"}{" "}
-              {checks?.passed}/{checks?.total}
-            </span>
-            <span>
-              {counts.met === counts.total ? "✓" : "✗"} {counts.met}/{counts.total} criteria
-            </span>
-            {packet.reviewer && (
-              <span>
-                {packet.reviewer.verdict === "approve"
-                  ? "✓ Reviewer approved"
-                  : "✗ Reviewer asked for changes"}
-              </span>
-            )}
-            {packet.riskFlags.length > 0 && (
-              <span className="text-muted-foreground">{packet.riskFlags.length} risk flags</span>
-            )}
-          </div>
-        )}
-      </Head>
-      <div className="flex flex-wrap gap-2 px-5 pt-4 pb-5">
-        <Button size="sm" asChild>
-          <Link to="/work/$id/review" params={{ id }}>
-            Open review packet
-          </Link>
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!canMerge || pending !== null}
-          title={canMerge ? undefined : "Only an approver on this project can merge"}
-          onClick={() => decide({ kind: "review.merge", workItemId: id, openedFullDiff: false })}
-          data-testid="merge"
-        >
-          Merge
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={pending !== null}
-          onClick={() => setSendBack(true)}
-        >
-          Send back
-        </Button>
-      </div>
-      <NoteDialog
-        open={sendBack}
-        onOpenChange={setSendBack}
-        title="Send back to build"
-        description="The work item goes back to build with your note. A factory incident opens to fix .factory/ so this doesn't happen again."
-        confirm="Send back"
-        destructive
-        onConfirm={(note) =>
-          decide({ kind: "review.sendBack", workItemId: id, note, openedFullDiff: false })
+        sub={`Asked ${ago(gate.createdAt)}${gate.escalated ? ", escalated" : ""}.`}
+        testId="inbox-title"
+      />
+      <TwoColumns
+        main={
+          gate.workItemId ? (
+            <Link to="/work/$id" params={{ id: gate.workItemId }} className="w-fit underline">
+              Open the work item
+            </Link>
+          ) : null
+        }
+        side={
+          <Panel needsYou className="gap-2.5" data-testid="decision">
+            <h2 className="m-0 font-semibold text-[13px]">Your decision</h2>
+            <Button disabled={pending !== null} onClick={() => decideAs("approved")}>
+              Approve
+            </Button>
+            <Button variant="outline" disabled={pending !== null} onClick={() => decideAs("rejected")}>
+              Reject
+            </Button>
+          </Panel>
         }
       />
-    </CardShell>
+    </div>
   );
 }
 
-function ApprovalCard({
-  gate,
-  projectName,
-  highlighted,
-}: {
-  gate: Gate;
-  projectName: string;
-  highlighted: boolean;
-}) {
-  const { decide, pending } = useDecide();
-  return (
-    <CardShell highlighted={highlighted} testId={`card-${gate.workItemId ?? gate.id}`}>
-      <Head
-        label="Approval"
-        meta={`${projectName} · ${gate.operation} · ${ago(gate.createdAt)}`}
-        title={gate.title}
-        workItemId={gate.workItemId}
-      />
-      <div className="flex flex-wrap gap-2 px-5 pt-4 pb-5">
-        <Button
-          size="sm"
-          disabled={pending !== null}
-          onClick={() =>
-            decide({
-              kind: "approval.decide",
-              pendingActionId: gate.id,
-              decision: "approved",
-              ...(gate.workItemId ? { workItemId: gate.workItemId } : {}),
-            })
-          }
-        >
-          Approve
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={pending !== null}
-          onClick={() =>
-            decide({
-              kind: "approval.decide",
-              pendingActionId: gate.id,
-              decision: "rejected",
-              ...(gate.workItemId ? { workItemId: gate.workItemId } : {}),
-            })
-          }
-        >
-          Reject
-        </Button>
-      </div>
-    </CardShell>
-  );
-}
+const ELSE = "__else__";
 
-export function QuestionCard({
+export function QuestionDetail({
   question,
+  number,
   projectName,
-  highlighted,
 }: {
   question: Question;
+  number: number | null;
   projectName: string;
-  highlighted: boolean;
 }) {
   const { decide, pending } = useDecide();
-  const [reply, setReply] = useState(false);
-  const answer = (text: string) =>
+  const choices = answerChoices(question);
+  const [choice, setChoice] = useState(choices[0]?.answer ?? ELSE);
+  const [note, setNote] = useState("");
+  const answer = choice === ELSE ? note.trim() : choice;
+  const send = (text: string, withNote: boolean) =>
     decide({
       kind: "question.answer",
       workItemId: question.workItemId,
       questionId: question.id,
       answer: text,
+      ...(withNote && note.trim() ? { note: note.trim() } : {}),
     });
-  const choices = answerChoices(question).slice(0, 4);
+  const itemLabel = `${number ? `#${number} ` : ""}${question.title}`;
   return (
-    <CardShell highlighted={highlighted} testId={`card-${question.workItemId}`}>
-      <Head
-        label="Question"
-        meta={`${projectName} · ${question.domain}${question.irreversible ? " · irreversible" : ""}`}
+    <div className="flex flex-col gap-4" data-testid={`card-${question.workItemId}`}>
+      <PageHeader
+        above={<Above kind="Question" meta={`${itemLabel} · ${projectName}`} />}
         title={question.prompt}
-        workItemId={null}
-      >
-        <div className="mt-1 text-muted-foreground text-sm">
-          On{" "}
-          <Link
-            to="/work/$id"
-            params={{ id: question.workItemId }}
-            search={{ tab: "planning" }}
-            className="underline"
-          >
-            {question.title}
-          </Link>
-        </div>
-      </Head>
-      <div className="flex flex-wrap gap-2 px-5 pt-4 pb-5">
-        {choices.map((c, i) => (
-          <Button
-            key={c.answer}
-            size="sm"
-            variant={i === 0 ? "default" : "outline"}
-            disabled={pending !== null}
-            onClick={() => answer(c.answer)}
-          >
-            {c.answer}
-            {c.tag && <span className="font-normal text-xs opacity-70">· {c.tag}</span>}
-          </Button>
-        ))}
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={pending !== null}
-          onClick={() => setReply(true)}
-        >
-          Reply…
-        </Button>
-      </div>
-      <NoteDialog
-        open={reply}
-        onOpenChange={setReply}
-        title="Answer in your own words"
-        description={question.prompt}
-        confirm="Answer"
-        onConfirm={answer}
+        testId="inbox-title"
       />
-    </CardShell>
+      <TwoColumns
+        main={
+          <>
+            <RadioGroup value={choice} onValueChange={setChoice} className="gap-2.5">
+              {[...choices, { answer: ELSE, tag: null }].map((c) => (
+                <Label
+                  key={c.answer}
+                  className={cn(
+                    "flex min-h-12 cursor-pointer items-center gap-3 rounded-[10px] bg-panel px-3.5 py-3 font-normal shadow-panel",
+                    choice === c.answer && "shadow-[0_0_0_1.5px_var(--ink)]",
+                  )}
+                >
+                  <RadioGroupItem value={c.answer} />
+                  <span className="font-medium">
+                    {c.answer === ELSE ? "Something else" : c.answer}
+                  </span>
+                  {c.tag && <span className="text-ink-muted">{c.tag}</span>}
+                </Label>
+              ))}
+            </RadioGroup>
+            <label className="flex flex-col gap-[5px]">
+              <span className="font-medium text-ink-3 text-xs">
+                {choice === ELSE ? "Your answer" : "Add a note for the agent"}
+              </span>
+              <Textarea
+                rows={2}
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                data-testid="note-input"
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                disabled={pending !== null || !answer}
+                onClick={() => send(answer, choice !== ELSE)}
+                data-testid="answer"
+              >
+                Answer
+              </Button>
+              {question.defaultAnswer && (
+                <Button
+                  variant="outline"
+                  disabled={pending !== null}
+                  onClick={() => send(question.defaultAnswer as string, false)}
+                >
+                  Accept the default
+                </Button>
+              )}
+            </div>
+          </>
+        }
+        side={
+          <Panel className="gap-2">
+            <h2 className="m-0 font-semibold text-[13px]">About this question</h2>
+            <dl className="m-0 grid grid-cols-[96px_1fr] gap-x-3 gap-y-2">
+              <dt className="text-ink-3">Domain</dt>
+              <dd className="m-0">{question.domain}</dd>
+              <dt className="text-ink-3">Blocks</dt>
+              <dd className="m-0">{itemLabel}</dd>
+              {question.defaultAnswer && (
+                <>
+                  <dt className="text-ink-3">Default</dt>
+                  <dd className="m-0">{question.defaultAnswer}</dd>
+                </>
+              )}
+              {question.irreversible && (
+                <>
+                  <dt className="text-ink-3">Note</dt>
+                  <dd className="m-0">Irreversible: it can't be changed later</dd>
+                </>
+              )}
+            </dl>
+            <Link
+              to="/work/$id"
+              params={{ id: question.workItemId }}
+              search={{ tab: "plan" }}
+              className="w-fit underline"
+            >
+              Open {number ? `#${number}` : "the work item"}
+            </Link>
+          </Panel>
+        }
+      />
+    </div>
+  );
+}
+
+export function PlanningDetail({ planning, projectName }: { planning: Planning; projectName: string }) {
+  return (
+    <div className="flex flex-col gap-4" data-testid={`planning-${planning.workItemId}`}>
+      <PageHeader
+        above={<Above kind="Spec" meta={`#${planning.number} · ${projectName}`} />}
+        title={`#${planning.number} ${planning.title}`}
+        sub={
+          planning.atGate
+            ? "The spec is ready for your approval."
+            : "Planning has a first draft: read it and answer what's open."
+        }
+        testId="inbox-title"
+      />
+      <Panel needsYou className="gap-2.5">
+        <div className="flex items-center gap-2">
+          <StatusDot status={planning.atGate ? "waiting" : "running"} />
+          {planning.openQuestions
+            ? `${planning.openQuestions} open question${planning.openQuestions === 1 ? "" : "s"}`
+            : "No open questions"}
+          <span className="text-ink-muted">· announced {ago(planning.announcedAt)}</span>
+        </div>
+        <Button asChild className="w-fit">
+          <Link to="/work/$id" params={{ id: planning.workItemId }} search={{ tab: "plan" }}>
+            Open the plan
+          </Link>
+        </Button>
+      </Panel>
+    </div>
   );
 }
