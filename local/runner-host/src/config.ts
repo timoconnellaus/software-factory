@@ -38,8 +38,14 @@ export interface Paths {
   stateDir: string;
   reposDir: string;
   runsDir: string;
-  /** Job worktrees: `<worktreesDir>/sf-<jobId>`. */
+  /**
+   * Job worktrees: `<worktreesDir>/sf-<jobId>`. Under the data dir, not the state dir: the harness
+   * denies reads of `~/.local/state/software-factory` (harness-claude `DENY_HOME`), and the agent
+   * must read its own worktree (incident 2026-11-12 #9).
+   */
   worktreesDir: string;
+  /** Each run's attachments (`<attachmentsDir>/<jobId>`), which the agent reads: also not under state. */
+  attachmentsDir: string;
   logDir: string;
 }
 
@@ -51,13 +57,19 @@ export function paths(env: NodeJS.ProcessEnv = process.env): Paths {
     "software-factory",
     "runner",
   );
+  const dataDir = join(
+    env.XDG_DATA_HOME ?? join(home, ".local", "share"),
+    "software-factory",
+    "runner",
+  );
   return {
     configFile: env.SF_RUNNER_CONFIG ?? join(configDir, "runner.json"),
     configDir,
     stateDir,
     reposDir: join(stateDir, "repos"),
     runsDir: join(stateDir, "runs"),
-    worktreesDir: join(stateDir, "worktrees"),
+    worktreesDir: join(dataDir, "worktrees"),
+    attachmentsDir: join(dataDir, "attachments"),
     logDir: join(home, "Library", "Logs", "software-factory"),
   };
 }

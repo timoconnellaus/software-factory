@@ -24,6 +24,7 @@ export const liveJobsFile = (dirs: Paths) => join(dirs.stateDir, "live-jobs.json
 export const hostDirs = (dirs: Paths, exec: Exec = nodeExec) => ({
   worktreesDir: dirs.worktreesDir,
   runsDir: dirs.runsDir,
+  attachmentsDir: dirs.attachmentsDir,
   exec,
 });
 
@@ -61,6 +62,7 @@ export function buildRunner(
     ownReposDir: dirs.reposDir,
     worktreesDir: dirs.worktreesDir,
     runsDir: dirs.runsDir,
+    attachmentsDir: dirs.attachmentsDir,
     startPoint: (job, checkout) => git.startPoint(job, checkout),
     // The harness must not read the runner's key, its other runs, or the clones' git internals.
     protectPaths: [dirs.configDir, dirs.runsDir, dirs.reposDir],
