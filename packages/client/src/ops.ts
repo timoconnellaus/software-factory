@@ -77,6 +77,14 @@ export interface OpMap {
   "desktop.denyDevice": Def<typeof operations.desktopDenyDevice>;
   "desktopDevice.list": Def<typeof operations.desktopDeviceList>;
   "desktopDevice.revoke": Def<typeof operations.desktopDeviceRevoke>;
+  "device.list": Def<typeof operations.deviceList>;
+  "device.revoke": Def<typeof operations.deviceRevoke>;
+  "device.update": Def<typeof operations.deviceUpdate>;
+  "mobile.authLookup": Def<typeof operations.mobileAuthLookup>;
+  "mobile.approveDevice": Def<typeof operations.mobileApproveDevice>;
+  "mobile.denyDevice": Def<typeof operations.mobileDenyDevice>;
+  "mobile.pairOffer": Def<typeof operations.mobilePairOffer>;
+  "mobile.pairOfferStatus": Def<typeof operations.mobilePairOfferStatus>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
   // The work model (spec 50): the backlog, ready and release.
   "workItem.board": Def<typeof operations.workItemBoard>;
