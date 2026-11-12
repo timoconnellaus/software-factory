@@ -204,6 +204,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   runners.runReportEvents,
   live.runLive,
   live.runSteer,
+  live.runReportArchiveMissing,
   live.runTakeSteers,
   live.runTakeover,
   terminal.runTerminalAttach,

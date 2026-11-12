@@ -74,7 +74,10 @@ export function services(env: Env): FactoryServices {
     ...(env.DEPLOYED_SHA ? { deployedSha: env.DEPLOYED_SHA } : {}),
     ...(env.RUNNER_SHA ? { runnerSha: env.RUNNER_SHA } : {}),
     attachments: r2AttachmentBlobs(env.ATTACHMENTS),
-    runArchive: { get: (key) => archivedChunk(env.ARCHIVE, key) },
+    runArchive: {
+      get: (key) => archivedChunk(env.ARCHIVE, key),
+      exists: async (key) => (await env.ARCHIVE.head(key)) !== null,
+    },
     runnerKey: async (runnerId, version) => {
       if (!RUNNER_CHANNEL_SECRET) {
         throw new OperationError("unavailable", "RUNNER_CHANNEL_SECRET is not set on sf-engine");
