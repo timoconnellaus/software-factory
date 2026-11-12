@@ -33,6 +33,7 @@ import {
   type WorkItemRow,
 } from "../operation.ts";
 import { planningRunEnded, USER_EVENTS } from "../planning.ts";
+import { policyImpact } from "../policy/impact.ts";
 import type { ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { runEvent } from "../workflow-events.ts";
@@ -574,6 +575,18 @@ async function buildJob(
   leaseExpiresAt: string,
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
+  // The harness stays at least as narrow as the version the item started under (ADR 0370 §5).
+  const pinned =
+    item.policy_sha && item.policy_sha !== project.policy_sha
+      ? (await loadPolicy(ctx.db, { id: project.id, policy_sha: item.policy_sha })).policy
+      : null;
+  const widened =
+    pinned && policy
+      ? policyImpact(pinned, policy, ctx.floor).changes.some(
+          (c) => c.class === "loosens" && c.path.startsWith("harness"),
+        )
+      : false;
+  const harnessProfile = widened ? pinned?.harness : policy?.harness;
   const role = job.role as ModelRole;
   const context = parseJson<Record<string, unknown>>(job.context, {});
   const planning = context.planning as Job["planning"] | undefined;
@@ -596,8 +609,8 @@ async function buildJob(
       role,
       model: resolveModel(role, policy?.modelRoles),
       prompt: job.prompt,
-      // From the default branch's policy only (ADR 0036, 0270), never the run's own branch.
-      ...(policy?.harness ? { profile: policy.harness } : {}),
+      // From the project's config version (ADR 0370, 0270), never the run's own branch.
+      ...(harnessProfile ? { profile: harnessProfile } : {}),
     },
     context,
     ...(job.stage === "planning" && planning ? { planning } : {}),

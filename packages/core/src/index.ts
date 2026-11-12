@@ -32,6 +32,7 @@ export {
   planningReadyEvent,
 } from "./planning.ts";
 export * from "./policy/gate.ts";
+export * from "./policy/impact.ts";
 export * from "./policy/project-policy.ts";
 export * from "./registry.ts";
 export * from "./scope.ts";

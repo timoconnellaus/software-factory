@@ -55,6 +55,49 @@ describe("calling operations from the app", () => {
     expect(calls[0]?.options.actor).toEqual({ type: "human", id: user.id });
   });
 
+  it("saves a config version and previews a draft as the signed-in person (spec 09 M1)", async () => {
+    const login = uid("gh-");
+    const { engine, calls } = recordingEngine((name) =>
+      name === "config.save"
+        ? { ok: true, result: { status: "pending", pendingActionId: "pa_1", auditId: "au_3" } }
+        : {
+            ok: true,
+            result: {
+              status: "ok",
+              output: {
+                valid: true,
+                error: null,
+                impact: { class: "loosens", changes: [] },
+                currentVersion: 3,
+              },
+              auditId: null,
+            },
+          },
+    );
+    const appEnv = testEnv(engine, login);
+    const { user, headers } = await signIn(appEnv, login);
+    const draft = { version: 1, autonomyPolicy: "autonomous" };
+    const preview = await runOp(appEnv, headers, {
+      name: "config.preview",
+      input: { projectId: "prj_1", policy: draft },
+    });
+    expect(preview).toMatchObject({
+      ok: true,
+      status: "ok",
+      output: { impact: { class: "loosens" } },
+    });
+    // A loosening save comes back as a pending gate, for an approver.
+    const saved = await runOp(appEnv, headers, {
+      name: "config.save",
+      input: { projectId: "prj_1", baseVersion: 3, policy: draft },
+      idempotencyKey: "app:save-1",
+    });
+    expect(saved).toMatchObject({ ok: true, status: "pending", pendingActionId: "pa_1" });
+    expect(calls.map((c) => c.name)).toEqual(["config.preview", "config.save"]);
+    expect(calls[1]?.options.actor).toEqual({ type: "human", id: user.id });
+    expect(calls[1]?.options.origin.surface).toBe("app");
+  });
+
   it("refuses without a session and never reaches the engine", async () => {
     const { engine, calls } = recordingEngine();
     const result = await runOp(testEnv(engine), new Headers(), { name: "inbox.list", input: {} });

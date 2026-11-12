@@ -23,10 +23,11 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | L | 0080–0089 | 0290–0299 | Attach an outside PR (`attach-pr`): spec 05, `workItem.attachPr`, the Workflow's attached path, `/attach`. Used: migration 0080; ADR 0290 | merged |
 | M | — | 0300–0309 | Planning design (`planning-process`): ADRs 0300–0306, specs 20–25, no migrations (spec 20's build claims its own block) | merged |
 | N | 0090–0099 | 0310–0319 | Work item attachments (`wi-1-attachments`, work item 1): R2 blobs, `workItem.attachment.*`, upload and serving routes, the runner channel's attachment calls, the app's Attachments section. Used: migration 0090; ADR 0310 | merged |
-| P | 0100–0109 | 0330–0339 | The merge queue (`merge-queue`): spec 06, `core_merge_queue`, `mergeQueue.*`, Workflow v4. Used: migration 0100; ADR 0330 | merged |
+| P | 0100–0109 | 0330–0339 | The merge queue (`merge-queue`): spec 06, `core_merge_queue`, `mergeQueue.*`, Workflow v5. Used: migration 0100; ADR 0330 | merged |
 | Q | 0110–0119 | 0340–0349 | The `sf` CLI (`cli`): spec 07, browser-only gate operations, CLI device login and tokens, `/cli/v1`, `local/cli`. Used: migration 0110; ADR 0340 | in review |
 | O | — | 0320–0329 | Unmergeable factory PRs (`stuck-work-item`): incident 2026-11-11 #7. Branches merge the default branch before build, `conflict` is its own verify state, missing CI asks a person instead of retrying the build | merged |
 | R | 0120–0129 | 0350–0359 | Planning M1, the loop (`planning-loop`): spec 20. The planning session on a runner, the planning MCP server and hooks, the planning log, chat, presence, heavy and light pools, Workflow v5, the Planning tab (layout A). Used: migration 0120; ADR 0350 | merged (#33, #35, #36, #37) |
+| U | 0140–0149 | 0370–0379 | Factory config in the app (`manage-the-factory-sttings-in-the-ui`): spec 09 (M1 config versions + Settings, M2 workflows + agents, M3 usage + improver, M4 adjudicator). ADRs 0370–0374; migrations 0140 (M1), 0141 (M3), 0142 (M4) | building |
 | T | 0130–0139 | 0360–0369 | Runners update themselves (`runner-auto-update`): spec 08, `DEPLOYED_SHA`, heartbeat versions, the self-updater and its rollback wrapper, `sf-runner install` fixes (incident #9). Used: migration 0130; ADR 0360 | in review |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the

@@ -1,4 +1,4 @@
-// Projects, their `.factory/` policy (mirrored from the default branch) and kill switches.
+// Projects, their factory config (versions in the app, ADR 0370) and kill switches.
 import type { Db } from "@software-factory/db";
 import { sql } from "kysely";
 import { z } from "zod";
@@ -8,6 +8,7 @@ import { defineOperation, type HandlerContext, type ProjectRow } from "../operat
 import { POLICY_PATH, parseProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, approverIds, isOrgAdmin, resumeEventType } from "../scope.ts";
 import type { FactoryServices, RepoRef } from "../services.ts";
+import { formatPolicy, versionOf, writeVersion } from "./config.ts";
 import { projectId, requireProject } from "./shared.ts";
 
 const connectionView = z.object({
@@ -20,7 +21,7 @@ const connectionView = z.object({
 });
 
 const policyView = z.object({
-  /** `none`: never read; `missing`: no `.factory/policy.json` on the default branch. */
+  /** `none`: no config yet; `missing`/`invalid`: an imported document that fails closed. */
   state: z.enum(["valid", "invalid", "missing", "none"]),
   error: z.string().nullable(),
   /** The open PR that adds a template policy, when one was opened from Setup. */
@@ -35,6 +36,8 @@ export const projectView = z.object({
   slug: z.string(),
   repo: z.object({ owner: z.string(), name: z.string(), defaultBranch: z.string() }),
   policySha: z.string().nullable(),
+  /** The current config version (ADR 0370); null before the first one. */
+  configVersion: z.number().nullable(),
   /** For admin tools and MCP. The app never shows it (onboarding never asks for ids, ADR 0055). */
   githubInstallationId: z.string().nullable(),
   connection: connectionView,
@@ -76,15 +79,19 @@ export async function projectViews(db: Db, rows: ProjectRow[]): Promise<ProjectV
           )
           .execute()
       : [];
-  const policies = await db
-    .selectFrom("core_project_policies")
-    .select(["project_id", "sha", "raw", "valid", "error"])
-    .where(
-      "project_id",
-      "in",
-      rows.map((r) => r.id),
-    )
-    .execute();
+  const shas = rows.map((r) => r.policy_sha).filter((x): x is string => !!x);
+  const policies = shas.length
+    ? await db
+        .selectFrom("core_project_policies")
+        .select(["project_id", "sha", "raw", "valid", "error"])
+        .where(
+          "project_id",
+          "in",
+          rows.map((r) => r.id),
+        )
+        .where("sha", "in", shas)
+        .execute()
+    : [];
   return rows.map((p) => {
     const record =
       records.find((r) => r.id === p.installation_record_id) ??
@@ -110,6 +117,7 @@ export async function projectViews(db: Db, rows: ProjectRow[]): Promise<ProjectV
       slug: p.slug,
       repo: { owner: p.repo_owner, name: p.repo_name, defaultBranch: p.default_branch },
       policySha: p.policy_sha,
+      configVersion: versionOf(p.policy_sha),
       githubInstallationId: p.github_installation_id,
       connection,
       policy: {
@@ -144,24 +152,82 @@ const noInstallation = (reason: string) =>
   `No GitHub App installation: ${reason}. The factory can't read or push this repo until one is connected (Setup → Connect GitHub).`;
 
 /**
- * Reads `.factory/policy.json` at the default branch's head through the App and records it (ADR
- * 0036, 0054). Used when a project is created, when an installation is connected, and by
- * policy.resync. Returns null when the branch doesn't exist yet (an empty repo).
+ * Gives a project its first config version (ADR 0370): the repo's `.factory/policy.json` at the
+ * default branch's head when it has a valid one (source `import`), else the template policy with
+ * the person adding the project as approver. No PR: config lives in the app. Also the "import from
+ * repo" path (policy.resync), which refuses when the repo has no file to import.
  */
 export async function syncPolicyFromGitHub(
   ctx: HandlerContext,
   project: ProjectRow,
   repo: RepoRef,
-): Promise<{ applied: boolean; valid: boolean; error: string | null; sha: string } | null> {
+  opts: { importOnly?: boolean } = {},
+): Promise<{
+  applied: boolean;
+  valid: boolean;
+  error: string | null;
+  sha: string;
+  imported: boolean;
+} | null> {
   const head = await ctx.services.github.getBranchSha(repo, project.default_branch);
-  if (!head) return null;
-  const content = await ctx.services.github.readFile(repo, POLICY_PATH, head);
-  const recorded = recordPolicy(ctx, project, {
-    ref: `refs/heads/${project.default_branch}`,
-    sha: head,
-    content,
+  const content = head ? await ctx.services.github.readFile(repo, POLICY_PATH, head) : null;
+  const parsed = content === null ? null : parseProjectPolicy(content);
+  if (opts.importOnly) {
+    if (!head) return null;
+    if (content === null) {
+      throw new OperationError(
+        "not_found",
+        `${project.default_branch} has no ${POLICY_PATH} to import`,
+      );
+    }
+    if (!parsed?.ok) {
+      throw new OperationError(
+        "invalid_input",
+        `${POLICY_PATH} on ${project.default_branch} isn't valid: ${parsed?.error ?? "invalid"}`,
+      );
+    }
+  }
+  if (parsed?.ok && head) {
+    const written = await writeVersion(ctx, project, {
+      raw: content ?? "",
+      valid: true,
+      error: null,
+      source: "import",
+      note: `Imported from ${POLICY_PATH} at ${head.slice(0, 7)}`,
+      ref: `refs/heads/${project.default_branch}`,
+    });
+    return { applied: true, valid: true, error: null, sha: written.sha, imported: true };
+  }
+  const login = await ctx.db
+    .selectFrom("core_user")
+    .select("github_login")
+    .where("id", "=", ctx.actor.id)
+    .executeTakeFirst();
+  const written = await writeVersion(ctx, project, {
+    raw: templatePolicy(login?.github_login ?? null),
+    valid: true,
+    error: null,
+    source: "app",
+    note:
+      parsed && !parsed.ok
+        ? `Template policy (the repo's ${POLICY_PATH} wasn't valid: ${parsed.error})`
+        : "Template policy",
   });
-  return { ...recorded, sha: head };
+  return { applied: true, valid: true, error: null, sha: written.sha, imported: false };
+}
+
+/** The config a new project starts from: Balanced, the person adding it as approver. */
+export function templatePolicy(approverLogin: string | null): string {
+  return formatPolicy({
+    version: 1,
+    autonomyPolicy: "balanced",
+    spec: { requiredFrom: "medium" },
+    timeouts: { gateHours: 72, questionHours: 48 },
+    wipLimit: 5,
+    retryLimit: 2,
+    approvers: approverLogin ? [approverLogin] : [],
+    ...(approverLogin ? { backupOwner: approverLogin } : {}),
+  });
 }
 
 /** The org's factory, created on first use. */
@@ -308,6 +374,7 @@ export const projectCreate = defineOperation({
       slug: row.slug,
       repo: { owner: repo.owner, name: repo.name, defaultBranch: repo.defaultBranch },
       policySha: synced?.sha ?? null,
+      configVersion: versionOf(synced?.sha ?? null),
       githubInstallationId: record.installation_id,
       connection: {
         status: "connected" as const,
@@ -322,7 +389,7 @@ export const projectCreate = defineOperation({
 export const projectUpdate = defineOperation({
   name: "project.update",
   description:
-    "Admin fix for a project's connection to GitHub (not part of onboarding, which never asks for ids): set its GitHub App installation id (or `detectInstallation: true` to look it up as the App), and/or its default branch. Needs an org owner or admin. Changing the default branch clears the synced policy: it is re-read from the new branch (policy.sync) and the project fails closed until then. Refuses with the reason when detection finds no installation.",
+    "Admin fix for a project's connection to GitHub (not part of onboarding, which never asks for ids): set its GitHub App installation id (or `detectInstallation: true` to look it up as the App), and/or its default branch. Needs an org owner or admin. Changing the default branch keeps the project's config (it lives in the app, ADR 0370). Refuses with the reason when detection finds no installation.",
   risk: "write",
   actors: ["human"],
   permission: "admin",
@@ -373,8 +440,8 @@ export const projectUpdate = defineOperation({
       next.github_installation_id = input.githubInstallationId;
     }
     if (input.defaultBranch !== undefined && input.defaultBranch !== project.default_branch) {
+      // Config lives in the app (ADR 0370): changing the branch keeps it.
       next.default_branch = input.defaultBranch;
-      next.policy_sha = null;
     }
     const before = {
       githubInstallationId: project.github_installation_id,
@@ -460,9 +527,9 @@ export const projectList = defineOperation({
 
 export const policySync = defineOperation({
   name: "policy.sync",
-  description: `Record a project's ${POLICY_PATH} as read from its default branch at one commit (ADR 0036). Called by the GitHub connector on each push to the default branch. A policy from any other ref is ignored (recorded, not applied). A malformed one is recorded and applied: it fails closed.`,
+  description: `Import a ${POLICY_PATH} document into a project as a new config version (ADR 0370; source \`import\`), as read from the default branch at one commit. A document from any other ref is ignored. A malformed or missing one is still recorded and made current, so the project fails closed until a valid version is saved: prefer config.save, which refuses an invalid document. Human admins only; the push webhook no longer calls it.`,
   risk: "write",
-  actors: ["intake", "human"],
+  actors: ["human"],
   permission: "admin",
   input: z.object({
     projectId,
@@ -475,8 +542,10 @@ export const policySync = defineOperation({
     applied: z.boolean(),
     valid: z.boolean(),
     error: z.string().nullable(),
+    /** The version it became (`v<N>`), when applied. */
+    version: z.string().nullable(),
   }),
-  // The connector brings the policy in, so a missing or malformed one can't block it (ADR 0054).
+  // It brings a policy in, so a missing or malformed one can't block it (ADR 0054).
   bootstrapsPolicy: true,
   allowWhenKilled: true,
   async handler(input, ctx) {
@@ -485,23 +554,22 @@ export const policySync = defineOperation({
 });
 
 /**
- * Records `.factory/policy.json` as read from one commit, and applies it only when the ref is the
- * default branch (ADR 0036). Shared by policy.sync and the connector's push.observe.
+ * Records a policy document read from one commit as a new config version, only when the ref is the
+ * default branch. Used by policy.sync.
  */
-export function recordPolicy(
+export async function recordPolicy(
   ctx: HandlerContext,
   project: ProjectRow,
   input: { ref: string; sha: string; content: string | null },
-): { applied: boolean; valid: boolean; error: string | null } {
+): Promise<{ applied: boolean; valid: boolean; error: string | null; version: string | null }> {
   const defaultRef = `refs/heads/${project.default_branch}`;
   const fromDefault = input.ref === defaultRef || input.ref === project.default_branch;
   if (!fromDefault) {
-    // Policy is read from the default branch only: an agent can't loosen its own policy from a
-    // branch (ADR 0036). The refusal is audited by this call's audit row.
     return {
       applied: false,
       valid: false,
       error: `ignored: ${input.ref} is not the default branch`,
+      version: null,
     };
   }
   const parsed =
@@ -509,30 +577,15 @@ export function recordPolicy(
       ? { ok: false as const, error: `no ${POLICY_PATH} at ${input.sha}` }
       : parseProjectPolicy(input.content);
   const error = parsed.ok ? null : parsed.error;
-  ctx.write(
-    ctx.db
-      .insertInto("core_project_policies")
-      .values({
-        project_id: project.id,
-        sha: input.sha,
-        ref: input.ref,
-        raw: input.content ?? "",
-        valid: parsed.ok ? 1 : 0,
-        error,
-        received_at: ctx.now,
-      })
-      .onConflict((oc) => oc.columns(["project_id", "sha"]).doNothing()),
-  );
-  ctx.write(
-    ctx.db.updateTable("core_projects").set({ policy_sha: input.sha }).where("id", "=", project.id),
-  );
-  ctx.change({
-    entity: "project",
-    id: project.id,
-    before: { policySha: project.policy_sha },
-    after: { policySha: input.sha, valid: parsed.ok },
+  const written = await writeVersion(ctx, project, {
+    raw: input.content ?? "",
+    valid: parsed.ok,
+    error,
+    source: "import",
+    note: `Imported from ${input.ref} at ${input.sha.slice(0, 7)}`,
+    ref: input.ref,
   });
-  return { applied: true, valid: parsed.ok, error };
+  return { applied: true, valid: parsed.ok, error, version: written.sha };
 }
 
 export const killSwitchSet = defineOperation({

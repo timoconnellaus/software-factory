@@ -59,6 +59,11 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #33, #35, #36, #37 | Spec 20, planning M1 ([ADR 0350](adr/0350-how-the-planning-loop-is-wired.md), migration 0120): planning is a live session on a runner. The planning log, sessions, chat and presence; heavy and light pools; the planning MCP server and kim-style hooks through the runner host's relay; Workflow v5's spec stage; the Planning tab, layout A. Merged with `factory/verify` red (not attached), with the default-branch ruleset switched off by the owner |
 
 ## In flight
+- **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
+  versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
+  (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals
+  (0374). Plan `.kim/plans/2026-11-11-manage-factory-settings-in-the-ui.md`, mockups
+  `.kim/mockups/project-settings.html` and `project-stages.html`. Building M1 first.
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.

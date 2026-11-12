@@ -5,11 +5,9 @@
 import { sql } from "kysely";
 import { z } from "zod";
 import { defineOperation, type HandlerContext, type WorkItemRow } from "../operation.ts";
-import { POLICY_PATH } from "../policy/project-policy.ts";
 import { POLICY_PR_BRANCH } from "./onboarding.ts";
-import { recordPolicy } from "./projects.ts";
 import { ACTIVE_RUN, finishRun } from "./runners.ts";
-import { repoRef, requireProject } from "./shared.ts";
+import { requireProject } from "./shared.ts";
 import { projectForRepo, repoName } from "./verify.ts";
 
 export const connectorReceive = defineOperation({
@@ -69,7 +67,7 @@ type RunRow = {
 export const pushObserve = defineOperation({
   name: "push.observe",
   description:
-    "The GitHub connector saw a push. To the default branch: mirror `.factory/policy.json` at the new head (ADR 0036). By the factory's App anywhere else (branch confinement, ADR 0052 item 4): a push must be to the run branch of an active run whose fencing token is current, or a control-plane move of a work item's branch; anything else fails the work item's active run (bumping its fencing token) and is audited. People's pushes to other branches are ignored here (`factory/verify` guards their PRs).",
+    "The GitHub connector saw a push. To the default branch: nothing to do (config lives in the app, ADR 0370; `.factory/policy.json` there is no longer read). By the factory's App anywhere else (branch confinement, ADR 0052 item 4): a push must be to the run branch of an active run whose fencing token is current, or a control-plane move of a work item's branch; anything else fails the work item's active run (bumping its fencing token) and is audited. People's pushes to other branches are ignored here (`factory/verify` guards their PRs).",
   risk: "write",
   actors: ["intake"],
   permission: "signed-in",
@@ -106,14 +104,11 @@ export const pushObserve = defineOperation({
     }
 
     if (branch === project.default_branch) {
-      const repo = await repoRef(ctx, project);
-      const content = await ctx.services.github.readFile(repo, POLICY_PATH, input.after);
-      const policy = recordPolicy(ctx, project, { ref: input.ref, sha: input.after, content });
+      // Config lives in the app (ADR 0370): a push to the default branch never changes it.
       return {
-        outcome: "policy" as const,
-        detail: policy.valid ? "policy synced" : `policy invalid: ${policy.error}`,
-        failedRuns: [],
-        policy,
+        outcome: "ok" as const,
+        detail: "default branch: config lives in the app, nothing to sync",
+        ...none,
       };
     }
     if (!input.pusherIsApp) {
