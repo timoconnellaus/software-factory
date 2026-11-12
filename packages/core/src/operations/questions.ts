@@ -8,6 +8,7 @@ import { parseJson } from "@software-factory/db";
 import {
   type PlanningQuestion,
   planningQuestionSchema,
+  questionAnswerFromEditInputSchema,
   questionDeleteInputSchema,
   questionDraftSchema,
   questionFocusInputSchema,
@@ -480,6 +481,8 @@ function answer(
   skipped = false,
   /** Accepted under this person's "finish alone" instruction (ADR 0470): recorded as theirs. */
   alone: string | null = null,
+  /** Recorded from this person's plan edit (spec 27): theirs, and not news to the planner. */
+  fromEdit: { editId: string; by: string } | null = null,
 ) {
   const revising = q.status === "answered";
   const revision = q.answer_revision + 1;
@@ -494,7 +497,8 @@ function answer(
         answer_delivered_at: null,
         accepted_default: acceptedDefault ? 1 : 0,
         accepted_alone: alone ? 1 : 0,
-        answered_by: alone ?? ctx.actor.id,
+        answered_via_edit: fromEdit?.editId ?? null,
+        answered_by: fromEdit?.by ?? alone ?? ctx.actor.id,
         answered_at: ctx.now,
         answer_revision: revision,
       })
@@ -504,10 +508,13 @@ function answer(
   );
   ctx.guardChanged(revising ? `revise ${q.id} once` : `answer ${q.id} once`);
   if (q.planning_session_id) {
-    logPlanning(ctx, q.work_item_id, revising ? "answer.revised" : "answer.submitted", {
-      questionId: q.id,
-      revision,
-    });
+    // An answer the planner recorded from an edit is its own doing: logged, but not news to it.
+    logPlanning(
+      ctx,
+      q.work_item_id,
+      fromEdit ? "answer.fromEdit" : revising ? "answer.revised" : "answer.submitted",
+      { questionId: q.id, revision, ...(fromEdit ? { editId: fromEdit.editId } : {}) },
+    );
   }
   ctx.change({
     entity: "question",
@@ -823,3 +830,45 @@ export const planningFinishAlone = defineOperation({
     return { on: true, accepted };
   },
 });
+
+export const questionAnswerFromEdit = defineOperation({
+  name: "question.answerFromEdit",
+  description:
+    "The planning agent records the answer a person's plan edit settled (spec 27, ADR 0471): the question is answered as that person, marked as coming from their edit. Refused for security & privacy and irreversible questions (a person answers those) and for an edit of another work item.",
+  risk: "write",
+  actors: ["runner"],
+  permission: "signed-in",
+  input: questionAnswerFromEditInputSchema.extend(planningJobFields),
+  output: z.object({ questionId: z.string(), revision: z.number() }),
+  scope: byJob,
+  async handler(input, ctx) {
+    await planningJob(ctx, input);
+    const q = await agentQuestion(ctx, input.questionId);
+    if ((NEVER_BULK_ACCEPTED_DOMAINS as readonly string[]).includes(q.domain) || q.irreversible) {
+      throw new OperationError(
+        "forbidden",
+        "a security, privacy or irreversible question is answered by a person: ask them in the chat",
+      );
+    }
+    const edit = await ctx.db
+      .selectFrom("core_spec_edits")
+      .select(["id", "work_item_id", "author_id"])
+      .where("id", "=", input.editId)
+      .executeTakeFirst();
+    if (!edit || edit.work_item_id !== q.work_item_id) {
+      throw new OperationError("forbidden", "that edit isn't this work item's");
+    }
+    answer(
+      ctx,
+      q,
+      input.answer,
+      input.answer === q.default_answer,
+      "from their edit to the plan",
+      false,
+      null,
+      { editId: edit.id, by: edit.author_id },
+    );
+    return { questionId: q.id, revision: q.answer_revision + 1 };
+  },
+});
+

@@ -336,6 +336,8 @@ export interface CoreQuestionsTable {
   skipped: Generated<Bool>;
   /** Spec 26: when this answer revision reached the planning agent. */
   answer_delivered_at: Iso | null;
+  /** Spec 27: the person's plan edit this answer was recorded from. */
+  answered_via_edit: string | null;
   planning_session_id: string | null;
   updated_at: Iso | null;
 }
@@ -819,6 +821,23 @@ export interface CorePlanningMessagesTable {
   created_at: Iso;
   /** Spec 26: the steer this message was typed as; delivered when the host takes it. */
   steer_id: string | null;
+  /** Spec 27: a comment's anchor on plan lines, as JSON `{ specId, lineStart, lineEnd, quote }`. */
+  anchor: string | null;
+}
+
+/** A person's edit to the plan's source lines (spec 27, ADR 0471). */
+export interface CoreSpecEditsTable {
+  id: string;
+  work_item_id: string;
+  spec_id: string;
+  base_spec_id: string;
+  line_start: number;
+  line_end: number;
+  before: string;
+  after: string;
+  author_id: string;
+  created_at: Iso;
+  replaced_by: string | null;
 }
 
 export interface CorePlanningPresenceTable {
@@ -954,6 +973,7 @@ export interface CoreDatabase {
   core_planning_events: CorePlanningEventsTable;
   core_planning_messages: CorePlanningMessagesTable;
   core_planning_presence: CorePlanningPresenceTable;
+  core_spec_edits: CoreSpecEditsTable;
   core_cli_device_codes: CoreCliDeviceCodesTable;
   core_cli_tokens: CoreCliTokensTable;
   core_desktop_auth_requests: CoreDesktopAuthRequestsTable;
