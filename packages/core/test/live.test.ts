@@ -88,7 +88,7 @@ describe("watching and steering a run", () => {
           log(4),
           { jobId: job.jobId, seq: 5, at: at(), type: "agent.status", status: "working" },
           log(6),
-          // Over a megabyte of lines: split into rows under D1's row limit.
+          // Long lines: a row stops at 64 KB, so each of these is about a row of its own.
           ...Array.from({ length: 20 }, (_, i) => log(7 + i, "y".repeat(60_000))),
         ],
       },
@@ -104,7 +104,11 @@ describe("watching and steering a run", () => {
       { seq: 5, last_seq: null },
       { seq: 6, last_seq: expect.any(Number) },
     ]);
-    expect(stored.length).toBeLessThan(8);
+    const sizes = await rows<{ bytes: number }>(
+      "SELECT length(e.payload) AS bytes FROM core_run_events e JOIN core_runs r ON r.id = e.run_id WHERE r.job_id = ?",
+      job.jobId,
+    );
+    expect(Math.max(...sizes.map((r) => r.bytes))).toBeLessThan(130_000);
     type Live = { events: { seq: number; type: string; data: { text?: string } }[] };
     const all = await ok<Live>("run.live", { workItemId: item.workItemId, afterSeq: 0 }, w.human);
     expect(all.events.slice(0, 6).map((e) => [e.seq, e.type, e.data.text ?? null])).toEqual([
@@ -129,6 +133,54 @@ describe("watching and steering a run", () => {
       job.jobId,
     );
     expect(again.length).toBe(stored.length);
+  });
+
+  it("caps a stored batch at 200 lines, and pages a first read by lines and bytes, not rows", async () => {
+    const { w, actor, item, job } = await running();
+    const log = (seq: number) => ({
+      jobId: job.jobId,
+      seq,
+      at: at(),
+      type: "log" as const,
+      stream: "terminal" as const,
+      text: `line ${seq}`,
+    });
+    // 1,500 lines in three calls of 500: 200 lines a row at most.
+    for (let call = 0; call < 3; call++) {
+      await ok(
+        "run.reportEvents",
+        {
+          jobId: job.jobId,
+          fencingToken: job.lease.fencingToken,
+          events: Array.from({ length: 500 }, (_, i) => log(call * 500 + i + 1)),
+        },
+        actor,
+      );
+    }
+    const stored = await rows<{ seq: number; last_seq: number }>(
+      "SELECT e.seq, e.last_seq FROM core_run_events e JOIN core_runs r ON r.id = e.run_id WHERE r.job_id = ? ORDER BY e.seq",
+      job.jobId,
+    );
+    expect(stored).toHaveLength(9);
+    expect(stored.every((r) => r.last_seq - r.seq + 1 <= 200)).toBe(true);
+    type Live = { events: { seq: number }[]; lastSeq: number };
+    const newest = await ok<Live>("run.live", { workItemId: item.workItemId }, w.human);
+    expect(newest.events).toHaveLength(300);
+    expect(newest.events.at(-1)?.seq).toBe(1500);
+    expect(newest.events[0]?.seq).toBe(1201);
+    // Walking from the start, a page at a time, reaches every line once.
+    const seen: number[] = [];
+    let cursor = 0;
+    for (let i = 0; i < 10 && cursor < 1500; i++) {
+      const page = await ok<Live>(
+        "run.live",
+        { workItemId: item.workItemId, afterSeq: cursor },
+        w.human,
+      );
+      seen.push(...page.events.map((e) => e.seq));
+      cursor = page.lastSeq;
+    }
+    expect(seen).toEqual(Array.from({ length: 1500 }, (_, i) => i + 1));
   });
 
   it("shows a run's events to any member, after a cursor, with transcript messages", async () => {
