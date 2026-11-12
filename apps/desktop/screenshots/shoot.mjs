@@ -37,6 +37,11 @@ export const SCREENS = [
   { name: "setup", path: "/setup", design: "Setup.html" },
   { name: "this-mac", path: "/settings", design: "SettingsDevices.html" },
   { name: "search", path: "/work", design: "Main.html", keys: ["meta+k"] },
+  // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
+  // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
+  { name: "update-required-ready", path: "/", query: "?update=ready", design: "Main.html" },
+  { name: "update-required-jobs", path: "/", query: "?update=jobs", design: "Main.html" },
+  { name: "update-required-download", path: "/", query: "?update=download", design: "Main.html" },
 ];
 
 const args = process.argv.slice(2);
@@ -141,7 +146,13 @@ try {
       await cdp.send("Page.navigate", { url: base });
       await sleep(300);
       await cdp.send("Runtime.evaluate", { expression: "localStorage.clear()" });
-      await shoot(cdp, `${base}#${s.path}`, resolve(out, `${s.name}-${theme}.png`), theme, s.keys);
+      await shoot(
+        cdp,
+        `${base}${s.query ?? ""}#${s.path}`,
+        resolve(out, `${s.name}-${theme}.png`),
+        theme,
+        s.keys,
+      );
     }
   }
   if (withDesign) {

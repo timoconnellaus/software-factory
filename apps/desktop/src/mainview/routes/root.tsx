@@ -53,7 +53,10 @@ function Root() {
   const signedIn = session?.signedIn ?? false;
   useEffect(() => {
     void signedIn;
-    client.removeQueries({ predicate: (q) => q.queryKey[0] !== "session" });
+    // The update status is the app's, not the account's: it survives (ADR 0393).
+    client.removeQueries({
+      predicate: (q) => q.queryKey[0] !== "session" && q.queryKey[0] !== "update",
+    });
     void router.invalidate();
   }, [signedIn, client, router]);
   if (!session) return null;

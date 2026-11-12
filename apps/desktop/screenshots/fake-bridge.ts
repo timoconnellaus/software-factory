@@ -2,7 +2,7 @@
 // operations are answered from fixtures.ts instead of the main process. vite.config.ts swaps it in.
 // It also draws the traffic lights macOS would draw over the toolbar, so shots match the window.
 import type { OpName } from "@software-factory/client/ops";
-import type { AppRPC, CallResult, RunnerState, Session } from "../src/shared/rpc.ts";
+import type { AppRPC, CallResult, RunnerState, Session, UpdateStatus } from "../src/shared/rpc.ts";
 import { ANSWERS } from "./fixtures.ts";
 
 /**
@@ -42,6 +42,23 @@ const session: Session = {
 };
 const runner: RunnerState = { status: "running", pid: 4242, restarts: 0, lastLine: null };
 
+/**
+ * Updates (ADR 0393): a page loaded with `?update=ready|jobs|download` (before the hash) shows the
+ * Update required screen in that state; anything else is a current build.
+ */
+function updateStatus(): UpdateStatus {
+  const which = new URLSearchParams(location.search).get("update");
+  return {
+    required: !!which,
+    ready: which === "ready" || which === "jobs",
+    version: which === "ready" || which === "jobs" ? "0.1.42" : null,
+    error: which === "download" ? "Failed to download update: HTTP 404" : null,
+    needsMove: false,
+    jobs: which === "jobs" ? 2 : 0,
+    downloadUrl: "https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip",
+  };
+}
+
 function answer(op: string, input: unknown): CallResult {
   const f = ANSWERS[op as OpName] as ((i: unknown) => unknown) | undefined;
   if (!f) return { ok: false, code: "unavailable", error: `no fixture for ${op}` };
@@ -61,6 +78,8 @@ export const bun = {
   loginItem: async () => ({ enabled: true }),
   openExternal: async () => ({ ok: true }),
   saveDownload: async () => ({ ok: true, path: null }),
+  updateStatus: async () => updateStatus(),
+  updateAction: async () => updateStatus(),
   titleBarDoubleClick: async () => {
     const call = await mainProcess();
     return call
@@ -74,6 +93,7 @@ export const onSession = none;
 export const onRunner = none;
 export const onInbox = none;
 export const onNavigate = none;
+export const onUpdate = none;
 
 // In the real window macOS draws the lights itself.
 const lights = document.createElement("div");

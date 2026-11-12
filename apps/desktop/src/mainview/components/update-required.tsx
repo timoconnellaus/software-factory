@@ -6,6 +6,7 @@ import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { useState } from "react";
 import type { UpdateStatus } from "../../shared/rpc.ts";
+import { DRAG, NO_DRAG } from "../lib/title-bar.ts";
 
 type Action = "restart" | "restart-when-idle" | "restart-anyway" | "download" | "retry";
 
@@ -46,7 +47,7 @@ export function updateRequiredView(u: UpdateStatus): {
     };
   return {
     body: u.error
-      ? `The app couldn't update itself (${u.error}). Download the new version, quit this one and open the new one.`
+      ? "The app couldn't update itself. Download the new version, quit this one and open the new one."
       : "Looking for the new version… If it doesn't appear in a few minutes, download it.",
     actions: [
       { action: "download", label: "Download the new version", variant: "default" },
@@ -69,6 +70,8 @@ export function UpdateRequired({
       className="mx-auto grid min-h-screen max-w-md place-content-center gap-4 p-6"
       data-testid="update-required"
     >
+      {/* The window has no title bar (spec 41): the top strip still moves it. */}
+      <div aria-hidden="true" className={`fixed inset-x-0 top-0 h-12 ${DRAG}`} />
       <h1 className="font-semibold text-2xl tracking-tight">Update required</h1>
       <p className="text-muted-foreground text-sm">
         This version of Software Factory is too old for the factory. {view.body}
@@ -76,7 +79,7 @@ export function UpdateRequired({
       {status.error && !status.needsMove && (
         <Card className="px-4 py-3 text-muted-foreground text-xs">{status.error}</Card>
       )}
-      <div className="flex flex-wrap gap-2">
+      <div className={`flex flex-wrap gap-2 ${NO_DRAG}`}>
         {view.actions.map((a) => (
           <Button
             key={a.action}
