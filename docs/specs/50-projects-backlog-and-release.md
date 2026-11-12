@@ -99,8 +99,8 @@ Nothing changes for a user.
 
 ## Part B: backlog, ready, queued (PR B)
 - **Migration 0211** (`0211_backlog.sql`):
-  - `core_work_items.status` gains `backlog`, `ready` and `queued` (the CHECK is rebuilt, as in
-    0080). `stage` stays `intake` until the item is pulled.
+  - `core_work_items.status` gains `backlog`, `ready`, `queued` and `planning` (the CHECK is
+    rebuilt, as in 0080; `planning` is used from part C). `stage` stays `intake` until the item is pulled.
   - New columns: `priority` (0 urgent, 1 high, 2 normal, 3 low; default 2), `rank` (REAL, the
     order within a priority; lower first), `acceptance_criteria` (JSON, set while shaping),
     `released_at`, `released_by`, `pulled_at`. Existing items are left as they are: they are
@@ -175,6 +175,49 @@ Nothing changes for a user.
   - `workItem.get` gains `priority`, `repository`, `waitsFor`, `waitedOnBy`, `releasedAt`,
     `releasedBy`.
   - The status enum in reads (`workItem.list`, `inbox.list`, …) includes the three new states.
+
+## Part C: planning before release (PR C, Workflow v7)
+Raised by the owner after part B was written: planning (the live session with questions, spec 20) is
+not a pipeline stage after Queued. **Planning is how an item gets from Backlog to Ready**, and the
+spec gate is that transition. Release stays a separate, later decision.
+
+States: `backlog` → `planning` (optional: by size, or on request) → `ready` (the plan approved at the
+spec gate, or no plan needed) → `queued` (released) → build → verify → merge gate → merge queue →
+`done`.
+
+What it changes:
+- **`planning` is a status** (added to the CHECK by migration 0211 already, so part C needs no table
+  rebuild). Items in it are not active: they don't count against `activeLimit`, and their jobs run on
+  the light pool (ADR 0301) as planning does today. No commitment to build.
+- **When the Workflow instance starts.** Either when planning starts (`workItem.plan { workItemId }`,
+  a person's call, or automatically on entering `ready` for items triage sizes at or above
+  `spec.requiredFrom`), or at the pull for an item that never planned. One instance per item, as now
+  (ADR 0006); the instance id stays the item id.
+- **Workflow v7** (new version; v1–v6 replay unchanged and v7's step names are frozen in
+  `workflow-versions.test.ts`):
+  1. triage → spec stage (the planning session) → spec gate → `spec: commit`, exactly as v6, while
+     the item is `planning`;
+  2. then a new step, **`release: wait`**: the item becomes `ready` and the instance waits for the
+     event `release-<item>` (in a loop of bounded `waitForEvent` timeouts, like the gate waits). No
+     job or slot is held while it waits;
+  3. the pull, finding a queued item that already has an instance, sends `release-<item>` instead of
+     `workflow.create`; the instance pins the config version current at that moment, records the
+     project's workflow (`workflow: plan`), and goes on to the slots, build, verify and the merge
+     gate as v6 does.
+  - An item released straight from the backlog (New work, `sf new`) has no instance; the pull creates
+    one, and v7 runs triage and, when the size needs it, planning **after** release, as today: the
+    `release: wait` step is a no-op for an item already released. Its planning then counts as active.
+  - Requesting changes at the spec gate keeps the item in `planning` (same session, as today); a
+    rejected spec ends the item as `rejected`, as today.
+- **Moving back.** `workItem.move { to: "backlog" }` from `planning` or `ready` ends the planning
+  session and terminates the instance; the approved spec stays on the item, and planning again
+  starts a new instance with a new id suffix (`<item>-p<n>`), so instance ids stay unique.
+- **The cheap triage pass in Ready** is v7's triage step: it runs when planning starts, never on
+  capture.
+
+Part C is staged after part B because it is a Workflow version: B ships the states, release, the
+pull and the links with planning still after the pull (v6 unchanged), and C moves planning ahead of
+release.
 
 ## Out of scope
 Screen changes beyond what keeps today's screens working, chat, issue intake, the reconciler, triage
