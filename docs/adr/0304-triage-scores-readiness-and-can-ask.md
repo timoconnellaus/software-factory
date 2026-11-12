@@ -43,3 +43,18 @@ guesses, which the research marks as the largest loss.
   item goes on to Ready, Queued or shaping as it was heading, so nobody releases it twice. A person
   may move a parked item on by hand; that withdraws its questions.
 
+## Amendment, 2026-11-12 (review of #117)
+**The pre-check is a floor for emptiness, not a judgement of clarity.** A keyword and word-count rule
+parked 13 of 15 ordinary requests ("App crashes on startup on Windows 11", "Upgrade React to 19"),
+and triage (an agent stage) already exists to ask what it needs. So the deterministic check parks
+only what code knows for certain:
+- nothing to act on: no body and a title of fewer than four words, or a body that is only a
+  template's headings (or comments and empty checkboxes) or only a link;
+- an exact duplicate of an open item from the same source (same title and body).
+
+Everything else goes to triage, which decides whether to ask.
+
+**"A person released it" is the surface, not the actor type.** A human on the app, the desktop, the
+phone or the sf CLI is a person. MCP is an agent acting with a person's token. Intake, the foreman,
+autopilots and the improver aren't people either.
+
