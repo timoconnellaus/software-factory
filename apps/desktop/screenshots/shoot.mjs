@@ -79,6 +79,27 @@ export const SCREENS = [
   },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
+  // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
+  {
+    name: "item-review-criteria",
+    path: "/work/wi_13?tab=review",
+    design: "ItemReview.html",
+    scrollTo: "factory-checks",
+  },
+  // The runner could not run the checks (ADR 0501, third review): shown plainly, not passed.
+  {
+    name: "item-review-not-run",
+    path: "/work/wi_13?tab=review&fixture=notrun",
+    design: "ItemReview.html",
+    scrollTo: "factory-checks",
+  },
+  // Fourth review: the decision when checks were not run (merge only without them, recorded).
+  {
+    name: "item-review-not-run-decision",
+    path: "/work/wi_13?tab=review&fixture=notrun",
+    design: "ItemReview.html",
+    scrollTo: "decision",
+  },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
   { name: "new-item", path: "/new", design: "WorkNew.html" },
   { name: "setup", path: "/setup", design: "Setup.html" },
@@ -185,6 +206,8 @@ async function shoot(cdp, url, file, theme, keys = [], clicks = [], scrollTo = n
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
+  // A fixture variant is read once per page load: load it afresh for each theme.
+  if (url.includes("fixture=")) await cdp.send("Page.navigate", { url: "about:blank" });
   await cdp.send("Page.navigate", { url });
   await sleep(1600);
   for (const k of keys) {

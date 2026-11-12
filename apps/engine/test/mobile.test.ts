@@ -1373,6 +1373,12 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
       headSha: head,
       touchesFactoryConfig: false,
     });
+    // The head's review packet: with none, the merge gate refuses (ADR 0501, fifth review).
+    await env.DB.prepare(
+      "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, created_at) VALUES (?, ?, ?, 'pass', ?)",
+    )
+      .bind(uid("rp_"), workItemId, head, new Date().toISOString())
+      .run();
     // The phone always names the commit.
     const noSha = { workItemId, openedFullDiff: true };
     const missing = await callOp(
@@ -1399,6 +1405,19 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
     const fresh = { workItemId, openedFullDiff: true, headSha: head };
     const proof = await prove(token, p, "review.merge", fresh);
     expect(proof.summary).toBe('Merge 3f2a91c "Guard the tests in verify" into main');
+    // Merging without checks the runner couldn't run is refused on the phone, in the engine: no
+    // challenge is issued for it, and a proof for the plain merge doesn't carry it (fifth review).
+    const without = { ...fresh, mergeWithoutChecks: true };
+    const challenge = await callOp(token, "presence.challenge", {
+      op: "review.merge",
+      input: without,
+    });
+    expect(challenge.status).toBe(403);
+    const forced = await callOp(token, "review.merge", without, proof);
+    expect(forced.status).toBe(403);
+    expect(
+      await first<{ status: string }>("SELECT status FROM core_pending_actions WHERE id = ?", pa),
+    ).toEqual({ status: "pending" });
     const merged = await callOp(token, "review.merge", fresh, proof);
     expect(merged.status).toBe(200);
     expect(

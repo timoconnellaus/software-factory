@@ -73,7 +73,7 @@ Routing triage questions by decision domain (R1 milestone (c)).
 - Tests: `packages/core/test/readiness.test.ts`, plus `packages/db/test/late-migrations.test.ts`
   (this branch's migration applies after everything on main and survives a fresh build).
 
-### Part B: triage's readiness (Workflow v8, provisional number)
+### Part B: triage's readiness (Workflow v9)
 - `triageResultSchema` gains `readiness` (`ready`, `needs_answers`, `not_actionable`; default
   `ready`), `readinessReason` and up to five `questions`. The triage prompt asks for them in v8
   instances, with the answers to an earlier round. `workItem.triage` journals the readiness and its

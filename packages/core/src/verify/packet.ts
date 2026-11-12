@@ -5,13 +5,26 @@
 import type { CheckResult } from "@software-factory/runner-contract";
 import type { ChangedFile } from "../services.ts";
 import type { CiSummary } from "./ci.ts";
+import {
+  type CheckRun,
+  type CriterionProof,
+  checkLines,
+  type DeclaredCheck,
+  type ExecutedChecks,
+  executedChecks,
+  notRunLines,
+  notRunTitle,
+  proveCriteria,
+  weakerLines,
+} from "./proof.ts";
 import { type RiskFlag, riskFlags } from "./risk.ts";
 import { type TestsIntact, testFindingLines, testsIntact } from "./tests-intact.ts";
 
 export interface PacketEvidence {
   summary: string;
-  criteria: { criterion: string; met: boolean; evidence: string }[];
-  /** What the runner ran in its worktree (tests, lint, typecheck): evidence only. */
+  /** The reviewer's judgement per criterion, and the checks it links each to (ADR 0501). */
+  criteria: { criterion: string; met: boolean; evidence: string; checks?: string[] | undefined }[];
+  /** What the reviewer agent says it ran: its opinion, never the verdict (ADR 0501). */
   checks: CheckResult[];
   reviewer: {
     role: "review";
@@ -33,6 +46,20 @@ export interface PacketInput {
   sameModelAsImplementer: boolean;
   /** What the runner said (kept in the packet; never decides). */
   runnerVerdict?: "pass" | "fail" | undefined;
+  /** The checks the project declares for this item (ADR 0501): names, and the commands now. */
+  declaredChecks?: readonly (string | DeclaredCheck)[] | undefined;
+  /** The CI checks the project's config requires: the only CI runs that may prove a criterion. */
+  requiredCi?: readonly string[] | undefined;
+  /** What the runner host ran on this SHA (core_check_results). */
+  checksRun?: readonly CheckRun[] | undefined;
+  /**
+   * Whether the item runs the factory's own checks (Workflow v8+, ADR 0501). False for an instance
+   * that started earlier: its verdict stays as it was (the agent's failing checks fail it), with no
+   * executed checks or proof.
+   */
+  hostChecks?: boolean | undefined;
+  /** The approved spec's acceptance criteria, for the links a person approved (ADR 0501). */
+  specCriteria?: readonly string[] | null | undefined;
 }
 
 export interface AssembledPacket {
@@ -54,6 +81,10 @@ export interface AssembledPacket {
    * agent: a person looks at the findings at the merge gate, and they block the auto-merge.
    */
   testsIntact: TestsIntact;
+  /** The declared checks as the host ran them on the SHA (ADR 0501). */
+  executed: ExecutedChecks;
+  /** Each criterion, Proven only by a linked check that passed on the SHA. */
+  proof: CriterionProof[];
   sections: Record<string, unknown>;
 }
 
@@ -71,8 +102,20 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   if (input.files === null) missing.push("the diff couldn't be read from GitHub");
 
   for (const c of evidence.criteria) if (!c.met) reasons.push(`unmet: ${c.criterion}`);
-  for (const c of evidence.checks) {
-    if (c.status === "fail") reasons.push(`runner check failing: ${c.name}`);
+  // The factory's own checks on this SHA decide (ADR 0501). The agent's report of checks decides
+  // only where the factory has none: an older instance, or a project that declares no checks, so
+  // a reviewer's failing test still fails verify.
+  const hostChecks = input.hostChecks ?? false;
+  const executed = executedChecks(
+    input.headSha,
+    hostChecks ? (input.declaredChecks ?? []) : [],
+    hostChecks ? (input.checksRun ?? []) : [],
+  );
+  reasons.push(...executed.reasons);
+  if (executed.declared.length === 0) {
+    for (const c of evidence.checks) {
+      if (c.status === "fail") reasons.push(`runner check failing: ${c.name}`);
+    }
   }
   if (evidence.reviewer?.verdict === "request_changes") {
     reasons.push("the reviewer requested changes");
@@ -96,6 +139,16 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
     warnings.push("the runner reported green, but CI on GitHub isn't: CI decides (spec 04)");
   }
 
+  // Checks the runner could not run: said plainly, never a pass, never a failure (third review, B3).
+  // `factory/verify` is then not success but action required (fourth review, S2): a person merges
+  // only by deciding to merge without them (review.merge).
+  warnings.push(...notRunLines(executed.notRun));
+  warnings.push(...weakerLines(executed.weaker));
+  if (hostChecks && executed.declared.length === 0) {
+    warnings.push(
+      "the project declares no checks, so the factory ran none itself: only CI and the reviewer's report back this verdict (ADR 0501)",
+    );
+  }
   const risk = input.files ? riskFlags(input.files) : [];
   const intact: TestsIntact = input.files
     ? testsIntact(input.headSha, input.files)
@@ -113,6 +166,13 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
         ],
         total: 1,
       };
+  const proof = hostChecks
+    ? proveCriteria(evidence.criteria, executed, ci, {
+        specCriteria: input.specCriteria,
+        requiredCi: input.requiredCi,
+        gateFilesChanged: intact.findings.some((f) => f.kind === "gate-file"),
+      })
+    : [];
   const verdict = evidencePass && ci.state === "success" ? "pass" : "fail";
   const evidenceReasons = [...missing.map((m) => `incomplete: ${m}`), ...reasons];
   const allReasons = [...ciReasons, ...evidenceReasons];
@@ -126,8 +186,21 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
     risk,
     riskFlags: [...risk.map((r) => r.message), ...evidence.riskFlags],
     testsIntact: intact,
+    executed,
+    proof,
     sections: {
       testsIntact: intact,
+      ...(hostChecks
+        ? {
+            executed,
+            proof,
+            proven: {
+              proven: proof.filter((p) => p.proven).length,
+              total: proof.length,
+              weakened: proof.some((p) => p.weakened),
+            },
+          }
+        : {}),
       verdict: { verdict, reasons: verdict === "pass" ? [] : allReasons, warnings },
       ci: { state: ci.state, checks: ci.checks },
       changed: input.files
@@ -139,6 +212,21 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
       evidenceReasons,
     },
   };
+}
+
+/** A person's decision to merge without the checks the runner could not run (fourth review). */
+export interface NotRunWaiver {
+  by: string;
+  at: string;
+  checks: string[];
+}
+
+/** What `factory/verify` is posted as. */
+export interface VerifyOutput {
+  status: "in_progress" | "completed";
+  conclusion?: "success" | "failure" | "action_required";
+  title: string;
+  summary: string;
 }
 
 /** The `factory/verify` check run's text for a packet's evidence and the CI as it stands now. */
@@ -153,12 +241,18 @@ export function verifyCheckOutput(args: {
   testFindings?: string[];
   /** How many findings there were in all (the lines may stop at MAX_FINDINGS). */
   testFindingsTotal?: number;
-}): {
-  status: "in_progress" | "completed";
-  conclusion?: "success" | "failure";
-  title: string;
-  summary: string;
-} {
+  /** The factory's own checks on this SHA, one line each (ADR 0501). */
+  checkLines?: string[];
+  /** How many criteria an executed check proves. */
+  proven?: { proven: number; total: number; weakened?: boolean } | null;
+  /**
+   * Declared checks the runner could not run on this SHA (fourth review, S2): with everything else
+   * passing, the check is action required, not success, until a person decides at the merge gate.
+   */
+  notRun?: ExecutedChecks["notRun"];
+  /** A person decided to merge without those checks (review.merge): recorded, then success. */
+  notRunWaived?: NotRunWaiver | null;
+}): VerifyOutput {
   const { ci } = args;
   const list = (title: string, items: string[]) =>
     items.length ? [`### ${title}`, ...items.map((i) => `- ${i}`), ""] : [];
@@ -169,13 +263,28 @@ export function verifyCheckOutput(args: {
   }`;
   const findings = args.testFindings ?? [];
   const findingCount = args.testFindingsTotal ?? findings.length;
+  const notRun = args.notRun ?? [];
+  const waived = notRun.length > 0 ? (args.notRunWaived ?? null) : null;
   const summary = [
     `Work item #${args.workItem.number}: ${args.workItem.title}`,
     "",
+    ...list(
+      waived
+        ? `Not run on this runner: a person decided to merge without these checks (${waived.at.slice(0, 10)})`
+        : "Not run on this runner: not passed, proving nothing; a person decides at the merge gate",
+      notRun.map((n) => `${n.name}: ${n.reason}`),
+    ),
     ...list("Tests not intact: a person must look at these (ADR 0500)", findings),
     ...list("What fails", args.evidencePass ? [] : args.evidenceReasons),
     ...list("Warnings", args.warnings),
     ...list("Risk flags", args.riskFlags),
+    ...list("Checks run by the factory", args.checkLines ?? []),
+    ...(args.proven
+      ? [
+          `Criteria proven by an executed check: ${args.proven.proven}/${args.proven.total}${args.proven.weakened ? " (weakened: the tests-intact guard found gate-file edits on this commit)" : ""}`,
+          "",
+        ]
+      : []),
     ciLine,
   ].join("\n");
   if (!args.evidencePass) {
@@ -200,12 +309,29 @@ export function verifyCheckOutput(args: {
       summary,
     };
   }
+  // Everything else passed, but declared checks could not be run: not success (fourth review, S2).
+  if (notRun.length > 0 && !waived) {
+    return {
+      status: "completed",
+      conclusion: "action_required",
+      title: notRunTitle(notRun),
+      summary,
+    };
+  }
+  const tail = [
+    ...(findingCount
+      ? [`${findingCount} test finding${findingCount === 1 ? "" : "s"} for a person`]
+      : []),
+    ...(waived
+      ? [
+          `merged without ${notRun.length} check${notRun.length === 1 ? "" : "s"} that could not be run, by a person's decision`,
+        ]
+      : []),
+  ];
   return {
     status: "completed",
     conclusion: "success",
-    title: findingCount
-      ? `Verified by the factory; ${findingCount} test finding${findingCount === 1 ? "" : "s"} for a person`
-      : "Verified by the factory",
+    title: tail.length ? `Verified by the factory; ${tail.join("; ")}` : "Verified by the factory",
     summary,
   };
 }
@@ -221,4 +347,62 @@ export function storedTestFindings(sections: Record<string, unknown>): {
   if (!Array.isArray(t?.findings)) return { testFindings: [], testFindingsTotal: 0 };
   const total = typeof t.total === "number" ? t.total : t.findings.length;
   return { testFindings: testFindingLines(t.findings, total), testFindingsTotal: total };
+}
+
+/**
+ * The check lines and proven count stored in a packet's sections (for `verifyCheckOutput`). A
+ * packet the merge queue carried to a new head (`checksRanOn`) says where its checks ran: they
+ * didn't run on the commit the check run is posted on (ADR 0501).
+ */
+export function storedProof(sections: Record<string, unknown>): {
+  checkLines: string[];
+  proven: { proven: number; total: number; weakened?: boolean } | null;
+  notRun: ExecutedChecks["notRun"];
+  notRunWaived: NotRunWaiver | null;
+} {
+  const e = sections.executed as Partial<ExecutedChecks> | undefined;
+  const p = sections.proven as
+    | { proven?: unknown; total?: unknown; weakened?: unknown }
+    | undefined;
+  const ranOn = typeof sections.checksRanOn === "string" ? sections.checksRanOn : null;
+  const lines =
+    Array.isArray(e?.declared) && Array.isArray(e?.results)
+      ? checkLines({ declared: e.declared, results: e.results })
+      : [];
+  return {
+    checkLines: ranOn
+      ? lines.map(
+          (l) => `${l} — ran on ${short(ranOn)}, not on this commit (carried by the merge queue)`,
+        )
+      : lines,
+    proven:
+      typeof p?.proven === "number" && typeof p.total === "number"
+        ? { proven: p.proven, total: p.total, ...(p.weakened === true ? { weakened: true } : {}) }
+        : null,
+    notRun: storedNotRun(sections),
+    notRunWaived: storedWaiver(sections),
+  };
+}
+
+/** The declared checks not run on the packet's SHA, from its sections. */
+export function storedNotRun(sections: Record<string, unknown>): ExecutedChecks["notRun"] {
+  const e = sections.executed as { notRun?: unknown } | undefined;
+  if (!Array.isArray(e?.notRun)) return [];
+  return e.notRun.flatMap((n: unknown) => {
+    const x = n as { name?: unknown; reason?: unknown } | null;
+    return typeof x?.name === "string" && typeof x.reason === "string"
+      ? [{ name: x.name, reason: x.reason }]
+      : [];
+  });
+}
+
+/** The recorded decision to merge without the checks not run, from a packet's sections. */
+export function storedWaiver(sections: Record<string, unknown>): NotRunWaiver | null {
+  const w = sections.notRunWaived as { by?: unknown; at?: unknown; checks?: unknown } | undefined;
+  if (typeof w?.by !== "string" || typeof w.at !== "string") return null;
+  return {
+    by: w.by,
+    at: w.at,
+    checks: Array.isArray(w.checks) ? w.checks.filter((c) => typeof c === "string") : [],
+  };
 }

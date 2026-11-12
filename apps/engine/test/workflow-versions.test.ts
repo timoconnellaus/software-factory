@@ -75,8 +75,16 @@ const V7_STEPS = [
   "`release: wait #${k}`",
   "`release: check #${k}`",
 ];
-// The steps v8 adds (spec 23 part B, ADR 0304): triage's readiness, its quick rounds and parking.
+// The steps v8 adds (spec 51, ADR 0501): the factory's checks on the build's head, the question when
+// they still fail, and the attached PR's check names for its reviewer.
 const V8_STEPS = [
+  "build #{b}: checks",
+  "build #{b}: checks failed",
+  "verify #{b}: check names",
+  "build #{b}: checks failing",
+].map((name) => `\`${name.replaceAll("{", "$" + "{")}\``);
+// The steps v9 adds (spec 23 part B, ADR 0304): triage's readiness, its quick rounds and parking.
+const V9_STEPS = [
   '"triage: park"',
   "`triage #${k - 1}: park`",
   "`triage #${k}: ask`",
@@ -89,8 +97,8 @@ const V8_STEPS = [
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 8 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(8);
+  it("starts new instances on version 9 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(9);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -103,7 +111,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(8);
+    expect(row.workflow_version).toBe(9);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -145,7 +153,9 @@ describe("Workflow versions", () => {
     for (const name of V6_STEPS) expect(source, name).toContain(name);
     for (const name of V7_STEPS) expect(source, name).toContain(name);
     for (const name of V8_STEPS) expect(source, name).toContain(name);
-    // v7 instances still dispatch to the same flow, with v8's triage readiness switched off.
+    for (const name of V9_STEPS) expect(source, name).toContain(name);
+    // v8 instances still dispatch to the same flow, with v9's triage readiness switched off.
+    expect(source).toContain("return flow.runV1(8);");
     expect(source).toContain("return flow.runV1(7);");
     // v6 instances still dispatch to the same flow, with v7's release wait switched off.
     expect(source).toContain("return flow.runV1(6);");

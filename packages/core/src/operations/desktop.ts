@@ -583,7 +583,7 @@ export const presenceChallenge = defineOperation({
   async handler(input, ctx) {
     const { deviceId, surface } = requireDevice(ctx);
     const target = getOperation(input.op);
-    if (!target || !presenceSurfaceAllowed(target, surface)) {
+    if (!target || !presenceSurfaceAllowed(target, surface, input.input)) {
       throw new OperationError(
         "forbidden",
         `${input.op} can't be decided with a presence proof from the ${surface}: it stays in the browser (ADR 0391, 0541)`,

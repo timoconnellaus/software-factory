@@ -400,7 +400,7 @@ current (ADR 0370 §2). The **floors** are F-rules: no setting, template or agen
   gate's `autoApprove` is on and `autoApproveVerdict()` passed on that digest (ADR 0515), or a
   person's Preview approval on that digest when Publish follows the Preview directly (Q2), or the
   adjudicator's Preview approval under the same condition only when the Publish gate's `autoApprove`
-  is on and its conditions hold for that digest (Q2 × Q12, (working answer, owner to confirm)). No other actor's decision counts. `autoApprove` on a `publish` (social) or `self-modify` gate is refused.
+  is on and its conditions hold for that digest (Q2 × Q12, (decided by the owner, 2026-11-12)). No other actor's decision counts. `autoApprove` on a `publish` (social) or `self-modify` gate is refused.
 - **F7** No `when` on a stage whose gate is `required`, or whose type is `irreversible`. A
   conditional gate's condition lives in its typed setting, where the impact check reads it.
 - **F8** **Nothing reaches a default branch except through checks.** A `publish` stage whose
@@ -626,7 +626,7 @@ export interface EvidenceItem {
   them, no new evidence since. Publish then records the Preview's decision as its own and acts. Any
   change (a re-render, a stage between them) needs Publish's own decision. An approval by the
   adjudicator (Q12) carries over only in a workflow whose Publish gate has `autoApprove` on and whose
-  conditions hold for that digest; otherwise Publish asks a person (working answer, owner to confirm). Since `autoApprove` is
+  conditions hold for that digest; otherwise Publish asks a person (decided by the owner, 2026-11-12). Since `autoApprove` is
   refused on a `post` action (F6), an adjudicator's Preview approval never publishes a post.
 - **Dark factory mode (ADR 0515)** decides the merge gate's packet as the `auto-approve` actor when
   every condition holds for the head SHA; the decision records the facts it checked.
@@ -666,7 +666,7 @@ Every org sees them under Workflows, read-only, with **Tighten**: an org admin m
 only tightens (add a check or decision stage, narrow a decider, require more evidence). A save whose
 impact has any `loosens` change is refused outright (`invalid_input`), not sent for approval; an
 org's tightened copy keeps the built-in's id with an org version. **"Never loosen" is measured
-against the shipped built-in**, not the org's last version (working answer, owner to confirm): an org may undo its own tightening
+against the shipped built-in**, not the org's last version (decided by the owner, 2026-11-12): an org may undo its own tightening
 back to the shipped definition, and that undo is a loosening against the org's version, so it is a
 `self-modify` save an org admin approves. A save looser than the shipped built-in is refused.
 
@@ -1122,7 +1122,7 @@ The owner's answers to Q11 and Q20–Q23, and their confirmation afterwards: aut
      secrets and env files, `.github/`, `.factory/`, lock files without a manifest change) or the
      workflow's `riskPaths`, and not a change to the factory itself: no path in the built-in,
      non-removable `SELF_MODIFY_PATHS` (`.factory/` and the policy, gate, registry, operation,
-     stage and workflow code, `AGENTS.md`, `docs/adr/`) (working answer, owner to confirm). It applies in every workflow on every
+     stage and workflow code, `AGENTS.md`, `docs/adr/`) (decided by the owner, 2026-11-12). It applies in every workflow on every
      repository; the workflow's `riskPaths` only adds to it.
   Anything else, or a fact that can't be read, goes to a person as today; the card says which
   condition sent it.
@@ -1140,8 +1140,8 @@ The owner's answers to Q11 and Q20–Q23, and their confirmation afterwards: aut
   (a system-written tightening) and puts a card in the inbox for the project's approvers and the org's admins, showing
   what went wrong and the merges since the last green. The shared workflow is never edited; other
   projects on it carry on. Lifting the hold is a loosening: **an org admin** lifts it and an org admin
-  approves it (Q6; working answer, owner to confirm); a project approver who isn't an org admin sees the card but can't lift it.
-- **Sampling doesn't hold merges** (working answer, owner to confirm). ADR 0374's "every fifth approval to a person" does not
+  approves it (Q6; decided by the owner, 2026-11-12); a project approver who isn't an org admin sees the card but can't lift it.
+- **Sampling doesn't hold merges** (decided by the owner, 2026-11-12). ADR 0374's "every fifth approval to a person" does not
   hold a merge when `autoApprove` is on: the sampled merge is auto-approved like the rest and also
   goes to a person as a **review-after-merge** inbox item. The verdict feeds the adjudicator's
   precision; "this should not have merged" sets the per-project hold like a revert.
@@ -1270,24 +1270,25 @@ sections above were rewritten.
   closes it, as the build plan says.
 
 ### Flagged for the coordinator
-Places where the answers needed an interpretation, or where they touch each other:
-- **Q2 × Q12** (working answer, owner to confirm). An adjudicator's Preview approval plus "one approval covers Publish" would
+Places where the answers needed an interpretation, or where they touch each other. The five working
+answers below were confirmed by the owner as written on 2026-11-12, and are decided.
+- **Q2 × Q12** (decided by the owner, 2026-11-12). An adjudicator's Preview approval plus "one approval covers Publish" would
   publish with no person. It carries over only where Publish's `autoApprove` is on and its
   conditions hold; otherwise only a person's Preview approval does.
 - **Q6, self-approval.** "Org admins edit and approve" with no second person means one admin can
   turn dark factory mode on alone (today's pending actions don't forbid approving your own). Fine
   for a one-person org; an org floor could require a different admin later.
-- **Q20 and the hold** (working answer, owner to confirm). The setting is per workflow; the switch-off is a per-project hold in
+- **Q20 and the hold** (decided by the owner, 2026-11-12). The setting is per workflow; the switch-off is a per-project hold in
   the project's config (`autoApproveHold`), written by the system as a tightening. Lifting it is a
   loosening: an org admin lifts it and approves it (Q6), the same as turning the mode on.
-- **The adjudicator's "every fifth approval to a person"** (working answer, owner to confirm). Holding one eligible merge in five
+- **The adjudicator's "every fifth approval to a person"** (decided by the owner, 2026-11-12). Holding one eligible merge in five
   contradicts "just auto approving merges", so with `autoApprove` on the sampled merge is not held:
   it merges and a person reviews it afterwards (review-after-merge); a bad one trips the hold.
-- **"Changes to the factory itself"** (working answer, owner to confirm). Read as factory config (`self-modify`) and a built-in,
+- **"Changes to the factory itself"** (decided by the owner, 2026-11-12). Read as factory config (`self-modify`) and a built-in,
   non-removable `SELF_MODIFY_PATHS` list (`.factory/` and the policy, gate, registry, operation,
   stage and workflow code), excluded from auto-approval in every workflow. The workflow's
   `riskPaths` only adds to it, so nobody has to remember to protect `gate.ts`.
-- **Built-ins, "tighten, never loosen"** (working answer, owner to confirm). Measured against the shipped built-in: an org may
+- **Built-ins, "tighten, never loosen"** (decided by the owner, 2026-11-12). Measured against the shipped built-in: an org may
   undo its own tightening back to the shipped floor, and that undo is a loosening an org admin
   approves.
 - **Incident fixes.** Under ADR 0515 they also need the adjudicator's earned approval, which ADR
