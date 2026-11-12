@@ -17,6 +17,7 @@ import {
   type WorkItemRow,
 } from "../operation.ts";
 import type { RepoRef } from "../services.ts";
+import { changeDigest } from "../verify/change-digest.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
 import { lineStopped } from "./delivery.ts";
 import {
@@ -156,7 +157,7 @@ export async function releaseMergeQueue(
       payload: {
         instanceId: entry.workflow_id,
         type: deliveredEvent(item.id),
-        payload: { outcome: told, reason },
+        payload: { outcome: told, reason, headSha: entry.head_sha },
       },
     });
   }
@@ -249,7 +250,7 @@ async function positionOf(
   if (i < 0) {
     const last = await ctx.db
       .selectFrom("core_merge_queue")
-      .select(["id", "outcome", "end_reason"])
+      .select(["id", "outcome", "end_reason", "head_sha"])
       .where("work_item_id", "=", item.id)
       .orderBy("enqueued_at", "desc")
       .orderBy("id", "desc")
@@ -260,7 +261,8 @@ async function positionOf(
       position: null,
       head: false,
       ahead: [],
-      headSha: null,
+      // The head it ended at: for `withdrawn`, the head to decide again (ADR 0582).
+      headSha: last?.outcome ? last.head_sha : null,
       driver: null,
       outcome: last?.outcome ?? null,
       outcomeReason: last?.outcome ? last.end_reason : null,
@@ -313,6 +315,10 @@ export const mergeQueueEnter = defineOperation({
     }
     const existing = await openEntry(ctx, w.id);
     if (!existing) {
+      // The change this approval is about (ADR 0582), so a merge of the default branch keeps it
+      // only while the change is the same. Read by the engine from GitHub, never a runner.
+      const approvedDigest =
+        input.driver === "babysitter" ? await digestOf(ctx, input.headSha) : null;
       const id = newId("mergeQueueEntry");
       ctx.write(
         ctx.db.insertInto("core_merge_queue").values({
@@ -326,6 +332,7 @@ export const mergeQueueEnter = defineOperation({
           enqueued_at: ctx.now,
           updated_at: ctx.now,
           driver: input.driver,
+          approved_digest: approvedDigest,
         }),
       );
       if (input.driver === "babysitter") wakeDelivery(ctx, w);
@@ -412,7 +419,7 @@ export const mergeQueueUpdate = defineOperation({
   permission: "signed-in",
   input: z.object({ workItemId }),
   output: z.object({
-    state: z.enum(["current", "updating", "updated", "conflict", "refused", "moved"]),
+    state: z.enum(["current", "updating", "updated", "withdrawn", "conflict", "refused", "moved"]),
     headSha: z.string(),
     reason: z.string().nullable(),
   }),
@@ -434,7 +441,16 @@ export const mergeQueueUpdate = defineOperation({
     const prHead = pr.headSha ?? at;
 
     if (prHead !== at)
-      return acceptUpdate(ctx, { w, project, repository, repo, entryId: entry.id, at, prHead });
+      return acceptUpdate(ctx, {
+        w,
+        project,
+        repository,
+        repo,
+        entryId: entry.id,
+        approvedDigest: entry.approved_digest,
+        at,
+        prHead,
+      });
 
     const behind = (await github.compareCommits(repo, repository.default_branch, at)).behindBy;
     if (behind === 0) return { state: "current" as const, headSha: at, reason: null };
@@ -466,6 +482,7 @@ export const mergeQueueUpdate = defineOperation({
           repository,
           repo,
           entryId: entry.id,
+          approvedDigest: entry.approved_digest,
           at,
           prHead: after,
         });
@@ -496,6 +513,7 @@ async function acceptUpdate(
     repository: RepositoryRow;
     repo: RepoRef;
     entryId: string;
+    approvedDigest: string | null;
     at: string;
     prHead: string;
   },
@@ -519,6 +537,11 @@ async function acceptUpdate(
       reason: `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${repository.default_branch} into ${at.slice(0, 7)}`,
     };
   }
+  // The approval is about the change (ADR 0582): a clean merge keeps it only while the PR's diff
+  // against the default branch is the same as the one approved. No digest (an older entry, or a
+  // patch GitHub left out): the parent rule above decides alone, as ADR 0330 did.
+  const now = args.approvedDigest ? await digestOf(ctx, prHead, repository, repo) : null;
+  const changed = now !== null && now !== args.approvedDigest;
   ctx.write(
     ctx.db
       .updateTable("core_merge_queue")
@@ -538,8 +561,41 @@ async function acceptUpdate(
     before: { sha: at },
     after: { sha: prHead, by: `merge queue: ${repository.default_branch} merged in` },
   });
-  await carryReviewPacket(ctx, { item: w, project, repo, fromSha: at, toSha: prHead });
+  await carryReviewPacket(ctx, {
+    item: w,
+    project,
+    repo,
+    fromSha: at,
+    toSha: prHead,
+    extra: args.approvedDigest
+      ? { changeDigest: { approved: args.approvedDigest, now, changed } }
+      : undefined,
+  });
+  if (changed) {
+    return {
+      state: "withdrawn" as const,
+      headSha: prHead,
+      reason: `merging ${repository.default_branch} in changed the approved change: its diff against ${repository.default_branch} is not the one approved`,
+    };
+  }
   return { state: "updated" as const, headSha: prHead, reason: null };
+}
+
+/** The change digest of `headSha` against the default branch, or null when it can't be read. */
+async function digestOf(
+  ctx: HandlerContext,
+  headSha: string,
+  repository: RepositoryRow = requireRepository(ctx),
+  repo?: RepoRef,
+): Promise<string | null> {
+  try {
+    const ref = repo ?? (await repoRef(ctx, repository));
+    return await changeDigest(
+      await ctx.services.github.compareFiles(ref, repository.default_branch, headSha),
+    );
+  } catch {
+    return null;
+  }
 }
 
 export const mergeQueueLeave = defineOperation({
@@ -554,7 +610,7 @@ export const mergeQueueLeave = defineOperation({
     outcome: z.enum(["merged", "left"]),
     reason: z.string().max(2_000),
     /** The babysitter's delivery outcome (spec 53), sent to the item's Workflow. */
-    delivery: z.enum(["merged", "conflict", "failed"]).optional(),
+    delivery: z.enum(["merged", "conflict", "failed", "withdrawn"]).optional(),
   }),
   output: z.object({ left: z.boolean() }),
   async handler(input, ctx) {

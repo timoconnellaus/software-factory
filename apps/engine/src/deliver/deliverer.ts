@@ -204,7 +204,7 @@ async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<
   const id = head.work_item_id;
   const end = async (
     status: "merged" | "left",
-    delivery: "merged" | "conflict" | "failed",
+    delivery: "merged" | "conflict" | "failed" | "withdrawn",
     reason: string,
   ): Promise<null> => {
     const left = await call(
@@ -238,6 +238,9 @@ async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<
     return end("left", "failed", "GitHub didn't finish merging the default branch in");
   }
   if (state === "conflict") return end("left", "conflict", String(u.output.reason ?? "conflict"));
+  // A clean merge of main that changed the approved change: the approval no longer holds, and the
+  // item goes back to its merge gate on the new head (ADR 0582).
+  if (state === "withdrawn") return end("left", "withdrawn", String(u.output.reason ?? ""));
   if (state !== "current" && state !== "updated") {
     return end(
       "left",
@@ -246,8 +249,10 @@ async function deliverHead(env: Env, head: HeadRow, clock: () => Date): Promise<
     );
   }
 
-  // A head the queue brought up to date merges only on green CI there (ADR 0330).
-  if (at !== head.approved_sha) {
+  // The head merges only on green CI there (ADR 0330): one the queue brought up to date, and one
+  // a person approved again after a withdrawal (ADR 0582). An approved head's CI was green at
+  // verify, so this read answers at once.
+  {
     const ci = await call(env, "ci.read", { workItemId: id, headSha: at });
     const since = Date.parse(head.updated_at);
     const waited = clock().getTime() - (Number.isNaN(since) ? clock().getTime() : since);

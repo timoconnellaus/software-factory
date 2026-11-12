@@ -1273,16 +1273,27 @@ class ItemFlow {
       headSha = auto.headSha; // refused (not check-only): the normal merge gate on the current head
     }
     const input = (at: string) => ({ workItemId: id, headSha: at, touchesFactoryConfig });
-    const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
+    let decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
       apply: false,
     });
+    // v11: the approval only says this head may merge; the babysitter lands it (spec 53). An
+    // approval it withdraws (merging main changed the change, ADR 0582) comes back to the gate on
+    // the new head, and a person decides again.
+    for (let k = 2; version >= 11; k++) {
+      if (decided.decision !== "approved") return this.notApproved(decided);
+      if (!decided.pendingActionId) return { kind: "done", reason: "merged" };
+      const delivered = await this.deliverV11(b, headSha, decided.pendingActionId, k - 1);
+      if (delivered.kind !== "withdrawn") return delivered;
+      headSha = delivered.headSha;
+      decided = await this.gate(meta, `merge #${b}: gate again #${k}`, "pr.merge", input(headSha), {
+        apply: false,
+      });
+    }
     if (decided.decision !== "approved") return this.notApproved(decided);
     if (!decided.pendingActionId) {
       // pr.merge ran without a gate (never for `merge` risk; a policy can't loosen it): it merged.
       return { kind: "done", reason: "merged" };
     }
-    // v11: the approval only says this head may merge; the babysitter lands it (spec 53).
-    if (version >= 11) return this.deliverV11(b, headSha, decided.pendingActionId);
     const landed = await this.landV4(b, "queue", headSha, decided.pendingActionId, (at) => ({
       op: "pr.merge",
       input: input(at),
@@ -1417,11 +1428,15 @@ class ItemFlow {
     b: number,
     headSha: string,
     approvalId: string,
+    k = 1,
   ): Promise<
-    { kind: "done"; reason: string } | { kind: "conflict" } | { kind: "failed"; reason: string }
+    | { kind: "done"; reason: string }
+    | { kind: "conflict" }
+    | { kind: "failed"; reason: string }
+    | { kind: "withdrawn"; headSha: string }
   > {
     const id = this.workItemId;
-    const p = `merge #${b}: deliver`;
+    const p = `merge #${b}: deliver${k === 1 ? "" : ` #${k}`}`;
     await this.act(`${p}: enqueue`, "mergeQueue.enter", {
       workItemId: id,
       headSha,
@@ -1442,14 +1457,27 @@ class ItemFlow {
         if (read.status !== "ok") throw new Ended("failed", "the merge queue couldn't be read");
         const o = read.output;
         if (o.queued === true) continue;
-        if (o.outcome === "merged" || o.outcome === "conflict" || o.outcome === "failed") {
-          told = { outcome: o.outcome, reason: String(o.outcomeReason ?? "") };
+        if (
+          o.outcome === "merged" ||
+          o.outcome === "conflict" ||
+          o.outcome === "failed" ||
+          o.outcome === "withdrawn"
+        ) {
+          told = {
+            outcome: o.outcome,
+            reason: String(o.outcomeReason ?? ""),
+            ...(typeof o.headSha === "string" ? { headSha: o.headSha } : {}),
+          };
         } else {
           throw new Ended("failed", "the item left the merge queue");
         }
       }
       if (told.outcome === "merged") return { kind: "done", reason: "merged by the babysitter" };
       if (told.outcome === "conflict") return { kind: "conflict" };
+      if (told.outcome === "withdrawn") {
+        if (!told.headSha) throw new Ended("failed", "the withdrawn head couldn't be read");
+        return { kind: "withdrawn", headSha: told.headSha };
+      }
       return { kind: "failed", reason: told.reason };
     }
   }

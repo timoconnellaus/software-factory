@@ -149,6 +149,13 @@ approval is actually about: the change.
   with `autoApprove` on, the five conditions decide it as for any head.
 - The review packet is copied to a surviving head with `carriedFrom` (ADR 0330), now also recording
   the change digest it was checked against.
+- **As built (PR c):** the digest is taken when the item enters delivery (`approved_digest`,
+  migration 0352) and checked when the queue accepts GitHub's update; a patch GitHub left out means
+  no digest and the parent rule alone, as before. A withdrawn approval sends `withdrawn` to Workflow
+  v11, which opens the merge gate again on the new head (`merge #b: gate again #k`); the copied packet
+  carries `changeDigest: { approved, now, changed }` for the card to say why. The deliverer now reads
+  CI before every merge, not only after an update. Re-running the criteria's checks (spec 51 PR B)
+  and re-checking `autoApprove` (ADR 0515) on the new head wait for those to be built.
 
 ### 4. The `babysit` job (ADR 0583, decision 2)
 - **A new built-in job kind** `babysit` (runner contract `JOB_STAGES`, harness prompt in

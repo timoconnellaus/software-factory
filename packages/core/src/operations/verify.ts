@@ -640,7 +640,15 @@ async function moveAttachedHead(
  */
 export async function carryReviewPacket(
   ctx: HandlerContext,
-  args: { item: WorkItemRow; project: ProjectRow; repo: RepoRef; fromSha: string; toSha: string },
+  args: {
+    item: WorkItemRow;
+    project: ProjectRow;
+    repo: RepoRef;
+    fromSha: string;
+    toSha: string;
+    /** Sections to add to the copy (spec 53: the change digest it was checked against). */
+    extra?: Record<string, unknown>;
+  },
 ): Promise<{ packetId: string | null }> {
   const from = await ctx.db
     .selectFrom("core_review_packets")
@@ -653,6 +661,7 @@ export async function carryReviewPacket(
   const sections: Record<string, unknown> = {
     ...parseObject(from.sections),
     carriedFrom: args.fromSha,
+    ...args.extra,
   };
   const id = newId("reviewPacket");
   ctx.write(

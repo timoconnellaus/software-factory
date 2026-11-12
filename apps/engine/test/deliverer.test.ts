@@ -117,3 +117,95 @@ describe("the babysitter's deliverer (v11)", () => {
     expect(state?.running_until).toBeNull();
   });
 });
+
+describe("the approval across a merge of main (ADR 0582)", () => {
+  const patched = (path: string) => [
+    { path, status: "added" as const, patch: `@@ -0,0 +1 @@\n+export const x = "${path}";` },
+  ];
+
+  it("survives a clean merge that leaves the change as approved", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Same change", patched("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await approve(w, a);
+    await itemStatus(a, "done");
+    const entry = await first<{ approved_digest: string | null; head_sha: string }>(
+      "SELECT approved_digest, head_sha FROM core_merge_queue WHERE work_item_id = ?",
+      a,
+    );
+    expect(entry?.approved_digest).toMatch(/^[0-9a-f]{64}$/);
+    const packet = await first<{ sections: string }>(
+      "SELECT sections FROM core_review_packets WHERE work_item_id = ? AND head_sha = ?",
+      a,
+      String(entry?.head_sha),
+    );
+    expect(JSON.parse(String(packet?.sections)).changeDigest).toMatchObject({ changed: false });
+  });
+
+  it("is withdrawn when the change differs, and a person decides again on the new head", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Changed change", patched("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    // Hold the update until the approved digest is replaced: as if merging main in had changed the
+    // lines the PR adds (the fake's merges never do).
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await waitFor("A queued", () =>
+      first("SELECT 1 AS q FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued'", a),
+    );
+    await env.DB.prepare(
+      "UPDATE core_merge_queue SET approved_digest = ? WHERE work_item_id = ? AND status = 'queued'",
+    )
+      .bind("0".repeat(64), a)
+      .run();
+    await github.deferUpdates(w.repo, false);
+    const pr = await first<{ pr_number: number }>(
+      "SELECT pr_number FROM core_work_items WHERE id = ?",
+      a,
+    );
+    await github.completeUpdate(w.repo, Number(pr?.pr_number));
+    // The deliverer sees the update on its next look; the cron's look, done here directly.
+    const row = await first<{ project_id: string; repository_id: string | null }>(
+      "SELECT project_id, repository_id FROM core_work_items WHERE id = ?",
+      a,
+    );
+    await deliverRepository(env, String(row?.project_id), row?.repository_id ?? null);
+
+    const ended = await waitFor("withdrawn", () =>
+      first<{ outcome: string; head_sha: string; approved_sha: string }>(
+        "SELECT outcome, head_sha, approved_sha FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'withdrawn'",
+        a,
+      ),
+    );
+    expect(ended.head_sha).not.toBe(ended.approved_sha);
+    // Back at the merge gate, on the new head, with nothing merged.
+    await waitFor("a new merge gate", () =>
+      first(
+        "SELECT 1 AS g FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND status = 'pending' AND json_extract(input, '$.headSha') = ?",
+        a,
+        ended.head_sha,
+      ),
+    );
+    expect(await merges(a)).toHaveLength(0);
+    await approve(w, a);
+    await itemStatus(a, "done");
+    expect(await merges(a)).toHaveLength(1);
+  });
+});
+
+async function toMergeGateWith(
+  w: World,
+  title: string,
+  files: Parameters<typeof build>[0],
+): Promise<string> {
+  const item = await ok<{ workItemId: string }>(
+    "workItem.create",
+    { state: "queued", projectId: w.projectId, title },
+    w.human,
+  );
+  await runStage(w, item.workItemId, "triage", () => triage("small"));
+  await runStage(w, item.workItemId, "build", () => build(files));
+  await runStage(w, item.workItemId, "verify", () => verifyPass);
+  await gateOpen(item.workItemId, "merge");
+  return item.workItemId;
+}

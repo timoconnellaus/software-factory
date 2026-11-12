@@ -53,8 +53,11 @@ export const mergeQueueEvent = (workItemId: string) => `mergeq-${workItemId}`;
 export const deliveredEvent = (workItemId: string) => `delivered-${workItemId}`;
 
 export interface DeliveredEventPayload {
-  outcome: "merged" | "conflict" | "failed";
+  /** `withdrawn`: the approval no longer holds for the head (ADR 0582); it goes back to the gate. */
+  outcome: "merged" | "conflict" | "failed" | "withdrawn";
   reason: string;
+  /** The entry's head when it ended: for `withdrawn`, the head to decide again. */
+  headSha?: string;
 }
 
 /**
