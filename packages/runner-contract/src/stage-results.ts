@@ -29,6 +29,18 @@ export const triageResultSchema = z.object({
   workflow: z.string().max(60).optional(),
   /** Why that workflow, logged with the choice. */
   workflowReason: z.string().max(1_000).optional(),
+  /**
+   * Whether it can be built as asked (spec 23, ADR 0304): `ready`; `needs_answers` (a few questions
+   * first); or `not_actionable` (the requester must say more). Binding and logged with its reason;
+   * it never opens or skips a gate the autonomy policy requires.
+   */
+  readiness: z.enum(["ready", "needs_answers", "not_actionable"]).default("ready"),
+  readinessReason: z.string().max(2_000).optional(),
+  /** The questions for needs_answers or not_actionable: to the requester, at most five. */
+  questions: z
+    .array(z.lazy(() => questionDraftSchema))
+    .max(5)
+    .default([]),
 });
 
 /**

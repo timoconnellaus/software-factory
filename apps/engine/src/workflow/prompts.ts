@@ -24,6 +24,8 @@ const footer = (shape: string) =>
 export function triagePrompt(
   item: ItemBrief,
   workflows: { name: string; description: string }[] = [],
+  /** Spec 23 (v9): score readiness too; the answers to an earlier round's questions, if any. */
+  readiness?: { answers: { prompt: string; answer: string }[] },
 ): string {
   return [
     `You are triaging work item #${item.number} for the software factory. Read the repository (AGENTS.md, CONTEXT.md, docs/) but change nothing.`,
@@ -35,6 +37,19 @@ export function triagePrompt(
     "Size it: small (one clear change, no design choices), medium (a few files or one real decision), large (new behaviour across the system, or several decisions).",
     "Draft its acceptance criteria (checkable statements) and list the decision domains it touches (product, architecture, security, ...).",
     "You may ask to skip or require a spec (`specRequested`), but the autonomy policy decides.",
+    ...(readiness
+      ? [
+          "",
+          "Score readiness (`readiness`, with `readinessReason`): `ready` if it can be built as asked; `needs_answers` if a few questions would settle what's unclear (ask them in `questions`, at most five, each with options and a recommended default where you can); `not_actionable` if the requester must say what they want first (ask them in `questions`). Don't ask what the repository already answers.",
+          ...(readiness.answers.length
+            ? [
+                "",
+                "The requester already answered:",
+                ...readiness.answers.map((a) => `- ${a.prompt}: ${a.answer}`),
+              ]
+            : []),
+        ]
+      : []),
     ...(workflows.length
       ? [
           "",
@@ -43,9 +58,11 @@ export function triagePrompt(
         ]
       : []),
     footer(
-      workflows.length
-        ? '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "workflow": "name (optional)", "workflowReason": "...", "summary": "..." }'
-        : '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "summary": "..." }',
+      readiness
+        ? '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "readiness": "ready|needs_answers|not_actionable", "readinessReason": "...", "questions": [{ "prompt": "...", "options": ["..."], "defaultAnswer": "..." }], "workflow": "name (optional)", "workflowReason": "...", "summary": "..." }'
+        : workflows.length
+          ? '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "workflow": "name (optional)", "workflowReason": "...", "summary": "..." }'
+          : '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "summary": "..." }',
     ),
   ].join("\n");
 }

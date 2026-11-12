@@ -57,9 +57,14 @@ export interface WorkItemParams {
   workItemId: string;
 }
 
+/** A triage result as the Workflow reads it. */
+type TriageResult = ReturnType<typeof triageResultSchema.parse>;
+
 export type WorkItemOutcome =
   | { status: "done"; workItemId: string }
-  | { status: "failed" | "rejected"; workItemId: string; reason: string };
+  | { status: "failed" | "rejected"; workItemId: string; reason: string }
+  /** v8 (spec 23): triage parked it for its requester; the next release starts a new Workflow. */
+  | { status: "parked"; workItemId: string; reason: string };
 
 /**
  * The version new instances start on. Bump it for any step-name change (ADR 0053).
@@ -107,8 +112,14 @@ export type WorkItemOutcome =
  *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. A check the
  *   runner could not run is not a failure: the item goes on to verify and the merge gate, which say
  *   so and leave the criteria it would prove Not proven. The reviewer is told the checks' names.
+ * - v9 (spec 23 part B, ADR 0304; provisional: the next number above main's at merge): triage
+ *   scores readiness ("triage-readiness"). `not_actionable` parks the item (`triage: park`) and the
+ *   instance ends; answering re-releases it on a new generation. `needs_answers` on an item without
+ *   a spec asks triage's questions and re-triages on the answers (`triage #k: ask`, `#k: answers`,
+ *   `triage #k`, `#k: record`, at most two rounds); with a spec, the planning session opens with them
+ *   (`planning: triage questions`).
  */
-export const WORKFLOW_VERSION = 8;
+export const WORKFLOW_VERSION = 9;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
@@ -333,6 +344,8 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
         return flow.runV1(7);
       case 8:
         return flow.runV1(8);
+      case 9:
+        return flow.runV1(9);
       default:
         throw new Error(`no implementation for Workflow version ${version}`);
     }
@@ -352,7 +365,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 = 1): Promise<WorkItemOutcome> {
+  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       let meta = await this.meta();
@@ -366,20 +379,76 @@ class ItemFlow {
       // Triage: the foreman sizes the item on a runner; code decides the spec gate from policy.
       // v6: it also picks one of the project's workflows (ADR 0371).
       const options = has(version, "workflow-plan") ? await this.workflowOptions() : [];
+      const scores = has(version, "triage-readiness");
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
         "triage",
         "triage",
-        triagePrompt(meta, options),
+        triagePrompt(meta, options, scores ? { answers: [] } : undefined),
         {},
         (r) => triageResultSchema.safeParse(r),
       );
-      const triage = triageRun.parsed;
-      const recorded = await this.act("triage: record", "workItem.triage", {
+      let triage = triageRun.parsed;
+      let recorded = await this.act("triage: record", "workItem.triage", {
         workItemId: id,
         result: triage,
       });
+      // v8 (spec 23): triage's readiness. Not actionable parks the item for its requester, and this
+      // instance ends; needs answers on an item without a spec is a quick round of triage's
+      // questions, then triage again on the answers (at most two rounds, then it goes on).
+      if (scores) {
+        for (let k = 2; ; k++) {
+          if (triage.readiness === "not_actionable" && triage.questions.length) {
+            const reason = triage.readinessReason ?? triage.reason;
+            await this.act(
+              k === 2 ? "triage: park" : `triage #${k - 1}: park`,
+              "workItem.parkForInfo",
+              {
+                workItemId: id,
+                reason,
+                questions: triage.questions,
+              },
+            );
+            return { status: "parked", workItemId: id, reason };
+          }
+          const round =
+            triage.readiness === "needs_answers" &&
+            triage.questions.length > 0 &&
+            recorded.specRequired !== true &&
+            k <= 3;
+          if (!round) break;
+          const asked = await this.act(`triage #${k}: ask`, "question.ask", {
+            workItemId: id,
+            questions: triage.questions,
+          });
+          await this.waitForAnswers(meta, `triage #${k}`);
+          const ids = (asked.questionIds as string[]) ?? [];
+          const answers = await this.step.do(`triage #${k}: answers`, async () => {
+            if (!ids.length) return [];
+            const { results } = await this.env.DB.prepare(
+              `SELECT prompt, answer FROM core_questions WHERE id IN (${ids.map(() => "?").join(", ")}) AND status = 'answered'`,
+            )
+              .bind(...ids)
+              .all<{ prompt: string; answer: string }>();
+            return results;
+          });
+          const again = await this.runWithRetries(
+            meta,
+            `triage #${k}`,
+            "triage",
+            "triage",
+            triagePrompt(meta, options, { answers }),
+            {},
+            (r) => triageResultSchema.safeParse(r),
+          );
+          triage = again.parsed;
+          recorded = await this.act(`triage #${k}: record`, "workItem.triage", {
+            workItemId: id,
+            result: triage,
+          });
+        }
+      }
       let criteria = triage.acceptanceCriteria;
       let specPath: string | null = null;
 
@@ -388,7 +457,14 @@ class ItemFlow {
         let note: string | null = null;
         let answers: { prompt: string; answer: string }[] = [];
         // v5: the planning session (spec 20) instead of v1–v4's spec rounds below.
-        if (has(version, "planning-spec")) criteria = await this.planningStage(meta);
+        if (has(version, "planning-spec")) {
+          // v8: a medium or large item triage found needs answers opens planning with its questions.
+          const seed =
+            scores && triage.readiness === "needs_answers" && triage.questions.length
+              ? triage.questions
+              : null;
+          criteria = await this.planningStage(meta, seed);
+        }
         for (let k = 1; !has(version, "planning-spec"); k++) {
           const mayAsk = k <= QUESTION_ROUNDS;
           const specRun = await this.runWithRetries(
@@ -1557,9 +1633,18 @@ class ItemFlow {
    * opens the spec gate. Changes requested go into the same session as the approver's message; a
    * decision ends the session. Returns the approved spec's acceptance criteria.
    */
-  async planningStage(meta: Meta): Promise<string[]> {
+  async planningStage(
+    meta: Meta,
+    seed: TriageResult["questions"] | null = null,
+  ): Promise<string[]> {
     const id = this.workItemId;
     await this.act("planning: start", "planning.start", { workItemId: id });
+    if (seed) {
+      await this.act("planning: triage questions", "planning.seedQuestions", {
+        workItemId: id,
+        questions: seed,
+      });
+    }
     for (let k = 1; ; k++) {
       const awaited = await this.act(`planning #${k}: await`, "planning.awaitReady", {
         workItemId: id,
