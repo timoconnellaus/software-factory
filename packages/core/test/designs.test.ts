@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { FOREMAN } from "../src/index.ts";
 import {
+  call,
   first,
   newItem,
   ok,
@@ -154,5 +155,21 @@ describe("system designs and .kim/ (spec 22)", () => {
       content: `${D2}app -> search: queries\napp -> cache: reads\n`,
     });
     expect(await agent("planning.ready")).toMatchObject({ round: 1 });
+  });
+
+  it("refuses to approve while a pulled file changed on the default branch after the gate opened (criterion 5)", async () => {
+    const w = await world();
+    await onMain(w, ".kim/designs/system.d2", D2);
+    const { item, agent } = await planning(w);
+    await agent("design.pull", { path: ".kim/designs/system.d2" });
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+    await agent("planning.news");
+    await agent("planning.ready");
+    const gate = await call("spec.accept", { workItemId: item.workItemId, specId }, FOREMAN);
+    expect(gate.status).toBe("pending");
+    await onMain(w, ".kim/designs/system.d2", `${D2}app -> search: queries\n`);
+    const refused = await refusal(ok("spec.approve", { workItemId: item.workItemId }, w.human));
+    expect(refused.code).toBe("conflict");
+    expect(refused.message).toContain("request changes so the planner merges it");
   });
 });

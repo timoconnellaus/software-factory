@@ -35,3 +35,9 @@ agent-written HTML.
 - A diff touching `.kim/` is ordinary content, not self-modify; `.factory/` is still self-modify.
 - Built in [spec 21](../specs/21-planning-visuals.md) (mockups, origin) and
   [spec 22](../specs/22-planning-system-designs.md) (designs, `.kim/` write-back).
+
+> Amended 2026-11-13 (spec 22 part A): a pulled `.kim/` file keeps its default-branch content as
+> revision 0, the base for the app's comparison and for conflicts. The approved plan writes the spec,
+> the plan and the kept artifacts in one commit. A pulled file changed on the default branch since it
+> was pulled blocks `planning.ready` and `spec.approve` until the planner pulls it again and merges.
+

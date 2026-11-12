@@ -154,6 +154,8 @@ export function Planning({
     setChatOpen(true);
   };
   const showChat = focus || chatOpen;
+  // Designs (spec 22) are text in their own notation, not HTML: the mockup panes leave them out.
+  const visuals = { ...view, artifacts: view.artifacts.filter((x) => x.kind !== "design") };
 
   return (
     <div
@@ -201,7 +203,7 @@ export function Planning({
           ) : tab === "mockups" ? (
             <div className="min-h-0 flex-1 overflow-auto">
               <MockupsPane
-                view={view}
+                view={visuals}
                 workItemId={item.id}
                 preview={preview}
                 pinMode={pinMode}
@@ -220,11 +222,11 @@ export function Planning({
             </div>
           ) : (
             <div className="min-h-0 flex-1">
-              <CanvasPane view={view} workItemId={item.id} onOpen={setOpened} />
+              <CanvasPane view={visuals} workItemId={item.id} onOpen={setOpened} />
             </div>
           )}
           <FullSize
-            view={view}
+            view={visuals}
             workItemId={item.id}
             artifact={opened}
             onClose={() => setOpened(null)}
@@ -996,7 +998,8 @@ function WorkspaceTabs({
   pinMode: boolean;
   onPinMode: () => void;
 }) {
-  const mockups = view.artifacts.length;
+  // Designs (spec 22) are text in their own notation, drawn in the System tab: not mockups.
+  const mockups = view.artifacts.filter((a) => a.kind !== "design").length;
   return (
     <div
       className="flex h-11 flex-none items-center gap-2 border-line-soft border-b px-4"
