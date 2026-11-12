@@ -99,7 +99,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   **M2a is built** (`desktop-m2`): `apps/desktop` (sign-in, the device key, the door client with the
   presence flow, the supervised runner on bundled Node, launchd takeover, the menu bar, badge,
   notifications by polling, login item, deep links) and `sf-runner`'s host lock. **M2b is built** (`desktop-m2b`): the ClientHub Durable Object per person, `/client/v1/live`, `notify`
-  fan-out (the assignee, or the org's owners and admins), and the app's live socket. Next: M3 (screens).
+  fan-out (the assignee, or the org's owners and admins), and the app's live socket. **M3 is built** (`desktop-m3-screens`): the inbox, New work (with
+  attachments over the door as `{ $bytes }`), the work item with Planning and its timeline, the
+  review packet (Merge and Send back through Touch ID), Setup and attach, ported into
+  `apps/desktop`; the shared logic is in `packages/client`. Next: M4 (signing and updates).
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

@@ -8,6 +8,8 @@
 //   `read`-risk operations. A desktop call may carry a presence proof, which the door redeems
 //   (presence.redeem) before it runs the call with `origin.presence` set to exactly that decision.
 // - `batch` runs up to 20 `read`-risk calls in parallel (the desktop app's page loads).
+// - Bytes travel as `{ "$bytes": "<base64>" }` in `call` and `batch` (wire-bytes.ts): an attachment
+//   upload's input, an attachment's output.
 // - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
 // MCP is meant to come through the same door.
@@ -28,6 +30,7 @@ import { createDb } from "@software-factory/db";
 import { STATUS } from "./channel.ts";
 import { clientHub } from "./client-hub.ts";
 import { invokeDeps } from "./deps.ts";
+import { decodeBytes, encodeBytes } from "./wire-bytes.ts";
 
 export const CLI_PREFIX = "/cli/v1/";
 export const CLIENT_PREFIX = "/client/v1/";
@@ -127,7 +130,10 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
           };
         }
         try {
-          return { ok: true, result: (await callAs(env, who, name, input ?? {})).output };
+          return {
+            ok: true,
+            result: encodeBytes((await callAs(env, who, name, input ?? {})).output),
+          };
         } catch (error) {
           if (error instanceof OperationError)
             return { ok: false, code: error.code, error: error.message };
@@ -174,7 +180,7 @@ async function callAs(
         `${name} changes things (risk ${op.risk}); this CLI token is read-only. Run \`sf login --write\` for a token that can.`,
       );
     }
-    return run(env, name, input, actor, { surface: "cli" }, idempotencyKey);
+    return run(env, name, decodeBytes(input), actor, { surface: "cli" }, idempotencyKey);
   }
   const origin: Origin = { surface: "desktop", deviceId: who.deviceId };
   if (presence !== undefined) {
@@ -199,7 +205,8 @@ async function callAs(
     );
     origin.presence = { op: name, inputDigest: digest, challengeId: String(proof.challengeId) };
   }
-  return run(env, name, input, actor, origin, idempotencyKey);
+  // The proof covers the input as sent; the operation gets its bytes decoded.
+  return run(env, name, decodeBytes(input), actor, origin, idempotencyKey);
 }
 
 async function run(
@@ -229,7 +236,7 @@ async function respond(
   try {
     const r = await call();
     if (r.pending) return reply({ pending: true, pendingActionId: r.pendingActionId }, 202);
-    return reply(bare ? r.output : { result: r.output });
+    return reply(bare ? r.output : { result: encodeBytes(r.output) });
   } catch (error) {
     if (error instanceof OperationError) {
       return reply(
