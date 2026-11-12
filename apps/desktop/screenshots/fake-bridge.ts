@@ -10,7 +10,7 @@ import type {
   TerminalEvent,
   UpdateStatus,
 } from "../src/shared/rpc.ts";
-import { ANSWERS } from "./fixtures.ts";
+import { ANSWERS, Refusal } from "./fixtures.ts";
 
 /**
  * Loaded in the real window (a dev build's SF_VIEW_URL) rather than headless Chrome: Electrobun's
@@ -70,14 +70,29 @@ function updateStatus(): UpdateStatus {
 function answer(op: string, input: unknown): CallResult {
   const f = ANSWERS[op as OpName] as ((i: unknown) => unknown) | undefined;
   if (!f) return { ok: false, code: "unavailable", error: `no fixture for ${op}` };
-  return { ok: true, result: f(input) };
+  try {
+    return { ok: true, result: f(input) };
+  } catch (e) {
+    if (e instanceof Refusal) return { ok: false, code: e.code, error: e.message } as CallResult;
+    throw e;
+  }
+}
+
+/** The writes the view made, in order, for the behaviour tests (behave.mjs) to check. */
+const calls: { op: string; input: unknown }[] = [];
+(window as { __sfCalls?: typeof calls }).__sfCalls = calls;
+/** A write takes a moment, as over the door, so a second click can land while one runs. */
+async function write(p: { op: string; input: unknown }): Promise<CallResult> {
+  calls.push(p);
+  await new Promise((r) => setTimeout(r, 400));
+  return answer(p.op, p.input);
 }
 
 export const bun = {
   session: async () => session,
   signIn: async () => session,
   signOut: async () => session,
-  call: async (p: { op: string; input: unknown }) => answer(p.op, p.input),
+  call: (p: { op: string; input: unknown }) => write(p),
   batch: async (p: { calls: { op: string; input: unknown }[] }) =>
     p.calls.map((c) => answer(c.op, c.input)),
   decide: async (p: { op: string; input: unknown }) => answer(p.op, p.input),

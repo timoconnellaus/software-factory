@@ -8,7 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { itemsIn } from "../lib/backlog.ts";
 import { openItem } from "../lib/places.ts";
-import { boardsQuery, configQuery } from "../lib/queries.ts";
+import { boardsQuery, configQuery, workflowQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { viewCounts, viewOf } from "../lib/work-board.ts";
 import { PageArea, PageHeader, Panel, SectionTitle } from "./shell-list.tsx";
@@ -31,6 +31,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
   const projects = useProjects();
   const board = useQuery(boardsQuery(session.orgs.map((o) => o.id)));
   const config = useQuery(configQuery(projectId));
+  const workflow = useQuery(workflowQuery(projectId));
   const { inbox } = useScopedInbox();
   const project = projects.data?.find((p) => p.id === projectId);
   const counts = viewCounts(board.data?.counts ?? [], { orgId: null, projectId });
@@ -48,10 +49,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
     ].filter((x): x is string => !!x),
   );
   const waitingOnYou = active.filter((i) => needsYou.has(i.id)).length;
-  const policy = config.data?.current?.policy as
-    | { workflow?: string | null; approvers?: string[] }
-    | null
-    | undefined;
+  const policy = config.data?.current?.policy as { approvers?: string[] } | null | undefined;
 
   if (projects.data && !project) {
     return (
@@ -187,8 +185,16 @@ export function ProjectPage({ projectId }: { projectId: string }) {
             <h2 className="m-0 font-semibold text-[13px]">About this project</h2>
             <dl className="m-0 grid grid-cols-[100px_minmax(0,1fr)] gap-x-3 gap-y-2">
               <dt className="text-ink-3">Workflow</dt>
-              <dd className="m-0">
-                {config.isPending ? "…" : (policy?.workflow ?? "The skeleton alone")}
+              <dd className="m-0" data-testid="project-workflow">
+                {workflow.isPending
+                  ? "…"
+                  : (workflow.data?.workflow?.label ?? (
+                      <span className="text-ink-3">
+                        None: work can be captured but not released (
+                        {workflow.data?.unavailable ?? "no read"}). It is set in the project's
+                        config.
+                      </span>
+                    ))}
               </dd>
               <dt className="text-ink-3">Repositories</dt>
               <dd className="m-0 flex flex-col gap-0.5">

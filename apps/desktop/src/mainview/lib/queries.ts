@@ -144,6 +144,17 @@ export const boardsQuery = (orgIds: string[]) =>
     refetchInterval: 15_000,
   });
 
+/**
+ * The workflow a project's items follow and its stages in order, each with its label and phase
+ * (`project.workflow`, ADR 0492/0493): what New work names and the board's lanes come from.
+ */
+export const workflowQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["workflow", projectId],
+    queryFn: () => read("project.workflow", { projectId }),
+    staleTime: 60_000,
+  });
+
 /** A project's factory config (ADR 0370): its workflow and approvers, for the project page. */
 export const configQuery = (projectId: string) =>
   queryOptions({

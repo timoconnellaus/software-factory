@@ -61,7 +61,8 @@ export type ReadOpName =
   | "protection.ruleset"
   | "desktopDevice.list"
   | "workItem.board"
-  | "config.get";
+  | "config.get"
+  | "project.workflow";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,
