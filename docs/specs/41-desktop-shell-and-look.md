@@ -184,7 +184,7 @@ rather than shown empty:
 *Added 2026-11-12.* Built over the operations the client door already serves; nothing on the server
 changed. Screenshots (light and dark, at the default 1200×800 window and a narrow 900×700 one, with
 the design beside them) are in [`docs/screenshots/desktop-factory/`](../screenshots/desktop-factory/).
-`shoot.mjs` takes `SHOT_W`, `SHOT_H` and `SHOT_OUT` for the other sizes and folder.
+`shoot.mjs` takes `--out`, `--size` and `--tag` for the other folder and sizes.
 - **The sidebar** has Factory between Work and Pinned. Its nested list shows only pages with an
   operation behind them. Skills and Autopilots (spec 52) have no server side yet, so they are not
   listed.
@@ -194,7 +194,8 @@ the design beside them) are in [`docs/screenshots/desktop-factory/`](../screensh
   org. The design's built-by-the-factory figures, time by stage and usage need aggregates from the
   audit journal that no operation returns, so they aren't shown.
 - **Runners** (`/factory/runners`, `FactoryRunners`): each of your runners with its state (online,
-  busy, paused for load or tmux with the numbers, rate-limited, draining, offline since), heavy and
+  busy, paused for load or tmux with the numbers, rate-limited, draining, offline and when last
+  heard, relative with the full date on hover), heavy and
   light slots (`inbox.list`), and its version against the one runners should run, with an update
   waiting, running, blocked or rolled back (`runner.list`, specs 38 and 43); then the chosen
   runner's harness, adapter, updates, rate limit, Claude accounts and when it was last heard.
@@ -203,12 +204,14 @@ the design beside them) are in [`docs/screenshots/desktop-factory/`](../screensh
   needs the run's runner in `workItem.list` or `inbox.list`, which neither returns.
 - **Checks and incidents** (`/factory/incidents`, `FactoryIncidents`): incidents are the work items
   of kind `incident` among each org's 100 most recent items. One is open until its fix item is done,
-  rejected or cancelled (a failed fix leaves it open). Each row shows what went wrong and the item
-  it came from (both from the fix item's title), the fix's state and its pull request. The first
-  guess at the cause, the checks that came from incidents, the project checks and acknowledging an
-  incident need an incident and checks read (and an acknowledge operation) on the client door.
-- Narrow windows (under 1100px) hide the secondary columns (project, head, from, opened); titles
-  wrap rather than clip.
+  rejected or cancelled (a failed fix leaves it open). Each row shows the fix item's title as the
+  factory wrote it, its project, the fix's state and its pull request. What went wrong and the item
+  it came from are the incident's own fields (`core_incidents.kind`, `source_work_item_id`), which
+  `workItem.list` doesn't return, so they aren't guessed from the title. They, the first guess at
+  the cause, the checks that came from incidents, the project checks and acknowledging an incident
+  need an incident and checks read (and an acknowledge operation) on the client door.
+- Narrow windows (under 1100px) hide the secondary columns (project, head, opened); titles wrap
+  rather than clip.
 - **Policy, Agents and Workflows** (`/factory/policy`, `/factory/agents`, `/factory/workflows`;
   `FactoryPolicy`, `FactoryAgents`, `FactoryWorkflow`) show a project's current config from
   `config.get`, read-only. A picker chooses the project when the rail's org has more than one.
@@ -228,3 +231,7 @@ the design beside them) are in [`docs/screenshots/desktop-factory/`](../screensh
   - **Workflows** lists the named workflows, marks the one the project runs (ADR 0492), and shows
     the chosen one's stages: the fixed skeleton (Spec, Build, Verify, Review, Merge) with the steps
     its three slots add (ADR 0371). Stage types and shaping stages (spec 52) are design only.
+- **Reads** (all of the section's pages): while a read is out a section shows a skeleton; a failed
+  read shows the door's error with Retry; the empty message ("Nothing is running", "You have no
+  runners yet") shows only when the read answered and was empty. Route-level tests render each page
+  through the real router against the fixture door in the three states (`test/*-routes.test.tsx`).
