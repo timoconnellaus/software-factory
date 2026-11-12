@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { appFor } from "../src/deps.ts";
 import {
   CONTROL_PLANE_PERMISSIONS,
   githubApp,
@@ -344,5 +345,63 @@ describe("reading protection (ADR 0280): read-only, always", () => {
     for (const p of tokenPermissions) {
       expect(Object.values(p).every((v) => v === "read")).toBe(true);
     }
+  });
+});
+
+describe("the App client kept for the isolate (AGENTS.md, Cloudflare cost, rule 10)", () => {
+  const repo = { installationId: "42", owner: "o", repo: "r" };
+
+  it("reuses its JWT until a minute before it expires", async () => {
+    const { pkcs1Pem } = await keyPair();
+    let at = Date.parse("2026-11-12T00:00:00Z");
+    const app = githubApp({
+      appId: "1",
+      appSlug: "s",
+      privateKey: pkcs1Pem,
+      now: () => new Date(at),
+    });
+    const first = await app.appJwt();
+    at += 6 * 60_000;
+    expect(await app.appJwt()).toBe(first);
+    at += 2 * 60_000; // 8 of its 9 minutes gone: a minute or less left
+    expect(await app.appJwt()).not.toBe(first);
+  });
+
+  it("drops a token GitHub answers 401 for and retries once with a fresh one", async () => {
+    const { pkcs1Pem } = await keyPair();
+    let minted = 0;
+    const used: string[] = [];
+    const app = githubApp({
+      appId: "1",
+      appSlug: "s",
+      privateKey: pkcs1Pem,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith("/access_tokens")) {
+          minted++;
+          return Response.json({
+            token: `ghs_${minted}`,
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          });
+        }
+        const auth = request.headers.get("authorization") ?? "";
+        used.push(auth);
+        // The first token is revoked after its first use.
+        if (auth === "token ghs_1" && used.length > 1) return new Response("", { status: 401 });
+        return Response.json({ object: { sha: "a".repeat(40) } });
+      },
+    });
+    expect(await app.getBranchSha(repo, "main")).toBe("a".repeat(40));
+    expect(await app.getBranchSha(repo, "main")).toBe("a".repeat(40)); // cached, then 401, then fresh
+    expect(await app.getBranchSha(repo, "main")).toBe("a".repeat(40)); // the fresh one, cached
+    expect(minted).toBe(2);
+    expect(used).toEqual(["token ghs_1", "token ghs_1", "token ghs_2", "token ghs_2"]);
+  });
+
+  it("is built once per App configuration", async () => {
+    const { pkcs1Pem } = await keyPair();
+    const a = appFor("1", "s", pkcs1Pem);
+    expect(appFor("1", "s", pkcs1Pem)).toBe(a);
+    expect(appFor("2", "s", pkcs1Pem)).not.toBe(a);
   });
 });
