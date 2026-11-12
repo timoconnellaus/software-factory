@@ -15,6 +15,7 @@ const EMPTY: Scope = {
   policy: null,
   policySha: null,
   policyError: null,
+  pinnedPolicy: null,
 };
 
 /** Reads the scope-naming fields from an operation's input. */
@@ -115,6 +116,10 @@ export async function resolveScope(
 
   if (!project) return { ...EMPTY, orgId, workItemId };
   const { policy, policyError } = await loadPolicy(db, project);
+  const pinnedPolicy =
+    workItem?.policy_sha && workItem.policy_sha !== project.policy_sha
+      ? (await loadPolicy(db, { id: project.id, policy_sha: workItem.policy_sha })).policy
+      : null;
   return {
     orgId,
     projectId,
@@ -124,6 +129,7 @@ export async function resolveScope(
     policy,
     policySha: project.policy_sha,
     policyError,
+    pinnedPolicy,
   };
 }
 
@@ -150,10 +156,28 @@ async function resolveBatched(
         : null;
 
   const statements: D1PreparedStatement[] = [];
-  const at: { workItem?: number; project?: number; policy?: number; role?: number } = {};
+  const at: {
+    workItem?: number;
+    project?: number;
+    policy?: number;
+    pinned?: number;
+    role?: number;
+  } = {};
   if (ids.workItemId) {
     at.workItem = statements.length;
     statements.push(d1.prepare("SELECT * FROM core_work_items WHERE id = ?").bind(ids.workItemId));
+    // The version the item was created under, when the project has moved on (ADR 0370 §5).
+    at.pinned = statements.length;
+    statements.push(
+      d1
+        .prepare(
+          `SELECT pp.raw, pp.valid, pp.error FROM core_work_items w
+           JOIN core_projects p ON p.id = w.project_id
+           JOIN core_project_policies pp ON pp.project_id = w.project_id AND pp.sha = w.policy_sha
+           WHERE w.id = ? AND w.policy_sha IS NOT NULL AND w.policy_sha IS NOT p.policy_sha`,
+        )
+        .bind(ids.workItemId),
+    );
   }
   if (projectExpr) {
     at.project = statements.length;
@@ -201,6 +225,10 @@ async function resolveBatched(
   }
   if (!project) return { ...EMPTY, orgId, workItemId: ids.workItemId, role };
   const { policy, policyError } = interpretPolicy(project, first<PolicyRow>(at.policy));
+  const pinnedRow = first<PolicyRow>(at.pinned);
+  const pinnedPolicy = pinnedRow
+    ? interpretPolicy({ policy_sha: workItem?.policy_sha ?? null }, pinnedRow).policy
+    : null;
   return {
     orgId,
     projectId,
@@ -210,6 +238,7 @@ async function resolveBatched(
     policy,
     policySha: project.policy_sha,
     policyError,
+    pinnedPolicy,
     role,
   };
 }

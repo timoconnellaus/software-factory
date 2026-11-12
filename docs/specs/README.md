@@ -24,6 +24,7 @@ and the factory's own planning stage writes specs in this same format.
 | [04](04-verify-and-pr.md) | Verify, holdout tests, review packet, PR through the GitHub connector, `factory/verify` check | 02, 03 |
 | [05](05-attach-a-pull-request.md) | Attach an outside PR (a local session's or a person's) to a work item: verify on its head, the merge gate, `/attach` | 04 |
 | [06](06-merge-queue.md) | The merge queue: approved merges land one at a time per project (Workflow v4) | 04 |
+| [09](09-factory-config-in-the-app.md) | Factory config in the app (versions, Settings), workflows and agents (v6), run usage and the improver, the adjudicator — four milestones | 01, 04, 06 |
 | [07](07-cli.md) | The `sf` CLI: see and act on work from a terminal; gate decisions stay in the browser | 01 |
 | [08](08-runner-auto-update.md) | Runners update themselves to the deployed commit, when idle, with rollback | 03 |
 | [10](10-r1-sign-in-and-org-switcher.md) | R1: sign-in and the org & account switcher | 01 |
@@ -38,6 +39,7 @@ and the factory's own planning stage writes specs in this same format.
 | [23](23-triage-questions-and-critic.md) | Planning M4: triage questions, the readiness check and the spec critic | 20 |
 | [24](24-planning-splits.md) | Planning splits a work item | 20 |
 | [25](25-verify-drift-check.md) | Verify checks drift from the spec | 04 |
+| [30](30-runner-local-without-orca.md) | runner-local: agents in tmux on the host, status from hooks, no Orca (piece 1 of the hosts plan) | 03 |
 | [wi-1](wi-1-let-s-also-make-it-so-work-items-can-hav.md) | Work item attachments (picker, drag-and-drop, paste; R2; runs read them) | 01, 03, 13 |
 | [wi-4](wi-4-let-s-improve-the-event-log-so-it-s-usef.md) | A readable event log: one pure module (`packages/timeline`) words each audit entry for the dashboard's timeline and `sf timeline` | 07, 13 |
 

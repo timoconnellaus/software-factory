@@ -1,8 +1,12 @@
 {
   "name": "runner-sends-the-prompt-as-a-file",
-  "description": "Incident 2026-11-11 bootstrap #8: runner-orca typed each job's multi-kilobyte prompt into the Claude terminal (`orca terminal send --text <prompt> --enter`), and the agent received only its tail, so every triage, spec, build and verify ran on a fragment. A runner adapter writes the full prompt to the worktree's prompt file (kept out of git) and types only harness-claude's one-line pointer to it.",
+  "description": "Incident 2026-11-11 bootstrap #8: the first runner adapter (runner-orca, since deleted) typed each job's multi-kilobyte prompt into the Claude terminal (`orca terminal send --text <prompt> --enter`), and the agent received only its tail, so every triage, spec, build and verify ran on a fragment. A runner adapter writes the full prompt to the worktree's prompt file (kept out of git) and types only harness-claude's one-line pointer to it.",
   "appliesTo": ["packages/runner-*/src/adapter.ts"],
-  "forbid": ["terminalPrompt\\([^)]*harness\\.prompt"],
+  "forbid": [
+    "terminalPrompt\\([^)]*harness\\.prompt",
+    "sendText\\([^)]*harness\\.prompt",
+    "sendKeys\\([^)]*harness\\.prompt"
+  ],
   "require": ["PROMPT_FILE", "PROMPT_POINTER"],
   "message": "Never type the job's prompt into a terminal: write job.harness.prompt to PROMPT_FILE in the worktree and send PROMPT_POINTER (one short line). See .factory/checks/runner-adapters.md and incident 2026-11-11 #8."
 }

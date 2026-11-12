@@ -16,6 +16,7 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -127,6 +128,16 @@ export function AppSidebar() {
                     <span className="truncate">{p.name}</span>
                   </Link>
                 </SidebarMenuButton>
+                <SidebarMenuAction asChild showOnHover>
+                  <Link
+                    to="/projects/$projectId/settings"
+                    params={{ projectId: p.id }}
+                    aria-label={`${p.name} settings`}
+                    data-testid={`project-settings-${p.slug}`}
+                  >
+                    <SettingsIcon />
+                  </Link>
+                </SidebarMenuAction>
               </SidebarMenuItem>
             ))}
             {projects.data?.length === 0 && (

@@ -264,19 +264,27 @@ _Avoid_: test case, fixture
 Something that executes jobs: a machine or service with capacity and capabilities, owned by a user.
 Owner-only by default; the owner shares it through an explicit allowlist of orgs, factories or
 projects (ADR 0038). It can report "rate-limited until T". Its capacity has two pools (ADR 0301):
-**heavy** slots for build and verify, and **light** slots for planning and triage. Example: the Orca
+**heavy** slots for build and verify, and **light** slots for planning and triage. Example: the local
 runner on the Mac mini, 2 heavy and 6 light.
 _Avoid_: worker (a Cloudflare Worker), agent, executor, host (the runner host is the daemon)
 
 **Runner adapter**
-The code that implements the runner contract for one kind of runner: `runner-orca` (v1),
-`runner-local`, `runner-codex-cloud`. The core only knows the contract.
+The code that implements the runner contract for one kind of runner: `runner-local` (git worktree +
+tmux on the runner's machine, ADR 0380; it replaced the first adapter, `runner-orca`), later dev
+boxes, sandboxes and `runner-codex-cloud`. The core only knows the contract.
 _Avoid_: driver, plugin, integration
+
+**Job session**
+The live harness for one job: under runner-local, Claude Code in the tmux session `sf-<jobId>` on
+the factory's own tmux socket (`tmux -L software-factory`), in the job's worktree. Its status comes
+from the harness's status hook (`<runDir>/status.jsonl`), not the screen (ADR 0380).
+_Avoid_: terminal (the session may have no terminal attached), pane
 
 **Runner host**
 The generic daemon (`local/runner-host`, command `sf-runner`) on a runner's machine. It connects
 outbound over the signed channel, loads runner adapters, fetches into the checkout the machine
-already has for each repo (its own clone only when there is none, ADR 0260), and is the only thing
+already has for each repo (found under the `checkouts` dirs in `runner.json` by canonical remote
+identity; its own clone only when there is none, ADR 0260), and is the only thing
 that pushes: the run branch, with the job token (ADR 0250). Before a build it merges the project's
 default branch into the run branch, leaving any conflict for the session to resolve (ADR 0320).
 It keeps its own code on the commit the engine was deployed from, updating itself when idle
@@ -287,7 +295,7 @@ _Avoid_: agent, daemon (in copy), runner (the host is not the runner)
 Something a runner or harness declares it can do. Jobs ask for capabilities; `.factory/` can
 restrict them. The known ones:
 - `browser`: can drive a browser for screenshots and visual evidence;
-- `ui-takeover`: a person can take the session over in the runner's UI;
+- `ui-takeover`: a person can take the session over (runner-local: `tmux attach` on the host);
 - `auto-register`: sessions the runner launches attach to their work item by themselves;
 - `own-hardware`: runs on a machine its owner controls (for client repos);
 - `hooks`: the harness runs session hooks (inject the live work item, block writes until claimed,
@@ -313,9 +321,45 @@ _Avoid_: runner (the CRM's name for this Worker), backend
 **Autonomy policy**
 How much a project's agents may do without a person: the gate check's answer for each actor × risk
 class, the spec threshold, timeouts, WIP limit. Shipped ones are Cautious, Balanced and Autonomous
-in the global factory repo; a project's `.factory/` picks one and can override it. Read only from
-the default branch (ADR 0036).
+in code; a project's config version picks one and can override it (ADR 0370).
 _Avoid_: preset (old name), mode, level, profile
+
+**Config version**
+One saved state of a project's config (policy, agents, workflows), kept as a row in D1 and written
+only through `config.*` operations. A work item records the version it started under (ADR 0370).
+Exported and imported as a `.factory/` bundle.
+_Avoid_: policy file, settings PR, policy SHA (the old name)
+
+**Impact summary**
+The server's classification of a config change as loosening, tightening or neutral
+(`policyImpact`). A loosening save is `self-modify` and waits for an approver.
+
+**Workflow** (of a project)
+A named preset that fills the fixed skeleton's three slots (after spec, before verify, after verify)
+with steps. Triage picks one per work item. Workflows only add steps (ADR 0371).
+_Avoid_: pipeline (the skeleton), stage list
+
+**Step**
+One entry in a workflow slot: a **work** step hands to an agent and is advisory; a **gate** step
+hands to a person and is enforced.
+
+**Agent** (config)
+A harness-neutral profile: model role and tier, instructions, abstract permissions, capabilities.
+The runner that takes the job resolves the model (ADR 0372).
+_Avoid_: droid, persona, bot
+
+**Practice change / policy change**
+A practice change alters *how* work is done (instructions, tiers, advisory steps); the factory may
+apply it itself as a **trial**. A policy change alters *what's allowed* and always goes to a person
+(ADR 0373).
+
+**Trial**
+A practice change applied to the next N items of one workflow, then promoted or rolled back on
+outcomes (verify pass rate, send-backs, gate edits), then cost and time.
+
+**Adjudicator**
+An agent that records the gate decision it would make in shadow mode, and approves a gate kind only
+after earning ≥95% precision; never rejects, never merge, deploy or self-modify (ADR 0374).
 
 **Project template**
 A shipped bundle of repo practice (`AGENTS.md`, `CONTEXT.md`, ADRs, specs, …) installed into a

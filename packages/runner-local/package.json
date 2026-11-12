@@ -1,0 +1,25 @@
+{
+  "name": "@software-factory/runner-local",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The local runner adapter: a job becomes a git worktree on the run branch with Claude Code in a tmux session on the factory's own socket; status comes from Claude Code hooks (ADR 0014, 0380).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@software-factory/harness-claude": "workspace:*",
+    "@software-factory/runner-contract": "workspace:*"
+  },
+  "devDependencies": {
+    "@software-factory/config": "workspace:*",
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}

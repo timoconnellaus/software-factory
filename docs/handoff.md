@@ -8,7 +8,8 @@ Last refreshed: 2026-11-11 (spec 05, attach an outside PR). V1 is defined in [`v
 
 ## The product
 A software factory on Cloudflare. Work comes in from anywhere, agents take it through triage, spec,
-build and verify, and people step in only at gates. Runners are adapters; Orca is the first. Small
+build and verify, and people step in only at gates. Runners are adapters; `runner-local` (git
+worktree + tmux on the owner's Macs, ADR 0380) replaced the first one, `runner-orca`. Small
 team, multi-org (Better Auth). Plan: [`.kim/plans/2026-11-10-personal-software-factory-design.md`](../.kim/plans/2026-11-10-personal-software-factory-design.md).
 Architecture: [`architecture.md`](architecture.md). UI: [`ui-plan.md`](ui-plan.md).
 
@@ -59,9 +60,29 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #33, #35, #36, #37 | Spec 20, planning M1 ([ADR 0350](adr/0350-how-the-planning-loop-is-wired.md), migration 0120): planning is a live session on a runner. The planning log, sessions, chat and presence; heavy and light pools; the planning MCP server and kim-style hooks through the runner host's relay; Workflow v5's spec stage; the Planning tab, layout A. Merged with `factory/verify` red (not attached), with the default-branch ruleset switched off by the owner |
 
 ## In flight
+- **Run agents without Orca** (block V, plan `.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`):
+  piece 1, [spec 30](specs/30-runner-local-without-orca.md) / [ADR 0380](adr/0380-runner-local-tmux-and-hook-status.md),
+  is built on branch `timoconnellaus/no-orca`: `packages/runner-local` (git worktree + tmux on
+  `tmux -L software-factory`, status from the harness's hook file, takeover by `tmux attach`)
+  replaces `packages/runner-orca`, which is deleted. Acceptance criteria 1–3 need a live run on the
+  M5 with Orca quit (a build, a triage, a planning session; attach and type). To switch the M5:
+  `brew install tmux` if missing, `git pull`, `sf-runner doctor --fix` (sets `checkouts` once from
+  Orca's repos), then `sf-runner install` with no jobs running. Job worktrees the old runner left in
+  Orca (`sf-job:` comments) are removed in Orca by hand. Pieces 2–8 get their own specs.
+- **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
+  versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
+  (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals
+  (0374). Plan `.kim/plans/2026-11-11-manage-factory-settings-in-the-ui.md`, mockups
+  `.kim/mockups/project-settings.html` and `project-stages.html`. M1 is #45, M2 (workflows, agents,
+  Workflow v6) is #48, M3 (usage, trials, the improver) is #50, and M4 (the adjudicator) is stacked on #50. Each PR
+  lists what was deferred in spec 09's "As built" sections.
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.
+- **Desktop app** (`electrobun`, spike block S 0130–0139): plan `.kim/plans/2026-11-11-software-factory-desktop-app-electrobun.md`,
+  spike `spikes/electrobun` (proposed ADR 0130). The spike found the desktop token can't prove a person
+  (any same-user process can drive the app's `bun`), so gate decisions in the app need a Secure Enclave
+  presence proof. That needs the owner's sign-off before the spec.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.
@@ -112,7 +133,7 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   - Kill switches: `killSwitch.set { scope: "org" | "project", id, on }`.
 - Deep links the outbox `notify` rows carry: `/?item=<workItemId>` and `/work/<workItemId>`.
 
-**Runner session (step 3: runner-host, runner-orca, harness-claude)**
+**Runner session (step 3: runner-host, runner-orca, harness-claude; runner-orca since replaced by runner-local, ADR 0380)**
 - Build against `@software-factory/runner-contract`: `httpControlPlane` (signed client),
   `RunnerAdapter`, the wire schemas, `RESULT_FILE` and the stage result schemas. The host's loop is
   in [`packages/runner-contract/README.md`](../packages/runner-contract/README.md).
@@ -172,7 +193,7 @@ Everything below exists on `main`, with tests. Read the package READMEs for deta
   directory to `PATH` and retries the bootstrap.
 
 **Prompts travel as a file (incident 2026-11-11 #8)**
-- runner-orca writes the job's prompt to `.factory-prompt.md` in the worktree (in
+- The runner adapter (runner-orca then, runner-local now) writes the job's prompt to `.factory-prompt.md` in the worktree (in
   `PRIVATE_WORKTREE_FILES`, so it's excluded from git) and types only `PROMPT_POINTER`, one line,
   after the live-process check. Typing the whole prompt truncated it to its tail, and every job
   since #24 ran on a fragment.
@@ -283,7 +304,7 @@ Still open:
   (command in `docs/deploying.md`). Not done yet on purpose: it fails every PR the factory didn't
   open, which would block the sessions still building V1. The repo ruleset confining App pushes to
   `factory/*` is applied (2026-11-11).
-- The Mac mini set up as the first runner (Orca + Claude Code signed in), with no `gh`, SSH agent or
+- The Mac mini set up as the first runner (tmux + Claude Code signed in; Orca not needed), with no `gh`, SSH agent or
   cloud credentials visible to the harness (ADR 0033).
 - Pair the M5's runner once the app can register one: `pbpaste | local/runner-host/bin/sf-runner pair
   --runner-id r_… --key-stdin` (the launchd service is installed and waits, unpaired, until then).

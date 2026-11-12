@@ -149,6 +149,45 @@ export interface CoreProjectPoliciesTable {
   valid: Bool;
   error: string | null;
   received_at: Iso;
+  /** The config version (ADR 0370); null on rows read from git before migration 0140. */
+  version: number | null;
+  /** app | import | migrated | improver | rollback */
+  source: string | null;
+  created_by: string | null;
+  note: string | null;
+  parent_version: number | null;
+}
+
+export interface CoreConfigTrialsTable {
+  id: string;
+  project_id: string;
+  base_sha: string;
+  candidate_sha: string;
+  kind: string;
+  summary: string;
+  evidence: Generated<JsonText>;
+  target_items: number;
+  status: Generated<"running" | "promoted" | "disabled">;
+  outcome: JsonText | null;
+  reason: string | null;
+  created_by: string;
+  created_at: Iso;
+  decided_at: Iso | null;
+}
+
+export interface CoreAdjudicationsTable {
+  id: string;
+  pending_action_id: string;
+  project_id: string;
+  work_item_id: string;
+  kind: "spec" | "step";
+  mode: "shadow" | "active";
+  job_id: string;
+  verdict: "approve" | "defer" | null;
+  reason: string | null;
+  acted: Generated<Bool>;
+  created_at: Iso;
+  decided_at: Iso | null;
 }
 
 export type KillScope = "org" | "project";
@@ -200,6 +239,11 @@ export interface CoreWorkItemsTable {
   size: Size | null;
   spec_required: Bool | null;
   spec_decision_reason: string | null;
+  /** 0141 (ADR 0371): the workflow triage picked; null is the skeleton alone. */
+  workflow: string | null;
+  workflow_reason: string | null;
+  /** 0142 (ADR 0373): the trial it ran under, on the trial's candidate version. */
+  trial_id: string | null;
   domains: Generated<JsonText>;
   current_spec_id: string | null;
   branch: string;
@@ -482,6 +526,8 @@ export interface CoreJobsTable {
   pool: Generated<"heavy" | "light">;
   pinned_runner_id: string | null;
   planning_session_id: string | null;
+  /** 0141 (ADR 0372): standard | light; null is standard. */
+  tier: string | null;
 }
 
 export type RunStatus =
@@ -778,6 +824,8 @@ export interface CoreDatabase {
   core_factories: CoreFactoriesTable;
   core_projects: CoreProjectsTable;
   core_project_policies: CoreProjectPoliciesTable;
+  core_config_trials: CoreConfigTrialsTable;
+  core_adjudications: CoreAdjudicationsTable;
   core_project_protection: CoreProjectProtectionTable;
   core_kill_switches: CoreKillSwitchesTable;
   core_batch_guard: CoreBatchGuardTable;

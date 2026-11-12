@@ -1,13 +1,13 @@
 // End to end on this machine: the real engine (apps/engine) under `wrangler dev` with its in-D1 fake
-// GitHub, the real runner host + runner-orca + harness-claude, and real Claude Code sessions in Orca
-// worktrees. A scratch bare repo stands in for GitHub's git side; the driver mirrors each real push
+// GitHub, the real runner host + runner-local + harness-claude, and real Claude Code sessions in
+// tmux, in git worktrees. A scratch bare repo stands in for GitHub's git side; the driver mirrors each real push
 // into the fake so the engine's hand-back and fast-forward checks run unchanged.
 //
 //   1. start the engine + driver:  see local/runner-host/README.md, "End-to-end test"
 //   2. node --experimental-transform-types e2e/e2e.ts [--driver http://127.0.0.1:8977]
 //
 // It files one small work item, lets the factory triage, build and verify it, and stops at the merge
-// gate. Then it cancels the item and checks that nothing the runner made is left in Orca or git.
+// gate. Then it cancels the item and checks that nothing the runner made is left in tmux or git.
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { Job } from "@software-factory/runner-contract";
-import { JOB_COMMENT_PREFIX, orcaCli } from "@software-factory/runner-orca";
+import { sessionName, tmuxCli } from "@software-factory/runner-local";
 import { configSchema, type Paths } from "../src/config.ts";
 import { buildRunner } from "../src/runner.ts";
 
@@ -96,6 +96,7 @@ const dirs: Paths = {
   stateDir: join(root, "state"),
   reposDir: join(root, "state", "repos"),
   runsDir: join(root, "state", "runs"),
+  worktreesDir: join(root, "state", "worktrees"),
   logDir: join(root, "logs"),
 };
 const config = configSchema.parse({
@@ -152,7 +153,7 @@ const { host } = buildRunner(config, dirs, {
   fetch: bridge,
   log: (m) => console.log(`  [runner] ${m}`),
 });
-const orca = orcaCli();
+const tmux = tmuxCli();
 
 let workItemId = "";
 try {
@@ -262,18 +263,10 @@ try {
     }).catch((e) => console.log(`cancel: ${e}`));
   }
   // Cleanup checks: nothing the runner made is left.
-  const rows = await orca.worktreePs();
-  const leftover = rows.filter(
-    (r) =>
-      r.comment?.startsWith(JOB_COMMENT_PREFIX) &&
-      [...jobs.keys()].some((j) => r.comment === `${JOB_COMMENT_PREFIX}${j}`),
-  );
-  check(leftover.length === 0, "no Orca worktree or terminal left");
-  const repos = await orca.repoList();
-  check(
-    !repos.some((r) => r.path.startsWith(root)),
-    "the runner's clone is unregistered from Orca",
-  );
+  const sessions = (await tmux.jobSessions()).map((s) => s.name);
+  const leftover = [...jobs.keys()].map(sessionName).filter((n) => sessions.includes(n));
+  check(leftover.length === 0, "no tmux session left");
+  check((await readdir(dirs.worktreesDir).catch(() => [])).length === 0, "no job worktree left");
   const clone = join(dirs.reposDir, OWNER, NAME);
   if (existsSync(clone)) {
     const wts = git(clone, "worktree", "list").split("\n");
@@ -281,12 +274,7 @@ try {
     check(!git(clone, "branch", "--list", "factory/*"), "no local run branches left");
   }
   check((await readdir(dirs.runsDir).catch(() => [])).length === 0, "no run directories left");
-  for (const r of repos.filter((r) => r.path.startsWith(root)))
-    await orca.repoForget(r.id).catch(() => {});
-  for (const row of leftover) {
-    await orca.terminalCloseAll(row.worktreeId).catch(() => {});
-    await orca.worktreeRemove(row.worktreeId).catch(() => {});
-  }
+  for (const name of leftover) await tmux.kill(name).catch(() => {});
   if (!values.keep) await rm(root, { recursive: true, force: true });
 }
 

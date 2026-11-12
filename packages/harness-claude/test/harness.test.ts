@@ -14,18 +14,33 @@ import {
   type LaunchRecord,
   launchProblems,
   launchScript,
+  parseStatusLines,
   parseTranscript,
   projectDirName,
   projectHarness,
   psCommand,
   readLaunchRecord,
+  readStatusFrom,
   runSettings,
   SETTINGS_FILE,
+  STATUS_FILE,
+  STATUS_HOOK_EVENTS,
   scrubbedProcessEnv,
   streamJsonToEvents,
   verifyLaunch,
   writeAttachments,
 } from "../src/index.ts";
+
+// The factory's own verify runs these tests inside the harness's sandbox, where spawning `ps`
+// fails (EPERM, thrown, not returned) and github.com is reached only through the sandbox's proxy.
+// The two tests that need a real process table and a direct GitHub connection skip there. Never in
+// CI: a broken `ps` there must fail, not skip, the credential-push test (ADR 0010/0033).
+const inHarnessSandbox =
+  !process.env.CI &&
+  (await psCommand(process.pid).then(
+    (line) => line === null,
+    () => true,
+  ));
 
 const dirs: string[] = [];
 const temp = async (prefix: string) => {
@@ -183,6 +198,84 @@ describe("run settings", () => {
     expect(ok.hooks?.Stop).toEqual(hook);
   });
 
+  it("adds the factory's status hook on every status event, PreToolUse included (ADR 0380)", () => {
+    const hook = [{ hooks: [{ type: "command" as const, command: "x" }] }];
+    const s = runSettings(
+      { stage: "build" },
+      { worktree: "/w", runDir: "/r", statusHook: "status-cmd", hooks: { Stop: hook } },
+    );
+    expect(Object.keys(s.hooks ?? {}).sort()).toEqual([...STATUS_HOOK_EVENTS].sort());
+    expect(s.hooks?.PreToolUse).toEqual([
+      { hooks: [{ type: "command", command: "status-cmd", timeout: 10 }] },
+    ]);
+    // The runner's own hooks stay, the status hook after them.
+    expect(s.hooks?.Stop?.map((h) => h.hooks[0]?.command)).toEqual(["x", "status-cmd"]);
+    expect(s.hooks?.PermissionRequest).toBeUndefined();
+    expect(s.permissions.deny).toContain("Bash(tmux:*)");
+    expect(s.permissions.deny).toContain("Bash(orca:*)");
+  });
+
+  it("the status hook appends one line per event and always answers {} with exit 0", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sf-status-"));
+    dirs.push(dir);
+    const projected = await projectHarness(
+      {
+        stage: "build",
+        jobId: "job_s",
+        harness: { id: "claude-code", role: "implement", prompt: "p" },
+      },
+      {
+        worktree: join(dir, "wt"),
+        runDir: join(dir, "run"),
+        runTmp: join(dir, "tmp"),
+        statusHook: true,
+      },
+    );
+    expect(projected.statusFile).toBe(join(dir, "run", STATUS_FILE));
+    const command = projected.settings.hooks?.PreToolUse?.[0]?.hooks[0]?.command ?? "";
+    const runHook = (input: string) =>
+      spawnSync("/bin/sh", ["-c", command], { input, encoding: "utf8" });
+    const long = "y".repeat(10_000);
+    for (const input of [
+      JSON.stringify({
+        hook_event_name: "SessionStart",
+        source: "startup",
+        transcript_path: "/t.jsonl",
+      }),
+      JSON.stringify({
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: long },
+      }),
+      JSON.stringify({
+        hook_event_name: "Notification",
+        notification_type: "permission_prompt",
+        message: "Claude needs your permission to use Bash",
+      }),
+      "not json at all",
+      "",
+    ]) {
+      const r = runHook(input);
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("{}\n");
+    }
+    const lines = parseStatusLines(await readFile(projected.statusFile ?? "", "utf8"));
+    expect(lines.map((l) => l.event)).toEqual([
+      "SessionStart",
+      "PreToolUse",
+      "Notification",
+      "unknown",
+    ]);
+    expect(lines[0]).toMatchObject({ reason: "startup", transcript: "/t.jsonl" });
+    expect(lines[1]?.tool).toBe("Bash");
+    expect(lines[1]?.input?.length).toBeLessThan(2_100);
+    expect(lines[2]).toMatchObject({ type: "permission_prompt" });
+    // Read incrementally, as the adapter tails it.
+    const first = await readStatusFrom(projected.statusFile ?? "", 0);
+    expect(first.lines).toHaveLength(4);
+    expect((await readStatusFrom(projected.statusFile ?? "", first.offset)).lines).toEqual([]);
+  });
+
   it("denies reads of protected paths", () => {
     const s = runSettings(
       { stage: "build" },
@@ -305,70 +398,76 @@ describe("launch", () => {
 });
 
 describe("projection", () => {
-  it("writes the same settings to the run dir and the worktree, and a launch record that verifies", async () => {
-    const worktree = await temp("sf-h-wt-");
-    const runDir = join(await temp("sf-h-run-"), "job_1");
-    const runTmp = join(await temp("sf-h-tmp-"), "job_1");
-    const bin = await temp("sf-h-bin-");
-    const claudeBin = join(bin, "claude");
-    const projected = await projectHarness(job("build"), { worktree, runDir, runTmp, claudeBin });
-    const local = await readFile(join(worktree, SETTINGS_FILE), "utf8");
-    expect(await readFile(projected.settingsPath, "utf8")).toBe(local);
-    expect(JSON.parse(local).permissions.defaultMode).toBe("bypassPermissions");
-    expect(await readFile(projected.gitConfigPath, "utf8")).toContain("helper =");
-    expect(projected.launch.argv).toContain(projected.settingsPath);
-    expect(await readLaunchRecord(runDir)).toEqual(projected.launch);
+  it.skipIf(inHarnessSandbox)(
+    "writes the same settings to the run dir and the worktree, and a launch record that verifies",
+    async () => {
+      const worktree = await temp("sf-h-wt-");
+      const runDir = join(await temp("sf-h-run-"), "job_1");
+      const runTmp = join(await temp("sf-h-tmp-"), "job_1");
+      const bin = await temp("sf-h-bin-");
+      const claudeBin = join(bin, "claude");
+      const projected = await projectHarness(job("build"), { worktree, runDir, runTmp, claudeBin });
+      const local = await readFile(join(worktree, SETTINGS_FILE), "utf8");
+      expect(await readFile(projected.settingsPath, "utf8")).toBe(local);
+      expect(JSON.parse(local).permissions.defaultMode).toBe("bypassPermissions");
+      expect(await readFile(projected.gitConfigPath, "utf8")).toContain("helper =");
+      expect(projected.launch.argv).toContain(projected.settingsPath);
+      expect(await readLaunchRecord(runDir)).toEqual(projected.launch);
 
-    // Run the launch script with a stand-in `claude` that just sleeps: the check passes on the
-    // real process, then fails once the settings are touched.
-    await writeFile(claudeBin, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
-    const child = spawn("/bin/sh", [projected.scriptPath], { stdio: "ignore" });
-    try {
-      let problems: string[] = ["not started"];
-      for (let i = 0; i < 30 && problems.length; i++) {
-        await new Promise((r) => setTimeout(r, 100));
-        problems = await verifyLaunch(projected.launch, async (pid) => {
-          const real = await psCommand(pid);
-          // `sh` runs the stand-in script, so ps shows the interpreter first; strip it.
-          return real?.replace(/^\/bin\/sh /, "") ?? null;
-        });
+      // Run the launch script with a stand-in `claude` that just sleeps: the check passes on the
+      // real process, then fails once the settings are touched.
+      await writeFile(claudeBin, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+      const child = spawn("/bin/sh", [projected.scriptPath], { stdio: "ignore" });
+      try {
+        let problems: string[] = ["not started"];
+        for (let i = 0; i < 30 && problems.length; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          problems = await verifyLaunch(projected.launch, async (pid) => {
+            const real = await psCommand(pid);
+            // `sh` runs the stand-in script, so ps shows the interpreter first; strip it.
+            return real?.replace(/^\/bin\/sh /, "") ?? null;
+          });
+        }
+        expect(problems).toEqual([]);
+        await writeFile(join(worktree, SETTINGS_FILE), "{}\n");
+        expect(await verifyLaunch(projected.launch)).toContain(
+          `${join(worktree, SETTINGS_FILE)} changed since it was projected`,
+        );
+      } finally {
+        child.kill();
       }
-      expect(problems).toEqual([]);
-      await writeFile(join(worktree, SETTINGS_FILE), "{}\n");
-      expect(await verifyLaunch(projected.launch)).toContain(
-        `${join(worktree, SETTINGS_FILE)} changed since it was projected`,
-      );
-    } finally {
-      child.kill();
-    }
-  });
+    },
+  );
 
-  it("gives git no way to push with the owner's credentials (criterion 8)", async () => {
-    // A repo whose remote needs credentials, run with the harness env: git must fail without
-    // prompting and without consulting a credential helper or the keychain.
-    const worktree = await temp("sf-h-git-");
-    const runDir = join(await temp("sf-h-run-"), "job_2");
-    await projectHarness(job("build"), { worktree, runDir, runTmp: join(runDir, "tmp") });
-    const env = scrubbedProcessEnv(process.env, harnessEnv(runDir));
-    const git = (...args: string[]) =>
-      spawnSync("git", args, { cwd: worktree, env, encoding: "utf8", timeout: 30_000 });
-    expect(git("init", "-q", "-b", "main").status).toBe(0);
-    await writeFile(join(worktree, "a.txt"), "a\n");
-    expect(git("add", "a.txt").status).toBe(0);
-    const commit = git("commit", "-qm", "a");
-    expect(commit.status).toBe(0);
-    expect(git("log", "-1", "--format=%an <%ae>").stdout.trim()).toBe(
-      "Software Factory <software-factory@users.noreply.github.com>",
-    );
-    expect(git("config", "--get-all", "credential.helper").stdout.trim()).toBe("");
-    expect(git("config", "--show-origin", "--list").stdout).not.toMatch(/osxkeychain|gh auth/);
-    expect(env.GH_TOKEN).toBeUndefined();
-    expect(env.SSH_AUTH_SOCK).toBeUndefined();
-    const push = git("push", "https://github.com/timoconnellaus/software-factory.git", "HEAD:x");
-    expect(push.status).not.toBe(0);
-    // no credential helper ran, nothing was asked
-    expect(push.stderr).toMatch(/could not read Username|terminal prompts disabled|denied|403/i);
-  });
+  it.skipIf(inHarnessSandbox)(
+    "gives git no way to push with the owner's credentials (criterion 8)",
+    async () => {
+      // A repo whose remote needs credentials, run with the harness env: git must fail without
+      // prompting and without consulting a credential helper or the keychain.
+      const worktree = await temp("sf-h-git-");
+      const runDir = join(await temp("sf-h-run-"), "job_2");
+      await projectHarness(job("build"), { worktree, runDir, runTmp: join(runDir, "tmp") });
+      const env = scrubbedProcessEnv(process.env, harnessEnv(runDir));
+      const git = (...args: string[]) =>
+        spawnSync("git", args, { cwd: worktree, env, encoding: "utf8", timeout: 30_000 });
+      expect(git("init", "-q", "-b", "main").status).toBe(0);
+      await writeFile(join(worktree, "a.txt"), "a\n");
+      expect(git("add", "a.txt").status).toBe(0);
+      const commit = git("commit", "-qm", "a");
+      expect(commit.status).toBe(0);
+      expect(git("log", "-1", "--format=%an <%ae>").stdout.trim()).toBe(
+        "Software Factory <software-factory@users.noreply.github.com>",
+      );
+      expect(git("config", "--get-all", "credential.helper").stdout.trim()).toBe("");
+      expect(git("config", "--show-origin", "--list").stdout).not.toMatch(/osxkeychain|gh auth/);
+      expect(env.GH_TOKEN).toBeUndefined();
+      expect(env.SSH_AUTH_SOCK).toBeUndefined();
+      const push = git("push", "https://github.com/timoconnellaus/software-factory.git", "HEAD:x");
+      expect(push.status).not.toBe(0);
+      // no credential helper ran, nothing was asked
+      expect(push.stderr).toMatch(/could not read Username|terminal prompts disabled|denied|403/i);
+    },
+  );
 
   it("keeps ANTHROPIC and CLAUDE variables but drops credentials", () => {
     const env = scrubbedProcessEnv(
@@ -439,11 +538,11 @@ describe("transcripts", () => {
 
   it("finds the newest transcript for a working directory", async () => {
     const root = await temp("sf-h-claude-");
-    const cwd = "/Users/x/orca/workspaces/repo/sf-job.1";
+    const cwd = "/Users/x/work/worktrees/repo/sf-job.1";
     const dir = join(root, "projects", projectDirName(cwd));
     execFileSync("mkdir", ["-p", dir]);
     await writeFile(join(dir, "a.jsonl"), lines);
-    expect(projectDirName(cwd)).toBe("-Users-x-orca-workspaces-repo-sf-job-1");
+    expect(projectDirName(cwd)).toBe("-Users-x-work-worktrees-repo-sf-job-1");
     expect(await findTranscript(cwd, { configDirs: [root] })).toBe(join(dir, "a.jsonl"));
     expect(await findTranscript(cwd, { configDirs: [root], since: Date.now() + 60_000 })).toBe(
       null,
@@ -584,5 +683,65 @@ describe("a planning session's projection (spec 20, ADR 0350)", () => {
         runDir: await temp("sf-run-"),
       }),
     ).rejects.toThrow(/relay/);
+  });
+});
+
+describe("usage from the transcript (spec 09 M3)", () => {
+  it("sums tokens per model, counting a streamed message once, and the wall time", () => {
+    const line = (o: unknown) => JSON.stringify(o);
+    const msg = (id: string, model: string, usage: Record<string, number>, timestamp: string) => ({
+      type: "assistant",
+      timestamp,
+      message: { id, model, usage, content: [{ type: "text", text: "hi" }] },
+    });
+    const jsonl = [
+      line({ type: "user", timestamp: "2026-11-12T00:00:00.000Z", message: { content: "go" } }),
+      line(
+        msg(
+          "m1",
+          "model-a",
+          { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 5 },
+          "2026-11-12T00:00:01.000Z",
+        ),
+      ),
+      // The same message again (streamed): not counted twice.
+      line(
+        msg(
+          "m1",
+          "model-a",
+          { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 5 },
+          "2026-11-12T00:00:01.500Z",
+        ),
+      ),
+      line(
+        msg("m2", "model-a", { input_tokens: 50, output_tokens: 5 }, "2026-11-12T00:00:30.000Z"),
+      ),
+      line(
+        msg(
+          "m3",
+          "model-b",
+          { input_tokens: 7, output_tokens: 3, cache_creation_input_tokens: 2 },
+          "2026-11-12T00:01:00.000Z",
+        ),
+      ),
+    ].join("\n");
+    const summary = parseTranscript(jsonl);
+    expect(summary.usage).toEqual([
+      {
+        model: "model-a",
+        inputTokens: 150,
+        outputTokens: 15,
+        cacheReadTokens: 5,
+        cacheWriteTokens: 0,
+      },
+      {
+        model: "model-b",
+        inputTokens: 7,
+        outputTokens: 3,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 2,
+      },
+    ]);
+    expect(summary.wallMs).toBe(60_000);
   });
 });

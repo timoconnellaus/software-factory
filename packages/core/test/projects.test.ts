@@ -63,7 +63,9 @@ describe("project.create from the repo picker", () => {
     );
     expect(p).toMatchObject({
       repo: { owner: "timoconnellaus", name, defaultBranch: "trunk" },
-      policySha: head,
+      // The repo's policy is imported as the first config version (ADR 0370).
+      policySha: "v1",
+      configVersion: 1,
       githubInstallationId: installationId,
       connection: { status: "connected", account: "timoconnellaus" },
       policy: { state: "valid", error: null },
@@ -77,23 +79,29 @@ describe("project.create from the repo picker", () => {
     });
   });
 
-  it("records a missing policy, so Setup can offer the PR", async () => {
+  it("gives a repo with no policy file a template config, with no PR (ADR 0370)", async () => {
     const { w, recordId, repoId } = await withSpareRepo("main");
     const p = await ok<View>(
       "project.create",
       { orgId: w.orgId, installationRecordId: recordId, repoId },
       w.human,
     );
-    expect(p.policy).toEqual({
-      state: "missing",
-      error: expect.stringContaining(`no ${POLICY_PATH}`),
-      prUrl: null,
+    expect(p).toMatchObject({
+      policySha: "v1",
+      configVersion: 1,
+      policy: { state: "valid", error: null, prUrl: null },
     });
-    // Fails closed: no work until a valid policy lands.
-    const r = await refusal(
-      call("workItem.create", { projectId: p.id, title: "x", body: "y" }, w.human),
+    const v1 = await first<{ raw: string; source: string }>(
+      "SELECT raw, source FROM core_project_policies WHERE project_id = ? AND version = 1",
+      p.id,
     );
-    expect(r.message).toMatch(/policy/i);
+    expect(v1.source).toBe("app");
+    expect(JSON.parse(v1.raw)).toMatchObject({
+      autonomyPolicy: "balanced",
+      approvers: [`gh-${w.userId}`],
+    });
+    // Work can start straight away.
+    await ok("workItem.create", { projectId: p.id, title: "x", body: "y" }, w.human);
   });
 
   it("refuses a repo the installation can't reach, and saves nothing", async () => {
@@ -203,7 +211,7 @@ describe("project.update (admin fix, not in onboarding)", () => {
     ]);
   });
 
-  it("sets an id by hand, and a new default branch clears the synced policy", async () => {
+  it("sets an id by hand, and a new default branch keeps the config (ADR 0370)", async () => {
     const w = await world();
     const set = await ok<View>(
       "project.update",
@@ -213,8 +221,8 @@ describe("project.update (admin fix, not in onboarding)", () => {
     expect(set).toMatchObject({
       githubInstallationId: "99",
       repo: { defaultBranch: "trunk" },
-      policySha: null,
-      policy: { state: "none" },
+      policySha: w.policySha,
+      policy: { state: "valid" },
     });
   });
 

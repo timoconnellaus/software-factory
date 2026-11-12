@@ -80,7 +80,11 @@ function Breadcrumb() {
                 ? ["Factory", "Work"]
                 : path.endsWith("/review")
                   ? ["Work", "Review packet"]
-                  : ["Factory", "Work item"];
+                  : path.startsWith("/projects/") && path.endsWith("/settings")
+                    ? ["Project", "Settings"]
+                    : path.startsWith("/projects/") && path.endsWith("/workflows")
+                      ? ["Project", "Workflows and agents"]
+                      : ["Factory", "Work item"];
   return (
     <span className="text-muted-foreground text-sm" data-testid="breadcrumb">
       {crumbs[0]} / <b className="font-medium text-foreground">{crumbs[1]}</b>

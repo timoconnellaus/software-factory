@@ -13,8 +13,9 @@ export function projectDirName(cwd: string): string {
 }
 
 /**
- * Where Claude's config may live on this host: `CLAUDE_CONFIG_DIR`, `~/.claude`, and Orca's
- * per-profile homes (Orca starts Claude with its own `CLAUDE_CONFIG_DIR` per account profile).
+ * Where Claude's config may live on this host: `CLAUDE_CONFIG_DIR`, `~/.claude`, and the
+ * per-profile homes the Orca desktop app kept (history: runs used to start there with Orca's own
+ * `CLAUDE_CONFIG_DIR` per account profile; plan piece 3 replaces these with the host's accounts).
  */
 export async function claudeConfigDirs(env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
   const dirs = new Set<string>();
@@ -59,7 +60,28 @@ interface ContentPart {
 }
 interface TranscriptLine {
   type?: string;
-  message?: { role?: string; content?: string | ContentPart[] };
+  timestamp?: string;
+  message?: {
+    role?: string;
+    model?: string;
+    id?: string;
+    content?: string | ContentPart[];
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  };
+}
+
+/** Tokens one model used in a session (spec 09 M3). */
+export interface ModelUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 export interface CommandRun {
@@ -72,6 +94,10 @@ export interface TranscriptSummary {
   commands: CommandRun[];
   lastAssistantText: string | null;
   toolCalls: number;
+  /** Tokens per model, from each assistant message's `usage` (one count per message id). */
+  usage: ModelUsage[];
+  /** First to last timestamped line, when the transcript has timestamps. */
+  wallMs: number | null;
 }
 
 function text(content: ContentPart["content"]): string {
@@ -85,6 +111,10 @@ export function parseTranscript(jsonl: string): TranscriptSummary {
   const commands: CommandRun[] = [];
   let lastAssistantText: string | null = null;
   let toolCalls = 0;
+  const usage = new Map<string, ModelUsage>();
+  const counted = new Set<string>();
+  let first: number | null = null;
+  let last: number | null = null;
   for (const line of jsonl.split("\n")) {
     if (!line.trim()) continue;
     let entry: TranscriptLine;
@@ -92,6 +122,28 @@ export function parseTranscript(jsonl: string): TranscriptSummary {
       entry = JSON.parse(line) as TranscriptLine;
     } catch {
       continue;
+    }
+    const at = entry.timestamp ? Date.parse(entry.timestamp) : Number.NaN;
+    if (Number.isFinite(at)) {
+      first = first === null ? at : Math.min(first, at);
+      last = last === null ? at : Math.max(last, at);
+    }
+    const m = entry.message;
+    // A message streams over several lines with the same id and usage: count it once.
+    if (entry.type === "assistant" && m?.usage && m.model && !counted.has(m.id ?? line)) {
+      counted.add(m.id ?? line);
+      const u = usage.get(m.model) ?? {
+        model: m.model,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
+      u.inputTokens += m.usage.input_tokens ?? 0;
+      u.outputTokens += m.usage.output_tokens ?? 0;
+      u.cacheReadTokens += m.usage.cache_read_input_tokens ?? 0;
+      u.cacheWriteTokens += m.usage.cache_creation_input_tokens ?? 0;
+      usage.set(m.model, u);
     }
     const content = entry.message?.content;
     if (!Array.isArray(content)) continue;
@@ -111,7 +163,13 @@ export function parseTranscript(jsonl: string): TranscriptSummary {
       }
     }
   }
-  return { commands, lastAssistantText, toolCalls };
+  return {
+    commands,
+    lastAssistantText,
+    toolCalls,
+    usage: [...usage.values()],
+    wallMs: first !== null && last !== null ? last - first : null,
+  };
 }
 
 const CHECK = /\b(test|tests|vitest|jest|lint|biome|eslint|typecheck|tsc|check)\b/;
