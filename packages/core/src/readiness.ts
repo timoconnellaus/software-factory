@@ -32,6 +32,22 @@ export interface NeedsInfo {
   /** Where it goes once answered. */
   heading: Heading;
   at: string;
+  /**
+   * Triage parked it the most times it may (spec 23, review of #125): answering no longer
+   * re-releases it; a person decides. `asked` lists every question asked across the cycles.
+   */
+  capped?: boolean;
+  asked?: string[];
+}
+
+/** How many times triage may park an item before a person must decide (review of #125). */
+export const TRIAGE_PARK_CAP = 3;
+
+/** Which Workflow generation an instance id is: `<id>` is 1, `<id>-r2` is 2, … */
+export function generationOf(workItemId: string, workflowId: string | null): number {
+  if (!workflowId?.startsWith(`${workItemId}-r`)) return 1;
+  const n = Number(workflowId.slice(workItemId.length + 2));
+  return Number.isFinite(n) && n > 1 ? n : 1;
 }
 
 /** The surfaces whose calls are a person's own (spec 23): MCP is an agent with a person's token. */
@@ -108,7 +124,13 @@ export function park(
     source: NeedsInfo["source"];
     reason: string;
     missing: Missing[];
-    prompts: string[];
+    capped?: boolean;
+    asked?: string[];
+    /** The questions: a prompt, or triage's draft (options and a default). */
+    prompts: (
+      | string
+      | { prompt: string; options?: string[]; defaultAnswer?: string; context?: string }
+    )[];
   },
 ): NeedsInfo {
   const hours = ctx.scope.policy?.timeouts.questionHours ?? 48;
@@ -122,6 +144,7 @@ export function park(
     questionIds,
     heading: args.heading,
     at: ctx.now,
+    ...(args.capped ? { capped: true, asked: args.asked ?? [] } : {}),
   };
   ctx.write(
     ctx.db
@@ -135,7 +158,9 @@ export function park(
       .where("id", "=", w.id),
   );
   // Numbers continue the item's own; a parked item has no planning session.
-  args.prompts.forEach((prompt, i) => {
+  args.prompts.forEach((asked, i) => {
+    const q = typeof asked === "string" ? { prompt: asked } : asked;
+    const options = q.options ?? [];
     ctx.write(
       ctx.db.insertInto("core_questions").values({
         id: questionIds[i] as string,
@@ -148,10 +173,11 @@ export function park(
         asked_by: ctx.actor.id,
         created_at: ctx.now,
         domain: "product",
-        prompt,
-        context: `#${w.number} ${w.title} waits for this before anyone works on it.`,
-        options: "[]",
-        kind: "text",
+        prompt: q.prompt,
+        context: q.context ?? `#${w.number} ${w.title} waits for this before anyone works on it.`,
+        options: JSON.stringify(options),
+        kind: options.length ? "single-choice" : "text",
+        default_answer: q.defaultAnswer ?? null,
         blocking: 1,
         irreversible: 0,
         position: i + 1,
@@ -256,4 +282,15 @@ export function readinessHint(w: {
   const checked = precheck({ title: w.title, body: w.body, parentId: w.parent_work_item_id });
   if (checked.ok) return null;
   return "There's little here to work on: triage will ask what it needs, or add a sentence on what you want done.";
+}
+
+/**
+ * The next Workflow generation's instance id (spec 23): a Workflow instance id can't be reused, so
+ * an item triage parked starts its next run as `<id>-r2`, `<id>-r3`, …
+ */
+export function nextGeneration(workItemId: string, current: string | null): string {
+  const n = current?.startsWith(`${workItemId}-r`)
+    ? Number(current.slice(workItemId.length + 2))
+    : 1;
+  return `${workItemId}-r${(Number.isFinite(n) ? n : 1) + 1}`;
 }

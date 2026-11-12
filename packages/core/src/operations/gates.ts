@@ -322,10 +322,21 @@ export const reviewMerge = defineOperation({
     }
     const pa = await gateFor(ctx, input.workItemId, "merge");
     if (input.headSha && pa.status === "pending" && mergeGateHead(pa) !== input.headSha) {
+      const now = mergeGateHead(pa);
       throw new OperationError(
         "conflict",
-        "A new push withdrew this approval: the merge gate is for another commit now",
-        { headSha: mergeGateHead(pa) },
+        `A new push withdrew this approval: the merge gate is for ${now ? now.slice(0, 7) : "another commit"} now, not ${input.headSha.slice(0, 7)}. Review the new commit.`,
+        { headSha: now },
+      );
+    }
+    if (pa.status !== "pending" && pa.decision === "withdrawn") {
+      // A push withdrew the gate and the factory is verifying the new commit (verify.ts): say so,
+      // rather than "already decided: withdrawn".
+      const was = input.headSha ?? mergeGateHead(pa);
+      throw new OperationError(
+        "conflict",
+        `A new push withdrew this approval: ${was ? `${was.slice(0, 7)} is` : "the commit you reviewed is"} no longer the head. The factory verifies the new commit and asks again.`,
+        { headSha: null },
       );
     }
     let note = input.note ?? null;

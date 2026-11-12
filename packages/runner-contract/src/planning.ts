@@ -469,6 +469,16 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     by: z.string(),
   }),
   z.object({
+    /** The spec critic's notes on the plan going to the gate (spec 23): read them, act if needed. */
+    type: z.literal("spec.critiqued"),
+    cursor: z.number(),
+    at: z.string(),
+    specId: z.string(),
+    status: z.enum(["done", "timed_out", "failed"]),
+    notes: z.array(z.string()),
+    summary: z.string().nullable(),
+  }),
+  z.object({
     /**
      * A person edited the plan (spec 27, ADR 0471): keep their wording word for word in every
      * revision, and record any answer it settles with question_answerFromEdit.
