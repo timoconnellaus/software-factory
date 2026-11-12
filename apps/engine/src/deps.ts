@@ -9,6 +9,7 @@ import {
 import { fakeGitHub } from "@software-factory/core/testing";
 import { runnerChannelKey } from "@software-factory/runner-contract";
 import { githubApp } from "./github/app.ts";
+import { mobileAttestation } from "./mobile.ts";
 import { deliverOutbox } from "./outbox.ts";
 import { secrets } from "./secrets.ts";
 
@@ -28,6 +29,7 @@ export function services(env: Env): FactoryServices {
     github,
     publicBaseUrl: env.PUBLIC_BASE_URL,
     allowSoftwareDeviceKeys: env.DESKTOP_ALLOW_SOFTWARE_KEYS === "1",
+    mobileAttestation: mobileAttestation(env),
     ...(env.DEPLOYED_SHA ? { deployedSha: env.DEPLOYED_SHA } : {}),
     ...(env.RUNNER_SHA ? { runnerSha: env.RUNNER_SHA } : {}),
     attachments: r2AttachmentBlobs(env.ATTACHMENTS),

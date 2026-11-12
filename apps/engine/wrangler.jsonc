@@ -81,6 +81,11 @@
     // Accept presence proofs from desktop devices with a software key (ADR 0391): "1" only on a local
     // dev engine. Anything else refuses them, so a gate decision needs a Secure Enclave key.
     "DESKTOP_ALLOW_SOFTWARE_KEYS": "",
+    // The phone app's signing certificates (ADR 0541): SHA-256, comma-separated, as `keytool -list
+    // -v` prints them. A phone registers only if Android attests our package signed with one of
+    // these. The release key's goes here once the owner makes it (spec 60, "What the owner must
+    // do"); a dev engine may add the debug key's. Empty: every phone sign-in is refused.
+    "MOBILE_SIGNING_CERTS": "",
     // "1" swaps the GitHub App for an in-D1 fake (tests and local dev only).
     "GITHUB_FAKE": ""
   }

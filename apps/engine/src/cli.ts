@@ -10,6 +10,9 @@
 // - `batch` runs up to 20 `read`-risk calls in parallel (the desktop app's page loads).
 // - Bytes travel as `{ "$bytes": "<base64>" }` in `call` and `batch` (wire-bytes.ts): an attachment
 //   upload's input, an attachment's output.
+// - `mobile/nonce`, `mobile/start` and `mobile/exchange` are the phone app's unsigned sign-in (as
+//   MOBILE_DEVICE_ACTOR, ADR 0541); a `mobile` token's calls run on the `mobile` surface, and a
+//   phone below MOBILE_MIN_PROTOCOL gets 426 (mobile.ts).
 // - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
 // MCP is meant to come through the same door.
@@ -25,11 +28,18 @@ import {
   type Origin,
   resolveCliToken,
   resolveDesktopToken,
+  resolveMobileToken,
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
 import { STATUS } from "./channel.ts";
 import { clientHub } from "./client-hub.ts";
 import { invokeDeps } from "./deps.ts";
+import {
+  MOBILE_DEVICE_ACTOR,
+  mobileSignInRoute,
+  mobileTooOld,
+  mobileUpdateRequired,
+} from "./mobile.ts";
 import { decodeBytes, encodeBytes } from "./wire-bytes.ts";
 
 export const CLI_PREFIX = "/cli/v1/";
@@ -49,16 +59,17 @@ const unauthenticated = () =>
     401,
   );
 
-/** Who a bearer token is: a CLI token (with its scope) or a desktop device's token. */
+/** Who a bearer token is: a CLI token (with its scope), or a desktop's or a phone's device token. */
 type Caller =
   | { kind: "cli"; userId: string; scope: "read" | "write" }
-  | { kind: "desktop"; userId: string; deviceId: string };
+  | { kind: "desktop" | "mobile"; userId: string; deviceId: string };
 
 export async function handleCli(request: Request, env: Env): Promise<Response> {
   const pathname = new URL(request.url).pathname;
   const path = pathname.slice(
     pathname.startsWith(CLIENT_PREFIX) ? CLIENT_PREFIX.length : CLI_PREFIX.length,
   );
+  if (mobileTooOld(request, path)) return mobileUpdateRequired();
   if (path === "ops" && request.method === "GET") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
@@ -93,6 +104,18 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (path === "desktop/start" || path === "desktop/exchange") {
     const op = path === "desktop/start" ? "desktop.authStart" : "desktop.authExchange";
     return respond(() => run(env, op, body, DESKTOP_DEVICE_ACTOR, { surface: "desktop" }), true);
+  }
+  const phoneSignIn = mobileSignInRoute(path);
+  if (phoneSignIn) {
+    return respond(async () => {
+      const r = await run(env, phoneSignIn, body, MOBILE_DEVICE_ACTOR, { surface: "mobile" });
+      // A wrong typed pairing code is counted (the call commits) and then refused.
+      const out = r.pending ? null : (r.output as { status?: string; error?: string });
+      if (out?.status === "refused") {
+        throw new OperationError("forbidden", out.error ?? "refused", out);
+      }
+      return r;
+    }, true);
   }
   if (path === "call") {
     const who = await authenticate(request, env);
@@ -155,6 +178,8 @@ async function authenticate(request: Request, env: Env): Promise<Caller | null> 
   const now = new Date().toISOString();
   const desktop = await resolveDesktopToken(db, token, now);
   if (desktop) return { kind: "desktop", userId: desktop.user_id, deviceId: desktop.device_id };
+  const phone = await resolveMobileToken(db, token, now);
+  if (phone) return { kind: "mobile", userId: phone.user_id, deviceId: phone.device_id };
   const cli = await resolveCliToken(db, token, now);
   if (cli) return { kind: "cli", userId: cli.user_id, scope: cli.scope };
   return null;
@@ -182,7 +207,8 @@ async function callAs(
     }
     return run(env, name, decodeBytes(input), actor, { surface: "cli" }, idempotencyKey);
   }
-  const origin: Origin = { surface: "desktop", deviceId: who.deviceId };
+  // The token's kind sets the surface; nothing in the request does (ADR 0391, 0541).
+  const origin: Origin = { surface: who.kind, deviceId: who.deviceId };
   if (presence !== undefined) {
     const proof = (presence && typeof presence === "object" ? presence : {}) as Record<
       string,

@@ -1,4 +1,5 @@
 import type { AttachmentBlobs } from "./attachments.ts";
+import type { MobileAttestationService } from "./operations/mobile.ts";
 
 // What operations may call outside D1. sf-engine supplies the real ones (the GitHub App, the runner
 // channel secret); tests supply fakes (`@software-factory/core/testing`). Handlers that call a
@@ -259,6 +260,11 @@ export interface FactoryServices {
    * engine runs with `DESKTOP_ALLOW_SOFTWARE_KEYS=1`, which no deployed config sets: fails closed.
    */
   allowSoftwareDeviceKeys?: boolean;
+  /**
+   * The phone app's key attestation (ADR 0541): the allowed signing certificates, Google's
+   * revocation list and the chain check. Absent: phone sign-in is refused as `unavailable`.
+   */
+  mobileAttestation?: MobileAttestationService;
   /**
    * The default-branch commit this engine was deployed from (ADR 0360). Sent to runners as
    * `desiredVersion` only when `runnerSha` is unset. Unset on a dev engine.
