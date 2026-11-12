@@ -44,6 +44,8 @@ export type OutboxMessage =
    * pushes to open Planning tabs and wakes the agent's wait.
    */
   | { kind: "planning.changed"; payload: { workItemId: string } }
+  /** Run `queue.pull` for a project after this call commits (ADR 0491). */
+  | { kind: "queue.pull"; payload: { projectId: string } }
   /**
    * A person steered a run (spec 31, ADR 0400): sf-engine wakes the work item's hub, so the runner
    * host's held steer call answers at once.

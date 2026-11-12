@@ -5,6 +5,7 @@ import type { AnyOperation } from "./operation.ts";
 import * as adjudicator from "./operations/adjudicator.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
+import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
 import * as config from "./operations/config.ts";
 import * as connector from "./operations/connector.ts";
@@ -35,6 +36,14 @@ export const OPERATIONS: readonly AnyOperation[] = [
   projects.repositoryAdd,
   projects.repositoryList,
   projects.repositoryUpdate,
+  backlog.workItemRelease,
+  backlog.workItemMove,
+  backlog.workItemUpdate,
+  backlog.workItemReorder,
+  backlog.workItemLink,
+  backlog.workItemUnlink,
+  backlog.workItemBoard,
+  backlog.queuePull,
   projects.policySync,
   projects.killSwitchSet,
   config.configGet,

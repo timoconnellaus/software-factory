@@ -38,3 +38,10 @@ WIP limit only holds builds while items wait at gates.
   e2e driver, tests).
 - Status enums in reads gain three values; old items are untouched.
 - A queued item can wait indefinitely on a dependency; the board read shows `blockedBy`.
+
+> Amended 2026-11-12 (review of #69): the pull never runs inside another call's batch. Release,
+> finish and cancel ask for it through the outbox (`queue.pull`), and it runs as the new `scheduler`
+> actor (read and write only in every policy), so it can't abort a finish and doesn't open an
+> approval a minute under `cautious`. Each start is one conditional UPDATE that re-checks the
+> active count, the repository and the waits-for links, so concurrent pulls can't pass the limit.
+> A trial's items take the candidate version's workflow. Ranks are renumbered when a gap runs out.

@@ -1528,9 +1528,17 @@ class ItemFlow {
   /** Queues a stage job and waits for its run to finish (or stall). Holds no slot while queued. */
   // ---- v6: workflows (spec 09 M2, ADR 0371) ----
 
-  /** The workflows triage may pick from: those of the config version the item started under. */
+  /**
+   * The workflows triage may pick from. None since ADR 0492 (an item follows its project's
+   * workflow, pinned when it was pulled), except for an item started before 0261, which keeps
+   * triage's pick (no `pulled_at`). The step keeps its name so running instances replay.
+   */
   async workflowOptions(): Promise<{ name: string; description: string }[]> {
     const text = await this.step.do("workflow: options", async () => {
+      const row = await this.env.DB.prepare("SELECT pulled_at FROM core_work_items WHERE id = ?")
+        .bind(this.workItemId)
+        .first<{ pulled_at: string | null }>();
+      if (row?.pulled_at) return JSON.stringify([]);
       const policy = await this.pinnedPolicy();
       return JSON.stringify(
         (policy?.workflows ?? []).map((w) => ({ name: w.name, description: w.description })),
