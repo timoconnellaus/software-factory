@@ -18,6 +18,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, from
   its current config version, and no looser than the version a work item started under), fencing
   token, permission, handler, then one D1 batch with the audit row and outbox rows (ADR 0035, 0370).
+  A changes-only operation that changed nothing commits no batch and writes no audit row (ADR 0590).
 - **Workflows** own the gates, one per work item; the **foreman** picks a route within them, and
   its decisions are listed as binding or advisory (ADR 0005, 0006). Gates block in v1 and a waiting
   item holds no runner slot.

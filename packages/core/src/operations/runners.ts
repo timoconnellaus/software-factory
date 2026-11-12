@@ -250,6 +250,8 @@ function reportRunnerState(
     signedAt?: number | undefined;
     /** Signed no later than the last accepted heartbeat: report nothing, write nothing. */
     stale?: boolean;
+    /** A claim signed in the same second as the heartbeat before it still reports (claims only). */
+    sameSecond?: boolean;
   },
 ): { pendingAccount: string | null } {
   // The owner's pick is done once the runner reports it active, and moot once the runner reports
@@ -260,6 +262,30 @@ function reportRunnerState(
     report.accounts !== undefined &&
     (report.accounts.active === requested || !report.accounts.names.includes(requested));
   if (report.stale) return { pendingAccount: requested !== null && !settled ? requested : null };
+  // A heartbeat or claim is audited when it changes what a person looks for after an incident
+  // (ADR 0590): whether the runner takes work (accepting, paused, rate limit), its code (version,
+  // update state, compat), its manifest or accounts, or the owner's account pick settling. Capacity
+  // in use and last seen change on every beat and are not audited.
+  const paused = report.capacity.paused ? json(report.capacity.paused) : null;
+  if (
+    settled ||
+    runner.accepting !== (report.capacity.accepting ? 1 : 0) ||
+    pauseKey(runnerPaused(runner)) !== pauseKey(report.capacity.paused ?? null) ||
+    runner.capacity_max !== report.capacity.max ||
+    runner.light_max !== (report.capacity.light?.max ?? null) ||
+    json(report.manifest) !== runner.manifest ||
+    (report.rateLimitedUntil !== undefined &&
+      report.rateLimitedUntil !== runner.rate_limited_until) ||
+    (report.version !== undefined &&
+      (report.version.sha !== runner.version ||
+        (report.version.autoUpdate ? 1 : 0) !== runner.auto_update ||
+        report.version.update.state !== runner.update_state ||
+        report.version.update.target !== runner.update_target)) ||
+    (report.accounts !== undefined && json(report.accounts) !== runner.accounts) ||
+    (report.compat !== undefined && report.compat !== runner.compat)
+  ) {
+    ctx.changed();
+  }
   ctx.write(
     ctx.db
       .updateTable("core_runners")
@@ -270,7 +296,7 @@ function reportRunnerState(
         light_max: report.capacity.light?.max ?? null,
         light_in_use: report.capacity.light?.inUse ?? 0,
         accepting: report.capacity.accepting ? 1 : 0,
-        paused: report.capacity.paused ? json(report.capacity.paused) : null,
+        paused,
         ...(report.rateLimitedUntil !== undefined
           ? { rate_limited_until: report.rateLimitedUntil }
           : {}),
@@ -294,7 +320,7 @@ function reportRunnerState(
         q.where((eb) =>
           eb.or([
             eb("last_signed_at", "is", null),
-            eb("last_signed_at", "<", report.signedAt ?? 0),
+            eb("last_signed_at", report.sameSecond ? "<=" : "<", report.signedAt ?? 0),
           ]),
         ),
       ),
@@ -354,6 +380,8 @@ export const runnerHeartbeat = defineOperation({
   description:
     "A runner host reports its manifest, capacity, rate limit and the jobs it holds. Each held job's lease is renewed if its fencing token is current; jobs the cloud has stopped (cancelled, taken over, kill switch) come back as cancel commands.",
   risk: "write",
+  // Every 20 s per runner: audited only when it sends a command (ADR 0590).
+  audit: { changesOnly: true, changed: (out) => out.commands.length > 0 },
   actors: ["runner"],
   permission: "signed-in",
   input: z.object({
@@ -684,6 +712,11 @@ async function freePools(
 }
 
 /** The pause a runner last reported (ADR 0552), or null. */
+/** A pause as audited: why and which pools, not the load figures that change every beat. */
+function pauseKey(p: z.infer<typeof capacityPausedSchema> | null | undefined): string | null {
+  return p ? JSON.stringify({ reason: p.reason, pools: [...p.pools].sort() }) : null;
+}
+
 function runnerPaused(
   runner: Pick<RunnerRow, "paused">,
 ): z.infer<typeof capacityPausedSchema> | null {
@@ -698,7 +731,7 @@ function runnerPaused(
  * yields while the pool has room: this is only called when it hasn't.
  */
 export async function requestYield(
-  ctx: Pick<HandlerContext, "db" | "now" | "write">,
+  ctx: Pick<HandlerContext, "db" | "now" | "write" | "changed">,
   runnerId: string,
 ): Promise<string | null> {
   const before = new Date(Date.parse(ctx.now) - PLANNING_YIELD_AFTER_MS).toISOString();
@@ -760,6 +793,8 @@ export async function requestYield(
       at: ctx.now,
     }),
   );
+  // Asking a session to yield is a change a person may look for (ADR 0590).
+  ctx.changed();
   return candidate.id;
 }
 
@@ -837,6 +872,9 @@ export const jobClaim = defineOperation({
   description:
     "A runner host asks for its next job (pull, spike ADR 0100). The scheduler gives the oldest queued job this runner may take: capabilities and harness covered, the requester's own runner or one shared into the project, a free slot, not rate-limited, no kill switch, the project under its WIP limit for builds, the item not leased to someone else. Claiming takes the work item's lease with a new fencing token and creates the run and its branch name. The same claimId returns the same job.",
   risk: "write",
+  // Every 20 s per runner: audited when it claims a job (ctx.change), not when empty or when a
+  // retried claimId gets the job it already had (ADR 0590).
+  audit: { changesOnly: true },
   actors: ["runner"],
   permission: "signed-in",
   input: z.object({
@@ -847,7 +885,7 @@ export const jobClaim = defineOperation({
   output: z.object({ job: z.custom<Job>().nullable() }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
-    reportRunnerState(ctx, runner, input);
+    const signedAt = ctx.origin.signedAt;
     const current = {
       ...runner,
       accepting: input.capacity.accepting ? 1 : 0,
@@ -885,6 +923,19 @@ export const jobClaim = defineOperation({
         .executeTakeFirst();
       return { job: await buildJob(ctx, prior, run, item, project, lease?.expires_at ?? ctx.now) };
     }
+
+    // The claim isn't stored by the channel, so an old empty one could be replayed within the
+    // signing window and run the scheduler again for a runner that has moved on. One signed before
+    // the runner's last accepted heartbeat or claim gets an empty answer and writes nothing. (A
+    // retried claimId gets its job above, whenever it was signed.)
+    if (
+      signedAt !== undefined &&
+      runner.last_signed_at !== null &&
+      signedAt < runner.last_signed_at
+    ) {
+      return { job: null };
+    }
+    reportRunnerState(ctx, runner, { ...input, signedAt, sameSecond: true });
 
     // Code older than the engine's compatibility level gets nothing (ADR 0520), whatever the runner
     // decides itself: one from before RUNNER_COMPAT, or one that can't update, may still claim.
@@ -938,6 +989,8 @@ export const jobClaim = defineOperation({
       if (refusal) {
         const waitReason = refusal.wip ? WIP_WAIT_REASON : (refusal.waitReason ?? null);
         if (waitReason && job.wait_reason !== waitReason) {
+          // Why a job waits is what a person looks for when it doesn't start (ADR 0590).
+          ctx.changed();
           ctx.write(
             ctx.db
               .updateTable("core_jobs")
@@ -1122,6 +1175,9 @@ export const runReportEvents = defineOperation({
   actors: ["runner"],
   permission: "signed-in",
   fenced: true,
+  // Every 3 s while a run logs: the events are kept in core_run_events, so the audit records only
+  // a batch that moves the run (a state, a session start, a takeover), ADR 0590.
+  audit: { changesOnly: true },
   input: z.object({ jobId, fencingToken, events: z.array(runnerEventSchema).max(500) }),
   output: z.object({ accepted: z.number() }),
   async handler(input, ctx) {
@@ -1150,6 +1206,7 @@ export const runReportEvents = defineOperation({
         : started?.type === "session.started" && started.takeover
           ? started.takeover
           : null;
+    if (mapped || started || handed) ctx.changed();
     if (isActive(run.status)) {
       ctx.write(
         ctx.db
