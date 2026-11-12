@@ -181,7 +181,13 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
         "/t/sf-checks",
       ]),
     );
-    expect(s.filesystem.allowRead).toEqual(["/t/sf-checks/job_1-x"]);
+    expect(s.filesystem.allowRead).toEqual([
+      "/t/sf-checks/job_1-x/tree-0",
+      "/t/sf-checks/job_1-x/home",
+      "/t/sf-checks/job_1-x/tmp",
+      "/t/sf-checks/job_1-x/empty",
+      "/t/sf-checks/job_1-x/gitconfig",
+    ]);
     // Its own tree, home and temp: not the rest of its root (the host's empty tool dirs and git
     // config, a later round's tree).
     expect(s.filesystem.allowWrite).toEqual([

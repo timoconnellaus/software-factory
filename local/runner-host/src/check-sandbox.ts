@@ -107,10 +107,18 @@ export function checkSandboxSettings(
       allowLocalBinding: true,
     },
     filesystem: {
-      // Read: the home's credential stores, the runner's own dirs, other jobs' checks. The job's
-      // own checks root is re-allowed (allowRead wins over denyRead).
+      // Read: the home's credential stores, the runner's own dirs, other jobs' checks. The check's
+      // own paths are re-allowed (allowRead wins over denyRead), each by name: on Linux srt
+      // re-binds an allowRead path read-only after the write binds, so allowing the whole root
+      // would make the tree read-only (a write path it already re-bound is skipped).
       denyRead: [...homeDeny, ...options.protectPaths, join(dirs.root, "..")],
-      allowRead: [dirs.root],
+      allowRead: [
+        dirs.dir,
+        join(dirs.root, "home"),
+        join(dirs.root, "tmp"),
+        join(dirs.root, "empty"),
+        join(dirs.root, "gitconfig"),
+      ],
       // Write: only the check's own tree, home and temp (TMPDIR points there). Not the system temp
       // dirs the harness allows, and not the rest of the root (its empty tool dirs and git config,
       // a later round's tree), which stays the host's.

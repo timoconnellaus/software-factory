@@ -33,6 +33,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap socat ripgrep
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0 || true
+          # srt's seccomp layer makes a nested user namespace inside bwrap's; the distro profile
+          # for bwrap strips its children's capabilities, so that fails (srt's README, Ubuntu 24.04).
+          if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
+            sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict || true
+          fi
 
       # Turborepo's local cache (.turbo/cache), keyed by commit and restored from the newest
       # earlier entry, so unchanged packages replay their typecheck and test results.
