@@ -7,7 +7,8 @@
 //
 // It reuses the container job's check path (./check-exec.ts, `execInCheckContainer`): the same
 // image, read-only root, every capability dropped, no new privileges, a pids limit, the clean tree
-// mounted at its own path. What differs for a local job:
+// mounted at its own path, and limits (2 CPUs, 4 GB of memory with a 1 GB /tmp inside it, unless
+// the runner's config says otherwise). What differs for a local job:
 //   - a network of its own per check: an internal Docker network with no route out, and on it the
 //     egress proxy (./egress.ts, the agent image's `egress-proxy.mjs`) with the job's allowlist
 //     (`allowedDomains(profile)`, not the model API), so an install reaches the registry and nothing
@@ -29,6 +30,9 @@ import { ensureImage } from "./image.ts";
 import { type ContainerRuntime, type ContainerSpec, dockerRuntime } from "./runtime.ts";
 import { JOB_LABEL, PROXY_ALIAS, proxySpec, ROLE_LABEL } from "./spec.ts";
 
+/** A local check container's limits unless the runner's config says otherwise (fifth review). */
+export const CHECK_LIMITS = { cpus: 2, memory: "4g", tmpSize: "1g" } as const;
+
 export interface LocalCheckOptions {
   /** The runtime (default: Docker over its CLI). */
   runtime?: ContainerRuntime;
@@ -39,11 +43,17 @@ export interface LocalCheckOptions {
   allowedHosts?: string[];
   /** Tests: `--add-host` entries for the proxy. */
   proxyAddHosts?: string[];
+  /** Tests: `host:port` entries the proxy lets through to a private address (a local upstream). */
+  proxyPrivateOk?: string[];
   /** Tests: the image to run (default: the agent image, built on first use). */
   image?: string;
   pidsLimit?: number;
+  /** Memory (`docker --memory`, default 4g); `/tmp`'s tmpfs is inside it. */
   memory?: string;
+  /** CPUs (default 2). */
   cpus?: number;
+  /** `/tmp`'s tmpfs size (default 1g): RAM, so within `memory`. */
+  tmpSize?: string;
   log?: (message: string) => void;
 }
 
@@ -94,7 +104,7 @@ export function localCheckContainer(
     try {
       await runtime.createNetwork(network, {
         internal: true,
-        labels: { [JOB_LABEL]: job.jobId },
+        labels: { [JOB_LABEL]: job.jobId, [ROLE_LABEL]: "check" },
       });
       await runtime.start(
         proxySpec({
@@ -103,6 +113,7 @@ export function localCheckContainer(
           jobId: job.jobId,
           allow,
           ...(options.proxyAddHosts ? { addHosts: options.proxyAddHosts } : {}),
+          ...(options.proxyPrivateOk ? { privateOk: options.proxyPrivateOk } : {}),
         }),
       );
       await runtime.connect(network, proxyName, PROXY_ALIAS);
@@ -127,12 +138,12 @@ export function localCheckContainer(
         command: [],
         env: { ...proxyEnv(), LANG: "C.UTF-8" },
         mounts: [],
-        tmpfs: { "/tmp": "rw,exec,nosuid,size=4g" },
+        tmpfs: { "/tmp": `rw,exec,nosuid,size=${options.tmpSize ?? CHECK_LIMITS.tmpSize}` },
         network,
         labels: { [JOB_LABEL]: job.jobId, [ROLE_LABEL]: "check" },
         pidsLimit: options.pidsLimit ?? 4096,
-        ...(options.cpus ? { cpus: options.cpus } : {}),
-        ...(options.memory ? { memory: options.memory } : {}),
+        cpus: options.cpus ?? CHECK_LIMITS.cpus,
+        memory: options.memory ?? CHECK_LIMITS.memory,
         interactive: false,
       };
       return await execInCheckContainer(

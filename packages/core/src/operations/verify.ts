@@ -327,15 +327,27 @@ export const reviewPacketRecord = defineOperation({
  * merges only by an explicit decision to merge without them (`review.merge` with
  * `mergeWithoutChecks`). Without it, refused with `conflict`. With it, the decision is recorded on
  * the packet (`notRunWaived`: who, when, which checks) and in the audit, and `factory/verify` on the
- * SHA is posted again as success, saying so. Nothing to decide (no packet, no check not run, already
- * decided): returns []. Never called by an agent: review.merge is a person's.
+ * SHA is posted again as success, saying so. Nothing to decide (no check not run, already
+ * decided): returns []. An item that runs the factory's checks with no review packet for the gate's
+ * head is refused (fifth review): it fails closed, since nothing says whether its checks ran. An
+ * older item (no `host-checks`) without one has nothing to decide. Never called by an agent:
+ * review.merge is a person's.
  */
 export async function decideNotRun(
   ctx: HandlerContext,
   item: WorkItemRow,
-  headSha: string,
+  headSha: string | null,
   mergeWithoutChecks: boolean,
 ): Promise<string[]> {
+  const checked = hostChecksOn(item);
+  if (!headSha) {
+    if (!checked) return [];
+    throw new OperationError(
+      "conflict",
+      "The merge gate names no commit, so the factory can't tell whether its checks ran on it. Re-run verify, then merge.",
+      { needs: "reviewPacket" },
+    );
+  }
   const packet = await ctx.db
     .selectFrom("core_review_packets")
     .select(["id", "sections", "risk_flags"])
@@ -343,7 +355,14 @@ export async function decideNotRun(
     .where("head_sha", "=", headSha)
     .orderBy("created_at", "desc")
     .executeTakeFirst();
-  if (!packet) return [];
+  if (!packet) {
+    if (!checked) return [];
+    throw new OperationError(
+      "conflict",
+      `There is no review packet for ${headSha.slice(0, 7)}, the commit this gate is for, so the factory can't tell whether its checks ran on it. Re-run verify, then merge.`,
+      { headSha, needs: "reviewPacket" },
+    );
+  }
   const sections = parseObject(packet.sections);
   const notRun = storedNotRun(sections);
   if (notRun.length === 0 || storedWaiver(sections)) return [];

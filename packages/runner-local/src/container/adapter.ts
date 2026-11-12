@@ -154,6 +154,8 @@ export interface ContainerOptions {
   extraMounts?: Mount[];
   /** Tests: `--add-host` entries for the proxy (`host.docker.internal:host-gateway` on Linux). */
   proxyAddHosts?: string[];
+  /** Tests: `host:port` entries the proxy lets through to a private address (a local upstream). */
+  proxyPrivateOk?: string[];
   /** Tests: how the live command line is read from the container (default `docker exec … ps`). */
   readCommand?: (runtime: ContainerRuntime, container: string) => ReadCommand;
   log?: (message: string) => void;
@@ -454,6 +456,7 @@ export function createContainerRunner(
           jobId: job.jobId,
           allow,
           ...(options.proxyAddHosts ? { addHosts: options.proxyAddHosts } : {}),
+          ...(options.proxyPrivateOk ? { privateOk: options.proxyPrivateOk } : {}),
         });
         const record: ContainerRecord = {
           jobId: job.jobId,

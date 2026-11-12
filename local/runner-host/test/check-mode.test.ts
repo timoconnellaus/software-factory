@@ -4,11 +4,11 @@
 import type { ExecResult, Job } from "@software-factory/runner-contract";
 import type { ContainerRuntime } from "@software-factory/runner-local";
 import { describe, expect, it } from "vitest";
-import { checkModeReport, localChecks, NO_MAC_CONTAINER } from "../src/check-mode.ts";
+import { checkModeReport, localChecks, NO_MAC_CONTAINER_LINE } from "../src/check-mode.ts";
 import { macTempDenies } from "../src/check-sandbox.ts";
 import { hostManifest, runChecks } from "../src/checks.ts";
 import { configSchema, paths } from "../src/config.ts";
-import { checkReadiness } from "../src/runner.ts";
+import { checkLine, checkReadiness } from "../src/runner.ts";
 
 const never = new AbortController().signal;
 const job = {
@@ -66,13 +66,13 @@ describe("where a sandbox runner's checks run (ADR 0501, fourth review)", () => 
       0,
       never,
     );
-    expect(r).toMatchObject({ exitCode: null, notRun: NO_MAC_CONTAINER });
+    expect(r).toMatchObject({ exitCode: null, notRun: NO_MAC_CONTAINER_LINE });
     expect(r?.isolation).toBeUndefined();
     expect(r?.logTail).toContain("Cannot connect");
     // No runtime configured at all: the same.
     const none = localChecks({ platform: "darwin", runtime: null, sandbox: ran("weaker-sandbox") });
     expect((await none?.(job, dirs)({ run: "x", timeoutMs: 1 }, never))?.notRun).toBe(
-      NO_MAC_CONTAINER,
+      NO_MAC_CONTAINER_LINE,
     );
   });
 
@@ -109,7 +109,7 @@ describe("where a sandbox runner's checks run (ADR 0501, fourth review)", () => 
       sandboxAvailable: true,
     });
     expect(none.mode).toBe("none");
-    expect(none.why).toContain(NO_MAC_CONTAINER);
+    expect(none.why).toBe(NO_MAC_CONTAINER_LINE);
     expect(none.why).toContain("checks.weakerMacSandbox");
     expect(
       await checkModeReport({
@@ -136,15 +136,32 @@ describe("where a sandbox runner's checks run (ADR 0501, fourth review)", () => 
     ]);
     expect(macTempDenies("/private/var/folders/ab/cd1234/T")).toContain("/var/folders/ab/cd1234");
   });
-  it("declares `checks` only where a check can really run here", () => {
+  it("declares `checks` when told to, with the one line on where they run", () => {
     const m = { contractVersion: 1, capabilities: ["git-push"] } as unknown as Parameters<
       typeof hostManifest
     >[0];
     expect(hostManifest(m).capabilities).toContain("checks");
     expect(hostManifest(m, false).capabilities).not.toContain("checks");
-    // An adapter that claims it, on a host that can't: not declared.
+    // An adapter that claims it, on a host that doesn't declare it (a sprite runner): not declared.
     const claims = { ...m, capabilities: ["git-push", "checks"] } as typeof m;
     expect(hostManifest(claims, false).capabilities).toEqual(["git-push"]);
+    expect(hostManifest(m, true, "container: a fresh check container").checksNote).toBe(
+      "container: a fresh check container",
+    );
+  });
+
+  it("says a Mac with no answering runtime can't run them, in the same line its checks report", async () => {
+    const base = configSchema.parse({ runnerId: "r_abcdef12", key: "k".repeat(32) });
+    const dead = async () => ({
+      code: 1,
+      stdout: "",
+      stderr: "Cannot connect to the Docker daemon",
+    });
+    const r = await checkReadiness(base, paths(), dead, "darwin");
+    expect(r).toMatchObject({ mode: "none", ok: false, why: NO_MAC_CONTAINER_LINE });
+    expect(checkLine(r)).toBe(
+      "not run here: this Mac runner has no container runtime (OrbStack is not answering): start it, or set checks.weakerMacSandbox",
+    );
   });
 
   it("says a sprite runner runs no checks here, and a container runner checks in containers", async () => {

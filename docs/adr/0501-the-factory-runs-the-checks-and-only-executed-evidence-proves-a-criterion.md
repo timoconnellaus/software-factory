@@ -278,3 +278,43 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 >    (`pruneCheckResults`, minute 41) deletes at most 500 older rows a time, oldest first on
 >    `core_check_results_created_idx` (migration 0272). A hand-back still drops an open item's
 >    results for heads it replaced more than 30 days ago, never its current head's.
+
+**Amended 2026-11-12 (fifth review).**
+
+> 1. **A runner that dies mid-check leaves nothing for long.** A Mac check container is a foreground
+>    `docker run --rm` beside an egress proxy on a network of its own, removed in a `finally`, which
+>    a killed runner never reaches. A `sandbox` runner on a Mac now reaps every container carrying
+>    the job label with role `check` or `egress`, and every check network, whose job it doesn't run:
+>    at start-up (all of them) and on its periodic sweep (`reapCheckContainers`). Tested by killing
+>    the runner mid-check on the real Docker.
+> 2. **Check containers have limits.** By default 2 CPUs and 4 GB of memory, with `/tmp` a 1 GB
+>    tmpfs inside that memory; a tree that grew past 10 GB isn't copied for the next check (that
+>    check is not run, with the reason). runner.json `checks` sets each (`cpus`, `memoryGb`,
+>    `tmpGb`, `maxTreeGb`). At most `checks.maxConcurrent` (default 1) checks run at once on a
+>    runner; each counts as a heavy job on the heartbeat's capacity while it runs, and a check waits
+>    to start while the load backoff (spec 43, ADR 0552) has stopped heavy work, for up to 10
+>    minutes, then runs anyway.
+> 3. **The egress proxy refuses non-public addresses.** An allowlisted name is resolved once by the
+>    proxy, which connects to that address (no rebinding between the check and the connect), and is
+>    refused when any address it resolves to is private, loopback, link-local, CGNAT (Tailscale),
+>    benchmarking (OrbStack), multicast or reserved, or the runtime's host gateway
+>    (`host.docker.internal` and its kin, resolved at start). Only the runner's own tests may exempt
+>    an exact `host:port` (`--private-ok`).
+> 4. **No packet, no merge.** For an item that runs the factory's checks, a merge gate with no review
+>    packet for its head is refused (`conflict`, saying why): nothing says whether its checks ran.
+> 5. **Not on the phone.** `review.merge` with `mergeWithoutChecks` is refused on the mobile surface
+>    by the engine (`mobileRefuses`, pinned in the decidability test), with or without a
+>    fingerprint, until the owner decides otherwise.
+> 6. **The prune's reads are bounded by its limit.** It reads the next 500 rows older than the
+>    cutoff after a cursor in `core_meta` (on `core_check_results_created_idx`), looks their items up
+>    by primary key in one batch, deletes those whose item ended, and moves the cursor (back to the
+>    start at the end), so rows read no longer grow with the number of finished items.
+> 7. **A `sandbox` runner always declares `checks`** (back to the earlier decision; #115 had briefly
+>    declared it only where a check could run, which left items stalled at build with no wait
+>    reason). With no check exec, each declared check comes back not run with the reason (a Mac:
+>    "this Mac runner has no container runtime (OrbStack is not answering): start it, or set
+>    checks.weakerMacSandbox"), the item builds and reaches the gate, and the explicit
+>    merge-without-checks decision applies. `sf-runner doctor` and Factory > Runners (the manifest's
+>    `checksNote`, read by runner.list) say the same in one line. A sprite runner never declares
+>    `checks`; a build that carries checks then waits with "no runner that can run this project's
+>    checks is online" when no online runner declares it.

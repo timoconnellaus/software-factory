@@ -9,9 +9,20 @@
   "main": "./src/server.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Workers Logs (AGENTS.md, Cloudflare cost, rule 11). From 1 Dec 2026 logs are billed by size
+  // (Observability pricing): 50 GB ingested per billing cycle included (shared with traces and every
+  // other Cloudflare log), then $0.25/GB, measured uncompressed. An open dashboard tab polls up to
+  // about 22 times a minute, ~950k requests a month per tab left open: 1 to 4 GB at 1 to 4 KB a
+  // request's log (an estimate). So every request is logged (1.0): this Worker's failures are a
+  // person's, and one-off. Lower it if more than a few tabs stay open all month.
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 1
   },
+  // CPU per invocation (rule 11), default 30 s: every request, page render and server function.
+  // CPU time excludes waiting on sf-engine or D1. A render and its server functions take tens of ms
+  // (the operations run in sf-engine); 5 s stops a runaway render billing 30 s each time.
+  "limits": { "cpu_ms": 5000 },
   "upload_source_maps": true,
   // Run next to D1 (ADR 0241). D1's primary is in SJC (WNAM); every page makes several D1 queries
   // and engine RPCs, so a Worker at the visitor's edge pays a trans-Pacific round trip for each

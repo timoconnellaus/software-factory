@@ -20,6 +20,7 @@ import {
   type ModelCredential,
   nodeExec,
   readSpritesToken,
+  reapCheckContainers,
   reapContainers,
   reapOrphans,
   reapSprites,
@@ -39,7 +40,7 @@ import {
 import { type CheckModeName, checkModeReport, localChecks } from "./check-mode.ts";
 import { checkSandbox, sandboxAvailable, sandboxTrial } from "./check-sandbox.ts";
 import { checkoutDirs } from "./checkouts.ts";
-import type { Paths, RunnerConfig } from "./config.ts";
+import { checkSettingsSchema, type Paths, type RunnerConfig } from "./config.ts";
 import { FETCH_NAMESPACE, hostGit } from "./git.ts";
 import { RunnerHost } from "./host.ts";
 import { APPARMOR_USERNS } from "./linux.ts";
@@ -163,6 +164,10 @@ export async function checkReadiness(
   };
 }
 
+/** Readiness as one line: doctor's and Factory > Runners'. */
+export const checkLine = (r: { mode: CheckModeName; why: string }) =>
+  `${r.mode === "none" ? "not run here" : r.mode}: ${r.why}`;
+
 /** `fn`, answered from its last result for `ms` after it settled. */
 function every<T>(ms: number, fn: () => Promise<T>): () => Promise<T> {
   let last: { at: number; value: Promise<T> } | undefined;
@@ -238,7 +243,23 @@ export function buildRunner(
   });
   const accounts = accountPaths(dirs);
   const containers = config.isolation === "container";
+  const checkSettings = checkSettingsSchema.parse(config.checks ?? {});
   const sprites = config.isolation === "sprites";
+  // A Mac sandbox runner's check containers (ADR 0501, fourth review): the runtime its checks run
+  // on, and that reaps what a runner that died mid-check left (fifth review).
+  const checkRuntime =
+    !containers && !sprites && process.platform === "darwin"
+      ? (options.container?.runtime ?? dockerRuntime({ exec, bin: dockerBin(config) }))
+      : null;
+  const reapChecks = (running: Set<string>) =>
+    checkRuntime ? reapCheckContainers(checkRuntime, running) : Promise.resolve([] as string[]);
+  // Claim nothing heavy, then nothing at all, while the machine is overloaded (ADR 0552). Checks
+  // wait on the same gate before they start (fifth review).
+  const load = new LoadGate(
+    loadPolicySchema.parse(config.load ?? {}),
+    options.loadReading ?? hostLoad,
+    log,
+  );
   // A stream-json session (ADR 0450) runs on the host only: a container or sprite job keeps tmux.
   const sessionMode = containers || sprites ? "tmux" : config.session;
   if ((containers || sprites) && config.session === "stream-json") {
@@ -343,17 +364,22 @@ export function buildRunner(
       (config.isolation ?? "sandbox") !== "sandbox"
         ? null
         : localChecks({
-            weakerMacSandbox: config.checks?.weakerMacSandbox ?? false,
-            runtime:
-              process.platform === "darwin"
-                ? dockerRuntime({ exec, bin: dockerBin(config) })
-                : null,
+            weakerMacSandbox: checkSettings.weakerMacSandbox,
+            limits: {
+              cpus: checkSettings.cpus,
+              memory: `${Math.round(checkSettings.memoryGb * 1024)}m`,
+              tmpSize: `${Math.round(checkSettings.tmpGb * 1024)}m`,
+            },
+            runtime: checkRuntime,
             sandbox: checkSandbox(checkSandboxOptions(config, dirs)),
           }),
     checksDir: dirs.checksDir,
-    // Declare `checks` only where a check can really run here (ADR 0501): asked again every 10
-    // minutes, never per heartbeat.
-    checksAvailable: every(10 * 60_000, async () => (await checkReadiness(config, dirs, exec)).ok),
+    // Fifth review: a `sandbox` runner always declares `checks` (a check that can't run comes back
+    // not run with the reason, and the gate asks a person); a container runner's adapter has its
+    // own exec; a sprite runner never declares it. The one line doctor prints rides on the
+    // manifest, asked again every 10 minutes, never per heartbeat.
+    declareChecks: (config.isolation ?? "sandbox") === "sandbox",
+    checksNote: every(10 * 60_000, async () => checkLine(await checkReadiness(config, dirs, exec))),
     heartbeatMs: config.heartbeatMs,
     reapOrphans: async (running) => {
       // Container jobs first, with plain file operations: their job repos are never touched by git.
@@ -375,7 +401,12 @@ export function buildRunner(
                 );
                 return [] as string[];
               })
-          : [];
+          : // A Mac sandbox runner's check containers, their proxies and networks: at start-up
+            // `running` is empty, so every one a dead runner left goes.
+            await reapChecks(running).catch((err) => {
+              log(`reaping check containers: ${err instanceof Error ? err.message : err}`);
+              return [] as string[];
+            });
       const local = await reapOrphans(
         {
           ...hostDirs(dirs, exec),
@@ -393,12 +424,10 @@ export function buildRunner(
       return [...new Set([...reaped, ...local])];
     },
     liveJobsFile: liveJobsFile(dirs),
-    // Claim nothing heavy, then nothing at all, while the machine is overloaded (ADR 0552).
-    load: new LoadGate(
-      loadPolicySchema.parse(config.load ?? {}),
-      options.loadReading ?? hostLoad,
-      log,
-    ),
+    load,
+    // At most this many checks at once, each a heavy job while it runs (fifth review).
+    maxChecks: checkSettings.maxConcurrent,
+    maxTreeBytes: Math.round(checkSettings.maxTreeGb * 1024 ** 3),
     // A sprites runner sweeps while it runs (ADR 0480): sprites no live job holds, or past their
     // lifetime, so none is left billing between restarts.
     ...(sprites
@@ -406,7 +435,11 @@ export function buildRunner(
           sweep: async (running: Set<string>) =>
             reapSprites(await spriteDirs(config, dirs, options.sprites?.api), running),
         }
-      : {}),
+      : checkRuntime
+        ? // And a Mac sandbox runner's check containers whose job it no longer runs (fifth review).
+          // A runtime that isn't answering has none running: nothing to do, quietly.
+          { sweep: (running: Set<string>) => reapChecks(running).catch(() => [] as string[]) }
+        : {}),
     log,
     ...(options.selfUpdate ? { selfUpdate: options.selfUpdate } : {}),
     ...(options.onUpdated ? { onUpdated: options.onUpdated } : {}),

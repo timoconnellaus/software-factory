@@ -20,9 +20,11 @@
 //   - Guards. Before any host git that follows code the job ran (a fix round, a check), the git
 //     config and the adapter's own git dir check are run again (`guard`); a finding fails the job.
 //   - The checked head is the pushed head: the host never commits after the last round.
+import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { cp, mkdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   type CapabilityManifest,
   type CheckCommand,
@@ -37,6 +39,8 @@ import {
   redactSecrets,
   type SessionOutcome,
 } from "@software-factory/runner-contract";
+
+const execFileP = promisify(execFile);
 
 /** Runs one command in the clean tree of the commit under check. */
 export type Exec = (
@@ -119,6 +123,13 @@ export interface CheckLoopOptions {
   secrets?: readonly string[];
   signal: AbortSignal;
   log?: (message: string) => void;
+  /**
+   * The disk bound for a tree carried to the next check (fifth review; runner.json
+   * `checks.maxTreeGb`): a tree that grew past it is not copied, and the next check is not run.
+   */
+  maxTreeBytes?: number;
+  /** A tree's size on disk (default `du -sk`; tests inject it). */
+  treeBytes?: (dir: string) => Promise<number>;
 }
 
 export interface CheckLoopResult {
@@ -154,12 +165,21 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
         await rm(at, { recursive: true, force: true });
         await mkdir(tree, { recursive: true, mode: 0o700 });
         let prepared: string | null = null;
+        let tooBig: string | null = null;
         if (options.exec) {
           try {
             // The first check gets the commit; each later one, a copy of what the one before left
-            // (made now: that check has ended and everything it started was killed).
+            // (made now: that check has ended and everything it started was killed), unless it
+            // grew past the runner's disk bound.
             if (prev === undefined) await options.exportTree(head, tree);
-            else await carryTree(join(prev, "tree"), tree);
+            else {
+              const bound = options.maxTreeBytes;
+              const size = bound ? await (options.treeBytes ?? duBytes)(join(prev, "tree")) : 0;
+              if (bound && size > bound) {
+                tooBig = `the tree the check before left is ${gb(size)} GB, over this runner's bound of ${gb(bound)} GB (runner.json checks.maxTreeGb)`;
+                prepared = tooBig;
+              } else await carryTree(join(prev, "tree"), tree);
+            }
           } catch (err) {
             prepared = err instanceof Error ? err.message : String(err);
           }
@@ -179,12 +199,16 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
                   durationMs: 0,
                   logTail: logTail(
                     redactSecrets(
-                      `the runner couldn't copy the tree the check before left: ${prepared}`,
+                      tooBig
+                        ? `not run: ${tooBig}`
+                        : `the runner couldn't copy the tree the check before left: ${prepared}`,
                       options.secrets,
                     ),
                   ),
                   headSha: head,
                   round,
+                  // Over the disk bound: nothing a fix round can win, so a person decides.
+                  ...(tooBig ? { notRun: tooBig.slice(0, 300) } : {}),
                 },
               ]
             : await runChecks(
@@ -236,6 +260,14 @@ export async function checkLoop(options: CheckLoopOptions): Promise<CheckLoopRes
   }
 }
 
+const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+
+/** A tree's size on disk, from `du -sk` (symlinks not followed). */
+export async function duBytes(dir: string): Promise<number> {
+  const { stdout } = await execFileP("du", ["-sk", dir], { maxBuffer: 1024 * 1024 });
+  return Number.parseInt(stdout, 10) * 1024;
+}
+
 /**
  * Copies a check's tree to the next check's (`dest`, empty): symlinks as they are (never followed,
  * so nothing outside the tree is read), files cloned where the filesystem can (APFS, btrfs, XFS).
@@ -256,14 +288,22 @@ export async function carryTree(src: string, dest: string): Promise<void> {
 
 /**
  * The adapter's manifest with what this host adds itself: `checks` (ADR 0501), since the host, not
- * the adapter, runs them, but only when `canRun` (a check exec really exists here: the adapter's
- * own, the check container, or an OS sandbox whose trial passed). A runner that can't run checks
- * (a sprite runner, a Mac with no container runtime and no opt-in, a Linux host whose sandbox can't
- * start) never declares it, so the cloud places no job that carries checks there.
+ * the adapter, runs them, when `declare` (fifth review): every `sandbox` runner and every runner
+ * whose adapter has its own exec, whether or not a check can run right now (one that can't comes
+ * back not run with the reason, and the gate asks a person). A runner whose jobs live elsewhere (a
+ * sprite runner) never declares it. `note` is the one line on where checks run here, or why not.
  */
-export function hostManifest(manifest: CapabilityManifest, canRun = true): CapabilityManifest {
+export function hostManifest(
+  manifest: CapabilityManifest,
+  declare = true,
+  note?: string,
+): CapabilityManifest {
   const without = manifest.capabilities.filter((c) => c !== "checks");
-  return { ...manifest, capabilities: canRun ? [...without, "checks"] : without };
+  return {
+    ...manifest,
+    capabilities: declare ? [...without, "checks"] : without,
+    ...(note ? { checksNote: note.slice(0, 300) } : {}),
+  };
 }
 
 /** Whether a job carries checks for the host to run. */

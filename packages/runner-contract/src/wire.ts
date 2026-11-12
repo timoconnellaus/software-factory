@@ -38,6 +38,11 @@ export const capabilityManifestSchema = z.object({
   runnerKind: z.string().min(1).max(40),
   harnesses: z.array(z.enum(HARNESSES)).min(1),
   capabilities: z.array(capabilitySchema),
+  /**
+   * One line on where the project's checks run on this runner, or why they can't (ADR 0501, fifth
+   * review): what `sf-runner doctor` says, shown in Factory > Runners. Optional: older hosts omit it.
+   */
+  checksNote: z.string().max(300).optional(),
 });
 
 export const capacityPausedSchema = z.object({

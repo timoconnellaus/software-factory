@@ -26,6 +26,12 @@ import {
 
 type World = Awaited<ReturnType<typeof world>>;
 
+/** Waits until the item's Workflow has queued its verify job and holds still (it bumps updated_at). */
+const settled = (id: string) =>
+  waitFor("a queued verify job", () =>
+    first("SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'verify'", id),
+  );
+
 /** `factory/verify` on a SHA, with what it says. */
 const verifyRun = async (w: World, sha: string) => {
   const state = await github.state(w.repo);
@@ -208,6 +214,42 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     expect(sections.proof.every((p: { proven: boolean }) => !p.proven)).toBe(true);
   });
 
+  it("refuses a merge when there is no review packet for the gate's head: fails closed and says why (fifth review)", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    const reason = "this Mac runner has no container runtime";
+    await runStage(w, item.workItemId, "build", () => ({
+      ...build(),
+      checks: [
+        { name: "lint", exitCode: null, notRun: reason },
+        { name: "tests", exitCode: null, notRun: reason },
+      ],
+    }));
+    const verify = await runStage(w, item.workItemId, "verify", () => linkedPass);
+    await gateOpen(item.workItemId, "merge");
+    const head = String(verify.context.headSha);
+    // The packet for the head is gone (or was never recorded): nothing says the checks ran.
+    await env.DB.prepare("DELETE FROM core_review_packets WHERE work_item_id = ?")
+      .bind(item.workItemId)
+      .run();
+    for (const mergeWithoutChecks of [false, true]) {
+      const refused = await call(
+        "review.merge",
+        { workItemId: item.workItemId, openedFullDiff: true, mergeWithoutChecks },
+        w.human,
+      ).catch((e: unknown) => e);
+      expect(String((refused as { message?: string }).message ?? JSON.stringify(refused))).toMatch(
+        new RegExp(`no review packet for ${head.slice(0, 7)}.*Re-run verify`),
+      );
+    }
+    const gate = await first<{ status: string }>(
+      "SELECT status FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge'",
+      item.workItemId,
+    );
+    expect(gate?.status).toBe("pending");
+  });
+
   it("refuses check results that didn't run on the run's head", async () => {
     const w = await world(CHECKS);
     const item = await create(w);
@@ -274,6 +316,49 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
       w.runnerActor,
     );
     expect(older.job).toBeNull();
+    const job = await runStage(w, item.workItemId, "build", () => build());
+    expect(job.checks?.commands).toHaveLength(2);
+  });
+
+  it("says why a build that carries checks waits when no online runner declares `checks` (fifth review)", async () => {
+    const w = await world(CHECKS);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await waitFor("a queued build job", () =>
+      first("SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'build'", item.workItemId),
+    );
+    // Every other runner is offline, and this one now reports no `checks` (a sprite runner): the
+    // build waits, saying why.
+    await env.DB.prepare("UPDATE core_runners SET last_seen_at = ? WHERE id != ?")
+      .bind("2026-01-01T00:00:00.000Z", w.runner.runnerId)
+      .run();
+    const without = { ...MANIFEST, capabilities: ["hooks", "headless"] };
+    await ok(
+      "runner.heartbeat",
+      { manifest: without, capacity: { max: 4, inUse: 0, accepting: true }, activeJobs: [] },
+      w.runnerActor,
+    );
+    const refused = await ok<{ job: Job | null }>(
+      "job.claim",
+      {
+        claimId: uid("claim-"),
+        manifest: without,
+        capacity: { max: 4, inUse: 0, accepting: true },
+      },
+      w.runnerActor,
+    );
+    expect(refused.job).toBeNull();
+    const waiting = await first<{ wait_reason: string | null }>(
+      "SELECT wait_reason FROM core_jobs WHERE work_item_id = ? AND stage = 'build'",
+      item.workItemId,
+    );
+    expect(waiting?.wait_reason).toBe("no runner that can run this project's checks is online");
+    // A runner that declares `checks` takes it.
+    await ok(
+      "runner.heartbeat",
+      { manifest: MANIFEST, capacity: { max: 4, inUse: 0, accepting: true }, activeJobs: [] },
+      w.runnerActor,
+    );
     const job = await runStage(w, item.workItemId, "build", () => build());
     expect(job.checks?.commands).toHaveLength(2);
   });
@@ -479,6 +564,7 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
         { name: "tests", exitCode: 0 },
       ],
     }));
+    await settled(item.workItemId);
     const old = "2026-01-01T00:00:00.000Z";
     await env.DB.prepare("UPDATE core_check_results SET created_at = ? WHERE work_item_id = ?")
       .bind(old, item.workItemId)
@@ -503,5 +589,48 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     expect(await pruneCheckResults(env.DB, now, 1)).toBe(1);
     expect(await pruneCheckResults(env.DB, now)).toBe(1);
     expect(await count()).toBe(0);
+  });
+
+  it("reads at most `limit` rows a time and passes over an open item's old rows (fifth review)", async () => {
+    // A world each: a runner claims the first item's verify job before the second's triage.
+    const built = async (title: string) => {
+      const w = await world(CHECKS);
+      const item = await create(w, title);
+      await runStage(w, item.workItemId, "triage", () => triage("small"));
+      await runStage(w, item.workItemId, "build", () => ({
+        ...build(),
+        checks: [
+          { name: "lint", exitCode: 0 },
+          { name: "tests", exitCode: 0 },
+        ],
+      }));
+      await settled(item.workItemId);
+      return item.workItemId;
+    };
+    const open = await built("Still open");
+    const ended = await built("Long done");
+    await env.DB.prepare("DELETE FROM core_meta WHERE key = 'check_results_prune_after'").run();
+    // The open item's rows are the oldest: a prune that started from them every hour would stall.
+    for (const [id, at] of [
+      [open, "2025-12-01T00:00:00.000Z"],
+      [ended, "2026-01-01T00:00:00.000Z"],
+    ] as const) {
+      await env.DB.prepare("UPDATE core_check_results SET created_at = ? WHERE work_item_id = ?")
+        .bind(at, id)
+        .run();
+    }
+    await env.DB.prepare("UPDATE core_work_items SET status = 'done', updated_at = ? WHERE id = ?")
+      .bind("2026-01-02T00:00:00.000Z", ended)
+      .run();
+    const now = new Date("2026-11-12T00:00:00.000Z");
+    const left = async (id: string) =>
+      (await all("SELECT name FROM core_check_results WHERE work_item_id = ?", id)).length;
+    // Other tests' rows are newer than the cutoff, so these four are the only old ones.
+    expect(await pruneCheckResults(env.DB, now, 2)).toBe(0); // the open item's two: kept
+    expect(await pruneCheckResults(env.DB, now, 2)).toBe(2); // then the ended item's
+    expect([await left(open), await left(ended)]).toEqual([2, 0]);
+    // At the end it starts over: the open item's rows are read again, and kept.
+    expect(await pruneCheckResults(env.DB, now, 2)).toBe(0);
+    expect(await left(open)).toBe(2);
   });
 });

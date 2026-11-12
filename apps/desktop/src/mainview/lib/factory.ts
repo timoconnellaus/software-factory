@@ -52,6 +52,8 @@ export interface RunnerRow {
   autoUpdate: boolean | null;
   harnesses: string[];
   kind: string | null;
+  /** Where the project's checks run on it, or why not, in one line (doctor's); null: not reported. */
+  checks: string | null;
   rateLimitedUntil: string | null;
   lastSeenAt: string | null;
   accounts: ListedRunner["accounts"];
@@ -115,6 +117,7 @@ export function runnerRows(
       autoUpdate: r.autoUpdate,
       harnesses: (r.manifest?.harnesses ?? []).map((h) => HARNESS_LABEL[h] ?? h),
       kind: r.manifest?.runnerKind ?? null,
+      checks: r.manifest?.checksNote ?? null,
       rateLimitedUntil: r.rateLimitedUntil,
       lastSeenAt: h?.lastSeenAt ?? r.lastSeenAt,
       accounts: r.accounts,

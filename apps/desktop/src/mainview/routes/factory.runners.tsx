@@ -132,6 +132,7 @@ function RunnerDetails({ r }: { r: RunnerRow }) {
     ["State", <StateText key="state" r={r} />],
     ["Harness", r.harnesses.length ? r.harnesses.join(", ") : "not reported"],
     ["Adapter", r.kind ?? "not reported"],
+    ["Project checks", r.checks ?? "not reported"],
     [
       "Updates",
       r.autoUpdate === null ? "not reported" : r.autoUpdate ? "Itself, when idle" : "Off",

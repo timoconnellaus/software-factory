@@ -49,6 +49,10 @@ describe("the signed runner channel", () => {
       w.runner.runnerId,
     );
     expect(seen?.capacity_max).toBe(2);
+    // Naturally idempotent, so never stored in the channel's idempotency store.
+    expect(
+      await all("SELECT 1 FROM core_channel_requests WHERE runner_id = ?", w.runner.runnerId),
+    ).toEqual([]);
   });
 
   it("refuses a bad signature, a stale timestamp, an unknown runner and a revoked key", async () => {
@@ -111,6 +115,96 @@ describe("the signed runner channel", () => {
       capacity: { max: 1, inUse: 0, accepting: true },
       activeJobs: [],
     });
+  });
+
+  it("a heartbeat no newer than the last changes no runner state but still renews its leases", async () => {
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Beat" },
+      w.human,
+    );
+    const c = await client(w.runner.runnerId);
+    let job = null;
+    for (let i = 0; i < 100 && !job; i++) {
+      job = (
+        await c.claim({
+          claimId: uid("claim-"),
+          manifest: MANIFEST,
+          capacity: { max: 4, inUse: 0, accepting: true },
+        })
+      ).job;
+      if (!job) await new Promise((r) => setTimeout(r, 50));
+    }
+    if (!job) throw new Error("no job");
+    const held = [{ jobId: job.jobId, fencingToken: job.lease.fencingToken }];
+    let n = 0;
+    const send = async (capacityMax: number, at: Date) => {
+      const body = JSON.stringify({
+        manifest: MANIFEST,
+        capacity: { max: capacityMax, inUse: 1, accepting: true },
+        activeJobs: held,
+      });
+      return worker.fetch(
+        new Request(`${base}${PATHS.heartbeat}`, {
+          method: "POST",
+          headers: await signRunnerRequest({
+            key: w.runner.key,
+            runner: w.runner.runnerId,
+            method: "POST",
+            path: PATHS.heartbeat,
+            body,
+            idempotencyKey: `beat:order-${String(++n).padStart(4, "0")}`,
+            now: at,
+          }),
+          body,
+        }),
+        env,
+      );
+    };
+    const capacity = async () =>
+      (
+        await first<{ capacity_max: number }>(
+          "SELECT capacity_max FROM core_runners WHERE id = ?",
+          w.runner.runnerId,
+        )
+      )?.capacity_max;
+    const OLD = "2000-01-01T00:00:00.000Z";
+    const ageLease = () =>
+      env.DB.prepare("UPDATE core_leases SET expires_at = ? WHERE work_item_id = ?")
+        .bind(OLD, item.workItemId)
+        .run();
+    const leaseRenewed = async () =>
+      (
+        await first<{ expires_at: string }>(
+          "SELECT expires_at FROM core_leases WHERE work_item_id = ?",
+          item.workItemId,
+        )
+      )?.expires_at !== OLD;
+    const now = Date.now();
+
+    // Out of order (or a captured beat replayed): the older one reports nothing, renews the lease.
+    expect((await send(3, new Date(now - 40_000))).status).toBe(200);
+    expect((await send(2, new Date(now - 30_000))).status).toBe(200);
+    await ageLease();
+    expect((await send(1, new Date(now - 40_000))).status).toBe(200);
+    expect(await capacity()).toBe(2);
+    expect(await leaseRenewed()).toBe(true);
+
+    // `sf-runner doctor`'s beat in the same second as the service's: the same.
+    await ageLease();
+    expect((await send(1, new Date(now - 30_000))).status).toBe(200);
+    expect(await capacity()).toBe(2);
+    expect(await leaseRenewed()).toBe(true);
+
+    // A clock that ran ahead and was put back: its beats keep the lease until real time catches up.
+    expect((await send(5, new Date(now + 120_000))).status).toBe(200);
+    await ageLease();
+    expect((await send(2, new Date(now))).status).toBe(200);
+    expect(await capacity()).toBe(5);
+    expect(await leaseRenewed()).toBe(true);
+    expect((await send(4, new Date(now + 121_000))).status).toBe(200);
+    expect(await capacity()).toBe(4);
   });
 
   it("answers a replayed request id from the store without running the handler again", async () => {

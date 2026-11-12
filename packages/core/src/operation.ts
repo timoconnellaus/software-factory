@@ -240,6 +240,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    */
   mobileDecidable?: true | ((input: z.output<I>) => boolean);
   /**
+   * Inputs the phone may not decide at all, proof or no proof: they stay on the desktop app or the
+   * website. `review.merge` with `mergeWithoutChecks` (ADR 0501, fifth review: merging without
+   * checks the runner couldn't run is not a phone decision until the owner decides otherwise).
+   * Takes the raw input, as the presence challenge sees it.
+   */
+  mobileRefuses?: (input: Record<string, unknown>) => boolean;
+  /**
    * The operation decides a pending action (approves, rejects or sends one back), through
    * `decidePending` (gates.ts), which checks who may decide what: the phone may not decide a config
    * change or anything self-modify (ADR 0541). `decidePending` refuses an operation that doesn't

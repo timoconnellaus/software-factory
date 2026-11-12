@@ -9,6 +9,20 @@ import { CAPABILITIES, type Capability } from "@software-factory/runner-contract
 import { z } from "zod";
 import { loadPolicySchema } from "./load.ts";
 
+/** runner.json `checks`: see `checks` in the config below (ADR 0501, fourth and fifth reviews). */
+export const checkSettingsSchema = z
+  .object({
+    weakerMacSandbox: z.boolean().default(false),
+    cpus: z.number().min(0.5).max(64).default(2),
+    memoryGb: z.number().min(0.5).max(256).default(4),
+    tmpGb: z.number().min(0.1).max(64).default(1),
+    maxTreeGb: z.number().min(0.1).max(1024).default(10),
+    maxConcurrent: z.number().int().min(1).max(16).default(1),
+  })
+  .strict()
+  .refine((c) => c.tmpGb < c.memoryGb, "checks.tmpGb must be less than checks.memoryGb");
+export type CheckSettings = z.output<typeof checkSettingsSchema>;
+
 export const DEFAULT_BASE_URL = "https://sf-engine.zerobsai.com";
 /** The app, where a person approves `sf-runner login` (when the engine's link is relative). */
 export const DEFAULT_APP_URL = "https://software-factory.zerobsai.com";
@@ -72,11 +86,14 @@ export const configSchema = z.object({
    * OS sandbox instead, which can't stop a process a check leaves from outliving it, nor give a
    * check a loopback of its own: the merge gate then says they ran in the weaker sandbox. Only this
    * file sets it: never the repo, never the cloud. Linux runners always use the OS sandbox.
+   *
+   * The limits (fifth review): a Mac's check container gets `cpus` CPUs and `memoryGb` of memory,
+   * its `/tmp` is a `tmpGb` tmpfs inside that memory, and a check whose tree grew past `maxTreeGb`
+   * isn't copied for the next check (that one is not run). At most `maxConcurrent` checks run at
+   * once on this runner, each counted as a heavy job while it runs, and a check waits to start
+   * while the load backoff (`load`) has stopped heavy work.
    */
-  checks: z
-    .object({ weakerMacSandbox: z.boolean().default(false) })
-    .strict()
-    .optional(),
+  checks: checkSettingsSchema.optional(),
   /** Container isolation's settings (ADR 0430). */
   container: z
     .object({

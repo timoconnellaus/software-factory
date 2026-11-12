@@ -4,10 +4,11 @@
 // reaches the registry through the check's own egress proxy and nothing else; nothing of the host's
 // filesystem is visible but the check's tree and store. Needs Docker and the agent image (built by
 // `sf-runner doctor --fix`, or here in CI or with SF_BUILD_AGENT_IMAGE=1).
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   currentImage,
@@ -15,6 +16,8 @@ import {
   ensureImage,
   JOB_LABEL,
   localCheckContainer,
+  ROLE_LABEL,
+  reapCheckContainers,
 } from "../src/container/index.ts";
 
 const hasDocker =
@@ -130,6 +133,56 @@ describe.skipIf(!hasDocker)(
       expect(r.output).toContain("example refused");
       expect(r.output).not.toMatch(/REACHED example|SAW-HOME|the owner's/);
       expect(r.output).toContain(`store=${join(root, "store")}`);
+    });
+
+    it("leaves nothing behind a runner killed mid-check once reaped: check, proxy and network (fifth review)", async () => {
+      const { root, dir } = await checkDir();
+      const jobId = `job_lc_kill_${Date.now().toString(36)}`;
+      const src = fileURLToPath(new URL("../src/container/index.ts", import.meta.url));
+      const script = join(root, "runner.mts");
+      await writeFile(
+        script,
+        [
+          `import { dockerRuntime, localCheckContainer } from ${JSON.stringify(src)};`,
+          `const exec = localCheckContainer({ runtime: dockerRuntime(), image: ${JSON.stringify(image)} })(`,
+          `  { jobId: ${JSON.stringify(jobId)}, harness: { id: "claude-code", role: "implement", prompt: "" } },`,
+          `  { root: ${JSON.stringify(root)}, dir: ${JSON.stringify(dir)} },`,
+          ");",
+          `await exec({ run: "sleep 300", timeoutMs: 600_000 }, new AbortController().signal);`,
+        ].join("\n"),
+      );
+      // The runner: a process of its own, killed with SIGKILL while its check runs, so no finally.
+      const runner = spawn(
+        process.execPath,
+        ["--experimental-transform-types", "--no-warnings", script],
+        { stdio: "ignore" },
+      );
+      const ours = async () =>
+        (await runtime.containers(`${JOB_LABEL}=${jobId}`)).map((c) => c.labels[ROLE_LABEL]);
+      const nets = async () => (await runtime.networks(`${JOB_LABEL}=${jobId}`)).map((n) => n.name);
+      cleanups.push(async () => {
+        runner.kill("SIGKILL");
+        await reapCheckContainers(runtime, new Set());
+      });
+      const until = Date.now() + 120_000;
+      while (!(await ours()).includes("check")) {
+        if (Date.now() > until || runner.exitCode !== null)
+          throw new Error("the check never started");
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      runner.kill("SIGKILL");
+      await new Promise((r) => runner.once("exit", r));
+      await new Promise((r) => setTimeout(r, 1_000));
+      // The runner is gone; its check, the check's egress proxy and their network live on.
+      expect((await ours()).sort()).toEqual(["check", "egress"]);
+      expect(await nets()).toHaveLength(1);
+      // A sweep keeps what a running job holds...
+      expect(await reapCheckContainers(runtime, new Set([jobId]))).toEqual([]);
+      expect(await ours()).toHaveLength(2);
+      // ...and the next start-up (nothing running) removes all of it.
+      expect(await reapCheckContainers(runtime, new Set())).toContain(jobId);
+      expect(await ours()).toEqual([]);
+      expect(await nets()).toEqual([]);
     });
   },
 );
