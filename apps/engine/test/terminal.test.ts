@@ -132,7 +132,7 @@ async function view(workItemId: string, runId: string, actor: Actor) {
 }
 
 /** A token for the person, as the desktop app's sign-in (or `sf login`) would mint it. */
-async function token(userId: string, kind: "desktop" | "cli") {
+async function token(userId: string, kind: "desktop" | "cli", scope: "read" | "write" = "write") {
   const raw = `${kind === "desktop" ? "sfd_" : "sfc_"}${uid("")}${uid("")}`;
   const hash = [
     ...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw))),
@@ -142,6 +142,7 @@ async function token(userId: string, kind: "desktop" | "cli") {
   const now = new Date().toISOString();
   const later = new Date(Date.now() + 3_600_000).toISOString();
   const deviceId = kind === "desktop" ? uid("dev_") : null;
+  const tokenId = uid("tok_");
   const statements = [];
   if (deviceId) {
     statements.push(
@@ -152,11 +153,11 @@ async function token(userId: string, kind: "desktop" | "cli") {
   }
   statements.push(
     env.DB.prepare(
-      "INSERT INTO core_cli_tokens (id, token_hash, user_id, name, scope, created_at, expires_at, kind, device_id) VALUES (?, ?, ?, 'test', 'write', ?, ?, ?, ?)",
-    ).bind(uid("tok_"), hash, userId, now, later, kind, deviceId),
+      "INSERT INTO core_cli_tokens (id, token_hash, user_id, name, scope, created_at, expires_at, kind, device_id) VALUES (?, ?, ?, 'test', ?, ?, ?, ?, ?)",
+    ).bind(tokenId, hash, userId, scope, now, later, kind, deviceId),
   );
   await env.DB.batch(statements);
-  return { raw, deviceId };
+  return { raw, deviceId, tokenId };
 }
 
 /** The desktop app's way in (spec 42, ADR 0530): the client door's terminal socket. */
@@ -448,5 +449,99 @@ describe("the web terminal relay", () => {
     expect(noTerminal.status).toBe(503);
     expect(await noTerminal.json()).toMatchObject({ code: "unavailable" });
     mine.ws.close(1000);
+  });
+
+  it("refuses a revoked, an expired and a read-scoped token, and an ended run (spec 42)", async () => {
+    const w = await world();
+    const { item, runId } = await running(w);
+    const at = (sql: string, ...binds: unknown[]) =>
+      env.DB.prepare(sql)
+        .bind(...binds)
+        .run();
+    const past = new Date(Date.now() - 1_000).toISOString();
+
+    const revoked = await token(w.userId, "desktop");
+    await at("UPDATE core_cli_tokens SET revoked_at = ? WHERE id = ?", past, revoked.tokenId);
+    expect((await door(item.workItemId, runId, revoked.raw)).status).toBe(401);
+
+    const expired = await token(w.userId, "desktop");
+    await at("UPDATE core_cli_tokens SET expires_at = ? WHERE id = ?", past, expired.tokenId);
+    expect((await door(item.workItemId, runId, expired.raw)).status).toBe(401);
+
+    const deviceGone = await token(w.userId, "desktop");
+    await at(
+      "UPDATE core_desktop_devices SET revoked_at = ? WHERE id = ?",
+      past,
+      deviceGone.deviceId,
+    );
+    expect((await door(item.workItemId, runId, deviceGone.raw)).status).toBe(401);
+
+    // A CLI token, read or write, is never the desktop app.
+    const read = await token(w.userId, "cli", "read");
+    const byRead = await door(item.workItemId, runId, read.raw);
+    expect(byRead.status).toBe(403);
+    expect(await byRead.json()).toMatchObject({ code: "forbidden" });
+
+    // An ended run (acceptance criterion 3): 409, before any upgrade, and nothing recorded.
+    const owner = await token(w.userId, "desktop");
+    await at("UPDATE core_runs SET status = 'handed_back', ended_at = ? WHERE id = ?", past, runId);
+    const ended = await door(item.workItemId, runId, owner.raw);
+    expect(ended.status).toBe(409);
+    expect(ended.webSocket).toBeFalsy();
+    expect(await ended.json()).toMatchObject({ code: "conflict" });
+    expect(
+      await all("SELECT id FROM core_run_terminal_attaches WHERE run_id = ?", runId),
+    ).toHaveLength(0);
+  });
+
+  it("closes an open stream when the person leaves the org or the app's sign-in is revoked", async () => {
+    const w = await world();
+    const { job, item, runId } = await running(w);
+    const relay = terminalRelay(env, job.jobId);
+    const open = async (raw: string) => {
+      const res = await door(item.workItemId, runId, raw);
+      expect(res.status).toBe(101);
+      if (!res.webSocket) throw new Error("no socket");
+      const e = end(res.webSocket);
+      await e.until("hello", has("hello"));
+      return e;
+    };
+
+    const owner = await token(w.userId, "desktop");
+    const mine = await open(owner.raw);
+    const sam = await member(w.orgId);
+    const samToken = await token(sam.id, "desktop");
+    const theirs = await open(samToken.raw);
+    const kept = await token(sam.id, "desktop");
+    const theirsToo = await open(kept.raw);
+
+    // Nothing changed: everyone stays.
+    expect(await relay.recheck()).toBe(0);
+
+    // Sam's one device sign-in is revoked: that socket closes, Sam's other one stays.
+    await env.DB.prepare("UPDATE core_cli_tokens SET revoked_at = ? WHERE id = ?")
+      .bind(new Date().toISOString(), samToken.tokenId)
+      .run();
+    expect(await relay.recheck()).toBe(1);
+    await theirs.until("closed", (e) => e.closed !== null);
+    expect(theirs.closed).toMatchObject({ code: 4001 });
+    expect(theirs.closed?.reason).toMatch(/revoked or has expired/);
+    expect(theirsToo.closed).toBeNull();
+
+    // Sam leaves the org mid-stream: the other socket closes too, the owner's stays.
+    await env.DB.prepare("DELETE FROM core_member WHERE user_id = ?").bind(sam.id).run();
+    expect(await relay.recheck()).toBe(1);
+    await theirsToo.until("closed", (e) => e.closed !== null);
+    expect(theirsToo.closed?.reason).toMatch(/no longer a member/);
+    expect(mine.closed).toBeNull();
+    expect((await relay.state()).viewers).toEqual([{ userId: w.userId, mode: "type" }]);
+
+    // An expired token is closed on the next check.
+    await env.DB.prepare("UPDATE core_cli_tokens SET expires_at = ? WHERE id = ?")
+      .bind(new Date(Date.now() - 1_000).toISOString(), owner.tokenId)
+      .run();
+    expect(await relay.recheck()).toBe(1);
+    await mine.until("closed", (e) => e.closed !== null);
+    expect((await relay.state()).viewers).toEqual([]);
   });
 });

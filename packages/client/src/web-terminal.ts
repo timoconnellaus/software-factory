@@ -83,12 +83,12 @@ export class TerminalClient {
       if (this.status.phase === "ended") return;
       this.set({
         phase: "closed",
-        message:
-          event.code === 1008
-            ? `Closed: ${event.reason || "read-only"}.`
-            : event.code === 1000 && event.reason
-              ? `Closed: ${event.reason}.`
-              : "Disconnected.",
+        // A reason the relay or the app gave (read-only, revoked, the view fell behind) is shown.
+        message: event.reason
+          ? `Closed: ${event.reason}.`
+          : event.code === 1008
+            ? "Closed: read-only."
+            : "Disconnected.",
       });
     });
   }

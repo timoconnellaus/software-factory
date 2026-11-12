@@ -188,9 +188,9 @@ describe("the main process's terminals across a view reload", () => {
     const { terminals, sockets } = mainProcess();
     for (let reload = 0; reload < 5; reload++) {
       for (let i = 0; i < TERMINAL_SOCKETS_MAX; i++) {
-        expect(terminals.open({ id: `view-${reload}-${i}00`, workItemId: ITEM, runId: RUN }).ok).toBe(
-          true,
-        );
+        expect(
+          terminals.open({ id: `view-${reload}-${i}00`, workItemId: ITEM, runId: RUN }).ok,
+        ).toBe(true);
       }
       // What index.ts does on dom-ready.
       terminals.closeAll();
@@ -239,7 +239,8 @@ describe("the pane's output on its way to the view", () => {
     const s = sockets[0];
     s?.fire("open");
     const chunk = Buffer.alloc(64 * 1024, 120);
-    for (let i = 0; i <= OUTPUT_PENDING_MAX / chunk.byteLength; i++) s?.fire("message", { data: chunk });
+    for (let i = 0; i <= OUTPUT_PENDING_MAX / chunk.byteLength; i++)
+      s?.fire("message", { data: chunk });
     expect(terminals.count).toBe(0);
     expect(s?.closedWith).toBe(4000);
     expect(events.at(-1)).toEqual({ id: "view-0001", kind: "close", ...FELL_BEHIND });
@@ -258,7 +259,9 @@ describe("the pane's output on its way to the view", () => {
     await tick();
     const door = main.sockets[0];
     door?.fire("open");
-    door?.fire("message", { data: JSON.stringify({ t: "hello", mode: "watch", viewers: 1, host: true }) });
+    door?.fire("message", {
+      data: JSON.stringify({ t: "hello", mode: "watch", viewers: 1, host: true }),
+    });
     door?.fire("message", { data: Buffer.from("one ") });
     main.timer.run();
     door?.fire("message", { data: Buffer.from("two") });
@@ -447,7 +450,10 @@ describe("Open terminal's rules", () => {
 });
 
 describe("closing the terminal from the keyboard", () => {
-  const key = (k: string, mods: Partial<Record<"metaKey" | "ctrlKey" | "altKey" | "shiftKey", boolean>> = {}) => ({
+  const key = (
+    k: string,
+    mods: Partial<Record<"metaKey" | "ctrlKey" | "altKey" | "shiftKey", boolean>> = {},
+  ) => ({
     key: k,
     metaKey: false,
     ctrlKey: false,
@@ -455,7 +461,10 @@ describe("closing the terminal from the keyboard", () => {
     shiftKey: false,
     ...mods,
   });
-  const at = (inTypingTerminal: boolean, overlayOpen = false) => ({ inTypingTerminal, overlayOpen });
+  const at = (inTypingTerminal: boolean, overlayOpen = false) => ({
+    inTypingTerminal,
+    overlayOpen,
+  });
 
   it("Esc closes it, except in a session you type into, where Esc is the session's", () => {
     expect(closesDock(key("Escape"), at(false))).toBe(true);

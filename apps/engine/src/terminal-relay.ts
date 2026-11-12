@@ -4,6 +4,9 @@
 // `run.terminal.attach`. Output from the host goes to every viewer; input and resizes go to the host
 // only from `type` viewers (the runner's owner): a `watch` socket that sends either is closed. The
 // relay asks the host to redraw when a viewer joins and to stop when the last one leaves.
+// While viewers are connected an alarm re-checks them every VIEWER_RECHECK_MS (spec 42, ADR 0530):
+// a viewer whose person left the org, or whose desktop token or device was revoked or expired, is
+// closed. Access is otherwise checked once, at the attach.
 // Hibernatable WebSockets: an idle relay costs nothing. It keeps only its sockets and its tickets.
 import { DurableObject } from "cloudflare:workers";
 import { invoke, isOperationError } from "@software-factory/core";
@@ -30,13 +33,18 @@ export interface ViewerGrant {
   userId: string;
   workItemId: string;
   mode: TerminalMode;
+  /** The desktop token it came in on (the client door), re-checked while it's open. */
+  tokenId?: string;
 }
+
+/** How often open viewers are re-checked against membership and their token. */
+export const VIEWER_RECHECK_MS = 60_000;
 
 type Ticket = ({ role: "host" } | ({ role: "view" } & ViewerGrant)) & { exp: number };
 type SocketMeta = { role: "host" } | ({ role: "viewer"; closed?: boolean } & ViewerGrant);
 
 /** WebSocket close codes the relay uses. */
-export const CLOSE = { normal: 1000, policy: 1008, replaced: 4000 } as const;
+export const CLOSE = { normal: 1000, policy: 1008, replaced: 4000, revoked: 4001 } as const;
 
 const TICKET_PREFIX = "ticket:";
 const TYPER_SIZE = "typer-size";
@@ -137,6 +145,9 @@ export class TerminalRelay extends DurableObject<Env> {
       const { role: _, exp: __, ...grant } = ticket;
       this.ctx.acceptWebSocket(server, ["viewer"]);
       server.serializeAttachment({ role: "viewer", ...grant } satisfies SocketMeta);
+      if ((await this.ctx.storage.getAlarm()) === null) {
+        await this.ctx.storage.setAlarm(Date.now() + VIEWER_RECHECK_MS);
+      }
       const host = this.hosts().length > 0;
       this.send(server, { t: "hello", mode: grant.mode, viewers: this.viewers().length, host });
       this.broadcastViewers();
@@ -194,6 +205,40 @@ export class TerminalRelay extends DurableObject<Env> {
       await this.ctx.storage.put(TYPER_SIZE, size);
       this.toHost({ t: "resize", size });
     }
+  }
+
+  override async alarm(): Promise<void> {
+    await this.recheck();
+    if (this.viewers().length > 0) await this.ctx.storage.setAlarm(Date.now() + VIEWER_RECHECK_MS);
+  }
+
+  /**
+   * Closes each viewer who may no longer watch: no longer a member of the work item's org, or on a
+   * desktop token that's revoked or expired, or whose device is revoked. Returns how many closed.
+   */
+  async recheck(): Promise<number> {
+    const now = new Date().toISOString();
+    let closed = 0;
+    for (const { ws, meta } of this.viewers()) {
+      const member = await this.env.DB.prepare(
+        "SELECT 1 FROM core_work_items w JOIN core_member m ON m.organization_id = w.org_id WHERE w.id = ? AND m.user_id = ?",
+      )
+        .bind(meta.workItemId, meta.userId)
+        .first();
+      let why = member ? null : "you're no longer a member of this organization";
+      if (!why && meta.tokenId) {
+        const token = await this.env.DB.prepare(
+          "SELECT 1 FROM core_cli_tokens t JOIN core_desktop_devices d ON d.id = t.device_id WHERE t.id = ? AND t.user_id = ? AND t.revoked_at IS NULL AND d.revoked_at IS NULL AND t.expires_at > ?",
+        )
+          .bind(meta.tokenId, meta.userId, now)
+          .first();
+        if (!token) why = "this app's sign-in was revoked or has expired";
+      }
+      if (!why) continue;
+      await this.dropViewer(ws, meta, CLOSE.revoked, why);
+      closed++;
+    }
+    return closed;
   }
 
   override async webSocketClose(ws: WebSocket, code: number): Promise<void> {

@@ -63,7 +63,8 @@ owner types (which takes the session over, as typing in a `tmux attach` does); e
 3. The door's socket runs `run.terminal.attach` as the token's person on the `desktop` surface with the
    device id; a missing or revoked token is refused `401` before any upgrade; a CLI token is refused
    `403`; an ended run is `409`, a runner without `terminal` `503`, someone outside the org `403` or `404` (as `call` answers
-   for them).
+   for them). An open stream closes within a minute when its token or device is revoked or
+   expires, or when its person leaves the org (ADR 0530 §5).
 4. The token never reaches the view: the RPC's terminal messages carry no token field (the RPC test
    checks), and the token is sent only in the socket's `Authorization` header.
 5. The terminal opens in place, resizes, expands to the window, and closes with Esc or the button
@@ -74,8 +75,9 @@ owner types (which takes the session over, as typing in a `tmux attach` does); e
 
 ## As built
 - **Esc** closes the terminal, except while the keyboard is in a terminal you can type into. There
-  Esc goes to the session, because it is Claude Code's interrupt. Click outside the terminal, or use
-  Close. A watcher's Esc always closes it. The dock's handler runs first, in the capture phase, so
+  Esc goes to the session, because it is Claude Code's interrupt, and xterm takes Tab, so **⌘Esc**
+  always closes it. The Close button shows ⌘Esc while you can type and Esc otherwise. ⌘W stays the
+  tab's shortcut. A watcher's Esc always closes it. The dock's handler runs first, in the capture phase, so
   Esc in planning focus closes the terminal before it leaves focus.
 - **Where it opens**: over the lower 45% of the page area (`#main`), and in planning focus between
   the session bar and the status bar. It is resizable by its top edge. Expand fills the window,
@@ -85,6 +87,18 @@ owner types (which takes the session over, as typing in a `tmux attach` does); e
   bridge read only the first, so the cursor went to 1;1, and the second block answered the next
   command. Text typed after a redraw overwrote the top of the screen, on the website too. The
   bridge now waits for both blocks. The real-tmux test checks the cursor.
+- **Review fixes** (2026-11-12):
+  - The shared view takes a `session` key (item and run) and reconnects when it changes. The website
+    also keys its view by run. Before, the Live tab's poll could move from an ended run to a new one
+    while the view stayed on the old one, showing "ended" with no Reconnect.
+  - The main process closes every terminal when the view (re)loads.
+  - Output is coalesced and bounded (ADR 0530, Consequences).
+  - OSC 8 links go through the app's opener, http(s) only. OSC 52 and the title stay off.
+  - The relay re-checks open viewers every minute (ADR 0530 §5).
+  - The tmux bridge reads a failed command line correctly. When one command in a `;` line fails,
+    tmux sends one `%error` block and drops the rest. The bridge now ends the whole line on that
+    block. Before, the line's next reader took the following command's answer, and every reply after
+    was off by one.
 - **Screenshots** (`docs/screenshots/desktop-terminal/`) come from
   `node apps/desktop/screenshots/terminal.mjs`. It serves the real view with the fixture door, and
   its relay bridges a real tmux pane through runner-local's control-mode bridge. That pane is on

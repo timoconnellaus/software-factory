@@ -140,7 +140,10 @@ export class Terminals {
     }
   }
 
-  close(p: { id: string }, why: { code: number; reason: string } = { code: 1000, reason: "" }): {
+  close(
+    p: { id: string },
+    why: { code: number; reason: string } = { code: 1000, reason: "" },
+  ): {
     ok: boolean;
   } {
     const ws = this.open_.get(p.id);

@@ -22,12 +22,17 @@ export async function attachTerminal(
   env: Env,
   workItemId: string,
   runId: string,
-  options: { actor: Actor; origin: Origin },
+  options: { actor: Actor; origin: Origin; tokenId?: string },
 ): Promise<TerminalAttachResult> {
   const deps = invokeDeps(env);
   let attached: { attachId: string; jobId: string; mode: TerminalMode };
   try {
-    const result = await invoke(deps, "run.terminal.attach", { workItemId, runId }, options);
+    const result = await invoke(
+      deps,
+      "run.terminal.attach",
+      { workItemId, runId },
+      { actor: options.actor, origin: options.origin },
+    );
     if (result.status !== "ok") {
       return {
         ok: false,
@@ -45,6 +50,7 @@ export async function attachTerminal(
     userId: options.actor.id,
     workItemId,
     mode: attached.mode,
+    ...(options.tokenId ? { tokenId: options.tokenId } : {}),
   });
   if (!admitted.ok) {
     // Refused for room: the attach closes at once.
@@ -52,7 +58,7 @@ export async function attachTerminal(
       deps,
       "run.terminal.detach",
       { workItemId, attachId: attached.attachId },
-      options,
+      { actor: options.actor, origin: options.origin },
     ).catch(() => {});
     return { ok: false, error: { code: "conflict", message: admitted.reason } };
   }

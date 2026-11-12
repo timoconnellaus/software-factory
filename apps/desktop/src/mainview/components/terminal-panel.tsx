@@ -17,8 +17,8 @@ import { type PointerEvent, useCallback, useEffect, useRef, useState } from "rea
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { bun, onTerminal } from "../bridge.ts";
-import { op } from "../lib/op.ts";
 import { openExternal } from "../lib/external.tsx";
+import { op } from "../lib/op.ts";
 import {
   CLOSE_CHORD_LABEL,
   closesDock,

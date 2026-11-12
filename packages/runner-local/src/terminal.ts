@@ -165,14 +165,16 @@ export async function openTmuxTerminal(options: TmuxTerminalOptions): Promise<Te
    * line, so the `%error` ends the whole line (the commands after it read as failed).
    */
   const pending: { count: number; blocks: Block[]; resolve: (b: Block[]) => void }[] = [];
-  const failed = (n: number): Block[] => Array.from({ length: n }, () => ({ ok: false, lines: [] }));
+  const failed = (n: number): Block[] =>
+    Array.from({ length: n }, () => ({ ok: false, lines: [] }));
   let pane: string | null = null;
   let exited = false;
   let stderr = "";
   const exit = (reason: string) => {
     if (exited) return;
     exited = true;
-    for (const p of pending.splice(0)) p.resolve([...p.blocks, ...failed(p.count - p.blocks.length)]);
+    for (const p of pending.splice(0))
+      p.resolve([...p.blocks, ...failed(p.count - p.blocks.length)]);
     options.onExit(reason);
   };
   const parser = new ControlParser({

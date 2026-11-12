@@ -57,7 +57,7 @@ const unauthenticated = () =>
 /** Who a bearer token is: a CLI token (with its scope) or a desktop device's token. */
 type Caller =
   | { kind: "cli"; userId: string; scope: "read" | "write" }
-  | { kind: "desktop"; userId: string; deviceId: string };
+  | { kind: "desktop"; userId: string; deviceId: string; tokenId: string };
 
 export async function handleCli(request: Request, env: Env): Promise<Response> {
   const pathname = new URL(request.url).pathname;
@@ -181,6 +181,8 @@ async function openTerminal(
   const attached = await attachTerminal(env, workItemId, runId, {
     actor: { type: "human", id: who.userId },
     origin: { surface: "desktop", deviceId: who.deviceId, requestId: crypto.randomUUID() },
+    // The relay re-checks the token (and the device) while the socket is open (ADR 0530).
+    tokenId: who.tokenId,
   });
   if (!attached.ok) {
     return reply(
@@ -199,7 +201,14 @@ async function authenticate(request: Request, env: Env): Promise<Caller | null> 
   const db = createDb(env.DB);
   const now = new Date().toISOString();
   const desktop = await resolveDesktopToken(db, token, now);
-  if (desktop) return { kind: "desktop", userId: desktop.user_id, deviceId: desktop.device_id };
+  if (desktop) {
+    return {
+      kind: "desktop",
+      userId: desktop.user_id,
+      deviceId: desktop.device_id,
+      tokenId: desktop.id,
+    };
+  }
   const cli = await resolveCliToken(db, token, now);
   if (cli) return { kind: "cli", userId: cli.user_id, scope: cli.scope };
   return null;

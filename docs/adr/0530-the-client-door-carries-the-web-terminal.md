@@ -29,10 +29,30 @@ command to run on the runner's Mac. The owner wants the button to open the termi
    only React file because `packages/ui` can't depend on it (client already imports ui's types).
 4. **Only desktop tokens.** A CLI token is refused (`forbidden`): the CLI has no terminal view, and a
    read-scoped token must not open a `write`-risk attach.
+5. **Access is re-checked while the stream is open.** The token is checked once, at the upgrade, and
+   the socket then runs straight to the relay. So the attach carries the desktop token's id to the
+   relay, and while it has viewers the relay's alarm re-checks each of them every minute. A viewer
+   who is no longer a member of the work item's org, or whose desktop token is revoked or expired, or
+   whose device is revoked, is closed with 4001 and a reason. A website viewer is re-checked for
+   membership only: the relay doesn't know the website session. A website sign-out or an expired
+   website session leaves an open stream running until the socket drops, as it did before this ADR.
 
 ## Consequences
-- Each open desktop terminal is one more socket from the main process to sf-engine; the main process
-  caps them at four and closes them on sign-out.
+- Each open desktop terminal is one more socket from the main process to sf-engine. The main process
+  caps them at four. It closes them all on sign-out, when the window closes, and when the view
+  (re)loads (`dom-ready`): a reload or a WebKit content-process restart leaves no view holding the
+  handles, and each open socket holds an attach, a relay viewer slot and the owner's pane size.
+- Output reaches the view coalesced, and what waits is bounded. The main process joins a socket's
+  frames for 16 ms and sends them as one RPC event. The view draws once per animation frame. Over
+  1 MiB waiting in the main process, or 2 MiB in the view (a hidden window draws no frames), the
+  socket closes as "the view fell behind" and Reconnect attaches afresh and redraws.
+- What the pane writes can't reach past the terminal. OSC 8 links open only if they are http(s), and
+  only through the app's own opener: the desktop's main process (https only) or a new tab on the
+  website, never xterm's default `confirm()` and `window.open`. OSC 52 (the clipboard) and title
+  changes stay off: the clipboard addon isn't loaded and the title event isn't listened to.
+- A viewer closed because its person left the org isn't journalled as detached, because
+  `run.terminal.detach` runs as that person and they are no longer a member. Its attach row keeps
+  `closed_at` empty.
 - A refused attach comes back as an HTTP status before the upgrade, which a WebSocket client can't
   read, so the view asks `run.live` first and shows its `terminal.reason` in one line; a failed upgrade
   after that shows a generic line.
