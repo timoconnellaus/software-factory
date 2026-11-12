@@ -86,6 +86,7 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0374](0374-the-adjudicator-earns-approval-in-shadow-mode.md) | The adjudicator earns gate approvals in shadow mode (≥95% precision), never rejects, never merge/deploy/self-modify |
 | [0360](0360-runners-update-themselves-to-the-deployed-commit.md) | Runners update themselves to the deployed commit: when idle, fast-forward only, rolled back by a wrapper if the new code doesn't start |
 | [0380](0380-runner-local-tmux-and-hook-status.md) | Runners run agents in tmux without Orca (`runner-local`, runner-orca deleted); status from Claude Code hooks; checkouts from configured dirs |
+| [0430](0430-a-container-per-job.md) | A container per job (Docker): a self-contained job repo with only the job's history, no home or host credentials, an egress proxy with the stage's allowlist, every stage `bypassPermissions`, the launch check inside the container |
 | [0390](0390-the-desktop-app-is-the-daily-ui.md) | The desktop app is the daily UI and the runner's supervisor |
 | [0391](0391-the-client-door-desktop-devices-and-presence.md) | One client door; desktop devices decide gates with a presence proof |
 | [0392](0392-the-website-shrinks-to-auth.md) | The website shrinks to auth, links go through a trampoline |
