@@ -73,3 +73,9 @@ Mockups for every R1 screen are in [`.kim/mockups/`](../../.kim/mockups/); the d
 
 ## Planning
 Specs 20–25 make planning work the way kim does ([ADR 0300](../adr/0300-planning-is-a-live-session-on-a-runner.md), plan in [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)). Build them in order: 20 → 21 → 22, then 23; 24 and 25 can run alongside after 20 and 04.
+
+## Workflows from stage types
+[Spec 52](52-workflows-from-stage-types.md) is a design for later: workflows built from built-in
+stage types and defined per org, skills and autopilots, the generic review packet and a reconciler
+([ADRs 0510–0514](../adr/0510-workflows-are-ordered-stages-of-stage-types.md)). Don't build it until
+its "When to start" holds.
