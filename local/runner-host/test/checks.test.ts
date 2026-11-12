@@ -299,10 +299,11 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       failed(await run(`node -e "console.log('1 failing'); process.kill(process.pid, 'SIGTERM')"`));
       // Nothing outside the sandbox can be signalled: the reporter above it survives.
       const parent = await run("kill -TERM $PPID; echo still-reported; exit 4");
-      expect(parent).toMatchObject({
-        exitCode: 4,
-        output: expect.stringContaining("still-reported"),
-      });
+      // macOS: the parent is outside the sandbox and the kill is refused (exit 4). Linux: it is
+      // srt's own shell inside the sandbox (143). Either way the reporter answered, with a failure.
+      expect(parent.output).toContain("still-reported");
+      expect(parent.output).not.toContain("no exit status");
+      expect([4, 143]).toContain(parent.exitCode);
       expect(await run("echo fine")).toMatchObject({ exitCode: 0 });
     },
     120_000,
