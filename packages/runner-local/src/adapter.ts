@@ -182,6 +182,7 @@ export const DEFAULT_CAPABILITIES: Capability[] = [
   "own-hardware",
   "work-item-attachments",
   "steer",
+  "interrupt",
 ];
 
 /** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
@@ -254,6 +255,17 @@ export function createLocalRunner(
 ): RunnerAdapter<LocalWorkspace, LocalSession> {
   const exec = config.exec ?? nodeExec;
   const tmux = tmuxCli({ ...config.tmux, exec });
+  /** Types one sanitised line into a session and submits it (a steer, or an interrupt's line). */
+  const typeLine = async (name: string, text: string) => {
+    const line = steerText(text);
+    if (!line) return;
+    for (let i = 0; i < line.length; i += STEER_CHUNK) {
+      await tmux.sendText(name, line.slice(i, i + STEER_CHUNK));
+      if (i + STEER_CHUNK < line.length) await sleep(30);
+    }
+    await sleep(200);
+    await tmux.sendKeys(name, "Enter");
+  };
   const pollMs = config.pollMs ?? 1000;
   const waitingInputTimeoutMs = config.waitingInputTimeoutMs ?? 15 * 60_000;
   const startTimeoutMs = config.startTimeoutMs ?? 90_000;
@@ -898,14 +910,14 @@ export function createLocalRunner(
      * Code queues a message typed while it works and reads it at its next step.
      */
     async steer(session, text) {
-      const line = steerText(text);
-      if (!line) return;
-      for (let i = 0; i < line.length; i += STEER_CHUNK) {
-        await tmux.sendText(session.name, line.slice(i, i + STEER_CHUNK));
-        if (i + STEER_CHUNK < line.length) await sleep(30);
-      }
-      await sleep(200);
-      await tmux.sendKeys(session.name, "Enter");
+      await typeLine(session.name, text);
+    },
+    // Spec 26, ADR 0470: stop the current step (Claude Code's Escape), then submit the factory's
+    // fixed line the same way a steer is typed.
+    async interrupt(session, text) {
+      await tmux.sendKeys(session.name, "Escape");
+      await sleep(500);
+      await typeLine(session.name, text);
     },
   };
 }

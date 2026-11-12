@@ -134,12 +134,19 @@ const ownerState = (owner: string) => ({
 });
 
 describe("runner-local adapter", { timeout: 30_000 }, () => {
-  it("declares hooks, takeover, own hardware, attachments and steer; no browser, no auto-register", async () => {
+  it("declares hooks, takeover, own hardware, attachments, steer and interrupt; no browser, no auto-register", async () => {
     const { runner } = await world();
     const m = await runner.manifest();
     expect(m.runnerKind).toBe("local");
     expect([...m.capabilities].sort()).toEqual(
-      ["hooks", "own-hardware", "steer", "ui-takeover", "work-item-attachments"].sort(),
+      [
+        "hooks",
+        "interrupt",
+        "own-hardware",
+        "steer",
+        "ui-takeover",
+        "work-item-attachments",
+      ].sort(),
     );
   });
 
@@ -625,6 +632,22 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
       PROMPT_POINTER,
       "also update the changelog",
     ]);
+    await w.runner.release(job(), ws, session);
+  });
+
+  it("interrupts by pressing Escape, then typing the line and pressing Enter (ADR 0470)", async () => {
+    const w = await world();
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    const session = await w.runner.startSession(job(), ws, signal);
+    const before = w.tmux.calls.length;
+    await w.runner.interrupt?.(session, "read your planning news");
+    const keys = w.tmux.calls
+      .slice(before)
+      .filter((c) => c.includes("send-keys"))
+      .map((c) => c.at(-1));
+    expect(keys).toEqual(["Escape", "read your planning news", "Enter"]);
+    expect(w.tmux.sessions.get("sf-job_1")?.submitted.at(-1)).toBe("read your planning news");
     await w.runner.release(job(), ws, session);
   });
 

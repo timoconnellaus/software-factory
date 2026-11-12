@@ -587,6 +587,8 @@ export interface CoreRunSteersTable {
   text: string;
   created_at: Iso;
   delivered_at: Iso | null;
+  /** ADR 0470: stop the agent's current step before submitting the text. */
+  interrupt: Generated<Bool>;
 }
 
 export interface CoreArtifactsTable {
@@ -763,6 +765,9 @@ export interface CorePlanningSessionsTable {
   activity: string | null;
   focused_question_id: string | null;
   announced_at: Iso | null;
+  /** ADR 0470: a person paused the planner; news doesn't wake it until resumed. */
+  paused_at: Iso | null;
+  paused_by: string | null;
   replaces_session_id: string | null;
   created_by: string;
   created_at: Iso;

@@ -39,6 +39,8 @@ export const CONTRACT_VERSION = "1" as const;
  *   without it still runs every job; its agent just sees no attachments.
  * - `steer`: a person can send a message into the live session from the dashboard (ADR 0400). The
  *   host keeps the channel's `steer` call open while the session runs and calls `adapter.steer`.
+ * - `interrupt`: with `steer`, the adapter can stop the agent's current step and submit a line
+ *   (`adapter.interrupt`: Escape, then the line), for a person's interrupt in planning (ADR 0470).
  * - `container-isolation`: each job's harness runs in its own container: only the job's repo
  *   mounted, no host credentials, an egress allowlist (ADR 0430). Planning sessions still run on
  *   the host, so a policy should require it for the other stages only.
@@ -53,6 +55,7 @@ export const CAPABILITIES = [
   "work-item-attachments",
   "steer",
   "container-isolation",
+  "interrupt",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -213,6 +216,12 @@ export interface RunnerAdapter<
    * sanitised and one line (`steerText`). Declare the `steer` capability to get steers.
    */
   steer?(session: S, text: string): Promise<void>;
+  /**
+   * Optional, with the `interrupt` capability (ADR 0470): stop the agent's current step (Claude
+   * Code's Escape), then submit `text` as `steer` does. The text is the factory's own fixed line,
+   * never a person's words.
+   */
+  interrupt?(session: S, text: string): Promise<void>;
 }
 
 /**

@@ -417,7 +417,15 @@ export const steersRequestSchema = z.object({
   waitMs: z.number().int().min(0).max(60_000).optional(),
 });
 export const steersResponseSchema = z.object({
-  steers: z.array(z.object({ id: z.string(), text: z.string(), at: iso })),
+  steers: z.array(
+    z.object({
+      id: z.string(),
+      text: z.string(),
+      at: iso,
+      /** Stop the current step first (`adapter.interrupt`, ADR 0470); else type it as is. */
+      interrupt: z.boolean().optional(),
+    }),
+  ),
 });
 export type SteersRequest = z.infer<typeof steersRequestSchema>;
 export type SteersResponse = z.infer<typeof steersResponseSchema>;

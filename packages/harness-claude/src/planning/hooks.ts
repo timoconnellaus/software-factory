@@ -79,7 +79,9 @@ export function fitNews(
           text: cut(e.text) ?? "",
           about: e.about ? { ...e.about, prompt: cut(e.about.prompt) ?? "" } : null,
         }
-      : { ...e, prompt: cut(e.prompt) ?? "", answer: cut(e.answer), note: cut(e.note) },
+      : e.type === "answer.submitted" || e.type === "answer.revised"
+        ? { ...e, prompt: cut(e.prompt) ?? "", answer: cut(e.answer), note: cut(e.note) }
+        : e,
   );
   json = JSON.stringify({
     ...news,

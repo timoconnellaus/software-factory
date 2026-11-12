@@ -177,6 +177,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    */
   presenceDecidable?: true;
   /**
+   * A browser-only decision a person may also make from a desktop device *without* a presence
+   * proof. Only answers to a planning session's questions: the owner's decision of 2026-11-12
+   * ("touch id approvals is overkill. We'll assume the user's computer is secure"), ADR 0042 and
+   * 0391 as amended. The CLI and MCP surfaces stay refused; gates keep their presence proof.
+   */
+  desktopDecidable?: true;
+  /**
    * The gate always asks a person, whatever the autonomy policy or overrides say (a workflow's gate
    * step, ADR 0371). `deny` still refuses.
    */

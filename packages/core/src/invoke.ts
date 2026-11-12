@@ -242,6 +242,7 @@ export async function runOperation<O = unknown>(
     origin.surface !== "test" &&
     op.browserOnly &&
     (op.browserOnly === true || op.browserOnly(input)) &&
+    !(origin.surface === "desktop" && op.desktopDecidable) &&
     !(await presenceAllows(op, origin, rawInput))
   ) {
     return refuse(

@@ -245,6 +245,13 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     kind: z.enum(["chat", "gate"]),
   }),
   z.object({
+    type: z.literal("planning.resumed"),
+    cursor: z.number(),
+    at: z.string(),
+    /** Who resumed planning after pausing it. */
+    by: z.string(),
+  }),
+  z.object({
     type: z.literal("presence.changed"),
     cursor: z.number(),
     at: z.string(),
@@ -274,3 +281,15 @@ export const planningWaitSchema = planningNewsSchema.extend({
   recheckAt: z.string().nullable(),
 });
 export type PlanningWait = z.infer<typeof planningWaitSchema>;
+
+/**
+ * The fixed lines an interrupt submits to the planning agent (ADR 0470). A person's words never go
+ * into the terminal: the agent reads them as news through the UserPromptSubmit hook.
+ */
+export const PLANNING_INTERRUPT_LINES = {
+  message:
+    "Software factory: a person interrupted you. Your planning news follows: read it and act on it before going back to what you were doing.",
+  stop: "Software factory: a person stopped your current step. Don't carry on with it: end your turn, and the Stop hook waits for them.",
+  pause:
+    "Software factory: a person paused planning. End your turn now; you'll be woken when they resume it.",
+} as const;

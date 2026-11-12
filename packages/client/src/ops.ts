@@ -35,6 +35,11 @@ export interface OpMap {
   "planning.get": Def<typeof operations.planningGet>;
   "planning.presence": Def<typeof operations.planningPresence>;
   "planning.move": Def<typeof operations.planningMove>;
+  "planning.answer": Def<typeof operations.planningAnswer>;
+  "planning.acceptDefaults": Def<typeof operations.planningAcceptDefaults>;
+  "planning.stop": Def<typeof operations.planningStop>;
+  "planning.pause": Def<typeof operations.planningPause>;
+  "planning.resume": Def<typeof operations.planningResume>;
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;

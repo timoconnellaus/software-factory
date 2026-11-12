@@ -24,7 +24,15 @@ export const OPEN_SESSION = ["starting", "working", "idle", "yielding", "yielded
 /** A planning job's harness session limit: long, because it waits in its Stop hook. */
 export const PLANNING_SESSION_TIMEOUT_MS = 6 * 3_600_000;
 /** Events a person causes: these wake a waiting agent (kim's USER_EVENTS). */
-export const USER_EVENTS = ["answer.submitted", "answer.revised", "chat.message"] as const;
+export const USER_EVENTS = [
+  "answer.submitted",
+  "answer.revised",
+  "chat.message",
+  // A person resumed a paused planner (ADR 0470): it wakes the agent at once, like a message.
+  "planning.resumed",
+] as const;
+/** User events after which a wait settles at once instead of waiting for a pause in answers. */
+const SETTLE_AT_ONCE = ["chat.message", "planning.resumed"];
 /** Events the agent is told about (spec 20: answers, revisions, chat, presence). */
 export const NEWS_EVENTS = [...USER_EVENTS, "presence.changed"] as const;
 /** Someone with the Planning view open heartbeats at least this often. */
@@ -330,6 +338,7 @@ export async function readNews(
   const people = await names(ctx, [
     ...questions.map((q) => q.answered_by ?? ""),
     ...messages.map((m) => m.author_id),
+    ...news.filter((r) => r.type === "planning.resumed").map((r) => r.actor_id),
   ]);
 
   const events: PlanningNewsEvent[] = [];
@@ -380,6 +389,13 @@ export async function readNews(
           : null,
         kind: m.kind,
       });
+    } else if (r.type === "planning.resumed") {
+      events.push({
+        type: "planning.resumed",
+        cursor: r.id,
+        at: r.at,
+        by: people.get(r.actor_id) ?? r.actor_id,
+      });
     } else if (r.type === "presence.changed") {
       events.push({
         type: "presence.changed",
@@ -414,7 +430,7 @@ export function batchDue(
 ): number | null {
   const latest = userEvents.at(-1);
   if (!latest) return null;
-  const quiet = open > 0 && latest.type !== "chat.message" ? idleMs : PLANNING_SETTLE_MS;
+  const quiet = open > 0 && !SETTLE_AT_ONCE.includes(latest.type) ? idleMs : PLANNING_SETTLE_MS;
   return Date.parse(latest.at) + quiet;
 }
 
@@ -693,4 +709,54 @@ export async function assertSpecGateCurrent(ctx: HandlerContext, workItemId: str
       "a person wrote after the planner asked for the gate: it is revising, and asks again when it's done",
     );
   }
+}
+
+// ---- interrupting the planner (ADR 0470) ----
+
+/**
+ * Stops the planning agent's current step and submits one of the factory's fixed lines, through
+ * the run's steers with `interrupt` (the runner adapter presses Escape first). Only while the agent
+ * is working: an idle agent is woken by its Stop hook anyway. Write-only besides the reads.
+ */
+export async function interruptPlanning(
+  ctx: HandlerContext,
+  session: PlanningSessionRow,
+  line: string,
+): Promise<{ interrupted: boolean; reason: string | null }> {
+  if (session.status !== "working") {
+    return {
+      interrupted: false,
+      reason: "the planner isn't mid-step: it reads this when it wakes",
+    };
+  }
+  const run = await ctx.db
+    .selectFrom("core_runs")
+    .leftJoin("core_runners", "core_runners.id", "core_runs.runner_id")
+    .select(["core_runs.id", "core_runners.manifest"])
+    .where("core_runs.job_id", "=", session.current_job_id ?? "")
+    .where("core_runs.status", "in", ["claimed", "preparing", "running", "collecting"])
+    .executeTakeFirst();
+  if (!run) return { interrupted: false, reason: "the planner isn't running right now" };
+  const capabilities =
+    parseJson<{ capabilities?: string[] }>(run.manifest ?? "{}", {}).capabilities ?? [];
+  if (!capabilities.includes("steer") || !capabilities.includes("interrupt")) {
+    return {
+      interrupted: false,
+      reason: "this runner can't interrupt: the planner gets it after its current step",
+    };
+  }
+  ctx.write(
+    ctx.db.insertInto("core_run_steers").values({
+      id: newId("runSteer"),
+      run_id: run.id,
+      work_item_id: session.work_item_id,
+      author_user_id: ctx.actor.id,
+      text: line,
+      interrupt: 1,
+      created_at: ctx.now,
+    }),
+  );
+  // Wakes the runner host's held steer call (sf-engine: the work item's hub).
+  ctx.emit({ kind: "run.steered", payload: { workItemId: session.work_item_id } });
+  return { interrupted: true, reason: null };
 }

@@ -514,6 +514,64 @@ async function closeRoundIfDone(ctx: HandlerContext, answeredIds: string[]) {
   return true;
 }
 
+const answerInput = z
+  .object({
+    questionId,
+    answer: z.string().min(1).max(100_000).optional(),
+    note: z.string().trim().max(4_000).optional(),
+    /** Skip it: the planning agent decides (spec 26). Planning questions only. */
+    skipped: z.boolean().optional(),
+  })
+  .refine((v) => v.skipped || v.answer !== undefined, {
+    message: "an answer is required unless the question is skipped",
+    path: ["answer"],
+  });
+const answerOutput = z.object({
+  answered: z.boolean(),
+  revised: z.boolean(),
+  roundComplete: z.boolean(),
+});
+
+/** Answers or skips one question (question.answer, or planning.answer for planning questions). */
+async function answerQuestion(
+  input: z.output<typeof answerInput>,
+  ctx: HandlerContext,
+  options: { planningOnly?: boolean } = {},
+): Promise<z.input<typeof answerOutput>> {
+  const q = await ctx.db
+    .selectFrom("core_questions")
+    .selectAll()
+    .where("id", "=", input.questionId)
+    .executeTakeFirst();
+  if (!q) throw new OperationError("not_found", "no such question");
+  if (options.planningOnly && !q.planning_session_id) {
+    throw new OperationError(
+      "invalid_input",
+      "not a planning session's question: use question.answer",
+    );
+  }
+  const revisable = q.planning_session_id !== null && q.status === "answered";
+  if (q.status !== "open" && !revisable) {
+    throw new OperationError("conflict", `question already ${q.status}`);
+  }
+  if (input.skipped && !q.planning_session_id) {
+    throw new OperationError("invalid_input", "only a planning session's questions can be skipped");
+  }
+  await assertCanAnswer(ctx, q.assignee_user_id);
+  if (input.skipped) answer(ctx, q, null, false, input.note || null, true);
+  else {
+    const value = input.answer ?? "";
+    answer(ctx, q, value, value === q.default_answer, input.note || null);
+  }
+  if (q.planning_session_id) {
+    await takeBackFromGate(ctx, requireWorkItem(ctx), "a person changed an answer");
+    await wakeSession(ctx, requireWorkItem(ctx));
+    return { answered: true, revised: revisable, roundComplete: false };
+  }
+  const roundComplete = await closeRoundIfDone(ctx, [q.id]);
+  return { answered: true, revised: false, roundComplete };
+}
+
 export const questionAnswer = defineOperation({
   name: "question.answer",
   description:
@@ -523,51 +581,72 @@ export const questionAnswer = defineOperation({
   permission: "member",
   browserOnly: true,
   presenceDecidable: true,
-  input: z
-    .object({
-      questionId,
-      answer: z.string().min(1).max(100_000).optional(),
-      note: z.string().trim().max(4_000).optional(),
-      /** Skip it: the planning agent decides (spec 26). Planning questions only. */
-      skipped: z.boolean().optional(),
-    })
-    .refine((v) => v.skipped || v.answer !== undefined, {
-      message: "an answer is required unless the question is skipped",
-      path: ["answer"],
-    }),
-  output: z.object({ answered: z.boolean(), revised: z.boolean(), roundComplete: z.boolean() }),
+  input: answerInput,
+  output: answerOutput,
   async handler(input, ctx) {
-    const q = await ctx.db
-      .selectFrom("core_questions")
-      .selectAll()
-      .where("id", "=", input.questionId)
-      .executeTakeFirst();
-    if (!q) throw new OperationError("not_found", "no such question");
-    const revisable = q.planning_session_id !== null && q.status === "answered";
-    if (q.status !== "open" && !revisable) {
-      throw new OperationError("conflict", `question already ${q.status}`);
-    }
-    if (input.skipped && !q.planning_session_id) {
-      throw new OperationError(
-        "invalid_input",
-        "only a planning session's questions can be skipped",
-      );
-    }
-    await assertCanAnswer(ctx, q.assignee_user_id);
-    if (input.skipped) answer(ctx, q, null, false, input.note || null, true);
-    else {
-      const value = input.answer ?? "";
-      answer(ctx, q, value, value === q.default_answer, input.note || null);
-    }
-    if (q.planning_session_id) {
-      await takeBackFromGate(ctx, requireWorkItem(ctx), "a person changed an answer");
-      await wakeSession(ctx, requireWorkItem(ctx));
-      return { answered: true, revised: revisable, roundComplete: false };
-    }
-    const roundComplete = await closeRoundIfDone(ctx, [q.id]);
-    return { answered: true, revised: false, roundComplete };
+    return answerQuestion(input, ctx);
   },
 });
+
+export const planningAnswer = defineOperation({
+  name: "planning.answer",
+  description:
+    "Answer or skip one of a planning session's questions, as question.answer does, from the app or the desktop. On the desktop it needs no presence proof: answering the planner is a conversation, not a gate (the owner's decision of 2026-11-12, ADR 0042 and 0391 as amended). Refused for questions outside a planning session.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  browserOnly: true,
+  desktopDecidable: true,
+  input: answerInput,
+  output: answerOutput,
+  async handler(input, ctx) {
+    return answerQuestion(input, ctx, { planningOnly: true });
+  },
+});
+
+const acceptOutput = z.object({
+  accepted: z.array(z.string()),
+  skipped: z.array(z.object({ id: z.string(), why: z.string() })),
+  roundComplete: z.boolean(),
+});
+
+/** Accepts the open defaults bulk accept may cover (question.acceptDefaults, planning.acceptDefaults). */
+async function acceptDefaults(
+  ctx: HandlerContext,
+  options: { planningOnly?: boolean } = {},
+): Promise<z.input<typeof acceptOutput>> {
+  const w = requireWorkItem(ctx);
+  const open = await ctx.db
+    .selectFrom("core_questions")
+    .selectAll()
+    .where("work_item_id", "=", w.id)
+    .where("status", "=", "open")
+    .$if(!!options.planningOnly, (q) => q.where("planning_session_id", "is not", null))
+    .execute();
+  const accepted: string[] = [];
+  const skipped: { id: string; why: string }[] = [];
+  for (const q of open) {
+    if ((NEVER_BULK_ACCEPTED_DOMAINS as readonly string[]).includes(q.domain)) {
+      skipped.push({ id: q.id, why: "security & privacy questions are answered one by one" });
+    } else if (q.irreversible) {
+      skipped.push({ id: q.id, why: "irreversible questions are answered one by one" });
+    } else if (q.default_answer === null) {
+      skipped.push({ id: q.id, why: "no default" });
+    } else {
+      await assertCanAnswer(ctx, q.assignee_user_id);
+      answer(ctx, q, q.default_answer, true);
+      accepted.push(q.id);
+    }
+  }
+  const planning = open.some((q) => q.planning_session_id !== null && accepted.includes(q.id));
+  if (planning) {
+    await takeBackFromGate(ctx, w, "a person accepted defaults");
+    await wakeSession(ctx, w);
+  }
+  const roundComplete =
+    accepted.length > 0 && !planning ? await closeRoundIfDone(ctx, accepted) : false;
+  return { accepted, skipped, roundComplete };
+}
 
 export const questionAcceptDefaults = defineOperation({
   name: "question.acceptDefaults",
@@ -579,42 +658,25 @@ export const questionAcceptDefaults = defineOperation({
   browserOnly: true,
   presenceDecidable: true,
   input: z.object({ workItemId }),
-  output: z.object({
-    accepted: z.array(z.string()),
-    skipped: z.array(z.object({ id: z.string(), why: z.string() })),
-    roundComplete: z.boolean(),
-  }),
+  output: acceptOutput,
   async handler(_input, ctx) {
-    const w = requireWorkItem(ctx);
-    const open = await ctx.db
-      .selectFrom("core_questions")
-      .selectAll()
-      .where("work_item_id", "=", w.id)
-      .where("status", "=", "open")
-      .execute();
-    const accepted: string[] = [];
-    const skipped: { id: string; why: string }[] = [];
-    for (const q of open) {
-      if ((NEVER_BULK_ACCEPTED_DOMAINS as readonly string[]).includes(q.domain)) {
-        skipped.push({ id: q.id, why: "security & privacy questions are answered one by one" });
-      } else if (q.irreversible) {
-        skipped.push({ id: q.id, why: "irreversible questions are answered one by one" });
-      } else if (q.default_answer === null) {
-        skipped.push({ id: q.id, why: "no default" });
-      } else {
-        await assertCanAnswer(ctx, q.assignee_user_id);
-        answer(ctx, q, q.default_answer, true);
-        accepted.push(q.id);
-      }
-    }
-    const planning = open.some((q) => q.planning_session_id !== null && accepted.includes(q.id));
-    if (planning) {
-      await takeBackFromGate(ctx, w, "a person accepted defaults");
-      await wakeSession(ctx, w);
-    }
-    const roundComplete =
-      accepted.length > 0 && !planning ? await closeRoundIfDone(ctx, accepted) : false;
-    return { accepted, skipped, roundComplete };
+    return acceptDefaults(ctx);
+  },
+});
+
+export const planningAcceptDefaults = defineOperation({
+  name: "planning.acceptDefaults",
+  description:
+    "Accept the default answer of every open planning question on a work item that has one, as question.acceptDefaults does (never security & privacy or irreversible ones), from the app or the desktop. On the desktop it needs no presence proof (the owner's decision of 2026-11-12, ADR 0042 and 0391 as amended).",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  browserOnly: true,
+  desktopDecidable: true,
+  input: z.object({ workItemId }),
+  output: acceptOutput,
+  async handler(_input, ctx) {
+    return acceptDefaults(ctx, { planningOnly: true });
   },
 });
 

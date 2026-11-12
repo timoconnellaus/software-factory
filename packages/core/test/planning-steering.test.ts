@@ -3,14 +3,25 @@
 import type { CapabilityManifest, Job, PlanningNews } from "@software-factory/runner-contract";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
-import { approvalEvent, FOREMAN } from "../src/index.ts";
-import { call, first, newItem, ok, RUNNER_ACTOR, refusal, rows, uid, world } from "./helpers.ts";
+import { approvalEvent, FOREMAN, invoke, type OperationError } from "../src/index.ts";
+import {
+  call,
+  deps,
+  first,
+  newItem,
+  ok,
+  RUNNER_ACTOR,
+  refusal,
+  rows,
+  uid,
+  world,
+} from "./helpers.ts";
 
 const manifest: CapabilityManifest = {
   contractVersion: CONTRACT_VERSION,
   runnerKind: "orca",
   harnesses: ["claude-code"],
-  capabilities: ["hooks", "steer"],
+  capabilities: ["hooks", "steer", "interrupt"],
 };
 type W = Awaited<ReturnType<typeof world>>;
 
@@ -274,5 +285,148 @@ describe("the planning loop to kim's standard (spec 26)", () => {
       item.workItemId,
     );
     expect(again.updated_at).toBe(seen.updated_at);
+  });
+
+  it("interrupts a working planner with the factory's own line, never the person's words (criterion 10)", async () => {
+    const w = await world();
+    const { item, job, m5, agent } = await planning(w);
+    await agent("planning.news", { activity: "reading the repo" }); // working
+    const sent = await ok<{ interrupted: boolean }>(
+      "chat.send",
+      { workItemId: item.workItemId, text: "Stop, use tabs.", interrupt: true },
+      w.human,
+    );
+    expect(sent.interrupted).toBe(true);
+    const taken = await ok<{ steers: { text: string; interrupt?: boolean }[] }>(
+      "run.takeSteers",
+      { jobId: job.jobId, fencingToken: job.lease.fencingToken },
+      m5,
+    );
+    expect(taken.steers).toEqual([
+      expect.objectContaining({ interrupt: true, text: expect.stringContaining("interrupted") }),
+    ]);
+    expect(taken.steers[0]?.text).not.toContain("tabs");
+    // The message itself arrives as news.
+    const news = await agent<PlanningNews>("planning.news");
+    expect(news.events).toEqual([
+      expect.objectContaining({ type: "chat.message", text: "Stop, use tabs." }),
+    ]);
+
+    // An idle planner isn't interrupted: its Stop hook wakes it.
+    await agent("planning.wait", { timeoutMs: 0 });
+    const idle = await ok<{ interrupted: boolean; note: string | null }>(
+      "chat.send",
+      { workItemId: item.workItemId, text: "And a header.", interrupt: true },
+      w.human,
+    );
+    expect(idle).toMatchObject({
+      interrupted: false,
+      note: expect.stringContaining("isn't mid-step"),
+    });
+  });
+
+  it("delivers an interrupt after the current step when the runner can't interrupt (criterion 10)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    await agent("planning.news", { activity: "reading the repo" });
+    await rows(
+      "UPDATE core_runners SET manifest = ? WHERE id IN (SELECT runner_id FROM core_runs WHERE work_item_id = ?)",
+      JSON.stringify({ ...manifest, capabilities: ["hooks", "steer"] }),
+      item.workItemId,
+    );
+    const sent = await ok<{ interrupted: boolean; note: string | null }>(
+      "chat.send",
+      { workItemId: item.workItemId, text: "Use tabs.", interrupt: true },
+      w.human,
+    );
+    expect(sent).toMatchObject({
+      interrupted: false,
+      note: expect.stringContaining("can't interrupt"),
+    });
+    const view = await ok<{ session: { canInterrupt: boolean } }>(
+      "planning.get",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    expect(view.session.canInterrupt).toBe(false);
+  });
+
+  it("stops the current step without ending the session, and a paused planner isn't woken until resumed (criterion 11)", async () => {
+    const w = await world();
+    const { item, job, m5, agent } = await planning(w);
+    await agent("planning.news", { activity: "revising the spec" });
+    expect(await ok("planning.stop", { workItemId: item.workItemId }, w.human)).toMatchObject({
+      stopped: true,
+    });
+    await agent("planning.wait", { timeoutMs: 0 });
+
+    await ok("planning.pause", { workItemId: item.workItemId }, w.human);
+    await ok("chat.send", { workItemId: item.workItemId, text: "While you're paused…" }, w.human);
+    await new Promise((r) => setTimeout(r, 900));
+    const paused = await agent<PlanningNews & { due: boolean }>("planning.wait", { timeoutMs: 0 });
+    expect(paused.due).toBe(false);
+    expect(
+      (
+        await ok<{ session: { paused: boolean } }>(
+          "planning.get",
+          { workItemId: item.workItemId },
+          w.human,
+        )
+      ).session.paused,
+    ).toBe(true);
+
+    await ok("planning.resume", { workItemId: item.workItemId }, w.human);
+    await new Promise((r) => setTimeout(r, 900));
+    const resumed = await agent<PlanningNews & { due: boolean }>("planning.wait", { timeoutMs: 0 });
+    expect(resumed.due).toBe(true);
+    expect(resumed.events.map((e) => e.type)).toEqual(["chat.message", "planning.resumed"]);
+    const session = await first<{ status: string }>(
+      "SELECT status FROM core_planning_sessions WHERE work_item_id = ?",
+      item.workItemId,
+    );
+    expect(session.status).not.toBe("ended");
+    expect(job.jobId).toBeTruthy();
+    expect(m5.type).toBe("runner");
+  });
+
+  it("lets a person answer planning questions from the desktop without a presence proof, and nothing else (owner decision 2026-11-12)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { questionIds } = await agent<{ questionIds: string[] }>("question.ask", {
+      questions: [
+        { prompt: "Filename?", default: "deals.csv" },
+        { prompt: "Header?", kind: "yes-no", default: "Yes" },
+      ],
+    });
+    const as = (surface: "desktop" | "cli", op: string, input: unknown) =>
+      invoke(deps, op, input, { actor: w.human, origin: { surface } });
+    expect(
+      await as("desktop", "planning.answer", { questionId: questionIds[0], answer: "export.csv" }),
+    ).toMatchObject({ status: "ok" });
+    expect(
+      await as("desktop", "planning.acceptDefaults", { workItemId: item.workItemId }),
+    ).toMatchObject({ status: "ok", output: { accepted: [questionIds[1]] } });
+    // Not from a CLI token, and the generic question.answer still wants a presence proof.
+    const cli = await as("cli", "planning.answer", {
+      questionId: questionIds[0],
+      answer: "x",
+    }).catch((e: OperationError) => e);
+    expect((cli as OperationError).code).toBe("forbidden");
+    const generic = await as("desktop", "question.answer", {
+      questionId: questionIds[0],
+      answer: "y",
+    }).catch((e: OperationError) => e);
+    expect((generic as OperationError).code).toBe("forbidden");
+    // Only a planning session's questions.
+    const v1 = await ok<{ questionIds: string[] }>(
+      "question.ask",
+      { workItemId: item.workItemId, questions: [{ prompt: "Old-style?" }] },
+      FOREMAN,
+    );
+    const outside = await as("desktop", "planning.answer", {
+      questionId: v1.questionIds[0],
+      answer: "z",
+    }).catch((e: OperationError) => e);
+    expect((outside as OperationError).code).toBe("invalid_input");
   });
 });

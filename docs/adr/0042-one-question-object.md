@@ -25,3 +25,14 @@ what is one thing: a decision someone needs to make.
 - `question.ask`, `question.answer`, `question.delegate` are the operations; sessions are queries.
 
 > Amended 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)): the Question gains `kind` (text, single-choice, multiple-choice, yes-no, number), multi-value defaults, `position`, `revision` and revisable answers, as in kim. The agent adds, edits, reorders and deletes questions freely during a planning session; there are no rounds ([ADR 0300](0300-planning-is-a-live-session-on-a-runner.md)). Bulk accept and escalation are unchanged.
+
+## Amendment, 2026-11-12: planning answers on the desktop need no presence proof
+Decided by the owner on 2026-11-12, in his words: "touch id approvals is overkill. We'll assume the
+user's computer is secure." Answering a planning session's questions, one at a time
+(`planning.answer`, which also skips) or in bulk (`planning.acceptDefaults`), is an ordinary member
+write from the desktop: these operations are `desktopDecidable` and ask for no presence proof. They
+stay `browserOnly` everywhere else, so a CLI or MCP token still can't answer for a person. Bulk accept
+still never covers security, privacy or irreversible questions. `question.answer` and
+`question.acceptDefaults` (questions outside a planning session) and every gate (spec, merge,
+approval) keep their presence proof. Whether gates keep it is a separate decision. Spec 26, [ADR
+0470](0470-planning-steering.md).

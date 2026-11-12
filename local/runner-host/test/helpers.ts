@@ -63,7 +63,7 @@ export interface FakeCloud {
   /** What the heartbeat answers as `desiredVersion` (ADR 0360); undefined leaves it out. */
   desiredVersion?: string | null;
   /** Steers queued per job (ADR 0400); the steer call takes them. */
-  steers: Map<string, { id: string; text: string; at: string }[]>;
+  steers: Map<string, { id: string; text: string; at: string; interrupt?: boolean }[]>;
   steerCalls: number;
   /** Answer the steer call 404, as an engine from before ADR 0400 does. */
   noSteerCall?: boolean;
@@ -266,34 +266,48 @@ export function fakeAdapter(
     signal: AbortSignal,
     relay?: PlanningRelay,
   ) => Promise<AdapterEvent[]>,
-  options: { steer?: boolean } = {},
+  options: { steer?: boolean; interrupt?: boolean } = {},
 ): RunnerAdapter<FakeWorkspace> & {
   calls: string[];
   prompts: string[];
   relays: Map<string, PlanningRelay>;
   steered: string[];
+  interrupted: string[];
 } {
   const calls: string[] = [];
   const prompts: string[] = [];
   const relays = new Map<string, PlanningRelay>();
   const steered: string[] = [];
+  const interrupted: string[] = [];
   return {
     calls,
     prompts,
     relays,
     steered,
+    interrupted,
     async manifest() {
       return {
         contractVersion: CONTRACT_VERSION,
         runnerKind: "fake",
         harnesses: ["claude-code"],
-        capabilities: options.steer ? ["headless", "steer"] : ["headless"],
+        capabilities: [
+          "headless",
+          ...(options.steer ? (["steer"] as const) : []),
+          ...(options.interrupt ? (["interrupt"] as const) : []),
+        ],
       };
     },
     ...(options.steer
       ? {
           async steer(_s: unknown, text: string) {
             steered.push(text);
+          },
+        }
+      : {}),
+    ...(options.interrupt
+      ? {
+          async interrupt(_s: unknown, text: string) {
+            interrupted.push(text);
           },
         }
       : {}),

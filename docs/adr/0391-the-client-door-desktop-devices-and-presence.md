@@ -85,3 +85,14 @@ exactly what ADR 0340 refused to treat as a person.
   This is what lets the desktop upload and show attachments.
 - The desktop's main process refuses a presence-decidable operation sent through `call`; the view
   sends those through `decide` only. `org.list` returns the caller's user id.
+
+## Amendment, 2026-11-12: planning answers on the desktop need no presence proof
+Decided by the owner on 2026-11-12, in his words: "touch id approvals is overkill. We'll assume the
+user's computer is secure." Answering a planning session's questions, one at a time
+(`planning.answer`, which also skips) or in bulk (`planning.acceptDefaults`), is an ordinary member
+write from the desktop: these operations are `desktopDecidable` and ask for no presence proof. They
+stay `browserOnly` everywhere else, so a CLI or MCP token still can't answer for a person. Bulk accept
+still never covers security, privacy or irreversible questions. `question.answer` and
+`question.acceptDefaults` (questions outside a planning session) and every gate (spec, merge,
+approval) keep their presence proof. Whether gates keep it is a separate decision. Spec 26, [ADR
+0470](0470-planning-steering.md).

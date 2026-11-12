@@ -5,6 +5,7 @@
 import { json, parseJson } from "@software-factory/db";
 import {
   chatReplyInputSchema,
+  PLANNING_INTERRUPT_LINES,
   planningNewsInputSchema,
   planningReadyInputSchema,
   planningWaitInputSchema,
@@ -17,6 +18,7 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import {
   batchDue,
   enqueuePlanningJob,
+  interruptPlanning,
   logPlanning,
   newsEnvelope,
   OPEN_SESSION,
@@ -609,7 +611,8 @@ export const planningWait = defineOperation({
     const news = await readNews(ctx, session.work_item_id, from);
     const envelope = await newsEnvelope(ctx, session);
     const dueAt = batchDue(news.userEvents, envelope.openQuestions, input.idleMs);
-    const due = dueAt !== null && dueAt <= Date.parse(ctx.now);
+    // A paused planner isn't woken by news until a person resumes it (ADR 0470).
+    const due = session.paused_at === null && dueAt !== null && dueAt <= Date.parse(ctx.now);
     if (due) {
       deliver(ctx, session, news.cursor, news.delivered);
       markWorking(ctx, session);
@@ -644,7 +647,7 @@ export const planningWait = defineOperation({
       cursor: from,
       events: [],
       due: false,
-      recheckAt: dueAt === null ? null : new Date(dueAt).toISOString(),
+      recheckAt: dueAt === null || session.paused_at ? null : new Date(dueAt).toISOString(),
     };
   },
 });
@@ -743,7 +746,7 @@ export const planningReady = defineOperation({
 export const chatSend = defineOperation({
   name: "chat.send",
   description:
-    "A person writes in the work item's planning chat, optionally about a question or replying to a message. It reaches the planning agent at once and wakes it (resuming a yielded session).",
+    "A person writes in the work item's planning chat, optionally about a question or replying to a message. It reaches the planning agent after its current step, or at once with `interrupt` (the agent's current step is stopped, ADR 0470), and wakes an idle or yielded session. While the spec waits at the gate it takes the spec back.",
   risk: "write",
   actors: ["human"],
   permission: "member",
@@ -752,8 +755,16 @@ export const chatSend = defineOperation({
     text: z.string().trim().min(1).max(20_000),
     questionId: z.string().min(1).optional(),
     replyTo: z.string().min(1).optional(),
+    /** Stop the planner's current step so it reads this now (⌘-Enter, ADR 0470). */
+    interrupt: z.boolean().optional(),
   }),
-  output: z.object({ messageId: z.string() }),
+  output: z.object({
+    messageId: z.string(),
+    /** Whether the planner was interrupted; otherwise it reads the message after its current step. */
+    interrupted: z.boolean(),
+    /** Why an interrupt asked for didn't happen. */
+    note: z.string().nullable(),
+  }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     await assertAbout(ctx, w.id, input.questionId, input.replyTo);
@@ -770,10 +781,20 @@ export const chatSend = defineOperation({
         created_at: ctx.now,
       }),
     );
-    logPlanning(ctx, w.id, "chat.message", { messageId });
+    logPlanning(ctx, w.id, "chat.message", { messageId, interrupt: input.interrupt ?? false });
     await takeBackFromGate(ctx, w, "a person wrote in the chat");
     await wakeSession(ctx, w);
-    return { messageId };
+    let interrupted = false;
+    let note: string | null = null;
+    if (input.interrupt) {
+      const session = await openSession(ctx, w.id);
+      const result = session
+        ? await interruptPlanning(ctx, session, PLANNING_INTERRUPT_LINES.message)
+        : { interrupted: false, reason: "no planning session is open" };
+      interrupted = result.interrupted;
+      note = result.reason;
+    }
+    return { messageId, interrupted, note };
   },
 });
 
@@ -882,6 +903,79 @@ export const planningMove = defineOperation({
   },
 });
 
+// ---- steering the planner (ADR 0470) ----
+
+export const planningStop = defineOperation({
+  name: "planning.stop",
+  description:
+    "A person stops the planning agent's current step (the activity line's Stop, ADR 0470). The session stays open: the agent ends its turn and waits. Needs a runner that can interrupt; an idle agent has nothing to stop.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ workItemId }),
+  output: z.object({ stopped: z.boolean(), note: z.string().nullable() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no open planning session");
+    const result = await interruptPlanning(ctx, session, PLANNING_INTERRUPT_LINES.stop);
+    if (result.interrupted) logPlanning(ctx, w.id, "planning.stopped", {});
+    return { stopped: result.interrupted, note: result.reason };
+  },
+});
+
+export const planningPause = defineOperation({
+  name: "planning.pause",
+  description:
+    "A person pauses the planning agent (ADR 0470): its current step is stopped, and news (answers, chat) doesn't wake it until someone resumes it with planning.resume. A paused session yields its runner slot when the light pool needs it, as an idle one does.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ workItemId }),
+  output: z.object({ paused: z.boolean(), interrupted: z.boolean() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no open planning session");
+    if (session.paused_at) return { paused: true, interrupted: false };
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_sessions")
+        .set({ paused_at: ctx.now, paused_by: ctx.actor.id, updated_at: ctx.now })
+        .where("id", "=", session.id),
+    );
+    logPlanning(ctx, w.id, "planning.paused", {});
+    const { interrupted } = await interruptPlanning(ctx, session, PLANNING_INTERRUPT_LINES.pause);
+    return { paused: true, interrupted };
+  },
+});
+
+export const planningResume = defineOperation({
+  name: "planning.resume",
+  description:
+    "A person resumes a paused planning agent (ADR 0470): it wakes at once with everything that arrived while it was paused, and a yielded session is resumed on its runner.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ workItemId }),
+  output: z.object({ resumed: z.boolean() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no open planning session");
+    if (!session.paused_at) return { resumed: false };
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_sessions")
+        .set({ paused_at: null, paused_by: null, updated_at: ctx.now })
+        .where("id", "=", session.id),
+    );
+    logPlanning(ctx, w.id, "planning.resumed", {});
+    await wakeSession(ctx, w);
+    return { resumed: true };
+  },
+});
+
 const questionView = z.object({
   id: z.string(),
   number: z.number().nullable(),
@@ -946,6 +1040,11 @@ export const planningGet = defineOperation({
         atGate: z.boolean(),
         ready: z.boolean(),
         yieldRequested: z.boolean(),
+        /** A person paused it (ADR 0470): news doesn't wake it until resumed. */
+        paused: z.boolean(),
+        pausedBy: z.string().nullable(),
+        /** Its runner can interrupt the current step (⌘-Enter, Stop); else messages wait for the step. */
+        canInterrupt: z.boolean(),
         focusedQuestionId: z.string().nullable(),
         runner: z
           .object({
@@ -1020,7 +1119,7 @@ export const planningGet = defineOperation({
     const runner = session?.runner_id
       ? await ctx.db
           .selectFrom("core_runners")
-          .select(["id", "name", "last_seen_at"])
+          .select(["id", "name", "last_seen_at", "manifest"])
           .where("id", "=", session.runner_id)
           .executeTakeFirst()
       : undefined;
@@ -1067,6 +1166,14 @@ export const planningGet = defineOperation({
             atGate: session.at_gate === 1,
             ready: session.ready_spec_id !== null,
             yieldRequested: session.yield_requested_at !== null,
+            paused: session.paused_at !== null,
+            pausedBy: session.paused_by,
+            canInterrupt: ["steer", "interrupt"].every((c) =>
+              (
+                parseJson<{ capabilities?: string[] }>(runner?.manifest ?? "{}", {}).capabilities ??
+                []
+              ).includes(c),
+            ),
             focusedQuestionId: session.focused_question_id,
             runner: runner
               ? { id: runner.id, name: runner.name, online, lastSeenAt: runner.last_seen_at }

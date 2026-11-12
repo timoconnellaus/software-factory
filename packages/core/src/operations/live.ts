@@ -339,7 +339,14 @@ export const runTakeSteers = defineOperation({
   input: z.object({ jobId, fencingToken }),
   output: z.object({
     workItemId: z.string(),
-    steers: z.array(z.object({ id: z.string(), text: z.string(), at: z.string() })),
+    steers: z.array(
+      z.object({
+        id: z.string(),
+        text: z.string(),
+        at: z.string(),
+        interrupt: z.boolean().optional(),
+      }),
+    ),
   }),
   async handler(input, ctx) {
     const run = await ctx.db
@@ -354,7 +361,7 @@ export const runTakeSteers = defineOperation({
     if (!ACTIVE.includes(run.status)) throw new OperationError("conflict", `run is ${run.status}`);
     const queued = await ctx.db
       .selectFrom("core_run_steers")
-      .select(["id", "text", "created_at"])
+      .select(["id", "text", "created_at", "interrupt"])
       .where("run_id", "=", run.id)
       .where("delivered_at", "is", null)
       .orderBy("created_at", "asc")
@@ -375,7 +382,13 @@ export const runTakeSteers = defineOperation({
     }
     return {
       workItemId: run.work_item_id,
-      steers: queued.map((s) => ({ id: s.id, text: s.text, at: s.created_at })),
+      steers: queued.map((s) => ({
+        id: s.id,
+        text: s.text,
+        at: s.created_at,
+        // ADR 0470: a planning interrupt stops the current step before its fixed line.
+        ...(s.interrupt ? { interrupt: true } : {}),
+      })),
     };
   },
 });
