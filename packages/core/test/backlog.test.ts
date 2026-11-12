@@ -476,3 +476,119 @@ describe("the pull under races and policy (review of #69)", () => {
     expect(order.at(-1)).toBe(b.workItemId);
   });
 });
+
+describe("shaping before release (ADR 0493)", () => {
+  it("starts the Workflow without a slot, and cancelling stops it", async () => {
+    const w = await world({ ...POLICY, activeLimit: 1 });
+    const shaping = await create(w, "Shape me");
+    const out = await ok<{ status: string }>(
+      "workItem.shape",
+      { workItemId: shaping.workItemId },
+      w.human,
+    );
+    expect(out.status).toBe("shaping");
+    expect(await starts(shaping.workItemId)).toBe(1);
+    // Shaping isn't delivery: the only slot is still free for released work.
+    const next = await create(w, "Released", { state: "queued" });
+    expect(await statusOf(next.workItemId)).toBe("running");
+    // A shaping item has a Workflow: cancelling it terminates that, unlike backlog work.
+    await ok("workItem.cancel", { workItemId: shaping.workItemId, reason: "no" }, w.human);
+    expect(await statusOf(shaping.workItemId)).toBe("cancelled");
+    expect(
+      await rows(
+        "SELECT id FROM core_outbox WHERE kind = 'workflow.terminate' AND payload LIKE ?",
+        `%${shaping.workItemId}%`,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("wakes a shaped item's Workflow at the pull instead of creating one", async () => {
+    const w = await world();
+    const item = await create(w, "Shaped");
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    const shaped = await ok<{ released: boolean; event: string }>(
+      "workItem.shaped",
+      { workItemId: item.workItemId },
+      FOREMAN,
+    );
+    expect(shaped.released).toBe(false);
+    expect(await statusOf(item.workItemId)).toBe("ready");
+    await ok("workItem.release", { workItemId: item.workItemId }, w.human);
+    expect(await statusOf(item.workItemId)).toBe("running");
+    expect(await starts(item.workItemId)).toBe(1); // only the shaping one
+    expect(
+      await rows(
+        "SELECT id FROM core_outbox WHERE kind = 'workflow.event' AND payload LIKE ?",
+        `%release-${item.workItemId}%`,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("refuses shaping what isn't backlog or ready, and finishes a spec rejected while shaping", async () => {
+    const w = await world();
+    const running = await create(w, "Running", { state: "queued" });
+    const e = await refusal(call("workItem.shape", { workItemId: running.workItemId }, w.human));
+    expect(e.code).toBe("conflict");
+    const item = await create(w, "Rejected while shaping");
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    await finish(item.workItemId, "rejected");
+    expect(await statusOf(item.workItemId)).toBe("rejected");
+  });
+
+  it("caps shaping per project, and refuses it under a kill switch", async () => {
+    const w = await world({ ...POLICY, shapingLimit: 1 });
+    const one = await create(w, "One");
+    const two = await create(w, "Two");
+    await ok("workItem.shape", { workItemId: one.workItemId }, w.human);
+    const capped = await refusal(call("workItem.shape", { workItemId: two.workItemId }, w.human));
+    expect(capped.message).toMatch(/shaping limit is 1/);
+    const k = await world();
+    const held = await create(k, "Held");
+    await ok("killSwitch.set", { scope: "project", id: k.projectId, on: true }, k.human);
+    const killed = await refusal(call("workItem.shape", { workItemId: held.workItemId }, k.human));
+    expect(killed.code).toBe("killed");
+  });
+
+  it("refuses releasing a plan the config in force no longer accepts", async () => {
+    const w = await world();
+    const item = await create(w, "Shaped small");
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    // Triage sized it small: no plan needed then.
+    await env.DB.prepare(
+      "UPDATE core_work_items SET size = 'small', spec_required = 0 WHERE id = ?",
+    )
+      .bind(item.workItemId)
+      .run();
+    await ok("workItem.shaped", { workItemId: item.workItemId }, FOREMAN);
+    // The config now wants a plan from small work up.
+    await ok(
+      "policy.sync",
+      {
+        projectId: w.projectId,
+        ref: "refs/heads/main",
+        sha: "f".repeat(40),
+        content: JSON.stringify({ ...POLICY, spec: { requiredFrom: "small" } }),
+      },
+      w.human,
+    );
+    const e = await refusal(call("workItem.release", { workItemId: item.workItemId }, w.human));
+    expect(e.code).toBe("conflict");
+    expect(e.message).toMatch(/now requires one for small work/);
+  });
+
+  it("tells a Workflow reaching the wait after its release was pulled to go on (an early event)", async () => {
+    const w = await world();
+    const item = await create(w, "Early");
+    await ok("workItem.shape", { workItemId: item.workItemId }, w.human);
+    // The pull ran before the Workflow reached `release: wait` (its event may have come first).
+    await env.DB.prepare("UPDATE core_work_items SET pulled_at = ? WHERE id = ?")
+      .bind(new Date().toISOString(), item.workItemId)
+      .run();
+    const shaped = await ok<{ released: boolean }>(
+      "workItem.shaped",
+      { workItemId: item.workItemId },
+      FOREMAN,
+    );
+    expect(shaped.released).toBe(true);
+  });
+});

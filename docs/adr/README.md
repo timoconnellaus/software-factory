@@ -94,6 +94,7 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0490](0490-a-project-is-not-a-repository.md) | A project is not a repository: `core_repositories` (backfilled one per project, project ids unchanged), zero or more per project, an item uses one, config stays per project |
 | [0491](0491-work-starts-in-a-backlog-and-is-released.md) | Work starts in a backlog and is released: backlog, ready, queued; `workItem.release` (agents only where config allows); the pull by priority under `activeLimit`, respecting "waits for" links |
 | [0492](0492-a-project-runs-one-workflow.md) | A project runs one workflow (config `workflow`); triage no longer picks and there is no per-item override; org-level workflows are a follow-up |
+| [0493](0493-shaping-stages-run-before-release.md) | Shaping stages run before release: `workItem.shape` starts the Workflow for triage and interview planning while the item is `shaping` (no slot); Workflow v7 waits for `release-<item>`; the pull wakes it |
 | [0390](0390-the-desktop-app-is-the-daily-ui.md) | The desktop app is the daily UI and the runner's supervisor |
 | [0391](0391-the-client-door-desktop-devices-and-presence.md) | One client door; desktop devices decide gates with a presence proof |
 | [0392](0392-the-website-shrinks-to-auth.md) | The website shrinks to auth, links go through a trampoline |
