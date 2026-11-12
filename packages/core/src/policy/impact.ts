@@ -63,6 +63,7 @@ const KNOWN = new Set([
   "workflows",
   "improve",
   "adjudicator",
+  "checks",
 ]);
 
 /**
@@ -295,6 +296,25 @@ export function policyImpact(
     );
   }
 
+  // The factory's own checks (ADR 0501): dropping or changing one lowers the bar; adding raises it.
+  checkChanges("checks", before.checks, after.checks, add);
+  for (const w of after.workflows) {
+    const was = before.workflows.find((x) => x.name.toLowerCase() === w.name.toLowerCase());
+    if (was) checkChanges(`workflows.${w.name}.checks`, was.checks, w.checks, add);
+  }
+  for (const w of before.workflows) {
+    if (
+      w.checks.length &&
+      !after.workflows.some((x) => x.name.toLowerCase() === w.name.toLowerCase())
+    ) {
+      add(
+        `workflows.${w.name}.checks`,
+        "loosens",
+        `Removing ${w.name} drops its checks ${list(w.checks.map((c) => c.name))}.`,
+      );
+    }
+  }
+
   // Workflows and agents (ADR 0371, 0372): gate steps are policy, the rest is practice.
   workflowChanges(before, after, add);
 
@@ -380,6 +400,26 @@ function gateSteps(policy: ProjectPolicy, skip: string | null = null): Map<strin
     }
   }
   return gates;
+}
+
+function checkChanges(
+  path: string,
+  before: ProjectPolicy["checks"],
+  after: ProjectPolicy["checks"],
+  add: (path: string, cls: ImpactClass, summary: string) => void,
+) {
+  const key = (c: { name: string }) => c.name.toLowerCase();
+  for (const b of before) {
+    const a = after.find((x) => key(x) === key(b));
+    if (!a) add(path, "loosens", `No longer runs the check ${b.name}.`);
+    else if (a.run !== b.run)
+      add(path, "loosens", `Changes what the check ${b.name} runs: \`${b.run}\` → \`${a.run}\`.`);
+    else if (a.timeoutMinutes !== b.timeoutMinutes)
+      add(path, "neutral", `The check ${b.name} may run ${a.timeoutMinutes} min.`);
+  }
+  for (const a of after) {
+    if (!before.some((x) => key(x) === key(a))) add(path, "tightens", `Runs the check ${a.name}.`);
+  }
 }
 
 /**

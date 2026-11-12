@@ -465,6 +465,39 @@ describe("the merge gate's words", () => {
     expect(verdictHeadline({ ...packet, verdict: "fail" }).status).toBe("failed");
   });
 
+  it("never heads a packet with checks not run as plain Passed, until a person merged without them", () => {
+    const executed = {
+      declared: ["tests"],
+      results: [
+        {
+          name: "tests",
+          command: "pnpm test",
+          exitCode: null,
+          timedOut: false,
+          durationMs: 0,
+          logTail: "not run: this Mac runner has no container runtime",
+          round: 0,
+          notRun: "this Mac runner has no container runtime",
+          passed: false,
+        },
+      ],
+      notRun: [{ name: "tests", reason: "this Mac runner has no container runtime" }],
+    };
+    const notRun = { ...packet, sections: { ...packet.sections, executed } };
+    expect(verdictHeadline(notRun)).toEqual({
+      text: "Passed, but one check could not be run",
+      status: "waiting",
+    });
+    const waived = {
+      ...notRun,
+      sections: {
+        ...notRun.sections,
+        notRunWaived: { by: "usr_1", at: "2026-11-12T00:00:00.000Z", checks: ["tests"] },
+      },
+    };
+    expect(verdictHeadline(waived).text).not.toMatch(/could not be run/);
+  });
+
   it("chips the checks, criteria, reviewer and risk", () => {
     expect(verdictChips(packet).map((c) => c.label)).toEqual([
       "Checks 1 of 1",

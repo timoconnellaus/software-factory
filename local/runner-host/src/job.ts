@@ -6,8 +6,8 @@
 //
 // Any channel call refused with 409 `fenced` or `killed`, or a cancel command from the heartbeat,
 // stops the session at once; a fenced run hands nothing back and pushes nothing (ADR 0035).
-import { lstat, readFile, realpath, rm } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   type AdapterEvent,
@@ -17,6 +17,7 @@ import {
   ChannelCallError,
   type ControlPlaneClient,
   canRun,
+  type ExecutedCheck,
   isReleaseIncomplete,
   type Job,
   type JobState,
@@ -31,6 +32,9 @@ import {
   type TokenResponse,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
+import type { CheckDirs } from "./check-sandbox.ts";
+import { checkLoop, type Exec, GuardTripped, hasChecks } from "./checks.ts";
+import { paths } from "./config.ts";
 import { assertPushable, type HostGit, revokeToken } from "./git.ts";
 import { type RunningRelay, startPlanningRelay } from "./planning-relay.ts";
 import { type Connect, terminalLoop } from "./terminal.ts";
@@ -262,6 +266,25 @@ export interface RunJobOptions<W extends WorkspaceHandle, S extends SessionHandl
   flushMs?: number;
   /** Called once the cloud has the hand-back: the job no longer holds its lease. */
   onHandedBack?: () => void;
+  /**
+   * The host's OS-sandboxed exec for the project's checks (ADR 0501, ./check-sandbox.ts), used when
+   * the adapter has no `exec` of its own. Absent or null: checks are reported not run.
+   */
+  checkSandbox?: ((job: Job, dirs: CheckDirs) => Exec) | null;
+  /**
+   * Where the jobs' clean check trees go (default: the runner's `paths().checksDir`). Never the
+   * system temp dir: every agent's sandbox may write there, so another job's agent could rewrite
+   * this job's tree between the export and the check. The runner's checks dir is in every
+   * harness's protectPaths (read and write denied).
+   */
+  checksDir?: string;
+  /**
+   * Waits for a check's slot on this runner (fifth review: a check counts against the capacity and
+   * waits on the load backoff) and returns its release. Absent: checks run when they come.
+   */
+  checkSlot?: (signal: AbortSignal) => Promise<() => void>;
+  /** The disk bound for a check's tree carried to the next check (runner.json `checks.maxTreeGb`). */
+  maxTreeBytes?: number;
 }
 
 /**
@@ -356,9 +379,118 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let error: string | undefined;
   let headSha: string | undefined;
   let result: unknown;
+  /** The project's checks as this host ran them (ADR 0501), for the hand-back. */
+  let executed: ExecutedCheck[] = [];
+  /** The commit the last check round ran on: a build pushes exactly this (ADR 0501). */
+  let checkedHead: string | undefined;
+  /** The worktree's sensitive git config before the session, for the guards after it. */
+  let configBefore: string | undefined;
+  /** The job's checks root (clean trees, the sandbox's home and temp), removed at the end. */
+  let checksRoot: string | undefined;
   let stored: StoredArtifact[] = [];
   const notes: string[] = [];
   const report: Pick<JobReport, "processesAlive"> = {};
+
+  /**
+   * The git guards (ADR 0501): before any host git that follows code the job ran (the session, a
+   * fix round, a check), the worktree's sensitive git config must be as it was before the session,
+   * and the adapter's own git dir check (a container's job repo) must find nothing.
+   */
+  const guard = async (ws: W, when: string) => {
+    const now = await git.sensitiveConfig(ws.path);
+    if (configBefore !== undefined && now !== configBefore) {
+      throw new GuardTripped(
+        `the repo's git config changed ${when}; not pushing:\n${now.slice(0, 2_000)}`,
+      );
+    }
+    const problems = (await adapter.checkWorkspace?.(job, ws)) ?? [];
+    if (problems.length > 0) {
+      throw new GuardTripped(`not pushing (${when}): ${problems.join("; ")}`);
+    }
+  };
+
+  /** The project's checks on `ws` (ADR 0501, ./checks.ts); `live` is the build's session. */
+  const runHostChecks = async (ws: W, live: S | undefined) => {
+    const checks = job.checks;
+    if (!checks) throw new Error("the job has no checks");
+    if (!checksRoot) {
+      const parent = options.checksDir ?? paths().checksDir;
+      await mkdir(parent, { recursive: true, mode: 0o700 });
+      checksRoot = await realpath(await mkdtemp(join(parent, `${job.jobId}-`)));
+    }
+    const root = checksRoot;
+    const adapterExec = adapter.exec?.bind(adapter);
+    // The host's own sandbox only for a runner whose jobs run on this machine: never for one whose
+    // jobs live elsewhere (a container, a cloud sandbox), whose code must not run here.
+    const caps: readonly string[] = (await adapter.manifest()).capabilities;
+    const remote = caps.includes("container-isolation") || caps.includes("cloud-sandbox");
+    const sandbox = remote ? null : options.checkSandbox;
+    const slot = options.checkSlot;
+    const slotted = (e: Exec): Exec =>
+      slot
+        ? async (command, s) => {
+            const release = await slot(s);
+            try {
+              return await e(command, s);
+            } finally {
+              release();
+            }
+          }
+        : e;
+    const exec = adapterExec
+      ? (dir: string): Exec => slotted((command, s) => adapterExec(job, ws, { ...command, dir }, s))
+      : sandbox
+        ? // The check's own dir is its tree's parent (./checks.ts): `<root>/r<round>-<i>`.
+          (dir: string) => slotted(sandbox(job, { root: dirname(dir), dir }))
+        : null;
+    const next = job.stage === "build" ? adapter.continueSession?.bind(adapter) : undefined;
+    return checkLoop({
+      checks,
+      exec,
+      ...(options.maxTreeBytes ? { maxTreeBytes: options.maxTreeBytes } : {}),
+      commit: async () => {
+        if (job.stage === "build") {
+          await git.commitLeftovers(
+            ws.path,
+            `factory: uncommitted changes left by run ${job.runNo}`,
+          );
+        }
+        return git.headSha(ws.path);
+      },
+      // The export's index is the host's: beside the root, where no check can read or write it.
+      exportTree: (sha, dir) => git.exportTree(ws.path, sha, dir, `${root}.index`),
+      root,
+      guard: (when) => guard(ws, when),
+      continueSession:
+        next && live
+          ? async (text) => {
+              // A fix round gets the job's session timeout again, and stops on a cancel. A
+              // session that can't take the turn is a failed round, never a failed hand-back.
+              const round = AbortSignal.any([
+                signal,
+                AbortSignal.timeout(job.limits.sessionTimeoutMs),
+              ]);
+              let ended: SessionOutcome = "failed";
+              try {
+                for await (const event of next(job, live, text, round)) {
+                  await stream.push(event);
+                  if (event.type === "session.ended") ended = event.outcome;
+                }
+              } catch (err) {
+                if (err instanceof StopJob) throw err;
+                log(
+                  `${job.jobId}: the fix round failed: ${err instanceof Error ? err.message : err}`,
+                );
+                return "failed";
+              }
+              return round.aborted ? abortedOutcome() : ended;
+            }
+          : undefined,
+      secrets: tokens,
+      signal,
+      log: (m) => log(`${job.jobId}: ${m}`),
+    });
+  };
 
   /**
    * The work item's attachments (ADR 0310), when the adapter declares `work-item-attachments`:
@@ -487,7 +619,15 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
           });
         }
       }
-      const configBefore = await git.sensitiveConfig(workspace.path);
+      configBefore = await git.sensitiveConfig(workspace.path);
+
+      // An attached PR's verify job runs the checks on the PR's head before its reviewer session,
+      // so they test what the PR's author pushed, not what the reviewer leaves (spec 51).
+      if (hasChecks(job) && job.stage !== "build") {
+        const ran = await runHostChecks(workspace, undefined);
+        executed = ran.results;
+        notes.push(...ran.notes);
+      }
 
       if (signal.aborted) throw signal.reason;
       const runJob = await withAttachments(job, workspace);
@@ -588,6 +728,37 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         notes.push(`the session wrote no ${RESULT_FILE}`);
       }
 
+      // The project's checks, on the commit handed back, and a failure sent back into the same
+      // session (ADR 0501). See ./checks.ts. A build left mid-merge gets none: it fails below.
+      if (hasChecks(job) && job.stage === "build" && outcome === "completed" && !error && session) {
+        const ws = workspace;
+        const unmerged = (await git.mergeState(ws.path)).unmerged;
+        if (unmerged.length === 0) {
+          // The checks and fix rounds get a budget of their own (the session's timer has stopped).
+          const collecting = setTimeout(
+            () => controller.abort(new Error("checks timeout")),
+            job.limits.sessionTimeoutMs,
+          );
+          try {
+            const ran = await runHostChecks(ws, session);
+            executed = ran.results;
+            checkedHead = ran.head;
+            notes.push(...ran.notes);
+            await stream.push({
+              type: "job.state",
+              state: "collecting",
+              detail: ran.notes.at(-1) ?? "checks ran",
+            });
+          } catch (err) {
+            if (err instanceof StopJob || signal.reason instanceof StopJob) throw stopped ?? err;
+            outcome = "failed";
+            error = `checks: ${err instanceof Error ? err.message : String(err)}`;
+          } finally {
+            clearTimeout(collecting);
+          }
+        }
+      }
+
       if (job.stage === "build" && outcome === "completed" && !error) {
         try {
           const merge = await git.mergeState(workspace.path);
@@ -596,7 +767,17 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
               `the merge of ${job.repo.defaultBranch ?? "the default branch"} was left unresolved in: ${merge.unmerged.slice(0, 20).join(", ")}`,
             );
           }
-          if (
+          if (checkedHead) {
+            // Never a commit after the last check round: the pushed head is the checked head. A
+            // fix round that ended early may have left more; that isn't checked, so it stays.
+            await guard(workspace, "before the push");
+            const now = await git.headSha(workspace.path);
+            if (now !== checkedHead || (await git.dirty(workspace.path))) {
+              notes.push(
+                `the worktree changed after the last check round (${checkedHead.slice(0, 7)}); only the checked commit is pushed`,
+              );
+            }
+          } else if (
             await git.commitLeftovers(
               workspace.path,
               `factory: uncommitted changes left by run ${job.runNo}`,
@@ -604,13 +785,13 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
           ) {
             notes.push("the session left uncommitted changes; the runner committed them");
           }
-          const head = await git.headSha(workspace.path);
+          const head = checkedHead ?? (await git.headSha(workspace.path));
           if (head === workspace.baseSha || (head === startSha && !ahead)) {
             outcome = "failed";
             notes.push("the build made no commits");
           } else {
             // A fresh token: the first one may be close to its hour by now.
-            headSha = await git.pushRunBranch(job, workspace.path, await freshToken());
+            headSha = await git.pushRunBranch(job, workspace.path, await freshToken(), checkedHead);
             await stream.push({
               type: "job.state",
               state: "collecting",
@@ -621,6 +802,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
           if (err instanceof StopJob) throw err;
           outcome = "failed";
           if (err instanceof UnresolvedMerge) notes.push(err.message);
+          else if (err instanceof GuardTripped) error = err.message;
           else error = `push: ${err instanceof Error ? err.message : String(err)}`;
         }
       }
@@ -660,6 +842,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
           ...(summary ? { summary: summary.slice(0, 20_000) } : {}),
           ...(headSha ? { headSha } : {}),
           ...(result !== undefined ? { result } : {}),
+          ...(executed.length ? { checks: executed } : {}),
         }),
       );
       handedBack = true;
@@ -678,6 +861,10 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     clearTimeout(timer);
     clearInterval(flusher);
     await relay?.close().catch(() => {});
+    if (checksRoot) {
+      await rm(checksRoot, { recursive: true, force: true }).catch(() => {});
+      await rm(`${checksRoot}.index`, { force: true }).catch(() => {});
+    }
     let processesAlive = false;
     let releaseFailed = false;
     await adapter.release(job, workspace, session).catch((err) => {

@@ -2,13 +2,19 @@
 // item's Review tab: the verdict, the criteria met or not, and Your decision. Merge and Send
 // back go through `decide()`, so each asks for Touch ID once (ADR 0391); only the look changed.
 import type { WorkItemDetail } from "@software-factory/client/ops";
-import { keptOnRunner, type ParsedPacket } from "@software-factory/client/packet";
+import {
+  keptOnRunner,
+  type ParsedPacket,
+  packetExecuted,
+  packetProof,
+} from "@software-factory/client/packet";
 import { Button } from "@software-factory/ui/components/button";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { useEffect, useState } from "react";
 import { useDecide } from "../lib/decisions.tsx";
 import { verdictChips, verdictHeadline } from "../lib/review.ts";
+import { CriterionProofNote, criterionMark } from "./factory-checks.tsx";
 import { Chip, Field, Panel } from "./shell-list.tsx";
 
 const OPENED_KEY = (id: string) => `sf:opened-diff:${id}`;
@@ -63,10 +69,12 @@ export function VerdictPanel({
 }
 
 /**
- * The acceptance criteria as the verify run reported them: met or not, with its evidence. Main's
- * packet carries the run's own claim (`met`); "proven by a check the factory ran" is spec 51 PR B.
+ * The acceptance criteria as the verify run reported them, with its evidence. From Workflow v8 a
+ * met criterion is marked Proven or Not proven by the factory's own checks (spec 51 PR B, ADR 0501);
+ * a packet from before shows the run's own claim (`met`).
  */
 export function CriteriaList({ packet }: { packet: ParsedPacket }) {
+  const proofs = packetProof(packet);
   if (packet.criteria.length === 0) {
     return <Panel className="text-ink-muted">The packet has no criteria.</Panel>;
   }
@@ -74,6 +82,9 @@ export function CriteriaList({ packet }: { packet: ParsedPacket }) {
     <div className="overflow-hidden rounded-[10px] bg-panel shadow-panel" data-testid="criteria">
       {packet.criteria.map((c) => {
         const runner = keptOnRunner(c.evidence);
+        // Spec 51 PR B (ADR 0501): Proven only by a check the approved spec links; else opinion.
+        const proof = proofs?.get(c.criterion);
+        const mark = criterionMark(c.met, proof);
         return (
           <div
             key={c.criterion}
@@ -82,13 +93,15 @@ export function CriteriaList({ packet }: { packet: ParsedPacket }) {
           >
             <div className="min-w-0 flex-1">
               <div className="font-medium">{c.criterion}</div>
+              {proof && !runner && <CriterionProofNote proof={proof} />}
               <div className="mt-0.5 font-mono text-[12.5px] text-ink-3 leading-normal">
+                {proof && !runner ? "Reviewer's opinion: " : ""}
                 {runner ? `kept on runner · ${runner}` : c.evidence || "no evidence"}
               </div>
             </div>
             <span className="flex flex-none items-center gap-1.5 self-start font-medium">
-              <StatusDot status={c.met ? "done" : "waiting"} />
-              {c.met ? "Met" : "Not met"}
+              <StatusDot status={mark.status} />
+              {mark.label}
             </span>
           </div>
         );
@@ -113,6 +126,10 @@ export function MergeDecision({
   const { decide, pending } = useDecide();
   const [note, setNote] = useState("");
   const sha = packet.headSha.slice(0, 7);
+  // Declared checks the runner could not run (ADR 0501, fourth review): merging is an explicit
+  // decision to merge without them, recorded with the merge.
+  const executed = packetExecuted(packet);
+  const without = executed && !executed.waived ? executed.notRun.map((n) => n.name) : [];
   if (!mergeGate) return null;
   return (
     <Panel needsYou className="gap-2.5" data-testid="decision">
@@ -135,12 +152,28 @@ export function MergeDecision({
             : "Only an approver on this project can merge"
         }
         onClick={() =>
-          decide({ kind: "review.merge", workItemId: item.id, openedFullDiff: opened })
+          decide({
+            kind: "review.merge",
+            workItemId: item.id,
+            openedFullDiff: opened,
+            ...(without.length > 0 ? { mergeWithoutChecks: true } : {}),
+          })
         }
         data-testid="merge"
       >
-        {pending === "review.merge" ? "Merging…" : `Merge ${sha}`}
+        {pending === "review.merge"
+          ? "Merging…"
+          : without.length > 0
+            ? `Merge ${sha} without these checks`
+            : `Merge ${sha}`}
       </Button>
+      {without.length > 0 && (
+        <p className="m-0 text-amber-700 text-xs leading-normal dark:text-amber-400">
+          {without.length === 1 ? "1 declared check" : `${without.length} declared checks`} could
+          not be run on the runner ({without.join(", ")}). Merging means merging without them;
+          that's recorded.
+        </p>
+      )}
       <Button
         variant="outline"
         disabled={!canDecide || pending !== null || !note.trim()}

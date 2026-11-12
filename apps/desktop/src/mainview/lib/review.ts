@@ -1,7 +1,12 @@
 // How the merge gate words a review packet (spec 41, design InboxMerge/ItemReview): the headline,
 // the chips under it and each criterion met or not, as main's verify run reports it (spec 51 PR B
 // brings criteria proven by checks the factory runs). Pure, from the stored packet only.
-import { checkCounts, type ParsedPacket, packetCounts } from "@software-factory/client/packet";
+import {
+  checkCounts,
+  type ParsedPacket,
+  packetCounts,
+  packetExecuted,
+} from "@software-factory/client/packet";
 import type { Status } from "@software-factory/ui/components/status-dot";
 
 const WORDS = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
@@ -11,6 +16,15 @@ export function verdictHeadline(p: ParsedPacket): { text: string; status: Status
   const c = packetCounts(p);
   const missing = c.total - c.met;
   if (p.verdict === "fail") return { text: "Failed verify", status: "failed" };
+  // Declared checks the runner could not run (ADR 0501, fourth review): not a pass to merge on.
+  const executed = packetExecuted(p);
+  const notRun = executed && !executed.waived ? executed.notRun.length : 0;
+  if (notRun > 0) {
+    return {
+      text: `Passed, but ${count(notRun)} ${notRun === 1 ? "check" : "checks"} could not be run`,
+      status: "waiting",
+    };
+  }
   if (missing === 0) return { text: "Passed", status: "done" };
   return {
     text: `Passed, with ${count(missing)} ${missing === 1 ? "criterion" : "criteria"} not met`,

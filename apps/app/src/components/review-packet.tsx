@@ -3,12 +3,15 @@
 // was opened first. Rendered only from the stored packet: no GitHub calls on load.
 
 import {
+  type CriterionProof,
   checkCounts,
   keptOnRunner,
   type PacketSection,
   type ParsedPacket,
   packetCounts,
+  packetExecuted,
   packetExtras,
+  packetProof,
   packetSections,
   packetTestsIntact,
   parsePacket,
@@ -62,6 +65,10 @@ export function ReviewPacket({ detail, full = false }: { detail: WorkItemDetail;
   const { decide, pending } = useDecide();
   const [sendBack, setSendBack] = useState(false);
   const canDecide = !!mergeGate && detail.viewer.isApprover;
+  // Declared checks the runner could not run (ADR 0501): merging is a recorded decision without them.
+  const executedChecks = packet ? packetExecuted(packet) : null;
+  const without =
+    executedChecks && !executedChecks.waived ? executedChecks.notRun.map((n) => n.name) : [];
   const me = useSession().user.id;
   const approverNames = detail.approvers.users.map((u) =>
     u.id === me ? "you" : (u.githubLogin ?? u.name),
@@ -138,17 +145,27 @@ export function ReviewPacket({ detail, full = false }: { detail: WorkItemDetail;
                   : "Only an approver on this project can merge"
             }
             onClick={() =>
-              decide({ kind: "review.merge", workItemId: item.id, openedFullDiff: opened })
+              decide({
+                kind: "review.merge",
+                workItemId: item.id,
+                openedFullDiff: opened,
+                ...(without.length > 0 ? { mergeWithoutChecks: true } : {}),
+              })
             }
             data-testid="merge"
           >
-            {pending === "review.merge" ? "Merging…" : "Merge"}
+            {pending === "review.merge"
+              ? "Merging…"
+              : without.length > 0
+                ? "Merge without these checks"
+                : "Merge"}
           </Button>
         </div>
       </div>
 
       {/* Always shown, whatever sections the project picks: it's for a person (ADR 0500). */}
       <TestsIntact packet={packet} currentHead={item.headSha} />
+      <FactoryChecks packet={packet} />
 
       {packetSections(detail.policy?.reviewPacketSections).map((section) => (
         <Section
@@ -226,9 +243,19 @@ function Section({
           <ChangedFiles packet={packet} />
         </Panel>
       );
-    case "criteria":
+    case "criteria": {
+      const proof = packetProof(packet);
       return (
-        <Panel title="Acceptance criteria · evidence" testId="section-criteria" flush>
+        <Panel
+          title="Acceptance criteria · evidence"
+          subtitle={
+            proof
+              ? "Proven only by a check that passed on this commit; the reviewer's words are opinion"
+              : undefined
+          }
+          testId="section-criteria"
+          flush
+        >
           {packet.criteria.length === 0 ? (
             <div className="px-5 pb-4">
               <Empty>The packet has no criteria.</Empty>
@@ -241,15 +268,23 @@ function Section({
                   return (
                     <TableRow key={c.criterion} className="border-t align-top" data-met={c.met}>
                       <TableCell className="w-10 py-2.5 pr-2 pl-5">
-                        <StatusDot status={c.met ? "done" : "failed"} className="mt-1.5" />
-                        <span className="sr-only">{c.met ? "met" : "not met"}</span>
+                        <StatusDot
+                          status={criterionStatus(c, proof?.get(c.criterion))}
+                          className="mt-1.5"
+                        />
+                        <span className="sr-only">
+                          {criterionLabel(c, proof?.get(c.criterion))}
+                        </span>
                       </TableCell>
                       <TableCell className="whitespace-normal py-2.5 pr-3">{c.criterion}</TableCell>
                       <TableCell className="whitespace-normal py-2.5 pr-5 text-muted-foreground text-xs">
                         {runner ? (
                           <span data-testid="kept-on-runner">kept on runner · {runner}</span>
                         ) : (
-                          c.evidence || "no evidence"
+                          <CriterionEvidence
+                            evidence={c.evidence}
+                            proof={proof?.get(c.criterion)}
+                          />
                         )}
                       </TableCell>
                     </TableRow>
@@ -260,6 +295,7 @@ function Section({
           )}
         </Panel>
       );
+    }
     case "holdout": {
       const holdout = packet.sections.holdout ?? packet.sections.holdouts;
       return (
@@ -415,6 +451,149 @@ function Section({
   }
 }
 
+/** A criterion's mark (ADR 0501): proven by a check, met only in the reviewer's opinion, or unmet. */
+function criterionStatus(c: { met: boolean }, proof: CriterionProof | undefined): Status {
+  if (!c.met) return "failed";
+  if (!proof) return "done"; // a packet from before: the reviewer's word, as it was shown then
+  return proof.proven ? "done" : "waiting";
+}
+function criterionLabel(c: { met: boolean }, proof: CriterionProof | undefined): string {
+  if (!c.met) return "not met";
+  if (!proof) return "met";
+  return proof.proven ? "proven" : "not proven";
+}
+
+function CriterionEvidence({
+  evidence,
+  proof,
+}: {
+  evidence: string;
+  proof: CriterionProof | undefined;
+}) {
+  if (!proof) return <>{evidence || "no evidence"}</>;
+  return (
+    <div className="grid gap-0.5" data-testid="criterion-proof" data-proven={proof.proven}>
+      <div className="font-medium text-foreground">
+        {proof.proven ? `Proven by ${proof.provenBy.join(", ")}` : "Not proven"}
+        {proof.weakened && (
+          <span className="font-normal text-amber-700 dark:text-amber-400">
+            {" "}
+            · weakened: gate files changed on this commit (see Tests intact)
+          </span>
+        )}
+        {!proof.proven && proof.unproven.length > 0 && (
+          <span className="font-normal text-muted-foreground">
+            {" "}
+            (linked {proof.unproven.join(", ")}: didn't pass on this commit)
+          </span>
+        )}
+      </div>
+      {(proof.provenBy.length > 0 || proof.unproven.length > 0 || proof.notCounted.length > 0) && (
+        <div className="text-muted-foreground text-xs" data-testid="criterion-linked-by">
+          {proof.linkedBy === "spec"
+            ? "Linked in the approved spec"
+            : "Linked by the reviewer, not proven"}
+          {proof.notCounted.length > 0 &&
+            ` · ${proof.notCounted.join(", ")} passed but can't prove a criterion (a static check, or a link the approved spec doesn't make)`}
+        </div>
+      )}
+      <div>Reviewer's opinion: {evidence || "no evidence"}</div>
+    </div>
+  );
+}
+
+/** The project's checks as the runner host ran them on this commit (ADR 0501). */
+function FactoryChecks({ packet }: { packet: ParsedPacket }) {
+  const executed = packetExecuted(packet);
+  if (!executed) return null; // a packet from before the factory ran checks itself
+  const all = [...executed.rows, ...executed.extra.map((r) => ({ name: r.name, result: r }))];
+  // Checks not run have a heading of their own, apart from failures (ADR 0501, fourth review).
+  const rows = all.filter(({ result }) => !result?.notRun);
+  const skipped = all.filter(({ result }) => !!result?.notRun);
+  return (
+    <>
+      <Panel
+        title="Checks run by the factory"
+        subtitle={
+          executed.ranOn
+            ? `Ran on ${executed.ranOn.slice(0, 7)}, not on ${packet.headSha.slice(0, 7)}: the merge queue carried this packet to the updated head`
+            : `Run by the runner host on ${packet.headSha.slice(0, 7)}, not reported by an agent`
+        }
+        testId="section-factoryChecks"
+      >
+        {executed.weaker.length > 0 && (
+          <div
+            className="mb-2 text-amber-700 text-xs dark:text-amber-400"
+            data-testid="checks-weaker"
+          >
+            Ran in the weaker sandbox of a Mac runner whose owner opted in (
+            {executed.weaker.join(", ")}): a process a check leaves can outlive it.
+          </div>
+        )}
+        {rows.length === 0 ? (
+          <Empty>
+            {skipped.length
+              ? "No check ran on this commit."
+              : "The project declares no checks: only CI backs this verdict."}
+          </Empty>
+        ) : (
+          <ul className="grid gap-2 text-sm">
+            {rows.map(({ name, result }) => (
+              <li key={name} className="grid gap-1" data-testid="factory-check">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusDot status={!result ? "idle" : result.passed ? "done" : "failed"} />
+                  <b>{name}</b>
+                  {result ? (
+                    <span className="text-muted-foreground text-xs">
+                      <code className="font-mono">{result.command}</code> ·{" "}
+                      {result.timedOut ? "timed out" : `exit ${result.exitCode ?? "signal"}`} ·{" "}
+                      {Math.max(1, Math.round(result.durationMs / 1000))} s
+                      {result.round
+                        ? ` · after ${result.round} fix round${result.round === 1 ? "" : "s"}`
+                        : ""}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">didn't run on this commit</span>
+                  )}
+                </div>
+                {result && !result.passed && result.logTail && (
+                  <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap">
+                    {result.logTail}
+                  </pre>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+      {skipped.length > 0 && (
+        <Panel
+          title="Not run on this runner"
+          subtitle={
+            executed.waived
+              ? `Merged without them by a person's decision, ${executed.waived.at.slice(0, 10)}`
+              : "Not failures, not passes: the criteria they would prove are Not proven. Merging means merging without them, and that's recorded"
+          }
+          testId="section-checksNotRun"
+        >
+          <ul className="grid gap-2 text-sm">
+            {skipped.map(({ name, result }) => (
+              <li key={name} className="grid gap-1" data-testid="factory-check-not-run">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusDot status="waiting" />
+                  <b>{name}</b>
+                  <code className="font-mono text-muted-foreground text-xs">{result?.command}</code>
+                </div>
+                <div className="text-amber-700 text-xs dark:text-amber-400">{result?.notRun}</div>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
+    </>
+  );
+}
+
 /** The tests-intact guard (ADR 0500): found in code from the diff, for a person, not the reviewer. */
 function TestsIntact({
   packet,
@@ -499,6 +678,8 @@ function VerdictRow({ packet }: { packet: ParsedPacket }) {
   const c = packetCounts(packet);
   const checks = checkCounts(packet);
   const extras = packetExtras(packet);
+  const proof = packetProof(packet);
+  const proven = proof ? [...proof.values()].filter((x) => x.proven).length : 0;
   const cells: { label: string; value: string; status: Status; extra?: string }[] = [
     {
       label: checks.source === "ci" ? "CI on the head SHA" : "Checks (runner)",
@@ -511,11 +692,23 @@ function VerdictRow({ packet }: { packet: ParsedPacket }) {
             ? "running"
             : "idle",
     },
-    {
-      label: "Criteria",
-      value: `${c.met}/${c.total} met`,
-      status: c.total && c.met === c.total ? "done" : "failed",
-    },
+    proof
+      ? {
+          // ADR 0501: proven by an executed check, not by the reviewer's say-so.
+          label: "Criteria",
+          value: `${proven}/${c.total} proven`,
+          status: c.met < c.total ? "failed" : c.total && proven === c.total ? "done" : "waiting",
+          ...(c.total > proven && c.met === c.total
+            ? { extra: "rest: opinion" }
+            : proof && [...proof.values()].some((x) => x.weakened)
+              ? { extra: "weakened: gate files changed" }
+              : {}),
+        }
+      : {
+          label: "Criteria",
+          value: `${c.met}/${c.total} met`,
+          status: c.total && c.met === c.total ? "done" : "failed",
+        },
     {
       label: "Reviewer (role review)",
       value: packet.reviewer
