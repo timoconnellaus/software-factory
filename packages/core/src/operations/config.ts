@@ -56,13 +56,18 @@ export async function writeVersion(
     ref?: string;
     /** Who the version is by, when not the caller (an approved proposal is its proposer's). */
     createdBy?: string;
+    /** The project's highest version when the caller already read it (a write for many projects). */
+    latest?: number | null;
   },
 ): Promise<{ version: number; sha: string }> {
-  const latest = await ctx.db
-    .selectFrom("core_project_policies")
-    .select(sql<number | null>`max(version)`.as("v"))
-    .where("project_id", "=", project.id)
-    .executeTakeFirst();
+  const latest =
+    input.latest !== undefined
+      ? { v: input.latest }
+      : await ctx.db
+          .selectFrom("core_project_policies")
+          .select(sql<number | null>`max(version)`.as("v"))
+          .where("project_id", "=", project.id)
+          .executeTakeFirst();
   const version = (latest?.v ?? 0) + 1;
   const key = versionKey(version);
   const expect = project.policy_sha;
