@@ -2,6 +2,12 @@ import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
+  definitionFor,
+  expectPhasesAsDefined,
+  expectSendBacksAsDefined,
+  expectStagesAsDefined,
+} from "./definition.ts";
+import {
   all,
   BALANCED,
   build,
@@ -67,6 +73,9 @@ describe("the work-item Workflow", () => {
       "done:done",
     ]);
     expect(stages.find((s) => s.stage === "spec")?.reason).toMatch(/below the spec threshold/);
+    // The compiled Software definition passes and skips the same stages (spec 52 PR (a)).
+    const { def } = definitionFor(BALANCED, "change");
+    await expectStagesAsDefined(item.workItemId, def, "small");
 
     // The journal tells the whole story, including the gate decision and how long it was open.
     const trail = await all<{ operation: string; actor_type: string; outcome: string }>(
@@ -222,6 +231,10 @@ describe("the work-item Workflow", () => {
       "SELECT stage, status FROM core_stages WHERE work_item_id = ? AND stage IN ('build', 'verify', 'merge') ORDER BY started_at, rowid",
       item.workItemId,
     );
+    // Both send-backs went where the compiled definition sends them (spec 52 PR (a)).
+    const { def } = definitionFor({ ...BALANCED, retryLimit: 2 }, "change");
+    await expectStagesAsDefined(item.workItemId, def, "small");
+    expect(await expectSendBacksAsDefined(item.workItemId, def)).toBe(2);
     // Both loops ran inside the one instance: verify → build on a failed check, merge → build on a send-back.
     expect(stages.map((s) => `${s.stage}:${s.status}`)).toEqual([
       "build:done",
@@ -233,6 +246,38 @@ describe("the work-item Workflow", () => {
       "verify:done",
       "merge:done",
     ]);
+  });
+
+  it("runs an incident's fix as the Incident definition says: opened released, nothing shaped, every stage in delivery (spec 52 PR (a))", async () => {
+    const w = await world();
+    const item = await create(w, "Something broke");
+    const opened = await ok<{ fixWorkItemId: string | null }>(
+      "incident.open",
+      { workItemId: item.workItemId, kind: "manual", reason: "the run looped" },
+      w.human,
+    );
+    const fix = opened.fixWorkItemId;
+    if (!fix) throw new Error("no fix item");
+    // Only the fix's jobs for this runner.
+    await ok(
+      "workItem.cancel",
+      { workItemId: item.workItemId, reason: "not in this test" },
+      w.human,
+    );
+    const kind = await first<{ kind: string }>(
+      "SELECT kind FROM core_work_items WHERE id = ?",
+      fix,
+    );
+    expect(kind?.kind).toBe("incident");
+    await runStage(w, fix, "triage", () => triage("small"));
+    await runStage(w, fix, "build", () => build([".factory/checks/loop.md"]));
+    await runStage(w, fix, "verify", () => verifyPass);
+    await gateOpen(fix, "merge");
+    await ok("review.merge", { workItemId: fix, openedFullDiff: true }, w.human);
+    await itemStatus(fix, "done");
+    const { def } = definitionFor(BALANCED, "incident");
+    await expectStagesAsDefined(fix, def, "small");
+    await expectPhasesAsDefined(fix, def, "small");
   });
 
   it("flags a diff that touches .factory/ as self-modify at the merge gate", async () => {

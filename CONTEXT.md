@@ -72,7 +72,8 @@ _Avoid_: draft, todo, inbox (the inbox is what waits on a person)
 **Shaping, delivery**
 The two phases of a workflow's stages, with release between them (ADR 0493). **Shaping** stages
 need a person, hold no build slot and don't count as active; with today's engine they are triage and
-interview planning (the spec stage and its gate). **Delivery** is everything from build on. A person
+interview planning (the spec stage and its gate). Triage is the one shaping stage that needs no person
+(spec 52, Q1). **Delivery** is everything from build on. A person
 can shape an item before releasing it (`workItem.shape`; its status is `shaping`, then `ready`);
 small items are released from the backlog and shape inside delivery.
 _Avoid_: planning state (planning is one stage type), pre-work
@@ -250,7 +251,7 @@ The factory's own check, in code, that a diff doesn't weaken the tests the build
 deleted, removed, skipped or commented-out tests, new lint or type suppressions, lowered thresholds
 and edits to gate files (`.factory/`, CI workflows, test and lint config), read from GitHub's diff at
 the head SHA (ADR 0500). A **finding** is for a person: it never fails the verdict, no agent judges
-it, and it blocks the check-only auto-merge. Findings belong to one SHA's review packet.
+it, and it blocks an auto-approved merge (ADR 0515). Findings belong to one SHA's review packet.
 _Avoid_: test tampering check, reviewer finding
 
 **CLI token**
@@ -298,8 +299,37 @@ _Avoid_: draft policy
 A project's approved merges, waiting to land one at a time (ADR 0330). The **head** (the oldest
 open entry) is brought up to date with the default branch by GitHub's update-branch, CI runs on
 it once, and it merges; then the next head goes. The approval carries over that clean update. A
-conflict or red CI at the head sends the item back to build.
+conflict or red CI at the head sends the item back to build. From Workflow v11 the babysitter's deliverer runs it per
+repository, and the queue is its delivery table (spec 53).
 _Avoid_: merge train, landing queue
+
+**Babysitter** (proposed, spec 53)
+What delivers approved work in one repository, from approval to Done: the merge, `main` staying
+green and, later, the deploy (ADR 0580). Two halves: the **deliverer**, engine code with no model
+(a reconcile pass per repository woken by GitHub's events and the minute cron), and the **`babysit`
+job**, a factory job the deliverer starts only for judgement (a conflict, a failed check, a red
+`main`; ADR 0583). Not a routine, not a schedule, not a person.
+_Avoid_: merge bot, release manager, routine
+
+**Delivery** (proposed, spec 53)
+A work item's life after its merge is approved: waiting to merge, merging, **held**, merged (later
+deployed). An **approval** says "this head may merge"; it survives a clean merge of `main` whose
+**change digest** (the PR's diff against its merge base, read by the engine from GitHub) is unchanged,
+and is withdrawn by any other new commit (ADR 0582).
+_Avoid_: landing (fine in prose for the merge itself), shipping
+
+**Main health, red episode** (proposed, spec 53)
+Whether a repository's default branch head is `green`, `red` or `pending` by its required checks. A
+**red episode** runs from the first red head after a green one to the next green; its **suspects** are
+the landings since the last green SHA. While one is open the line stops: only **repairs** (a fix the
+`babysit` job wrote, or a revert the engine made) merge, and every other approved item is **held**
+(ADR 0581, 0584).
+_Avoid_: broken build, main-red issue (patientos's claim; here the episode is the claim)
+
+**Known flake** (proposed, spec 53)
+A check, or a test in one, that failed and then passed on a rerun of the same SHA, recorded in the
+repository's flake list. A failed check is rerun at most once per SHA (ADR 0583).
+_Avoid_: flaky test (as a label you add by hand)
 
 **Default-branch ruleset**
 The repository ruleset that guards a project's default branch: a PR, the CI checks and
@@ -343,8 +373,8 @@ attached PR sent back at review opens none: the factory didn't build it): it pro
 a fix to `.factory/` plus a regression case in `evals/regressions/`, and goes through the normal
 gates. It carries a **root-cause class** (`missing-check`, `prompt-or-skill`, `missing-context`,
 `policy`, `runner`, `confinement`, `unknown`) saying which part of `.factory/` to change. An
-incident's own failures open no further incidents. A fix that only adds checks and regression cases
-may auto-merge where the project opts in (ADR 0230).
+incident's own failures open no further incidents. Its fix merges with no person only under
+**dark factory mode**, like any change (ADR 0515; the check-only exception of ADR 0230 is superseded).
 _Avoid_: bug, postmortem, issue
 
 **Check (`.factory/checks/`)**
@@ -547,22 +577,27 @@ _Avoid_: pipeline (the skeleton), stage list
 One entry in a workflow slot: a **work** step hands to an agent and is advisory; a **gate** step
 hands to a person and is enforced.
 
-**Stage type**, **workflow template**, **stage template** (designed, spec 52, not built)
+**Stage type**, **workflow template**, **stage template** (spec 52, being built)
 A stage type is built-in code with a fixed contract (what it runs, produces and needs, its evidence,
 screen, gate and reversibility); a workflow will be an org-level ordered list of stages, each an
 instance of a stage type, split into **shaping** stages (before release) and **delivery** stages.
 Templates are ready-made workflows (Software, Marketing) or stage types with default settings
-(ADR 0510).
+(ADR 0510). Org admins edit an org workflow and approve its loosenings; a project may override only a
+short list of settings. Attached PRs and incidents run **built-in workflows** people can see and
+tighten, not loosen. Small stages (`agent-check`, `decision`) show inside the stage they belong to.
 
 **Skill** (designed, spec 52, not built)
 How the team does one thing, written once (instructions plus files), versioned and owned by the
 org, attached to an agent, a stage, or built into a stage type. The factory may propose an edit;
-only a person accepts one (ADR 0513).
+only a person accepts one (ADR 0513). Org skills reach the reviewer only by extending its built-in
+skills, as a policy change.
 _Avoid_: playbook, recipe
 
 **Autopilot** (designed, spec 52, not built)
 A trigger (schedule or event), an agent, its skills, an instruction and an output target: work the
-factory starts on its own. It files through the backlog, never merges or deploys (ADR 0514).
+factory starts on its own. It files through the backlog, never merges or deploys (ADR 0514). Each run
+is a work item of kind `autopilot`, hidden from the Work lists and shown as run history on the
+autopilot's page, limited per autopilot by a time limit, an output cap and a daily run cap.
 _Avoid_: cron job, bot
 
 **Agent** (config)
@@ -572,7 +607,8 @@ _Avoid_: droid, persona, bot
 
 **Practice change / policy change**
 A practice change alters *how* work is done (instructions, tiers, advisory steps); the factory may
-apply it itself as a **trial**. A policy change alters *what's allowed* and always goes to a person
+apply it itself as a **trial**, except agent instructions and skills, which it only proposes and a
+person accepts (spec 52, Q17). A policy change alters *what's allowed* and always goes to a person
 (ADR 0373).
 
 **Trial**
@@ -581,7 +617,20 @@ outcomes (verify pass rate, send-backs, gate edits), then cost and time.
 
 **Adjudicator**
 An agent that records the gate decision it would make in shadow mode, and approves a gate kind only
-after earning ≥95% precision; never rejects, never merge, deploy or self-modify (ADR 0374).
+after earning ≥95% precision; never rejects, never deploy or self-modify. On merge its earned approval
+is one condition of **dark factory mode**, never enough alone (ADR 0374, 0515).
+
+**Dark factory mode** (`autoApprove`, designed, spec 52, ADR 0515)
+A setting on the workflow's merge gate (later its deploy gate), off by default; never a per-project
+override (a project that wants it runs a workflow that has it on). With it on, the merge gate is approved with no person (the babysitter then lands it, as for a
+person's approval) only when every
+check passed and every criterion is proven by a check that ran, tests are intact, the adjudicator
+approved and has earned it on this project, the change is inside the size and path limits, and its
+risk is low (no migrations, auth, billing or policy files). Turning it on is a loosening an org admin
+approves; on an incident, a revert or red CI after its merge it puts a **hold** on that project
+(not on the shared workflow), which an org admin lifts (a loosening, approved by an org admin). Changes to the
+factory itself always need a person.
+_Avoid_: auto-merge (that was ADR 0230's narrow exception), YOLO mode
 
 **Project template**
 A shipped bundle of repo practice (`AGENTS.md`, `CONTEXT.md`, ADRs, specs, …) installed into a
@@ -590,8 +639,8 @@ _Avoid_: preset (old name), scaffold, boilerplate
 
 **Floor**
 The global policy an autonomy policy or project override can only tighten, never loosen. Merge,
-deploy and self-modify always need a person regardless (the one pre-approvable merge is
-`check-merge`, an incident's check-only fix, ADR 0230). A client org has its own floor.
+self-modify always needs a person regardless; merge and deploy need one unless dark factory mode
+holds (ADR 0515, which supersedes ADR 0230's `check-merge`). A client org has its own floor.
 _Avoid_: baseline, minimum policy, guardrails
 
 **Evidence policy**

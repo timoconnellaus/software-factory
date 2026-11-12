@@ -9,6 +9,7 @@
     "./attachments": "./src/attachments.ts",
     "./attachment-rules": "./src/attachment-rules.ts",
     "./policy-gate": "./src/policy/gate.ts",
+    "./stages": "./src/stages/index.ts",
     "./testing": "./src/testing/index.ts"
   },
   "scripts": {
