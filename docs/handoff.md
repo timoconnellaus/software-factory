@@ -69,6 +69,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   `brew install tmux` if missing, `git pull`, `sf-runner doctor --fix` (sets `checkouts` once from
   Orca's repos), then `sf-runner install` with no jobs running. Job worktrees the old runner left in
   Orca (`sf-job:` comments) are removed in Orca by hand. Pieces 2–8 get their own specs.
+  Piece 5, **Linux hosts** (block Z, [spec 34](specs/34-linux-hosts.md) /
+  [ADR 0420](adr/0420-linux-hosts-run-the-runner-as-a-systemd-user-service.md), branch
+  `timoconnellaus/hosts-linux`): a systemd user service chosen by platform, Linux log path, the
+  harness's per-platform deny lists, Linux doctor checks (bubblewrap, socat, linger), the install
+  path in the runner-host README, and `local/runner-host/scripts/linux-check.sh` (the tests in a
+  Debian container). Criteria 2–3, 6 and 8 need a live Linux host (README "Running on Linux").
 - **Factory config in the app** (block U, spec 09): config moves from `.factory/policy.json` to
   versions in the app (ADR 0370), workflows fill typed slots (0371), agents are harness-neutral
   (0372), the factory trials its own practice changes (0373) and an adjudicator earns approvals

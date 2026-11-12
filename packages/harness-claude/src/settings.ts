@@ -136,6 +136,8 @@ export interface SettingsOptions {
   attachmentsDir?: string;
   /** Files the agent's Read tool may not open (a planning session's relay file, ADR 0350). */
   denyReadFiles?: string[];
+  /** The platform the run's on, for its credential stores and temp dirs (default: this one). */
+  platform?: NodeJS.Platform;
 }
 
 /** Hook events whose output can grant a permission or answer a dialog: a runner may not add them. */
@@ -242,11 +244,22 @@ export const DENY_COMMANDS = [
   "tmux",
   "claude",
   "sudo",
+  // The service manager and the keyrings: launchd and the keychain on macOS, systemd and the
+  // kernel or desktop keyrings on Linux (ADR 0420).
   "launchctl",
   "osascript",
+  "systemctl",
+  "loginctl",
+  "journalctl",
+  "secret-tool",
+  "keyctl",
 ];
 
-/** Home paths no stage may read or write: credentials, the runner's own files, the keychains. */
+/**
+ * Home paths no stage may read or write on any platform: credentials, Claude Code's own login file
+ * (where Linux keeps it; macOS keeps it in the keychain), the runner's own files. Each platform adds
+ * its own credential stores ({@link denyHome}).
+ */
 export const DENY_HOME = [
   ".ssh",
   ".gnupg",
@@ -262,10 +275,26 @@ export const DENY_HOME = [
   ".npmrc",
   ".docker/config.json",
   ".kube",
-  "Library/Keychains",
-  "Library/Preferences/.wrangler",
   ".wrangler",
+  ".claude/.credentials.json",
 ];
+
+/** Per platform: the keychains and credential stores a desktop or server keeps in the home dir. */
+export const DENY_HOME_BY_PLATFORM: Partial<Record<NodeJS.Platform, readonly string[]>> = {
+  darwin: ["Library/Keychains", "Library/Preferences/.wrangler"],
+  // GNOME Keyring and KWallet (libsecret's stores), `pass`, the Hetzner CLI (ADR 0420).
+  linux: [".local/share/keyrings", ".local/share/kwalletd", ".password-store", ".config/hcloud"],
+};
+
+/** Every home path denied on `platform`: the common list plus that platform's own. */
+export function denyHome(platform: NodeJS.Platform = process.platform): string[] {
+  return [...DENY_HOME, ...(DENY_HOME_BY_PLATFORM[platform] ?? [])];
+}
+
+/** The system temp dirs a sandboxed command may write by default: `/private/tmp` is macOS's `/tmp`. */
+export function defaultTempDirs(platform: NodeJS.Platform = process.platform): string[] {
+  return platform === "darwin" ? ["/tmp", "/private/tmp"] : ["/tmp"];
+}
 
 /**
  * Hosts sandboxed commands may reach in every stage: the npm registry (npm, pnpm, corepack),
@@ -423,7 +452,7 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
       throw new Error(`a runner may not add ${event} hooks: they can answer permission decisions`);
     }
   }
-  const homeDeny = DENY_HOME.map((p) => `~/${p}`);
+  const homeDeny = denyHome(options.platform).map((p) => `~/${p}`);
   const protect = options.protectPaths ?? [];
   // The worktree's Claude config is the factory's: the run may not change its own settings, hooks
   // or the project's (a hook runs outside the sandbox, so a run that wrote one could escape it).
@@ -487,7 +516,7 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
         allowWrite: [
           options.worktree,
           runTmp,
-          ...(options.tempDirs ?? ["/tmp", "/private/tmp"]),
+          ...(options.tempDirs ?? defaultTempDirs(options.platform)),
           ...gitWrite,
         ],
         denyWrite: [

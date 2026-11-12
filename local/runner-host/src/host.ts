@@ -47,7 +47,7 @@ export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle>
   selfUpdate?: SelfUpdate;
   /**
    * Called once the host has stopped after an update (no jobs running), so the process exits
-   * non-zero and launchd starts the new code.
+   * non-zero and the service (launchd or systemd) starts the new code.
    */
   onUpdated?: () => void;
 }
@@ -191,7 +191,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     this.schedule(this.failures ? Math.min(every * 2 ** (this.failures - 1), 300_000) : every);
   }
 
-  /** Updated and idle: stop the loop and let the process exit for launchd to restart it. */
+  /** Updated and idle: stop the loop and let the process exit for the service to restart it. */
   private async stopForUpdate() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);

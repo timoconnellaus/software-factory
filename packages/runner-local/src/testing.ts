@@ -91,7 +91,7 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
       case "list-panes": {
         const s = sessions.get(target(rest));
         if (!s) return err(`can't find window: ${target(rest)}`);
-        return ok(`${s.dead ? 1 : 0}\t${options.pid ?? 4242}\t${s.history.length}\n`);
+        return ok(`${s.dead ? 1 : 0}:${options.pid ?? 4242}:${s.history.length}\n`);
       }
       case "capture-pane": {
         const s = sessions.get(target(rest));
@@ -140,7 +140,7 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
       case "list-sessions":
         if (sessions.size === 0) return err("no server running on /tmp/tmux-501/scripted");
         return ok(
-          `${[...sessions.values()].map((s) => `${s.name}\t${s.dead ? 1 : 0}\t0`).join("\n")}\n`,
+          `${[...sessions.values()].map((s) => `${s.name}:${s.dead ? 1 : 0}:0`).join("\n")}\n`,
         );
       default:
         return err(`unscripted tmux ${verb}`);
