@@ -66,7 +66,7 @@ Each rule is checkable in review; the query-plan guard
 8. No D1 query inside a loop over another query's rows unless the loop is bounded to 10 or fewer;
    join instead.
 9. The channel's idempotency store is only for calls that aren't naturally idempotent, and a call
-   left out of it must be harmless to replay (the heartbeat refuses an older signed time).
+   left out of it must be harmless to replay (an older heartbeat only renews leases).
 10. Expensive clients (the GitHub App, imported keys) are built once per isolate, not per call.
 11. Each wrangler config sets `observability.head_sampling_rate` and `limits.cpu_ms`, with the
     reason for the value beside it.
