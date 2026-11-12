@@ -253,6 +253,16 @@ export interface FactoryServices {
    * stores files; the attachment operations then refuse with `unavailable`.
    */
   attachments?: AttachmentBlobs;
+  /**
+   * The archive of runs' events (sf-archive on sf-engine): one chunk's NDJSON by its key, or null
+   * when it isn't there. run.live reads an archived run's page from here. Absent where nothing is
+   * archived (tests that don't need it, sf-app).
+   */
+  runArchive?: {
+    get(key: string): Promise<string | null>;
+    /** Whether the object is there (an R2 HEAD): run.reportArchiveMissing checks for itself. */
+    exists(key: string): Promise<boolean>;
+  };
   /** The app's public URL (`PUBLIC_BASE_URL`), for links GitHub shows (the check's details). */
   publicBaseUrl?: string;
   /**

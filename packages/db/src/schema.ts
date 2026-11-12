@@ -316,6 +316,8 @@ export interface CoreWorkItemsTable {
    */
   org_config_version: number | null;
   parent_work_item_id: string | null;
+  /** 0370 (spec 23): a parked item's needs-info marker, JSON; null when not parked. */
+  needs_info: string | null;
   created_at: Iso;
   updated_at: Iso;
   closed_at: Iso | null;
@@ -329,6 +331,7 @@ export interface CoreWorkItemsTable {
   acceptance_criteria: JsonText | null;
   released_at: Iso | null;
   released_by: string | null;
+  footprint: Generated<string>;
   /** 0261: when the pipeline started (the pull). */
   pulled_at: Iso | null;
   /** 0262 (ADR 0493): when its Workflow started to run the shaping stages, before release. */
@@ -421,6 +424,17 @@ export interface CoreQuestionsTable {
   skipped: Generated<Bool>;
   /** Spec 26: when this answer revision reached the planning agent. */
   answer_delivered_at: Iso | null;
+  /** Spec 27: the person's plan edit this answer was recorded from. */
+  answered_via_edit: string | null;
+  /** Spec 21: the artifact this question is about, and its options as cards or bound values. */
+  artifact_id: string | null;
+  option_artifacts: string | null;
+  option_values: string | null;
+  control: string | null;
+  unit: string | null;
+  min: number | null;
+  max: number | null;
+  step: number | null;
   planning_session_id: string | null;
   updated_at: Iso | null;
 }
@@ -496,7 +510,13 @@ export interface CoreReviewPacketsTable {
   created_at: Iso;
 }
 
-export type IncidentKind = "sent_back" | "run_failed" | "run_stalled" | "manual";
+export type IncidentKind =
+  | "sent_back"
+  | "run_failed"
+  | "run_stalled"
+  | "manual"
+  /** 0364: a run's archived log is lost; for a person, no agent fix. */
+  | "archive_missing";
 
 export interface CoreIncidentsTable {
   id: string;
@@ -665,6 +685,29 @@ export interface CoreRunsTable {
   last_event_at: Iso | null;
   ended_at: Iso | null;
   released_at: Iso | null;
+  /** When the run's events and steers were archived to R2 (migration 0362). */
+  events_archived_at: Iso | null;
+  /** How its session ran (ADR 0450), from its `session.started` (migration 0362). */
+  session_mode: "terminal" | "stream" | null;
+}
+
+/** The archiver's lease on a run (migration 0362): one tick archives a run at a time. */
+export interface CoreRunArchiveLeasesTable {
+  run_id: string;
+  holder: string;
+  expires_at: Iso;
+}
+
+/** One archived chunk of a run's events in sf-archive (migration 0362); steers are first_seq -1. */
+export interface CoreRunArchiveChunksTable {
+  run_id: string;
+  first_seq: number;
+  last_seq: number;
+  r2_key: string;
+  rows: number;
+  bytes: number;
+  sha256: string;
+  archived_at: Iso;
 }
 
 export interface CoreRunEventsTable {
@@ -885,6 +928,8 @@ export interface CorePlanningSessionsTable {
   /** ADR 0470: who told the planner to finish alone, and when; null while it's off. */
   finish_alone_by: string | null;
   finish_alone_at: Iso | null;
+  /** Spec 21: the artifact the planner put on screen last. */
+  shown_artifact_id: string | null;
   /** Spec 26: the highest cursor handed to the harness; a hook's ack is clamped to it. */
   handed_cursor: Generated<number>;
   /** Spec 26: JSON `{ questionId: answer revision }` handed out, for read receipts. */
@@ -922,6 +967,53 @@ export interface CorePlanningMessagesTable {
   created_at: Iso;
   /** Spec 26: the steer this message was typed as; delivered when the host takes it. */
   steer_id: string | null;
+  /** Spec 27: a comment's anchor on plan lines, as JSON `{ specId, lineStart, lineEnd, quote }`. */
+  anchor: string | null;
+  /** Spec 21: a comment pinned to a spot in an artifact, as JSON. */
+  pin: string | null;
+}
+
+/** A planning artifact (spec 21, ADR 0472): a mockup, diagram or document. */
+export interface CorePlanningArtifactsTable {
+  id: string;
+  work_item_id: string;
+  kind: "mockup" | "diagram" | "document";
+  title: string;
+  description: string | null;
+  revision: Generated<number>;
+  keep: Generated<Bool>;
+  created_by: string;
+  created_at: Iso;
+  updated_at: Iso;
+  deleted_at: Iso | null;
+}
+
+/** One revision of a planning artifact's content (spec 21). */
+export interface CorePlanningArtifactRevisionsTable {
+  artifact_id: string;
+  revision: number;
+  content: string;
+  size: number;
+  controls: Generated<string>;
+  created_at: Iso;
+}
+
+/** A person's edit to the plan's source lines (spec 27, ADR 0471). */
+export interface CoreSpecEditsTable {
+  id: string;
+  work_item_id: string;
+  spec_id: string;
+  base_spec_id: string;
+  line_start: number;
+  line_end: number;
+  before: string;
+  after: string;
+  author_id: string;
+  created_at: Iso;
+  replaced_by: string | null;
+  released_at: Iso | null;
+  released_by: string | null;
+  footprint: Generated<string>;
 }
 
 export interface CorePlanningPresenceTable {
@@ -1092,6 +1184,8 @@ export interface CoreDatabase {
   core_jobs: CoreJobsTable;
   core_runs: CoreRunsTable;
   core_run_events: CoreRunEventsTable;
+  core_run_archive_chunks: CoreRunArchiveChunksTable;
+  core_run_archive_leases: CoreRunArchiveLeasesTable;
   core_run_steers: CoreRunSteersTable;
   core_run_terminal_attaches: CoreRunTerminalAttachesTable;
   core_artifacts: CoreArtifactsTable;
@@ -1108,6 +1202,9 @@ export interface CoreDatabase {
   core_planning_events: CorePlanningEventsTable;
   core_planning_messages: CorePlanningMessagesTable;
   core_planning_presence: CorePlanningPresenceTable;
+  core_spec_edits: CoreSpecEditsTable;
+  core_planning_artifacts: CorePlanningArtifactsTable;
+  core_planning_artifact_revisions: CorePlanningArtifactRevisionsTable;
   core_cli_device_codes: CoreCliDeviceCodesTable;
   core_cli_tokens: CoreCliTokensTable;
   core_desktop_auth_requests: CoreDesktopAuthRequestsTable;
