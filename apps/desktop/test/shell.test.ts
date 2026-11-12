@@ -2,6 +2,8 @@
 // org scoping, the status bar's wording, the Inbox's list and selection, the tab titles and search,
 // the Work views and board, and how the merge gate words a packet. Fixtures come from the
 // screenshot harness's door, so the screens and the tests see the same data.
+
+import { STAGE_LABEL } from "@software-factory/client/format";
 import type { Inbox } from "@software-factory/client/ops";
 import { parsePacket } from "@software-factory/client/packet";
 import { describe, expect, it } from "vitest";
@@ -30,10 +32,12 @@ import {
   togglePin,
 } from "../src/mainview/lib/view-state.ts";
 import {
+  boardLanes,
   cardState,
   countsByView,
-  lanes,
+  outcomeOf,
   viewOf,
+  waitingOn,
   workItemsFor,
 } from "../src/mainview/lib/work-board.ts";
 
@@ -284,7 +288,8 @@ describe("Work views and the board", () => {
   it("sorts statuses into views", () => {
     expect(viewOf("waiting")).toBe("active");
     expect(viewOf("done")).toBe("done");
-    expect(viewOf("cancelled")).toBe("stopped");
+    // Done shows every way out of the factory, with its outcome.
+    expect(viewOf("cancelled")).toBe("done");
     expect(viewOf("backlog")).toBe("backlog");
     expect(viewOf("shaping")).toBe("planning");
     expect(viewOf("ready")).toBe("ready");
@@ -304,21 +309,53 @@ describe("Work views and the board", () => {
       planning: 0,
       ready: 3,
       active: 7,
-      done: 3,
-      stopped: 0,
+      done: 5,
     });
   });
 
-  it("puts each active item in its stage's lane, in the factory's order", () => {
-    const board = lanes(workItemsFor(ITEMS, { view: "active", orgId: "org_personal" }));
-    expect(board.map((l) => `${l.stage}:${l.items.map((i) => i.number).join(",")}`)).toEqual([
-      "intake:28",
-      "triage:",
-      "spec:12",
-      "build:9,11",
-      "verify:26",
-      "merge:13",
+  it("puts each item in the factory in its stage's lane, Queued first, shaping before delivery", () => {
+    const items = (ANSWERS["workItem.board"]?.({ orgId: "org_personal" }).items ?? [])
+      .filter((i) => ["queued", "running", "waiting", "paused"].includes(i.status))
+      .map((i) => ({ ...i, orgId: "org_personal" }));
+    const board = boardLanes(items, STAGE_LABEL);
+    expect(
+      board.map((l) => `${l.key}/${l.phase}:${l.items.map((i) => i.number).join(",")}`),
+    ).toEqual([
+      "queued/queued:28",
+      "spec/shaping:12",
+      "build/delivery:9,11",
+      "verify/delivery:26",
+      "merge/delivery:13",
     ]);
+    // A stage the view has no label for still gets its lane, after the ones it knows.
+    const odd = boardLanes(
+      [{ ...(items[1] as (typeof items)[number]), stage: "publish", phase: "delivery" }],
+      STAGE_LABEL,
+    );
+    expect(odd.map((l) => l.label)).toEqual(["Queued", "Publish"]);
+  });
+
+  it("says who an item waits on, and words its outcome", () => {
+    const needs = new Set(["wi_13"]);
+    expect(waitingOn({ id: "wi_13", status: "waiting", blockedBy: [] }, needs).label).toBe(
+      "Waiting on you",
+    );
+    expect(waitingOn({ id: "x", status: "running", blockedBy: [] }, needs).label).toBe(
+      "Agent working",
+    );
+    expect(
+      waitingOn({ id: "x", status: "queued", blockedBy: [{ number: 26 } as never] }, needs).label,
+    ).toBe("Waiting for #26");
+    expect(waitingOn({ id: "x", status: "queued", blockedBy: [] }, needs).label).toBe(
+      "Waiting for a slot",
+    );
+    expect(outcomeOf({ status: "done", statusReason: null })).toEqual({
+      label: "Done",
+      status: "done",
+    });
+    expect(outcomeOf({ status: "cancelled", statusReason: "cancelled from the app" }).label).toBe(
+      "Cancelled: cancelled from the app",
+    );
   });
 
   it("marks a card that needs you", () => {

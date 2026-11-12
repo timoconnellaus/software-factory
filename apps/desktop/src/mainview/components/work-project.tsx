@@ -10,7 +10,7 @@ import { itemsIn } from "../lib/backlog.ts";
 import { openItem } from "../lib/places.ts";
 import { boardsQuery, configQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
-import { viewCounts } from "../lib/work-board.ts";
+import { viewCounts, viewOf } from "../lib/work-board.ts";
 import { PageArea, PageHeader, Panel, SectionTitle } from "./shell-list.tsx";
 import { useScopedInbox } from "./shell-sidebar.tsx";
 
@@ -104,7 +104,17 @@ export function ProjectPage({ projectId }: { projectId: string }) {
           "count-ready",
         )}
         {card("In the factory", counts.active, `${waitingOnYou} waiting on you`, "count-active")}
-        {card("Done", counts.done, `${counts.stopped} stopped`, "count-done")}
+        {card(
+          "Done",
+          counts.done,
+          `${(board.data?.counts ?? [])
+            .filter(
+              (c) =>
+                c.projectId === projectId && c.status !== "done" && viewOf(c.status) === "done",
+            )
+            .reduce((n, c) => n + c.n, 0)} cancelled or failed`,
+          "count-done",
+        )}
       </div>
       <div className="flex flex-wrap items-start gap-[18px]">
         <section className="flex min-w-0 flex-[999_1_420px] flex-col gap-2">

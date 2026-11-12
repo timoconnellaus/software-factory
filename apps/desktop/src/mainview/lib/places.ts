@@ -52,7 +52,6 @@ const WORK_VIEW_TITLE: Record<string, string> = {
   ready: "Ready",
   active: "In the factory",
   done: "Done",
-  stopped: "Stopped",
 };
 
 export interface PlaceCommand {

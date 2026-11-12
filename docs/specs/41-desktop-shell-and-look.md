@@ -222,3 +222,30 @@ rather than shown empty:
 - **The title bar**: every toolbar control (back, forward, sidebar, tabs, new tab, search, New
   item) is 28px with the 7px radius. Double-clicking its empty space zooms and unzooms the window;
   checked in the dev build's real window (`window/titlebar-before.png`, `titlebar-zoomed.png`).
+
+## As built (slice 2, part 2: In the factory and Done)
+*Amended 2026-11-12.* Screenshots are in [`docs/screenshots/desktop-work/`](../screenshots/desktop-work/)
+(`board`, `board-list`, `board-empty`, `active-all`, `done`).
+- **A project's board** (`?view=active&project=`, design `WorkActive`) reads `workItem.board`. Its
+  lanes are **Queued** (the one lane spec 50 makes universal: released, not yet pulled) and then
+  the stages the server reports on the items, shaping stages before delivery ones (each item's
+  `phase`). Within a phase the order follows the stages `STAGE_LABEL` knows; a stage it doesn't
+  know still gets its lane, after them. No stage list is fixed in the view. Each card shows its
+  number, title, live state (Working, Needs you, Waiting, Paused, Queued), who it waits on (you, an
+  agent, someone else, a slot, or the items it waits for) or the server's status reason, and how
+  long since it changed; the board re-reads every 15 seconds. Board and List switch layouts.
+- **Needs server work**: a read of a project's workflow stages (with each one's phase and who
+  decides it). Without it, a stage with no items has no lane (Queued excepted), and the design's
+  "Code decides / You decide" per lane and the lane's one-line description are left out. The
+  design's Edit workflow and Filter are left out with it. The card's progress bar (build plan
+  tasks) and agent name need the run's plan on the board read.
+- **All projects** (`/work`, design `WorkActiveAll`) is a list, since stages differ by workflow:
+  counts (waiting on you, agent working, waiting, queued) and every released item sorted by who it
+  waits on, with its stage, project and time. The design's Workflow column needs the item's
+  workflow on `workItem.board` (needs server work); Shipping and Held need the merge queue and WIP
+  holds per item.
+- **Done** (`?view=done`, design `WorkDone`) is every finished item (done, failed, rejected,
+  cancelled) with its outcome and reason, finished when, and its pull request; the separate Stopped
+  view is gone and `?view=stopped` lands on Done. It lists each org's 100 most recent items
+  (`workItem.list`). Rounds and Usage need runs and usage on a list read; Last 30 days and Export are
+  left out.

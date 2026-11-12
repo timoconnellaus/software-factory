@@ -92,6 +92,14 @@ export const ITEMS: Summary[] = [
   }),
   item(4, "Make the event log useful", "done", "done", { updatedAt: ago(60 * 40) }),
   item(1, "Attachments on work items", "done", "done", { updatedAt: ago(60 * 60) }),
+  item(7, "Rename the runner pairing command", "build", "cancelled", {
+    statusReason: "by you, from the app",
+    updatedAt: ago(60 * 70),
+  }),
+  item(6, "Retry verify when CI is late", "verify", "failed", {
+    statusReason: "verify failed three times",
+    updatedAt: ago(60 * 90),
+  }),
   item(3, "Import contacts from a CSV", "build", "running", {
     projectId: CRM,
     orgId: CLIENT,

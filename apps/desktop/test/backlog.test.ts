@@ -57,8 +57,7 @@ describe("the lists before release", () => {
       planning: 0,
       ready: 3,
       active: 6,
-      done: 3,
-      stopped: 0,
+      done: 5,
     });
     expect(viewCounts(counts, { orgId: null }).backlog).toBe(6);
     expect(viewCounts(counts, { orgId: null, projectId: "prj_site" }).ready).toBe(1);

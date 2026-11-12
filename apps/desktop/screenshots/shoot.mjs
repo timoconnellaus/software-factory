@@ -30,7 +30,11 @@ export const SCREENS = [
   { name: "inbox-question", path: "/?item=wi_11", design: "InboxQuestion.html" },
   { name: "inbox-spec", path: "/?item=wi_12", design: "InboxMerge.html" },
   { name: "work-board", path: "/work", design: "WorkActive.html" },
-  { name: "work-project", path: "/work?project=prj_factory", design: "WorkActive.html" },
+  {
+    name: "work-project",
+    path: "/work?view=active&project=prj_factory",
+    design: "WorkActive.html",
+  },
   { name: "work-done", path: "/work?view=done", design: "WorkDone.html" },
   { name: "item-overview", path: "/work/wi_13", design: "ItemOverview.html" },
   // #9 has a live run with a takeover hint, so the header shows Pin, Open terminal and Cancel.
@@ -76,6 +80,16 @@ export const SCREENS = [
   },
   { name: "work-new", path: "/new", design: "WorkNew.html" },
   { name: "project", path: "/work?project=prj_factory", design: "WorkProject.html" },
+  // In the factory and Done (spec 41 slice 2).
+  { name: "board", path: "/work?view=active&project=prj_factory", design: "WorkActive.html" },
+  {
+    name: "board-list",
+    path: "/work?view=active&project=prj_factory&layout=list",
+    design: "WorkActive.html",
+  },
+  { name: "board-empty", path: "/work?view=active&project=prj_site", design: "WorkActive.html" },
+  { name: "active-all", path: "/work", design: "WorkActiveAll.html" },
+  { name: "done", path: "/work?view=done", design: "WorkDone.html" },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
   { name: "update-required-ready", path: "/", query: "?update=ready", design: "Main.html" },

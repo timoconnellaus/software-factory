@@ -525,8 +525,8 @@ function CancelItems({
         <DialogHeader>
           <DialogTitle>Cancel {plural(items.length, "item")}?</DialogTitle>
           <DialogDescription>
-            {items.map((i) => `#${i.number}`).join(", ")} leave the backlog and show under Stopped.
-            This can't be undone.
+            {items.map((i) => `#${i.number}`).join(", ")} leave the backlog and show under Done, as
+            cancelled. This can't be undone.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
