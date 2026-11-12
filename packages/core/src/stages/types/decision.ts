@@ -6,6 +6,7 @@ import {
   conditionSchema,
   deciderImpact,
   deciderSchema,
+  instructionsImpact,
   instructionsSchema,
 } from "../settings.ts";
 
@@ -58,12 +59,10 @@ export const decision: StageType<typeof settings> = {
       ...deciderImpact(`${stageId}.decider`, before.decider, after.decider),
       ...conditionImpact(`${stageId}.when`, before.when, after.when),
     ];
-    if (before.instructions !== after.instructions)
-      out.push({
-        path: `${stageId}.instructions`,
-        class: "neutral",
-        summary: "Instructions changed.",
-      });
+    // What the decider is told is part of what it judges by (a person's prompt, or an adjudicator's).
+    out.push(
+      ...instructionsImpact(`${stageId}.instructions`, before.instructions, after.instructions),
+    );
     return out;
   },
 };

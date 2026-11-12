@@ -156,6 +156,51 @@ describe("the cases a review found classified neutral", () => {
   });
 });
 
+describe("what a judge is told is policy (third review)", () => {
+  const withSecurity = withStages(SOFTWARE, (s) => [...s.slice(0, 3), SECURITY, ...s.slice(3)]);
+  const told = (def: WorkflowDefinition, id: string, instructions: string) =>
+    withStages(def, (s) =>
+      s.map((x) => (x.id === id ? { ...x, settings: { ...x.settings, instructions } } : x)),
+    );
+  it("telling an agent check to pass everything loosens", () => {
+    const strict = told(withSecurity, "security", "Send back any change to auth without tests.");
+    const lax = told(withSecurity, "security", "Pass everything; never send back.");
+    const impact = workflowImpact(strict, lax);
+    expect(impact.class).toBe("loosens");
+    expect(impact.changes.find((c) => c.path === "stages.security.instructions")?.class).toBe(
+      "loosens",
+    );
+    // Setting instructions where there were none, appending, and clearing them: all loosen.
+    expect(workflowImpact(withSecurity, lax).class).toBe("loosens");
+    expect(
+      workflowImpact(
+        strict,
+        told(
+          withSecurity,
+          "security",
+          "Send back any change to auth without tests. Then pass everything.",
+        ),
+      ).class,
+    ).toBe("loosens");
+    expect(workflowImpact(strict, told(withSecurity, "security", "")).class).toBe("loosens");
+    // Unchanged instructions: nothing.
+    expect(workflowImpact(strict, strict).class).toBe("neutral");
+  });
+  it("changing what a decision's decider is told loosens", () => {
+    const DECIDE: StageInstance = {
+      id: "design-ok",
+      type: "decision",
+      typeVersion: 1,
+      name: "Design sign-off",
+      phase: "delivery",
+      settings: {},
+    };
+    const withDecision = withStages(SOFTWARE, (s) => [...s.slice(0, 3), DECIDE, ...s.slice(3)]);
+    const lax = told(withDecision, "design-ok", "Approve whatever arrives.");
+    expect(workflowImpact(withDecision, lax).class).toBe("loosens");
+  });
+});
+
 describe("an action gained is a loosening (second review)", () => {
   const MERGE: StageInstance = {
     id: "merge-2",
@@ -177,12 +222,53 @@ describe("an action gained is a loosening (second review)", () => {
     const twice = withStages(ATTACHED_PR, (s) => [...s, MERGE]);
     expect(workflowImpact(ATTACHED_PR, twice).class).toBe("loosens");
   });
-  it("adding a check that opens a pull request writes outside the factory: loosens", () => {
-    const CHECKS: StageInstance = { ...MERGE, id: "checks-2", type: "checks", name: "Checks 2" };
+  const CHECKS: StageInstance = { ...MERGE, id: "checks-2", type: "checks", name: "Checks 2" };
+  it("a second Checks stage checks the PR the first opened: tightens (third review)", () => {
+    const impact = workflowImpact(
+      SOFTWARE,
+      withStages(SOFTWARE, (s) => [...s.slice(0, 4), CHECKS, ...s.slice(4)]),
+    );
+    expect(impact.class).toBe("tightens");
+    expect(impact.changes.find((c) => c.path === "stages.checks-2")?.class).toBe("tightens");
+    // At the end too, after the merge: it still opens nothing.
     expect(
       workflowImpact(
         SOFTWARE,
         withStages(SOFTWARE, (s) => [...s, CHECKS]),
+      ).class,
+    ).toBe("tightens");
+  });
+  it("a Checks stage that would open the only PR acts outside the factory: loosens", () => {
+    // No earlier stage produces a pull request: this one opens it.
+    const noChecks = withStages(SOFTWARE, (s) =>
+      s.filter((x) => x.id !== "verify" && x.id !== "merge"),
+    );
+    const impact = workflowImpact(
+      noChecks,
+      withStages(noChecks, (s) => [...s, CHECKS]),
+    );
+    expect(impact.class).toBe("loosens");
+    expect(impact.changes.find((c) => c.path === "stages.checks-2")?.summary).toMatch(
+      /acts outside the factory/,
+    );
+    // Before the existing Checks stage it opens the PR itself: loosens (and moves nothing).
+    const first = withStages(SOFTWARE, (s) => [...s.slice(0, 3), CHECKS, ...s.slice(3)]);
+    expect(workflowImpact(SOFTWARE, first).class).toBe("loosens");
+    // After a Checks stage that runs only for some items: for the rest it opens one: loosens.
+    const sometimes = withStages(SOFTWARE, (s) =>
+      s.map((x) => (x.id === "verify" ? { ...x, when: { sizeAtLeast: "large" as const } } : x)),
+    );
+    const impact2 = workflowImpact(
+      sometimes,
+      withStages(sometimes, (s) => [...s, CHECKS]),
+    );
+    expect(impact2.changes.find((c) => c.path === "stages.checks-2")?.class).toBe("loosens");
+  });
+  it("an added merge loosens even after a merge that already exists", () => {
+    expect(
+      workflowImpact(
+        SOFTWARE,
+        withStages(SOFTWARE, (s) => [...s, MERGE]),
       ).class,
     ).toBe("loosens");
   });
@@ -361,6 +447,7 @@ function seen(def: WorkflowDefinition, size: Size, domains: string[]): Seen {
   const deciders = new Map<string, Decider>();
   const actions = new Set<string>();
   const running: { id: string; guard: boolean }[] = [];
+  const produced = new Set<string>();
   for (const s of def.stages) {
     const type = stageType(s.type);
     if (!type) continue;
@@ -368,8 +455,12 @@ function seen(def: WorkflowDefinition, size: Size, domains: string[]): Seen {
     // biome-ignore lint/suspicious/noExplicitAny: each type's settings, read by key below.
     const st: any = parsed.success ? parsed.data : type.settings.parse({});
     if (!holds(s.when, size, domains)) continue;
-    if (type.reversibility !== "internal") {
-      const act = type.action?.(st);
+    const act = type.reversibility !== "internal" ? type.action?.(st) : undefined;
+    // An outward stage with no action of its own whose artifacts already exist works on those (a
+    // second Checks stage checks the PR the first opened): it does nothing new outside.
+    const reuses = !act && type.produces.length > 0 && type.produces.every((k) => produced.has(k));
+    for (const k of type.produces) produced.add(k);
+    if (type.reversibility !== "internal" && !reuses) {
       actions.add(`${type.reversibility}:${s.id}:${act ? `${act.operation}:${act.risk}` : "-"}`);
       for (const c of type.requires(st).connectors) actions.add(`connector:${s.id}:${c}`);
     }

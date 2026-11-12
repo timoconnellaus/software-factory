@@ -35,6 +35,25 @@ export function actsOutside(type: AnyStageType, settings: unknown): boolean {
   return parsed === null || type.action?.(parsed) !== undefined;
 }
 
+/**
+ * True when `stage` takes no outside action of its own in `workflow`: it has no irreversible action,
+ * and everything it produces outside (a pull request) an earlier stage already produces, so it works
+ * on that one instead of opening another.
+ */
+function checksExisting(type: AnyStageType, stage: StageInstance, workflow: WorkflowDefinition) {
+  if (type.reversibility !== "reversible-outside") return false;
+  const parsed = parse(type, stage.settings);
+  if (parsed === null || type.action?.(parsed) !== undefined) return false;
+  const earlier = new Set<string>();
+  for (const s of workflow.stages) {
+    if (s.id === stage.id) break;
+    // A producer that runs only for some items leaves the rest without one: this stage would open it.
+    if (s.when) continue;
+    for (const kind of stageType(s.type)?.produces ?? []) earlier.add(kind);
+  }
+  return type.produces.length > 0 && type.produces.every((kind) => earlier.has(kind));
+}
+
 const loosens = (path: string, summary: string): ImpactChange => ({
   path,
   class: "loosens",
@@ -158,15 +177,19 @@ export function workflowImpact(
     // added (work that produces something, a conditional check) is not on the allow-list. An added
     // stage that acts outside the factory (a merge, a publish, a deploy, a PR it opens) is an action
     // gained, never a tightening, even though it has a gate: a workflow that never merged now does.
+    // A check whose only outward act is producing an artifact an earlier stage already produces (a
+    // second Checks stage: the PR exists) opens nothing; it checks the existing one, so it tightens.
     const type = stageType(s.type);
-    if (type && actsOutside(type, s.settings))
+    const check =
+      type !== undefined && guards(type, s.settings) && !s.when && parse(type, s.settings) !== null;
+    if (type && actsOutside(type, s.settings) && !(check && checksExisting(type, s, after)))
       changes.push(
         loosens(
           `stages.${s.id}`,
           `Adds ${s.name}, which acts outside the factory (${type.reversibility}).`,
         ),
       );
-    else if (type && guards(type, s.settings) && !s.when && parse(type, s.settings) !== null)
+    else if (check)
       changes.push({
         path: `stages.${s.id}`,
         class: "tightens",

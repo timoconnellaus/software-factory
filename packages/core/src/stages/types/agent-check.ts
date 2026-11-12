@@ -1,7 +1,7 @@
 import { MODEL_ROLES } from "@software-factory/runner-contract";
 import { z } from "zod";
 import type { StageType } from "../contract.ts";
-import { instructionsSchema } from "../settings.ts";
+import { instructionsImpact, instructionsSchema } from "../settings.ts";
 
 const settings = z.object({ instructions: instructionsSchema }).strict();
 
@@ -37,7 +37,5 @@ export const agentCheck: StageType<typeof settings> = {
   judges: "agent",
   steps: () => [{ id: "check", kind: "agent" }],
   impact: (before, after, stageId) =>
-    before.instructions === after.instructions
-      ? []
-      : [{ path: `${stageId}.instructions`, class: "neutral", summary: "Instructions changed." }],
+    instructionsImpact(`${stageId}.instructions`, before.instructions, after.instructions),
 };
