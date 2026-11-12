@@ -2,6 +2,10 @@
 // and the floor, model roles and the work-item model (ADR 0003, 0004, 0008, 0018).
 export * from "./actors.ts";
 export * from "./attachments.ts";
+export * from "./attestation/android.ts";
+export { DerError, readDer } from "./attestation/der.ts";
+export { GOOGLE_ATTESTATION_ROOTS, type PinnedRoot } from "./attestation/roots.ts";
+export { type Certificate, parseCertificate } from "./attestation/x509.ts";
 export * from "./errors.ts";
 export * from "./ids.ts";
 export * from "./improve.ts";
@@ -29,7 +33,20 @@ export {
   resolveDesktopToken,
 } from "./operations/desktop.ts";
 export { DEVICE_LOGIN_ACTOR, normalizeUserCode } from "./operations/devices.ts";
+export { PHONE_REFUSES_PENDING, phoneMayDecidePending } from "./operations/gates.ts";
 export * as operations from "./operations/index.ts";
+export {
+  formatPairCode,
+  MOBILE_APPROVE_PATH,
+  MOBILE_CALLBACK_PATH,
+  MOBILE_DEVICE_ACTOR,
+  MOBILE_PAIR_PATH,
+  MOBILE_TOKEN_PREFIX,
+  type MobileAttestationService,
+  normalizePairCode,
+  PAIR_CODE_REFUSED,
+  resolveMobileToken,
+} from "./operations/mobile.ts";
 export { PROTECTION_RECHECK_MS } from "./operations/protection.ts";
 export { NEVER_BULK_ACCEPTED_DOMAINS } from "./operations/questions.ts";
 export { LEASE_TTL_MS } from "./operations/runners.ts";

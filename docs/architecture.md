@@ -154,6 +154,15 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   trampoline. A `ClientHub` Durable Object per person holds the app's live socket
   (`/client/v1/live`); the outbox's `notify` messages are pushed through it. The door refuses
   desktop builds below `DESKTOP_MIN_PROTOCOL` with 426 `update_required` (ADR 0393).
+- **The phone app** (`apps/mobile`, Flutter, ADRs 0540–0543, spec 60) comes through the same door
+  with a `mobile` token on the `mobile` surface. Its device key is an Android Keystore key bound to
+  a fingerprint for every use; `sf-engine` checks the key's attestation at sign-in
+  (`packages/core/src/attestation/`: the chain to Google's pinned roots, the revocation list, the
+  challenge, our package and signing certificate, the boot state). It pairs by the website's
+  `/mobile/connect` or a pairing offer's QR code from Settings → Devices, and decides with the same
+  presence proofs as the desktop; which operations take a proof and which are one tap on each device
+  is `deviceDecidable()` in `invoke()`. The website serves `/.well-known/assetlinks.json` for its App
+  Links.
 - **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
   without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
   0037). A session's PR that never joined is attached afterwards (ADR 0290).
