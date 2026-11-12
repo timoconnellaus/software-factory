@@ -19,10 +19,12 @@
 // No nonce is stored for replay protection: a captured request replays only within its 5 minutes,
 // for the same runner, path, body and idempotency key. For a stored call the cloud answers a
 // repeated key with the stored response instead of acting twice. Unstored calls are reads, held
-// waits or the job token, which a replay can't change anything with, and the heartbeat, which the
-// cloud refuses unless its signed timestamp is newer than the runner's last accepted heartbeat
-// (core_runners.last_signed_at). So a replay, or a host retry after a lost response, changes
-// nothing.
+// waits or the job token, which a replay can't change anything with, and the heartbeat: one whose
+// signed timestamp is no newer than the runner's last accepted heartbeat (core_runners.
+// last_signed_at) changes none of the runner's state and only renews its leases, fenced; and the
+// claim: a retried claimId gets the job it already got, and any other claim signed before the
+// runner's last accepted call gets an empty answer and writes nothing. So a replay, or a host retry
+// after a lost response, changes nothing but a lease the runner holds.
 //
 // Web Crypto only, so it runs in Workers and in Node.
 

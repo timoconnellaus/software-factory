@@ -121,13 +121,14 @@ async function route(
       release: "run.release",
     }[job.call];
   }
-  // The heartbeat is unstored: its signed time lets the cloud refuse a replayed one (ADR 0016).
+  // The heartbeat and the claim are unstored: their signed time keeps a replayed one from changing
+  // state (ADR 0016, 0590).
   return invokeReply(
     env,
     op,
     input,
     { type: "runner", id: runner },
-    path === PATHS.heartbeat ? signedAt : undefined,
+    path === PATHS.heartbeat || path === PATHS.claim ? signedAt : undefined,
   );
 }
 

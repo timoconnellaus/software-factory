@@ -9,11 +9,12 @@
   "main": "./src/server.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
-  // Workers Logs (AGENTS.md, Cloudflare cost, rule 11): 20M events a month are included, then
-  // $0.60/M (Observability pricing from 1 Dec 2026). An open dashboard tab polls up to about 22 times a
-  // minute (each query every 10-30 s), ~950k events a month per tab left open, so every request is
-  // logged (1.0): this Worker's failures are a person's, and one-off. Lower it if more than about
-  // 15 tabs stay open all month, or when the new pricing says so.
+  // Workers Logs (AGENTS.md, Cloudflare cost, rule 11). From 1 Dec 2026 logs are billed by size
+  // (Observability pricing): 50 GB ingested per billing cycle included (shared with traces and every
+  // other Cloudflare log), then $0.25/GB, measured uncompressed. An open dashboard tab polls up to
+  // about 22 times a minute, ~950k requests a month per tab left open: 1 to 4 GB at 1 to 4 KB a
+  // request's log (an estimate). So every request is logged (1.0): this Worker's failures are a
+  // person's, and one-off. Lower it if more than a few tabs stay open all month.
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

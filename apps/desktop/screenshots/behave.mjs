@@ -32,12 +32,16 @@ function page(cdp, base) {
   const $ = (selector) => `document.querySelector(${JSON.stringify(selector)})`;
   const p = {
     evaluate,
-    /** A fresh view at a path: one tab, nothing remembered, no writes recorded. */
-    async open(path) {
+    /**
+     * A fresh view at a path: one tab, nothing remembered, no writes recorded. `query` goes before
+     * the hash (the fake door reads it: `?terminal=fixture`); the hash history then glues it onto
+     * the last hash param, so paths that take one end with `&end=1`.
+     */
+    async open(path, query = "") {
       await cdp.send("Page.navigate", { url: base });
       await sleep(200);
       await evaluate("localStorage.clear()");
-      await cdp.send("Page.navigate", { url: `${base}#${path}` });
+      await cdp.send("Page.navigate", { url: `${base}${query}#${path}` });
       await p.waitFor("document.querySelector('main') !== null");
       await sleep(400);
     },
@@ -68,6 +72,16 @@ function page(cdp, base) {
     calls: (op) =>
       evaluate(`(window.__sfCalls ?? []).filter((c) => c.op === ${JSON.stringify(op)})`),
     path: () => evaluate("location.hash.slice(1)"),
+    /** Which element has the keyboard, as `[data-testid]`, `[data-peek]` or the tag. */
+    focused: () =>
+      evaluate(
+        "(() => { const e = document.activeElement; return e?.dataset?.testid ?? (e?.dataset?.peek ? 'peek:' + e.dataset.peek : e?.tagName); })()",
+      ),
+    inPanel: () =>
+      evaluate(
+        "!!document.querySelector('[data-testid=item-panel]')?.contains(document.activeElement)",
+      ),
+    panelOpen: () => evaluate("!!document.querySelector('[data-testid=item-panel]')"),
     toasts: () =>
       evaluate("[...document.querySelectorAll('[data-sonner-toast]')].map((t) => t.textContent)"),
   };
@@ -83,6 +97,9 @@ function expect(actual, label) {
     toContain: (v) => (actual ?? "").includes(v) || fail(`to contain ${JSON.stringify(v)}`),
     toBeTruthy: () => !!actual || fail("truthy"),
     toBeFalsy: () => !actual || fail("falsy"),
+    not: {
+      toContain: (v) => !(actual ?? "").includes(v) || fail(`not to contain ${JSON.stringify(v)}`),
+    },
   };
 }
 
@@ -172,6 +189,166 @@ export const TESTS = [
       await p.click('[data-testid="discard"]');
       await sleep(300);
       expect(await p.exists('[data-testid="edit-dialog"]'), "discarded").toBeFalsy();
+    },
+  },
+  {
+    name: "panel: Esc closes the dialog, then the terminal, then the panel",
+    async run(p) {
+      await p.open("/work?view=active&project=prj_factory&item=wi_9&end=1", "?terminal=fixture");
+      await p.waitFor("document.querySelector('[data-testid=panel-body]')");
+      await p.click('[data-testid="item-panel"] [data-testid="cancel"]');
+      await p.waitFor("document.querySelector('[role=dialog]')");
+      await sleep(300);
+      await p.key("Escape");
+      await sleep(300);
+      expect(await p.exists("[role=dialog]"), "the dialog closes").toBeFalsy();
+      expect(await p.panelOpen(), "the panel stays").toBeTruthy();
+      await p.click('[data-testid="item-panel"] [data-testid="open-terminal"]');
+      await p.waitFor("document.querySelector('[data-testid=terminal-dock]')");
+      await p.focus('[data-testid="item-panel"]');
+      await p.key("Escape");
+      await sleep(200);
+      expect(await p.exists('[data-testid="terminal-dock"]'), "the terminal closes").toBeFalsy();
+      expect(await p.panelOpen(), "the panel stays").toBeTruthy();
+      await p.key("Escape");
+      await sleep(300);
+      expect(await p.panelOpen(), "then the panel closes").toBeFalsy();
+    },
+  },
+  {
+    name: "panel: Esc while typing keeps the panel and the typed text",
+    async run(p) {
+      await p.open("/work?view=active&project=prj_factory&item=wi_12&itemTab=plan");
+      await p.waitFor("document.querySelector('[data-testid=chat-strip]')", 5000);
+      await p.click('[data-testid="chat-strip"]');
+      await p.waitFor("document.querySelector('[data-testid=chat-input]')");
+      await p.focus('[data-testid="chat-input"]');
+      await p.type("half a thought");
+      await p.key("Escape");
+      await sleep(200);
+      expect(await p.panelOpen(), "the panel stays").toBeTruthy();
+      expect(
+        await p.evaluate("document.querySelector('[data-testid=chat-input]').value"),
+        "the typed text",
+      ).toContain("half a thought");
+    },
+  },
+  {
+    name: "panel: deep link, reload, back and forward; closing doesn't leave a way back into it",
+    async run(p) {
+      await p.open("/work?view=active&project=prj_factory&item=wi_9");
+      expect(await p.panelOpen(), "a deep link opens it").toBeTruthy();
+      await p.evaluate("location.reload()");
+      await sleep(1500);
+      expect(await p.panelOpen(), "a reload keeps it").toBeTruthy();
+      await p.open("/work?view=active&project=prj_factory");
+      await p.click('[data-testid="card-wi_9"]');
+      await p.waitFor("document.querySelector('[data-testid=item-panel]')");
+      expect(await p.path(), "the URL names it").toContain("item=wi_9");
+      await p.evaluate("history.back()");
+      await sleep(500);
+      expect(await p.panelOpen(), "back closes it").toBeFalsy();
+      await p.evaluate("history.forward()");
+      await sleep(500);
+      expect(await p.panelOpen(), "forward opens it again").toBeTruthy();
+      await p.click('[data-testid="panel-close"]');
+      await sleep(400);
+      expect(await p.panelOpen(), "closed").toBeFalsy();
+      await p.evaluate("history.back()");
+      await sleep(500);
+      expect(await p.path(), "back after closing").not.toContain("item=wi_9");
+    },
+  },
+  {
+    name: "panel: opening moves focus into it, Tab stays inside, closing returns it to the card",
+    async run(p) {
+      await p.open("/work?view=active&project=prj_factory");
+      await p.focus('[data-testid="card-wi_9"]');
+      await p.key("Enter");
+      await p.waitFor("document.querySelector('[data-testid=panel-body]')");
+      await sleep(200);
+      expect(await p.inPanel(), "focus moved in").toBeTruthy();
+      for (let i = 0; i < 40; i++) await p.key("Tab");
+      expect(await p.inPanel(), "Tab stays inside").toBeTruthy();
+      await p.click('[data-testid="panel-close"]');
+      await sleep(400);
+      expect(await p.focused(), "back on the card").toBe("card-wi_9");
+      expect(
+        await p.evaluate("document.querySelectorAll('main').length"),
+        "one main landmark with it open",
+      ).toBe(1);
+    },
+  },
+  {
+    name: "panel: closing it, or showing another item, releases the terminal's socket",
+    async run(p) {
+      await p.open("/work?view=active&project=prj_factory&item=wi_9&end=1", "?terminal=fixture");
+      await p.waitFor(
+        "document.querySelector('[data-testid=item-panel] [data-testid=open-terminal]')",
+      );
+      await p.click('[data-testid="item-panel"] [data-testid="open-terminal"]');
+      await p.waitFor("(window.__sfCalls ?? []).some((c) => c.op === 'terminal.open')");
+      await sleep(300);
+      await p.click('[data-testid="panel-close"]');
+      await sleep(400);
+      const [opened] = await p.calls("terminal.open");
+      const closed = await p.calls("terminal.close");
+      expect(closed.length, "closed once").toBe(1);
+      expect(closed[0]?.input.id, "the same socket").toBe(opened?.input.id);
+      // Another item in the panel: the first one's terminal goes.
+      await p.click('[data-testid="card-wi_9"]');
+      await p.waitFor(
+        "document.querySelector('[data-testid=item-panel] [data-testid=open-terminal]')",
+      );
+      await p.click('[data-testid="item-panel"] [data-testid="open-terminal"]');
+      await p.waitFor(
+        "(window.__sfCalls ?? []).filter((c) => c.op === 'terminal.open').length === 2",
+      );
+      await sleep(300);
+      await p.click('[data-testid="card-wi_26"]');
+      await sleep(400);
+      expect((await p.calls("terminal.close")).length, "released on item change").toBe(2);
+    },
+  },
+  {
+    name: "panel: Expand keeps the tab and an open terminal",
+    async run(p) {
+      await p.open(
+        "/work?view=active&project=prj_factory&item=wi_9&itemTab=runs&end=1",
+        "?terminal=fixture",
+      );
+      await p.waitFor(
+        "document.querySelector('[data-testid=item-panel] [data-testid=open-terminal]')",
+      );
+      await p.click('[data-testid="item-panel"] [data-testid="open-terminal"]');
+      await p.waitFor("document.querySelector('[data-testid=terminal-dock]')");
+      await p.click('[data-testid="panel-expand"]');
+      await sleep(800);
+      expect(await p.path(), "the item's page").toContain("/work/wi_9");
+      expect(await p.path(), "the same tab").toContain("tab=runs");
+      expect(
+        await p.exists('[data-testid="terminal-dock"]'),
+        "the terminal stays open",
+      ).toBeTruthy();
+    },
+  },
+  {
+    name: "panel: at 1200 wide it leaves the board readable, and resizes from its left edge",
+    async run(p) {
+      await p.open("/work?view=active&project=prj_factory&item=wi_9");
+      const w = Number(
+        await p.evaluate("document.querySelector('[data-testid=item-panel]').dataset.width"),
+      );
+      expect(w <= 480 && w >= 360, `width ${w} between 360 and half the content area`).toBeTruthy();
+      await p.focus('[data-testid="panel-resize"]');
+      await p.key("ArrowRight");
+      const narrower = Number(
+        await p.evaluate("document.querySelector('[data-testid=item-panel]').dataset.width"),
+      );
+      expect(narrower < w, `narrower after ArrowRight (${narrower})`).toBeTruthy();
+      expect(await p.evaluate("localStorage.getItem('sf.itemPanel.width')"), "remembered").toBe(
+        String(narrower),
+      );
     },
   },
 ];

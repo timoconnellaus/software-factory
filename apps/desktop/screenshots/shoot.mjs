@@ -83,6 +83,44 @@ export const SCREENS = [
   // A project whose config defines workflows and names none: captured, never released.
   { name: "work-new-no-workflow", path: "/new?project=prj_crm", design: "WorkNew.html" },
   { name: "project", path: "/work?project=prj_factory", design: "WorkProject.html" },
+  // In the factory and Done (spec 41 slice 2).
+  { name: "board", path: "/work?view=active&project=prj_factory", design: "WorkActive.html" },
+  {
+    name: "board-list",
+    path: "/work?view=active&project=prj_factory&layout=list",
+    design: "WorkActive.html",
+  },
+  { name: "board-empty", path: "/work?view=active&project=prj_site", design: "WorkActive.html" },
+  { name: "active-all", path: "/work", design: "WorkActiveAll.html" },
+  { name: "active-all-list", path: "/work?layout=list", design: "WorkActiveAll.html" },
+  { name: "done", path: "/work?view=done", design: "WorkDone.html" },
+  // The item side panel (spec 41 slice 7): over the board, over the All projects list, on the
+  // Plan tab, and on an item before release.
+  {
+    name: "panel-board",
+    path: "/work?view=active&project=prj_factory&item=wi_9",
+    design: "WorkActivePanel.html",
+  },
+  {
+    name: "panel-all-review",
+    path: "/work?item=wi_13&itemTab=review",
+    design: "WorkActivePanel.html",
+  },
+  {
+    name: "panel-plan",
+    path: "/work?view=active&project=prj_factory&item=wi_12&itemTab=plan",
+    design: "WorkActivePanel.html",
+  },
+  { name: "panel-backlog", path: "/work?view=backlog&item=wi_21", design: "WorkActivePanel.html" },
+  // The terminal docked inside the panel, on the fixture door's made-up session (never a real
+  // shell). Shot to docs/screenshots/desktop-terminal with `--out desktop-terminal`.
+  {
+    name: "board-panel",
+    path: "/work?view=active&project=prj_factory&item=wi_9&end=1",
+    query: "?terminal=fixture",
+    design: "WorkActivePanel.html",
+    clicks: ['[data-testid="item-panel"] [data-testid="open-terminal"]'],
+  },
   { name: "factory-overview", path: "/factory", design: "FactoryOverview.html" },
   { name: "factory-runners", path: "/factory/runners", design: "FactoryRunners.html" },
   { name: "factory-incidents", path: "/factory/incidents", design: "FactoryIncidents.html" },

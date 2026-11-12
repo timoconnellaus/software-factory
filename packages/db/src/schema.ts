@@ -626,8 +626,6 @@ export interface CoreRunsTable {
   last_event_at: Iso | null;
   ended_at: Iso | null;
   released_at: Iso | null;
-  /** When the run's events and steers were archived to R2 and deleted from D1 (migration 0361). */
-  events_archived_at: Iso | null;
 }
 
 export interface CoreRunEventsTable {
@@ -636,6 +634,8 @@ export interface CoreRunEventsTable {
   at: Iso;
   type: string;
   payload: JsonText;
+  /** Set on a row that holds a batch of log lines, `seq` to `last_seq` (migration 0361). */
+  last_seq: number | null;
 }
 
 /** A person's message into a live run (spec 31, ADR 0400). */

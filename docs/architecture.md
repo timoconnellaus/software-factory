@@ -12,10 +12,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   one Workflow per work item, outbox delivery, the minute cron and the signed runner channel
   (`sf-engine.zerobsai.com/runner/v1/*`). Both bind one D1 database, `software-factory`: work items,
   questions, gates, runs, leases, audit journal, outbox and Better Auth, all `core_*` tables
-  (`packages/db/migrations`, ADR 0050). `sf-engine` also binds two private R2 buckets:
-  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes, and `sf-archive` (`ARCHIVE`),
-  where a run's events and steers go 30 days after it ended. Tables that only grow are pruned by the
-  minute cron in bounded batches (`apps/engine/src/retention.ts`, AGENTS.md "Cloudflare cost").
+  (`packages/db/migrations`, ADR 0050). `sf-engine` also binds one private R2 bucket,
+  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes. Tables that only grow are
+  pruned by the minute cron in bounded batches (`apps/engine/src/retention.ts`, AGENTS.md "Cloudflare cost").
 - **Operations** (ADR 0003, 0004) are the only way to change state. Every call goes through
   `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, from
   its current config version, and no looser than the version a work item started under), fencing
@@ -84,7 +83,10 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
-  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
+  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). Designed, not built (spec 53, ADRs 0580–0585): from Workflow v11 an approval only says the
+  head may merge, and the **babysitter** delivers it: a per-repository reconcile pass in the engine
+  (no model) orders, updates and merges approved PRs and holds them while `main` is red, and starts a
+  `babysit` job on a runner only for judgement (a conflict, a failed check, a red `main`). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
   auto-merge where policy opts in (ADR 0230).
 - **Attached PRs** (ADR 0290, spec 05): a PR opened outside the factory fails `factory/verify` with

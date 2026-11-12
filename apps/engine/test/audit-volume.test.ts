@@ -226,6 +226,28 @@ describe("audit volume of machine-frequency calls (ADR 0590)", () => {
     console.log(report.join("\n"));
   });
 
+  it("audits a heartbeat that changes what a person looks for: accepting, the update state", async () => {
+    const count = async () =>
+      (await env.DB.prepare(
+        "SELECT count(*) AS n FROM core_audit WHERE operation = 'runner.heartbeat' AND actor_id = ?",
+      )
+        .bind(w.runner.runnerId)
+        .first<number>("n")) ?? 0;
+    const beat = async (accepting: boolean) =>
+      (await channel(env)).heartbeat({
+        manifest: MANIFEST,
+        capacity: { max: 2, inUse: 1, accepting },
+        activeJobs: [{ jobId: job.jobId, fencingToken: job.fencingToken }],
+      });
+    const before = await count();
+    await beat(false);
+    expect(await count()).toBe(before + 1);
+    await beat(false);
+    expect(await count()).toBe(before + 1);
+    await beat(true);
+    expect(await count()).toBe(before + 2);
+  });
+
   it("keeps a runner's input as a digest, never its body", async () => {
     await (await channel(env)).heartbeat({
       manifest: MANIFEST,

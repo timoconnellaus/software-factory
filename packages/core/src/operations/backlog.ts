@@ -1031,10 +1031,21 @@ const BOARD_STATES = [
   "cancelled",
 ] as const;
 
+/**
+ * An item's phase (ADR 0493, as the owner decided 2026-11-12): **shaping** until it is released
+ * (backlog, shaping, ready), **delivery** from release on. A released item in its triage or spec
+ * stage is delivering: a small item released from the backlog runs those stages after release.
+ */
+export function itemPhase(status: string): "shaping" | "delivery" {
+  return status === "backlog" || status === "shaping" || status === "ready"
+    ? "shaping"
+    : "delivery";
+}
+
 export const workItemBoard = defineOperation({
   name: "workItem.board",
   description:
-    "Work items by state, for one project or across the org (ADR 0491): by default backlog, ready, queued and the active ones, each with priority, rank, repository, what it waits for and what blocks it, in the order the factory would pull them; and counts per project and state (every state, done and cancelled included). At most 500 items.",
+    "Work items by state, for one project or across the org (ADR 0491): by default backlog, ready, queued and the active ones, each with priority, rank, repository, what it waits for and what blocks it, in the order the factory would pull them; and counts per project and state (every state, done and cancelled included). Each item's `phase` is shaping before release (backlog, shaping, ready) and delivery from release on (ADR 0493). At most 500 items: compare with the counts to tell a cut list.",
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
@@ -1102,7 +1113,7 @@ export const workItemBoard = defineOperation({
           status: w.status,
           statusReason: w.status_reason,
           stage: w.stage,
-          phase: STAGE_PHASE[w.stage as keyof typeof STAGE_PHASE] ?? "delivery",
+          phase: itemPhase(w.status),
           priority: priorityOf(w.priority),
           rank: w.rank,
           size: w.size,
@@ -1126,7 +1137,7 @@ export const BUILT_IN_WORKFLOW = { name: "software", label: "Software (built in)
 export const projectWorkflow = defineOperation({
   name: "project.workflow",
   description:
-    "The workflow a project's items follow (ADR 0492) and its stages in order, each with its label and phase (ADR 0493: shaping before release, delivery after). `workflow` is the one the project's config names, the built-in Software workflow when the config defines none, or null when the project can't release work (no valid config, or workflows defined and none named), with the reason. Today every workflow runs the built-in engine's stages.",
+    "The workflow a project's items follow (ADR 0492) and the stages an item works through, in order (not intake and done, the engine's entry and exit), each with its label and phase (ADR 0493: shaping before release, delivery after). `workflow` is the one the project's config names, the built-in Software workflow when the config defines none, or null when the project can't release work (no valid config, or workflows defined and none named), with the reason. Today every workflow runs the built-in engine's stages.",
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
@@ -1154,7 +1165,8 @@ export const projectWorkflow = defineOperation({
   async handler(_input, ctx) {
     const project = requireProject(ctx);
     const policy = ctx.scope.policy;
-    const stages = STAGES.map((stage) => ({
+    // Intake and done are the engine's entry and exit, not stages an item works through.
+    const stages = STAGES.filter((s) => s !== "intake" && s !== "done").map((stage) => ({
       stage,
       label: STAGE_LABEL[stage],
       phase: STAGE_PHASE[stage],

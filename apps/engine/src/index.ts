@@ -16,7 +16,7 @@ import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
 import { pullQueuedWork } from "./pull.ts";
-import { archiveRunEvents, pruneExpired } from "./retention.ts";
+import { pruneExpired } from "./retention.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
@@ -54,9 +54,8 @@ export default {
     await runAdjudicator(env);
     // Once an hour: the improver (ADR 0373) decides running trials and starts the next one.
     if (now.getUTCMinutes() === 23) await runImprover(env, now);
-    // Retention (AGENTS.md "Cloudflare cost", rule 4): every minute, a bounded slice of the oldest
-    // ended run's events goes to R2; once an hour, expired rows go in one batch.
-    await archiveRunEvents(env, now);
+    // Retention (AGENTS.md "Cloudflare cost", rule 3): once an hour, expired rows go in bounded
+    // batches.
     if (now.getUTCMinutes() === 41) await pruneExpired(env.DB, now);
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
