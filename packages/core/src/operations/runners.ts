@@ -2,7 +2,7 @@
 // channel in sf-engine maps each signed call to one of these operations with actor
 // `{ type: "runner", id: <runner id> }`.
 
-import { json, parseJson } from "@software-factory/db";
+import { type CoreJobsTable, json, parseJson } from "@software-factory/db";
 import {
   accountNameSchema,
   type artifactSchema,
@@ -28,7 +28,7 @@ import {
   stagePool,
   storedArtifactSchema,
 } from "@software-factory/runner-contract";
-import { sql } from "kysely";
+import { type Selectable, sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId, newRunnerId } from "../ids.ts";
@@ -544,6 +544,8 @@ export const jobEnqueue = defineOperation({
         session_timeout_ms: input.sessionTimeoutMs,
         created_at: ctx.now,
         pool: stagePool(input.stage),
+        // Shaping work is claimed after released work (ADR 0493, migration 0363).
+        shaping: w.status === "shaping" ? 1 : 0,
         tier: input.tier === "standard" ? null : input.tier,
       }),
     );
@@ -555,6 +557,33 @@ export const jobEnqueue = defineOperation({
     return { jobId: id };
   },
 });
+
+/**
+ * What job.claim's candidate query already read for a job (AGENTS.md "Cloudflare cost", rule 8):
+ * placementRefusal uses these instead of a query each, and memoises the per-project reads (policy,
+ * WIP count, protection) across the claim's candidates. The checks and their order are unchanged.
+ */
+export interface PlacementFacts {
+  /** Whether itemRepository would find the item's repository. */
+  hasRepository: boolean;
+  /** The runner is the requester's, or shared into the item's org, factory or project. */
+  shared: boolean;
+  /** A kill switch is on for the item's org or project. */
+  killed: boolean;
+  lease: { holder_kind: string | null; expires_at: string | null } | null;
+  /** Per-claim memo of the per-project reads. */
+  memo: Map<string, Promise<unknown>>;
+}
+
+const memoised = <T>(facts: PlacementFacts | undefined, key: string, read: () => Promise<T>) => {
+  if (!facts) return read();
+  let hit = facts.memo.get(key) as Promise<T> | undefined;
+  if (!hit) {
+    hit = read();
+    facts.memo.set(key, hit);
+  }
+  return hit;
+};
 
 /** Why a runner may not take a job on this work item now, or null if it may (ADR 0015, 0038, 0040). */
 export async function placementRefusal(
@@ -571,16 +600,19 @@ export async function placementRefusal(
     repository_id?: string | null;
   },
   project: Pick<ProjectRow, "id" | "factory_id" | "policy_sha">,
+  facts?: PlacementFacts,
 ): Promise<{ reason: string; wip?: true; waitReason?: string } | null> {
   if (!manifest) return { reason: "runner has not reported a manifest" };
   // Checked before anything is claimed (ADR 0490): an item with no repository waits, with the
   // reason, and never blocks the jobs behind it.
   if (
     "repository_id" in item &&
-    !(await itemRepository(ctx.db, {
-      repository_id: item.repository_id ?? null,
-      project_id: item.project_id,
-    }))
+    !(facts
+      ? facts.hasRepository
+      : await itemRepository(ctx.db, {
+          repository_id: item.repository_id ?? null,
+          project_id: item.project_id,
+        }))
   ) {
     const reason = "the work item has no repository: choose one of its project's";
     return { reason, waitReason: reason };
@@ -603,7 +635,10 @@ export async function placementRefusal(
     requires: job.requires,
   });
   if (!fit.ok) return { reason: fit.reason };
-  if (runner.owner_user_id !== item.requester_user_id) {
+  if (facts && !facts.shared) {
+    return { reason: "runner is not the requester's and is not shared into this project" };
+  }
+  if (!facts && runner.owner_user_id !== item.requester_user_id) {
     const share = await ctx.db
       .selectFrom("core_runner_shares")
       .select("runner_id")
@@ -619,23 +654,32 @@ export async function placementRefusal(
     if (!share)
       return { reason: "runner is not the requester's and is not shared into this project" };
   }
-  if (await activeKillSwitch(ctx.db, item.org_id, item.project_id))
+  if (facts ? facts.killed : await activeKillSwitch(ctx.db, item.org_id, item.project_id))
     return { reason: "kill switch" };
-  const { policy } = await loadPolicy(ctx.db, project);
+  const { policy } = await memoised(facts, `policy:${project.id}`, () =>
+    loadPolicy(ctx.db, project),
+  );
   if (!policy) return { reason: "project has no valid policy" };
-  if (job.stage === "build" && (await atWipLimit(ctx, project.id, policy))) {
+  if (
+    job.stage === "build" &&
+    (await memoised(facts, `wip:${project.id}`, () => atWipLimit(ctx, project.id, policy)))
+  ) {
     return { reason: WIP_WAIT_REASON, wip: true };
   }
   if (job.stage === "build") {
     // ADR 0280: a policy may hold builds while the default branch's protection is red.
-    const held = await protectionBlocksBuild(ctx, project.id, policy.protection.onRed);
+    const held = await memoised(facts, `protection:${project.id}`, () =>
+      protectionBlocksBuild(ctx, project.id, policy.protection.onRed),
+    );
     if (held) return { reason: held, waitReason: held };
   }
-  const lease = await ctx.db
-    .selectFrom("core_leases")
-    .select(["holder_kind", "expires_at"])
-    .where("work_item_id", "=", item.id)
-    .executeTakeFirst();
+  const lease = facts
+    ? facts.lease
+    : await ctx.db
+        .selectFrom("core_leases")
+        .select(["holder_kind", "expires_at"])
+        .where("work_item_id", "=", item.id)
+        .executeTakeFirst();
   if (
     lease?.holder_kind &&
     lease.expires_at &&
@@ -644,6 +688,136 @@ export async function placementRefusal(
     return { reason: `held by a ${lease.holder_kind}` };
   }
   return null;
+}
+
+type JobRow = Selectable<CoreJobsTable>;
+
+/** A queued job as job.claim's one query reads it: the job, and what placement needs to know. */
+interface ClaimCandidate {
+  candidate: JobRow;
+  item: Pick<
+    WorkItemRow,
+    "id" | "org_id" | "project_id" | "requester_user_id" | "repository_id" | "status" | "branch"
+  >;
+  project: Pick<ProjectRow, "id" | "factory_id" | "policy_sha">;
+  facts: Omit<PlacementFacts, "memo">;
+  fencingToken: number | null;
+}
+
+/**
+ * job.claim's candidates (AGENTS.md "Cloudflare cost", rule 8): the first 50 queued jobs in claim
+ * order, joined to their item, project and lease, with itemRepository's answer, the runner's
+ * owner-or-share and the kill switch worked out in SQL. Jobs in a pool with no room, on an item
+ * not running, waiting or shaping, or (with the item's repository found) that the runner may not
+ * take for its owner, a share or a kill switch are left out: placementRefusal refused those
+ * without a write. One query for the whole claim instead of 4 to 8 per queued job.
+ */
+async function claimCandidates(
+  ctx: Pick<HandlerContext, "db">,
+  runner: Pick<RunnerRow, "id" | "owner_user_id">,
+  pools: readonly ("heavy" | "light")[],
+): Promise<ClaimCandidate[]> {
+  if (pools.length === 0) return [];
+  type Row = JobRow & {
+    item_org_id: string;
+    item_project_id: string;
+    item_requester_user_id: string;
+    item_repository_id: string | null;
+    item_status: WorkItemRow["status"];
+    item_branch: string;
+    project_factory_id: string;
+    project_policy_sha: string | null;
+    lease_holder_kind: string | null;
+    lease_expires_at: string | null;
+    lease_fencing_token: number | null;
+    has_repository: number;
+    shared: number;
+    killed: number;
+  };
+  const { rows } = await sql<Row>`
+    WITH q AS (
+      -- INDEXED BY: without it the planner may pick core_jobs_status_idx and sort the whole queue.
+      SELECT j.* FROM core_jobs j INDEXED BY core_jobs_queue_idx WHERE j.status = 'queued'
+      ORDER BY j.shaping, j.created_at LIMIT 50
+    ),
+    c AS (
+      SELECT q.*,
+        w.org_id AS item_org_id, w.project_id AS item_project_id,
+        w.requester_user_id AS item_requester_user_id, w.repository_id AS item_repository_id,
+        w.status AS item_status, w.branch AS item_branch,
+        p.factory_id AS project_factory_id, p.policy_sha AS project_policy_sha,
+        l.holder_kind AS lease_holder_kind, l.expires_at AS lease_expires_at,
+        l.fencing_token AS lease_fencing_token,
+        CASE WHEN w.repository_id IS NOT NULL
+          THEN EXISTS (SELECT 1 FROM core_repositories r WHERE r.id = w.repository_id)
+          ELSE (SELECT count(*) FROM (
+                  SELECT 1 FROM core_repositories r WHERE r.project_id = w.project_id LIMIT 2)) = 1
+        END AS has_repository,
+        (w.requester_user_id = ${runner.owner_user_id} OR EXISTS (
+          SELECT 1 FROM core_runner_shares s WHERE s.runner_id = ${runner.id} AND (
+            (s.scope = 'org' AND s.scope_id = w.org_id)
+            OR (s.scope = 'factory' AND s.scope_id = p.factory_id)
+            OR (s.scope = 'project' AND s.scope_id = p.id)))) AS shared,
+        EXISTS (
+          SELECT 1 FROM core_kill_switches k WHERE k.is_on = 1 AND (
+            (k.scope = 'org' AND k.scope_id = w.org_id)
+            OR (k.scope = 'project' AND k.scope_id = w.project_id))) AS killed
+      FROM q
+      JOIN core_work_items w ON w.id = q.work_item_id
+      JOIN core_projects p ON p.id = q.project_id
+      LEFT JOIN core_leases l ON l.work_item_id = q.work_item_id
+      WHERE q.pool IN (${sql.join(pools)})
+        AND w.status IN ('running', 'waiting', 'shaping')
+    )
+    SELECT * FROM c
+    WHERE has_repository = 0 OR (shared AND NOT killed)
+    ORDER BY shaping, created_at`.execute(ctx.db);
+  return rows.map((r) => {
+    const {
+      item_org_id,
+      item_project_id,
+      item_requester_user_id,
+      item_repository_id,
+      item_status,
+      item_branch,
+      project_factory_id,
+      project_policy_sha,
+      lease_holder_kind,
+      lease_expires_at,
+      lease_fencing_token,
+      has_repository,
+      shared,
+      killed,
+      ...candidate
+    } = r;
+    return {
+      candidate: candidate as JobRow,
+      item: {
+        id: candidate.work_item_id,
+        org_id: item_org_id,
+        project_id: item_project_id,
+        requester_user_id: item_requester_user_id,
+        repository_id: item_repository_id,
+        status: item_status,
+        branch: item_branch,
+      },
+      project: {
+        id: candidate.project_id,
+        factory_id: project_factory_id,
+        policy_sha: project_policy_sha,
+      },
+      facts: {
+        hasRepository: has_repository === 1,
+        shared: shared === 1,
+        killed: killed === 1,
+        lease:
+          lease_holder_kind === null && lease_expires_at === null && lease_fencing_token === null
+            ? null
+            : { holder_kind: lease_holder_kind, expires_at: lease_expires_at },
+      },
+      fencingToken: lease_fencing_token,
+    };
+  });
 }
 
 /** A project is at its WIP limit when that many items wait at human gates (ADR 0040). */
@@ -947,30 +1121,21 @@ export const jobClaim = defineOperation({
     // A light job this runner could take but for a full light pool: ask an idle session to yield.
     let lightBlocked = false;
 
-    // Released work first: a shaping item's triage and planning jobs (ADR 0493) wait behind the
-    // jobs of work people already committed to, then oldest first.
-    const queued = await ctx.db
-      .selectFrom("core_jobs")
-      .selectAll()
-      .where("status", "=", "queued")
-      .orderBy(
-        sql`(SELECT w.status = 'shaping' FROM core_work_items w WHERE w.id = core_jobs.work_item_id)`,
-      )
-      .orderBy("created_at")
-      .limit(50)
-      .execute();
-    for (const job of queued) {
-      const item = await ctx.db
-        .selectFrom("core_work_items")
-        .selectAll()
-        .where("id", "=", job.work_item_id)
-        .executeTakeFirst();
-      const project = await ctx.db
-        .selectFrom("core_projects")
-        .selectAll()
-        .where("id", "=", job.project_id)
-        .executeTakeFirst();
-      if (!item || !project) continue;
+    // The first 50 queued jobs, released work first: a shaping item's triage and planning jobs
+    // (ADR 0493) wait behind the jobs of work people already committed to, then oldest first. One
+    // query (AGENTS.md "Cloudflare cost", rule 8) reads each job with its item, project and lease,
+    // and whether the item has its repository, and drops in SQL the jobs this runner could never
+    // take now: a pool with no room, an item not running, waiting or shaping, and (unless the item
+    // lacks its repository, whose wait reason is still recorded) a runner neither the requester's
+    // nor shared in, or a kill switch. What it drops was refused before without a write, so the
+    // claim does exactly what it did, in a few queries instead of several per queued job.
+    const pools = (["heavy", "light"] as const).filter(
+      (p) => room[p] || (p === "light" && room.split),
+    );
+    const queued = await claimCandidates(ctx, runner, pools);
+    const facts = { memo: new Map<string, Promise<unknown>>() };
+    for (const row of queued) {
+      const { candidate: job, item, project } = row;
       // `shaping`: shaping stages before release runs its triage and planning jobs too (ADR 0493).
       if (!["running", "waiting", "shaping"].includes(item.status)) continue;
       if (!room[job.pool] && (job.pool !== "light" || !room.split || lightBlocked)) continue;
@@ -986,6 +1151,7 @@ export const jobClaim = defineOperation({
         },
         item,
         project,
+        { ...facts, ...row.facts },
       );
       if (refusal) {
         const waitReason = refusal.wip ? WIP_WAIT_REASON : (refusal.waitReason ?? null);
@@ -1006,12 +1172,7 @@ export const jobClaim = defineOperation({
         continue;
       }
 
-      const lease = await ctx.db
-        .selectFrom("core_leases")
-        .select("fencing_token")
-        .where("work_item_id", "=", item.id)
-        .executeTakeFirst();
-      const previous = lease?.fencing_token ?? 0;
+      const previous = row.fencingToken ?? 0;
       const token = previous + 1;
       const lastRun = await ctx.db
         .selectFrom("core_runs")
@@ -1107,13 +1268,26 @@ export const jobClaim = defineOperation({
         id: runId,
         after: { jobId: job.id, runner: runner.id, branch, fencingToken: token },
       });
+      // The claimed item's and project's full rows, for the job the runner gets: this job only.
+      const [itemRow, projectRow] = await Promise.all([
+        ctx.db
+          .selectFrom("core_work_items")
+          .selectAll()
+          .where("id", "=", item.id)
+          .executeTakeFirstOrThrow(),
+        ctx.db
+          .selectFrom("core_projects")
+          .selectAll()
+          .where("id", "=", project.id)
+          .executeTakeFirstOrThrow(),
+      ]);
       return {
         job: await buildJob(
           ctx,
           job,
           { id: runId, run_no: runNo, branch, fencing_token: token },
-          item,
-          project,
+          itemRow,
+          projectRow,
           expiresAt,
         ),
       };

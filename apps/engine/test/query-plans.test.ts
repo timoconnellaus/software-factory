@@ -13,6 +13,7 @@ import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-con
 import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
 import worker from "../src/index.ts";
+import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import { pruneExpired } from "../src/retention.ts";
 import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
 import { growingScans, type Recorded, recordingEnv } from "./query-plans.ts";
@@ -133,6 +134,38 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     run: (e) => recentOutcomes(createDb(e.DB), w.projectId, { limit: 10 }),
   },
   {
+    // Every five minutes: the shadow reconciler (spec 52 PR (c)) reads the items that ended since its
+    // cursor, with one to read: an ended item with its stages and a packet the queue carried.
+    name: "the shadow reconciler's pass",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "backlog", projectId: w.projectId, title: "Ended" },
+        w.human,
+      );
+      const id = item.workItemId;
+      const at = new Date().toISOString();
+      await env.DB.batch([
+        env.DB.prepare(
+          "INSERT INTO core_stages (id, work_item_id, stage, attempt, status, started_at) VALUES (?, ?, 'triage', 1, 'done', ?)",
+        ).bind(`st_${id}`, id, at),
+        env.DB.prepare(
+          "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, sections, created_at) VALUES (?, ?, 'b2', 'pass', '{\"carriedFrom\":\"a1\"}', ?)",
+        ).bind(`rp_${id}`, id, at),
+        env.DB.prepare(
+          "UPDATE core_work_items SET status = 'done', size = 'small', updated_at = ? WHERE id = ?",
+        ).bind(at, id),
+      ]);
+      const read = await shadowPass(e, new Date(Date.now() + SHADOW_LAG_MS + 60_000));
+      if (read === 0) throw new Error("the pass read no ended item");
+      return read;
+    },
+  },
+  {
+    name: "the shadow reconciler's prune",
+    run: (e) => pruneReconcileShadow(e, new Date()),
+  },
+  {
     // The hourly stray-blob sweep with a blob to check (an empty bucket runs no D1 query).
     name: "the attachment sweep",
     run: async (e) => {
@@ -196,6 +229,26 @@ describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
       .bind(...list.params)
       .all<{ detail: string }>();
     expect(results.map((r) => r.detail).join("\n")).toMatch(/USING INDEX \w+ \(status=\?/);
+  });
+
+  it("job.claim reads the queue in claim order from its index: no sort of the queued jobs", async () => {
+    const seen: Recorded[] = [];
+    await (await channel(recordingEnv(env, seen), w.runner.runnerId)).claim({
+      claimId: uid("claim-"),
+      manifest: MANIFEST,
+      capacity: { max: 2, inUse: 0, accepting: true },
+    });
+    const claim = seen.find((r) => /WITH q AS/.test(r.sql));
+    if (!claim) throw new Error("the claim query didn't run");
+    const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${claim.sql}`)
+      .bind(...claim.params)
+      .all<{ id: number; parent: number; detail: string }>();
+    // The CTE q: core_jobs through core_jobs_queue_idx, and no temp B-tree under it.
+    const q = results.find((r) => /^(MATERIALIZE|CO-ROUTINE) q$/.test(r.detail));
+    if (!q) throw new Error(`no q in the plan:\n${results.map((r) => r.detail).join("\n")}`);
+    const under = results.filter((r) => r.parent === q.id).map((r) => r.detail);
+    expect(under.join("\n")).toMatch(/core_jobs_queue_idx/);
+    expect(under.join("\n")).not.toMatch(/TEMP B-TREE/);
   });
 
   for (const path of HOT_PATHS) {

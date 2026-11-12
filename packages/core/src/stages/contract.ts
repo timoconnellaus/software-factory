@@ -2,12 +2,13 @@
 // consumes and produces, what proves it done, the screen it shows, what it needs, its gate and how
 // far its actions reach. A workflow only chooses types, orders them and configures them.
 //
-// This is build plan PR (a): descriptors only. `next()` and the reconciler's snapshot come with
-// PR (c); nothing at run time reads these yet.
+// Build plan PR (a) added the descriptors; PR (c) adds `next()` and `skip()`, which the reconciler
+// (reconcile.ts) calls. Nothing at run time drives an item with them yet: shadow mode comes first.
 import type { Capability, ModelRole } from "@software-factory/runner-contract";
 import type { z } from "zod";
 import type { RiskClass } from "../policy/gate.ts";
 import type { ImpactChange } from "../policy/impact.ts";
+import type { ItemSnapshot, NextContext, StageAction } from "./reconcile.ts";
 
 export const PHASES = ["shaping", "delivery"] as const;
 export type Phase = (typeof PHASES)[number];
@@ -146,12 +147,38 @@ export interface StageType<S extends z.ZodType = z.ZodType> {
   /** The one exception to F3: a shaping stage that needs no person. Only `triage` (Q1). */
   shapingWithoutPerson?: true;
   reversibility: Reversibility;
+  /**
+   * The stage judges the work (its verdict passes or sends back): `code` when the judge is the
+   * factory's own reviewer, whose prompt and skills are code's and take no org agent (F10, Q16: org
+   * skills reach it only as additions, a policy change); `agent` when a named agent judges, so
+   * changing that agent or its instructions is a loosening.
+   */
+  judges?: "code" | "agent";
   /** For `irreversible` types: the outside action, its risk in `ALWAYS_REVIEW` (F6). */
   action?: (settings: z.infer<S>) => { operation: string; risk: RiskClass; on: ArtifactKind };
   /** The steps it runs for an item. Pure. */
   steps(settings: z.infer<S>, item: ItemFacts): readonly StepPlan[];
-  /** Classifies a settings change. Anything it doesn't classify must loosen. */
+  /**
+   * Classifies a settings change. `workflowImpact` treats any differing setting it returns no
+   * change for as a loosening (the classifier is an allow-list, ADR 0516).
+   */
   impact(before: z.infer<S>, after: z.infer<S>, stageId: string): readonly ImpactChange[];
+  /**
+   * Settings saved under an earlier `typeVersion`, in this version's shape, so a version bump is
+   * compared setting by setting. Absent, or returning null: the bump is a loosening (ADR 0516).
+   */
+  migrate?(settings: unknown, fromVersion: number): unknown | null;
+  /**
+   * Why the stage is skipped for this item, beyond its `when` (the spec stage below its size
+   * threshold); null when it runs. Pure.
+   */
+  skip?(settings: z.infer<S>, item: ItemSnapshot["item"]): string | null;
+  /**
+   * The next action inside the current entry (ADR 0511): a job, a gate, an operation, a wait, or
+   * the stage's end (complete, send back, fail, reject). Pure. A send-back with `to: ""` goes to the
+   * nearest earlier stage that produces what this one consumes.
+   */
+  next?(ctx: NextContext<z.infer<S>>): StageAction;
 }
 
 /** Erases a type's settings parameter so different types fit one registry. */

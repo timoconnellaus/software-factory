@@ -88,6 +88,20 @@ export interface OpMap {
   "mobile.pairOffer": Def<typeof operations.mobilePairOffer>;
   "mobile.pairOfferStatus": Def<typeof operations.mobilePairOfferStatus>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
+  // Org workflows (spec 52 PR (b)).
+  "workflow.list": Def<typeof operations.workflowList>;
+  "workflow.get": Def<typeof operations.workflowGet>;
+  "workflow.preview": Def<typeof operations.workflowPreview>;
+  "workflow.save": Def<typeof operations.workflowSave>;
+  "workflow.createFromTemplate": Def<typeof operations.workflowCreateFromTemplate>;
+  "workflow.archive": Def<typeof operations.workflowArchive>;
+  "agent.save": Def<typeof operations.agentSave>;
+  "orgConfig.get": Def<typeof operations.orgConfigGet>;
+  "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
+  "stageType.list": Def<typeof operations.stageTypeList>;
+  // The reconciler in shadow (spec 52 PR (c)).
+  "reconcile.report": Def<typeof operations.reconcileReport>;
+  "reconcile.streak": Def<typeof operations.reconcileStreak>;
   // The work model (spec 50): the backlog, ready and release.
   "workItem.board": Def<typeof operations.workItemBoard>;
   "workItem.update": Def<typeof operations.workItemUpdate>;
