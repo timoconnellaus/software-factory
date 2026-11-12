@@ -40,6 +40,7 @@ import {
   planningReadyEvent,
   presentPeople,
   readNews,
+  STANDING_EDITS_MAX,
   standingEdits,
   takeBackFromGate,
   wakeSession,
@@ -1326,7 +1327,14 @@ export const specEdit = defineOperation({
     ctx.guardChanged("the plan is still the version edited");
     // A heading the person renamed carries the edits beneath it along (third review of #85).
     const renames = sectionRenames(spec.body_md, body);
-    const standing = (await standingEdits(ctx, w.id)).map((e) => ({
+    const before = await standingEdits(ctx, w.id);
+    if (before.length >= STANDING_EDITS_MAX) {
+      throw new OperationError(
+        "conflict",
+        `this plan already holds ${STANDING_EDITS_MAX} people's edits the planner must keep: release some (under the plan) before editing more`,
+      );
+    }
+    const standing = before.map((e) => ({
       ...e,
       moved: renames.size > 0,
       footprint: renameSections(e.footprint, renames),
