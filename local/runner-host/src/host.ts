@@ -353,6 +353,18 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
     });
   }
 
+  /**
+   * Stops claiming, locally (the desktop app's "Restart to update", spec 40 M4), and rewrites the
+   * live-jobs file once any claim in flight has landed, so a reader that sees the new `updatedAt`
+   * knows the job list is final. Running jobs carry on.
+   */
+  async drain(): Promise<void> {
+    if (!this.draining) this.log("drain: taking no new jobs (asked locally)");
+    this.draining = true;
+    await this.ticking;
+    await this.recordLive();
+  }
+
   /** Waits for every running job to finish. */
   async idle(): Promise<JobReport[]> {
     return Promise.all([...this.running.values()].map((r) => r.done));

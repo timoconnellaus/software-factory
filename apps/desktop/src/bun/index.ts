@@ -12,10 +12,14 @@ import { acquireInstanceLock, watchParent } from "./instance.ts";
 import { Live, liveUrl } from "./live.ts";
 import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { operationHandlers } from "./operations.ts";
+import { restartToUpdate as restartUpdate } from "./restart-update.ts";
 import { Runner } from "./runner.ts";
+import { liveJobs } from "./runner-jobs.ts";
 import { saveTo } from "./save.ts";
 import { Terminals } from "./terminal.ts";
 import { titleBarDoubleClick } from "./title-bar.ts";
+import { bunExec, runningAppPath } from "./update-verify.ts";
+import { type UpdaterLike, Updates } from "./updates.ts";
 import { viewUrl } from "./view-url.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
@@ -186,6 +190,128 @@ const RUNNER_LABEL: Record<RunnerState["status"], string> = {
   locked: "another host is running",
   failed: "failed",
 };
+let told: string | null = null;
+const updates = new Updates(
+  // Electrobun's Updater has more than this; these are the parts updates.ts uses.
+  { updater: Updater as unknown as UpdaterLike, exec: bunExec, appPath: runningAppPath() },
+  (u) => {
+    const say = u.ready && u.version ? `ready:${u.version}` : u.needsMove ? "move" : null;
+    if (say && say !== told) {
+      Utils.showNotification({
+        title: "Software Factory",
+        body: u.ready
+          ? `Version ${u.version} is ready: restart to update`
+          : (u.error ?? "Move the app to Applications to get updates"),
+      });
+    }
+    told = say ?? told;
+    if (u.error) console.log(`updates: ${u.error}`);
+    refreshTray();
+  },
+);
+/** The person chose "Restart to update when the runner is idle". */
+let restartWhenIdle = false;
+
+/** The update menu items: no job is cancelled for an update unless the person says so. */
+function updateItems() {
+  const u = updates.state;
+  if (u.needsMove)
+    return [
+      {
+        type: "normal" as const,
+        label: "Move to Applications to get updates",
+        action: "noop",
+        enabled: false,
+      },
+    ];
+  if (!u.ready) return [];
+  const jobs = liveJobs().length;
+  if (jobs === 0)
+    return [
+      { type: "normal" as const, label: `Restart to update to ${u.version}`, action: "update" },
+    ];
+  const n = `${jobs} job${jobs === 1 ? "" : "s"}`;
+  return [
+    {
+      type: "normal" as const,
+      label: restartWhenIdle
+        ? `Update to ${u.version} once ${n} finish${jobs === 1 ? "es" : ""}`
+        : `Update to ${u.version}: the runner is running ${n}`,
+      action: "noop",
+      enabled: false,
+    },
+    ...(restartWhenIdle
+      ? []
+      : [
+          {
+            type: "normal" as const,
+            label: "Restart to update when they finish",
+            action: "update-when-idle",
+          },
+        ]),
+    {
+      type: "normal" as const,
+      label: `Restart anyway (cancels ${n}; their unpushed work is lost)`,
+      action: "update-anyway",
+    },
+  ];
+}
+
+let restarting = false;
+/**
+ * Drain the runner (unless the person chose to cancel its jobs), stop it and the live socket, then
+ * restart into the update (restart-update.ts). If a job turned up meanwhile, wait for idle. If the
+ * update doesn't happen (nothing staged, a refused signature, a quit handler said no, a throw) both
+ * come back.
+ */
+async function restartToUpdate(anyway = false) {
+  if (restarting) return;
+  restarting = true;
+  const wasWaiting = restartWhenIdle;
+  restartWhenIdle = false;
+  try {
+    const outcome = await restartUpdate(
+      {
+        drain: () => runner.drain(),
+        liveJobs: () => liveJobs(),
+        stopLive: () => live.stop(),
+        startLive: () => live.start(),
+        stopRunner: () => runner.stop(),
+        startRunner: () => void runner.start(),
+        apply: () => updates.apply(),
+      },
+      { anyway },
+    );
+    if (outcome === "deferred") {
+      restartWhenIdle = true;
+      if (!wasWaiting)
+        Utils.showNotification({
+          title: "Software Factory",
+          body: "The runner is busy: it takes no new jobs, and the app updates once it is idle.",
+        });
+    } else {
+      Utils.showNotification({
+        title: "Software Factory",
+        body: `The update didn't install: ${updates.state.error ?? "unknown error"}`,
+      });
+    }
+  } catch (error) {
+    Utils.showNotification({
+      title: "Software Factory",
+      body: `The update didn't install: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  } finally {
+    restarting = false;
+    refreshTray();
+  }
+}
+// The job count in the menu, and the deferred restart once the runner is idle.
+setInterval(() => {
+  if (!updates.state.ready) return;
+  if (restartWhenIdle && liveJobs().length === 0) void restartToUpdate();
+  else refreshTray();
+}, 15_000);
+
 function refreshTray() {
   const s = runner.state;
   tray.setTitle(`SF${inboxCount ? ` ${inboxCount}` : ""}${s.status === "running" ? " ●" : ""}`);
@@ -209,6 +335,7 @@ function refreshTray() {
         ]
       : []),
     { type: "divider" },
+    ...updateItems(),
     { type: "normal", label: "Open Software Factory", action: "open" },
     { type: "normal", label: "Launch at login", action: "login-item", checked: loginItemEnabled() },
     { type: "normal", label: "Quit", action: "quit" },
@@ -224,6 +351,17 @@ tray.on("tray-clicked", async (e: unknown) => {
     refreshTray();
   }
   if (action === "quit") await quit();
+  // Offered only while the runner is idle; re-checked here in case a job just started.
+  if (action === "update") {
+    if (liveJobs().length === 0) await restartToUpdate();
+    else refreshTray();
+  }
+  if (action === "update-when-idle") {
+    restartWhenIdle = true;
+    refreshTray();
+  }
+  // The person was told how many jobs this cancels.
+  if (action === "update-anyway") await restartToUpdate(true);
 });
 
 function setBadge(count: number) {
@@ -310,6 +448,7 @@ watchParent(() => void quit());
 
 refreshTray();
 void runner.start();
+void updates.start();
 live.start();
 void pollInbox();
 setInterval(() => void pollInbox(), INBOX_POLL_MS);
