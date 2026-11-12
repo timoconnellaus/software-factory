@@ -13,29 +13,18 @@ export function projectDirName(cwd: string): string {
 }
 
 /**
- * Where Claude's config may live on this host: `CLAUDE_CONFIG_DIR`, `~/.claude`, and the
- * per-profile homes the Orca desktop app kept (history: runs used to start there with Orca's own
- * `CLAUDE_CONFIG_DIR` per account profile; plan piece 3 replaces these with the host's accounts).
+ * The newest transcript for a working directory, modified at or after `since` (ms). It looks in the
+ * run's account's config dir (ADR 0410; `configDirs`), else in whatever `claude` uses with no
+ * account set (`CLAUDE_CONFIG_DIR`, else `~/.claude`).
  */
-export async function claudeConfigDirs(env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
-  const dirs = new Set<string>();
-  if (env.CLAUDE_CONFIG_DIR) dirs.add(env.CLAUDE_CONFIG_DIR);
-  dirs.add(join(homedir(), ".claude"));
-  const profiles = join(homedir(), "Library", "Application Support", "orca", "claude-profiles");
-  for (const entry of await readdir(profiles).catch(() => [] as string[])) {
-    dirs.add(join(profiles, entry, "home"));
-  }
-  return [...dirs];
-}
-
-/** The newest transcript for a working directory, modified at or after `since` (ms). */
 export async function findTranscript(
   cwd: string,
   options: { since?: number; configDirs?: string[] } = {},
 ): Promise<string | null> {
   const name = projectDirName(cwd);
   let best: { path: string; mtime: number } | null = null;
-  for (const root of options.configDirs ?? (await claudeConfigDirs())) {
+  const defaultDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || homedir(), ".claude");
+  for (const root of options.configDirs ?? [defaultDir]) {
     const dir = join(root, "projects", name);
     for (const file of await readdir(dir).catch(() => [] as string[])) {
       if (!file.endsWith(".jsonl")) continue;

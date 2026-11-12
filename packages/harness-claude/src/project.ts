@@ -5,6 +5,7 @@ import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Job, PlanningRelay } from "@software-factory/runner-contract";
+import { accountLaunchLines, CREDENTIALS_FILE, type HarnessAccount } from "./account.ts";
 import {
   claudeArgv,
   type LaunchRecord,
@@ -66,6 +67,11 @@ export async function projectHarness(
      * conversation started or resumed. `nodeBin` runs them (default: this process's Node).
      */
     planning?: { relay: PlanningRelay; nodeBin?: string };
+    /**
+     * The Claude account the run uses (ADR 0410). Default: the host's own (`default`), with the
+     * environment as it is.
+     */
+    account?: HarnessAccount;
   },
 ): Promise<ProjectedHarness> {
   const runTmp = options.runTmp ?? join(await realpath(tmpdir()), "software-factory", job.jobId);
@@ -88,9 +94,30 @@ export async function projectHarness(
   if (job.stage === "planning" && !planning) {
     throw new Error(`planning job ${job.jobId} needs its planning session and relay`);
   }
-  const { statusHook: _statusHook, planning: _planning, ...settingsOptions } = options;
+  const {
+    statusHook: _statusHook,
+    planning: _planning,
+    account: _account,
+    ...settingsOptions
+  } = options;
+  // The account's credentials (its token file, a login's credentials file) are the owner's: a run
+  // never reads them, whatever else the runner protects (ADR 0410). The config dir itself stays
+  // readable, as `~/.claude` always was: Claude's sandboxed shell reads its snapshots from there.
+  const accountSecrets = [
+    ...(options.account?.token ? [options.account.token.file] : []),
+    ...(options.account?.configDir ? [join(options.account.configDir, CREDENTIALS_FILE)] : []),
+  ];
+  const denyReadFiles = [
+    ...(options.denyReadFiles ?? []),
+    ...accountSecrets,
+    ...(planning ? [planning.relayFile] : []),
+  ];
   const settings = runSettings(job, {
     ...settingsOptions,
+    ...(accountSecrets.length
+      ? { protectPaths: [...new Set([...(options.protectPaths ?? []), ...accountSecrets])] }
+      : {}),
+    ...(denyReadFiles.length ? { denyReadFiles } : {}),
     ...(statusFile ? { statusHook: statusHookCommand(node, statusScript, statusFile) } : {}),
     ...(planning
       ? {
@@ -98,7 +125,6 @@ export async function projectHarness(
             options.hooks,
             planningHooks(planning.relayFile, options.planning?.nodeBin ?? process.execPath),
           ),
-          denyReadFiles: [...(options.denyReadFiles ?? []), planning.relayFile],
         }
       : {}),
     runTmp,
@@ -132,6 +158,12 @@ export async function projectHarness(
     settingsPaths: [paths.runSettings, paths.localSettings],
     pidFile: paths.pidFile,
     worktree: options.worktree,
+    ...(options.account
+      ? {
+          account: options.account.name,
+          ...(options.account.configDir ? { configDir: options.account.configDir } : {}),
+        }
+      : {}),
   };
   await rm(paths.pidFile, { force: true });
   if (statusFile) {
@@ -139,7 +171,11 @@ export async function projectHarness(
     await writeFile(statusScript, statusHookSource(), { mode: 0o600 });
   }
   await writeFile(paths.record, `${JSON.stringify(launch, null, 2)}\n`, { mode: 0o600 });
-  await writeFile(paths.script, launchScript(launch, launchUnsets(settings.env)), { mode: 0o700 });
+  await writeFile(
+    paths.script,
+    launchScript(launch, launchUnsets(settings.env), accountLaunchLines(options.account)),
+    { mode: 0o700 },
+  );
   return {
     settingsPath: paths.runSettings,
     localSettingsPath: paths.localSettings,

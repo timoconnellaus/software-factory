@@ -13,10 +13,12 @@ Orca did this with a config dir per profile. The factory must never hold the cre
 and the run's environment must stay credential-free apart from the model credential.
 
 ## Decision
-1. **Accounts are a host thing.** A host holds named accounts under
-   `~/.config/software-factory/accounts/`. A **login** account is a Claude Code config dir of its
-   own (`CLAUDE_CONFIG_DIR`), logged into by running `claude` there. A **token** account is a
-   `claude setup-token` OAuth token or an API key in a 0600 file, plus a config dir of its own.
+1. **Accounts are a host thing.** A host holds named accounts. A **login** account is a Claude
+   Code config dir of its own (`~/.local/share/software-factory/accounts/<name>/`, used as
+   `CLAUDE_CONFIG_DIR`), logged into by running `claude` there. A **token** account is a
+   `claude setup-token` OAuth token or an API key in a 0600 file
+   (`~/.config/software-factory/accounts/<name>.token`), plus a config dir of its own. The registry
+   (`~/.config/software-factory/accounts.json`) holds the active name and each account's kind.
    `default` is always there and is whatever `claude` uses with no account set. Adding and
    removing accounts happens only on the host (`sf-runner account …`).
 2. **Switching is manual and by name.** The host has one active account, and a job takes it when its
@@ -27,8 +29,10 @@ and the run's environment must stay credential-free apart from the model credent
 3. **One model credential reaches the run.** The launch script unsets the model credential
    variables, then sets the account's: `CLAUDE_CONFIG_DIR`, and for a token account the one token
    variable, read from the token file at launch, so no file the harness writes holds it. The token
-   file and the accounts' config dirs are under the runner's config dir, which every run already
-   denies. The default account leaves the environment untouched.
+   file is under the runner's config dir, which every run already denies, and the harness denies it
+   and the account's `.credentials.json` by name. The config dir itself stays readable, as
+   `~/.claude` always was, because Claude's sandboxed shell reads its snapshots from there. The
+   default account leaves the environment untouched.
 4. **Usage limits are surfaced, not acted on.** A run that hits a usage limit says so on the run, and
    the host reports it against the account. The owner decides whether to switch. There is no
    automatic rotation.

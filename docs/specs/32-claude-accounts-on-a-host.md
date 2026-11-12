@@ -16,7 +16,7 @@ from the dashboard. Credentials never leave the host: the factory sees account n
 ## Scope
 - **Accounts on the host** (`local/runner-host`, `accounts.ts`). Two kinds:
   - **login**: a Claude Code login in its own config dir,
-    `~/.config/software-factory/accounts/<name>/`, used as `CLAUDE_CONFIG_DIR`.
+    `~/.local/share/software-factory/accounts/<name>/`, used as `CLAUDE_CONFIG_DIR`.
     `sf-runner account add <name>` creates the dir (0700) and runs `claude` there so the owner logs
     in (`--no-login` skips that).
   - **token**: a `claude setup-token` OAuth token or an Anthropic API key, read from stdin by
@@ -55,9 +55,11 @@ from the dashboard. Credentials never leave the host: the factory sees account n
     secret). The default account leaves the environment as it was. (Claude Code's
     `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` is not used: it forces the permission mode to `default`,
     which would break ADR 0270.)
-  - The rest of the credential-free environment is unchanged. The account's token file is under
-    the runner's config dir, which every run already denies (read and write). Each account's
-    config dir is denied too, so a run can't read another session's transcripts or credentials.
+  - The rest of the credential-free environment is unchanged. The token file is under the runner's
+    config dir, which every run already denies, and the harness also denies it by name, along with
+    the account's `.credentials.json` (where a login keeps its credentials when there's no
+    Keychain). The account's config dir itself stays readable, as `~/.claude` always was: Claude's
+    sandboxed shell reads its snapshots from there.
   - The launch record names the account (`account`, `configDir`), never the token. The ADR 0270
     check (argv and settings hashes) is unchanged.
   - The transcript finder reads the run's account config dir (default: `CLAUDE_CONFIG_DIR` or
@@ -83,7 +85,7 @@ from the dashboard. Credentials never leave the host: the factory sees account n
 ## Acceptance criteria
 1. A host with no accounts runs jobs exactly as before: the launch script sets no account variable
    and `sf-runner account list` shows `default` active.
-2. `sf-runner account add work` makes `~/.config/software-factory/accounts/work/` (0700) and runs
+2. `sf-runner account add work` makes `~/.local/share/software-factory/accounts/work/` (0700) and runs
    `claude` with `CLAUDE_CONFIG_DIR` set to it. `sf-runner account add ci --token-stdin` stores the
    token 0600, outside any config dir, and nothing else on disk or on the wire carries it.
 3. After `sf-runner account use work`, the next job's launch script exports

@@ -4,6 +4,7 @@
 
 import { json, parseJson } from "@software-factory/db";
 import {
+  accountNameSchema,
   type artifactSchema,
   CAPABILITIES,
   type Capability,
@@ -18,6 +19,8 @@ import {
   PLANNING_YIELD_AFTER_MS,
   type Pool,
   runBranch,
+  type RunnerAccounts,
+  runnerAccountsSchema,
   runnerEventSchema,
   runnerVersionSchema,
   stagePool,
@@ -70,7 +73,35 @@ const runnerView = z.object({
   update: z
     .object({ state: z.string(), target: z.string().nullable(), reason: z.string().nullable() })
     .nullable(),
+  /**
+   * Its Claude accounts (ADR 0410): names, the active one, the one its owner asked for (until the
+   * runner reports it active) and recent usage limits. Null: it hasn't reported any (an older
+   * runner).
+   */
+  accounts: z
+    .object({
+      names: z.array(z.string()),
+      active: z.string(),
+      requested: z.string().nullable(),
+      limits: z.array(z.object({ name: z.string(), at: z.string(), message: z.string() })),
+    })
+    .nullable(),
 });
+
+/** A runner row's accounts, for `runnerView`. */
+function accountsView(r: {
+  accounts: string | null;
+  account_requested: string | null;
+}): z.infer<typeof runnerView>["accounts"] {
+  const reported = parseJson<RunnerAccounts | null>(r.accounts, null);
+  if (!reported) return null;
+  return {
+    names: reported.names,
+    active: reported.active,
+    requested: r.account_requested,
+    limits: reported.limits ?? [],
+  };
+}
 
 /** The commit runners should run (ADR 0360), or null on an engine that doesn't know it. */
 const desiredVersion = (ctx: HandlerContext): string | null => {
@@ -189,6 +220,7 @@ export const runnerList = defineOperation({
         update: r.update_state
           ? { state: r.update_state, target: r.update_target, reason: r.update_reason }
           : null,
+        accounts: accountsView(r),
       })),
     };
   },
@@ -202,8 +234,16 @@ function reportRunnerState(
     capacity: z.infer<typeof capacitySchema>;
     rateLimitedUntil?: string | null | undefined;
     version?: z.infer<typeof runnerVersionSchema> | undefined;
+    accounts?: RunnerAccounts | undefined;
   },
-) {
+): { pendingAccount: string | null } {
+  // The owner's pick is done once the runner reports it active, and moot once the runner reports
+  // accounts without it (removed on the host).
+  const requested = runner.account_requested;
+  const settled =
+    requested !== null &&
+    report.accounts !== undefined &&
+    (report.accounts.active === requested || !report.accounts.names.includes(requested));
   ctx.write(
     ctx.db
       .updateTable("core_runners")
@@ -227,10 +267,57 @@ function reportRunnerState(
               update_reason: report.version.update.reason,
             }
           : {}),
+        ...(report.accounts ? { accounts: json(report.accounts) } : {}),
+        ...(settled ? { account_requested: null, account_requested_at: null } : {}),
       })
       .where("id", "=", runner.id),
   );
+  return { pendingAccount: requested !== null && !settled ? requested : null };
 }
+
+export const runnerAccountUse = defineOperation({
+  name: "runner.account.use",
+  description:
+    "Pick which of a runner's Claude accounts new jobs use (ADR 0410). Takes the account's name only: accounts and their credentials live on the runner's host. Running jobs keep theirs. The runner's owner only.",
+  risk: "write",
+  actors: ["human"],
+  permission: "signed-in",
+  input: z.object({ runnerId: z.string().min(1), name: accountNameSchema }),
+  output: z.object({ runnerId: z.string(), requested: z.string(), active: z.string() }),
+  async handler(input, ctx) {
+    const runner = await loadRunner(ctx, input.runnerId);
+    if (runner.owner_user_id !== ctx.actor.id)
+      throw new OperationError("forbidden", "not your runner");
+    const reported = parseJson<RunnerAccounts | null>(runner.accounts, null);
+    if (!reported) {
+      throw new OperationError(
+        "conflict",
+        "this runner hasn't reported its Claude accounts: update it (sf-runner) first",
+      );
+    }
+    if (!reported.names.includes(input.name)) {
+      throw new OperationError(
+        "invalid_input",
+        `no account "${input.name}" on this runner; add it on the host with sf-runner account add`,
+      );
+    }
+    // Picking the active one clears a pending pick.
+    const requested = input.name === reported.active ? null : input.name;
+    ctx.write(
+      ctx.db
+        .updateTable("core_runners")
+        .set({ account_requested: requested, account_requested_at: requested ? ctx.now : null })
+        .where("id", "=", runner.id),
+    );
+    ctx.change({
+      entity: "runner",
+      id: runner.id,
+      before: { account: reported.active, requested: runner.account_requested },
+      after: { account: input.name },
+    });
+    return { runnerId: runner.id, requested: input.name, active: reported.active };
+  },
+});
 
 export const runnerHeartbeat = defineOperation({
   name: "runner.heartbeat",
@@ -246,10 +333,15 @@ export const runnerHeartbeat = defineOperation({
     rateLimitedUntil: z.iso.datetime({ offset: true }).nullable().optional(),
     /** The runner's own code and its self-update (ADR 0360); older runners omit it. */
     version: runnerVersionSchema.optional(),
+    /** Its Claude accounts, names only (ADR 0410); older runners omit it. */
+    accounts: runnerAccountsSchema.optional(),
   }),
   output: z.object({
     commands: z.array(
-      z.object({ kind: z.literal("cancel"), jobId: z.string(), reason: z.string() }),
+      z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("cancel"), jobId: z.string(), reason: z.string() }),
+        z.object({ kind: z.literal("account.use"), name: z.string() }),
+      ]),
     ),
     leases: z.array(z.object({ jobId: z.string(), expiresAt: z.string() })),
     /** The commit the runner should run (ADR 0360); null when the engine doesn't know. */
@@ -257,8 +349,13 @@ export const runnerHeartbeat = defineOperation({
   }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
-    reportRunnerState(ctx, runner, input);
-    const commands: { kind: "cancel"; jobId: string; reason: string }[] = [];
+    const { pendingAccount } = reportRunnerState(ctx, runner, input);
+    const commands: (
+      | { kind: "cancel"; jobId: string; reason: string }
+      | { kind: "account.use"; name: string }
+    )[] = [];
+    // Sent on every heartbeat until the host reports the switch (ADR 0410).
+    if (pendingAccount) commands.push({ kind: "account.use", name: pendingAccount });
     const leases: { jobId: string; expiresAt: string }[] = [];
     const expiresAt = new Date(Date.parse(ctx.now) + LEASE_TTL_MS).toISOString();
     for (const held of input.activeJobs) {

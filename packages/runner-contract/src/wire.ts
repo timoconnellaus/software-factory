@@ -285,6 +285,28 @@ export const runnerVersionSchema = z.object({
 });
 export type RunnerVersion = z.infer<typeof runnerVersionSchema>;
 
+/**
+ * A Claude account's name on a host (ADR 0410). `default` is whatever `claude` uses with no account
+ * set. Names only: an account's credential never leaves its host.
+ */
+export const ACCOUNT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const DEFAULT_ACCOUNT = "default";
+export const accountNameSchema = z.string().regex(ACCOUNT_NAME, "lower-case letters, digits and -");
+
+/** The host's Claude accounts, as it reports them on the heartbeat (ADR 0410). */
+export const runnerAccountsSchema = z.object({
+  /** Every account on the host, `default` included. */
+  names: z.array(accountNameSchema).min(1).max(32),
+  /** The one new jobs use. */
+  active: accountNameSchema,
+  /** Accounts whose last run hit a usage limit: when, and what Claude said. */
+  limits: z
+    .array(z.object({ name: accountNameSchema, at: iso, message: z.string().max(500) }))
+    .max(32)
+    .default([]),
+});
+export type RunnerAccounts = z.infer<typeof runnerAccountsSchema>;
+
 export const heartbeatRequestSchema = z.object({
   manifest: capabilityManifestSchema,
   capacity: capacitySchema,
@@ -294,12 +316,16 @@ export const heartbeatRequestSchema = z.object({
   rateLimitedUntil: iso.nullable().optional(),
   /** The runner's own code version and where its self-update stands (ADR 0360). Optional: older hosts omit it. */
   version: runnerVersionSchema.optional(),
+  /** The host's Claude accounts, names only (ADR 0410). Optional: older hosts omit it. */
+  accounts: runnerAccountsSchema.optional(),
 });
 
 export const runnerCommandSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("cancel"), jobId: id, reason: z.string() }),
   z.object({ kind: z.literal("steer"), jobId: id, text: z.string() }),
   z.object({ kind: z.literal("drain") }),
+  /** The owner picked this account for new jobs (ADR 0410). Older hosts ignore it. */
+  z.object({ kind: z.literal("account.use"), name: accountNameSchema }),
 ]);
 
 export const heartbeatResponseSchema = z.object({
