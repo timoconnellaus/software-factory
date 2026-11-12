@@ -60,7 +60,7 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 | #33, #35, #36, #37 | Spec 20, planning M1 ([ADR 0350](adr/0350-how-the-planning-loop-is-wired.md), migration 0120): planning is a live session on a runner. The planning log, sessions, chat and presence; heavy and light pools; the planning MCP server and kim-style hooks through the runner host's relay; Workflow v5's spec stage; the Planning tab, layout A. Merged with `factory/verify` red (not attached), with the default-branch ruleset switched off by the owner |
 
 ## In flight
-- **Run agents without Orca** (block V, plan `.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`):
+- **Run agents without Orca** (block W, plan `.kim/plans/2026-11-11-run-agents-on-hosts-without-orca.md`):
   piece 1, [spec 30](specs/30-runner-local-without-orca.md) / [ADR 0380](adr/0380-runner-local-tmux-and-hook-status.md),
   is built on branch `timoconnellaus/no-orca`: `packages/runner-local` (git worktree + tmux on
   `tmux -L software-factory`, status from the harness's hook file, takeover by `tmux attach`)
@@ -79,10 +79,12 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
 - **Planning design** (`planning-process`, block M): planning rebuilt as a live session on a runner,
   modelled on kim. ADRs 0300–0306, specs 20–25, mockups `.kim/mockups/planning-*.html`, plan
   `.kim/plans/2026-11-11-factory-planning.md`.
-- **Desktop app** (`electrobun`, spike block S 0130–0139): plan `.kim/plans/2026-11-11-software-factory-desktop-app-electrobun.md`,
-  spike `spikes/electrobun` (proposed ADR 0130). The spike found the desktop token can't prove a person
-  (any same-user process can drive the app's `bun`), so gate decisions in the app need a Secure Enclave
-  presence proof. That needs the owner's sign-off before the spec.
+- **Desktop app** (`desktop-app`, block W, spec [40](specs/40-desktop-app.md), ADRs 0390–0392): a macOS app
+  on Electrobun that is the daily UI and supervises the runner; the website shrinks to auth. The spike
+  (`spikes/electrobun`, #44) showed a Keychain token can't prove a person, so gate decisions from the
+  desktop need a Secure Enclave presence proof (ADR 0391, amends 0340). Five milestones: M1 the client
+  door + desktop devices + presence (cloud), M2 `apps/desktop` shell + runner, M3 screens, M4 signing
+  and updates, M5 the website strip-down.
 - The runner (#14) hasn't run against the deployed engine yet: that needs a registered runner (the
   app's setup screen) and a project with `.factory/policy.json` (step 5). See `local/runner-host/README.md`. Spike ADRs 0100 and 0110 are promoted into `docs/adr/`; 0120 (auth) moves when
   the app session promotes it.

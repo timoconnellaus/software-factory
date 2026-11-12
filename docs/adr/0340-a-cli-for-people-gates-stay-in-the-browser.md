@@ -47,3 +47,6 @@ deploy and self-modify always go to a human" (ADR 0005, AGENTS.md).
   marking it, and the registry test checks that every `gateKind` decision operation is marked.
 - **A leaked token is bounded:** read-only by default, 30 days, revocable, and never able to
   approve.
+
+## Amendment, 2026-11-12
+[ADR 0391](0391-the-client-door-desktop-devices-and-presence.md): the CLI door becomes the client door (`/client/v1`, `/cli/v1` kept), and a **desktop** device may decide the presence-decidable gates (spec, merge, `approval.decide`, questions) with a Secure Enclave presence proof bound to that exact call. Everything else stays browser-only, and CLI tokens are unchanged.
