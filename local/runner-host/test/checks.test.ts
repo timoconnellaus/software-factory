@@ -301,9 +301,17 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       const parent = await run("kill -TERM $PPID; echo still-reported; exit 4");
       // macOS: the parent is outside the sandbox and the kill is refused (exit 4). Linux: it is
       // srt's own shell inside the sandbox (143). Either way the reporter answered, with a failure.
-      expect(parent.output).toContain("still-reported");
       expect(parent.output).not.toContain("no exit status");
-      expect([4, 143]).toContain(parent.exitCode);
+      if (process.platform === "darwin") {
+        // The kill is refused outside the sandbox, so the check runs on and exits 4.
+        expect(parent).toMatchObject({
+          exitCode: 4,
+          output: expect.stringContaining("still-reported"),
+        });
+      } else {
+        // srt's shell inside the sandbox dies (the echo may die with it): reported, not a pass.
+        expect(checkPassed({ exitCode: parent.exitCode, timedOut: false })).toBe(false);
+      }
       expect(await run("echo fine")).toMatchObject({ exitCode: 0 });
     },
     120_000,
