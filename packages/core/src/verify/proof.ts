@@ -4,17 +4,17 @@
 // a criterion to checks and argue it is met, but its word alone leaves it Not proven.
 //
 // Pure functions; `reviewPacket.record` reads the results from D1 and CI from GitHub.
+import { has } from "../workflow-features.ts";
 import type { CiSummary } from "./ci.ts";
 
 /**
- * The Workflow version from which an item runs the factory's own checks (ADR 0501): the build job
- * carries them, `build #b: checks` reads them, and the verdict uses them. An instance that started
- * earlier keeps the old behaviour throughout (no host checks, the agent's report decides).
+ * Whether an item runs the factory's own checks (ADR 0501): its Workflow version has `host-checks`
+ * (../workflow-features.ts). The build job carries them, `build #b: checks` reads them, and the
+ * verdict uses them. An instance that started earlier keeps the old behaviour throughout (no host
+ * checks, the agent's report decides).
  */
-export const HOST_CHECKS_WORKFLOW_VERSION = 8;
-
 export const hostChecksOn = (item: { workflow_version: number | null }) =>
-  (item.workflow_version ?? 0) >= HOST_CHECKS_WORKFLOW_VERSION;
+  has(item.workflow_version, "host-checks");
 
 /** One executed check, as stored (core_check_results) for one SHA. */
 export interface CheckRun {

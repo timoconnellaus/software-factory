@@ -49,3 +49,4 @@ export * from "./scope.ts";
 export * from "./services.ts";
 export * from "./verify/index.ts";
 export * from "./workflow-events.ts";
+export * from "./workflow-features.ts";

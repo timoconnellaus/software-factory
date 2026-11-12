@@ -20,6 +20,7 @@ import {
   ciEvent,
   DEFAULT_BUILDER,
   FOREMAN,
+  has,
   type GateEventPayload,
   invoke,
   isOperationError,
@@ -362,7 +363,7 @@ class ItemFlow {
 
       // Triage: the foreman sizes the item on a runner; code decides the spec gate from policy.
       // v6: it also picks one of the project's workflows (ADR 0371).
-      const options = version >= 6 ? await this.workflowOptions() : [];
+      const options = has(version, "workflow-plan") ? await this.workflowOptions() : [];
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
@@ -385,8 +386,8 @@ class ItemFlow {
         let note: string | null = null;
         let answers: { prompt: string; answer: string }[] = [];
         // v5: the planning session (spec 20) instead of v1–v4's spec rounds below.
-        if (version >= 5) criteria = await this.planningStage(meta);
-        for (let k = 1; version < 5; k++) {
+        if (has(version, "planning-spec")) criteria = await this.planningStage(meta);
+        for (let k = 1; !has(version, "planning-spec"); k++) {
           const mayAsk = k <= QUESTION_ROUNDS;
           const specRun = await this.runWithRetries(
             meta,
@@ -437,10 +438,10 @@ class ItemFlow {
       }
       // v7: the shaping stages are done. Unreleased work waits here for its release (ADR 0493),
       // and delivery re-reads the item and its config as pinned at the pull.
-      if (version >= 7 && (await this.waitForRelease())) meta = await this.refreshMeta();
+      if (has(version, "release-wait") && (await this.waitForRelease())) meta = await this.refreshMeta();
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
-      const plan = version >= 6 ? await this.workflowPlan() : null;
+      const plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
       let slotNote: string | null = null;
       if (plan) {
         const after = await this.runSlot(meta, plan, "afterSpec", 0, {
@@ -549,7 +550,7 @@ class ItemFlow {
         // failure back into the same session up to the retry limit; one still failing goes to a
         // person, never a cold retry.
         let checkNames: string[] = [];
-        if (version >= 8) {
+        if (has(version, "host-checks")) {
           const checked = await this.act(`build #${b}: checks`, "checks.forHead", {
             workItemId: id,
             headSha,
@@ -592,12 +593,12 @@ class ItemFlow {
           workItemId: id,
           stage: "verify",
         });
-        if (version >= 2) {
+        if (has(version, "verify-packet")) {
           // Open the PR first, so CI runs on this head while the reviewer works (spec 04). It
           // carries a factory/verify that isn't passing until the packet below says so.
           await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
         }
-        if (version >= 3 && (await this.unmergeable(b, headSha))) {
+        if (has(version, "conflicts") && (await this.unmergeable(b, headSha))) {
           note = await conflicted(b, build);
           continue;
         }
@@ -605,7 +606,7 @@ class ItemFlow {
           `verify #${b}`,
           "verify",
           "review",
-          verifyPrompt(meta, { criteria, headSha, checks: version >= 8 ? checkNames : null }),
+          verifyPrompt(meta, { criteria, headSha, checks: has(version, "host-checks") ? checkNames : null }),
           {
             criteria,
             headSha,
@@ -633,9 +634,9 @@ class ItemFlow {
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        if (version >= 2) {
+        if (has(version, "verify-packet")) {
           let ci = await this.waitForCi(b, headSha, version);
-          for (let k = 1; version >= 3 && ci === "missing"; k++) {
+          for (let k = 1; has(version, "conflicts") && ci === "missing"; k++) {
             // No CI at all is a setup problem the builder can't fix: ask a person (ADR 0320).
             await this.askNoCi(meta, b, k, headSha);
             ci = await this.waitForCi(b, headSha, version, k + 1);
@@ -657,8 +658,8 @@ class ItemFlow {
           riskFlags: r.riskFlags,
         });
         // v2: the packet's verdict (green CI on the head SHA + a complete packet) decides.
-        const passed = version >= 2 ? packet.verdict === "pass" : runnerPassed;
-        if (!passed && version >= 2) {
+        const passed = has(version, "verify-packet") ? packet.verdict === "pass" : runnerPassed;
+        if (!passed && has(version, "verify-packet")) {
           const reasons = Array.isArray(packet.reasons) ? (packet.reasons as string[]) : [];
           note = await failed(
             b,
@@ -702,7 +703,7 @@ class ItemFlow {
           workItemId: id,
           stage: "merge",
         });
-        if (version >= 4) {
+        if (has(version, "merge-queue")) {
           const landed = await this.mergeV4(meta, b, headSha, pr.touchesFactoryConfig === true);
           if (landed.kind === "done") {
             await this.act("end: done", "workItem.finish", {
@@ -729,7 +730,7 @@ class ItemFlow {
           continue;
         }
         let decided: Awaited<ReturnType<ItemFlow["gate"]>> | null = null;
-        if (version >= 2 && meta.kind === "incident") {
+        if (has(version, "verify-packet") && meta.kind === "incident") {
           // A check-only incident fix may merge without a person, if the project opted in and the
           // rule holds (ADR 0230). Refused: the normal merge gate below.
           const autoName = `merge #${b}: auto-merge`;
@@ -833,7 +834,7 @@ class ItemFlow {
         // v8: the verify job runs the project's checks on the PR's head before the reviewer (ADR
         // 0501); the reviewer is told their names, to link criteria to. Before v8: as it was.
         let checkNames: string[] | null = null;
-        if (version >= 8) {
+        if (has(version, "host-checks")) {
           const declared = await this.act(`verify #${b}: check names`, "checks.forHead", {
             workItemId: id,
             headSha,
@@ -1217,7 +1218,7 @@ class ItemFlow {
         headSha,
       });
       if (ci.status !== "ok") return "unreadable"; // the packet records why and fails
-      if (version >= 3 && ci.output.mergeable === false) return "conflict";
+      if (has(version, "conflicts") && ci.output.mergeable === false) return "conflict";
       const state = String(ci.output.state);
       if (state === "success" || state === "failure") return state;
       if (state === "missing" && i >= CI_MISSING_ROUNDS) return "missing";
