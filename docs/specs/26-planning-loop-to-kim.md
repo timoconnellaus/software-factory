@@ -119,6 +119,11 @@ comments on its parts (slice 2, next). Mockups, designs and splits (specs 21, 22
   `canInterrupt`.
 - `planning.answer` and `planning.acceptDefaults` are `desktopDecidable` (a new operation flag:
   `invoke()` skips the browser-only refusal on the desktop surface). Planning questions only.
-- Not built yet: `planning.finishAlone`, which waits on the owner's reading of ADR 0042 (audit,
-  decision 3).
+- `planning.finishAlone { on }` (in `questions.ts`): `browserOnly` and `desktopDecidable`, human only.
+  Turning it on accepts the open bulk-acceptable planning questions with `acceptDefaults(…, { alone })`.
+  `question.ask` from the planner inserts a bulk-acceptable question already answered while it is on.
+  Both record `accepted_alone` and set `answered_by` to the person who turned it on.
+  `planning.note` (changes requested) turns it off. The planner hears `finish.alone` in its news.
+  `planning.get` gains `session.finishAlone` and `acceptedAlone` on each question. Migration 0241
+  adds `finish_alone_by`, `finish_alone_at` and `core_questions.accepted_alone`.
 

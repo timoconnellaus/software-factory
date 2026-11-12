@@ -293,9 +293,21 @@ export const planningNote = defineOperation({
     ctx.write(
       ctx.db
         .updateTable("core_planning_sessions")
-        .set({ round, ready_spec_id: null, ready_at: null, at_gate: 0, updated_at: ctx.now })
+        .set({
+          round,
+          ready_spec_id: null,
+          ready_at: null,
+          at_gate: 0,
+          // Changes requested turn "finish alone" off (ADR 0470): the approver wants a say.
+          finish_alone_by: null,
+          finish_alone_at: null,
+          updated_at: ctx.now,
+        })
         .where("id", "=", session.id),
     );
+    if (session.finish_alone_by) {
+      logPlanning(ctx, w.id, "finish.alone", { on: false, reason: "changes requested" });
+    }
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -994,6 +1006,8 @@ const questionView = z.object({
   answer: z.string().nullable(),
   note: z.string().nullable(),
   acceptedDefault: z.boolean(),
+  /** Accepted under a person's "finish alone" instruction; answeredBy is that person. */
+  acceptedAlone: z.boolean(),
   skipped: z.boolean(),
   /** When this answer reached the planning agent (a read receipt); null until then. */
   answerDeliveredAt: z.string().nullable(),
@@ -1045,6 +1059,8 @@ export const planningGet = defineOperation({
         pausedBy: z.string().nullable(),
         /** Its runner can interrupt the current step (⌘-Enter, Stop); else messages wait for the step. */
         canInterrupt: z.boolean(),
+        /** "Let the planner finish alone" is on: who set it and when (ADR 0470). */
+        finishAlone: z.object({ by: z.string(), byName: z.string(), at: z.string() }).nullable(),
         focusedQuestionId: z.string().nullable(),
         runner: z
           .object({
@@ -1128,7 +1144,10 @@ export const planningGet = defineOperation({
       Date.parse(ctx.now) - Date.parse(runner.last_seen_at) <= RUNNER_OFFLINE_MS;
     const people = new Map<string, string>();
     const ids = [
-      ...new Set(messages.filter((m) => m.author_kind === "person").map((m) => m.author_id)),
+      ...new Set([
+        ...messages.filter((m) => m.author_kind === "person").map((m) => m.author_id),
+        ...(session?.finish_alone_by ? [session.finish_alone_by] : []),
+      ]),
     ];
     if (ids.length) {
       for (const u of await ctx.db
@@ -1174,6 +1193,14 @@ export const planningGet = defineOperation({
                 []
               ).includes(c),
             ),
+            finishAlone:
+              session.finish_alone_by && session.finish_alone_at
+                ? {
+                    by: session.finish_alone_by,
+                    byName: people.get(session.finish_alone_by) ?? session.finish_alone_by,
+                    at: session.finish_alone_at,
+                  }
+                : null,
             focusedQuestionId: session.focused_question_id,
             runner: runner
               ? { id: runner.id, name: runner.name, online, lastSeenAt: runner.last_seen_at }
@@ -1201,6 +1228,7 @@ export const planningGet = defineOperation({
         answer: q.answer,
         note: q.note,
         acceptedDefault: q.accepted_default === 1,
+        acceptedAlone: q.accepted_alone === 1,
         skipped: q.skipped === 1,
         answerDeliveredAt: q.answer_delivered_at,
         answeredBy: q.answered_by,

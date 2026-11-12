@@ -44,6 +44,7 @@ export const LABELS: Readonly<Record<string, string>> = {
   "planning.stop": "Planner stopped",
   "planning.pause": "Planner paused",
   "planning.resume": "Planner resumed",
+  "planning.finishAlone": "Planner told to finish alone",
   "question.escalate": "Questions escalated",
   "workItem.awaitQuestions": "Waiting on answers",
   "job.enqueue": "Job queued",

@@ -41,8 +41,11 @@ current step or as an interrupt, Stop, Pause, and "Let the planner finish alone"
   this session. It accepts every bulk-acceptable default now and each one the agent asks later, and
   tells the agent to call `planning_ready` when it can. Security and privacy questions, irreversible
   ones and questions without a default still wait for a person, as with bulk accept (ADR 0042).
-  Nothing is accepted on a timeout, and approving the spec stays a person's decision. A person
-  turns it off by answering a question themselves or with `planning.finishAlone { on: false }`.
+  Nothing is accepted on a timeout, and approving the spec stays a person's decision. Only a
+  person turns it on or off (never an agent, the chat or the CLI). It is per session and off by
+  default, every answer it gives is recorded as accepted under the instruction of the person who
+  set it, and changes requested at the gate turn it off. The owner approved this form on
+  2026-11-12 (ADR 0042, amended).
 - **A steer on a planning run is in the record.** `run.steer` on a planning run also stores the
   text as a chat message by its author, marked delivered, so the Planning tab and a session rebuilt
   on another runner see it.

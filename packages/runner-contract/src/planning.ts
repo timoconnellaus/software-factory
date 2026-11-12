@@ -245,6 +245,19 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     kind: z.enum(["chat", "gate"]),
   }),
   z.object({
+    /**
+     * A person told you to finish alone, or took it back (ADR 0470). While on, the factory accepts
+     * the default of every question it may bulk-accept, now and as you ask them (they arrive as
+     * answers); security, privacy, irreversible and no-default ones still wait for a person. Finish
+     * the spec on your recommendations and call planning_ready when nothing blocking is open.
+     */
+    type: z.literal("finish.alone"),
+    cursor: z.number(),
+    at: z.string(),
+    on: z.boolean(),
+    by: z.string(),
+  }),
+  z.object({
     type: z.literal("planning.resumed"),
     cursor: z.number(),
     at: z.string(),

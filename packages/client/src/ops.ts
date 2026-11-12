@@ -40,6 +40,7 @@ export interface OpMap {
   "planning.stop": Def<typeof operations.planningStop>;
   "planning.pause": Def<typeof operations.planningPause>;
   "planning.resume": Def<typeof operations.planningResume>;
+  "planning.finishAlone": Def<typeof operations.planningFinishAlone>;
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
   "run.steer": Def<typeof operations.runSteer>;

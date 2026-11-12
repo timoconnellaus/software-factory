@@ -313,6 +313,8 @@ export interface CoreQuestionsTable {
   status: Generated<"open" | "answered" | "withdrawn">;
   answer: string | null;
   accepted_default: Generated<Bool>;
+  /** ADR 0470: accepted under a person's "finish alone" instruction (answered_by is that person). */
+  accepted_alone: Generated<Bool>;
   answered_by: string | null;
   answered_at: Iso | null;
   planning_round: number;
@@ -768,6 +770,9 @@ export interface CorePlanningSessionsTable {
   /** ADR 0470: a person paused the planner; news doesn't wake it until resumed. */
   paused_at: Iso | null;
   paused_by: string | null;
+  /** ADR 0470: who told the planner to finish alone, and when; null while it's off. */
+  finish_alone_by: string | null;
+  finish_alone_at: Iso | null;
   replaces_session_id: string | null;
   created_by: string;
   created_at: Iso;

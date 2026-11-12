@@ -36,3 +36,18 @@ still never covers security, privacy or irreversible questions. `question.answer
 `question.acceptDefaults` (questions outside a planning session) and every gate (spec, merge,
 approval) keep their presence proof. Whether gates keep it is a separate decision. Spec 26, [ADR
 0470](0470-planning-steering.md).
+
+## Amendment, 2026-11-12: "Let the planner finish alone"
+The owner approved the planning design (`docs/design/factory-ui`, PR #61) that offers "Let the
+planner finish alone", and on 2026-11-12 approved its standing form: a person's explicit, revocable
+instruction for one planning session (`planning.finishAlone`). It is not an acceptance on timeout,
+so the rule above still holds. While it is on, every planning question bulk accept may cover is
+accepted with its default, the open ones at once and each new one as the planner asks it. Conditions:
+- only a person turns it on or off, in the app or the desktop: never an agent, the chat or the CLI;
+- it is per session and off by default;
+- security and privacy, irreversible and no-default questions still wait for a person;
+- approving the spec stays a person's decision;
+- every answer it gives is recorded as accepted under that instruction (`accepted_alone`), as the
+  answer of the person who set it, with when they set it, and the Planning tab shows it that way;
+- it turns itself off when the spec is sent back with changes requested.
+See [ADR 0470](0470-planning-steering.md).

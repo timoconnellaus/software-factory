@@ -79,6 +79,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   questions.questionAcceptDefaults,
   questions.planningAnswer,
   questions.planningAcceptDefaults,
+  questions.planningFinishAlone,
   questions.questionEscalate,
   questions.questionUpdate,
   questions.questionDelete,

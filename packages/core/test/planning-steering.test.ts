@@ -429,4 +429,107 @@ describe("the planning loop to kim's standard (spec 26)", () => {
     }).catch((e: OperationError) => e);
     expect((outside as OperationError).code).toBe("invalid_input");
   });
+
+  it("finishes alone on a person's standing instruction: bulk-acceptable defaults now and as asked, the rest waits (criterion 12)", async () => {
+    const w = await world();
+    const { item, m5, job, agent } = await planning(w);
+    const { questionIds } = await agent<{ questionIds: string[] }>("question.ask", {
+      questions: [
+        { prompt: "Filename?", default: "deals.csv" },
+        { prompt: "Who may export?", domain: "security", default: "Admins" },
+        { prompt: "Drop the old table?", irreversible: true, default: "No" },
+        { prompt: "Anything else?" },
+      ],
+    });
+    const [filename, security, irreversible, noDefault] = questionIds as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    // Only a person, and not from a CLI token or the planner.
+    const cli = await invoke(
+      deps,
+      "planning.finishAlone",
+      { workItemId: item.workItemId, on: true },
+      { actor: w.human, origin: { surface: "cli" } },
+    ).catch((e: OperationError) => e);
+    expect((cli as OperationError).code).toBe("forbidden");
+    expect(
+      (
+        await refusal(
+          ok(
+            "planning.finishAlone",
+            { workItemId: item.workItemId, on: true, jobId: job.jobId },
+            m5,
+          ),
+        )
+      ).code,
+    ).toBe("forbidden");
+
+    const on = await ok<{ accepted: string[] }>(
+      "planning.finishAlone",
+      { workItemId: item.workItemId, on: true },
+      w.human,
+    );
+    expect(on.accepted).toEqual([filename]);
+    type View = {
+      session: { finishAlone: { by: string; at: string } | null };
+      questions: {
+        id: string;
+        status: string;
+        acceptedAlone: boolean;
+        answeredBy: string | null;
+      }[];
+    };
+    let view = await ok<View>("planning.get", { workItemId: item.workItemId }, w.human);
+    expect(view.session.finishAlone).toMatchObject({ by: w.userId });
+    const byId = (id: string) => view.questions.find((q) => q.id === id);
+    expect(byId(filename)).toMatchObject({
+      status: "answered",
+      acceptedAlone: true,
+      answeredBy: w.userId,
+    });
+    for (const id of [security, irreversible, noDefault]) expect(byId(id)?.status).toBe("open");
+
+    // The planner hears it, and a question it asks later is accepted as it's asked.
+    const news = await agent<PlanningNews>("planning.news");
+    expect(news.events).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "finish.alone", on: true })]),
+    );
+    const later = await agent<{ questionIds: string[] }>("question.ask", {
+      questions: [
+        { prompt: "Separator?", kind: "single-choice", options: [",", ";"], default: "," },
+        { prompt: "Share with partners?", domain: "privacy", default: "No" },
+      ],
+    });
+    view = await ok<View>("planning.get", { workItemId: item.workItemId }, w.human);
+    expect(byId(later.questionIds[0] as string)).toMatchObject({
+      status: "answered",
+      acceptedAlone: true,
+    });
+    expect(byId(later.questionIds[1] as string)?.status).toBe("open");
+    const later_news = await agent<PlanningNews>("planning.news");
+    expect(later_news.events).toEqual([
+      expect.objectContaining({
+        type: "answer.submitted",
+        questionId: later.questionIds[0],
+        acceptedDefault: true,
+      }),
+    ]);
+
+    // Changes requested at the gate turn it off.
+    await ok(
+      "planning.note",
+      { workItemId: item.workItemId, note: "Say more.", by: w.userId },
+      FOREMAN,
+    );
+    view = await ok<View>("planning.get", { workItemId: item.workItemId }, w.human);
+    expect(view.session.finishAlone).toBeNull();
+    const after = await agent<{ questionIds: string[] }>("question.ask", {
+      questions: [{ prompt: "Encoding?", default: "UTF-8" }],
+    });
+    view = await ok<View>("planning.get", { workItemId: item.workItemId }, w.human);
+    expect(byId(after.questionIds[0] as string)?.status).toBe("open");
+  });
 });

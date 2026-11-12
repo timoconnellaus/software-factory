@@ -18,7 +18,7 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
-import { logPlanning, takeBackFromGate, wakeSession } from "../planning.ts";
+import { logPlanning, openSession, takeBackFromGate, wakeSession } from "../planning.ts";
 import { approverIds, backupOwnerId } from "../scope.ts";
 import { questionsEvent } from "../workflow-events.ts";
 import { byJob, notifyAway, planningJob, planningJobFields } from "./planning.ts";
@@ -26,6 +26,20 @@ import { fencingToken, jobId, questionId, requireWorkItem, workItemId } from "./
 
 /** Questions bulk accept never covers (ADR 0042). */
 export const NEVER_BULK_ACCEPTED_DOMAINS = ["security", "privacy", "security-privacy"] as const;
+
+/** Whether bulk accept (and "finish alone") may answer a question with its default (ADR 0042). */
+export function bulkAcceptable(q: {
+  domain?: string;
+  irreversible?: boolean | number;
+  default?: string | null;
+}) {
+  return (
+    !(NEVER_BULK_ACCEPTED_DOMAINS as readonly string[]).includes(q.domain ?? "product") &&
+    !q.irreversible &&
+    q.default !== null &&
+    q.default !== undefined
+  );
+}
 
 /** The text an accepted default answers with: its values joined (kim's defaultAnswerText). */
 export const defaultText = (values: string[]) => values.join(", ");
@@ -130,6 +144,7 @@ export const questionAsk = defineOperation({
       .where("work_item_id", "=", w.id)
       .executeTakeFirst();
     let number = Number(counters?.n ?? 0);
+    const alone: string[] = [];
     let position = Number(counters?.p ?? 0);
     const ids: string[] = [];
     const numbers: number[] = [];
@@ -169,8 +184,24 @@ export const questionAsk = defineOperation({
             irreversible: q.irreversible ? 1 : 0,
             position: q.position ?? ++position,
             planning_session_id: sessionId,
+            // "Finish alone" (ADR 0470): a bulk-acceptable question is accepted as it is asked,
+            // recorded as the answer of the person who gave the instruction.
+            ...(session?.finish_alone_by && text && bulkAcceptable({ ...q, default: text })
+              ? {
+                  status: "answered" as const,
+                  answer: text,
+                  accepted_default: 1,
+                  accepted_alone: 1,
+                  answered_by: session.finish_alone_by,
+                  answered_at: ctx.now,
+                  answer_revision: 1,
+                }
+              : {}),
           }),
         );
+        if (session?.finish_alone_by && text && bulkAcceptable({ ...q, default: text })) {
+          alone.push(id);
+        }
       } else {
         const q = parse(questionDraftSchema, raw, i);
         ctx.write(
@@ -195,6 +226,9 @@ export const questionAsk = defineOperation({
     if (sessionId) {
       // The planning agent's questions show up live; the owner hears once, when planning is ready.
       logPlanning(ctx, w.id, "question.asked", { questionIds: ids });
+      for (const questionId of alone) {
+        logPlanning(ctx, w.id, "answer.submitted", { questionId, revision: 1, alone: true });
+      }
       ctx.change({ entity: "work_item", id: w.id, after: { questionsAsked: ids.length } });
       if (session) {
         await notifyAway(
@@ -444,6 +478,8 @@ function answer(
   acceptedDefault: boolean,
   note: string | null = null,
   skipped = false,
+  /** Accepted under this person's "finish alone" instruction (ADR 0470): recorded as theirs. */
+  alone: string | null = null,
 ) {
   const revising = q.status === "answered";
   const revision = q.answer_revision + 1;
@@ -457,7 +493,8 @@ function answer(
         skipped: skipped ? 1 : 0,
         answer_delivered_at: null,
         accepted_default: acceptedDefault ? 1 : 0,
-        answered_by: ctx.actor.id,
+        accepted_alone: alone ? 1 : 0,
+        answered_by: alone ?? ctx.actor.id,
         answered_at: ctx.now,
         answer_revision: revision,
       })
@@ -611,9 +648,9 @@ const acceptOutput = z.object({
 });
 
 /** Accepts the open defaults bulk accept may cover (question.acceptDefaults, planning.acceptDefaults). */
-async function acceptDefaults(
+export async function acceptDefaults(
   ctx: HandlerContext,
-  options: { planningOnly?: boolean } = {},
+  options: { planningOnly?: boolean; alone?: string } = {},
 ): Promise<z.input<typeof acceptOutput>> {
   const w = requireWorkItem(ctx);
   const open = await ctx.db
@@ -633,8 +670,8 @@ async function acceptDefaults(
     } else if (q.default_answer === null) {
       skipped.push({ id: q.id, why: "no default" });
     } else {
-      await assertCanAnswer(ctx, q.assignee_user_id);
-      answer(ctx, q, q.default_answer, true);
+      if (!options.alone) await assertCanAnswer(ctx, q.assignee_user_id);
+      answer(ctx, q, q.default_answer, true, null, false, options.alone ?? null);
       accepted.push(q.id);
     }
   }
@@ -724,3 +761,50 @@ async function assertCanAnswer(ctx: HandlerContext, assignee: string | null) {
     throw new OperationError("forbidden", "this question is assigned to someone else");
   }
 }
+
+export const planningFinishAlone = defineOperation({
+  name: "planning.finishAlone",
+  description:
+    "A person tells the planning agent to finish alone, or takes it back (ADR 0470, the owner's approval of 2026-11-12). While on, every planning question bulk accept may cover is accepted with its default, the open ones now and each new one as the agent asks it, recorded as accepted under this person's instruction. Security & privacy, irreversible and no-default questions still wait for a person, and approving the spec stays a person's. Per session, off by default; changes requested at the gate turn it off. Only a person, in the app or the desktop.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  browserOnly: true,
+  desktopDecidable: true,
+  input: z.object({ workItemId, on: z.boolean() }),
+  output: z.object({ on: z.boolean(), accepted: z.array(z.string()) }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no open planning session");
+    if (ctx.actor.type !== "human") {
+      throw new OperationError("forbidden", "only a person can tell the planner to finish alone");
+    }
+    const already = session.finish_alone_by !== null;
+    if (already === input.on) return { on: input.on, accepted: [] };
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_sessions")
+        .set({
+          finish_alone_by: input.on ? ctx.actor.id : null,
+          finish_alone_at: input.on ? ctx.now : null,
+          updated_at: ctx.now,
+        })
+        .where("id", "=", session.id),
+    );
+    logPlanning(ctx, w.id, "finish.alone", { on: input.on });
+    ctx.change({
+      entity: "planning_session",
+      id: session.id,
+      before: { finishAlone: already },
+      after: { finishAlone: input.on, by: ctx.actor.id },
+    });
+    if (!input.on) {
+      await wakeSession(ctx, w);
+      return { on: false, accepted: [] };
+    }
+    const { accepted } = await acceptDefaults(ctx, { planningOnly: true, alone: ctx.actor.id });
+    if (!accepted.length) await wakeSession(ctx, w);
+    return { on: true, accepted };
+  },
+});
