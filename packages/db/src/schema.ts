@@ -813,7 +813,8 @@ export interface CoreMergeQueueTable {
 }
 
 export type MergeQueueDriver = "workflow" | "babysitter";
-export type DeliveryOutcome = "merged" | "conflict" | "failed";
+/** `withdrawn`: the approval no longer holds for the head (spec 53, ADR 0582). */
+export type DeliveryOutcome = "merged" | "conflict" | "failed" | "withdrawn";
 
 // ---- 0350: the babysitter's deliverer (spec 53, ADR 0580, 0585) ----
 
