@@ -6,6 +6,7 @@ import {
   type InvokeResult,
   invoke,
   OperationError,
+  SCHEDULER,
 } from "../src/index.ts";
 import { fakeServices, fakeUserToken } from "../src/testing/index.ts";
 
@@ -16,6 +17,28 @@ export const deps: InvokeDeps = {
   services,
   deliver: async (ids) => {
     delivered.push(ids);
+    // As the engine does (ADR 0491): a `queue.pull` message runs the pull, as the scheduler, right
+    // after the call that asked for it commits. Its refusals are the cron's to retry.
+    if (ids.length === 0) return;
+    const { results } = await env.DB.prepare(
+      "SELECT payload FROM core_outbox WHERE kind = 'queue.pull' AND id IN (SELECT value FROM json_each(?))",
+    )
+      .bind(JSON.stringify(ids))
+      .all<{ payload: string }>();
+    for (const row of results) {
+      const { projectId } = JSON.parse(row.payload) as { projectId: string };
+      await invoke(
+        deps,
+        "queue.pull",
+        { projectId },
+        {
+          actor: SCHEDULER,
+          origin: { surface: "test" },
+        },
+      ).catch((error) => {
+        if (!(error instanceof OperationError)) throw error;
+      });
+    }
   },
 };
 

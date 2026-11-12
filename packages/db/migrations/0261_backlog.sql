@@ -133,4 +133,31 @@ CREATE TABLE core_work_item_links (
 );
 CREATE INDEX core_work_item_links_waits_for_idx ON core_work_item_links (waits_for_id);
 
+-- A project runs one workflow (ADR 0492). A project whose config defines exactly one workflow gets
+-- a new config version naming it, so new items keep that workflow's gate steps; one that defines
+-- several fails closed (release refuses until a person names one in Settings). Items started
+-- before this migration keep triage's pick. Only projects on an app config version (`v<N>`).
+INSERT INTO core_project_policies
+  (project_id, sha, ref, raw, valid, error, received_at, version, source, created_by, note, parent_version)
+SELECT p.id, 'v' || (pp.version + 1), 'app',
+       json_set(pp.raw, '$.workflow', json_extract(pp.raw, '$.workflows[0].name')),
+       1, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), pp.version + 1, 'migrated', NULL,
+       'The project runs its only workflow (ADR 0492)', pp.version
+FROM core_projects p
+JOIN core_project_policies pp ON pp.project_id = p.id AND pp.sha = p.policy_sha
+WHERE pp.valid = 1 AND pp.version IS NOT NULL AND json_valid(pp.raw)
+  AND pp.version = (SELECT MAX(version) FROM core_project_policies WHERE project_id = p.id)
+  AND json_array_length(pp.raw, '$.workflows') = 1
+  AND json_type(pp.raw, '$.workflow') IS NULL;
+
+UPDATE core_projects
+SET policy_sha = (
+  SELECT sha FROM core_project_policies
+  WHERE project_id = core_projects.id AND note = 'The project runs its only workflow (ADR 0492)'
+)
+WHERE EXISTS (
+  SELECT 1 FROM core_project_policies
+  WHERE project_id = core_projects.id AND note = 'The project runs its only workflow (ADR 0492)'
+);
+
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 261) WHERE key = 'schema_version';

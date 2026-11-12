@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 // Spec 09 M2: workflows and agents in the config (ADR 0371, 0372).
 import { describe, expect, it } from "vitest";
 import { parseFloor, parseProjectPolicy, policyImpact } from "../src/index.ts";
@@ -101,8 +102,28 @@ describe("an item follows its project's workflow (ADR 0492)", () => {
   });
 
   it("ignores triage's pick: the item keeps its project's workflow", async () => {
-    const w = await world(doc());
+    const quick = { name: "Quick fix", slots: {}, core: {} };
+    const w = await world(doc({ workflows: [feature, quick], workflow: "Ship a feature" }));
     const item = await newItem(w);
+    const r = await ok<{ workflow: string | null }>(
+      "workItem.triage",
+      {
+        workItemId: item.workItemId,
+        result: { size: "small", reason: "tiny", workflow: "Quick fix" },
+      },
+      FOREMAN,
+    );
+    expect(r.workflow).toBe("Ship a feature");
+  });
+
+  it("keeps triage's pick for an item started before 0261 (no pulled_at)", async () => {
+    const w = await world(doc({ workflow: "Ship a feature" }));
+    const item = await newItem(w);
+    await env.DB.prepare(
+      "UPDATE core_work_items SET pulled_at = NULL, workflow = NULL WHERE id = ?",
+    )
+      .bind(item.workItemId)
+      .run();
     const r = await ok<{ workflow: string | null }>(
       "workItem.triage",
       {
@@ -111,7 +132,25 @@ describe("an item follows its project's workflow (ADR 0492)", () => {
       },
       FOREMAN,
     );
-    expect(r.workflow).toBeNull();
+    expect(r.workflow).toBe("Ship a feature");
+  });
+
+  it("fails closed when the config defines workflows but names none", async () => {
+    const w = await world(doc());
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Something" },
+      w.human,
+    );
+    const e = await refusal(call("workItem.release", { workItemId: item.workItemId }, w.human));
+    expect(e.code).toBe("conflict");
+    expect(e.message).toMatch(/names none/);
+    const setup = await ok<{ steps: { key: string; done: boolean }[] }>(
+      "setup.status",
+      { orgId: w.orgId },
+      w.human,
+    );
+    expect(setup.steps.find((st) => st.key === "policy")?.done).toBe(false);
   });
 
   it("refuses a config naming a workflow it doesn't define", () => {
@@ -139,7 +178,9 @@ describe("an item follows its project's workflow (ADR 0492)", () => {
 
 describe("workflow.gate", () => {
   it("always waits for a person, even when overrides would allow the agent", async () => {
-    const w = await world(doc({ overrides: { agent: { plan: "allow" } } }));
+    const w = await world(
+      doc({ workflow: "Ship a feature", overrides: { agent: { plan: "allow" } } }),
+    );
     const item = await newItem(w);
     const r = await call(
       "workflow.gate",

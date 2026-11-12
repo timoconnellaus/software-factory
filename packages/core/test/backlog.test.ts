@@ -1,8 +1,9 @@
 // Work starts in a backlog and is released (spec 50 part B, ADR 0491): creating no longer starts the
 // pipeline, release is a person's call unless config lets agents, and the factory pulls queued work
 // by priority under the active limit, respecting "waits for" links.
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { parseFloor, parseProjectPolicy, policyImpact } from "../src/index.ts";
+import { parseFloor, parseProjectPolicy, policyImpact, SCHEDULER } from "../src/index.ts";
 import { call, FOREMAN, first, ok, onboard, POLICY, refusal, rows, uid, world } from "./helpers.ts";
 
 type World = Awaited<ReturnType<typeof world>>;
@@ -46,7 +47,7 @@ describe("capture and release (ADR 0491)", () => {
   it("create and release starts at once when there is room, pinning the config version", async () => {
     const w = await world();
     const item = await create(w, "Now please", { state: "queued" });
-    expect(item.status).toBe("running");
+    expect(await statusOf(item.workItemId)).toBe("running");
     expect(await starts(item.workItemId)).toBe(1);
     const row = await first<{ policy_sha: string; pulled_at: string; released_by: string }>(
       "SELECT policy_sha, pulled_at, released_by FROM core_work_items WHERE id = ?",
@@ -60,12 +61,14 @@ describe("capture and release (ADR 0491)", () => {
   it("releases from ready; refuses what isn't backlog or ready (criterion 5)", async () => {
     const w = await world();
     const item = await create(w, "Shaped", { state: "ready" });
-    const released = await ok<{ status: string; started: string[] }>(
+    const released = await ok<{ status: string; blockedBy: unknown[] }>(
       "workItem.release",
       { workItemId: item.workItemId },
       w.human,
     );
-    expect(released).toMatchObject({ status: "running", started: [item.workItemId] });
+    expect(released).toMatchObject({ status: "queued", blockedBy: [] });
+    // The pull ran right after the release committed, in its own batch.
+    expect(await statusOf(item.workItemId)).toBe("running");
     const again = await refusal(call("workItem.release", { workItemId: item.workItemId }, w.human));
     expect(again.code).toBe("conflict");
   });
@@ -93,7 +96,8 @@ describe("capture and release (ADR 0491)", () => {
       { workItemId: theirs.workItemId },
       FOREMAN,
     );
-    expect(done.status).toBe("running");
+    expect(done.status).toBe("queued");
+    expect(await statusOf(theirs.workItemId)).toBe("running");
   });
 
   it("treats letting agents release as a loosening, a person's change", () => {
@@ -117,7 +121,7 @@ describe("capture and release (ADR 0491)", () => {
     const w = await world({ ...POLICY, activeLimit: 1 });
     await create(w, "Takes the slot", { state: "queued" });
     const waiting = await create(w, "Waits", { state: "queued" });
-    expect(waiting.status).toBe("queued");
+    expect(await statusOf(waiting.workItemId)).toBe("queued");
     await ok("workItem.move", { workItemId: waiting.workItemId, to: "ready" }, w.human);
     expect(await statusOf(waiting.workItemId)).toBe("ready");
     const cancelled = await ok<{ cancelled: boolean }>(
@@ -140,12 +144,14 @@ describe("the pull (ADR 0491, criterion 6)", () => {
   it("takes queued work by priority, then rank, never past the active limit", async () => {
     const w = await world({ ...POLICY, activeLimit: 1 });
     const first_ = await create(w, "First", { state: "queued" });
-    expect(first_.status).toBe("running");
+    expect(await statusOf(first_.workItemId)).toBe("running");
     const normal = await create(w, "Normal", { state: "queued" });
     const low = await create(w, "Low", { state: "queued", priority: "low" });
     const urgent = await create(w, "Urgent", { state: "queued", priority: "urgent" });
     const normal2 = await create(w, "Normal too", { state: "queued" });
-    for (const i of [normal, low, urgent, normal2]) expect(i.status).toBe("queued");
+    for (const i of [normal, low, urgent, normal2]) {
+      expect(await statusOf(i.workItemId)).toBe("queued");
+    }
 
     await finish(first_.workItemId);
     expect(await statusOf(urgent.workItemId)).toBe("running");
@@ -175,7 +181,7 @@ describe("the pull (ADR 0491, criterion 6)", () => {
   it("holds an item until what it waits for is done, across projects", async () => {
     const w = await world();
     const feature = await create(w, "The feature", { state: "queued" });
-    expect(feature.status).toBe("running");
+    expect(await statusOf(feature.workItemId)).toBe("running");
     // The launch post is in another project of the same org.
     const site = await ok<{ id: string }>(
       "project.create",
@@ -204,7 +210,7 @@ describe("the pull (ADR 0491, criterion 6)", () => {
       },
       w.human,
     );
-    expect(fix.status).toBe("queued");
+    expect(await statusOf(fix.workItemId)).toBe("queued");
     const board = await ok<{
       items: { id: string; blockedBy: { id: string }[] }[];
     }>("workItem.board", { orgId: w.orgId, projectId: w.projectId }, w.human);
@@ -212,7 +218,7 @@ describe("the pull (ADR 0491, criterion 6)", () => {
       feature.workItemId,
     ]);
     // Nothing pulls it while the feature runs.
-    await ok("queue.pull", { projectId: w.projectId }, FOREMAN);
+    await ok("queue.pull", { projectId: w.projectId }, SCHEDULER);
     expect(await statusOf(fix.workItemId)).toBe("queued");
     await finish(feature.workItemId);
     // finish pulled in the same call.
@@ -233,7 +239,7 @@ describe("the pull (ADR 0491, criterion 6)", () => {
       },
       w.human,
     );
-    expect(post.status).toBe("queued");
+    expect(await statusOf(post.workItemId)).toBe("queued");
     await finish(feature.workItemId);
     expect(await statusOf(post.workItemId)).toBe("running");
 
@@ -259,7 +265,7 @@ describe("the pull (ADR 0491, criterion 6)", () => {
       { workItemId: waiter.workItemId, waitsFor: blocker.workItemId },
       w.human,
     );
-    await ok("queue.pull", { projectId: w.projectId }, FOREMAN);
+    await ok("queue.pull", { projectId: w.projectId }, SCHEDULER);
     expect(await statusOf(waiter.workItemId)).toBe("running");
   });
 });
@@ -335,5 +341,138 @@ describe("workItem.board (criterion 10)", () => {
       w.human,
     );
     expect(detail.item).toMatchObject({ priority: "high", status: "queued" });
+  });
+});
+
+describe("the pull under races and policy (review of #69)", () => {
+  /** Queued items written straight to the table, so no pull has run for them yet. */
+  async function queuedDirectly(w: World, n: number) {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) ids.push((await create(w, `Queued ${i}`)).workItemId);
+    for (const id of ids) {
+      await env.DB.prepare(
+        "UPDATE core_work_items SET status = 'queued', released_at = ? WHERE id = ?",
+      )
+        .bind(new Date().toISOString(), id)
+        .run();
+    }
+    return ids;
+  }
+  const active = async (w: World) =>
+    (
+      await rows(
+        "SELECT id FROM core_work_items WHERE project_id = ? AND status IN ('running', 'waiting', 'paused')",
+        w.projectId,
+      )
+    ).length;
+
+  it("never passes the active limit when pulls run at once", async () => {
+    const w = await world({ ...POLICY, activeLimit: 2 });
+    await queuedDirectly(w, 5);
+    const pulls = await Promise.allSettled(
+      [1, 2, 3, 4].map(() => call("queue.pull", { projectId: w.projectId }, SCHEDULER)),
+    );
+    expect(pulls.some((p) => p.status === "fulfilled")).toBe(true);
+    expect(await active(w)).toBe(2);
+  });
+
+  it("never fails a finish because a pull ran at the same time", async () => {
+    const w = await world({ ...POLICY, activeLimit: 1 });
+    const running = await create(w, "Running", { state: "queued" });
+    await queuedDirectly(w, 2);
+    const [finished] = await Promise.all([
+      call(
+        "workItem.finish",
+        { workItemId: running.workItemId, status: "done", reason: "x" },
+        FOREMAN,
+      ),
+      call("queue.pull", { projectId: w.projectId }, SCHEDULER).catch(() => null),
+    ]);
+    expect(finished.status).toBe("ok");
+    expect(await statusOf(running.workItemId)).toBe("done");
+    expect(await active(w)).toBe(1);
+  });
+
+  it("pulls under the cautious policy without asking anyone", async () => {
+    const w = await world({ ...POLICY, autonomyPolicy: "cautious", overrides: {} });
+    const [id] = await queuedDirectly(w, 1);
+    const pulled = await call("queue.pull", { projectId: w.projectId }, SCHEDULER);
+    expect(pulled.status).toBe("ok");
+    expect(await statusOf(id as string)).toBe("running");
+    expect(
+      await rows(
+        "SELECT id FROM core_pending_actions WHERE project_id = ? AND operation = 'queue.pull'",
+        w.projectId,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("refuses release when the config is missing or malformed", async () => {
+    const w = await world();
+    const item = await create(w, "Waiting for config");
+    await env.DB.prepare("UPDATE core_projects SET policy_sha = NULL WHERE id = ?")
+      .bind(w.projectId)
+      .run();
+    const e = await refusal(call("workItem.release", { workItemId: item.workItemId }, w.human));
+    expect(e.code).toBe("unavailable");
+  });
+
+  it("holds the pull while a kill switch is on", async () => {
+    const w = await world();
+    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: true }, w.human);
+    const held = await create(w, "Held", { state: "queued" });
+    expect(await statusOf(held.workItemId)).toBe("queued");
+    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: false }, w.human);
+    await ok("queue.pull", { projectId: w.projectId }, SCHEDULER);
+    expect(await statusOf(held.workItemId)).toBe("running");
+  });
+
+  it("refuses changing a released item's repository", async () => {
+    const w = await world({ ...POLICY, activeLimit: 1 });
+    await create(w, "Running", { state: "queued" });
+    const queued = await create(w, "Queued", { state: "queued" });
+    const e = await refusal(
+      call("workItem.update", { workItemId: queued.workItemId, repositoryId: null }, w.human),
+    );
+    expect(e.code).toBe("conflict");
+  });
+
+  it("never lets two links made at once close a cycle", async () => {
+    const w = await world();
+    const a = await create(w, "A");
+    const b = await create(w, "B");
+    const both = await Promise.allSettled([
+      call("workItem.link", { workItemId: a.workItemId, waitsFor: b.workItemId }, w.human),
+      call("workItem.link", { workItemId: b.workItemId, waitsFor: a.workItemId }, w.human),
+    ]);
+    expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(
+      await rows(
+        "SELECT work_item_id FROM core_work_item_links WHERE work_item_id IN (?, ?)",
+        a.workItemId,
+        b.workItemId,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("keeps the order through many moves between the same two items", async () => {
+    const w = await world();
+    const a = await create(w, "A");
+    const b = await create(w, "B");
+    const movers = [];
+    for (let i = 0; i < 60; i++) movers.push((await create(w, `M${i}`)).workItemId);
+    // Each new one goes just after A, so the gap between A and the last one halves every time.
+    for (const m of movers) {
+      await ok("workItem.reorder", { workItemId: m, after: a.workItemId }, w.human);
+    }
+    const board = await ok<{ items: { id: string }[] }>(
+      "workItem.board",
+      { orgId: w.orgId, projectId: w.projectId, states: ["backlog"] },
+      w.human,
+    );
+    const order = board.items.map((i) => i.id);
+    expect(order[0]).toBe(a.workItemId);
+    expect(order[1]).toBe(movers[movers.length - 1]);
+    expect(order.at(-1)).toBe(b.workItemId);
   });
 });

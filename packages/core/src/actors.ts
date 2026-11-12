@@ -4,7 +4,14 @@
 
 // `scheduler` is the factory's own pull (ADR 0491): it only starts work a person (or a policy
 // that lets agents) already released, so it reads and writes but can do nothing else.
-export const ACTOR_TYPES = ["human", "agent", "runner", "intake", "self-improve", "scheduler"] as const;
+export const ACTOR_TYPES = [
+  "human",
+  "agent",
+  "runner",
+  "intake",
+  "self-improve",
+  "scheduler",
+] as const;
 export type ActorType = (typeof ACTOR_TYPES)[number];
 
 export interface Actor {

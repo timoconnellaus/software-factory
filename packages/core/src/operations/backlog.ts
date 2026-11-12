@@ -67,6 +67,12 @@ export function releaseRefusal(
       `the project has no valid config (${ctx.scope.policyError}): nothing can be released`,
     );
   }
+  if (workflowUnchosen(policy)) {
+    return new OperationError(
+      "conflict",
+      "the project defines workflows but names none for its items: choose the project's workflow in its Settings first (ADR 0492)",
+    );
+  }
   if (ctx.actor.type !== "human" && !policy.release.agents) {
     return new OperationError(
       "denied",
@@ -86,9 +92,22 @@ export function releaseRefusal(
 }
 
 /**
- * Starts an item's pipeline (the pull, ADR 0491): it becomes `running`, pins the project's config
- * version (or a running trial's candidate, ADR 0373) and its workflow (ADR 0492), gets its intake
- * stage, and its Workflow is created. Guarded: if another call pulled it first, the batch aborts.
+ * What a pull's start must still find true when its batch commits (ADR 0491). The start is one
+ * conditional UPDATE, so two pulls can never both take the last slot: D1 runs write batches one at
+ * a time, and the second one's count already sees the first one's start.
+ */
+export interface StartConditions {
+  activeLimit: number;
+  needsRepository: boolean;
+}
+
+/**
+ * Starts an item's pipeline: it becomes `running`, pins the config version (or a running trial's
+ * candidate, ADR 0373) and that version's workflow (ADR 0492), gets its intake stage, and its
+ * Workflow is created. Guarded: unless the item is still queued (and, for the pull, the project is
+ * still under its active limit, the item has its repository and nothing it waits for is undone),
+ * the whole batch aborts and nothing starts. The caller's batch is the pull's own (`queue.pull`),
+ * or an attached PR's or incident's creation, which start outside the limit.
  */
 export function startPipeline(
   ctx: HandlerContext,
@@ -100,6 +119,7 @@ export function startPipeline(
     /** An attached PR follows no workflow: it skips spec and build (spec 05). */
     workflow?: boolean;
   },
+  conditions?: StartConditions,
 ): void {
   const workflow = pin.workflow === false ? null : (pin.policy?.workflow ?? null);
   ctx.write(
@@ -116,9 +136,29 @@ export function startPipeline(
         updated_at: ctx.now,
       })
       .where("id", "=", item.id)
-      .where("status", "=", "queued"),
+      .where("status", "=", "queued")
+      .$if(!!conditions, (q) =>
+        q
+          .where(
+            sql<number>`(SELECT count(*) FROM core_work_items a WHERE a.project_id = ${project.id} AND a.status IN ('running', 'waiting', 'paused'))`,
+            "<",
+            conditions?.activeLimit ?? 0,
+          )
+          .where(({ not, exists, selectFrom }) =>
+            not(
+              exists(
+                selectFrom("core_work_item_links as l")
+                  .innerJoin("core_work_items as t", "t.id", "l.waits_for_id")
+                  .select("l.waits_for_id")
+                  .where("l.work_item_id", "=", item.id)
+                  .where("t.status", "!=", "done"),
+              ),
+            ),
+          )
+          .$if(!!conditions?.needsRepository, (q2) => q2.where("repository_id", "is not", null)),
+      ),
   );
-  ctx.guardChanged(`pull #${item.number}`);
+  ctx.guardChanged(`start #${item.number}`);
   ctx.write(
     ctx.db.insertInto("core_stages").values({
       id: newId("stage"),
@@ -150,6 +190,7 @@ export interface PullCandidate {
   rank: number;
   released_at: string | null;
   created_at: string;
+  repository_id: string | null;
 }
 
 /** Pull order (ADR 0491): priority, then rank, then release time, then creation. */
@@ -166,9 +207,6 @@ export function pullOrder(a: PullCandidate, b: PullCandidate): number {
 export async function blockersOf(
   ctx: Pick<HandlerContext, "db">,
   ids: string[],
-  extra: Map<string, string[]> = new Map(),
-  /** Items this call is finishing as done: their writes aren't committed yet. */
-  done: readonly string[] = [],
 ): Promise<
   Map<string, { id: string; number: number; title: string; status: string; projectId: string }[]>
 > {
@@ -177,95 +215,120 @@ export async function blockersOf(
     { id: string; number: number; title: string; status: string; projectId: string }[]
   >();
   if (ids.length === 0) return out;
-  const links = await ctx.db
+  const rows = await ctx.db
     .selectFrom("core_work_item_links as l")
-    .select(["l.work_item_id", "l.waits_for_id"])
+    .innerJoin("core_work_items as t", "t.id", "l.waits_for_id")
+    .select(["l.work_item_id", "t.id", "t.number", "t.title", "t.status", "t.project_id"])
     .where("l.work_item_id", "in", ids)
+    .where("t.status", "!=", "done")
     .execute();
-  const pairs = [
-    ...links.map((l) => [l.work_item_id, l.waits_for_id] as const),
-    ...[...extra].flatMap(([id, targets]) => targets.map((t) => [id, t] as const)),
-  ];
-  const targets = [...new Set(pairs.map(([, t]) => t))];
-  const rows = targets.length
-    ? await ctx.db
-        .selectFrom("core_work_items")
-        .select(["id", "number", "title", "status", "project_id"])
-        .where("id", "in", targets)
-        .execute()
-    : [];
-  for (const [id, t] of pairs) {
-    const row = rows.find((r) => r.id === t);
-    if (!row || row.status === "done" || done.includes(t)) continue;
-    const list = out.get(id) ?? [];
-    if (!list.some((x) => x.id === t)) {
-      list.push({
-        id: t,
-        number: row.number,
-        title: row.title,
-        status: row.status,
-        projectId: row.project_id,
-      });
-    }
-    out.set(id, list);
+  for (const r of rows) {
+    const list = out.get(r.work_item_id) ?? [];
+    list.push({
+      id: r.id,
+      number: r.number,
+      title: r.title,
+      status: r.status,
+      projectId: r.project_id,
+    });
+    out.set(r.work_item_id, list);
   }
   return out;
 }
 
 /**
- * The pull for one project (ADR 0491): while its active items are under `activeLimit`, start the
- * next queued item whose "waits for" items are all done. Reads happen before this call's writes
- * commit, so the caller passes what its own batch changes: `extra` queued items it is adding or
- * releasing (and their new links), and `leaving` items it is taking out of the pipeline.
+ * Asks for a pull of a project after this call commits (ADR 0491): an outbox message the engine
+ * delivers right after the commit, as `queue.pull` by the scheduler. Never inside the caller's own
+ * batch, so a pull that loses a race can't abort a finish, a cancel or New work.
+ */
+export function requestPull(ctx: HandlerContext, projectIdValue: string): void {
+  ctx.emit({ kind: "queue.pull", payload: { projectId: projectIdValue } });
+}
+
+/**
+ * After an item ends: a pull of its own project (its slot is free), and, when it is done, of every
+ * other project with queued work waiting on it. The cron catches anything this misses.
+ */
+export async function requestPullsAfterEnd(
+  ctx: HandlerContext,
+  item: Pick<WorkItemRow, "id" | "project_id">,
+  outcome: string,
+): Promise<void> {
+  requestPull(ctx, item.project_id);
+  if (outcome !== "done") return;
+  const others = await ctx.db
+    .selectFrom("core_work_item_links as l")
+    .innerJoin("core_work_items as w", "w.id", "l.work_item_id")
+    .select("w.project_id")
+    .distinct()
+    .where("l.waits_for_id", "=", item.id)
+    .where("w.status", "=", "queued")
+    .where("w.project_id", "!=", item.project_id)
+    .execute();
+  for (const o of others) requestPull(ctx, o.project_id);
+}
+
+/**
+ * The pull for one project (ADR 0491), run only by `queue.pull` in its own batch: while its active
+ * items are under `activeLimit`, start the next queued item that has its repository (when its
+ * workflow needs one) and whose "waits for" items are all done, by priority, rank, release time.
+ * Each start re-checks those conditions in its own write (`startPipeline`), so a race aborts this
+ * pull, never another call, and the next pull picks up.
  */
 export async function pullQueued(
   ctx: HandlerContext,
   project: ProjectRow,
   policy: ProjectPolicy | null,
-  opts: {
-    extra?: PullCandidate[];
-    extraLinks?: Map<string, string[]>;
-    leaving?: string[];
-    /** Items this call finishes as done: what waits on them may start. */
-    done?: string[];
-  } = {},
 ): Promise<string[]> {
   if (!policy) return [];
+  // A project that defines workflows but names none fails closed (ADR 0492).
+  if (workflowUnchosen(policy)) return [];
   if (await activeKillSwitch(ctx.db, project.org_id, project.id)) return [];
-  const leaving = opts.leaving ?? [];
-  let activeQ = ctx.db
-    .selectFrom("core_work_items")
-    .select(sql<number>`count(*)`.as("n"))
-    .where("project_id", "=", project.id)
-    .where("status", "in", [...ACTIVE_STATUSES]);
-  if (leaving.length) activeQ = activeQ.where("id", "not in", leaving);
-  const active = Number((await activeQ.executeTakeFirst())?.n ?? 0);
+  const active = Number(
+    (
+      await ctx.db
+        .selectFrom("core_work_items")
+        .select(sql<number>`count(*)`.as("n"))
+        .where("project_id", "=", project.id)
+        .where("status", "in", [...ACTIVE_STATUSES])
+        .executeTakeFirst()
+    )?.n ?? 0,
+  );
   let room = policy.activeLimit - active;
   if (room <= 0) return [];
-  const stored = await ctx.db
-    .selectFrom("core_work_items")
-    .select(["id", "number", "priority", "rank", "released_at", "created_at"])
-    .where("project_id", "=", project.id)
-    .where("status", "=", "queued")
-    .execute();
-  const extra = opts.extra ?? [];
-  const queue = [...stored.filter((s) => !extra.some((e) => e.id === s.id)), ...extra].sort(
-    pullOrder,
-  );
+  const queue = (
+    await ctx.db
+      .selectFrom("core_work_items")
+      .select(["id", "number", "priority", "rank", "released_at", "created_at", "repository_id"])
+      .where("project_id", "=", project.id)
+      .where("status", "=", "queued")
+      .execute()
+  ).sort(pullOrder);
   const blocked = await blockersOf(
     ctx,
     queue.map((q) => q.id),
-    opts.extraLinks,
-    opts.done,
   );
+  const needsRepository = workflowNeedsRepository(policy, policy.workflow);
   let trial = await trialForNewItem(ctx, project.id);
   let trialRoom = trial ? await trialRoomLeft(ctx, trial.id) : 0;
+  // A trial's items run its candidate version, workflow included (ADR 0373, 0492).
+  const trialPolicy = trial
+    ? (await loadPolicy(ctx.db, { id: project.id, policy_sha: trial.candidateSha })).policy
+    : null;
   const started: string[] = [];
   for (const q of queue) {
     if (room <= 0) break;
     if (blocked.get(q.id)?.length) continue;
-    startPipeline(ctx, q, project, { policy, trial: trialRoom > 0 ? trial : null });
-    if (trial && trialRoom > 0 && --trialRoom === 0) trial = null;
+    if (needsRepository && !q.repository_id) continue;
+    const onTrial = trial && trialRoom > 0 && trialPolicy;
+    startPipeline(
+      ctx,
+      q,
+      project,
+      { policy: onTrial ? trialPolicy : policy, trial: onTrial ? trial : null },
+      { activeLimit: policy.activeLimit, needsRepository },
+    );
+    if (onTrial && --trialRoom === 0) trial = null;
     started.push(q.id);
     room--;
   }
@@ -273,36 +336,12 @@ export async function pullQueued(
 }
 
 /**
- * After an item ends: pull its own project (its slot is free) and every other project with queued
- * work waiting on it when it is done (ADR 0491). The cron catches anything this misses.
+ * A project whose config defines workflows but names none for its items (ADR 0492): nothing is
+ * released or pulled until a person chooses one, rather than items silently running the skeleton
+ * without the workflows' gate steps.
  */
-export async function pullAfterEnd(
-  ctx: HandlerContext,
-  item: Pick<WorkItemRow, "id" | "project_id">,
-  outcome: string,
-): Promise<string[]> {
-  const done = outcome === "done" ? [item.id] : [];
-  const project = ctx.scope.project;
-  const started =
-    project && project.id === item.project_id
-      ? await pullQueued(ctx, project, ctx.scope.policy, { leaving: [item.id], done })
-      : [];
-  if (!done.length) return started;
-  const others = await ctx.db
-    .selectFrom("core_work_item_links as l")
-    .innerJoin("core_work_items as w", "w.id", "l.work_item_id")
-    .innerJoin("core_projects as p", "p.id", "w.project_id")
-    .selectAll("p")
-    .where("l.waits_for_id", "=", item.id)
-    .where("w.status", "=", "queued")
-    .where("w.project_id", "!=", item.project_id)
-    .groupBy("p.id")
-    .execute();
-  for (const other of others) {
-    const { policy } = await loadPolicy(ctx.db, other);
-    started.push(...(await pullQueued(ctx, other, policy, { done })));
-  }
-  return started;
+export function workflowUnchosen(policy: Pick<ProjectPolicy, "workflows" | "workflow">): boolean {
+  return policy.workflows.length > 0 && !policy.workflow;
 }
 
 /** How many more items a running trial takes (ADR 0373). */
@@ -367,9 +406,8 @@ function requirePre(w: WorkItemRow, what: string) {
 }
 
 const startedOutput = z.object({
+  /** `queued`: the factory pulls it right after this call commits, when there is room. */
   status: z.string(),
-  /** Items this call started (its own, or others it made room for). */
-  started: z.array(z.string()),
   /** What it waits for that isn't done; empty when nothing holds it. */
   blockedBy: z.array(
     z.object({ id: z.string(), number: z.number(), title: z.string(), status: z.string() }),
@@ -410,13 +448,11 @@ export const workItemRelease = defineOperation({
       before: { status: w.status },
       after: { status: "queued", releasedBy: ctx.actor.id },
     });
-    const started = await pullQueued(ctx, project, ctx.scope.policy, {
-      extra: [{ ...w, released_at: ctx.now }],
-    });
+    // The pull runs after this commits, in its own batch (it may start this item or not).
+    requestPull(ctx, project.id);
     const blocked = (await blockersOf(ctx, [w.id])).get(w.id) ?? [];
     return {
-      status: started.includes(w.id) ? "running" : "queued",
-      started,
+      status: "queued",
       blockedBy: blocked.map(({ projectId: _p, ...b }) => b),
     };
   },
@@ -487,6 +523,14 @@ export const workItemUpdate = defineOperation({
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     requirePre(w, "it can be edited");
+    // Released work keeps its repository: release checked it, and the pull relies on it. Take it
+    // back to ready (workItem.move) to change it.
+    if (input.repositoryId !== undefined && !["backlog", "ready"].includes(w.status)) {
+      throw new OperationError(
+        "conflict",
+        `work item #${w.number} is ${w.status}: its repository changes only in backlog or ready`,
+      );
+    }
     if (input.repositoryId && !ctx.scope.repositories.some((r) => r.id === input.repositoryId)) {
       throw new OperationError("not_found", "that repository isn't this project's");
     }
@@ -552,17 +596,38 @@ export const workItemReorder = defineOperation({
     // The neighbour on the other side of the anchor, in the same priority.
     const neighbour = await ctx.db
       .selectFrom("core_work_items")
-      .select("rank")
+      .select(["id", "rank"])
       .where("project_id", "=", w.project_id)
       .where("priority", "=", anchor.priority)
       .where("id", "!=", w.id)
       .where("rank", input.before ? "<" : ">", anchor.rank)
       .orderBy("rank", input.before ? "desc" : "asc")
       .executeTakeFirst();
+    let anchorRank = anchor.rank;
+    let neighbourRank = neighbour?.rank;
+    // Halving the gap runs out of precision after a few dozen moves between the same two items:
+    // then renumber the project's ranks 1, 2, 3… in their current order, and place between those.
+    if (neighbourRank !== undefined && Math.abs(anchorRank - neighbourRank) < 1e-6) {
+      const all = await ctx.db
+        .selectFrom("core_work_items")
+        .select(["id", "rank"])
+        .where("project_id", "=", w.project_id)
+        .where("id", "!=", w.id)
+        .orderBy("rank")
+        .orderBy("created_at")
+        .orderBy("id")
+        .execute();
+      const renumbered = new Map(all.map((r, i) => [r.id, i + 1]));
+      for (const [id, r] of renumbered) {
+        ctx.write(ctx.db.updateTable("core_work_items").set({ rank: r }).where("id", "=", id));
+      }
+      anchorRank = renumbered.get(anchor.id) ?? anchorRank;
+      neighbourRank = neighbour ? renumbered.get(neighbour.id) : undefined;
+    }
     const rank =
-      neighbour === undefined
-        ? anchor.rank + (input.before ? -1 : 1)
-        : (anchor.rank + neighbour.rank) / 2;
+      neighbourRank === undefined
+        ? anchorRank + (input.before ? -1 : 1)
+        : (anchorRank + neighbourRank) / 2;
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -592,17 +657,32 @@ export const workItemLink = defineOperation({
     const w = requireWorkItem(ctx);
     requirePre(w, "what it waits for can change");
     await checkLink(ctx, w, input.waitsFor);
+    const already = await ctx.db
+      .selectFrom("core_work_item_links")
+      .select("work_item_id")
+      .where("work_item_id", "=", w.id)
+      .where("waits_for_id", "=", input.waitsFor)
+      .executeTakeFirst();
+    if (already) return { linked: true };
+    // The cycle check again, in the insert itself: two links made at once can't close a cycle
+    // between them (D1 runs write batches one at a time). A cycle aborts this call.
     ctx.write(
-      ctx.db
-        .insertInto("core_work_item_links")
-        .values({
-          work_item_id: w.id,
-          waits_for_id: input.waitsFor,
-          created_at: ctx.now,
-          created_by: ctx.actor.id,
-        })
-        .onConflict((oc) => oc.doNothing()),
+      ctx.d1
+        .prepare(
+          `INSERT INTO core_work_item_links (work_item_id, waits_for_id, created_at, created_by)
+           SELECT ?1, ?2, ?3, ?4
+           WHERE NOT EXISTS (
+             WITH RECURSIVE r(id) AS (
+               SELECT waits_for_id FROM core_work_item_links WHERE work_item_id = ?2
+               UNION
+               SELECT l.waits_for_id FROM core_work_item_links l JOIN r ON l.work_item_id = r.id
+             )
+             SELECT 1 FROM r WHERE id = ?1
+           )`,
+        )
+        .bind(w.id, input.waitsFor, ctx.now, ctx.actor.id),
     );
+    ctx.guardChanged("waits-for link without a cycle");
     ctx.change({ entity: "work_item_link", id: w.id, after: { waitsFor: input.waitsFor } });
     return { linked: true };
   },
@@ -636,9 +716,9 @@ export const workItemUnlink = defineOperation({
 export const queuePull = defineOperation({
   name: "queue.pull",
   description:
-    'The factory pulls queued work on a project into the pipeline (ADR 0491): while it is under its active limit, the next queued item whose "waits for" items are all done starts, by priority, then rank, then release time. The engine\'s minute cron runs it for projects with queued work; release, finish and cancel also pull.',
+    'The factory pulls queued work on a project into the pipeline (ADR 0491): while it is under its active limit, the next queued item whose "waits for" items are all done (and that has its repository) starts, by priority, then rank, then release time. Run only by the scheduler: after release, create-and-release, finish and cancel commit (through the outbox), and from the engine\'s minute cron. It starts only work that was already released, so it is never a reviewable decision: the scheduler actor may read and write and nothing else.',
   risk: "write",
-  actors: ["agent"],
+  actors: ["scheduler"],
   permission: "signed-in",
   input: z.object({ projectId }),
   output: z.object({ started: z.array(z.string()) }),

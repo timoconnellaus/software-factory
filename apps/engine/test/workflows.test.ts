@@ -154,7 +154,8 @@ describe("workflows (spec 09 M2)", () => {
   });
 
   it("runs the skeleton alone for a project with no workflow, with the default Builder", async () => {
-    const w = await world(POLICY);
+    // No workflows defined (a config that defines some must name one: ADR 0492 fails it closed).
+    const w = await world({ ...POLICY, workflows: [] });
     const item = await create(w);
     // Triage's pick is ignored (ADR 0492): the project names no workflow.
     await runStage(w, item.workItemId, "triage", () =>

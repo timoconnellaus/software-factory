@@ -20,9 +20,9 @@ import {
   priority,
   priorityIndex,
   priorityOf,
-  pullAfterEnd,
-  pullQueued,
   releaseRefusal,
+  requestPull,
+  requestPullsAfterEnd,
 } from "./backlog.ts";
 import { queuedEntriesQuery, releaseMergeQueue } from "./merge-queue.ts";
 import { protectionDriftQuery } from "./protection.ts";
@@ -260,22 +260,8 @@ export const workItemCreate = defineOperation({
       acceptanceCriteria: input.acceptanceCriteria ?? null,
     });
     await linkNewItem(ctx, { id: created.id, org_id: project.org_id }, input.waitsFor);
-    const started =
-      input.state === "queued"
-        ? await pullQueued(ctx, project, ctx.scope.policy, {
-            extra: [
-              {
-                id: created.id,
-                number: created.number,
-                priority: priorityIndex(input.priority),
-                rank: created.rank,
-                released_at: ctx.now,
-                created_at: ctx.now,
-              },
-            ],
-            extraLinks: new Map([[created.id, input.waitsFor]]),
-          })
-        : [];
+    // Create and release: the pull runs right after this commits, in its own batch.
+    if (input.state === "queued") requestPull(ctx, project.id);
     ctx.write(
       ctx.db
         .insertInto("core_intake_keys")
@@ -291,7 +277,7 @@ export const workItemCreate = defineOperation({
       number: project.next_number,
       branch: created.branch,
       outcome: "created" as const,
-      status: started.includes(created.id) ? "running" : input.state,
+      status: input.state,
     };
   },
 });
@@ -757,8 +743,8 @@ export const workItemCancel = defineOperation({
     if (!(ACTIVE_STATUSES as readonly string[]).includes(w.status)) return { cancelled: false };
     await releaseMergeQueue(ctx, w, "left", `cancelled: ${input.reason}`);
     cancelWorkItem(ctx, w, input.reason);
-    // Its slot is free: the next queued item may start (ADR 0491).
-    await pullQueued(ctx, requireProject(ctx), ctx.scope.policy, { leaving: [w.id] });
+    // Its slot is free: the next queued item may start, after this commits (ADR 0491).
+    requestPull(ctx, w.project_id);
     return { cancelled: true };
   },
 });
@@ -784,9 +770,25 @@ export const workItemTriage = defineOperation({
     const policy = ctx.scope.policy;
     if (!policy) throw new OperationError("denied", "no valid policy");
     // An item follows its project's workflow, pinned when it was pulled (ADR 0492): triage no
-    // longer picks, and a pick it still sends is ignored. Items pulled before 0261 keep theirs.
-    const workflow = w.kind === "attached" ? null : w.workflow;
-    const workflowReason = w.kind === "attached" ? null : w.workflow_reason;
+    // longer picks, and a pick it still sends is ignored. An item started before 0261 (no
+    // `pulled_at`) was promised triage's pick (ADR 0371): it keeps that rule, so the deploy never
+    // takes a workflow's gate steps away from work already under way.
+    let workflow = w.kind === "attached" ? null : w.workflow;
+    let workflowReason = w.kind === "attached" ? null : w.workflow_reason;
+    if (w.kind !== "attached" && !w.pulled_at) {
+      const shape = ctx.scope.pinnedPolicy ?? policy;
+      const picked = input.result.workflow
+        ? (shape.workflows.find(
+            (x) => x.name.toLowerCase() === input.result.workflow?.toLowerCase(),
+          ) ?? null)
+        : null;
+      workflow = picked?.name ?? null;
+      workflowReason = workflow
+        ? (input.result.workflowReason ?? "picked by triage")
+        : input.result.workflow
+          ? `triage asked for "${input.result.workflow}", which this project doesn't have: the skeleton alone`
+          : null;
+    }
     // An attached PR is already built: spec and build are skipped whatever its size (spec 05).
     const decision =
       w.kind === "attached"
@@ -1014,7 +1016,7 @@ export const workItemFinish = defineOperation({
       after: { status: input.status },
     });
     // Its slot is free, and what waited on it may start (ADR 0491).
-    await pullAfterEnd(ctx, w, input.status);
+    await requestPullsAfterEnd(ctx, w, input.status);
     return { status: input.status };
   },
 });
