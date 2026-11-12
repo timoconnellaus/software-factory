@@ -280,16 +280,16 @@ export interface EditFootprint {
 
 const keyOf = (k: PlanKey) => `${k.section}␟${k.parent ?? ""}␟${k.text}`;
 
-/** A block's words without its list marker: what "says it" looks for. */
+/** A block's words without its list marker. */
 const content = (text: string) => text.replace(/^([-*+]|\d{1,9}[.)])\s+/, "").trim();
 
-/** How many blocks of a section say `text` (its words, as a whole, within the block). */
-function saying(blocks: PlanBlock[], section: string, text: string): number {
-  const said = content(text);
-  if (!said) return 0;
-  const escaped = said.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "u");
-  return blocks.filter((b) => b.section === section && re.test(content(b.text))).length;
+/**
+ * How many blocks of a section are `text` exactly (fourth review of #85): a removed block counts
+ * only as a whole block; a longer line that mentions it is the planner's to write, and is listed to
+ * the person (`mentions`), not refused.
+ */
+function exactly(blocks: PlanBlock[], section: string, text: string): number {
+  return blocks.filter((b) => b.section === section && b.text === text).length;
 }
 
 /** How many times each block (section, parent and text) appears in a plan. */
@@ -302,7 +302,7 @@ export function planCounts(md: string): Map<string, number> {
 /**
  * The edits a plan doesn't keep. Edits are taken in order and each takes the copies it needs, so two
  * edits that both wrote "- TBD" in a section need two of them. What an edit removed is kept out
- * while no more blocks of its section say it than the edit left.
+ * while no more blocks of its section are exactly it than the edit left.
  */
 export function droppedEdits<E extends { footprint: EditFootprint }>(md: string, edits: E[]): E[] {
   const blocks = planBlocks(md);
@@ -313,24 +313,81 @@ export function droppedEdits<E extends { footprint: EditFootprint }>(md: string,
     const need = new Map<string, number>();
     for (const b of e.footprint.blocks) need.set(keyOf(b), (need.get(keyOf(b)) ?? 0) + 1);
     const writes = [...need].every(([k, n]) => (counts.get(k) ?? 0) - (used.get(k) ?? 0) >= n);
-    const removed = e.footprint.gone.every((g) => saying(blocks, g.section, g.text) <= g.max);
+    const removed = e.footprint.gone.every((g) => exactly(blocks, g.section, g.text) <= g.max);
     if (!writes || !removed) return true;
     for (const [k, n] of need) used.set(k, (used.get(k) ?? 0) + n);
     return false;
   });
 }
 
-/** Why a plan doesn't keep an edit, in words for the person and the planner. */
+/** Words in common, for naming the block the planner wrote in place of a person's. */
+const overlap = (a: string, b: string) => {
+  const words = (t: string) =>
+    content(t)
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean);
+  const w = new Set(words(a));
+  return words(b).filter((x) => w.has(x)).length;
+};
+
+/**
+ * Why a plan doesn't keep an edit, exactly enough for the planner to undo what broke it: which
+ * block is missing from which section (and what stands nearest in its place), or which removed
+ * block is back.
+ */
 export function whyNotKept(md: string, footprint: EditFootprint): string {
   const blocks = planBlocks(md);
-  const sections = new Set(blocks.map((b) => b.section));
+  // A section exists while its heading does, even with nothing under it.
+  const sections = new Set([
+    ...blocks.map((b) => b.section),
+    ...blocks.flatMap((b) => (b.opens !== null ? [b.opens] : [])),
+  ]);
   const lost = [...footprint.blocks, ...footprint.gone].find(
     (k) => k.section && !sections.has(k.section),
   );
   if (lost) return `its section "${lost.section}" is no longer in the plan`;
-  const back = footprint.gone.find((g) => saying(blocks, g.section, g.text) > g.max);
-  if (back) return `what it removed ("${content(back.text)}") is back in the plan`;
+  const back = footprint.gone.find((g) => exactly(blocks, g.section, g.text) > g.max);
+  if (back)
+    return `"${content(back.text)}", which it removed, is back in ${back.section || "the plan"}`;
+  const missing = footprint.blocks.find(
+    (k) =>
+      !blocks.some(
+        (b) => b.section === k.section && b.text === k.text && b.parent === (k.parent ?? b.parent),
+      ),
+  );
+  if (missing) {
+    const near = blocks
+      .filter((b) => b.section === missing.section)
+      .map((b) => ({ b, n: overlap(missing.text, b.text) }))
+      .sort((x, y) => y.n - x.n)[0];
+    const moved = blocks.find((b) => b.text === missing.text);
+    if (moved) {
+      return `"${content(missing.text)}" moved: it belongs in ${missing.section || "the top of the plan"}${missing.parent ? ` under "${content(missing.parent)}"` : ""}, and is now in ${moved.section || "the top of the plan"}${moved.parent ? ` under "${content(moved.parent)}"` : ""}`;
+    }
+    return `"${content(missing.text)}" is missing from ${missing.section || "the plan"}${near && near.n > 0 ? `; the plan has "${content(near.b.text)}" there instead` : ""}`;
+  }
   return "the plan doesn't have its words as written, in their place";
+}
+
+/**
+ * Lines of the plan that mention what an edit removed without being it (fourth review of #85): the
+ * planner may write them; the person sees them under the plan, with Release or Keep.
+ */
+export function mentions(md: string, footprint: EditFootprint): string[] {
+  const blocks = planBlocks(md);
+  const out: string[] = [];
+  for (const g of footprint.gone) {
+    const said = content(g.text);
+    if (!said) continue;
+    const escaped = said.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "iu");
+    for (const b of blocks) {
+      if (b.section === g.section && b.text !== g.text && re.test(content(b.text)))
+        out.push(b.text);
+    }
+  }
+  return [...new Set(out)];
 }
 
 /** Whether a rendered block is one an edit wrote (same section, parent and text). */
@@ -339,46 +396,105 @@ export function editWrote(footprint: EditFootprint, block: PlanKey): boolean {
 }
 
 /**
- * How a person's edit renamed sections: old section path → new, when the plan's headings are the
- * same in number and level before and after (a rename, not a section added or deleted). Every path
- * under a renamed heading is mapped too.
+ * How a person's edit of lines `lineStart..lineEnd` (now `count` lines) moved the plan's other
+ * blocks (fourth review of #85): every block outside the edited lines is the same block after, at
+ * the same place (shifted by the change in length), but its section or parent may have changed: a
+ * heading renamed, inserted, deleted or reordered above it ("Notes" becoming "Notes (2)"), or its
+ * parent item reworded. Returns the key, section and parent maps from before to after.
  */
-export function sectionRenames(before: string, after: string): Map<string, string> {
-  const heads = (md: string) =>
-    planBlocks(md)
-      .filter((b) => b.kind === "heading")
-      .map((b) => ({
-        opens: b.opens ?? "",
-        level: /^ {0,3}#+/.exec(b.text)?.[0].trim().length ?? 0,
-      }));
-  const a = heads(before);
-  const b = heads(after);
-  const map = new Map<string, string>();
-  if (a.length !== b.length || a.some((h, i) => h.level !== b[i]?.level)) return map;
-  a.forEach((h, i) => {
-    const q = b[i]?.opens;
-    if (q !== undefined && h.opens !== q) map.set(h.opens, q);
-  });
-  return map;
+export function structureMoves(
+  before: string,
+  after: string,
+  lineStart: number,
+  lineEnd: number,
+  count: number,
+): { keys: Map<string, PlanKey>; sections: Map<string, string>; parents: Map<string, string> } {
+  const delta = count - (lineEnd - lineStart + 1);
+  const at = new Map(planBlocks(after).map((b) => [b.lineStart, b]));
+  const keys = new Map<string, PlanKey>();
+  const sections = new Map<string, string>();
+  const parents = new Map<string, string>();
+  for (const b of planBlocks(before)) {
+    if (b.lineEnd >= lineStart && b.lineStart <= lineEnd) continue;
+    const a = at.get(b.lineStart < lineStart ? b.lineStart : b.lineStart + delta);
+    if (!a || a.text !== b.text) continue;
+    const k = keyOf(b);
+    if (!keys.has(k)) keys.set(k, { section: a.section, parent: a.parent, text: a.text });
+    if (b.section !== a.section && !sections.has(b.section)) sections.set(b.section, a.section);
+    if (b.parent && b.parent !== a.parent && !parents.has(b.parent))
+      parents.set(b.parent, a.parent);
+  }
+  return { keys, sections, parents };
 }
 
-/** A footprint with its sections renamed (a person renamed a heading above it). */
-export function renameSections(
+/** A footprint carried along by `structureMoves` (a person's edit moved what it is keyed to). */
+export function rekeyFootprint(
   footprint: EditFootprint,
-  renames: Map<string, string>,
+  moves: ReturnType<typeof structureMoves>,
 ): EditFootprint {
-  if (renames.size === 0) return footprint;
-  const move = (s: string) => {
-    let best = "";
-    for (const old of renames.keys()) {
-      if ((s === old || s.startsWith(`${old} › `)) && old.length > best.length) best = old;
-    }
-    return best ? `${renames.get(best)}${s.slice(best.length)}` : s;
-  };
+  const section = (s: string) => moves.sections.get(s) ?? s;
+  const parent = (p: string | undefined) => (p ? (moves.parents.get(p) ?? p) : p);
   return {
-    blocks: footprint.blocks.map((k) => ({ ...k, section: move(k.section) })),
-    gone: footprint.gone.map((k) => ({ ...k, section: move(k.section) })),
+    blocks: footprint.blocks.map((k) => {
+      const moved = moves.keys.get(keyOf(k));
+      return moved
+        ? { ...k, ...moved }
+        : { ...k, section: section(k.section), parent: parent(k.parent) };
+    }),
+    gone: footprint.gone.map((k) => ({
+      ...k,
+      section: section(k.section),
+      parent: parent(k.parent),
+    })),
   };
+}
+
+/** Whether a footprint changed (so its stored copy needs writing). */
+export const sameFootprint = (a: EditFootprint, b: EditFootprint) =>
+  JSON.stringify(a) === JSON.stringify(b);
+
+/** Words without the edges' punctuation, spaces folded, lowercased: how an answer compares. */
+const plain = (t: string) =>
+  foldSpace(t)
+    .toLowerCase()
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+
+/**
+ * What an edit changed on the line carrying `tag`: the words of the new line between the words it
+ * shares with the old line at the start and at the end. Null when no line carries the tag.
+ */
+export function changedSpan(before: string, after: string, tag: string): string | null {
+  const line = (t: string) =>
+    t
+      .split("\n")
+      .find((l) => l.includes(tag))
+      ?.replace(tag, " ")
+      .replace(/^\s*([-*+]|\d+[.)])\s+/, "");
+  const b = line(before)?.split(/\s+/).filter(Boolean);
+  const a = line(after)?.split(/\s+/).filter(Boolean);
+  if (!a || !b) return null;
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let end = 0;
+  while (
+    end < a.length - start &&
+    end < b.length - start &&
+    a[a.length - 1 - end] === b[b.length - 1 - end]
+  )
+    end++;
+  return a.slice(start, a.length - end).join(" ");
+}
+
+/**
+ * The answer an edit gives a question, or null (fourth review of #85: no reading of meaning). The
+ * changed span, trimmed, must BE one of the question's options (case and surrounding punctuation
+ * aside), or, for a question with no options, the answer is the whole changed span as written. Any
+ * other edit answers nothing: the person is asked to confirm with one tap.
+ */
+export function editAnswer(span: string | null, options: string[]): string | null {
+  if (!span || !plain(span)) return null;
+  if (options.length === 0) return span.trim().replace(/^[,;:\s]+|[,;:\s]+$/g, "");
+  return options.find((o) => plain(o) === plain(span)) ?? null;
 }
 
 /**
@@ -454,7 +570,7 @@ export function editFootprint(
         section: b.section,
         parent: b.parent,
         text: b.text,
-        max: saying(blocks, b.section, b.text),
+        max: exactly(blocks, b.section, b.text),
       })),
     },
   };

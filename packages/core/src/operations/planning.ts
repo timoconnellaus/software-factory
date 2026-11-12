@@ -8,14 +8,16 @@ import {
   droppedEdits,
   type EditFootprint,
   editFootprint,
+  mentions,
   PLANNING_INTERRUPT_LINES,
   planningNewsInputSchema,
   planningPeekInputSchema,
   planningReadyInputSchema,
   planningWaitInputSchema,
-  renameSections,
-  sectionRenames,
+  rekeyFootprint,
+  sameFootprint,
   specReviseInputSchema,
+  structureMoves,
   whyNotKept,
 } from "@software-factory/runner-contract";
 import { z } from "zod";
@@ -1325,20 +1327,20 @@ export const specEdit = defineOperation({
         .where("current_spec_id", "=", input.specId),
     );
     ctx.guardChanged("the plan is still the version edited");
-    // A heading the person renamed carries the edits beneath it along (third review of #85).
-    const renames = sectionRenames(spec.body_md, body);
-    const before = await standingEdits(ctx, w.id);
-    if (before.length >= STANDING_EDITS_MAX) {
-      throw new OperationError(
-        "conflict",
-        `this plan already holds ${STANDING_EDITS_MAX} people's edits the planner must keep: release some (under the plan) before editing more`,
-      );
-    }
-    const standing = before.map((e) => ({
-      ...e,
-      moved: renames.size > 0,
-      footprint: renameSections(e.footprint, renames),
-    }));
+    // A person's edit that moves structure (a heading renamed, inserted, deleted or reordered above,
+    // a parent item reworded) carries the edits it moves along, in this batch, so nobody is stuck
+    // (fourth review of #85).
+    const moves = structureMoves(
+      spec.body_md,
+      body,
+      input.lineStart,
+      input.lineEnd,
+      input.after.trim() === "" ? 0 : input.after.split("\n").length,
+    );
+    const standing = (await standingEdits(ctx, w.id)).map((e) => {
+      const footprint = rekeyFootprint(e.footprint, moves);
+      return { ...e, moved: !sameFootprint(footprint, e.footprint), footprint };
+    });
     for (const e of standing.filter((x) => x.moved)) {
       ctx.write(
         ctx.db
@@ -1364,6 +1366,13 @@ export const specEdit = defineOperation({
             (g) => droppedEdits(body, [{ footprint: { blocks: [], gone: [g] } }]).length > 0,
           ),
       );
+    // Retire first, then count: an edit that frees slots isn't refused (fourth review of #85, 4).
+    if (standing.length - covered.length + 1 > STANDING_EDITS_MAX) {
+      throw new OperationError(
+        "conflict",
+        `this plan already holds ${STANDING_EDITS_MAX} people's edits the planner must keep: release some (under the plan) before editing more`,
+      );
+    }
     if (covered.length) {
       ctx.write(
         ctx.db
@@ -1574,6 +1583,8 @@ export const planningGet = defineOperation({
         kept: z.boolean(),
         /** Why the plan doesn't keep it (its section is gone, what it removed is back…). */
         whyNotKept: z.string().nullable(),
+        /** Lines the planner wrote that mention what this edit removed (listed, not refused). */
+        mentions: z.array(z.string()),
         /** The blocks it wrote, by section and parent: the plan's blocks that show as this person's. */
         blocks: z.array(z.object({ section: z.string(), parent: z.string(), text: z.string() })),
       }),
@@ -1756,6 +1767,7 @@ export const planningGet = defineOperation({
       edits: edits.map((e) => ({
         kept: !notKept.has(e.id),
         whyNotKept: current && notKept.has(e.id) ? whyNotKept(current.body_md, e.footprint) : null,
+        mentions: current ? mentions(current.body_md, e.footprint) : [],
         blocks: e.footprint.blocks.map((b) => ({ ...b, parent: b.parent ?? "" })),
         id: e.id,
         specId: e.spec_id,

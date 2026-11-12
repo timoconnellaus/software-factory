@@ -348,6 +348,7 @@ export function YourEdits({
                 </span>
               )}
             </span>
+            {e.mentions.length > 0 && <Mentions edit={e} />}
           </span>
           <Button
             variant="outline"
@@ -361,5 +362,53 @@ export function YourEdits({
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * Lines the planner wrote that mention what a person's edit removed (fourth review of #85): allowed,
+ * but shown to the person, who may let the planner reword the edit (the row's Release) or keep it
+ * (Keep, remembered on this device).
+ */
+function Mentions({ edit }: { edit: PlanningView["edits"][number] }) {
+  const key = `sf-mentions-${edit.id}`;
+  const seen = (() => {
+    try {
+      return localStorage.getItem(key) ?? "";
+    } catch {
+      return "";
+    }
+  })();
+  const [kept, setKept] = useState(seen === edit.mentions.join("\n"));
+  if (kept) return null;
+  return (
+    <span
+      className="mt-1 grid gap-1 rounded bg-status-waiting/10 px-2 py-1 text-xs"
+      data-testid={`edit-mentions-${edit.id}`}
+    >
+      {edit.mentions.map((m) => (
+        <span key={m}>
+          The planner mentions something you removed:{" "}
+          <q className="italic">{m.replace(/^\s*([-*+]|\d+[.)])\s+/, "")}</q>
+        </span>
+      ))}
+      <span className="flex items-center gap-1.5 text-ink-muted">
+        Release the edit to let the planner reword it, or
+        <Button
+          size="xs"
+          variant="ghost"
+          onClick={() => {
+            try {
+              localStorage.setItem(key, edit.mentions.join("\n"));
+            } catch {
+              // A per-device convenience only.
+            }
+            setKept(true);
+          }}
+        >
+          Keep
+        </Button>
+      </span>
+    </span>
   );
 }

@@ -168,7 +168,9 @@ export function answerText(kind: string, values: string[]): string {
 
 /** The plan's blocks, as the server compares them (spec 27): one segmentation for both. */
 export {
+  changedSpan,
   dedent,
+  editAnswer,
   editWrote,
   foldSpace,
   normalizeLines,
