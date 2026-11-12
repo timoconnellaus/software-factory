@@ -63,7 +63,8 @@ Read first:
   Cloudflare Workflow instance that replays `run()` and matches steps by name (ADR 0006, 0053). Seven
   versions share `runV1` with steps switched on by version; attached PRs take `runAttached`, chosen
   by kind. Open PRs take v8 (#73, spec 51) and v9 (planning); this spec's first engine change, if it
-  needs one, is **v10**.
+  needs one, takes **the next free version at merge time** (the version rule: a PR claims the
+  Workflow version when it merges, not when it is planned).
 - **Three slots** (`afterSpec`, `beforeVerify`, `afterVerify`) take `work` steps (an agent,
   advisory: pass, send back, ask) and `gate` steps (a person, through `workflow.gate`, which is
   `alwaysReview`). A named workflow fills the slots. Workflows and agents live in each **project's**
@@ -817,7 +818,7 @@ and after.
   shape. Each stage entry records the version it started on; the registry keeps old versions'
   `next()` until `core_item_stages` has none open, then deletes them. Prompt and logic changes that
   keep the state shape reach in-flight items at once (tested on recorded snapshots first).
-- **Old Workflow versions**: v1–v10 stay until no open item runs on the replayed Workflow, then
+- **Old Workflow versions**: every version up to the last one replayed stays until no open item runs on the replayed Workflow, then
   `work-item.ts` is deleted (ADR 0053's rule, applied one last time).
 
 ## Skills
@@ -1102,8 +1103,10 @@ The owner's answers to Q11 and Q20–Q23, and their confirmation afterwards: aut
   condition sent it.
 - **It approves; it doesn't merge.** The setting auto-**approves** the merge gate when the five
   conditions hold. The merge itself, keeping main green and following the deploy belong to the
-  babysitter that lands approved work, whether a person or this setting approved it: see its spec
-  (block AP, ADRs 0580–0589, working title "the Deliver stage"). Spec 52 specifies no merge mechanics.
+  babysitter that lands approved work, whether a person or this setting approved it: see
+  [spec 53](53-the-babysitter-delivers-approved-work.md) (ADRs 0580–0589). Spec 52 specifies no merge
+  mechanics. An engine-made revert is auto-approved only under its own per-workflow switch (off by
+  default) and never when it touches `SELF_MODIFY_PATHS` (ADR 0515 rule 5).
 - **Merge and deploy.** Merge approvals now; deploy approvals once a deploy stage with a health check
   exists. Never a
   `post` or other outside action, never `self-modify` (policy, workflows, agents, skills on the judge).
@@ -1122,7 +1125,8 @@ The owner's answers to Q11 and Q20–Q23, and their confirmation afterwards: aut
 
 ## Build plan
 Small PRs, each leaving main working and under about 1,500 changed lines. Block AI: migrations
-0280–0289, ADRs 0510–0519. Workflow version: **v10** if a PR needs one (#73 holds v8, planning v9).
+0280–0289, ADRs 0510–0519. Workflow version: **the next free version at merge time** if a PR needs one (#73 holds v8,
+planning v9; a PR claims its version when it merges).
 No PR here touches the desktop app: its screens are other workers' (each PR lists the operations a
 screen needs).
 
@@ -1160,7 +1164,7 @@ screen needs).
    org, as described above). `OVERRIDABLE` per type; `planWorkflow()` reads the org workflow plus
    overrides and returns the same plan (the (a) table test again, before and after). Release takes the
    current version or flags the item (Q4); tightening reaches running items at the next boundary (Q3).
-   May need Workflow v10 for the re-pin at release.
+   May need a new Workflow version (the next free one at merge time) for the re-pin at release.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the
@@ -1171,7 +1175,7 @@ screen needs).
    person's operation, so the Workflow records the actor's decision through an internal function, not
    an operation any token can call), and the Workflow calling it at the merge gate instead of `pr.autoMerge`
    (landing stays with today's merge queue until the babysitter's spec replaces it)
-   (Workflow v10 or the next free version). Tests: each condition alone sends the item to a person;
+   (the next free Workflow version at merge time). Tests: each condition alone sends the item to a person;
    all together merge; each trigger sets the hold; an agent can't save it on.
 7. **(f) Skills** (migration **0283**: `core_skill_versions`). As in "Skills", plus agent instructions
    as proposals (Q17). The projection into the harness is a small hook in `harness-claude` and the
@@ -1182,7 +1186,7 @@ screen needs).
    `decision` and `agent-work`, runner jobs without a repository and media in R2; Publish through a
    connector, Q2's carry-over and the Measure follow-up item; the board's lanes and the all-projects
    phase columns (`workflow.lanes`, `workItem.board`); Software on the reconciler (the switch-over
-   PR); deleting Workflow v1–v10; Preview for software.
+   PR); deleting the replayed Workflow versions; Preview for software.
 
 ## When to start
 The owner asked for the build to start on 2026-11-12, with the answers below. (a) and (b) change no
