@@ -51,3 +51,16 @@ native app that replaces both for day-to-day use, with the website kept for auth
   - the Secure Enclave and LocalAuthentication.
 - Canary/stable builds self-extract on first launch. Notarization is checked on the extracted bundle.
 - Hutch installs to `~/.hutch` and edits the shell profile. CI caches it.
+
+## Amended 2026-11-12 (spec 40 M4 review)
+- **Stable is not on a tag.** A tag-triggered workflow runs the tagged commit's own workflow file,
+  so anyone able to push a tag could run it with the signing material. Stable is a manual run of
+  the release workflow on `main`, refused until the owner has locked the `release` environment
+  down (main only, a required reviewer, no admin bypass, a `v*` tag ruleset) and set
+  `DESKTOP_STABLE_ENABLED`. Until then only canary ships.
+- **The app checks updates itself.** Electrobun's updater trusts the bucket, so the app refuses a
+  version that isn't higher than its own, and a staged bundle that isn't signed by its own Team ID
+  (read from its own signature) or that Gatekeeper rejects. The upload uses an R2 token scoped to
+  the bucket and held only by the `release` environment.
+- **The download is the plain app**, not the self-extracting wrapper (the consequence above about
+  self-extraction no longer holds).

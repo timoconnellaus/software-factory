@@ -36,7 +36,11 @@ itself to `~/.hutch` and adds a PATH line to your shell profile the first time.
 
 ## Releases (M4)
 Signed, notarized builds come from `.github/workflows/desktop-release.yml`: canary on every merge to
-`main` that touches the app, stable on a `v*` tag. Install once from
+`main` that touches the app or what it bundles; stable is off until the owner locks the `release`
+environment down (`docs/deploying.md`), and then is a manual run on `main`, never a tag. The app
+applies only a higher version signed by its own Team ID and accepted by Gatekeeper
+(`src/bun/updates.ts`, `src/bun/update-verify.ts`), and waits for the runner's jobs before
+restarting. Install once from
 `https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip` (unzip, move to
 `/Applications`, open; there's no installer step); after that the app updates itself (menu bar: *Restart to update*). Electrobun signs and notarizes itself (`mac.codesign`/`notarize`
 in `electrobun.config.ts`). It has to: it writes the build hash into `Resources/version.json` after

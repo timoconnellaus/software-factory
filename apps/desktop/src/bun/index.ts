@@ -3,7 +3,7 @@
 // The desktop token and the device key stay here; the view only ever sees results.
 import { hostname } from "node:os";
 import { join } from "node:path";
-import Electrobun, { BrowserView, BrowserWindow, Tray, Utils } from "electrobun/main";
+import Electrobun, { BrowserView, BrowserWindow, Tray, Updater, Utils } from "electrobun/main";
 import type { AppRPC, RunnerState } from "../shared/rpc.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
@@ -13,8 +13,10 @@ import { Live, liveUrl } from "./live.ts";
 import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { operationHandlers } from "./operations.ts";
 import { Runner } from "./runner.ts";
+import { liveJobs } from "./runner-jobs.ts";
 import { saveTo } from "./save.ts";
-import { Updates } from "./updates.ts";
+import { bunExec, runningAppPath } from "./update-verify.ts";
+import { type UpdaterLike, Updates } from "./updates.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
 /** The inbox count's fallback refresh; the live socket brings changes the moment they happen. */
@@ -171,15 +173,97 @@ const RUNNER_LABEL: Record<RunnerState["status"], string> = {
   locked: "another host is running",
   failed: "failed",
 };
-const updates = new Updates((u) => {
-  if (u.ready && u.version) {
-    Utils.showNotification({
-      title: "Software Factory",
-      body: `Version ${u.version} is ready: restart to update`,
-    });
-  }
+let told: string | null = null;
+const updates = new Updates(
+  // Electrobun's Updater has more than this; these are the parts updates.ts uses.
+  { updater: Updater as unknown as UpdaterLike, exec: bunExec, appPath: runningAppPath() },
+  (u) => {
+    const say = u.ready && u.version ? `ready:${u.version}` : u.needsMove ? "move" : null;
+    if (say && say !== told) {
+      Utils.showNotification({
+        title: "Software Factory",
+        body: u.ready
+          ? `Version ${u.version} is ready: restart to update`
+          : (u.error ?? "Move the app to Applications to get updates"),
+      });
+    }
+    told = say ?? told;
+    if (u.error) console.log(`updates: ${u.error}`);
+    refreshTray();
+  },
+);
+/** The person chose "Restart to update when the runner is idle". */
+let restartWhenIdle = false;
+
+/** The update menu items: no job is cancelled for an update unless the person says so. */
+function updateItems() {
+  const u = updates.state;
+  if (u.needsMove)
+    return [
+      {
+        type: "normal" as const,
+        label: "Move to Applications to get updates",
+        action: "noop",
+        enabled: false,
+      },
+    ];
+  if (!u.ready) return [];
+  const jobs = liveJobs().length;
+  if (jobs === 0)
+    return [
+      { type: "normal" as const, label: `Restart to update to ${u.version}`, action: "update" },
+    ];
+  const n = `${jobs} job${jobs === 1 ? "" : "s"}`;
+  return [
+    {
+      type: "normal" as const,
+      label: restartWhenIdle
+        ? `Update to ${u.version} once ${n} finish${jobs === 1 ? "es" : ""}`
+        : `Update to ${u.version}: the runner is running ${n}`,
+      action: "noop",
+      enabled: false,
+    },
+    ...(restartWhenIdle
+      ? []
+      : [
+          {
+            type: "normal" as const,
+            label: "Restart to update when they finish",
+            action: "update-when-idle",
+          },
+        ]),
+    {
+      type: "normal" as const,
+      label: `Restart anyway (cancels ${n}; their unpushed work is lost)`,
+      action: "update-anyway",
+    },
+  ];
+}
+
+/**
+ * Stop the runner and the live socket, then restart into the update. If the update doesn't
+ * happen (nothing staged, a refused signature, a quit handler said no) both come back.
+ */
+async function restartToUpdate() {
+  restartWhenIdle = false;
+  live.stop();
+  await runner.stop();
+  await updates.apply();
+  // Still running: the update didn't start.
+  void runner.start();
+  live.start();
+  Utils.showNotification({
+    title: "Software Factory",
+    body: `The update didn't install: ${updates.state.error ?? "unknown error"}`,
+  });
   refreshTray();
-});
+}
+// The job count in the menu, and the deferred restart once the runner is idle.
+setInterval(() => {
+  if (!updates.state.ready) return;
+  if (restartWhenIdle && liveJobs().length === 0) void restartToUpdate();
+  else refreshTray();
+}, 15_000);
 
 function refreshTray() {
   const s = runner.state;
@@ -204,15 +288,7 @@ function refreshTray() {
         ]
       : []),
     { type: "divider" },
-    ...(updates.state.ready
-      ? [
-          {
-            type: "normal" as const,
-            label: `Restart to update to ${updates.state.version}`,
-            action: "update",
-          },
-        ]
-      : []),
+    ...updateItems(),
     { type: "normal", label: "Open Software Factory", action: "open" },
     { type: "normal", label: "Launch at login", action: "login-item", checked: loginItemEnabled() },
     { type: "normal", label: "Quit", action: "quit" },
@@ -228,12 +304,17 @@ tray.on("tray-clicked", async (e: unknown) => {
     refreshTray();
   }
   if (action === "quit") await quit();
+  // Offered only while the runner is idle; re-checked here in case a job just started.
   if (action === "update") {
-    // The runner cancels and releases its jobs first; the update then restarts the app.
-    live.stop();
-    await runner.stop();
-    await updates.apply();
+    if (liveJobs().length === 0) await restartToUpdate();
+    else refreshTray();
   }
+  if (action === "update-when-idle") {
+    restartWhenIdle = true;
+    refreshTray();
+  }
+  // The person was told how many jobs this cancels.
+  if (action === "update-anyway") await restartToUpdate();
 });
 
 function setBadge(count: number) {
