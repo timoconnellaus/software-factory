@@ -233,6 +233,37 @@ export const handbackSchema = z.object({
 
 // ---- requests and responses ----
 
+/** A full git commit SHA. */
+export const commitSha = z.string().regex(/^[0-9a-f]{40}$/, "a 40-character commit SHA");
+
+/** Where a runner's self-update stands (ADR 0360). */
+export const RUNNER_UPDATE_STATES = [
+  "current",
+  "waiting",
+  "blocked",
+  "updating",
+  "rolled_back",
+] as const;
+
+export const runnerVersionSchema = z.object({
+  /** The commit the runner's code is at. */
+  sha: commitSha,
+  /** Whether it updates itself (`autoUpdate` in its config, default on). */
+  autoUpdate: z.boolean(),
+  update: z.object({
+    /**
+     * `current`: at the desired version. `waiting`: behind it, draining until its jobs finish.
+     * `blocked`: behind it and can't update (local changes, auto-update off, not on main…), with
+     * the reason. `updating`: applying it now. `rolled_back`: the last update didn't start
+     * cleanly and was reverted, with the reason.
+     */
+    state: z.enum(RUNNER_UPDATE_STATES),
+    target: commitSha.nullable(),
+    reason: z.string().max(500).nullable(),
+  }),
+});
+export type RunnerVersion = z.infer<typeof runnerVersionSchema>;
+
 export const heartbeatRequestSchema = z.object({
   manifest: capabilityManifestSchema,
   capacity: capacitySchema,
@@ -240,6 +271,8 @@ export const heartbeatRequestSchema = z.object({
   activeJobs: z.array(z.object({ jobId: id, fencingToken })),
   /** The harness reported a rate limit: no new jobs until then. */
   rateLimitedUntil: iso.nullable().optional(),
+  /** The runner's own code version and where its self-update stands (ADR 0360). Optional: older hosts omit it. */
+  version: runnerVersionSchema.optional(),
 });
 
 export const runnerCommandSchema = z.discriminatedUnion("kind", [
@@ -252,6 +285,12 @@ export const heartbeatResponseSchema = z.object({
   commands: z.array(runnerCommandSchema),
   /** New lease expiry per renewed job. */
   leases: z.array(z.object({ jobId: id, expiresAt: iso })),
+  /**
+   * The runner code the factory runs (ADR 0360): the commit of the default branch the engine was
+   * deployed from. A runner behind it updates itself when idle. Null or missing: unknown (a dev
+   * engine), so no update.
+   */
+  desiredVersion: commitSha.nullable().optional(),
 });
 
 export const claimRequestSchema = z.object({
