@@ -324,7 +324,8 @@ export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: stri
   );
   // An approval not yet used dies with the item (spec 53 review): nothing may carry it out after
   // the cancel, whoever holds it (the item's Workflow, or the babysitter's deliverer).
-  ctx.write(
+  ctx.writePendingStatus(
+    "close",
     ctx.db
       .updateTable("core_pending_actions")
       .set({
