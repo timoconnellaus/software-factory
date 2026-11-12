@@ -418,6 +418,37 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect(bad.status).toBe(400);
   });
 
+  it("answers update_required to a desktop build below DESKTOP_MIN_PROTOCOL (spec 40 M4, ADR 0393)", async () => {
+    const w = await world();
+    const { token } = await signIn(w);
+    const at = (min: string, protocol?: string, path = "call", auth: string | null = token) =>
+      worker.fetch(
+        new Request(`https://sf-engine.example/client/v1/${path}`, {
+          method: "POST",
+          body: JSON.stringify({ op: "inbox.list", input: {} }),
+          headers: {
+            "content-type": "application/json",
+            ...(auth ? { authorization: `Bearer ${auth}` } : {}),
+            ...(protocol ? { "x-sf-client-protocol": protocol } : {}),
+          },
+        }),
+        { ...env, DESKTOP_MIN_PROTOCOL: min },
+      );
+    // No floor (the default): every build is served, with or without the header.
+    expect((await at("")).status).toBe(200);
+    expect((await at("", "1")).status).toBe(200);
+    // A floor of 2: protocol 1, no header (a build before the handshake) and junk are too old.
+    for (const p of ["1", undefined, "two"]) {
+      const res = await at("2", p);
+      expect(res.status).toBe(426);
+      expect(await json(res)).toMatchObject({ code: "update_required", minProtocol: 2 });
+    }
+    expect((await at("2", "2")).status).toBe(200);
+    expect((await at("2", "3")).status).toBe(200);
+    // Sign-in is refused too, before it mints anything.
+    expect((await at("2", "1", "desktop/start", null)).status).toBe(426);
+  });
+
   it("caps waiting sign-ins and prunes old requests and challenges", async () => {
     const w = await world();
     const { token, device } = await signIn(w);

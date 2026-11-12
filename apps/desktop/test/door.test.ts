@@ -11,6 +11,7 @@ const DIGEST_VECTOR = "48aa8d7ca4745dc18af09c1efd1d919435cf93ad6aac93632f0e3cb04
 import { nextRestart } from "../src/bun/backoff.ts";
 import { Door, type Fetch, UnauthenticatedError } from "../src/bun/door.ts";
 import { pkcePair } from "../src/bun/pkce.ts";
+import { DOOR_PROTOCOL, UpdateRequiredError } from "../src/bun/protocol.ts";
 
 function fakeDoor(
   answer: (path: string, body: Record<string, unknown>) => { status?: number; json: unknown },
@@ -47,6 +48,34 @@ describe("the door client", () => {
     await expect(
       new Door("https://e", () => null, f).call("inbox.list", {}),
     ).rejects.toBeInstanceOf(UnauthenticatedError);
+  });
+
+  it("names its door protocol on every request and turns 426 update_required into an update check (ADR 0393)", async () => {
+    const headers: Record<string, string>[] = [];
+    let status = 200;
+    const f: Fetch = async (_url, init) => {
+      headers.push(init.headers as Record<string, string>);
+      return status === 426
+        ? new Response(JSON.stringify({ code: "update_required", error: "too old" }), { status })
+        : new Response(JSON.stringify({ result: { ok: 1 } }), { status });
+    };
+    let checks = 0;
+    const door = new Door(
+      "https://e",
+      () => "sfd_t",
+      f,
+      () => checks++,
+    );
+    expect(await door.call("inbox.list", {})).toEqual({ ok: true, result: { ok: 1 } });
+    expect(headers[0]).toMatchObject({
+      "x-sf-client": "desktop",
+      "x-sf-client-protocol": String(DOOR_PROTOCOL),
+    });
+    status = 426;
+    await expect(door.call("inbox.list", {})).rejects.toBeInstanceOf(UpdateRequiredError);
+    await expect(door.signInCall("desktop/start", {})).rejects.toBeInstanceOf(UpdateRequiredError);
+    expect(checks).toBe(2);
+    expect(headers[2]).toMatchObject({ "x-sf-client-protocol": String(DOOR_PROTOCOL) });
   });
 
   it("decides a gate with a proof for exactly that op and input, signing the engine's summary", async () => {

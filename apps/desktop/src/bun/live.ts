@@ -3,6 +3,7 @@
 // backoff; every (re)connect re-reads the inbox, so a push missed while offline is caught up.
 // Bun's WebSocket takes headers, so the token goes in Authorization, never in the URL.
 import { nextRestart } from "./backoff.ts";
+import { PROTOCOL_HEADERS } from "./protocol.ts";
 
 export interface LiveEvent {
   type: "hello" | "notify";
@@ -35,8 +36,9 @@ export class Live {
     if (this.ws) return;
     const token = this.token();
     if (!token) return;
+    const headers = { authorization: `Bearer ${token}`, ...PROTOCOL_HEADERS };
     // biome-ignore lint/suspicious/noExplicitAny: Bun's WebSocket accepts { headers }, the DOM type doesn't say so.
-    const ws = new WebSocket(this.url, { headers: { authorization: `Bearer ${token}` } } as any);
+    const ws = new WebSocket(this.url, { headers } as any);
     this.ws = ws;
     ws.addEventListener("open", () => {
       this.openedAt = Date.now();

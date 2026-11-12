@@ -77,6 +77,10 @@
     // Accept presence proofs from desktop devices with a software key (ADR 0391): "1" only on a local
     // dev engine. Anything else refuses them, so a gate decision needs a Secure Enclave key.
     "DESKTOP_ALLOW_SOFTWARE_KEYS": "",
+    // The oldest desktop door protocol the client door serves (ADR 0393). Older builds get 426
+    // `update_required` and update themselves. Empty or 0 = serve every build. Raise it only when
+    // older builds must stop; the app's own number is DOOR_PROTOCOL in apps/desktop.
+    "DESKTOP_MIN_PROTOCOL": "",
     // "1" swaps the GitHub App for an in-D1 fake (tests and local dev only).
     "GITHUB_FAKE": ""
   }

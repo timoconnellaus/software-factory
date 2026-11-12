@@ -12,6 +12,9 @@
 //   upload's input, an attachment's output.
 // - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
+// - The version handshake (spec 40 M4, ADR 0393): the desktop app sends `x-sf-client-protocol`. A
+//   desktop sign-in or a desktop token's request below DESKTOP_MIN_PROTOCOL gets 426
+//   `update_required`, and the app updates. No header is protocol 0 (builds before the handshake).
 // MCP is meant to come through the same door.
 import {
   type Actor,
@@ -49,6 +52,29 @@ const unauthenticated = () =>
     401,
   );
 
+/** The header the desktop app names its door protocol in (ADR 0393). */
+export const CLIENT_PROTOCOL_HEADER = "x-sf-client-protocol";
+
+/** The desktop build speaks a door protocol older than the engine still serves (ADR 0393). */
+export function desktopTooOld(request: Request, env: Pick<Env, "DESKTOP_MIN_PROTOCOL">): boolean {
+  const min = Number.parseInt(env.DESKTOP_MIN_PROTOCOL ?? "", 10);
+  if (!Number.isSafeInteger(min) || min <= 0) return false;
+  const sent = request.headers.get(CLIENT_PROTOCOL_HEADER) ?? "";
+  const protocol = /^\d{1,6}$/.test(sent) ? Number(sent) : 0;
+  return protocol < min;
+}
+
+const updateRequired = (env: Pick<Env, "DESKTOP_MIN_PROTOCOL">) =>
+  reply(
+    {
+      error:
+        "This version of the Software Factory app is too old for the factory. Update it: menu bar, Restart to update (or download it again).",
+      code: "update_required",
+      minProtocol: Number.parseInt(env.DESKTOP_MIN_PROTOCOL, 10),
+    },
+    426,
+  );
+
 /** Who a bearer token is: a CLI token (with its scope) or a desktop device's token. */
 type Caller =
   | { kind: "cli"; userId: string; scope: "read" | "write" }
@@ -62,6 +88,7 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (path === "ops" && request.method === "GET") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
+    if (who.kind === "desktop" && desktopTooOld(request, env)) return updateRequired(env);
     return reply({ operations: describeOperations() });
   }
   // The desktop app's live connection (spec 40 M2b): the token says who, the person's ClientHub
@@ -69,6 +96,7 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (path === "live" && request.method === "GET") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
+    if (who.kind === "desktop" && desktopTooOld(request, env)) return updateRequired(env);
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
     }
@@ -91,12 +119,14 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
     return respond(() => run(env, op, body, CLI_DEVICE_ACTOR, { surface: "cli" }), true);
   }
   if (path === "desktop/start" || path === "desktop/exchange") {
+    if (desktopTooOld(request, env)) return updateRequired(env);
     const op = path === "desktop/start" ? "desktop.authStart" : "desktop.authExchange";
     return respond(() => run(env, op, body, DESKTOP_DEVICE_ACTOR, { surface: "desktop" }), true);
   }
   if (path === "call") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
+    if (who.kind === "desktop" && desktopTooOld(request, env)) return updateRequired(env);
     const idempotencyKey =
       typeof body.idempotencyKey === "string" && body.idempotencyKey.length <= 200
         ? body.idempotencyKey
@@ -108,6 +138,7 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (path === "batch") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
+    if (who.kind === "desktop" && desktopTooOld(request, env)) return updateRequired(env);
     const calls = body.calls;
     if (!Array.isArray(calls) || calls.length === 0 || calls.length > BATCH_LIMIT) {
       return reply(

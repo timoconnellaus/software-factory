@@ -46,7 +46,14 @@ async function deviceName(): Promise<string> {
 }
 
 let auth: Auth;
-const door = () => new Door(ENGINE_URL, () => auth.currentToken());
+// A door that says this build is too old (ADR 0393) sends the updater to look now.
+const door = () =>
+  new Door(
+    ENGINE_URL,
+    () => auth.currentToken(),
+    fetch,
+    () => void updates.checkNow(),
+  );
 auth = new Auth(door, await deviceName());
 await auth.init();
 

@@ -23,6 +23,12 @@ export class Updates {
     setInterval(() => void this.check(), EVERY_MS);
   }
 
+  /** Check now (the door said this build is too old, ADR 0393). Dev builds never update. */
+  async checkNow(): Promise<void> {
+    if ((await Updater.localInfo.channel()) === "dev") return;
+    await this.check();
+  }
+
   private async check(): Promise<void> {
     if (this.state.ready) return;
     try {

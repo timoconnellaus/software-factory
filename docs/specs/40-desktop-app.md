@@ -181,8 +181,12 @@ environment (only `main` and `v*` tags may use it):
   `https://downloads.zerobsai.com/desktop` (the build's `release.baseUrl`).
 - **The app** checks every 6 hours, downloads in the background and offers *Restart to update*,
   stopping the runner cleanly first.
+- **The version handshake** ([ADR 0393](../adr/0393-the-client-door-version-handshake.md)): the app
+  sends `x-sf-client-protocol` (`DOOR_PROTOCOL`, `src/bun/protocol.ts`) on every door request and
+  the live socket. Below sf-engine's `DESKTOP_MIN_PROTOCOL` (empty: serve every build) a desktop
+  sign-in or token gets 426 `update_required`; the app then checks for an update at once and the
+  view gets that code. Tested in `apps/engine/test/desktop.test.ts` and `apps/desktop/test`.
 - **Not yet:**
-  - The `update_required` version handshake.
   - **M4b, the Secure Enclave key.** Tested on the M5 with the real Developer ID: a command-line
     `sf-keys` signed with `keychain-access-groups` is killed by macOS (restricted entitlement, no
     profile), and without the entitlement the Secure Enclave refuses (`-34018`). So the key helper
