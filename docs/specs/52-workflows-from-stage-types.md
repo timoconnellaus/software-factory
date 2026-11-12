@@ -1246,7 +1246,11 @@ screen needs).
    token): `reshape` shapes it again under the current workflow (the waiting Workflow instance is
    terminated and a new instance, `<item>_r…`, runs the current shaping stages), and `accept` records
    that the shaping done counts under the current version and releases it. Either way it is
-   delivered under the current workflow. Still to come in (d): the tightening re-pin at the next
+   delivered under the current workflow. The check runs again at the pull, against the version
+   delivery will run on, and the start is guarded on the org still being at that version: an item
+   released under v2 whose shaping changed in v3 before it started goes back to Ready, flagged. And
+   `accept` refuses once the org has saved past the version the flag named, flagging the item again
+   against the current version so the person sees the new difference. Still to come in (d): the tightening re-pin at the next
    boundary (Q3), and moving each project's slot workflow to the org.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,

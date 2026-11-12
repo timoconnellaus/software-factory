@@ -11,6 +11,7 @@ import {
   parseProjectPolicy,
   policyImpact,
   resolveScope,
+  SCHEDULER,
 } from "../src/index.ts";
 import {
   applyOverrides,
@@ -822,6 +823,72 @@ describe("release takes the current version unless the shaping stages changed (Q
       row.workflow_id,
     );
     expect(created).toBeTruthy();
+  });
+
+  it("the pull checks again: released under v2, the org changes shaping in v3, it goes back to Ready flagged", async () => {
+    const w = await world();
+    await orgWorkflow(w);
+    expect((await saveConfig(w, { ...POLICY, activeLimit: 1, workflow: SHIP.id })).status).toBe(
+      "ok",
+    );
+    // The only slot is taken, so a release waits in Queued.
+    const busy = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "backlog", projectId: w.projectId, title: "Busy" },
+      w.human,
+    );
+    await env.DB.prepare("UPDATE core_work_items SET status = 'running' WHERE id = ?")
+      .bind(busy.workItemId)
+      .run();
+    const id = await shapedItem(w);
+    expect(
+      (await ok<{ status: string }>("workItem.release", { workItemId: id }, w.human)).status,
+    ).toBe("queued");
+    await orgSave(w, 2, withSetting("spec", { requiredFrom: "small" }));
+    await env.DB.prepare("UPDATE core_work_items SET status = 'done' WHERE id = ?")
+      .bind(busy.workItemId)
+      .run();
+    await ok("queue.pull", { projectId: w.projectId }, SCHEDULER);
+    expect(await flagOf(id)).toMatchObject({ status: "ready", release_flag_user_id: w.userId });
+    const row = await first<{ released_at: string | null; pulled_at: string | null }>(
+      "SELECT released_at, pulled_at FROM core_work_items WHERE id = ?",
+      id,
+    );
+    expect(row).toEqual({ released_at: null, pulled_at: null });
+    expect(JSON.parse((await flagOf(id)).release_flag ?? "{}")).toMatchObject({
+      shapedUnder: 2,
+      current: 3,
+    });
+  });
+
+  it("accept refuses once the org has moved past the version the flag named, and flags it again", async () => {
+    const w = await world();
+    await orgWorkflow(w);
+    expect((await saveConfig(w, { ...POLICY, workflow: SHIP.id })).status).toBe("ok");
+    const id = await shapedItem(w);
+    await orgSave(w, 2, withSetting("spec", { requiredFrom: "small" }));
+    await ok("workItem.release", { workItemId: id }, w.human);
+    // The flag names v3; the org saves v4, changing the shaping again.
+    await orgSave(w, 3, withSetting("spec", { requiredFrom: "large" }));
+    const out = await ok<{ status: string; refused?: string }>(
+      "workItem.releaseChoice",
+      { workItemId: id, choice: "accept" },
+      w.human,
+    );
+    expect(out.status).toBe("ready");
+    expect(out.refused).toMatch(/changed again \(v3 → v4\)/);
+    expect(JSON.parse((await flagOf(id)).release_flag ?? "{}")).toMatchObject({
+      shapedUnder: 2,
+      current: 4,
+    });
+    // Accepting the difference it now names releases it, under v4.
+    const accepted = await ok<{ status: string }>(
+      "workItem.releaseChoice",
+      { workItemId: id, choice: "accept" },
+      w.human,
+    );
+    expect(accepted.status).toBe("queued");
+    expect(await pinOf(id)).toBe(4);
   });
 
   it("an agent's release leaves the item flagged with the reason; only a person chooses", async () => {
