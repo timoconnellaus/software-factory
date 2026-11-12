@@ -414,6 +414,50 @@ describe("the babysitter's deliverer (v11)", () => {
     expect(await merges(u.a)).toEqual([]);
   });
 
+  // Review of #134: GitHub's `closed` webhook can land while the babysitter is merging, before
+  // pr.merge's batch commits. Its merging mark makes it the factory's own merge, never "outside".
+  it("a merged webhook while the babysitter is merging is the factory's own: the item ends merged by it", async () => {
+    const w = await world();
+    const u = await updatedAndWaiting(w, "Webhook beats the batch");
+    await github.setChecks(w.repo, u.head_sha, CI("success"));
+    const outcomes: string[] = [];
+    deliverTestSeams.beforeLand = async (id) => {
+      deliverTestSeams.beforeLand = null;
+      // The approval alone would say so too: hide it, so the mark is what decides.
+      await env.DB.prepare("UPDATE core_pending_actions SET status = 'pending' WHERE id = ?")
+        .bind(u.pending_action_id)
+        .run();
+      const r = await ok<{ outcome: string }>(
+        "verify.refresh",
+        {
+          repo: { owner: w.repo.owner, name: w.repo.repo },
+          headSha: u.head_sha,
+          prNumber: u.pr,
+          trigger: "closed",
+          merged: true,
+        },
+        { type: "intake", id: "github" },
+      );
+      outcomes.push(r.outcome);
+      await env.DB.prepare("UPDATE core_pending_actions SET status = 'approved' WHERE id = ?")
+        .bind(u.pending_action_id)
+        .run();
+      expect(
+        (await first<{ status: string }>("SELECT status FROM core_work_items WHERE id = ?", id))
+          ?.status,
+      ).not.toBe("done");
+    };
+    await deliverRepository(env, u.project_id, u.repositoryId);
+    expect(outcomes).toEqual(["ignored"]);
+    await itemStatus(u.a, "done");
+    const row = await first<{ status_reason: string | null }>(
+      "SELECT status_reason FROM core_work_items WHERE id = ?",
+      u.a,
+    );
+    expect(row?.status_reason ?? "").not.toMatch(/outside the factory/);
+    expect(await merges(u.a)).toHaveLength(1);
+  });
+
   it("asks GitHub to update a head at most MAX_UPDATES times, then holds it", async () => {
     const w = await world();
     const u = await updatedAndWaiting(w, "Main keeps moving");
