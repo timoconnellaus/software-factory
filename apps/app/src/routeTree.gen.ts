@@ -15,10 +15,14 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAttachRouteImport } from './routes/_app/attach'
 import { Route as AppNewRouteImport } from './routes/_app/new'
 import { Route as AppSetupRouteImport } from './routes/_app/setup'
+import { Route as MobileCallbackRouteImport } from './routes/mobile.callback'
+import { Route as MobilePairRouteImport } from './routes/mobile.pair'
 import { Route as OpenSplatRouteImport } from './routes/open.$'
 import { Route as AppCliConnectRouteImport } from './routes/_app/cli.connect'
 import { Route as AppDesktopConnectRouteImport } from './routes/_app/desktop.connect'
+import { Route as AppMobileConnectRouteImport } from './routes/_app/mobile.connect'
 import { Route as AppRunnersConnectRouteImport } from './routes/_app/runners.connect'
+import { Route as AppSettingsDevicesRouteImport } from './routes/_app/settings.devices'
 import { Route as AppWorkIndexRouteImport } from './routes/_app/work.index'
 import { Route as AppProjectsProjectIdSettingsRouteImport } from './routes/_app/projects.$projectId.settings'
 import { Route as AppProjectsProjectIdWorkflowsRouteImport } from './routes/_app/projects.$projectId.workflows'
@@ -54,6 +58,16 @@ const AppSetupRoute = AppSetupRouteImport.update({
   path: '/setup',
   getParentRoute: () => AppRoute,
 } as any)
+const MobileCallbackRoute = MobileCallbackRouteImport.update({
+  id: '/mobile/callback',
+  path: '/mobile/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MobilePairRoute = MobilePairRouteImport.update({
+  id: '/mobile/pair',
+  path: '/mobile/pair',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const OpenSplatRoute = OpenSplatRouteImport.update({
   id: '/open/$',
   path: '/open/$',
@@ -69,9 +83,19 @@ const AppDesktopConnectRoute = AppDesktopConnectRouteImport.update({
   path: '/desktop/connect',
   getParentRoute: () => AppRoute,
 } as any)
+const AppMobileConnectRoute = AppMobileConnectRouteImport.update({
+  id: '/mobile/connect',
+  path: '/mobile/connect',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppRunnersConnectRoute = AppRunnersConnectRouteImport.update({
   id: '/runners/connect',
   path: '/runners/connect',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsDevicesRoute = AppSettingsDevicesRouteImport.update({
+  id: '/settings/devices',
+  path: '/settings/devices',
   getParentRoute: () => AppRoute,
 } as any)
 const AppWorkIndexRoute = AppWorkIndexRouteImport.update({
@@ -108,10 +132,14 @@ export interface FileRoutesByFullPath {
   '/attach': typeof AppAttachRoute
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
+  '/mobile/callback': typeof MobileCallbackRoute
+  '/mobile/pair': typeof MobilePairRoute
   '/open/$': typeof OpenSplatRoute
   '/cli/connect': typeof AppCliConnectRoute
   '/desktop/connect': typeof AppDesktopConnectRoute
+  '/mobile/connect': typeof AppMobileConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
+  '/settings/devices': typeof AppSettingsDevicesRoute
   '/work/': typeof AppWorkIndexRoute
   '/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
   '/projects/$projectId/workflows': typeof AppProjectsProjectIdWorkflowsRoute
@@ -123,11 +151,15 @@ export interface FileRoutesByTo {
   '/attach': typeof AppAttachRoute
   '/new': typeof AppNewRoute
   '/setup': typeof AppSetupRoute
+  '/mobile/callback': typeof MobileCallbackRoute
+  '/mobile/pair': typeof MobilePairRoute
   '/open/$': typeof OpenSplatRoute
   '/': typeof AppIndexRoute
   '/cli/connect': typeof AppCliConnectRoute
   '/desktop/connect': typeof AppDesktopConnectRoute
+  '/mobile/connect': typeof AppMobileConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
+  '/settings/devices': typeof AppSettingsDevicesRoute
   '/work': typeof AppWorkIndexRoute
   '/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
   '/projects/$projectId/workflows': typeof AppProjectsProjectIdWorkflowsRoute
@@ -141,11 +173,15 @@ export interface FileRoutesById {
   '/_app/attach': typeof AppAttachRoute
   '/_app/new': typeof AppNewRoute
   '/_app/setup': typeof AppSetupRoute
+  '/mobile/callback': typeof MobileCallbackRoute
+  '/mobile/pair': typeof MobilePairRoute
   '/open/$': typeof OpenSplatRoute
   '/_app/': typeof AppIndexRoute
   '/_app/cli/connect': typeof AppCliConnectRoute
   '/_app/desktop/connect': typeof AppDesktopConnectRoute
+  '/_app/mobile/connect': typeof AppMobileConnectRoute
   '/_app/runners/connect': typeof AppRunnersConnectRoute
+  '/_app/settings/devices': typeof AppSettingsDevicesRoute
   '/_app/work/': typeof AppWorkIndexRoute
   '/_app/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
   '/_app/projects/$projectId/workflows': typeof AppProjectsProjectIdWorkflowsRoute
@@ -160,10 +196,14 @@ export interface FileRouteTypes {
     | '/attach'
     | '/new'
     | '/setup'
+    | '/mobile/callback'
+    | '/mobile/pair'
     | '/open/$'
     | '/cli/connect'
     | '/desktop/connect'
+    | '/mobile/connect'
     | '/runners/connect'
+    | '/settings/devices'
     | '/work/'
     | '/projects/$projectId/settings'
     | '/projects/$projectId/workflows'
@@ -175,11 +215,15 @@ export interface FileRouteTypes {
     | '/attach'
     | '/new'
     | '/setup'
+    | '/mobile/callback'
+    | '/mobile/pair'
     | '/open/$'
     | '/'
     | '/cli/connect'
     | '/desktop/connect'
+    | '/mobile/connect'
     | '/runners/connect'
+    | '/settings/devices'
     | '/work'
     | '/projects/$projectId/settings'
     | '/projects/$projectId/workflows'
@@ -192,11 +236,15 @@ export interface FileRouteTypes {
     | '/_app/attach'
     | '/_app/new'
     | '/_app/setup'
+    | '/mobile/callback'
+    | '/mobile/pair'
     | '/open/$'
     | '/_app/'
     | '/_app/cli/connect'
     | '/_app/desktop/connect'
+    | '/_app/mobile/connect'
     | '/_app/runners/connect'
+    | '/_app/settings/devices'
     | '/_app/work/'
     | '/_app/projects/$projectId/settings'
     | '/_app/projects/$projectId/workflows'
@@ -207,6 +255,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   SignInRoute: typeof SignInRoute
+  MobileCallbackRoute: typeof MobileCallbackRoute
+  MobilePairRoute: typeof MobilePairRoute
   OpenSplatRoute: typeof OpenSplatRoute
 }
 
@@ -254,6 +304,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSetupRouteImport
       parentRoute: typeof AppRoute
     }
+    '/mobile/callback': {
+      id: '/mobile/callback'
+      path: '/mobile/callback'
+      fullPath: '/mobile/callback'
+      preLoaderRoute: typeof MobileCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mobile/pair': {
+      id: '/mobile/pair'
+      path: '/mobile/pair'
+      fullPath: '/mobile/pair'
+      preLoaderRoute: typeof MobilePairRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/open/$': {
       id: '/open/$'
       path: '/open/$'
@@ -275,11 +339,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppDesktopConnectRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/mobile/connect': {
+      id: '/_app/mobile/connect'
+      path: '/mobile/connect'
+      fullPath: '/mobile/connect'
+      preLoaderRoute: typeof AppMobileConnectRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/runners/connect': {
       id: '/_app/runners/connect'
       path: '/runners/connect'
       fullPath: '/runners/connect'
       preLoaderRoute: typeof AppRunnersConnectRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings/devices': {
+      id: '/_app/settings/devices'
+      path: '/settings/devices'
+      fullPath: '/settings/devices'
+      preLoaderRoute: typeof AppSettingsDevicesRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/work/': {
@@ -327,7 +405,9 @@ interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
   AppCliConnectRoute: typeof AppCliConnectRoute
   AppDesktopConnectRoute: typeof AppDesktopConnectRoute
+  AppMobileConnectRoute: typeof AppMobileConnectRoute
   AppRunnersConnectRoute: typeof AppRunnersConnectRoute
+  AppSettingsDevicesRoute: typeof AppSettingsDevicesRoute
   AppWorkIndexRoute: typeof AppWorkIndexRoute
   AppProjectsProjectIdSettingsRoute: typeof AppProjectsProjectIdSettingsRoute
   AppProjectsProjectIdWorkflowsRoute: typeof AppProjectsProjectIdWorkflowsRoute
@@ -342,7 +422,9 @@ const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
   AppCliConnectRoute: AppCliConnectRoute,
   AppDesktopConnectRoute: AppDesktopConnectRoute,
+  AppMobileConnectRoute: AppMobileConnectRoute,
   AppRunnersConnectRoute: AppRunnersConnectRoute,
+  AppSettingsDevicesRoute: AppSettingsDevicesRoute,
   AppWorkIndexRoute: AppWorkIndexRoute,
   AppProjectsProjectIdSettingsRoute: AppProjectsProjectIdSettingsRoute,
   AppProjectsProjectIdWorkflowsRoute: AppProjectsProjectIdWorkflowsRoute,
@@ -355,6 +437,8 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   SignInRoute: SignInRoute,
+  MobileCallbackRoute: MobileCallbackRoute,
+  MobilePairRoute: MobilePairRoute,
   OpenSplatRoute: OpenSplatRoute,
 }
 export const routeTree = rootRouteImport

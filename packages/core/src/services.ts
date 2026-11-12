@@ -1,4 +1,5 @@
 import type { AttachmentBlobs } from "./attachments.ts";
+import type { MobileAttestationService } from "./operations/mobile.ts";
 
 // What operations may call outside D1. sf-engine supplies the real ones (the GitHub App, the runner
 // channel secret); tests supply fakes (`@software-factory/core/testing`). Handlers that call a
@@ -21,6 +22,9 @@ export interface CheckRunInfo {
   /** The App that posted it (`github-actions` for Actions), when GitHub says. */
   appSlug: string | null;
   url: string | null;
+  /** When GitHub started and completed the run, if it says (spec 53: orders `main` observations). */
+  startedAt?: string | null;
+  completedAt?: string | null;
 }
 
 /** What `factory/verify` (or any check the App posts) should say about one head SHA. */
@@ -229,6 +233,8 @@ export interface GitHubService {
   ): Promise<{ aheadBy: number; behindBy: number }>;
   /** A commit's parents, in order (`GET /commits/{sha}`). */
   commitParents(repo: RepoRef, sha: string): Promise<string[]>;
+  /** The commit's committer date as GitHub gives it (ISO), or null when it isn't there. */
+  commitTime(repo: RepoRef, sha: string): Promise<string | null>;
   /**
    * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
    * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`
@@ -257,8 +263,14 @@ export interface FactoryServices {
   /**
    * Accept presence proofs from desktop devices with a software key (ADR 0391). Off unless the
    * engine runs with `DESKTOP_ALLOW_SOFTWARE_KEYS=1`, which no deployed config sets: fails closed.
+   * Macs only: a phone with a software key never decides, whatever this says (ADR 0541).
    */
   allowSoftwareDeviceKeys?: boolean;
+  /**
+   * The phone app's key attestation (ADR 0541): the allowed signing certificates, Google's
+   * revocation list and the chain check. Absent: phone sign-in is refused as `unavailable`.
+   */
+  mobileAttestation?: MobileAttestationService;
   /**
    * The default-branch commit this engine was deployed from (ADR 0360). Sent to runners as
    * `desiredVersion` only when `runnerSha` is unset. Unset on a dev engine.

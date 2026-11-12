@@ -11,6 +11,7 @@ import * as config from "./operations/config.ts";
 import * as connector from "./operations/connector.ts";
 import * as delivery from "./operations/delivery.ts";
 import * as desktop from "./operations/desktop.ts";
+import * as device from "./operations/device.ts";
 import * as devices from "./operations/devices.ts";
 import * as gates from "./operations/gates.ts";
 import * as github from "./operations/github.ts";
@@ -18,6 +19,7 @@ import * as improve from "./operations/improve.ts";
 import * as incidents from "./operations/incidents.ts";
 import * as live from "./operations/live.ts";
 import * as mergeQueue from "./operations/merge-queue.ts";
+import * as mobile from "./operations/mobile.ts";
 import * as onboarding from "./operations/onboarding.ts";
 import * as planning from "./operations/planning.ts";
 import * as projects from "./operations/projects.ts";
@@ -139,6 +141,18 @@ export const OPERATIONS: readonly AnyOperation[] = [
   desktop.desktopDeviceRevoke,
   desktop.presenceChallenge,
   desktop.presenceRedeem,
+  device.deviceList,
+  device.deviceRevoke,
+  device.deviceUpdate,
+  mobile.mobileNonce,
+  mobile.mobileAuthStart,
+  mobile.mobileAuthLookup,
+  mobile.mobileApproveDevice,
+  mobile.mobileDenyDevice,
+  mobile.mobileAuthExchange,
+  mobile.mobilePairOffer,
+  mobile.mobilePairOfferStatus,
+  mobile.mobileRenew,
   gates.specApprove,
   gates.specRequestChanges,
   gates.reviewMerge,

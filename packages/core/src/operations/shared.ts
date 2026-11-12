@@ -310,6 +310,20 @@ export function cancelWorkItem(ctx: HandlerContext, w: WorkItemRow, reason: stri
       .where("work_item_id", "=", w.id)
       .where("status", "=", "pending"),
   );
+  // An approval not yet used dies with the item (spec 53 review): nothing may carry it out after
+  // the cancel, whoever holds it (the item's Workflow, or the babysitter's deliverer).
+  ctx.write(
+    ctx.db
+      .updateTable("core_pending_actions")
+      .set({
+        status: "rejected",
+        decision: "withdrawn",
+        decided_at: ctx.now,
+        note: "withdrawn: the work item was cancelled",
+      })
+      .where("work_item_id", "=", w.id)
+      .where("status", "=", "approved"),
+  );
   ctx.write(
     ctx.db
       .updateTable("core_questions")

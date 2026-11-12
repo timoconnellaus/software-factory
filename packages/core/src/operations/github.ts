@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation } from "../operation.ts";
-import { requireQueueHead } from "./merge-queue.ts";
+import { requireOpenToMerge, requireQueueHead } from "./merge-queue.ts";
 import { repoRef, requireRepository, requireWorkItem, sha, workItemId } from "./shared.ts";
 
 export const branchEnsure = defineOperation({
@@ -139,7 +139,7 @@ export const prOpen = defineOperation({
 export const prMerge = defineOperation({
   name: "pr.merge",
   description:
-    "Merge the work item's PR through the GitHub App. Risk `merge` (`self-modify` when the diff touches `.factory/`): always reviewed, for every actor and policy, so it opens the merge gate; it runs once a person approves with review.merge. Refused if the head moved since the packet was made, and for a queued item unless it is the head of the merge queue at the head the queue recorded (ADR 0330).",
+    "Merge the work item's PR through the GitHub App. Risk `merge` (`self-modify` when the diff touches `.factory/`): always reviewed, for every actor and policy, so it opens the merge gate; it runs once a person approves with review.merge. Refused if the head moved since the packet was made, for an item that is no longer open (cancelled, done, failed), for a queued item unless it is the head of the merge queue at the head the queue recorded (ADR 0330), and for the babysitter unless the item's entry is still open in its queue (spec 53).",
   risk: "merge",
   riskOf: (input) => (input.touchesFactoryConfig ? "self-modify" : "merge"),
   actors: ["agent"],
@@ -154,6 +154,10 @@ export const prMerge = defineOperation({
       throw new OperationError("conflict", "the branch moved since the review packet was made");
     }
     await requireQueueHead(ctx, w, input.headSha);
+    // Only an open item merges, and the babysitter only an entry still in its queue (spec 53
+    // review): read now, before GitHub is asked, and guarded again in this call's batch so a cancel
+    // or a leave that commits in between refuses it.
+    await requireOpenToMerge(ctx, w);
     const repo = await repoRef(ctx, requireRepository(ctx));
     const merged = await ctx.services.github.mergePullRequest(repo, {
       number: w.pr_number,

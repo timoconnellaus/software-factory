@@ -68,13 +68,23 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
 ## Scope
 
 ### 1. Approval is separate from delivery (ADR 0580)
-- **Workflow v11** (`#73` holds v8, planning v9, spec 52's build v10). After the merge gate is
+- **Workflow v11** (the number is provisional: see **Workflow versions** below). After the merge gate is
   approved, the item's Workflow calls `delivery.enter` (today's `mergeQueue.enter`, renamed with an
   alias kept) and waits for one event, `delivered-<item>`, whose payload is the outcome: `merged`
   (with the merge SHA), `conflict`, `failed` (with the reason) or `withdrawn` (the approval no longer
   holds, with what changed). It then finishes the item, or goes back to build or the merge gate as
   today. It never updates or merges anything itself. A hold-timeout re-reads `delivery.position`, so
   a lost event costs time, not the item.
+- **Workflow versions.** A running instance replays on the code it started with, so a feature
+  must never switch on inside an instance of an older version. No `version >= N` comparisons for
+  features: one table in the Workflow (`WORKFLOW_FEATURES`) maps each version number to the set of
+  features it has, a row per version, immutable once merged, and code asks
+  `has(version, "feature")`. v1 to v7's rows reproduce today's behaviour exactly (the existing
+  version tests prove it). A PR takes the next number above whatever is on `main` **at merge
+  time** and adds its row; rows of other open PRs do not exist until they merge. This spec's PRs
+  say v11 today (`#73`, planning and spec 52's build had claimed v8 to v10); whichever merges first
+  renumbers to the next free number then. Each of (b) and (c) that changes the Workflow's steps adds
+  its own row rather than folding into v11's after v11 has merged.
 - **The deliverer** does what `landV4` did, per repository instead of per item: pick the head, bring
   it up to date, wait for CI on the new head, merge it with `pr.merge` at the head SHA it recorded
   and the approval id, and send `delivered-<item>`.
@@ -89,7 +99,19 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     repositories whose `next_check_at` has passed. It re-reads GitHub on the cron, which heals a lost
     webhook.
   - **One pass per repository at a time**: a compare-and-set on `core_delivery_state.rev`
-    (migration 0350), as ADR 0511 does per item.
+    (migration 0350), as ADR 0511 does per item. The key is the repository (an item with no
+    repository is never the babysitter's), and `rev` is a fencing token: every operation the pass
+    calls carries it and is refused once another pass took over (ADR 0586).
+  - **Bounded re-updates.** Each pass brings the head up to date again (a `main` that moved while CI
+    ran gets one more update and CI run), at most three update-branch requests per entry
+    (`mergeQueue.update`'s `maxUpdates`); past that the item goes back as `failed`.
+  - **A merge GitHub refuses is re-snapshotted**, never retried as is and not sent straight back to
+    build: the pass brings the head up to date again (a moved `main` updates it and CI runs there);
+    a refusal with nothing changed goes back as `failed` (PR (d) asks a person instead).
+  - **Only an open item merges.** `pr.merge` refuses an item that is no longer open, and for the
+    babysitter an entry no longer open in its queue, read before GitHub is asked and guarded in
+    the same batch. Cancelling an item withdraws its approved, unused actions too, not only its
+    pending ones.
 - **Merge method and order (decision 4):** merge commits only (`method: "merge"`), one PR at a time
   per repository, in approval order, each updated to the current default branch and CI'd once before
   it lands. The engine's own ordering stays; GitHub's merge queue is not used (ADR 0580 §4).
@@ -129,6 +151,32 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
   ruleset's required checks waits for per-repository protection (spec 50). The Inbox card is
   `inbox.list`'s `mainRed`; the phone push is a `notify` (`main.red`, `main.green`) that spec 60 can
   deliver.
+- **Review fixes (PR b):**
+  - **Reconciled from GitHub.** A held queue's recheck (every 30 minutes, `HELD_RECHECK_MS`, or on
+    any wake) calls `main.observe` before it holds anything, so one missed green webhook costs at
+    most one recheck. Cost: per repository with held work, one recheck per 30 minutes: three GitHub
+    reads (the branch ref, the head commit's time, its check runs), two D1 point reads, and a D1
+    write and audit row only when the state changed.
+  - **Ordered by GitHub's own times.** An observation's place is the head commit's committer date,
+    then the latest start or completion among its counted check runs (`head_at`, `event_at`).
+    `main.observe` writes only an observation newer than the stored one, checked when it reads and
+    guarded in SQL in its batch, so a push and a check suite read together, or a run on an older
+    commit read late, never put an older state back. A rerun in flight is `pending` and keeps the
+    episode open; a run cancelled or timed out after it started is red; one cancelled before it
+    started (or GitHub's `stale`) doesn't count. Flapping opens one episode per red spell.
+  - **Only changes are written.** An observation that changes nothing (the same head, state,
+    failing checks and episode) writes nothing, not even an audit row (`quietWhenUnchanged`).
+  - **`workItem.markRepair`** is refused unless the line is stopped on the item's repository
+    (guarded in its batch). It is browser-only: a person in sf-app, or on the desktop or phone with a
+    presence proof for that call (like a merge decision); never the CLI, MCP, a runner or an agent.
+    Risk stays `write`: the classes above it would make a person's own mark open a gate for another
+    person; the presence proof is the confirmation. A repair sorts first **only while** its
+    repository is red; after green it is an ordinary item in approval order.
+  - **Items landing through their own Workflow (v4 to v7) are never held**: they started before the
+    babysitter and land as they always did until they drain. Only the babysitter's deliveries hold.
+  - **Who is told (owner question 4, recommended, not yet answered):** the project's approvers,
+    fixed when the episode opens (`core_main_health.audience`, one function: `mainRedAudience`).
+    The Inbox card and the `main.red`/`main.green` pushes go to them only.
 
 ### 3. An approval survives a clean merge of main (ADR 0582, decision 1)
 ADR 0330 already carries an approval over GitHub's update-branch when the new head's first parent is
@@ -288,8 +336,10 @@ What the screens need, and the operations that serve them:
 - Several repositories per item, and per-repository protection (spec 50's follow-up).
 
 ## Build plan
-Small PRs, deterministic part first. Block **AP**: migrations 0350–0359, ADRs 0580–0589. Workflow
-version **v11**.
+Small PRs, deterministic part first. Block **AP**: migrations 0350–0359 (0350 delivery state,
+0351 main health, 0352 the approved change, 0353 `core_flakes`), ADRs 0580–0589. Workflow version
+**v11**, provisional: the next free number on `main` at merge time, added as a row of
+`WORKFLOW_FEATURES` (see **Workflow versions**).
 1. **Docs** (this spec, ADRs 0580–0585, CONTEXT.md). No code.
 2. **(a) Approval separated from merge.** Workflow v11; `core_delivery_state` (migration 0350); the
    deliverer in `apps/engine/src/deliver/` doing exactly what `landV4` does (update, CI, merge,
@@ -301,7 +351,7 @@ version **v11**.
 4. **(c) Approval survives a clean merge of main.** The change digest, its check on update, the
    `withdrawn` outcome, the re-check under `autoApprove` (once ADR 0515 is built).
 5. **(d) The `babysit` job kind.** `JOB_STAGES`, the prompt, `babysit.next`, `ci.rerun`,
-   `flake.record` and `core_flakes` (migration 0352), conflict resolution with `branch.advance`, the
+   `flake.record` and `core_flakes` (migration 0353), conflict resolution with `branch.advance`, the
    delivery fence; the `conflict` and `check-failed` reasons.
 6. **(e) Red main.** Episodes and suspects, `mainRed.attribute`, `repair` items, `mainRed.revert`,
    `revertVerdict()`, the reland item.

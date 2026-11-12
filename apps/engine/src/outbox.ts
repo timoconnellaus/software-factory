@@ -118,7 +118,10 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
     case "delivery.wake":
       // The babysitter's deliverer for that repository queue (spec 53, ADR 0580). A pass already
       // running there is told to go round again instead.
-      await deliverRepository(env, message.payload.projectId, message.payload.repositoryId);
+      // An item with no repository is never the babysitter's (one lease per repository, ADR 0586).
+      if (message.payload.repositoryId) {
+        await deliverRepository(env, message.payload.projectId, message.payload.repositoryId);
+      }
       return;
     case "queue.pull":
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
@@ -133,6 +136,10 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // The runner host's held steer call waits on the work item's hub (ADR 0400). A wake, not a
       // change: open Planning tabs don't re-read.
       await planningHub(env, message.payload.workItemId).wake();
+      return;
+    case "device.revoked":
+      // A revoked device's live socket closes now, not when it next calls (ADR 0541).
+      await clientHub(env, message.payload.userId).closeDevice(message.payload.deviceId);
       return;
     case "notify":
       // To the person's open desktop apps (spec 40 M2b). Web push arrives with spec 15; the inbox

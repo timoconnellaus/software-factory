@@ -83,8 +83,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
   and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). From Workflow v11 (spec 53, ADR 0580) an approval only says the head may merge, and the
   **babysitter** delivers it: the engine's per-repository deliverer (`apps/engine/src/deliver/`, no
-  model, woken by the outbox's `delivery.wake` and the minute cron, one pass per queue at a time in
-  `core_delivery_state`) updates, CIs and merges the head with the approval. Designed, not yet built:
+  model, woken by the outbox's `delivery.wake` and the minute cron, one pass per repository at a time,
+  leased in `core_delivery_state` whose `rev` fences every call it makes, ADR 0586) updates, CIs and merges the head with the approval. Designed, not yet built:
   holding while `main` is red, the approval across a merge of `main` checked by change digest, and a
   `babysit` job on a runner for judgement (a conflict, a failed check, a red `main`). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
@@ -155,6 +155,15 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   trampoline. A `ClientHub` Durable Object per person holds the app's live socket
   (`/client/v1/live`); the outbox's `notify` messages are pushed through it. The door refuses
   desktop builds below `DESKTOP_MIN_PROTOCOL` with 426 `update_required` (ADR 0393).
+- **The phone app** (`apps/mobile`, Flutter, ADRs 0540–0543, spec 60) comes through the same door
+  with a `mobile` token on the `mobile` surface. Its device key is an Android Keystore key bound to
+  a fingerprint for every use; `sf-engine` checks the key's attestation at sign-in
+  (`packages/core/src/attestation/`: the chain to Google's pinned roots, the revocation list, the
+  challenge, our package and signing certificate, the boot state). It pairs by the website's
+  `/mobile/connect` or a pairing offer's QR code from Settings → Devices, and decides with the same
+  presence proofs as the desktop; which operations take a proof and which are one tap on each device
+  is `deviceDecidable()` in `invoke()`. The website serves `/.well-known/assetlinks.json` for its App
+  Links.
 - **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
   without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
   0037). A session's PR that never joined is attached afterwards (ADR 0290).

@@ -1146,7 +1146,8 @@ export const inboxList = defineOperation({
     ),
     /**
      * "`main` is red" (spec 53, ADR 0581): one card per open red episode, while the line is
-     * stopped: the failing checks and since when. What is held behind it is `delivery.status`
+     * stopped, for the project's approvers only (owner question 4, recommended; not yet answered):
+     * the failing checks and since when. What is held behind it is `delivery.status`
      * (no count here: the inbox doesn't count rows of a growing table).
      */
     mainRed: z.array(
@@ -1290,6 +1291,7 @@ export const inboxList = defineOperation({
             "h.failing",
             "h.red_since",
             "h.last_green_sha",
+            "h.audience",
           ])
           .where("p.org_id", "in", myOrgs)
           .where("h.red_since", "is not", null)
@@ -1384,17 +1386,21 @@ export const inboxList = defineOperation({
           ).map((kind) => ({ kind, filename: `${d.repo}-${kind}.json` })),
         };
       }),
-      mainRed: redRows.map((r) => ({
-        projectId: r.project_id,
-        name: r.name,
-        repositoryId: r.repository_id,
-        repo: { owner: r.owner, name: r.repo },
-        branch: r.default_branch,
-        headSha: r.head_sha,
-        failing: parseJson<string[]>(r.failing, []),
-        redSince: String(r.red_since),
-        lastGreenSha: r.last_green_sha,
-      })),
+      // Only to the episode's audience: the project's approvers (owner question 4's
+      // recommendation, `mainRedAudience`).
+      mainRed: redRows
+        .filter((r) => parseJson<string[]>(r.audience, []).includes(me))
+        .map((r) => ({
+          projectId: r.project_id,
+          name: r.name,
+          repositoryId: r.repository_id,
+          repo: { owner: r.owner, name: r.repo },
+          branch: r.default_branch,
+          headSha: r.head_sha,
+          failing: parseJson<string[]>(r.failing, []),
+          redSince: String(r.red_since),
+          lastGreenSha: r.last_green_sha,
+        })),
     };
   },
 });
