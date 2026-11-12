@@ -42,6 +42,7 @@ import {
 } from "@software-factory/ui/components/dialog";
 import { Input } from "@software-factory/ui/components/input";
 import { Kbd } from "@software-factory/ui/components/kbd";
+import { Popover, PopoverContent, PopoverTrigger } from "@software-factory/ui/components/popover";
 import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
@@ -981,25 +982,16 @@ function PlanBlock({
             ? ` and updated ${updated.map((q) => `Q${q.number ?? "?"}`).join(", ")} to match`
             : ""}
           .
-          <button
-            type="button"
-            className="ml-1 underline"
+          <Button
+            variant="link"
+            size="xs"
+            className="ml-1 h-auto p-0 text-current underline"
             title="Let the planner reword it"
-            onClick={async () => {
-              try {
-                await op(
-                  "spec.releaseEdit",
-                  { workItemId, editId: edit.id },
-                  { idempotencyKey: submitKey() },
-                );
-              } catch (error) {
-                toast.error(errorMessage(error));
-              }
-            }}
+            onClick={() => releaseEdit(workItemId, edit.id)}
             data-testid="plan-block-release"
           >
             Let it reword
-          </button>
+          </Button>
         </span>
       )}
     </Tag>
@@ -1592,11 +1584,7 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
       <span className="text-muted-foreground text-sm" data-testid="planning-progress">
         {gateSummary(view)}
       </span>
-      {view.edits.some((e) => !e.kept) && (
-        <span className="text-destructive text-xs" data-testid="edits-not-kept">
-          {view.edits.filter((e) => !e.kept).length} of your edits aren't in the plan as written
-        </span>
-      )}
+      <EditsNotKept view={view} workItemId={item.id} />
       {specGate && partial && partial.length > 0 && (
         <span className="text-status-waiting text-xs">
           {partial.length} coverage categor{partial.length === 1 ? "y" : "ies"} still partial
@@ -1658,5 +1646,63 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         onConfirm={(note) => decide({ kind: "spec.requestChanges", workItemId: item.id, note })}
       />
     </div>
+  );
+}
+
+/** Lets the planner reword a person's edit: it stops standing (spec 27, ADR 0471). */
+async function releaseEdit(workItemId: string, editId: string) {
+  try {
+    await op("spec.releaseEdit", { workItemId, editId }, { idempotencyKey: submitKey() });
+  } catch (error) {
+    toast.error(errorMessage(error));
+  }
+}
+
+/**
+ * The edits the plan doesn't keep word for word, at the gate bar (review of #85, round 2). They hold
+ * the gate (`planning.ready` refuses), and no block of the plan shows them any more, so each is
+ * listed here with "Let it reword": a person can always let the planner go on.
+ */
+function EditsNotKept({ view, workItemId }: { view: PlanningView; workItemId: string }) {
+  const notKept = view.edits.filter((e) => !e.kept);
+  if (notKept.length === 0) return null;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="link"
+          size="xs"
+          className="h-auto p-0 text-destructive"
+          data-testid="edits-not-kept"
+        >
+          {notKept.length} edit{notKept.length === 1 ? "" : "s"} not in the plan as written
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="grid w-96 gap-3" data-testid="edits-not-kept-list">
+        <div className="text-muted-foreground text-xs">
+          The planner can't ask for the gate until the plan keeps these edits word for word, or the
+          edit is released.
+        </div>
+        {notKept.map((e) => (
+          <div key={e.id} className="grid gap-1 text-sm">
+            <div className="text-muted-foreground text-xs">
+              {e.authorName}, {ago(e.createdAt)}
+            </div>
+            <div className="line-clamp-4 whitespace-pre-wrap rounded bg-selected px-2 py-1">
+              {e.after || <span className="text-muted-foreground">(deleted lines)</span>}
+            </div>
+            <Button
+              variant="outline"
+              size="xs"
+              className="justify-self-start"
+              onClick={() => releaseEdit(workItemId, e.id)}
+              data-testid={`edit-release-${e.id}`}
+            >
+              Let it reword
+            </Button>
+          </div>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }

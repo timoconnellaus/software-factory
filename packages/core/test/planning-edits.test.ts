@@ -441,6 +441,51 @@ describe("people edit the plan and comment on its parts (spec 27)", () => {
     expect(await agent("spec.revise", SPEC)).toMatchObject({});
   });
 
+  it("lets a person release an edit the plan can no longer keep, so the gate isn't held forever (review of #85, round 2)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+    const label = "- Only issues with the sf label come in [Q1]";
+    const where = "- New items land in the project's Backlog [Q2]";
+    const a = await ok<{ specId: string; editId: string }>(
+      "spec.edit",
+      {
+        workItemId: item.workItemId,
+        specId,
+        lineStart: 3,
+        lineEnd: 4,
+        before: BODY.split("\n").slice(3, 5).join("\n"),
+        after: `${label}\n${where}`,
+      },
+      w.human,
+    );
+    // Someone rewrites half of it: the first edit isn't covered, and the plan can't keep it.
+    await ok(
+      "spec.edit",
+      {
+        workItemId: item.workItemId,
+        specId: a.specId,
+        lineStart: 3,
+        lineEnd: 3,
+        before: label,
+        after: "- Only issues with the agent label come in [Q1]",
+      },
+      w.human,
+    );
+    await agent("planning.news");
+    const held = await refusal(agent("planning.ready"));
+    expect(held.code).toBe("conflict");
+    const view = await ok<{ edits: { id: string; kept: boolean }[] }>(
+      "planning.get",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    expect(view.edits.find((e) => e.id === a.editId)?.kept).toBe(false);
+    await ok("spec.releaseEdit", { workItemId: item.workItemId, editId: a.editId }, w.human);
+    await agent("planning.news");
+    expect(await agent("planning.ready")).toMatchObject({ round: 1 });
+  });
+
   it("records an answer from an edit only when it still stands, is newest, is about the question, and its author may answer (review of #85, 4)", async () => {
     const w = await world();
     const { item, agent } = await planning(w);
