@@ -99,7 +99,12 @@ export const Route = createRoute({
     Promise.all([
       // The org's board: what an item before release can wait for (its edit dialog).
       queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
-      queryClient.ensureQueryData(workItemQuery(params.id)),
+      // Then its project's workflow, whose name the Details panel shows (spec 52 PR (d)).
+      queryClient
+        .ensureQueryData(workItemQuery(params.id))
+        .then((d) =>
+          queryClient.ensureQueryData(workflowQuery(d.item.projectId)).catch(() => null),
+        ),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
       queryClient.ensureQueryData(attachmentsQuery(params.id)).catch(() => null),
