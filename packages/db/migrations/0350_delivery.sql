@@ -19,12 +19,13 @@ CREATE TABLE core_delivery_state (
 
 -- Who lands a queue entry: its own Workflow (v4–v7, and an incident's auto-merge), or the
 -- babysitter's deliverer (v11). How it ended, as sent to the Workflow (`merged`, `conflict`,
--- `failed`, or `withdrawn`: the approval no longer holds, spec 53 PR c), so a lost event can be read
+-- `failed`, `withdrawn`: the approval no longer holds, or `reverify`: it holds once the new head
+-- passes its own verification, spec 53 PR c), so a lost event can be read
 -- back. When GitHub was asked to merge the default branch in.
 ALTER TABLE core_merge_queue ADD COLUMN driver TEXT NOT NULL DEFAULT 'workflow'
   CHECK (driver IN ('workflow', 'babysitter'));
 ALTER TABLE core_merge_queue ADD COLUMN outcome TEXT
-  CHECK (outcome IS NULL OR outcome IN ('merged', 'conflict', 'failed', 'withdrawn'));
+  CHECK (outcome IS NULL OR outcome IN ('merged', 'conflict', 'failed', 'withdrawn', 'reverify'));
 ALTER TABLE core_merge_queue ADD COLUMN update_asked_at TEXT;
 -- How many times GitHub was asked to update the entry's head: the deliverer stops asking after a
 -- few, so a default branch that keeps moving while CI runs can't keep a head updating for ever.
