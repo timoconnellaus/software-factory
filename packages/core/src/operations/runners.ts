@@ -260,6 +260,30 @@ function reportRunnerState(
     report.accounts !== undefined &&
     (report.accounts.active === requested || !report.accounts.names.includes(requested));
   if (report.stale) return { pendingAccount: requested !== null && !settled ? requested : null };
+  // A heartbeat or claim is audited when it changes what a person looks for after an incident
+  // (ADR 0590): whether the runner takes work (accepting, paused, rate limit), its code (version,
+  // update state, compat), its manifest or accounts, or the owner's account pick settling. Capacity
+  // in use and last seen change on every beat and are not audited.
+  const paused = report.capacity.paused ? json(report.capacity.paused) : null;
+  if (
+    settled ||
+    runner.accepting !== (report.capacity.accepting ? 1 : 0) ||
+    runner.paused !== paused ||
+    runner.capacity_max !== report.capacity.max ||
+    runner.light_max !== (report.capacity.light?.max ?? null) ||
+    json(report.manifest) !== runner.manifest ||
+    (report.rateLimitedUntil !== undefined &&
+      report.rateLimitedUntil !== runner.rate_limited_until) ||
+    (report.version !== undefined &&
+      (report.version.sha !== runner.version ||
+        (report.version.autoUpdate ? 1 : 0) !== runner.auto_update ||
+        report.version.update.state !== runner.update_state ||
+        report.version.update.target !== runner.update_target)) ||
+    (report.accounts !== undefined && json(report.accounts) !== runner.accounts) ||
+    (report.compat !== undefined && report.compat !== runner.compat)
+  ) {
+    ctx.changed();
+  }
   ctx.write(
     ctx.db
       .updateTable("core_runners")
@@ -270,7 +294,7 @@ function reportRunnerState(
         light_max: report.capacity.light?.max ?? null,
         light_in_use: report.capacity.light?.inUse ?? 0,
         accepting: report.capacity.accepting ? 1 : 0,
-        paused: report.capacity.paused ? json(report.capacity.paused) : null,
+        paused,
         ...(report.rateLimitedUntil !== undefined
           ? { rate_limited_until: report.rateLimitedUntil }
           : {}),
@@ -700,7 +724,7 @@ function runnerPaused(
  * yields while the pool has room: this is only called when it hasn't.
  */
 export async function requestYield(
-  ctx: Pick<HandlerContext, "db" | "now" | "write">,
+  ctx: Pick<HandlerContext, "db" | "now" | "write" | "changed">,
   runnerId: string,
 ): Promise<string | null> {
   const before = new Date(Date.parse(ctx.now) - PLANNING_YIELD_AFTER_MS).toISOString();
@@ -762,6 +786,8 @@ export async function requestYield(
       at: ctx.now,
     }),
   );
+  // Asking a session to yield is a change a person may look for (ADR 0590).
+  ctx.changed();
   return candidate.id;
 }
 
@@ -839,8 +865,9 @@ export const jobClaim = defineOperation({
   description:
     "A runner host asks for its next job (pull, spike ADR 0100). The scheduler gives the oldest queued job this runner may take: capabilities and harness covered, the requester's own runner or one shared into the project, a free slot, not rate-limited, no kill switch, the project under its WIP limit for builds, the item not leased to someone else. Claiming takes the work item's lease with a new fencing token and creates the run and its branch name. The same claimId returns the same job.",
   risk: "write",
-  // Every 20 s per runner: an empty claim is not audited (ADR 0590).
-  audit: { changesOnly: true, changed: (out) => out.job !== null },
+  // Every 20 s per runner: audited when it claims a job (ctx.change), not when empty or when a
+  // retried claimId gets the job it already had (ADR 0590).
+  audit: { changesOnly: true },
   actors: ["runner"],
   permission: "signed-in",
   input: z.object({
@@ -942,6 +969,8 @@ export const jobClaim = defineOperation({
       if (refusal) {
         const waitReason = refusal.wip ? WIP_WAIT_REASON : (refusal.waitReason ?? null);
         if (waitReason && job.wait_reason !== waitReason) {
+          // Why a job waits is what a person looks for when it doesn't start (ADR 0590).
+          ctx.changed();
           ctx.write(
             ctx.db
               .updateTable("core_jobs")
