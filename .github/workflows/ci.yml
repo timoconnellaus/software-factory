@@ -60,6 +60,10 @@ jobs:
       # The deploy scripts and the repo guards (model ids, runner imports) aren't a workspace
       # package; their tests run on Node directly.
       - run: node --test "scripts/*/*.test.ts"
+      # Hostile planning mockups in real engines (spec 21, ADR 0472): Chromium, and WebKit for the
+      # desktop app's WKWebView. Nothing they try may reach the trap server or leave the frame.
+      - run: pnpm --filter @software-factory/desktop exec playwright install --with-deps chromium webkit
+      - run: pnpm --filter @software-factory/desktop test:browser
       # The deploy refuses it too; failing here catches a floor raised too early before merge.
       - name: Desktop floor vs the published builds (ADR 0393)
         run: node scripts/deploy/desktop-floor.ts

@@ -6,13 +6,17 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 /** The migrations this branch adds, by file name. Keep in step when one is added. */
-const OWN = ["0242_plan_edits.sql"];
+const OWN = ["0242_plan_edits.sql", "0243_planning_artifacts.sql"];
 
 /** The columns they add, as `table.column`, which must exist both ways. */
 const COLUMNS = [
   "core_planning_messages.anchor",
   "core_questions.answered_via_edit",
   "core_spec_edits.footprint",
+  "core_questions.option_artifacts",
+  "core_planning_messages.pin",
+  "core_planning_sessions.shown_artifact_id",
+  "core_planning_artifact_revisions.controls",
 ];
 
 async function columns(db: D1Database): Promise<Set<string>> {
