@@ -78,3 +78,10 @@ exactly what ADR 0340 refused to treat as a person.
   software one, because macOS has no attestation for it, so the app declares where its key lives.
   The approval page shows that with the key's fingerprint, and software keys can't decide (4).
   Registering a device at all needs a person to approve it on the website, as for a CLI login.
+
+## Amendment, 2026-11-12 (spec 40 M3)
+- The door carries bytes as `{ "$bytes": "<base64>" }`: it decodes them in a call's input after
+  digesting it (so a proof covers the input as sent) and encodes every `Uint8Array` in an output.
+  This is what lets the desktop upload and show attachments.
+- The desktop's main process refuses a presence-decidable operation sent through `call`; the view
+  sends those through `decide` only. `org.list` returns the caller's user id.

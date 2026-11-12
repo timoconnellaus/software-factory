@@ -99,4 +99,3 @@ export type OpResult<O = Json> =
   | { ok: true; status: "ok"; output: O }
   | { ok: true; status: "pending"; pendingActionId: string }
   | { ok: false; code: RefusalCode | "unauthenticated"; message: string };
-

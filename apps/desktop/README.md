@@ -8,7 +8,7 @@ client door with a desktop token ([ADR 0381](../../docs/adr/0381-the-client-door
 ```sh
 pnpm --filter @software-factory/desktop devkit      # fetch the Electrobun SDK (Hutch) into .hutch/
 pnpm --filter @software-factory/desktop typecheck
-pnpm --filter @software-factory/desktop test        # Node: deep links, PKCE, the door client, backoff
+pnpm --filter @software-factory/desktop test        # Node: the door client, decisions, loaders, the timeline
 pnpm --filter @software-factory/desktop dev         # macOS: build the dev .app and run it here
 SF_ENGINE_URL=http://localhost:8787 pnpm --filter @software-factory/desktop dev   # against a local engine
 ```
@@ -27,7 +27,12 @@ itself to `~/.hutch` and adds a PATH line to your shell profile the first time.
 | `src/bun/keychain.ts`, `cf.ts`, `macos.ts` | Keychain secrets, dock badge and login item over `bun:ffi`. |
 | `src/bun/runner.ts`, `backoff.ts` | `sf-runner run` on the bundled Node 24: restarts, launchd takeover, pairing. |
 | `src/bun/instance.ts` | One app per user, and quitting (with the runner) if the launcher dies. |
+| `src/bun/operations.ts` | The view's `call`, `batch` and `decide`; a gate decision through `call` is refused. |
+| `src/bun/save.ts` | Saving a file the view hands over (a ruleset, an attachment) to ~/Downloads. |
+| `src/shared/decisions.ts` | The gate decisions, which go only through `decide` (Touch ID). |
 | `src/mainview/` | The SPA (TanStack Router, hash history) on `packages/ui`. It holds no token. |
+| `src/mainview/lib/` | `op` / `read` (one `batch` per tick) / `decide`, the queries, the session from `org.list`, decisions, attachments over the door. |
+| `src/mainview/routes/`, `components/` | The screens, ported from sf-app (spec 40 M3): Inbox, Work, New work, attach, the work item with Planning and its timeline, the review packet, Setup, This Mac. Pure logic is in `packages/client`. |
 
 ## Signing the key helper (M4)
 Only `sf-keys` gets the `keychain-access-groups` entitlement (the Developer ID team's group), so only

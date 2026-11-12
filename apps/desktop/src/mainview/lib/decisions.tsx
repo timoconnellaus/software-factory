@@ -56,7 +56,11 @@ export async function run(d: Decision): Promise<string> {
       return r.alreadyDecided ? "Already decided" : DONE[d.kind];
     }
     case "spec.requestChanges": {
-      const r = await decideOp("spec.requestChanges", { workItemId: d.workItemId, note: d.note }, key);
+      const r = await decideOp(
+        "spec.requestChanges",
+        { workItemId: d.workItemId, note: d.note },
+        key,
+      );
       return r.alreadyDecided ? "Already decided" : DONE[d.kind];
     }
     case "review.merge": {

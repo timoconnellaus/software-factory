@@ -4,14 +4,14 @@
 import { hostname } from "node:os";
 import { join } from "node:path";
 import Electrobun, { BrowserView, BrowserWindow, Tray, Utils } from "electrobun/main";
-import { DECISION_OPS, refuseDecisionCall } from "../shared/decisions.ts";
-import type { AppRPC, CallResult, RunnerState } from "../shared/rpc.ts";
+import type { AppRPC, RunnerState } from "../shared/rpc.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
-import { Door, UnauthenticatedError } from "./door.ts";
+import { Door } from "./door.ts";
 import { acquireInstanceLock, watchParent } from "./instance.ts";
 import { Live, liveUrl } from "./live.ts";
 import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
+import { operationHandlers } from "./operations.ts";
 import { Runner } from "./runner.ts";
 import { saveTo } from "./save.ts";
 
@@ -62,32 +62,19 @@ const toView = <K extends keyof ViewMessages>(name: K, payload: ViewMessages[K])
   rpc?.send[name](payload);
 };
 
-/** A door call that turns a revoked token into "signed out" instead of an error. */
-async function guarded<T extends CallResult | CallResult[]>(
-  f: () => Promise<T>,
-  fallback: T,
-): Promise<T> {
-  try {
-    return await f();
-  } catch (error) {
-    if (error instanceof UnauthenticatedError) {
-      auth.forget();
-      toView("sessionChanged", auth.session());
-      refreshTray();
-      return fallback;
-    }
-    const message = error instanceof Error ? error.message : "network error";
-    return (
-      Array.isArray(fallback)
-        ? fallback.map(() => ({ ok: false, code: "unavailable", error: message }))
-        : {
-            ok: false,
-            code: "unavailable",
-            error: message,
-          }
-    ) as T;
-  }
-}
+const ops = operationHandlers({
+  door,
+  signer: () => {
+    const key = auth.key;
+    return key ? (m: string) => key.sign(m) : null;
+  },
+  signedOut: () => {
+    auth.forget();
+    toView("sessionChanged", auth.session());
+    refreshTray();
+  },
+});
+const guarded = ops.guarded;
 
 const rpc = BrowserView.defineRPC<AppRPC>({
   maxRequestTime: 120_000,
@@ -108,41 +95,10 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         setBadge(0);
         return auth.session();
       },
-      call: ({
-        op,
-        input,
-        idempotencyKey,
-      }: {
-        op: string;
-        input: unknown;
-        idempotencyKey?: string;
-      }): CallResult | Promise<CallResult> => {
-        // A gate decision needs a presence proof: it goes through decide, never call (ADR 0381).
-        if (DECISION_OPS.has(op)) return refuseDecisionCall(op);
-        return guarded<CallResult>(
-          () => door().call(op, input, idempotencyKey ? { idempotencyKey } : {}),
-          { ok: false, code: "unauthenticated", error: "signed out" },
-        );
-      },
-      batch: ({ calls }) =>
-        guarded(
-          () => door().batch(calls),
-          calls.map(() => ({ ok: false as const, code: "unauthenticated", error: "signed out" })),
-        ),
-      decide: ({ op, input, idempotencyKey }) => {
-        const key = auth.key;
-        if (!key)
-          return {
-            ok: false,
-            code: "unauthenticated",
-            error: "sign in again: this Mac has no device key",
-          };
-        return guarded(() => door().decide(op, input, (m) => key.sign(m), idempotencyKey), {
-          ok: false,
-          code: "unauthenticated",
-          error: "signed out",
-        });
-      },
+      // Operations through the client door; gate decisions only through decide (operations.ts).
+      call: ops.call,
+      batch: ops.batch,
+      decide: ops.decide,
       runnerState: () => runner.state,
       runnerAction: async ({ action }) => {
         if (action === "takeover") await runner.takeOverFromLaunchd();

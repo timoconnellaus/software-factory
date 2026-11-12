@@ -44,4 +44,3 @@ export function runnerLabel(r: Runner): string {
       return `draining · ${slots}`;
   }
 }
-

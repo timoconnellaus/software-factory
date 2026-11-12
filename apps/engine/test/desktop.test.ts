@@ -402,7 +402,9 @@ describe("the desktop app's client door (/client/v1)", () => {
     const batch = await json<{ results: { ok: boolean; result?: { bytes: unknown } }[] }>(
       await post(
         "batch",
-        { calls: [{ op: "workItem.attachment.get", input: { attachmentId: result.attachment.id } }] },
+        {
+          calls: [{ op: "workItem.attachment.get", input: { attachmentId: result.attachment.id } }],
+        },
         token,
       ),
     );

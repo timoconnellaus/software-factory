@@ -2,10 +2,11 @@
 // plus the held, refused, failed, merged and gate-note rules, the rendered label, detail line,
 // note and dot. Written against the timeline before its wording moved to @software-factory/timeline,
 // and kept unchanged after, so "unchanged" is checked against the old behaviour.
+
+import { clock } from "@software-factory/client/format";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Timeline } from "#/components/timeline";
-import { clock } from "@software-factory/client/format";
 import type { TimelineEntry, WorkItemDetail } from "#/lib/ops";
 
 const AT = "2026-11-10T09:58:00.000Z";

@@ -39,67 +39,72 @@ export function SettingsPage() {
     <main className="mx-auto grid w-full max-w-[1200px] gap-4 p-4 md:p-6">
       <h1 className="font-semibold text-2xl tracking-tight">This Mac</h1>
       <div className="grid max-w-2xl gap-4">
-      <Card className="gap-3 px-5 py-4" data-testid="runner">
-        <div className="flex items-center gap-2 font-semibold">
-          <StatusDot
-            status={
-              r?.status === "running" ? "running" : r?.status === "failed" ? "failed" : "idle"
-            }
-          />
-          This Mac's runner
-        </div>
-        <div className="text-sm">{r ? RUNNER_TEXT[r.status] : "…"}</div>
-        {r?.lastLine && (
-          <pre className="overflow-x-auto rounded bg-muted p-2 font-mono text-xs">{r.lastLine}</pre>
-        )}
-        <div className="flex gap-2">
-          {r?.status === "unpaired" && (
-            <Button size="sm" onClick={() => bun.runnerAction({ action: "pair" })}>
-              Pair this Mac
-            </Button>
+        <Card className="gap-3 px-5 py-4" data-testid="runner">
+          <div className="flex items-center gap-2 font-semibold">
+            <StatusDot
+              status={
+                r?.status === "running" ? "running" : r?.status === "failed" ? "failed" : "idle"
+              }
+            />
+            This Mac's runner
+          </div>
+          <div className="text-sm">{r ? RUNNER_TEXT[r.status] : "…"}</div>
+          {r?.lastLine && (
+            <pre className="overflow-x-auto rounded bg-muted p-2 font-mono text-xs">
+              {r.lastLine}
+            </pre>
           )}
-          {r?.status === "launchd" && (
-            <Button size="sm" onClick={() => bun.runnerAction({ action: "takeover" })}>
-              Run it in the app
-            </Button>
-          )}
-          {(r?.status === "running" || r?.status === "failed") && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => bun.runnerAction({ action: "restart" })}
-            >
-              Restart
-            </Button>
-          )}
-        </div>
-      </Card>
-      <Card className="gap-3 px-5 py-4">
-        <div className="font-semibold">This Mac</div>
-        <div className="text-muted-foreground text-sm">
-          {session?.keyStorage === "secure-enclave"
-            ? "Decisions are signed by a key in this Mac's Secure Enclave: approving asks for Touch ID."
-            : "This build has a software key (not signed for the Secure Enclave)."}
-        </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={login.data?.enabled ?? false}
-            onChange={async (e) =>
-              client.setQueryData(["login-item"], await bun.loginItem({ enable: e.target.checked }))
-            }
-          />
-          Open at login
-        </label>
-        <Button
-          size="sm"
-          variant="outline"
-          className="w-fit"
-          onClick={async () => client.setQueryData(["session"], await bun.signOut({}))}
-        >
-          Sign out
-        </Button>
-      </Card>
+          <div className="flex gap-2">
+            {r?.status === "unpaired" && (
+              <Button size="sm" onClick={() => bun.runnerAction({ action: "pair" })}>
+                Pair this Mac
+              </Button>
+            )}
+            {r?.status === "launchd" && (
+              <Button size="sm" onClick={() => bun.runnerAction({ action: "takeover" })}>
+                Run it in the app
+              </Button>
+            )}
+            {(r?.status === "running" || r?.status === "failed") && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => bun.runnerAction({ action: "restart" })}
+              >
+                Restart
+              </Button>
+            )}
+          </div>
+        </Card>
+        <Card className="gap-3 px-5 py-4">
+          <div className="font-semibold">This Mac</div>
+          <div className="text-muted-foreground text-sm">
+            {session?.keyStorage === "secure-enclave"
+              ? "Decisions are signed by a key in this Mac's Secure Enclave: approving asks for Touch ID."
+              : "This build has a software key (not signed for the Secure Enclave)."}
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={login.data?.enabled ?? false}
+              onChange={async (e) =>
+                client.setQueryData(
+                  ["login-item"],
+                  await bun.loginItem({ enable: e.target.checked }),
+                )
+              }
+            />
+            Open at login
+          </label>
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-fit"
+            onClick={async () => client.setQueryData(["session"], await bun.signOut({}))}
+          >
+            Sign out
+          </Button>
+        </Card>
       </div>
     </main>
   );

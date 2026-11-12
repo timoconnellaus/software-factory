@@ -123,6 +123,36 @@ Setup, runners. Moved from `apps/app` to `apps/desktop`, loaders on `batch`.
 - Each screen's existing tests pass against the client door.
 - Approving a merge in the app asks for Touch ID once and merges through the merge queue.
 
+**As built** (`desktop-m3-screens`)
+- **Shared logic** moved out of `apps/app` into `packages/client` (operation types and `OpError`,
+  format, inbox grouping, the review packet, planning, questions, work item steps, runner labels,
+  attachment checks, runner pairing); both apps import it, and its tests moved with it. The view's
+  attachment rules come from `@software-factory/core/attachment-rules`, which has no runtime
+  dependencies.
+- **The React screens were ported, not shared**: `apps/desktop/src/mainview/{routes,components}`
+  follow sf-app's markup, wording and test ids. sf-app's copies go in M5.
+- **Data:** `read()` batches each tick's reads into one `batch` call on the door (up to 20); `op()`
+  takes an idempotency key; a held call answers `pending`. Who is signed in comes from `org.list`,
+  which now returns the caller's `userId`.
+- **Gate decisions** go only through `decide()`: the view's `op()` refuses them, and so does the
+  main process's `call`. A test checks the desktop's list against core's `presenceDecidable`
+  operations.
+- **Attachments:** the door carries bytes as `{ "$bytes": "<base64>" }` both ways
+  (`apps/engine/src/wire-bytes.ts`), so New work and the work item upload through
+  `workItem.attachment.add` and show images from `workItem.attachment.get`. Files and rulesets
+  are saved to ~/Downloads through the main process (`saveDownload`).
+- **Planning** re-reads `planning.get` every 3 s while the tab is open: the door has no planning
+  stream yet (sf-app uses Server-Sent Events).
+- **Still on the website:** browser-only operations (registering a runner or rotating its key,
+  approving devices, a kill switch off) and project settings and workflows (spec 09, which came
+  after this spec). Setup links to the website for them. M5 has to keep those pages or move
+  project settings into the desktop first.
+- **Tests:** the timeline's wording renders in the desktop; every page's loader asks for what the
+  page renders; merge and send back run through the main process's handlers and the door client
+  against a fake door, signing exactly once (`test/client-door.test.ts`). Touch ID itself and
+  the merge queue aren't exercised here: the queue is the engine's (spec 06), and the proof's
+  redemption is covered in `apps/engine/test/desktop.test.ts`.
+
 ## M4: signing, notarization and updates
 GitHub Actions on macOS builds, signs and notarizes the app, and uploads canary and stable to R2.
 The in-app updater follows the channel. The client door's version handshake can answer

@@ -40,4 +40,3 @@ export function pastedImageName(now: Date, contentType = "image/png"): string {
   const stamp = now.toISOString().replace(/[:.]/g, "-").replace("T", "_").replace("Z", "");
   return `pasted-image-${stamp}.${ext}`;
 }
-

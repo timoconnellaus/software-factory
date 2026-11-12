@@ -10,7 +10,9 @@ import { DECISION_OPS } from "../../shared/decisions.ts";
 import type { AppRPC, CallResult } from "../../shared/rpc.ts";
 
 type Requests = AppRPC["bun"]["requests"];
-type Request<K extends keyof Requests> = (p: Requests[K]["params"]) => Promise<Requests[K]["response"]>;
+type Request<K extends keyof Requests> = (
+  p: Requests[K]["params"],
+) => Promise<Requests[K]["response"]>;
 
 /** The main process's operation requests: main.tsx connects the RPC bridge, tests a fake door. */
 export interface OpTransport {
@@ -100,18 +102,20 @@ function flush() {
   queue = [];
   for (let i = 0; i < batch.length; i += MAX_BATCH) {
     const chunk = batch.slice(i, i + MAX_BATCH);
-    bun().batch({ calls: chunk.map((p) => p.call) }).then(
-      (results) => {
-        chunk.forEach((p, j) => {
-          const r = results[j];
-          if (r) p.resolve(r);
-          else p.reject(new OpError("unavailable", "no answer for this read"));
-        });
-      },
-      (error) => {
-        for (const p of chunk) p.reject(error);
-      },
-    );
+    bun()
+      .batch({ calls: chunk.map((p) => p.call) })
+      .then(
+        (results) => {
+          chunk.forEach((p, j) => {
+            const r = results[j];
+            if (r) p.resolve(r);
+            else p.reject(new OpError("unavailable", "no answer for this read"));
+          });
+        },
+        (error) => {
+          for (const p of chunk) p.reject(error);
+        },
+      );
   }
 }
 

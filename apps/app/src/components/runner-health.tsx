@@ -1,10 +1,11 @@
 // The runner health line (spec 12): each of your runners with a status dot: online, busy n/cap,
 // rate-limited until T, offline since T.
+
+import type { Inbox } from "@software-factory/client/ops";
+import { RUNNER_DOT, runnerLabel, updateLabel } from "@software-factory/client/runners";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
 import { Link } from "@tanstack/react-router";
-import type { Inbox } from "@software-factory/client/ops";
-import { RUNNER_DOT, runnerLabel, updateLabel } from "@software-factory/client/runners";
 
 export { runnerLabel, updateLabel };
 

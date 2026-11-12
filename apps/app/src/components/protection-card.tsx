@@ -1,11 +1,12 @@
 // "Protection on `main` changed" (ADR 0280): a project's default-branch protection was green and is
 // now red (a ruleset edited or deleted on GitHub, seen by a webhook or the daily re-check). Same
 // buttons as Setup: download the ruleset, open GitHub's rulesets page, then Check now in Setup.
+
+import { ago } from "@software-factory/client/format";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Link } from "@tanstack/react-router";
-import { ago } from "@software-factory/client/format";
 import type { Inbox } from "#/lib/ops";
 import { rulesetDownloadPath } from "#/lib/ruleset";
 

@@ -3,9 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { duration } from "../src/format.ts";
 import { groupByProject } from "../src/inbox.ts";
 import type { Inbox, WorkItemDetail } from "../src/ops.ts";
-import { runnerLabel, updateLabel } from "../src/runners.ts";
 import { keptOnRunner, packetSections, parsePacket } from "../src/packet.ts";
 import { answerChoices, bulkAcceptable } from "../src/questions.ts";
+import { runnerLabel, updateLabel } from "../src/runners.ts";
 import { agentTime, stageSteps, yourTime } from "../src/work-item.ts";
 
 const NOW = "2026-11-11T10:00:00.000Z";

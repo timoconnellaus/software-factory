@@ -1,13 +1,7 @@
 // The review packet (spec 14, mockup review-packet). In the app it IS the merge gate (ADR 0041):
 // Merge calls review.merge, Send back calls review.sendBack, and both record whether the full diff
 // was opened first. Rendered only from the stored packet: no GitHub calls on load.
-import { Button } from "@software-factory/ui/components/button";
-import { Card } from "@software-factory/ui/components/card";
-import { type Status, StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
-import { cn } from "@software-factory/ui/lib/utils";
-import { useEffect, useState } from "react";
-import Markdown from "react-markdown";
-import type { WorkItemDetail } from "#/lib/ops";
+
 import {
   checkCounts,
   keptOnRunner,
@@ -18,6 +12,13 @@ import {
   packetSections,
   parsePacket,
 } from "@software-factory/client/packet";
+import { Button } from "@software-factory/ui/components/button";
+import { Card } from "@software-factory/ui/components/card";
+import { type Status, StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
+import { cn } from "@software-factory/ui/lib/utils";
+import { useEffect, useState } from "react";
+import Markdown from "react-markdown";
+import type { WorkItemDetail } from "#/lib/ops";
 import { useSession } from "#/lib/session";
 import { NoteDialog, useDecide } from "./decisions.tsx";
 

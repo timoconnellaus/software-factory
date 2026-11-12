@@ -1,5 +1,9 @@
 // Inbox cards (spec 12, mockup home-inbox): spec approval, ready to merge, a question, and any
 // other gate. Cards that need you get the waiting ring; status is a dot.
+
+import { ago } from "@software-factory/client/format";
+import { checkCounts, packetCounts, parsePacket } from "@software-factory/client/packet";
+import { answerChoices } from "@software-factory/client/questions";
 import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
@@ -8,11 +12,8 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { ago } from "@software-factory/client/format";
 import type { Inbox } from "#/lib/ops";
-import { checkCounts, packetCounts, parsePacket } from "@software-factory/client/packet";
 import { workItemQuery } from "#/lib/queries";
-import { answerChoices } from "@software-factory/client/questions";
 import { NoteDialog, useDecide } from "./decisions.tsx";
 
 type Gate = Inbox["gates"][number];

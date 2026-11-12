@@ -41,7 +41,10 @@ export type AppRPC = {
       signIn: { params: Record<string, never>; response: Session };
       signOut: { params: Record<string, never>; response: Session };
       /** One operation; a form submit passes an idempotency key so a retry runs once. */
-      call: { params: { op: string; input: unknown; idempotencyKey?: string }; response: CallResult };
+      call: {
+        params: { op: string; input: unknown; idempotencyKey?: string };
+        response: CallResult;
+      };
       batch: { params: { calls: { op: string; input: unknown }[] }; response: CallResult[] };
       /** A gate decision: a presence challenge, Touch ID (showing the engine's summary), then the call (ADR 0381). */
       decide: {
