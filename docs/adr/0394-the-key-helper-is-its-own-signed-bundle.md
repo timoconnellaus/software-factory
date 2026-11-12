@@ -26,10 +26,18 @@ decisions (`DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in production). On 2026-11-
 keep gate approvals on the desktop with Touch ID, so the helper has to be made to work.
 
 ## Decision
-1. **The helper becomes a small app bundle**, `SF Keys.app`, inside the desktop app at
-   `Contents/Resources/app/native/SF Keys.app`, with bundle id `com.software-factory.desktop.keys`
-   (a child of the app's `com.software-factory.desktop`). It has no UI of its own (`LSUIElement`),
-   and the app runs its executable directly, as it runs `sf-keys` today.
+1. **The helper becomes a small app bundle**, `SF Keys.app`, with bundle id
+   `com.software-factory.desktop.keys` (a child of the app's `com.software-factory.desktop`). It
+   has no UI of its own (`LSUIElement`), and the app runs its executable directly, as it runs
+   `sf-keys` today. **It sits at `Contents/Helpers/SF Keys.app`**, the standard place for nested
+   code: Apple's bundle layout puts helper apps there and expects `Contents/Resources` to hold no
+   code (codesign seals nested code elsewhere as a resource, which is fragile). The one condition is that Electrobun's build leaves the helper's signature,
+   entitlements and embedded profile alone there. Electrobun signs, notarizes and packages inside
+   one `electrobun build`, and probably signs nested Mach-O files itself, so the first build PR is a
+   spike (spec 40 M4b, "Build") that tries `Contents/Helpers` and `Contents/Resources` at each of
+   Electrobun's hooks and reports which one survives into the notarized app, the download zip and
+   the update archive. The helper goes where Electrobun leaves it alone, `Contents/Helpers`
+   if both do, and the result is recorded here as a dated amendment, with why.
 2. **It has its own explicit App ID and a Developer ID provisioning profile**, made by the owner in
    the Apple Developer portal for the same team and the same Developer ID Application certificate
    that signs the app. No capability is ticked on the App ID: the team's own
@@ -48,8 +56,16 @@ keep gate approvals on the desktop with Touch ID, so the helper has to be made t
    (`kSecUseDataProtectionKeychain`) under that access group.
 5. **The helper still signs only a presence message** (nonce, op, input digest, summary) and builds
    the prompt from the message's own summary line. It takes no prompt text from its caller.
-6. **A release without the profile fails** rather than ship a build that silently can't decide.
-   Unsigned dev builds keep the software key and say so (`keyStorage: "software"`).
+6. **Without the profile, the release ships without the helper**, as before M4b (a software key, no
+   gate decisions from the desktop), and says so in a notice; the CI steps that need
+   `MACOS_KEYS_PROFILE` skip cleanly. With it, a release that fails any helper check fails: it
+   never ships a helper that macOS would kill or that can't decide. Unsigned dev builds keep the
+   software key and say so (`keyStorage: "software"`).
+7. **The helper's surface is small.** Four commands (`create`, `public`, `sign`, `delete`), a tag
+   from a compiled-in allowlist (the device key and a test tag), and the rule that **the key signs
+   presence messages only**. Distinct exit codes for cancelled, no key, refused message and
+   authentication failed; the app kills it when the 60 s challenge expires and it calls
+   `LAContext.invalidate()` on `SIGTERM`; one prompt at a time.
 
 ## Why the app's `bun` running any script doesn't defeat this
 - **Using the key needs the entitlement, not the app's signature.** `securityd` checks the
@@ -81,5 +97,13 @@ keep gate approvals on the desktop with Touch ID, so the helper has to be made t
 - **The server still can't tell** a Secure Enclave key from a software one (no attestation on
   macOS); the app declares where its key lives, as before. What changes is that a signed build can
   now truthfully declare `secure-enclave`.
+- **Moving to the Secure Enclave key can be phished.** The key-storage marker sits in the app's
+  keychain, which a same-user agent can write: it can flip it, make the "sign in again" banner
+  appear and race its own `desktop.authStart`. The app shows the new key's fingerprint and the
+  website's approval page shows the requested key's, and the person approves only when they match.
+- **A downgrade orphans the key.** An older build can't reach the Secure Enclave key, signs in again
+  with a software key, and leaves the old key in the keychain, unused.
+- **It all assumes System Integrity Protection is on.** With SIP off, the profile and entitlement
+  checks that keep the key to the helper can be bypassed by an admin.
 - `DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in production. This ADR doesn't change which keys may
   decide.

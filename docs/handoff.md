@@ -157,8 +157,10 @@ through `factory/verify` and the merge gate. The repo is public: no secrets, no 
   `…/canary-macos-arm64-Software-Factory.zip` load, and that an installed canary updates to the next.
   **M4b is back on (2026-11-12):** the owner kept gate approvals on the desktop with Touch ID
   (`.userPresence`). Spec 40 M4b and ADR 0394 have the design and the owner's steps (an App ID
-  `com.software-factory.desktop.keys`, a Developer ID profile in `MACOS_KEYS_PROFILE`); build it once
-  the owner has made them. **On hold:** M5 (the website keeps everything
+  `com.software-factory.desktop.keys`, a Developer ID profile in `MACOS_KEYS_PROFILE`, not set yet: the
+  owner is redoing a profile whose bundle id was mistyped). The first build PR is the signing spike
+  (where `SF Keys.app` can sit and at which Electrobun hook it can be signed so it survives
+  `electrobun build`); every CI step that needs the profile skips cleanly without it. **On hold:** M5 (the website keeps everything
   until the desktop app has the Factory and Settings sections). Signed builds use a software key and
   the engine refuses software keys for gate decisions (`DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in
   production). Why it stays empty: tested on the M5, no keychain restriction protects the desktop
