@@ -3,6 +3,7 @@
 // what news and waits answer. Shared by the cloud (operation inputs) and the harness (tool schemas),
 // so the two can't drift. Runtime-neutral.
 import { z } from "zod";
+import { ARTIFACT_MAX_BYTES, controlSchema, UNIT_PATTERN } from "./planning-visuals.ts";
 
 /** Operations a planning job may run over `/runner/v1/jobs/:id/planning` (ADR 0350). */
 export const PLANNING_OPS = [
@@ -11,6 +12,12 @@ export const PLANNING_OPS = [
   "question.delete",
   "question.reorder",
   "question.focus",
+  "question.answerFromEdit",
+  "artifact.add",
+  "artifact.update",
+  "artifact.delete",
+  "artifact.show",
+  "artifact.read",
   "spec.revise",
   "chat.reply",
   "planning.news",
@@ -142,6 +149,28 @@ export const planningQuestionSchema = z.object({
   irreversible: z.boolean().default(false),
   /** Where it goes in the open list (0 first). Omitted: at the end. */
   position: z.number().int().nonnegative().optional(),
+  /** Spec 21: the artifact this question is about; focusing the question shows it. */
+  artifactId: z.string().min(1).optional(),
+  /** Option label → artifact id, for a choice between visuals: the options render as cards. */
+  optionArtifacts: z.record(z.string(), z.string().min(1)).optional(),
+  /**
+   * Option label → the controls it sets in the artifact named by artifactId, e.g.
+   * `{ "Serif": { "--font-display": "Fraunces, serif" } }`. Hovering an option previews it.
+   */
+  optionValues: z
+    .record(z.string(), z.record(controlSchema, z.string().trim().min(1).max(500)))
+    .optional(),
+  /** The one control a number (a CSS variable, with min and max) or text (a #slot) answer sets. */
+  control: controlSchema.optional(),
+  /** Appended to a number answer, e.g. px. */
+  unit: z
+    .string()
+    .trim()
+    .regex(UNIT_PATTERN, "unit must be a CSS unit such as px, rem or %")
+    .optional(),
+  min: z.number().finite().optional(),
+  max: z.number().finite().optional(),
+  step: z.number().finite().positive().optional(),
 });
 export type PlanningQuestion = z.input<typeof planningQuestionSchema>;
 
@@ -167,6 +196,50 @@ export const questionReorderInputSchema = z.object({
 export const questionFocusInputSchema = z.object({
   /** The question everyone's view should go to; null clears the focus. */
   questionId: z.string().min(1).nullable(),
+});
+
+/** Record the answer a person's plan edit settled (spec 27, ADR 0471). */
+export const questionAnswerFromEditInputSchema = z.object({
+  questionId: z.string().min(1),
+  /** The answer the edit implies, in the question's terms (an option, Yes/No, a number, text). */
+  answer: z.string().trim().min(1).max(10_000),
+  /** The `spec.edited` event's editId. */
+  editId: z.string().min(1),
+});
+
+/** Spec 21: the planner's artifacts (ADR 0472). Content is the whole document each time. */
+export const ARTIFACT_KINDS = ["mockup", "diagram", "document"] as const;
+export const artifactAddInputSchema = z.object({
+  kind: z.enum(ARTIFACT_KINDS).default("mockup"),
+  title: z.string().trim().min(1).max(200),
+  /**
+   * Self-contained HTML (inline CSS; CDN scripts and Google Fonts work) for a mockup or diagram, or
+   * Markdown for a document. Put data-name="…" on each meaningful element so a pinned comment names
+   * it. Declare what answers may change: CSS variables (--accent), data-plan-<name> attributes
+   * (@name), data-plan-text="<slot>" text slots (#slot).
+   */
+  content: z.string().min(1).max(ARTIFACT_MAX_BYTES),
+  /** What it shows, e.g. a layout's idea. Say "phone" or "tablet" to get that frame. */
+  description: z.string().trim().max(5_000).optional(),
+  /** Bring it on everyone's screen now. */
+  show: z.boolean().default(false),
+  /** Save it to the repo's .kim/ with the approved plan (spec 22). */
+  keep: z.boolean().default(false),
+});
+export const artifactUpdateInputSchema = z.object({
+  artifactId: z.string().min(1),
+  title: z.string().trim().min(1).max(200).optional(),
+  content: z.string().min(1).max(ARTIFACT_MAX_BYTES).optional(),
+  description: z.string().trim().max(5_000).optional(),
+  show: z.boolean().optional(),
+  keep: z.boolean().optional(),
+});
+export const artifactDeleteInputSchema = z.object({ artifactId: z.string().min(1) });
+export const artifactShowInputSchema = z.object({ artifactId: z.string().min(1) });
+export const artifactReadInputSchema = z.object({
+  artifactId: z.string().min(1),
+  /** A past revision; omitted, the latest. */
+  revision: z.number().int().positive().optional(),
 });
 
 export const coverageItemSchema = z.object({
@@ -254,6 +327,12 @@ export const PLANNING_TOOL_INPUTS = {
   "question.delete": questionDeleteInputSchema,
   "question.reorder": questionReorderInputSchema,
   "question.focus": questionFocusInputSchema,
+  "question.answerFromEdit": questionAnswerFromEditInputSchema,
+  "artifact.add": artifactAddInputSchema,
+  "artifact.update": artifactUpdateInputSchema,
+  "artifact.delete": artifactDeleteInputSchema,
+  "artifact.show": artifactShowInputSchema,
+  "artifact.read": artifactReadInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema.omit({ cursor: true, ack: true, hold: true }),
@@ -270,6 +349,12 @@ export const PLANNING_INPUTS = {
   "question.delete": questionDeleteInputSchema,
   "question.reorder": questionReorderInputSchema,
   "question.focus": questionFocusInputSchema,
+  "question.answerFromEdit": questionAnswerFromEditInputSchema,
+  "artifact.add": artifactAddInputSchema,
+  "artifact.update": artifactUpdateInputSchema,
+  "artifact.delete": artifactDeleteInputSchema,
+  "artifact.show": artifactShowInputSchema,
+  "artifact.read": artifactReadInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema,
@@ -287,10 +372,21 @@ export const PLANNING_TOOL_DESCRIPTIONS: Record<PlanningOp, string> = {
     "Edit a question (prompt, options, default, recommendation, kind…). Its answer, if any, stands.",
   "question.delete": "Withdraw a question that no longer matters. Say why.",
   "question.reorder": "Put the open questions in a new order, most important first.",
+  "artifact.add":
+    "Add a mockup (self-contained HTML), a diagram (HTML or SVG) or a document (Markdown) beside the plan. People see it in the Mockups tab and on the canvas, and can pin comments to its elements. Put data-name on meaningful elements. For a choice between layouts, add one per option and name them in a question's optionArtifacts; for fonts, colours, spacing and copy, declare controls in one mockup (--var, data-plan-<attr>, data-plan-text) and bind a question to them.",
+  "artifact.update":
+    "Replace an artifact's content or title (a new revision; the old ones are kept). When a bound answer arrives with `applied` values, write them into the mockup's defaults here. A revision that drops a control a question binds answers with warnings.",
+  "artifact.delete":
+    "Remove an artifact that no longer matters (its revisions stay in the record).",
+  "artifact.show": "Bring an artifact on everyone's screen (not while someone is mid-question).",
+  "artifact.read":
+    "Read an artifact's content (the latest revision, or one named), e.g. after resuming on another runner.",
+  "question.answerFromEdit":
+    "A person's edit to the plan settled a question: record the answer it implies, as theirs (it shows as coming from their edit). Not for security, privacy or irreversible questions: ask the person instead.",
   "question.focus":
     "Bring a question to everyone's view (when you want an answer to it next). null clears.",
   "spec.revise":
-    "Replace the living spec with a new revision: the whole spec every time (body, criteria, assumptions, coverage, clarifications). Tag every statement with its source: [Qn], [request], [repo], [parent] or [assumption].",
+    "Replace the living spec with a new revision: the whole spec every time (body, criteria, assumptions, coverage, clarifications). Tag every statement with its source: [Qn], [request], [repo], [parent] or [assumption]. Keep every line a person edited word for word (refused otherwise): if one must change, ask them in the chat.",
   "chat.reply": "Reply in the planning chat, optionally about a question or to a message.",
   "planning.news":
     "Answers, revised answers, chat and presence since you last looked. The hooks bring news on their own; call this only to check now.",
@@ -316,6 +412,11 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     answer: z.string().nullable(),
     /** The answer's revision: a receipt is stamped for exactly this one. */
     revision: z.number(),
+    /** Spec 21: what a bound answer set in its mockup; write these into its defaults. */
+    applied: z
+      .object({ artifactId: z.string(), values: z.record(z.string(), z.string()) })
+      .nullable()
+      .optional(),
     skipped: z.boolean(),
     note: z.string().nullable(),
     acceptedDefault: z.boolean(),
@@ -329,6 +430,24 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     text: z.string(),
     from: z.string(),
     questionId: z.string().nullable(),
+    /** Spec 21: a comment pinned to a spot in an artifact: the element, and where it is. */
+    pin: z
+      .object({
+        artifactId: z.string(),
+        artifact: z.string().nullable(),
+        element: z.string(),
+        selector: z.string().nullable(),
+        x: z.number(),
+        y: z.number(),
+        width: z.number(),
+      })
+      .nullable()
+      .optional(),
+    /** A comment on plan lines (spec 27): the lines it is about, as they read when it was written. */
+    anchor: z
+      .object({ lineStart: z.number(), lineEnd: z.number(), quote: z.string() })
+      .nullable()
+      .optional(),
     /** The question the message is about (kim's `about`), so the agent needn't look it up. */
     about: z
       .object({ questionId: z.string(), number: z.number().nullable(), prompt: z.string() })
@@ -348,6 +467,21 @@ export const planningNewsEventSchema = z.discriminatedUnion("type", [
     at: z.string(),
     on: z.boolean(),
     by: z.string(),
+  }),
+  z.object({
+    /**
+     * A person edited the plan (spec 27, ADR 0471): keep their wording word for word in every
+     * revision, and record any answer it settles with question_answerFromEdit.
+     */
+    type: z.literal("spec.edited"),
+    cursor: z.number(),
+    at: z.string(),
+    editId: z.string(),
+    by: z.string(),
+    lineStart: z.number(),
+    lineEnd: z.number(),
+    before: z.string(),
+    after: z.string(),
   }),
   z.object({
     type: z.literal("planning.resumed"),
