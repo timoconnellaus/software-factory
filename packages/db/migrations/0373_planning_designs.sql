@@ -41,4 +41,9 @@ CREATE UNIQUE INDEX core_planning_artifacts_pulled_idx
   ON core_planning_artifacts (work_item_id, pulled_path)
   WHERE pulled_path IS NOT NULL AND deleted_at IS NULL;
 
+-- What a person approved at the plan gate (review of #130): each `.kim/` file the write-back
+-- creates or changes, as JSON [{path, artifactId, revision, sha256}]. spec.commit writes exactly
+-- these revisions and refuses if one is gone or its content differs. Null: nothing beyond the spec.
+ALTER TABLE core_specs ADD COLUMN kim_files TEXT;
+
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 373) WHERE key = 'schema_version';

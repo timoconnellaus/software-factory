@@ -465,6 +465,11 @@ export interface CoreSpecsTable {
   summary: string | null;
   /** 0372 (spec 23): the spec critic's notes, JSON; null until the critic ran. */
   critique: string | null;
+  /**
+   * 0373 (spec 22, review of #130): the `.kim/` files a person approved at the gate, JSON
+   * [{path, artifactId, revision, sha256}]; spec.commit writes exactly these. Null: none.
+   */
+  kim_files: string | null;
 }
 
 export type PendingActionKind = "spec" | "merge" | "approval";

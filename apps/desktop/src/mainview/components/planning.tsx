@@ -76,6 +76,7 @@ import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
 import { CanvasPane, FullSize, MockupsPane, type Pin } from "./planning-visuals.tsx";
+import { approveLabel, useWriteBack, WriteBack } from "./write-back.tsx";
 
 /** How often an open Planning tab says it is still here. */
 const PRESENCE_MS = 20_000;
@@ -259,6 +260,9 @@ export function Planning({
           </button>
         )}
       </div>
+      {detail.gates.some((g) => g.kind === "spec" && g.status === "pending") && (
+        <WriteBack workItemId={item.id} view={view} />
+      )}
       <GateBar view={view} detail={detail} />
     </div>
   );
@@ -1602,6 +1606,8 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
   };
   const specGate = detail.gates.find((g) => g.kind === "spec" && g.status === "pending");
   const canApprove = !!specGate && detail.viewer.isApprover;
+  // What approving writes (review of #130): the person sees the list before the button is live.
+  const writeBack = useWriteBack(item.id, view, !!specGate);
   const partial = view.spec?.coverage.filter((c) => (c as { status: string }).status === "partial");
   return (
     <div
@@ -1650,12 +1656,12 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
           </Button>
           <Button
             size="sm"
-            disabled={!canApprove || pending !== null}
+            disabled={!canApprove || pending !== null || !writeBack}
             title={canApprove ? undefined : "Only an approver on this project can approve the spec"}
             onClick={() => decide({ kind: "spec.approve", workItemId: item.id })}
             data-testid="approve-spec"
           >
-            Approve spec
+            {approveLabel(writeBack?.kimCount)}
           </Button>
         </>
       ) : (

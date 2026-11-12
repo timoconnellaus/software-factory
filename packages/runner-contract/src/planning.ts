@@ -274,6 +274,12 @@ export const artifactUpdateInputSchema = z.object({
   show: z.boolean().optional(),
   keep: z.boolean().optional(),
 });
+/** The file types each `.kim/` folder holds (review of #130). */
+export const KIM_EXTENSIONS = {
+  designs: ["dbml", "d2", "mmd", "yaml", "yml"],
+  mockups: ["html"],
+  plans: ["md"],
+} as const;
 /**
  * Brings a file from the repository's `.kim/` folder (on the default branch) in as an artifact the
  * planner can revise (spec 22). Its content there is kept as the base the app compares against.
@@ -281,12 +287,26 @@ export const artifactUpdateInputSchema = z.object({
 export const designPullInputSchema = z.object({
   path: z
     .string()
+    .max(200, "a path of at most 200 characters")
     .regex(
       /^\.kim\/(designs|mockups|plans)\/[\w./-]+$/,
       "a path under .kim/designs, .kim/mockups or .kim/plans",
     )
-    .refine((p) => !p.includes(".."), "no .. in the path"),
+    .refine((p) => !p.includes(".."), "no .. in the path")
+    // The tree API refuses `.` and empty segments (review of #130): refused here, not at commit.
+    .refine(
+      (p) => p.split("/").every((seg) => seg !== "" && seg !== "."),
+      "no empty or . segments in the path",
+    )
+    .refine((p) => {
+      const [, folder] = p.split("/");
+      const ext = p.slice(p.lastIndexOf(".") + 1).toLowerCase();
+      const allowed: readonly string[] =
+        KIM_EXTENSIONS[folder as keyof typeof KIM_EXTENSIONS] ?? [];
+      return allowed.includes(ext);
+    }, "a design is .dbml, .d2, .mmd, .yaml or .yml; a mockup .html; a plan .md"),
 });
+
 export const artifactDeleteInputSchema = z.object({ artifactId: z.string().min(1) });
 export const artifactShowInputSchema = z.object({ artifactId: z.string().min(1) });
 export const artifactReadInputSchema = z.object({

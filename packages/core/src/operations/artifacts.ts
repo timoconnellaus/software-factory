@@ -60,6 +60,28 @@ async function droppedBindings(
   return warnings;
 }
 
+/**
+ * While the plan waits at the gate, what a person is looking at doesn't change under them (review
+ * of #130): adding, revising, deleting or pulling an artifact is refused, like spec.revise. Guarded
+ * in the batch too, so a call racing planning.ready can't land after the gate opened.
+ */
+function refuseAtGate(ctx: HandlerContext, session: { id: string; at_gate: number }) {
+  if (session.at_gate) {
+    throw new OperationError(
+      "conflict",
+      "the plan is waiting at the gate, and the person deciding sees its artifacts as they are: wait for a decision (changes arrive in the chat)",
+    );
+  }
+  ctx.guardExists(
+    "the plan isn't waiting at the gate",
+    ctx.db
+      .selectFrom("core_planning_sessions")
+      .select("id")
+      .where("id", "=", session.id)
+      .where("at_gate", "=", 0),
+  );
+}
+
 function showArtifact(ctx: HandlerContext, sessionId: string, artifactId: string) {
   ctx.write(
     ctx.db
@@ -72,7 +94,7 @@ function showArtifact(ctx: HandlerContext, sessionId: string, artifactId: string
 export const artifactAdd = defineOperation({
   name: "artifact.add",
   description:
-    "The planning agent adds a mockup, diagram or document beside the plan (spec 21, ADR 0472). Its content is kept as revision 1, with the controls a mockup declares. People see it in the Mockups tab and on the canvas.",
+    "The planning agent adds a mockup, diagram or document beside the plan (spec 21, ADR 0472). Its content is kept as revision 1, with the controls a mockup declares. People see it in the Mockups tab and on the canvas. Refused while the plan waits at the gate.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -85,6 +107,7 @@ export const artifactAdd = defineOperation({
   scope: byJob,
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
+    refuseAtGate(ctx, session);
     const w = requireWorkItem(ctx);
     if (bytes(input.content) > ARTIFACT_MAX_BYTES) {
       throw new OperationError(
@@ -136,7 +159,7 @@ export const artifactAdd = defineOperation({
 export const artifactUpdate = defineOperation({
   name: "artifact.update",
   description:
-    "The planning agent revises an artifact: new content is a new revision (the old ones are kept); title, description, keep and show change in place. Answers with `warnings` when a question binds a control the new revision no longer declares.",
+    "The planning agent revises an artifact: new content is a new revision (the old ones are kept); title, description, keep and show change in place. Answers with `warnings` when a question binds a control the new revision no longer declares. Refused while the plan waits at the gate.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -150,6 +173,7 @@ export const artifactUpdate = defineOperation({
   scope: byJob,
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
+    refuseAtGate(ctx, session);
     const w = requireWorkItem(ctx);
     const current = await liveArtifact(ctx, w.id, input.artifactId);
     let revision = current.revision;
@@ -211,7 +235,7 @@ export const artifactUpdate = defineOperation({
 export const artifactDelete = defineOperation({
   name: "artifact.delete",
   description:
-    "The planning agent removes an artifact from the plan's workspace. Its revisions stay in the record.",
+    "The planning agent removes an artifact from the plan's workspace. Its revisions stay in the record. Refused while the plan waits at the gate.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -219,7 +243,8 @@ export const artifactDelete = defineOperation({
   output: z.object({ artifactId: z.string(), deleted: z.boolean() }),
   scope: byJob,
   async handler(input, ctx) {
-    await planningJob(ctx, input);
+    const { session } = await planningJob(ctx, input);
+    refuseAtGate(ctx, session);
     const w = requireWorkItem(ctx);
     const current = await liveArtifact(ctx, w.id, input.artifactId);
     ctx.write(
@@ -449,7 +474,7 @@ function guardBudget(ctx: HandlerContext, workItemId: string) {
 export const designPull = defineOperation({
   name: "design.pull",
   description:
-    "The planning agent brings a file from the repository's .kim/ folder (designs, mockups or plans, on the default branch) in as an artifact to revise (spec 22). Its content there is kept as the base (revision 0) the app compares against; the artifact is kept, so the approved plan writes it back to the same path. Pulling a file already pulled takes the default branch's current copy as the new base (merge your changes into it) and leaves your latest revision as it is.",
+    "The planning agent brings a file from the repository's .kim/ folder (designs, mockups or plans, on the default branch) in as an artifact to revise (spec 22). Its content there is kept as the base (revision 0) the app compares against; the artifact is kept, so the approved plan writes it back to the same path. Pulling a file already pulled takes the default branch's current copy as the new base (merge your changes into it) and leaves your latest revision as it is. Refused while the plan waits at the gate.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -457,7 +482,8 @@ export const designPull = defineOperation({
   output: z.object({ artifactId: z.string(), revision: z.number(), changed: z.boolean() }),
   scope: byJob,
   async handler(input, ctx) {
-    await planningJob(ctx, input);
+    const { session } = await planningJob(ctx, input);
+    refuseAtGate(ctx, session);
     const w = requireWorkItem(ctx);
     const repository = requireRepository(ctx);
     const repo = await repoRef(ctx, repository);

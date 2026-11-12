@@ -40,4 +40,8 @@ agent-written HTML.
 > revision 0, the base for the app's comparison and for conflicts. The approved plan writes the spec,
 > the plan and the kept artifacts in one commit. A pulled file changed on the default branch since it
 > was pulled blocks `planning.ready` and `spec.approve` until the planner pulls it again and merges.
-
+>
+> Amended 2026-11-13 (review of #130): what a person approves is what is written. While the plan
+> waits at the gate the planner can't add, change, delete or pull artifacts; approval records each
+> `.kim/` file's revision and content hash on the spec, and the commit writes exactly those. The gate
+> lists every file it writes, with its text, until part B draws designs.

@@ -14,6 +14,7 @@ const COLUMNS = [
   "core_planning_artifacts.design_type",
   "core_planning_artifacts.pulled_path",
   "core_planning_artifacts.pulled_base_sha",
+  "core_specs.kim_files",
 ];
 
 async function columns(db: D1Database): Promise<Set<string>> {

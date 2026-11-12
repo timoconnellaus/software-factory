@@ -5,7 +5,7 @@ import { droppedEdits, specResultSchema } from "@software-factory/runner-contrac
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
-import { keptArtifacts, kimPath } from "../kim.ts";
+import { approvedKimFiles, planPath, writeBackFiles } from "../kim.ts";
 import { defineOperation } from "../operation.ts";
 import { guardCurrentSpec, openSession, standingEdits } from "../planning.ts";
 import { repoRef, requireRepository, requireWorkItem, workItemId } from "./shared.ts";
@@ -124,7 +124,7 @@ export const specAccept = defineOperation({
 export const specCommit = defineOperation({
   name: "spec.commit",
   description:
-    "Commit the approved spec to docs/specs/ on the work item's branch (never main) through the GitHub App, so the build starts from it. In the same commit, the plan and every kept planning artifact land in the repo's .kim/ folder (spec 22): the plan in .kim/plans/, mockups in .kim/mockups/, designs in .kim/designs/ (a pulled file back at its path). Dropped and draft artifacts aren't committed.",
+    "Commit the approved spec to docs/specs/ on the work item's branch (never main) through the GitHub App, so the build starts from it. In the same commit, the plan and the kept planning artifacts a person approved at the gate land in the repo's .kim/ folder (spec 22): the plan in .kim/plans/, mockups in .kim/mockups/, designs in .kim/designs/ (a pulled file back at its path), each at exactly the revision approved; refused if one is gone or differs. Dropped and draft artifacts aren't committed.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -144,13 +144,10 @@ export const specCommit = defineOperation({
     const path = `docs/specs/wi-${w.number}-${w.slug}.md`;
     const content = specDocument(spec);
     const repo = await repoRef(ctx, requireRepository(ctx));
-    // Spec 22: the plan and the kept artifacts, in the same commit as the spec.
-    const kept = await keptArtifacts(ctx, w.id);
-    const files = [
-      { path, content },
-      { path: `.kim/plans/wi-${w.number}-${w.slug}.md`, content },
-      ...kept.map((a) => ({ path: kimPath(a), content: a.content })),
-    ];
+    // Spec 22: the plan and the kept artifacts, in the same commit as the spec. Only the files a
+    // person approved at the gate, at the revision they saw (review of #130).
+    const kept = await approvedKimFiles(ctx, spec.kim_files);
+    const files = [{ path, content }, { path: planPath(w), content }, ...kept];
     const unique = [...new Map(files.map((f) => [f.path, f])).values()];
     const { commitSha } = await ctx.services.github.commitFiles(repo, {
       branch: w.branch,
@@ -171,6 +168,67 @@ export const specCommit = defineOperation({
     );
     ctx.change({ entity: "spec", id: spec.id, after: { path, commitSha } });
     return { path, commitSha };
+  },
+});
+
+export const specWriteBack = defineOperation({
+  name: "spec.writeBack",
+  description:
+    "The files approving the plan will write (spec 22, review of #130): the spec under docs/specs/, the plan under .kim/plans/, and each kept artifact under .kim/, with whether it is new or changed against the pulled base, its text and that base. The gate lists them so a person sees everything committed; approval records exactly these.",
+  risk: "read",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ workItemId }),
+  output: z.object({
+    files: z.array(
+      z.object({
+        path: z.string(),
+        /** `spec`: docs/specs/; `plan`: the plan's .kim/ copy; otherwise the artifact's kind. */
+        kind: z.string(),
+        status: z.enum(["new", "changed"]),
+        content: z.string(),
+        base: z.string().nullable(),
+      }),
+    ),
+    /** How many of them land under .kim/. */
+    kimCount: z.number(),
+  }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const spec = w.current_spec_id
+      ? await ctx.db
+          .selectFrom("core_specs")
+          .selectAll()
+          .where("id", "=", w.current_spec_id)
+          .executeTakeFirst()
+      : undefined;
+    if (!spec) return { files: [], kimCount: 0 };
+    const content = specDocument(spec);
+    const artifacts = await writeBackFiles(ctx, w);
+    const files: {
+      path: string;
+      kind: string;
+      status: "new" | "changed";
+      content: string;
+      base: string | null;
+    }[] = [
+      {
+        path: `docs/specs/wi-${w.number}-${w.slug}.md`,
+        kind: "spec",
+        status: "new",
+        content,
+        base: null,
+      },
+      { path: planPath(w), kind: "plan", status: "new", content, base: null },
+      ...artifacts.map((a) => ({
+        path: a.path,
+        kind: a.kind,
+        status: a.status,
+        content: a.content,
+        base: a.base,
+      })),
+    ];
+    return { files, kimCount: files.filter((f) => f.path.startsWith(".kim/")).length };
   },
 });
 

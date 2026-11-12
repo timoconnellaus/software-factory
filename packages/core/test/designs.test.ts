@@ -56,6 +56,21 @@ async function planning(w: W) {
   return { item, agent };
 }
 
+/** Opens the gate and a person approves it; the Workflow's re-run of spec.accept, as SQL. */
+async function approve(
+  w: W,
+  workItemId: string,
+  specId: string,
+  agent: (op: string, input?: Record<string, unknown>) => Promise<unknown>,
+) {
+  await agent("planning.news");
+  await agent("planning.ready");
+  const gate = await call("spec.accept", { workItemId, specId }, FOREMAN);
+  expect(gate.status).toBe("pending");
+  await ok("spec.approve", { workItemId }, w.human);
+  await rows("UPDATE core_specs SET status = 'approved' WHERE id = ?", specId);
+}
+
 /** Puts a file on the default branch, as a merge would. */
 const onMain = (w: W, path: string, content: string) =>
   services.github.commitFile(w.repo, { branch: "main", path, content, message: "seed" });
@@ -108,7 +123,7 @@ describe("system designs and .kim/ (spec 22)", () => {
     await agent("artifact.add", { title: "Export button", content: "<p>Export</p>", keep: true });
     await agent("artifact.add", { title: "Scratch", content: "<p>scratch</p>" });
     const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
-    await rows("UPDATE core_specs SET status = 'approved' WHERE id = ?", specId);
+    await approve(w, item.workItemId, specId, agent);
     const committed = await ok<{ commitSha: string }>(
       "spec.commit",
       { workItemId: item.workItemId },
@@ -171,5 +186,148 @@ describe("system designs and .kim/ (spec 22)", () => {
     const refused = await refusal(ok("spec.approve", { workItemId: item.workItemId }, w.human));
     expect(refused.code).toBe("conflict");
     expect(refused.message).toContain("request changes so the planner merges it");
+  });
+
+  it("refuses changing artifacts while the plan waits at the gate (review of #130)", async () => {
+    const w = await world();
+    await onMain(w, ".kim/designs/system.d2", D2);
+    const { item, agent } = await planning(w);
+    const m = await agent<{ artifactId: string }>("artifact.add", {
+      title: "Export button",
+      content: "<p>Export</p>",
+      keep: true,
+    });
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+    await agent("planning.news");
+    await agent("planning.ready");
+    expect(
+      (await call("spec.accept", { workItemId: item.workItemId, specId }, FOREMAN)).status,
+    ).toBe("pending");
+    for (const [op, input] of [
+      ["artifact.update", { artifactId: m.artifactId, content: "<p>Changed</p>" }],
+      ["artifact.add", { title: "Late", content: "<p>late</p>", keep: true }],
+      ["artifact.delete", { artifactId: m.artifactId }],
+      ["design.pull", { path: ".kim/designs/system.d2" }],
+    ] as const) {
+      const refused = await refusal(agent(op, input));
+      expect(refused.code, op).toBe("conflict");
+      expect(refused.message, op).toContain("waiting at the gate");
+    }
+    const kept = await first<{ revision: number }>(
+      "SELECT revision FROM core_planning_artifacts WHERE id = ?",
+      m.artifactId,
+    );
+    expect(kept.revision).toBe(1);
+  });
+
+  it("lists every file the write-back writes at the gate, and commits exactly the approved revisions (review of #130)", async () => {
+    const w = await world();
+    await onMain(w, ".kim/designs/system.d2", D2);
+    await onMain(w, ".kim/designs/same.d2", D2);
+    const { item, agent } = await planning(w);
+    const pulled = await agent<{ artifactId: string }>("design.pull", {
+      path: ".kim/designs/system.d2",
+    });
+    await agent("artifact.update", {
+      artifactId: pulled.artifactId,
+      content: `${D2}app -> cache: reads\n`,
+    });
+    // Pulled and unchanged: nothing to write, so not listed and not committed.
+    await agent("design.pull", { path: ".kim/designs/same.d2" });
+    const m = await agent<{ artifactId: string }>("artifact.add", {
+      title: "Export button",
+      content: "<p>Export</p>",
+      keep: true,
+    });
+    // Same title: a second path, not an overwrite.
+    await agent("artifact.add", { title: "Export button", content: "<p>Two</p>", keep: true });
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+    const listed = await ok<{
+      files: { path: string; status: string; content: string; base: string | null }[];
+      kimCount: number;
+    }>("spec.writeBack", { workItemId: item.workItemId }, w.human);
+    const plan = `.kim/plans/wi-${item.number}-${item.branch.split("-").slice(1).join("-")}.md`;
+    expect(listed.files.map((f) => [f.path, f.status])).toEqual([
+      [expect.stringMatching(/^docs\/specs\//), "new"],
+      [expect.stringMatching(/^\.kim\/plans\//), "new"],
+      [".kim/designs/system.d2", "changed"],
+      [".kim/mockups/export-button.html", "new"],
+      [".kim/mockups/export-button-2.html", "new"],
+    ]);
+    expect(listed.files[2]?.base).toBe(D2);
+    expect(listed.kimCount).toBe(4);
+    await approve(w, item.workItemId, specId, agent);
+    // By any route, a newer revision appears after approval: the approved one is still what lands.
+    await rows(
+      "INSERT INTO core_planning_artifact_revisions (artifact_id, revision, content, size, controls, created_at) VALUES (?, 2, '<p>Sneaked</p>', 14, '[]', '2026-11-13T00:00:00Z')",
+      m.artifactId,
+    );
+    await rows("UPDATE core_planning_artifacts SET revision = 2 WHERE id = ?", m.artifactId);
+    await ok("spec.commit", { workItemId: item.workItemId }, FOREMAN);
+    const branch = (
+      await first<{ branch: string }>(
+        "SELECT branch FROM core_work_items WHERE id = ?",
+        item.workItemId,
+      )
+    ).branch;
+    const read = (path: string) => services.github.readFile(w.repo, path, branch);
+    expect(await read(".kim/mockups/export-button.html")).toBe("<p>Export</p>");
+    expect(await read(".kim/mockups/export-button-2.html")).toBe("<p>Two</p>");
+    expect(await read(".kim/designs/system.d2")).toContain("app -> cache");
+    expect(await read(plan)).toContain("Members see Export");
+    const changed = await services.github.compareFiles(w.repo, "main", branch);
+    expect(
+      changed
+        .map((c) => c.path)
+        .filter((p) => p.startsWith(".kim/"))
+        .sort(),
+    ).toEqual(
+      [
+        plan,
+        ".kim/designs/system.d2",
+        ".kim/mockups/export-button-2.html",
+        ".kim/mockups/export-button.html",
+      ].sort(),
+    );
+  });
+
+  it("refuses to commit when an approved revision is gone or its content differs (review of #130)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const m = await agent<{ artifactId: string }>("artifact.add", {
+      title: "Export button",
+      content: "<p>Export</p>",
+      keep: true,
+    });
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+    await approve(w, item.workItemId, specId, agent);
+    await rows(
+      "UPDATE core_planning_artifact_revisions SET content = '<p>Tampered</p>' WHERE artifact_id = ? AND revision = 1",
+      m.artifactId,
+    );
+    const refused = await refusal(ok("spec.commit", { workItemId: item.workItemId }, FOREMAN));
+    expect(refused.code).toBe("conflict");
+    expect(refused.message).toContain(".kim/mockups/export-button.html");
+    await rows("DELETE FROM core_planning_artifact_revisions WHERE artifact_id = ?", m.artifactId);
+    expect((await refusal(ok("spec.commit", { workItemId: item.workItemId }, FOREMAN))).code).toBe(
+      "conflict",
+    );
+  });
+
+  it("refuses pulled paths the tree API or the folder wouldn't take (review of #130)", async () => {
+    const w = await world();
+    const { agent } = await planning(w);
+    for (const path of [
+      ".kim/designs/./x.d2",
+      ".kim/designs//x.d2",
+      `.kim/designs/${"a".repeat(200)}.d2`,
+      ".kim/designs/x.txt",
+      ".kim/designs/x.mermaid",
+      ".kim/mockups/x.md",
+      ".kim/mockups/x.svg",
+      ".kim/plans/x.html",
+    ]) {
+      expect((await refusal(agent("design.pull", { path }))).code, path).toBe("invalid_input");
+    }
   });
 });

@@ -72,7 +72,22 @@ Creating a design system when none exists, unless asked (as in kim).
     is committed.
   - Deviation: the conflict reaches the gate as these refusals, not as a stored notice. A refused
     approval can't record anything, since its batch rolls back.
+- **What is approved is what is written** (review of #130):
+  - While the plan waits at the gate, `artifact.add`, `artifact.update`, `artifact.delete` and
+    `design.pull` are refused (like `spec.revise`), and guarded in the batch against a race with
+    `planning.ready`.
+  - Approving the gate (`spec.approve`, or `approval.decide` on a spec gate) records on the spec
+    (`core_specs.kim_files`, migration 0373) each `.kim/` file the write-back writes: path, artifact,
+    revision and SHA-256 of its content. `spec.commit` writes exactly those revisions and refuses
+    if one is gone or its content differs; a spec approved without a record writes no artifacts.
+  - A pulled file whose latest revision equals its base isn't written. Generated paths that collide
+    get `-2`, `-3` before the extension.
 - The desktop's Mockups pane and canvas leave designs out (they are drawn in part B's System tab).
+  Until then, the gate lists every file approving writes (`spec.writeBack`): path, new or changed
+  against the pulled base, and its text as plain text in a collapsible block with added and removed
+  lines marked. The approve button reads "Approve the plan and write N files to .kim/".
+- `design.pull` takes a path of at most 200 characters, no `.` or empty segments, `.dbml`, `.d2`,
+  `.mmd`, `.yaml` or `.yml` under `designs/`, `.html` under `mockups/` and `.md` under `plans/`.
 - Tests: `packages/core/test/designs.test.ts` and the db late-migrations test (0373 after
   everything on main).
 
