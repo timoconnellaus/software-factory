@@ -7,10 +7,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { bun } from "./bridge.ts";
 import { connect } from "./lib/op.ts";
+import { onTitleBarDoubleClick } from "./lib/title-bar.ts";
 import { makeRouter } from "./router.tsx";
 import "./styles.css";
 
 connect(bun);
+onTitleBarDoubleClick(document, () => void bun.titleBarDoubleClick({}).catch(() => undefined));
 const { router, queryClient } = makeRouter();
 
 const el = document.getElementById("root");

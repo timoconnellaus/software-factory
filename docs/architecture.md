@@ -44,7 +44,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 - **Onboarding** never asks for an id the factory can fetch (ADR 0055, 0056): Connect GitHub goes
   through GitHub's install flow back to sf-app's `/integrations/github/setup`
   (`github.connectInstallation` verifies the single-use state and the installation as the App), a
-  project is picked from the repos an installation reaches (`github.repos`, `project.create`), its
+  project is picked from the repos an installation reaches (`github.repos`, `project.create`; a
+  project is not a repository: it has zero or more in `core_repositories`, added with
+  `repository.add`, and a work item uses one, ADR 0490), its
   first config version is imported from the repo's `.factory/policy.json` or created from the
   template, and a runner connects by device login
   (`/runner/v1/device/*`, approved at `/runners/connect`). `setup.status` is the Setup checklist.
@@ -121,7 +123,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
   `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses
   off the app, so no token (the CLI's, MCP's) can approve anything.
-- **The desktop app** (`apps/desktop`, ADRs 0390–0392, spec 40) is the daily UI on macOS (Electrobun): it
+- **The desktop app** (`apps/desktop`, ADRs 0390–0392 and 0460, specs 40 and 41) is the daily UI on macOS (Electrobun), a window shell of sections with nested lists drawn from `packages/ui`'s desktop tokens: it
   supervises this Mac's `sf-runner` and calls operations through the same door (`/client/v1`) with a
   desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates
   only with a per-call presence proof (Touch ID) the door verifies; nothing else on the Mac can make

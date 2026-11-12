@@ -37,3 +37,5 @@ Relationship OS ADRs 0028 and 0130.
 > Amended 2026-11-11 (planning interview, [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md)): cascade and depth for planning: a planning session may split its work item into children approved at the spec gate, depth 1 ([ADR 0303](0303-a-planning-session-can-split-a-work-item.md)).
 
 > Amended 2026-11-12 ([ADR 0371](0371-workflows-are-presets-over-typed-slots.md), spec 09 M2): Workflow v6 runs the slot steps of the item's pinned workflow inside the same instance. Step names derive from the slot and the step's index.
+
+> Amended 2026-11-12 (proposed, [ADR 0511](0511-a-reconciler-runs-the-stage-list.md), spec [52](../specs/52-workflows-from-stage-types.md)): for workflows built from stage types, spec 52 recommends a reconciler (a pure function from a D1 snapshot to the next action, run on events and a minute tick) instead of one replayed Workflow per item. Awaiting the owner; until it is decided and built, this ADR stands. Autopilot runs (ADR 0514) are work items of kind `autopilot`, and an event never fires an autopilot on its own output (a cascade limit).

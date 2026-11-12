@@ -159,8 +159,8 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     typeof id === "string"
       ? await ctx.db
           .selectFrom("core_work_items as w")
-          .innerJoin("core_projects as p", "p.id", "w.project_id")
-          .select(["w.number", "w.title", "p.default_branch"])
+          .leftJoin("core_repositories as r", "r.id", "w.repository_id")
+          .select(["w.number", "w.title", "r.default_branch"])
           .where("w.id", "=", id)
           .executeTakeFirst()
       : undefined;
@@ -176,7 +176,7 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     case "review.merge": {
       const w = await item(input.workItemId);
       return w
-        ? `Merge #${w.number} ${quoted(w.title)} into ${w.default_branch}`
+        ? `Merge #${w.number} ${quoted(w.title)} into ${w.default_branch ?? "the default branch"}`
         : "Merge a work item";
     }
     case "review.sendBack":

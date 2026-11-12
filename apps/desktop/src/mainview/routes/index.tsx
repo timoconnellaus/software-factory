@@ -1,21 +1,22 @@
-// Home is the Inbox (spec 12; ported from sf-app for spec 40 M3): what's waiting on you, grouped by
-// project, the Running section and the runner health line. `/?item=<workItemId>` highlights that
-// card.
+// Home is the Inbox (spec 12; restyled for spec 41, design InboxMerge/InboxQuestion): the nested
+// list of what waits on you (merges, specs, questions, approvals, notices), and the selected one's
+// page with its decision. `/?item=<key>` selects one (a work item id for anything on an item, as
+// `sf://` links send); without it, the first is selected.
 
-import { ago, errorMessage, STAGE_LABEL } from "@software-factory/client/format";
-import { gateWorkItemIds, groupByProject } from "@software-factory/client/inbox";
-import { Card } from "@software-factory/ui/components/card";
+import { errorMessage } from "@software-factory/client/format";
+import { gateWorkItemIds } from "@software-factory/client/inbox";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
-import { StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
+import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
-import { useEffect } from "react";
 import { FinishSetupCard } from "../components/finish-setup.tsx";
-import { GateCard, QuestionCard } from "../components/inbox-cards.tsx";
+import { GateDetail, PlanningDetail, QuestionDetail } from "../components/inbox-cards.tsx";
 import { ProtectionChangedCard } from "../components/protection-card.tsx";
-import { RunnerHealth } from "../components/runner-health.tsx";
-import { inboxQuery, setupStatusQuery, workItemQuery, workListQuery } from "../lib/queries.ts";
-import { useProjects } from "../lib/session.ts";
+import { ListGroup, ListItem, NestedList, PageArea } from "../components/shell-list.tsx";
+import { useScopedInbox } from "../components/shell-sidebar.tsx";
+import { entryText, GROUP_ORDER, inboxEntries, selectedEntry } from "../lib/inbox-list.ts";
+import { inboxQuery, setupStatusQuery, workItemQuery, workListsQuery } from "../lib/queries.ts";
+import { useProjects, useSession } from "../lib/session.ts";
 import { appRoute } from "./_app.tsx";
 
 export const Route = createRoute({
@@ -23,15 +24,15 @@ export const Route = createRoute({
   path: "/",
   validateSearch: (s: Record<string, unknown>): { item?: string } =>
     typeof s.item === "string" ? { item: s.item } : {},
-  // Everything the page renders, in one request: the inbox and the work list (for "shipped this
-  // week"), then the work items behind the gate cards. The Finish setup card asks GitHub, so it
-  // is started here but not waited for: it shows when it arrives.
+  // Everything the page renders, in one request: the inbox, the work lists (item numbers) and the
+  // work items behind the gates. Setup's status asks GitHub, so it is started here but not waited
+  // for: the Finish setup notice shows when it arrives.
   loader: async ({ context: { queryClient, session } }) => {
     const orgId = session.personalOrgId;
     if (orgId) void queryClient.prefetchQuery(setupStatusQuery(orgId));
     const [inbox] = await Promise.all([
       queryClient.ensureQueryData(inboxQuery()),
-      orgId ? queryClient.ensureQueryData(workListQuery(orgId)).catch(() => null) : null,
+      queryClient.ensureQueryData(workListsQuery(session.orgs.map((o) => o.id))).catch(() => null),
     ]);
     await Promise.all(
       gateWorkItemIds(inbox).map((id) =>
@@ -41,221 +42,134 @@ export const Route = createRoute({
   },
   pendingComponent: InboxPending,
   errorComponent: ({ error }) => (
-    <Page>
-      <h1 className="font-semibold text-2xl tracking-tight">Inbox</h1>
-      <p className="text-destructive text-sm">Couldn't load the inbox: {errorMessage(error)}</p>
-    </Page>
+    <PageArea>
+      <h1 className="m-0 font-semibold text-[18px]">Inbox</h1>
+      <p className="text-destructive">Couldn't load the inbox: {errorMessage(error)}</p>
+    </PageArea>
   ),
   component: InboxPage,
 });
 
-const WEEK = 7 * 24 * 60 * 60 * 1000;
-
 function InboxPage() {
-  const { item: highlight } = Route.useSearch();
-  const { session } = Route.useRouteContext();
-  const { data } = useSuspenseQuery(inboxQuery());
-  const projects = useProjects();
-  const work = useQuery({
-    ...workListQuery(session.personalOrgId ?? ""),
+  const { item } = Route.useSearch();
+  const session = useSession();
+  useSuspenseQuery(inboxQuery());
+  const { inbox } = useScopedInbox();
+  const setup = useQuery({
+    ...setupStatusQuery(session.personalOrgId ?? ""),
     enabled: !!session.personalOrgId,
   });
+  const work = useQuery(workListsQuery(session.orgs.map((o) => o.id)));
+  const projects = useProjects();
   const projectName = (id: string | null) =>
-    projects.data?.find((p) => p.id === id)?.name ?? (id ? "project" : "factory");
+    projects.data?.find((p) => p.id === id)?.name ?? (id ? "project" : "the factory");
+  const numberOf = (id: string) => work.data?.find((i) => i.id === id)?.number ?? null;
 
-  useEffect(() => {
-    if (!highlight) return;
-    document
-      .querySelector(`[data-testid="card-${CSS.escape(highlight)}"]`)
-      ?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [highlight]);
-
-  const waiting = data.gates.length + data.questions.length;
-  const shipped =
-    work.data?.items.filter(
-      (i) => i.status === "done" && Date.now() - Date.parse(i.updatedAt) < WEEK,
-    ).length ?? 0;
-  const groups = groupByProject(data);
-  const highlightGone =
-    highlight &&
-    !data.gates.some((g) => g.workItemId === highlight) &&
-    !data.questions.some((q) => q.workItemId === highlight);
-  const used = data.runners.reduce((n, r) => n + r.inUse, 0);
-  const cap = data.runners.reduce((n, r) => n + r.max, 0);
+  const entries = inbox ? inboxEntries(inbox, setup.data) : [];
+  const selected = selectedEntry(entries, item);
+  const gone = !!item && !entries.some((e) => e.key === item);
 
   return (
-    <Page>
-      <div>
-        <h1 className="font-semibold text-2xl tracking-tight">Inbox</h1>
-        <div className="text-muted-foreground text-sm" data-testid="inbox-counts">
-          {waiting} {waiting === 1 ? "item" : "items"} waiting on you · {data.running.length}{" "}
-          running · {shipped} shipped this week
-        </div>
-      </div>
-
-      <FinishSetupCard orgId={session.personalOrgId ?? ""} />
-      {data.protection.map((d) => (
-        <ProtectionChangedCard key={d.projectId} drift={d} />
-      ))}
-
-      {data.planning.map((p) => (
-        <Card
-          key={p.workItemId}
-          className="gap-1 px-5 py-4"
-          data-testid={`planning-${p.workItemId}`}
-        >
-          <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-            <StatusDot status={p.atGate ? "waiting" : "running"} />
-            <span>{p.atGate ? "Spec ready for your approval" : "Planning is ready"}</span>
-            <span>· {projectName(p.projectId)}</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold">
-              #{p.number} {p.title}
-            </span>
-            <span className="text-muted-foreground text-sm">
-              {p.openQuestions
-                ? `${p.openQuestions} open question${p.openQuestions === 1 ? "" : "s"}`
-                : "no open questions"}
-            </span>
-            <span className="grow" />
-            <Link
-              to="/work/$id"
-              params={{ id: p.workItemId }}
-              search={{ tab: "planning" }}
-              className="text-sm underline"
-            >
-              Open planning
+    <>
+      <NestedList title="Inbox">
+        {GROUP_ORDER.map((group) => {
+          const rows = entries.filter((e) => e.group === group);
+          if (rows.length === 0) return null;
+          return (
+            <div key={group} className="contents">
+              <ListGroup>{group}</ListGroup>
+              {rows.map((e) => {
+                const t = entryText(e, numberOf);
+                return (
+                  <ListItem
+                    key={e.key}
+                    to="/"
+                    search={{ item: e.key }}
+                    active={selected?.key === e.key && !gone}
+                    sub={
+                      <>
+                        <StatusDot status={t.status} />
+                        <span className="truncate">{t.sub}</span>
+                      </>
+                    }
+                    data-testid={`inbox-row-${e.key}`}
+                  >
+                    {t.title}
+                  </ListItem>
+                );
+              })}
+            </div>
+          );
+        })}
+        {entries.length === 0 && (
+          <p className="px-2 py-1 text-ink-muted text-xs">Nothing waits on you.</p>
+        )}
+      </NestedList>
+      <PageArea>
+        {gone && (
+          <div
+            className="rounded-[10px] bg-panel px-3.5 py-3 shadow-panel"
+            role="status"
+            data-testid="already-decided"
+          >
+            That item is no longer waiting on you: it has already been decided.{" "}
+            <Link to="/work/$id" params={{ id: item }} className="underline">
+              Open the work item
             </Link>
-          </div>
-        </Card>
-      ))}
-
-      {highlightGone && (
-        <div
-          className="rounded-md border px-4 py-3 text-sm"
-          role="status"
-          data-testid="already-decided"
-        >
-          That item is no longer waiting on you: it has already been decided.{" "}
-          <Link to="/work/$id" params={{ id: highlight }} className="underline">
-            Open the work item
-          </Link>
-        </div>
-      )}
-
-      {groups.length === 0 && (
-        <Card className="items-center gap-1 py-10 text-center">
-          <div className="font-medium">Nothing is waiting on you</div>
-          <div className="text-muted-foreground text-sm">
-            Gates, questions and merges show up here.{" "}
-            <Link to="/new" className="underline">
-              Send new work
-            </Link>
-          </div>
-        </Card>
-      )}
-
-      {groups.map((g) => (
-        <section key={g.projectId} className="grid gap-3" data-testid={`group-${g.projectId}`}>
-          <div className="flex items-center gap-2 text-muted-foreground text-xs">
-            <span className="font-medium text-foreground">{projectName(g.projectId || null)}</span>
-            {g.waitingBuilds > 0 && (
-              <span className="inline-flex items-center gap-1.5" data-testid="wip-hold">
-                <StatusDot status="waiting" />
-                {g.waitingBuilds} {g.waitingBuilds === 1 ? "build" : "builds"} waiting on review
-              </span>
-            )}
-          </div>
-          {g.gates.map((gate) => (
-            <GateCard
-              key={gate.id}
-              gate={gate}
-              projectName={projectName(gate.projectId)}
-              highlighted={highlight === gate.workItemId}
-            />
-          ))}
-          {g.questions.map((q) => (
-            <QuestionCard
-              key={q.id}
-              question={q}
-              projectName={projectName(q.projectId)}
-              highlighted={highlight === q.workItemId}
-            />
-          ))}
-        </section>
-      ))}
-
-      <Card className="gap-0 py-0" data-testid="running">
-        <div className="flex items-baseline justify-between px-5 pt-5 pb-3">
-          <div className="font-semibold">Running</div>
-          <div className="text-muted-foreground text-xs">
-            {cap ? `${used} of ${cap} slots in use` : "no runner slots"}
-          </div>
-        </div>
-        {data.running.length === 0 ? (
-          <div className="px-5 pb-4 text-muted-foreground text-sm">Nothing is running.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <tbody>
-                {data.running.map((item) => (
-                  <tr key={item.id} className="border-t">
-                    <td className="py-2.5 pr-3 pl-5">
-                      <StatusBadge
-                        status={
-                          item.status === "waiting"
-                            ? "waiting"
-                            : item.status === "paused"
-                              ? "idle"
-                              : "running"
-                        }
-                      >
-                        {STAGE_LABEL[item.stage] ?? item.stage}
-                      </StatusBadge>
-                    </td>
-                    <td className="w-full py-2.5 pr-3">
-                      <Link to="/work/$id" params={{ id: item.id }} className="hover:underline">
-                        {item.title}
-                      </Link>
-                      {item.kind === "incident" && (
-                        <span className="ml-2 text-muted-foreground text-xs">factory incident</span>
-                      )}
-                    </td>
-                    <td className="whitespace-nowrap py-2.5 pr-3 text-muted-foreground">
-                      {projectName(item.projectId)}
-                    </td>
-                    <td className="whitespace-nowrap py-2.5 pr-5 font-mono text-muted-foreground text-xs">
-                      {item.statusReason ?? item.status} · {ago(item.createdAt).replace(" ago", "")}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
         )}
-        <div className="border-t px-5 py-3">
-          <RunnerHealth runners={data.runners} />
-        </div>
-      </Card>
-    </Page>
+        {!selected && !gone && (
+          <div
+            className="flex flex-col items-center gap-1 py-20 text-center"
+            data-testid="inbox-empty"
+          >
+            <div className="font-semibold text-[15px]">Nothing is waiting on you</div>
+            <div className="text-ink-muted">
+              Merges, specs and questions show up here.{" "}
+              <Link to="/new" className="text-ink underline">
+                Send new work
+              </Link>
+            </div>
+          </div>
+        )}
+        {selected && !gone && (
+          <>
+            {selected.kind === "gate" && (
+              <GateDetail gate={selected.gate} projectName={projectName(selected.gate.projectId)} />
+            )}
+            {selected.kind === "question" && (
+              <QuestionDetail
+                question={selected.question}
+                number={numberOf(selected.question.workItemId)}
+                projectName={projectName(selected.question.projectId)}
+              />
+            )}
+            {selected.kind === "planning" && (
+              <PlanningDetail
+                planning={selected.planning}
+                projectName={projectName(selected.planning.projectId)}
+              />
+            )}
+            {selected.kind === "protection" && <ProtectionChangedCard drift={selected.drift} />}
+            {selected.kind === "setup" && <FinishSetupCard orgId={session.personalOrgId ?? ""} />}
+          </>
+        )}
+      </PageArea>
+    </>
   );
 }
 
 function InboxPending() {
   return (
-    <Page>
-      <Skeleton className="h-8 w-40" />
-      <Skeleton className="h-36 w-full" />
-      <Skeleton className="h-36 w-full" />
-    </Page>
-  );
-}
-
-function Page({ children }: { children: React.ReactNode }) {
-  return (
-    <main className="mx-auto grid w-full grid-cols-[minmax(0,1fr)] max-w-[1200px] gap-4 p-4 md:p-6">
-      {children}
-    </main>
+    <>
+      <NestedList title="Inbox">
+        <Skeleton className="mx-2 my-2 h-10" />
+        <Skeleton className="mx-2 my-2 h-10" />
+      </NestedList>
+      <PageArea>
+        <Skeleton className="h-8 w-60" />
+        <Skeleton className="h-40 w-full" />
+      </PageArea>
+    </>
   );
 }

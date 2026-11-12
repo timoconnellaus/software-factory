@@ -17,6 +17,7 @@
     "src",
     "test",
     "scripts/*.ts",
+    "screenshots",
     "vite.config.ts",
     "vitest.config.ts",
     "electrobun.config.ts"

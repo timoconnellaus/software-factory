@@ -938,8 +938,12 @@ class ItemFlow {
     return this.step.do("meta: item", async () => {
       const row = await this.env.DB.prepare(
         `SELECT w.number, w.title, w.body, w.branch, w.kind, w.pr_number, w.head_sha,
-                pr.default_branch, p.raw FROM core_work_items w
+                r.default_branch, p.raw FROM core_work_items w
          JOIN core_projects pr ON pr.id = w.project_id
+         -- The item's repository, else its project's only one (ADR 0490), as itemRepository().
+         LEFT JOIN core_repositories r ON r.id = COALESCE(w.repository_id, (
+           SELECT id FROM core_repositories WHERE project_id = w.project_id
+           AND (SELECT count(*) FROM core_repositories WHERE project_id = w.project_id) = 1))
          LEFT JOIN core_project_policies p ON p.project_id = pr.id AND p.sha = pr.policy_sha
          WHERE w.id = ?`,
       )
@@ -952,10 +956,12 @@ class ItemFlow {
           kind: "change" | "incident" | "attached";
           pr_number: number | null;
           head_sha: string | null;
-          default_branch: string;
+          default_branch: string | null;
           raw: string | null;
         }>();
       if (!row) throw new Error(`work item ${this.workItemId} not found`);
+      // Never guess a default branch: an item with no repository can't run its pipeline.
+      if (!row.default_branch) throw new Error(`work item ${this.workItemId} has no repository`);
       let policy: {
         retryLimit?: number;
         timeouts?: { gateHours?: number; questionHours?: number };

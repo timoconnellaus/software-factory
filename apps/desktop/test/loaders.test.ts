@@ -38,7 +38,7 @@ describe("every page's loader asks for everything the page renders", () => {
 
   it("finds the pages", () => {
     expect(pages.length).toBeGreaterThanOrEqual(5);
-    expect(shell).toEqual(new Set(["meQuery", "projectsQuery", "inboxQuery"]));
+    expect(shell).toEqual(new Set(["meQuery", "projectsQuery", "inboxQuery", "workListsQuery"]));
   });
 
   for (const file of pages) {
@@ -60,7 +60,9 @@ describe("every page's loader asks for everything the page renders", () => {
   }
 
   it("the shell's own components are covered by the shell's loader", () => {
-    const missing = componentSources(read("routes/_app.tsx"))
+    // Focus mode's bar shows only on a work item's page, whose loader reads the item and its
+    // planning (checked above as work.$id.index.tsx).
+    const missing = componentSources(read("routes/_app.tsx").replace(/^import .*focus-bar.*$/m, ""))
       .flatMap((c) => [...queriesIn(c)])
       .filter((q) => !shell.has(q));
     expect(missing).toEqual([]);
