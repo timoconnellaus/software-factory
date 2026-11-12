@@ -157,6 +157,14 @@ export interface HandlerContext {
    * a moved head, a cancelled item); `apply` marks an approved one carried out.
    */
   writePendingStatus(how: PendingStatusWrite, statement: Compilable | D1PreparedStatement): void;
+  /**
+   * Queue a write that records something that already happened outside the factory (GitHub merged
+   * the PR, spec 53 review). It commits with the batch; if a guard fails the batch, it commits
+   * anyway in a second batch with the approval marked used and an audit row saying what happened,
+   * so the record never says it didn't. Write it so it is right in both cases (it runs against the
+   * state the guard found changed).
+   */
+  happened(statement: Compilable | D1PreparedStatement): void;
   /** Abort the whole batch unless the previous write changed at least one row (ADR 0050). */
   guardChanged(name: string): void;
   /** Abort the whole batch unless `query` returns a row when the batch runs. */

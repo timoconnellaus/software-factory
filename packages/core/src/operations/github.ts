@@ -159,13 +159,58 @@ export const prMerge = defineOperation({
     // or a leave that commits in between refuses it.
     await requireOpenToMerge(ctx, w);
     const repo = await repoRef(ctx, requireRepository(ctx));
-    const merged = await ctx.services.github.mergePullRequest(repo, {
-      number: w.pr_number,
-      sha: input.headSha,
-      method: "merge",
-    });
-    if (!merged.merged) throw new OperationError("conflict", `merge refused: ${merged.reason}`);
-    ctx.change({ entity: "work_item", id: w.id, after: { merged: merged.sha } });
-    return { merged: true as const, sha: merged.sha };
+    const github = ctx.services.github;
+    // A PR GitHub already shows merged at this head was merged by a call that lost track of it (a
+    // pass that died, or lost its lease, between GitHub's merge and its own record): it is recorded
+    // as merged, not merged again; GitHub refuses a second merge (spec 53 review).
+    const pr = await github.getPullRequest(repo, w.pr_number);
+    let sha: string;
+    if (pr?.merged) {
+      if (pr.head.sha !== input.headSha || !pr.mergeCommitSha) {
+        throw new OperationError(
+          "conflict",
+          `merge refused: #${w.pr_number} was already merged at ${pr.head.sha.slice(0, 7)}, not ${input.headSha.slice(0, 7)}`,
+        );
+      }
+      sha = pr.mergeCommitSha;
+    } else {
+      const merged = await github.mergePullRequest(repo, {
+        number: w.pr_number,
+        sha: input.headSha,
+        method: "merge",
+      });
+      if (!merged.merged) throw new OperationError("conflict", `merge refused: ${merged.reason}`);
+      sha = merged.sha;
+    }
+    // From here the merge has happened. If a guard below fails the batch (a cancel, a takeover or a
+    // leave that committed while GitHub merged), these still commit: merged wins over a cancel that
+    // raced it, and the item is done with a note saying so (spec 53).
+    ctx.happened(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          status: "done",
+          status_reason: "cancelled after its merge had started",
+          updated_at: ctx.now,
+        })
+        .where("id", "=", w.id)
+        .where("status", "=", "cancelled"),
+    );
+    ctx.happened(
+      ctx.db
+        .updateTable("core_merge_queue")
+        .set({
+          status: "merged",
+          outcome: "merged",
+          end_reason: "merged; the cancel that raced the merge came too late",
+          updated_at: ctx.now,
+        })
+        .where("work_item_id", "=", w.id)
+        .where("status", "=", "left")
+        .where("end_reason", "like", "cancelled:%")
+        .where("ended_at", ">=", ctx.now),
+    );
+    ctx.change({ entity: "work_item", id: w.id, after: { merged: sha } });
+    return { merged: true as const, sha };
   },
 });

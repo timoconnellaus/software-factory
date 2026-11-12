@@ -812,6 +812,14 @@ export interface CoreMergeQueueTable {
   update_asked_at: Iso | null;
   /** 0350: how many times GitHub was asked to (the babysitter bounds it, spec 53 review). */
   updates: Generated<number>;
+  /** 0350 (spec 53 review): marked just before GitHub is asked to merge; a cancel then waits. */
+  merging_at: Iso | null;
+  /** 0350: the question asked at the update bound, while it is open or not yet read back. */
+  hold_question_id: string | null;
+  /** 0350: update-branch requests a person allowed beyond the bound. */
+  updates_granted: Generated<number>;
+  /** 0350: the person asked to wait until then before the next update. */
+  held_until: Iso | null;
 }
 
 export type MergeQueueDriver = "workflow" | "babysitter";

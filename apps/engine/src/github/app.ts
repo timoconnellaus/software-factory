@@ -724,6 +724,7 @@ interface GitHubPull {
   state: "open" | "closed";
   merged?: boolean;
   merged_at?: string | null;
+  merge_commit_sha?: string | null;
   draft?: boolean;
   user?: { login: string } | null;
   head: { ref: string; sha: string; repo: { full_name: string } | null };
@@ -743,5 +744,7 @@ function pullInfo(p: GitHubPull): PullRequestInfo {
     author: p.user?.login ?? null,
     head: { ref: p.head.ref, sha: p.head.sha, repo: p.head.repo?.full_name ?? null },
     base: { ref: p.base.ref },
+    // Before a merge GitHub reports a test-merge commit here: only a merged PR's is its merge.
+    mergeCommitSha: (p.merged ?? Boolean(p.merged_at)) ? (p.merge_commit_sha ?? null) : null,
   };
 }

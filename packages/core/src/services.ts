@@ -135,6 +135,8 @@ export interface PullRequestInfo {
   /** `repo` is the head repository's `owner/name` (a fork's differs); null when it was deleted. */
   head: { ref: string; sha: string; repo: string | null };
   base: { ref: string };
+  /** The merge commit once merged (GitHub's `merge_commit_sha`); null or absent otherwise. */
+  mergeCommitSha?: string | null;
 }
 
 export interface GitHubService {

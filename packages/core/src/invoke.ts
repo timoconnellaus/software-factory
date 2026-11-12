@@ -474,6 +474,7 @@ export async function runOperation<O = unknown>(
 
   // 10. Run the handler: it reads now and queues its writes.
   const statements: D1PreparedStatement[] = [];
+  const happened: D1PreparedStatement[] = [];
   const messages: OutboxMessage[] = [];
   const changes: Change[] = [];
   let subject: Partial<Scope> = { ...scope };
@@ -506,6 +507,11 @@ export async function runOperation<O = unknown>(
         );
       }
       statements.push(isPrepared(statement) ? statement : toStatement(d1, statement));
+    },
+    happened: (statement) => {
+      const prepared = isPrepared(statement) ? statement : toStatement(d1, statement);
+      statements.push(prepared);
+      happened.push(prepared);
     },
     guardChanged: (guardName) => statements.push(guardChanged(d1, `${op.name}:${guardName}`)),
     guardExists: (guardName, query: Compilable) => {
@@ -617,6 +623,39 @@ export async function runOperation<O = unknown>(
     const unique = /UNIQUE constraint failed/.test(String(error));
     const fenced =
       guard && ((fence && /fence/.test(String(error))) || (lease && /lease/.test(String(error))));
+    // What already happened outside (GitHub merged) is recorded whatever the guards found: the
+    // record must say it happened (spec 53 review). Unguarded by state; the approval was used.
+    if (guard && happened.length > 0) {
+      await d1.batch([
+        ...happened,
+        ...(approval
+          ? [
+              d1
+                .prepare(
+                  "UPDATE core_pending_actions SET status = 'applied' WHERE id = ? AND status != 'applied'",
+                )
+                .bind(approval.id),
+            ]
+          : []),
+        audit(
+          {
+            decision: gate.decision,
+            outcome: "ok",
+            reason: `done outside the factory, recorded although the state changed underneath this call (${String(error)})`,
+            result: op.redact?.output ? op.redact.output(output) : output,
+            diff: changes,
+            auditId,
+          },
+          subject,
+        ),
+        clearGuards(d1),
+      ]);
+      throw new OperationError(
+        fenced ? "fenced" : "conflict",
+        `${op.name}: the state changed underneath this call; what it did outside was recorded`,
+        { recorded: true },
+      );
+    }
     await audit(
       {
         decision: gate.decision,
