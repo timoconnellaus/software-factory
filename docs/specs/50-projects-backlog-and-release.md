@@ -114,20 +114,22 @@ Nothing changes for a user.
 Two separate things, which the schema and the operations keep apart:
 
 1. **Work-management states**, fixed, the same for every item whatever its workflow:
-   `backlog` → `planning` → `ready` → `queued` → *(the workflow runs)* → `done`, with the endings
+   `backlog` → `ready` → (release) → `queued` → *(the workflow runs)* → `done`, with the endings
    `failed`, `rejected` and `cancelled`. While the workflow runs the item's status says only whether
-   it is moving: `running`, `waiting` (on a person or an event) or `paused` (a kill switch). These
+   it is moving: `running`, `waiting` (on a person or an event) or `paused` (a kill switch), and,
+   before release, `shaping` while the workflow's shaping stages run (part C). These
    are `core_work_items.status` (a CHECK), `ITEM_STATUSES`, the board read's states and counts, and
    the operations that move between them (`workItem.create/update/move/release/link`,
    `queue.pull`, `workItem.cancel`). None of them names a software stage.
-2. **Stages**, between queued and done, which belong to the **workflow**. Triage, spec, build,
-   verify, review and merge are the **Software** workflow's stages, not universal ones: a Marketing
-   workflow might draft, review and publish. They are `core_work_items.stage` (free text since
-   0261), `core_stages` (free text) and the board's `stage` field (a string).
-   - **How planning runs is the workflow's setting**: whether it is required and from what size
-     (today `spec.requiredFrom`), which agent runs it, and who approves the plan (today the spec gate
-     and its approvers). Planning as a fixed *state* (part C) is when it happens; *how* is the
-     workflow's.
+2. **Stages**, which belong to the **workflow**. Triage, spec, build, verify, review and merge are
+   the **Software** workflow's stages, not universal ones: a Marketing workflow might draft, review
+   and publish. A workflow's stages fall in two **phases** with release between them: **shaping**
+   stages (they need a person, hold no build slot and don't count as active) and **delivery**
+   stages. They are `core_work_items.stage` (free text since 0261), `core_stages` (free text) and
+   the board's `stage` field (a string).
+   - **Interview planning is one stage type**, not a universal state. How it runs is the workflow's
+     setting: whether it is required and from what size (today `spec.requiredFrom`), which agent
+     runs it, and who approves the plan (today the spec gate and its approvers).
 
 **Known limits** (because the engine's skeleton is fixed code, ADR 0371): the stages a workflow can
 use today are the skeleton's (`intake`, `triage`, `spec`, `build`, `verify`, `merge`, `done`; the
@@ -141,8 +143,8 @@ operations in this spec don't change for them, and only the job-kind CHECKs woul
 
 ## Part B: backlog, ready, queued (PR B)
 - **Migration 0261** (`0261_backlog.sql`):
-  - `core_work_items.status` gains `backlog`, `ready`, `queued` and `planning` (the CHECK is
-    rebuilt, as in 0080; `planning` is used from part C). `stage` stays `intake` until the item is
+  - `core_work_items.status` gains `backlog`, `ready`, `queued` and `shaping` (the CHECK is
+    rebuilt, as in 0080; `shaping` is used from part C). `stage` stays `intake` until the item is
     pulled. The rebuild drops `stage`'s CHECK: stages are the workflow's (below), so a
     workflow-defined stage needs no migration; the operations still validate it.
   - New columns: `priority` (0 urgent, 1 high, 2 normal, 3 low; default 2), `rank` (REAL, the

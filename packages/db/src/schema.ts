@@ -231,9 +231,9 @@ export interface CoreBatchGuardTable {
 
 export type Stage = "intake" | "triage" | "spec" | "build" | "verify" | "merge" | "done";
 export type WorkItemStatus =
-  // 0261 (ADR 0491): before the pipeline; `planning` is spec 50 part C's.
+  // 0261 (ADR 0491): before the pipeline; `shaping` is spec 50 part C's.
   | "backlog"
-  | "planning"
+  | "shaping"
   | "ready"
   | "queued"
   | "running"

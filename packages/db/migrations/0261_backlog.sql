@@ -1,7 +1,7 @@
 -- Migration 0261 (spec 50 part B, ADR 0491): work starts in a backlog and is released. A work item
 -- may be `backlog` (captured), `ready` (shaped) or `queued` (released, waiting for a slot) before
--- its pipeline starts; `planning` is reserved for part C (planning before release) so it needs no
--- second rebuild. Items gain a priority and a manual rank, and "waits for" links between items.
+-- its pipeline starts; `shaping` is reserved for part C (shaping stages before release) so it needs
+-- no second rebuild. Items gain a priority and a manual rank, and "waits for" links between items.
 --
 -- SQLite can't alter a CHECK, so core_work_items is rebuilt as in 0080. Two things to know:
 -- - Dropping a parent table deletes its rows first, and that runs ON DELETE CASCADE in its children
@@ -38,10 +38,10 @@ CREATE TABLE core_work_items_0261 (
   -- validate it against the stages the engine's skeleton knows today (ADR 0371).
   stage TEXT NOT NULL DEFAULT 'intake',
   -- The fixed work-management states every item has, whatever its workflow (spec 50): backlog,
-  -- planning (part C), ready, queued, then running/waiting/paused while its workflow runs, and the
+  -- shaping (part C), ready, queued, then running/waiting/paused while its workflow runs, and the
   -- endings done/failed/rejected/cancelled. Which stage it is in is `stage`, the workflow's.
   status TEXT NOT NULL DEFAULT 'running'
-    CHECK (status IN ('backlog', 'planning', 'ready', 'queued', 'running', 'waiting', 'paused',
+    CHECK (status IN ('backlog', 'shaping', 'ready', 'queued', 'running', 'waiting', 'paused',
                       'done', 'failed', 'rejected', 'cancelled')),
   status_reason TEXT,
   size TEXT CHECK (size IN ('small', 'medium', 'large')),
