@@ -14,7 +14,7 @@ import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@software-factory/ui/components/tabs";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -106,6 +106,7 @@ function WorkItemPage() {
     <Page>
       <Header detail={d} />
       <StageSteps detail={d} />
+      <WorkflowLine detail={d} />
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
         <Tabs
           value={current}
@@ -480,5 +481,49 @@ function Page({ children }: { children: React.ReactNode }) {
     <main className="mx-auto grid w-full grid-cols-[minmax(0,1fr)] max-w-[1200px] gap-4 p-4 md:p-6">
       {children}
     </main>
+  );
+}
+
+/** The workflow the item follows (ADR 0371), changeable until its build starts. */
+function WorkflowLine({ detail }: { detail: WorkItemDetail }) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const { item, workflows } = detail;
+  if (workflows.length === 0 && !item.workflow) return null;
+  const changeable = ["intake", "triage", "spec"].includes(item.stage);
+  async function change(name: string) {
+    setBusy(true);
+    try {
+      await op("workItem.setWorkflow", { workItemId: item.id, workflow: name || null });
+      toast.success(name ? `Follows ${name} now.` : "Follows the skeleton alone now.");
+      await queryClient.invalidateQueries({ queryKey: ["workItem", item.id] });
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="work-item-workflow">
+      <span className="text-muted-foreground">Workflow</span>
+      {changeable ? (
+        <select
+          className="h-8 rounded-md border bg-background px-2"
+          value={item.workflow ?? ""}
+          disabled={busy}
+          onChange={(e) => void change(e.target.value)}
+        >
+          <option value="">The skeleton alone</option>
+          {workflows.map((w) => (
+            <option key={w.name}>{w.name}</option>
+          ))}
+        </select>
+      ) : (
+        <span className="font-medium">{item.workflow ?? "The skeleton alone"}</span>
+      )}
+      {item.workflowReason && (
+        <span className="text-muted-foreground text-xs">{item.workflowReason}</span>
+      )}
+    </div>
   );
 }

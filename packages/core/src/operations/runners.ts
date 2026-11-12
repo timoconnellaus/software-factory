@@ -5,6 +5,7 @@
 import { json, parseJson } from "@software-factory/db";
 import {
   type artifactSchema,
+  CAPABILITIES,
   type Capability,
   type CapabilityManifest,
   canRun,
@@ -25,7 +26,7 @@ import {
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId, newRunnerId } from "../ids.ts";
-import { resolveModel } from "../model-roles.ts";
+import { MODEL_TIERS, resolveModel } from "../model-roles.ts";
 import {
   defineOperation,
   type HandlerContext,
@@ -33,6 +34,7 @@ import {
   type WorkItemRow,
 } from "../operation.ts";
 import { planningRunEnded, USER_EVENTS } from "../planning.ts";
+import { policyImpact } from "../policy/impact.ts";
 import type { ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { runEvent } from "../workflow-events.ts";
@@ -322,6 +324,10 @@ export const jobEnqueue = defineOperation({
     role: z.enum(MODEL_ROLES),
     prompt: z.string().min(1).max(200_000),
     context: z.record(z.string(), z.unknown()).default({}),
+    /** The agent's model tier (ADR 0372); the runner's claim resolves it to a model. */
+    tier: z.enum(MODEL_TIERS).default("standard"),
+    /** Capabilities the agent needs on top of the stage's. */
+    agentRequires: z.array(z.enum(CAPABILITIES)).max(10).default([]),
     sessionTimeoutMs: z
       .number()
       .int()
@@ -332,7 +338,9 @@ export const jobEnqueue = defineOperation({
   output: z.object({ jobId: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const requires = ctx.scope.policy?.requires[input.stage] ?? [];
+    const requires = [
+      ...new Set([...(ctx.scope.policy?.requires[input.stage] ?? []), ...input.agentRequires]),
+    ];
     const id = newId("job");
     ctx.write(
       ctx.db.insertInto("core_jobs").values({
@@ -348,9 +356,14 @@ export const jobEnqueue = defineOperation({
         session_timeout_ms: input.sessionTimeoutMs,
         created_at: ctx.now,
         pool: stagePool(input.stage),
+        tier: input.tier === "standard" ? null : input.tier,
       }),
     );
-    ctx.change({ entity: "job", id, after: { stage: input.stage, role: input.role, requires } });
+    ctx.change({
+      entity: "job",
+      id,
+      after: { stage: input.stage, role: input.role, tier: input.tier, requires },
+    });
     return { jobId: id };
   },
 });
@@ -567,6 +580,7 @@ async function buildJob(
     prompt: string;
     context: string;
     session_timeout_ms: number;
+    tier?: string | null;
   },
   run: { id: string; run_no: number; branch: string; fencing_token: number },
   item: WorkItemRow,
@@ -574,6 +588,18 @@ async function buildJob(
   leaseExpiresAt: string,
 ): Promise<Job> {
   const { policy } = await loadPolicy(ctx.db, project);
+  // The harness stays at least as narrow as the version the item started under (ADR 0370 §5).
+  const pinned =
+    item.policy_sha && item.policy_sha !== project.policy_sha
+      ? (await loadPolicy(ctx.db, { id: project.id, policy_sha: item.policy_sha })).policy
+      : null;
+  const widened =
+    pinned && policy
+      ? policyImpact(pinned, policy, ctx.floor).changes.some(
+          (c) => c.class === "loosens" && c.path.startsWith("harness"),
+        )
+      : false;
+  const harnessProfile = widened ? pinned?.harness : policy?.harness;
   const role = job.role as ModelRole;
   const context = parseJson<Record<string, unknown>>(job.context, {});
   const planning = context.planning as Job["planning"] | undefined;
@@ -594,10 +620,10 @@ async function buildJob(
     harness: {
       id: job.harness as Job["harness"]["id"],
       role,
-      model: resolveModel(role, policy?.modelRoles),
+      model: resolveModel(role, policy?.modelRoles, job.tier === "light" ? "light" : "standard"),
       prompt: job.prompt,
-      // From the default branch's policy only (ADR 0036, 0270), never the run's own branch.
-      ...(policy?.harness ? { profile: policy.harness } : {}),
+      // From the project's config version (ADR 0370, 0270), never the run's own branch.
+      ...(harnessProfile ? { profile: harnessProfile } : {}),
     },
     context,
     ...(job.stage === "planning" && planning ? { planning } : {}),
@@ -929,7 +955,7 @@ export const runReportEvents = defineOperation({
 export const runAddArtifact = defineOperation({
   name: "run.addArtifact",
   description:
-    "Store one artifact from a run (diff, log, screenshot, summary). Ids are content hashes, so a re-upload is a no-op. Bodies over 512 KB are truncated.",
+    "Store one artifact from a run (diff, log, screenshot, summary, usage). Ids are content hashes, so a re-upload is a no-op. Bodies over 512 KB are truncated.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -940,14 +966,23 @@ export const runAddArtifact = defineOperation({
   async handler(input, ctx) {
     const run = await loadRun(ctx, input.jobId);
     const a = input.artifact as z.infer<typeof artifactSchema> & { id: string };
-    const body = a.kind === "diff" ? a.patch : a.kind === "screenshot" ? a.base64 : a.text;
+    const body =
+      a.kind === "diff"
+        ? a.patch
+        : a.kind === "screenshot"
+          ? a.base64
+          : a.kind === "usage"
+            ? JSON.stringify({ harness: a.harness, entries: a.entries, wallMs: a.wallMs ?? null })
+            : a.text;
     const truncated = body.length > MAX_ARTIFACT_BODY;
     const meta =
       a.kind === "diff"
         ? { baseSha: a.baseSha, headSha: a.headSha, branch: a.branch, stats: a.stats }
         : a.kind === "screenshot"
           ? { url: a.url, contentType: a.contentType }
-          : {};
+          : a.kind === "usage"
+            ? { harness: a.harness, entries: a.entries, wallMs: a.wallMs ?? null }
+            : {};
     ctx.write(
       ctx.db
         .insertInto("core_artifacts")

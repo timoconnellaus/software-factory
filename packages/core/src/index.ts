@@ -4,6 +4,7 @@ export * from "./actors.ts";
 export * from "./attachments.ts";
 export * from "./errors.ts";
 export * from "./ids.ts";
+export * from "./improve.ts";
 export * from "./incidents/classify.ts";
 export * from "./invoke.ts";
 export * from "./model-roles.ts";
@@ -41,6 +42,7 @@ export {
   planningReadyEvent,
 } from "./planning.ts";
 export * from "./policy/gate.ts";
+export * from "./policy/impact.ts";
 export * from "./policy/project-policy.ts";
 export * from "./registry.ts";
 export * from "./scope.ts";

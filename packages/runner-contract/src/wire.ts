@@ -209,6 +209,27 @@ export const artifactSchema = z.discriminatedUnion("kind", [
     base64: z.string(),
   }),
   z.object({ kind: z.literal("summary"), text: z.string() }),
+  /**
+   * What the run used, per model, read from the harness's own transcript (spec 09 M3, ADR 0373).
+   * Counts only: the factory never sees keys or bills (ADR 0023).
+   */
+  z.object({
+    kind: z.literal("usage"),
+    harness: z.string().max(40),
+    entries: z
+      .array(
+        z.object({
+          model: z.string().max(100),
+          inputTokens: z.number().int().nonnegative(),
+          outputTokens: z.number().int().nonnegative(),
+          cacheReadTokens: z.number().int().nonnegative().default(0),
+          cacheWriteTokens: z.number().int().nonnegative().default(0),
+        }),
+      )
+      .max(20),
+    /** First to last message of the session. */
+    wallMs: z.number().int().nonnegative().optional(),
+  }),
 ]);
 
 /** An artifact on the wire; `id` is a content hash (`artifactId`) so re-uploads are idempotent. */

@@ -25,6 +25,8 @@ export const ID_PREFIXES = {
   desktopAuthRequest: "dar",
   desktopDevice: "dsk",
   presenceChallenge: "prc",
+  trial: "trl",
+  adjudication: "adj",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

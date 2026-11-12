@@ -26,7 +26,7 @@ import type {
   PendingActionRow,
   Scope,
 } from "./operation.ts";
-import { type Decision, decide, parseFloor, type RiskClass } from "./policy/gate.ts";
+import { type Decision, decide, parseFloor, type RiskClass, strictest } from "./policy/gate.ts";
 import { getOperation } from "./registry.ts";
 import {
   activeKillSwitch,
@@ -155,7 +155,8 @@ export async function runOperation<O = unknown>(
     });
   }
   const input = parsed.data as Record<string, unknown>;
-  const risk: RiskClass = op.riskOf ? op.riskOf(input) : op.risk;
+  let risk: RiskClass = op.risk;
+  const floor = parseFloor(deps.floor);
   const redactedInput = op.redact?.input ? op.redact.input(input) : input;
 
   let scope: Scope = {
@@ -167,6 +168,7 @@ export async function runOperation<O = unknown>(
     policy: null,
     policySha: null,
     policyError: null,
+    pinnedPolicy: null,
   };
   const audit = (fields: AuditFields, subject: Partial<Scope> = scope) =>
     auditStatement(d1, {
@@ -214,6 +216,9 @@ export async function runOperation<O = unknown>(
     }
     throw error;
   }
+
+  // A risk that depends on the scope (a config save that loosens the current version, ADR 0370).
+  if (op.riskOf) risk = await op.riskOf(input, { scope, floor, db });
 
   // 4b. Actor check (after the scope, so the refusal is audited against it).
   if (!op.actors.includes(actor.type)) {
@@ -270,7 +275,7 @@ export async function runOperation<O = unknown>(
   //    project (runner registration, the claim loop) are judged under Cautious + the floor, and so
   //    are calls that bring the policy in (`bootstrapsPolicy`).
   const scoped = scope.project !== null && !op.bootstrapsPolicy;
-  const gate = decide({
+  const current = decide({
     actor: actor.type,
     risk,
     policy: scoped
@@ -279,8 +284,33 @@ export async function runOperation<O = unknown>(
         : null
       : { autonomyPolicy: "cautious", overrides: {} },
     ...(scope.policyError ? { policyError: scope.policyError } : {}),
-    floor: parseFloor(deps.floor),
+    floor,
   });
+  // A work item stays at least as strict as the config version it started under (ADR 0370 §5):
+  // tightening reaches running work, loosening never does.
+  const pinned =
+    scoped && scope.policy && scope.pinnedPolicy
+      ? decide({
+          actor: actor.type,
+          risk,
+          policy: {
+            autonomyPolicy: scope.pinnedPolicy.autonomyPolicy,
+            overrides: scope.pinnedPolicy.overrides,
+          },
+          floor,
+        })
+      : null;
+  let gate =
+    pinned && strictest(pinned.decision, current.decision) !== current.decision
+      ? {
+          decision: pinned.decision,
+          reason: `${pinned.reason} (the version this item started under)`,
+        }
+      : current;
+  // A workflow's gate step is enforced in code, never loosened by policy (ADR 0371).
+  if (op.alwaysReview && gate.decision === "allow") {
+    gate = { decision: "review", reason: `${op.name} always asks a person` };
+  }
 
   // An approved re-run must match its pending action. `deny` still refuses it.
   let approval: PendingActionRow | undefined;
@@ -394,6 +424,7 @@ export async function runOperation<O = unknown>(
     now,
     services: deps.services,
     scope,
+    floor,
     write: (statement) =>
       statements.push(isPrepared(statement) ? statement : toStatement(d1, statement)),
     guardChanged: (guardName) => statements.push(guardChanged(d1, `${op.name}:${guardName}`)),
@@ -531,7 +562,18 @@ async function openPendingAction(
   // The requester decides when they are an approver; otherwise the first approver.
   const approvers = scope.orgId ? await approverIds(db, scope.orgId, scope.policy) : [];
   const requester = scope.workItem?.requester_user_id;
-  const assignee = requester && approvers.includes(requester) ? requester : (approvers[0] ?? null);
+  // A gate step may name who decides (ADR 0371); they must be one of the project's approvers.
+  const named = op.assignee?.(args.input) ?? null;
+  const namedId =
+    named && scope.orgId
+      ? ((await approverIds(db, scope.orgId, { approvers: [named] }))[0] ?? null)
+      : null;
+  const assignee =
+    namedId && approvers.includes(namedId)
+      ? namedId
+      : requester && approvers.includes(requester)
+        ? requester
+        : (approvers[0] ?? null);
   const hours = scope.policy?.timeouts.gateHours ?? 72;
   const timeoutAt = new Date(Date.parse(now) + hours * 3_600_000).toISOString();
   const title =

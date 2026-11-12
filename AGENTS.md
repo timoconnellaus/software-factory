@@ -29,9 +29,11 @@ Fresh session? Read [`docs/handoff.md`](docs/handoff.md), then [`docs/parallel-w
   work item allows. (ADR 0010, 0025, 0033)
 - **Policy is enforced in code and is not AI-configurable.** Gates live in the Workflow state
   machine, never in a prompt. The foreman picks a route only within them. Loosening an autonomy policy
-  or the floor is a human-only change, and merge, deploy and self-modify always go to a human. Policy
-  is read from the default branch only; a diff to `.factory/` is self-modify. A malformed policy
-  fails closed. (ADR 0005, 0008, 0036)
+  or the floor is a human-only change, and merge, deploy and self-modify always go to a human.
+  Config is a versioned app setting, written only through operations; a save that loosens it is
+  self-modify, and an invalid one is refused. The factory may change its own *practice* (how work
+  is done) as trials that roll back automatically, never *policy* (what's allowed).
+  (ADR 0005, 0008, 0370, 0373)
 - **Code asks for a model role, never a model id.** (ADR 0018)
 - **Runners are adapters.** The core knows only the runner contract and capabilities. It never
   imports Orca or any other runner. Runner-specific features are optional capabilities the adapter
