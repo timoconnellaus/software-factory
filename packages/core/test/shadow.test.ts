@@ -56,6 +56,7 @@ describe("shadowVerdict", () => {
       "end done",
     ]);
     expect(v.uncompared).toEqual([...SHADOW_NOT_COMPARED]);
+    expect(v.known).toEqual([]);
     expect(v.divergences).toBe(SHADOW_NOT_COMPARED.length);
     expect(SHADOW_NOT_COMPARED.length).toBeGreaterThan(0);
     expect(SHADOW_REQUIRED).toContain("stage order and skips");
@@ -149,5 +150,25 @@ describe("shadowVerdict", () => {
       "enter merge",
       "end done",
     ]);
+  });
+  it("a head that moved in the merge queue is reported by name, and counts as a divergence", () => {
+    const history = rows(
+      "intake:done",
+      "triage:done",
+      "spec:skipped",
+      "build:done",
+      "verify:done",
+      "merge:done",
+      "done:done",
+    );
+    const v = shadowVerdict(SOFTWARE, item(), history, "done", { queueHeadMoved: true });
+    // The stage order still agrees: today's history shows the merge stage done, with no return to
+    // Checks. The difference is the gate, so it is named, not hidden in a transition.
+    expect(v.transitions.every((t) => t.agrees)).toBe(true);
+    expect(v.known).toEqual([
+      { reason: "queue-head-moved", note: KNOWN_DIFFERENCES["queue-head-moved"] },
+    ]);
+    expect(v.known[0]?.note).toMatch(/spec 53/);
+    expect(v.divergences).toBe(SHADOW_NOT_COMPARED.length + 1);
   });
 });

@@ -2,7 +2,7 @@ import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { SHADOW_NOT_COMPARED, type ShadowVerdict } from "@software-factory/core/stages";
 import { describe, expect, it } from "vitest";
-import { shadowPass } from "../src/reconcile-shadow.ts";
+import { SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import {
   definitionFor,
   expectPhasesAsDefined,
@@ -45,7 +45,9 @@ async function shadowVerdictOf(workItemId: string) {
   expect(
     await first("SELECT work_item_id FROM core_reconcile_items WHERE work_item_id = ?", workItemId),
   ).toBeNull();
-  while ((await shadowPass(env)) > 0);
+  // Past the pass's lag, so the item's last write is old enough to read.
+  const later = new Date(Date.now() + SHADOW_LAG_MS + 60_000);
+  while ((await shadowPass(env, later)) > 0);
   const row = await first<{ report: string; divergences: number }>(
     "SELECT report, divergences FROM core_reconcile_items WHERE work_item_id = ?",
     workItemId,
@@ -54,7 +56,9 @@ async function shadowVerdictOf(workItemId: string) {
   const verdict = JSON.parse(row.report) as ShadowVerdict;
   expect(verdict.uncompared).toEqual([...SHADOW_NOT_COMPARED]);
   expect(row.divergences).toBe(
-    verdict.transitions.filter((t) => !t.agrees).length + SHADOW_NOT_COMPARED.length,
+    verdict.transitions.filter((t) => !t.agrees).length +
+      SHADOW_NOT_COMPARED.length +
+      verdict.known.length,
   );
   return verdict.transitions.map((t) => (t.agrees ? t.observed : `${t.observed} ≠ ${t.predicted}`));
 }

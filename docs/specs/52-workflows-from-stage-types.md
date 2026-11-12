@@ -551,6 +551,17 @@ today's Workflow, recording what it would do, and takes no item until it **agree
 row**: 20 consecutive finished items whose every transition it predicted, with any divergence
 resetting the count (build plan PR (c)). The switch-over is its own PR, approved by a person.
 
+**Known differences in shadow, to settle before the streak can count.** Each is reported under its
+own name in the item's report (`known`), not as a generic divergence, and counts as a divergence
+until it is settled:
+- `queue-head-moved`: when the head moves in the merge queue, today's Workflow merges the default
+  branch into the branch, waits for CI on the new head and lands with the same approval (ADR 0330),
+  while the reconciler's `publish` stage sends the item back to Checks and reopens the merge gate.
+  The babysitter (spec 53, PRs #103 to #105) changes exactly this: its deliverer lands approved
+  merges, and an approval survives a clean merge of main only while the change is the same. Settle
+  the reconciler's rule with spec 53 as built, then drop the name. The shadow pass sees it as a
+  review packet the queue carried to a new head (`carriedFrom`).
+
 ## The review packet: artifact, evidence, decision
 Today's packet (ADR 0020, 0037, 0041) is a verdict, what changed, criteria with evidence, the
 reviewer, checks, risk flags and drift, for one head SHA, and it backs `factory/verify`. The same

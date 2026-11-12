@@ -13,7 +13,7 @@ export const AGREEMENT_STREAK_TARGET = 20;
 export const reconcileReport = defineOperation({
   name: "reconcile.report",
   description:
-    "The shadow reconciler's report for one ended work item (spec 52 PR (c)): each stage transition the Workflow made, what the reconciler predicted, whether they agree, and what wasn't compared (each counts as a divergence). Null until the shadow pass has read the item. It drives nothing. Members only.",
+    "The shadow reconciler's report for one ended work item (spec 52 PR (c)): each stage transition the Workflow made, what the reconciler predicted, whether they agree, what wasn't compared, and the known differences it hit by name (such as `queue-head-moved`); each counts as a divergence. Null until the shadow pass has read the item. It drives nothing. Members only.",
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
@@ -27,6 +27,7 @@ export const reconcileReport = defineOperation({
           z.object({ observed: z.string(), predicted: z.string(), agrees: z.boolean() }),
         ),
         uncompared: z.array(z.string()),
+        known: z.array(z.object({ reason: z.string(), note: z.string() })),
         divergences: z.number(),
       })
       .nullable(),
@@ -47,6 +48,8 @@ export const reconcileReport = defineOperation({
         finishedAt: row.finished_at,
         transitions: verdict.transitions,
         uncompared: verdict.uncompared,
+        // Verdicts written before known differences were named carry none.
+        known: verdict.known ?? [],
         divergences: verdict.divergences,
       },
     };

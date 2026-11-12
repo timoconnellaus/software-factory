@@ -36,6 +36,29 @@ export const SHADOW_NOT_COMPARED: readonly ShadowAspect[] = SHADOW_REQUIRED.filt
   (a) => !SHADOW_COMPARED.includes(a),
 );
 
+/**
+ * Differences between today's Workflow and the reconciler that are known and not yet settled. Each
+ * is reported under its own name, not as a generic divergence, and counts as a divergence until it
+ * is settled, so no item with one can extend the streak.
+ */
+export const KNOWN_DIFFERENCES = {
+  /**
+   * The head moved in the merge queue (ADR 0330): today's Workflow merges the default branch into the
+   * branch, waits for CI on the new head and lands with the same approval; the reconciler's publish
+   * stage sends the item back to Checks and reopens the merge gate. Spec 53 (the babysitter, PRs #103
+   * to #105) changes exactly this; the two settle together.
+   */
+  "queue-head-moved":
+    "the head moved in the merge queue: today's Workflow merged the default branch in and landed with the same approval; the reconciler would go back to Checks and reopen the gate (to settle with spec 53)",
+} as const;
+export type KnownDifference = keyof typeof KNOWN_DIFFERENCES;
+
+/** What the shadow pass observed about an item besides its stage rows. */
+export interface ShadowObserved {
+  /** The merge queue brought the head up to date (a review packet carried to the new head). */
+  queueHeadMoved?: boolean;
+}
+
 /** A `core_stages` row, oldest first. */
 export interface StageRow {
   stage: string;
@@ -55,7 +78,12 @@ export interface ShadowVerdict {
   transitions: ShadowComparison[];
   /** Aspects not compared for this item; each counts as a divergence. */
   uncompared: string[];
-  /** Transitions that disagree, plus every uncompared aspect. Zero only when all was compared. */
+  /** Known differences this item hit, by name (`KNOWN_DIFFERENCES`); each counts as a divergence. */
+  known: { reason: KnownDifference; note: string }[];
+  /**
+   * Transitions that disagree, plus every uncompared aspect and every known difference. Zero only
+   * when all was compared and nothing differed.
+   */
   divergences: number;
 }
 
@@ -99,6 +127,7 @@ export function shadowVerdict(
   item: ItemSnapshot["item"],
   rows: readonly StageRow[],
   end: ItemEnd,
+  observed: ShadowObserved = {},
 ): ShadowVerdict {
   const def = shadowDefinition(definition);
   const ids = new Set(def.stages.map((s) => s.id));
@@ -159,9 +188,13 @@ export function shadowVerdict(
     });
   }
   const uncompared = [...SHADOW_NOT_COMPARED];
+  const known: ShadowVerdict["known"] = [];
+  if (observed.queueHeadMoved)
+    known.push({ reason: "queue-head-moved", note: KNOWN_DIFFERENCES["queue-head-moved"] });
   return {
     transitions,
     uncompared,
-    divergences: transitions.filter((t) => !t.agrees).length + uncompared.length,
+    known,
+    divergences: transitions.filter((t) => !t.agrees).length + uncompared.length + known.length,
   };
 }

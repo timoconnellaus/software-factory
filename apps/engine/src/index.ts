@@ -58,7 +58,7 @@ export default {
     // PR (c)), off the Workflow's path; a failure here only delays the next pass.
     if (now.getUTCMinutes() % 5 === 0) {
       try {
-        await shadowPass(env);
+        await shadowPass(env, now);
       } catch (error) {
         console.error("shadow pass failed", error);
       }
