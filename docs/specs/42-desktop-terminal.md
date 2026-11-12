@@ -71,3 +71,21 @@ owner types (which takes the session over, as typing in a `tmux attach` does); e
 6. When the terminal can't be reached, one line says why and the tmux command is behind "Attach from a
    terminal instead".
 7. `pnpm lint`, `pnpm typecheck` and the touched packages' tests pass.
+
+## As built
+- **Esc** closes the terminal, except while the keyboard is in a terminal you can type into. There
+  Esc goes to the session, because it is Claude Code's interrupt. Click outside the terminal, or use
+  Close. A watcher's Esc always closes it. The dock's handler runs first, in the capture phase, so
+  Esc in planning focus closes the terminal before it leaves focus.
+- **Where it opens**: over the lower 45% of the page area (`#main`), and in planning focus between
+  the session bar and the status bar. It is resizable by its top edge. Expand fills the window,
+  leaving the status bar.
+- **A bug fixed in runner-local's bridge** (`packages/runner-local/src/terminal.ts`): a redraw sends
+  `capture-pane …; display-message …` as one command line, and tmux answers it with two blocks. The
+  bridge read only the first, so the cursor went to 1;1, and the second block answered the next
+  command. Text typed after a redraw overwrote the top of the screen, on the website too. The
+  bridge now waits for both blocks. The real-tmux test checks the cursor.
+- **Screenshots** (`docs/screenshots/desktop-terminal/`) come from
+  `node apps/desktop/screenshots/terminal.mjs`. It serves the real view with the fixture door, and
+  its relay bridges a real tmux pane through runner-local's control-mode bridge. That pane is on
+  its own `sf-shot` socket, never the factory's. Typing goes in through Chrome.

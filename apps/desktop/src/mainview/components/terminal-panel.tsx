@@ -149,7 +149,7 @@ export function TerminalPanel({
             )}
             data-testid="terminal-mode"
           >
-            {mode === "type" ? "You can type: typing takes the session over" : "Watching read-only"}
+            {mode === "type" ? "You can type" : "Read-only"}
           </span>
         )}
         <span className="grow" />
