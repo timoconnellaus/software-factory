@@ -147,4 +147,21 @@ describe("the screens through the client door", () => {
     await expect(decide("spec.approve", { workItemId: "wi_1" })).resolves.toBeDefined();
     expect(prompts).toHaveLength(1);
   });
+
+  it("keeps update_required as its own code, so the view can say to update (ADR 0393)", async () => {
+    const tooOld = async () =>
+      new Response(JSON.stringify({ code: "update_required", error: "update the app" }), {
+        status: 426,
+      });
+    const handlers = operationHandlers({
+      door: () => new Door("https://engine.example", () => "sfd_t", tooOld),
+      signer: () => null,
+      signedOut: () => {},
+    });
+    expect(await handlers.call({ op: "inbox.list", input: {} })).toEqual({
+      ok: false,
+      code: "update_required",
+      error: "update the app",
+    });
+  });
 });

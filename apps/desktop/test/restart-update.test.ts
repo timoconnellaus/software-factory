@@ -33,10 +33,37 @@ describe("restartToUpdate", () => {
     expect(calls).toEqual(["drain"]);
   });
 
-  it("defers when the runner doesn't confirm the drain", async () => {
+  it("reports a timeout when the runner doesn't confirm the drain, and stops nothing", async () => {
     const { d, calls } = deps({ drain: async () => "timeout" });
-    expect(await restartToUpdate(d, { anyway: false })).toBe("deferred");
+    expect(await restartToUpdate(d, { anyway: false })).toBe("timeout");
     expect(calls).toEqual([]);
+  });
+
+  it("shows the wait with its deadline, and clears it however the drain ends", async () => {
+    const shown: (number | null)[] = [];
+    let asked = 0;
+    const { d } = deps({
+      now: () => 1_000,
+      waiting: (until) => shown.push(until),
+      drain: async (ms) => {
+        asked = ms;
+        return "confirmed";
+      },
+    });
+    await restartToUpdate(d, { anyway: false, timeoutMs: 5_000 });
+    expect(asked).toBe(5_000);
+    expect(shown).toEqual([6_000, null]);
+  });
+
+  it("gives up on a drain that never answers once the deadline has passed", async () => {
+    const shown: (number | null)[] = [];
+    const { d, calls } = deps({
+      waiting: (until) => shown.push(until),
+      drain: () => new Promise(() => {}),
+    });
+    expect(await restartToUpdate(d, { anyway: false, timeoutMs: 10 })).toBe("timeout");
+    expect(calls).toEqual([]);
+    expect(shown.at(-1)).toBeNull();
   });
 
   it("drains, stops, applies; brings everything back when the update didn't start", async () => {
@@ -47,8 +74,10 @@ describe("restartToUpdate", () => {
 
   it("restarting anyway skips the drain", async () => {
     const { d, calls } = deps({ jobsAfterDrain: ["job-1"] });
-    await restartToUpdate(d, { anyway: true });
+    const shown: (number | null)[] = [];
+    await restartToUpdate({ ...d, waiting: (u) => shown.push(u) }, { anyway: true });
     expect(calls[0]).toBe("stopLive");
+    expect(shown).toEqual([]);
   });
 
   it("a throw from apply still brings the runner and the live socket back", async () => {

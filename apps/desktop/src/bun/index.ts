@@ -4,7 +4,7 @@
 import { hostname } from "node:os";
 import { join } from "node:path";
 import Electrobun, { BrowserView, BrowserWindow, Tray, Updater, Utils } from "electrobun/main";
-import type { AppRPC, RunnerState } from "../shared/rpc.ts";
+import type { AppRPC, RunnerState, UpdateStatus } from "../shared/rpc.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
 import { Door } from "./door.ts";
@@ -12,7 +12,7 @@ import { acquireInstanceLock, watchParent } from "./instance.ts";
 import { Live, liveUrl } from "./live.ts";
 import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { operationHandlers } from "./operations.ts";
-import { restartToUpdate as restartUpdate } from "./restart-update.ts";
+import { DRAIN_TIMEOUT_MS, restartToUpdate as restartUpdate } from "./restart-update.ts";
 import { Runner } from "./runner.ts";
 import { liveJobs } from "./runner-jobs.ts";
 import { saveTo } from "./save.ts";
@@ -52,7 +52,8 @@ async function deviceName(): Promise<string> {
 }
 
 let auth: Auth;
-const door = () => new Door(ENGINE_URL, () => auth.currentToken());
+// A door that says this build is too old (ADR 0393) sends the updater to look now.
+const door = () => new Door(ENGINE_URL, () => auth.currentToken(), fetch, doorSaysUpdate);
 auth = new Auth(door, await deviceName());
 await auth.init();
 
@@ -89,6 +90,10 @@ const terminals = new Terminals(
   ENGINE_URL,
   () => auth.currentToken(),
   (e) => toView("terminalEvent", e),
+  undefined,
+  undefined,
+  // A terminal's upgrade refused as too old shows "Update required", as the live socket does.
+  { updateRequired: () => doorSaysUpdate() },
 );
 
 const rpc = BrowserView.defineRPC<AppRPC>({
@@ -130,6 +135,20 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       }),
       titleBarDoubleClick: async () => ({ action: await titleBarDoubleClick(win) }),
       openExternal: ({ url }) => ({ ok: /^https:\/\//.test(url) && Utils.openExternal(url) }),
+      updateStatus: () => updateStatus(),
+      updateAction: async ({ action }) => {
+        if (action === "restart" && liveJobs().length === 0) await restartToUpdate();
+        if (action === "restart-when-idle") restartWhenIdle = true;
+        // The view named the jobs this cancels.
+        if (action === "restart-anyway") await restartToUpdate(true);
+        if (action === "download") Utils.openExternal(downloadUrl);
+        if (action === "retry") {
+          updateRequired = false;
+          live.start();
+        }
+        pushUpdate();
+        return updateStatus();
+      },
       saveDownload: ({ filename, base64 }) => {
         try {
           const path = saveTo(Utils.paths.downloads, filename, Buffer.from(base64, "base64"));
@@ -206,9 +225,46 @@ const updates = new Updates(
     }
     told = say ?? told;
     if (u.error) console.log(`updates: ${u.error}`);
-    refreshTray();
+    pushUpdate();
   },
 );
+/**
+ * The door answered update_required (ADR 0393): show the view's "Update required" screen and look
+ * for an update now (updates.ts throttles how often). The updater talks only to the download
+ * bucket, never the door, so a wrong floor on the engine can't stop the app from updating.
+ */
+let updateRequired = false;
+function doorSaysUpdate() {
+  if (!updateRequired) {
+    updateRequired = true;
+    pushUpdate();
+  }
+  void updates.checkNow();
+}
+let downloadUrl = "https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip";
+void Updater.localInfo.channel().then((c) => {
+  if (c === "stable" || c === "canary")
+    downloadUrl = `https://downloads.zerobsai.com/desktop/${c}-macos-arm64-Software-Factory.zip`;
+});
+function updateStatus(): UpdateStatus {
+  const u = updates.state;
+  return {
+    required: updateRequired,
+    ready: u.ready,
+    version: u.version,
+    error: u.error,
+    needsMove: u.needsMove,
+    jobs: liveJobs().length,
+    waitingForRunner,
+    downloadUrl,
+  };
+}
+function pushUpdate() {
+  toView("updateChanged", updateStatus());
+  refreshTray();
+}
+/** "Restart to update" is waiting for the runner to stop claiming, until this time (epoch ms). */
+let waitingForRunner: number | null = null;
 /** The person chose "Restart to update when the runner is idle". */
 let restartWhenIdle = false;
 
@@ -225,6 +281,17 @@ function updateItems() {
       },
     ];
   if (!u.ready) return [];
+  if (waitingForRunner !== null) {
+    const s = Math.max(0, Math.ceil((waitingForRunner - Date.now()) / 1000));
+    return [
+      {
+        type: "normal" as const,
+        label: `Update to ${u.version}: waiting for the runner (up to ${s} s)…`,
+        action: "noop",
+        enabled: false,
+      },
+    ];
+  }
   const jobs = liveJobs().length;
   if (jobs === 0)
     return [
@@ -272,9 +339,18 @@ async function restartToUpdate(anyway = false) {
   try {
     const outcome = await restartUpdate(
       {
-        drain: () => runner.drain(),
+        drain: (ms) => runner.drain(ms),
+        // "Waiting for the runner" in the menu and the view, with when it gives up.
+        waiting: (until) => {
+          waitingForRunner = until;
+          pushUpdate();
+        },
         liveJobs: () => liveJobs(),
-        stopLive: () => live.stop(),
+        // The live socket and every open terminal: an update restarts the app under them.
+        stopLive: () => {
+          live.stop();
+          terminals.closeAll();
+        },
         startLive: () => live.start(),
         stopRunner: () => runner.stop(),
         startRunner: () => void runner.start(),
@@ -282,7 +358,14 @@ async function restartToUpdate(anyway = false) {
       },
       { anyway },
     );
-    if (outcome === "deferred") {
+    if (outcome === "timeout") {
+      restartWhenIdle = true;
+      if (!wasWaiting)
+        Utils.showNotification({
+          title: "Software Factory",
+          body: `The runner didn't answer within ${DRAIN_TIMEOUT_MS / 1000} s. The app updates once it is idle; or choose Restart anyway.`,
+        });
+    } else if (outcome === "deferred") {
       restartWhenIdle = true;
       if (!wasWaiting)
         Utils.showNotification({
@@ -305,11 +388,11 @@ async function restartToUpdate(anyway = false) {
     refreshTray();
   }
 }
-// The job count in the menu, and the deferred restart once the runner is idle.
+// The job count in the menu and the view, and the deferred restart once the runner is idle.
 setInterval(() => {
   if (!updates.state.ready) return;
   if (restartWhenIdle && liveJobs().length === 0) void restartToUpdate();
-  else refreshTray();
+  else pushUpdate();
 }, 15_000);
 
 function refreshTray() {
@@ -407,6 +490,7 @@ const live = new Live(liveUrl(ENGINE_URL), () => auth.currentToken(), {
     // Pushes may have been missed while the socket was down: open Planning views re-read (spec 26).
     toView("planningChanged", { workItemId: "*" });
   },
+  updateRequired: () => doorSaysUpdate(),
   event: (e) => {
     // A Planning view this person has open changed (spec 26): the view re-reads it.
     if (e.type === "planning.changed" && e.workItemId) {
@@ -437,6 +521,7 @@ Electrobun.events.on("open-url", async (e: { data: { url: string } }) => {
 
 async function quit() {
   live.stop();
+  terminals.closeAll();
   await runner.stop();
   Utils.quit();
 }
