@@ -29,6 +29,7 @@ import {
   type Procs,
   RUN_BRANCH_MARKERS,
   reapOrphans,
+  runsWithSettings,
   stopHarness,
   TmuxGone,
   TmuxUnavailable,
@@ -173,6 +174,15 @@ async function drain(it: AsyncIterable<AdapterEvent>) {
 const settingsOf = (runsDir: string, jobId = "job_1") =>
   join(runsDir, jobId, "claude-settings.json");
 
+/** Waits for a condition instead of a fixed time (the tests run on loaded machines too). */
+async function until(what: string, test: () => boolean | Promise<boolean>, ms = 10_000) {
+  const end = Date.now() + ms;
+  while (!(await test())) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await sleep(5);
+  }
+}
+
 describe("tmux answers", () => {
   const r = (code: number, stderr = "", timedOut = false) => ({
     stdout: "",
@@ -293,10 +303,9 @@ describe("a job while tmux doesn't answer", { timeout: 30_000 }, () => {
     const run = (async () => {
       for await (const e of w.runner.events(job(), session, signal)) events.push(e);
     })();
-    await sleep(100);
-    // Still running: nothing ended while tmux timed out.
+    // Several polls with tmux timing out, then: still running.
+    await until("a few failed polls", () => w.fl.state.calls > 8);
     expect(events.some((e) => e.type === "session.ended")).toBe(false);
-    expect(w.fl.state.calls).toBeGreaterThan(2);
     // The capacity doesn't read a silent tmux as "no sessions": it counts its own, takes nothing.
     expect(await w.runner.capacity()).toMatchObject({
       inUse: 1,
@@ -305,11 +314,9 @@ describe("a job while tmux doesn't answer", { timeout: 30_000 }, () => {
     });
     // tmux comes back; the agent finishes.
     w.fl.state.broken = false;
-    const until = Date.now() + 5_000;
-    while (!events.some((e) => e.type === "log" && e.text === "runner: tmux answers again")) {
-      if (Date.now() > until) throw new Error("tmux never answered again");
-      await sleep(5);
-    }
+    await until("tmux answers again", () =>
+      events.some((e) => e.type === "log" && e.text === "runner: tmux answers again"),
+    );
     w.tmux.append("sf-job_1", { event: "Stop" });
     await run;
     const notes = events.filter((e) => e.type === "log" && e.stream === "stderr");
@@ -335,7 +342,7 @@ describe("a job while tmux doesn't answer", { timeout: 30_000 }, () => {
     const run = (async () => {
       for await (const e of w.runner.events(job(), session, signal)) events.push(e);
     })();
-    await sleep(60);
+    await until("a few failed polls", () => w.fl.state.calls > 8);
     expect(events.some((e) => e.type === "session.ended")).toBe(false);
     w.fake.alive.clear(); // Claude exited
     await run;
@@ -394,7 +401,8 @@ describe("a job while tmux doesn't answer", { timeout: 30_000 }, () => {
     expect(existsSync(ws.path)).toBe(false);
     expect((await runner.capacity()).inUse).toBe(1);
     stubborn.alive.clear();
-    expect((await runner.capacity()).inUse).toBe(0);
+    // Retried in the background: capacity never waits for it.
+    await until("the survivor is gone", async () => (await runner.capacity()).inUse === 0);
   });
 });
 
@@ -570,16 +578,41 @@ describe("a steer typed mid-turn (tmux)", { timeout: 30_000 }, () => {
     const run = (async () => {
       for await (const e of w.runner.events(job(), session, signal)) events.push(e);
     })();
-    await sleep(20);
     await w.runner.steer?.(session, "also update the changelog");
     w.tmux.append("sf-job_1", { event: "Stop" }); // the first turn's Stop
-    await sleep(80);
+    await until("the Stop is read", () =>
+      events.some((e) => e.type === "agent.status" && e.status === "idle"),
+    );
     expect(events.some((e) => e.type === "session.ended")).toBe(false);
-    expect(events.filter((e) => e.type === "agent.status").at(-1)).toMatchObject({
-      status: "idle",
-    });
     // Claude takes the queued steer as its next turn, then stops.
     w.tmux.append("sf-job_1", { event: "UserPromptSubmit" });
+    w.tmux.append("sf-job_1", { event: "Stop" });
+    await run;
+    expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "completed" });
+    await w.runner.release(job(), ws, session);
+  });
+
+  it("a steered turn that shows work but no UserPromptSubmit (a late hook) isn't cut off at the grace", async () => {
+    const w = await world({ queueSteers: true }, { turnGraceMs: 50 });
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    const session = await w.runner.startSession(job(), ws, signal);
+    const events: AdapterEvent[] = [];
+    const run = (async () => {
+      for await (const e of w.runner.events(job(), session, signal)) events.push(e);
+    })();
+    await w.runner.steer?.(session, "also update the changelog");
+    w.tmux.append("sf-job_1", { event: "Stop" });
+    await until("the Stop is read", () =>
+      events.some((e) => e.type === "agent.status" && e.status === "idle"),
+    );
+    // The steered turn works; its UserPromptSubmit never comes.
+    w.tmux.append("sf-job_1", { event: "PreToolUse", tool: "Edit" });
+    await until("the tool is read", () => events.some((e) => e.type === "tool"));
+    // Well past the grace period: still running.
+    const past = Date.now() + 200;
+    await until("past the grace", () => Date.now() > past);
+    expect(events.some((e) => e.type === "session.ended")).toBe(false);
     w.tmux.append("sf-job_1", { event: "Stop" });
     await run;
     expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "completed" });
@@ -598,6 +631,149 @@ describe("a steer typed mid-turn (tmux)", { timeout: 30_000 }, () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(50);
     expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "completed" });
     await w.runner.release(job(), ws, session);
+  });
+});
+
+describe("whose processes are the job's (review of #87)", () => {
+  const path = "/runs/job_1/claude-settings.json";
+  /** A table of processes; `kill` throws what `errors` says per pid, else succeeds (and kills). */
+  function table(
+    list: Proc[],
+    options: { uid?: number; eperm?: number[]; cwds?: Record<number, string> } = {},
+  ) {
+    const alive = new Set(list.map((p) => p.pid));
+    const signalled: [number, NodeJS.Signals | 0][] = [];
+    const procs: Procs = {
+      list: async () => list.filter((p) => alive.has(p.pid)),
+      kill(pid, signal) {
+        const target = Math.abs(pid);
+        if (options.eperm?.includes(target)) {
+          throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+        }
+        const members =
+          pid < 0 ? list.filter((p) => p.pgid === target) : list.filter((p) => p.pid === target);
+        if (!members.some((p) => alive.has(p.pid))) {
+          throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+        }
+        if (signal === 0) return;
+        signalled.push([pid, signal]);
+        for (const m of members) alive.delete(m.pid);
+      },
+      ownGroup: async () => 1,
+      uid: () => options.uid ?? 501,
+      cwds: async (pids) =>
+        new Map(pids.filter((p) => options.cwds?.[p]).map((p) => [p, options.cwds?.[p] as string])),
+    };
+    return { procs, signalled, alive };
+  }
+  const stop = { termGraceMs: 10, killGraceMs: 10, pollMs: 1 };
+
+  it("only `--settings <path>`, only the runner's user: never the owner's less, tail or grep on it", async () => {
+    expect(runsWithSettings(`claude --settings ${path} --strict-mcp-config`, path)).toBe(true);
+    expect(runsWithSettings(`claude --settings=${path}`, path)).toBe(true);
+    expect(runsWithSettings(`less ${path}`, path)).toBe(false);
+    expect(runsWithSettings(`grep -r settings ${path}`, path)).toBe(false);
+    expect(runsWithSettings(`claude --settings ${path}.bak`, path)).toBe(false);
+    const t = table([
+      { pid: 10, ppid: 1, pgid: 10, uid: 501, command: `claude --settings ${path}` },
+      { pid: 20, ppid: 1, pgid: 20, uid: 501, command: `less ${path}` },
+      { pid: 30, ppid: 1, pgid: 30, uid: 0, command: `claude --settings ${path}` },
+    ]);
+    expect(await stopHarness(t.procs, path, stop)).toEqual([10]);
+    expect(t.signalled.map(([p]) => p)).toEqual([-10]);
+    expect(t.alive.has(20)).toBe(true);
+    expect(t.alive.has(30)).toBe(true);
+  });
+
+  it("a process it may not signal (EPERM) isn't the job's and doesn't pin it as a survivor", async () => {
+    const t = table(
+      [
+        { pid: 10, ppid: 1, pgid: 10, command: `claude --settings ${path}` },
+        { pid: 11, ppid: 10, pgid: 99, command: "setuid-helper" },
+      ],
+      { eperm: [11] },
+    );
+    await expect(stopHarness(t.procs, path, stop)).resolves.toContain(10);
+  });
+
+  it("stops a dev server that left the group and was re-parented to init, by its cwd in the worktree", async () => {
+    const t = table(
+      [
+        { pid: 10, ppid: 1, pgid: 10, command: `claude --settings ${path}` },
+        { pid: 40, ppid: 1, pgid: 40, command: "node dev-server.js" },
+        { pid: 41, ppid: 40, pgid: 40, command: "esbuild --watch" },
+        { pid: 50, ppid: 1, pgid: 50, command: "node other.js" },
+        { pid: 60, ppid: 900, pgid: 60, command: "zsh" },
+      ],
+      { cwds: { 40: "/wt/sf-job_1/app", 50: "/elsewhere", 60: "/wt/sf-job_1" } },
+    );
+    const signalled = await stopHarness(t.procs, path, { ...stop, worktree: "/wt/sf-job_1" });
+    expect(signalled.sort()).toEqual([10, 40, 41]);
+    expect(t.alive.has(50)).toBe(true);
+    // The owner's shell in the worktree has a live parent: left alone.
+    expect(t.alive.has(60)).toBe(true);
+  });
+});
+
+describe("leftover sessions don't eat capacity (review of #87)", { timeout: 30_000 }, () => {
+  it("a dead pane doesn't count, nor an abandoned session whose Claude is gone, and it is killed later", async () => {
+    const w = await world();
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(job(), signal);
+    const session = await w.runner.startSession(job(), ws, signal);
+    expect((await w.runner.capacity()).inUse).toBe(1);
+    const s = w.tmux.sessions.get("sf-job_1");
+    if (s) s.dead = true;
+    expect((await w.runner.capacity()).inUse).toBe(0);
+    if (s) s.dead = false;
+    // Release while kill-session times out: the session stays on the server.
+    w.fl.state.broken = true;
+    await w.runner.release(job(), ws, session);
+    w.fl.state.broken = false;
+    expect(w.tmux.sessions.has("sf-job_1")).toBe(true);
+    // The background clean-up kills it; until then, with no Claude, it doesn't count.
+    await until("the abandoned session is killed", async () => {
+      await w.runner.capacity();
+      return !w.tmux.sessions.has("sf-job_1");
+    });
+    expect((await w.runner.capacity()).inUse).toBe(0);
+  });
+});
+
+describe("the marker never costs the owner commits (review of #87)", { timeout: 30_000 }, () => {
+  const branch = "timoconnellaus/desktop-terminal-run-2";
+  it("a marked branch the owner committed on is kept by the sweep, moved aside by a new run", async () => {
+    const w = await world();
+    const signal = new AbortController().signal;
+    const j = job({ branch, runNo: 2 });
+    const ws = await w.runner.prepareWorkspace(j, signal);
+    // The crash: the worktree went, the branch and its marker stayed.
+    git(w.owner, "worktree", "remove", "--force", ws.path);
+    // The owner checks it out, commits a fix and switches away.
+    git(w.owner, "checkout", "-q", branch);
+    await writeFile(join(w.owner, "FIX.md"), "mine\n");
+    git(w.owner, "add", "FIX.md");
+    git(w.owner, "-c", "user.name=o", "-c", "user.email=o@x.invalid", "commit", "-qm", "my fix");
+    const mine = git(w.owner, "rev-parse", "HEAD");
+    git(w.owner, "checkout", "-q", "owner-work");
+    const dirs = {
+      worktreesDir: w.config.worktreesDir,
+      runsDir: w.runsDir,
+      exec: w.fl.exec,
+      procs: w.fake.procs,
+      checkouts: { dirs: [w.projects] },
+    };
+    const findings = (await diagnose({ ...dirs, live: new Set() })).filter(
+      (f) => f.kind === "orphan-branch",
+    );
+    expect(findings).toEqual([expect.objectContaining({ fixable: false })]);
+    await reapOrphans(dirs, new Set());
+    expect(git(w.owner, "rev-parse", branch)).toBe(mine);
+    // A re-run of that job takes the name, and the owner's commit is kept under another one.
+    const again = await w.runner.prepareWorkspace(j, signal);
+    const kept = git(w.owner, "branch", "--list", `${branch}-kept-*`).replace(/^[*+ ]+/, "");
+    expect(git(w.owner, "rev-parse", kept)).toBe(mine);
+    await w.runner.release(j, again, undefined);
   });
 });
 

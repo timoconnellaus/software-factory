@@ -35,3 +35,9 @@ that it would never touch an owner's branch. Runs for an attached PR (ADR 0290) 
   in the checkout is deleted in a `finally`. They don't have this leak. Neither do Sprites jobs (ADR
   0480): their job repo is made the same way (`createJobRepo`), in the job dir, which release
   removes whole.
+
+> Amended 2026-11-12 (review of #87): a branch the run didn't just make is deleted only when that
+> loses nothing: its tip is the marker's commit, or is in `origin/<branch>`. A stale `job.branch`
+> with other commits is moved aside to `<branch>-kept-<time>`, so its commits are kept and the run
+> still gets its name. The sweep reports such a branch and leaves it. Deletion is
+> `git branch -D -- <branch>`.

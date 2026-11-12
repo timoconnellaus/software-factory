@@ -115,8 +115,8 @@ export function tmuxCli(options: TmuxOptions = {}) {
 
   /**
    * One command, retried with backoff and jitter while tmux fails in a way that isn't "gone".
-   * `once`: a command that must not run twice (typing) isn't retried after a timeout, when it may
-   * have arrived.
+   * `once`: a command that must not run twice (typing) is never retried: a timeout, a client killed
+   * by a signal or a "lost server" can each come after the keys arrived.
    */
   async function attempt(
     args: string[],
@@ -134,7 +134,7 @@ export function tmuxCli(options: TmuxOptions = {}) {
       const answer = classifyTmux(r);
       if (answer !== "error") return { answer, r };
       last = r;
-      if (opts.once && r.timedOut) break;
+      if (opts.once) break;
     }
     throw new TmuxUnavailable(`${explain(args, last)}${tries > 1 ? ` (tried ${tries}×)` : ""}`);
   }

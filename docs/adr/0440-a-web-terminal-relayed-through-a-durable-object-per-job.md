@@ -93,3 +93,7 @@ must stay outbound-only with no standing token, and the same relay must serve a 
 > bridge also sends `detach-client` before closing its input, so tmux ends the client on its own terms.
 > The 8 crash reports in a day came from short-lived servers that `terminal.test.ts` started inside
 > factory jobs (sockets `sf-term-test-<pid>`). Those tests now skip when `SOFTWARE_FACTORY_RUN=1`.
+
+> Note 2026-11-12 (spec 43): with `pause-after=60`, a viewer that falls a minute behind loses the
+> output since the pause and sees a redraw of the current screen instead. The job's logs
+> (`capture-pane`) are unaffected.

@@ -10,7 +10,12 @@ import { readdir, readFile, realpath, rm } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { RUN_SETTINGS_FILE, removeRunDir } from "@software-factory/harness-claude";
 import { isRunBranch, WORKTREE_JOB_FILE } from "./adapter.ts";
-import { deleteRunBranch, isMarkedRunBranch, sweepRunBranches } from "./branches.ts";
+import {
+  deleteRunBranch,
+  isMarkedRunBranch,
+  runBranchDisposable,
+  sweepRunBranches,
+} from "./branches.ts";
 import { type CheckoutSearch, duplicateCheckouts, isUnder, scanCheckouts } from "./checkouts.ts";
 import { type Exec, nodeExec } from "./exec.ts";
 import {
@@ -107,10 +112,12 @@ async function removeJobWorktree(dirs: LocalHostDirs, w: JobWorktree): Promise<v
   await rm(w.path, { recursive: true, force: true });
   if (w.checkout) {
     await exec("git", ["worktree", "prune"], { cwd: w.checkout });
-    // Only a branch the factory marked as its own (ADR 0551), or a factory run branch.
+    // Only a branch the factory marked as its own (ADR 0551) that loses nothing, or an unmarked
+    // factory run branch from before the marker (as before).
+    const marked = w.branch ? await isMarkedRunBranch(w.checkout, w.branch, exec) : false;
     if (
       w.branch &&
-      (isRunBranch(w.branch) || (await isMarkedRunBranch(w.checkout, w.branch, exec)))
+      (marked ? await runBranchDisposable(w.checkout, w.branch, exec) : isRunBranch(w.branch))
     ) {
       await deleteRunBranch(w.checkout, w.branch, exec);
     }
@@ -127,25 +134,23 @@ export interface JobProcess {
   settingsPath: string;
 }
 
-/** The host's processes running a job's harness: their command line names its settings path. */
+/**
+ * The runner user's processes running a job's harness: `--settings <runsDir>/<jobId>/
+ * claude-settings.json` on their command line (a process that only names the file isn't one).
+ */
 export async function jobProcesses(dirs: LocalHostDirs): Promise<JobProcess[]> {
   const procs = dirs.procs ?? hostProcs(dirs.exec ?? nodeExec);
   const prefix = dirs.runsDir.endsWith(sep) ? dirs.runsDir : `${dirs.runsDir}${sep}`;
+  const uid = procs.uid?.() ?? null;
   const out: JobProcess[] = [];
+  const pattern = new RegExp(
+    `(?:^|\\s)--settings(?:=|\\s+)${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^/\\s]+)/${RUN_SETTINGS_FILE.replace(/\./g, "\\.")}(?:\\s|$)`,
+  );
   for (const p of await procs.list()) {
-    let at = p.command.indexOf(prefix);
-    while (at >= 0) {
-      const rest = p.command.slice(at + prefix.length);
-      const m = /^([^/\s]+)\/([^\s]+)/.exec(rest);
-      if (m?.[1] && m[2] === RUN_SETTINGS_FILE) {
-        out.push({
-          jobId: m[1],
-          pid: p.pid,
-          settingsPath: `${prefix}${m[1]}/${RUN_SETTINGS_FILE}`,
-        });
-        break;
-      }
-      at = p.command.indexOf(prefix, at + 1);
+    if (uid !== null && p.uid !== undefined && p.uid !== uid) continue;
+    const m = pattern.exec(p.command);
+    if (m?.[1]) {
+      out.push({ jobId: m[1], pid: p.pid, settingsPath: `${prefix}${m[1]}/${RUN_SETTINGS_FILE}` });
     }
   }
   return out;
@@ -265,11 +270,13 @@ export async function diagnose(
     for (const b of await sweepRunBranches(checkout, {
       dryRun: true,
       ...(options.exec ? { exec: options.exec } : {}),
-    }).catch(() => [] as string[])) {
+    }).catch(() => [])) {
       findings.push({
         kind: "orphan-branch",
-        message: `run branch ${b} in ${checkout} was left by a job that no worktree runs`,
-        fixable: true,
+        message: b.disposable
+          ? `run branch ${b.branch} in ${checkout} was left by a job that no worktree runs`
+          : `run branch ${b.branch} in ${checkout} was left by a job, with commits that aren't the factory's or pushed; left for you to delete`,
+        fixable: b.disposable,
       });
     }
   }

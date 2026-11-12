@@ -56,7 +56,14 @@ import {
   steerText,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
-import { branchExists, checkedOutBranches, deleteRunBranch, markRunBranch } from "./branches.ts";
+import {
+  branchExists,
+  checkedOutBranches,
+  deleteRunBranch,
+  markRunBranch,
+  moveAsideRunBranch,
+  runBranchDisposable,
+} from "./branches.ts";
 import { exists, findCheckout, isUnder } from "./checkouts.ts";
 import { type Exec, nodeExec, run } from "./exec.ts";
 import {
@@ -331,7 +338,14 @@ export function createLocalRunner(
     const line = steerText(text);
     if (!line) return;
     for (let i = 0; i < line.length; i += STEER_CHUNK) {
-      await tmux.sendText(name, line.slice(i, i + STEER_CHUNK));
+      try {
+        await tmux.sendText(name, line.slice(i, i + STEER_CHUNK));
+      } catch (err) {
+        // Pieces typed already would sit in the input box and run with the next message: clear
+        // the line (Ctrl-U, best effort; spec 43), then report the steer failed.
+        if (i > 0) await tmux.sendKeys(name, "C-u").catch(() => {});
+        throw err;
+      }
       if (i + STEER_CHUNK < line.length) await sleep(30);
     }
     await sleep(200);
@@ -417,14 +431,60 @@ export function createLocalRunner(
    * counted as in use until they're gone.
    */
   const survivors = new Map<string, string>();
-  const retrySurvivors = async () => {
+  /**
+   * Sessions this adapter gave up on: a kill-session that tmux didn't answer, or a new-session that
+   * failed and may still have started late. Killed again, and their harness stopped again, in the
+   * background until tmux confirms them gone (and for a while after, for a late start). One whose
+   * harness is confirmed gone doesn't count as in use.
+   */
+  const abandoned = new Map<
+    string,
+    { settingsPath?: string; since: number; harnessGone: boolean; sessionGone: boolean }
+  >();
+  const abandon = (name: string, settingsPath?: string) =>
+    abandoned.set(name, {
+      ...(settingsPath ? { settingsPath } : {}),
+      since: Date.now(),
+      harnessGone: false,
+      sessionGone: false,
+    });
+  /** A quick tmux for the background and capacity: one try, a short timeout. */
+  const quickTmux = tmuxCli({ ...config.tmux, exec, attempts: 1, timeoutMs: 10_000 });
+  const ABANDONED_KEEP_MS = 120_000;
+  const quickStop = { termGraceMs: 1_000, killGraceMs: 1_000 };
+  let maintaining: Promise<void> | null = null;
+  const maintain = async () => {
     for (const [jobId, settingsPath] of survivors) {
-      await stopHarness(procs, settingsPath, { termGraceMs: 0, killGraceMs: 1_000 }).then(
+      await stopHarness(procs, settingsPath, quickStop).then(
         () => survivors.delete(jobId),
         () => {},
       );
     }
+    for (const [name, entry] of abandoned) {
+      entry.sessionGone = await quickTmux.kill(name).then(
+        () => true,
+        () => false,
+      );
+      entry.harnessGone = entry.settingsPath
+        ? await stopHarness(procs, entry.settingsPath, quickStop).then(
+            () => true,
+            () => false,
+          )
+        : entry.sessionGone;
+      if (entry.sessionGone && entry.harnessGone && Date.now() - entry.since > ABANDONED_KEEP_MS) {
+        abandoned.delete(name);
+      }
+    }
   };
+  /** Starts the background clean-up if it isn't running; never waits for it. */
+  const kickMaintenance = () => {
+    if (maintaining || (survivors.size === 0 && abandoned.size === 0)) return;
+    maintaining = maintain().finally(() => {
+      maintaining = null;
+    });
+  };
+  /** capacity() answers within this, whatever tmux does (the lease is 10 minutes). */
+  const CAPACITY_DEADLINE_MS = 30_000;
 
   async function release(
     job: Job,
@@ -447,16 +507,20 @@ export function createLocalRunner(
     started.delete(job.jobId);
     // A tmux that doesn't answer is no reason to leave Claude running (incident #11 (2026-11-12)):
     // the job's processes are stopped from the process table either way, and a session left on
-    // the server is reaped later.
+    // the server is killed again in the background (and doesn't count once its harness is gone).
+    const settingsPath = settingsPathOf(workspace, live);
     const killed = await tmux.kill(name).then(
       () => null,
       (err: unknown) => (err instanceof Error ? err.message : String(err)),
     );
-    const settingsPath = settingsPathOf(workspace, live);
+    if (killed) abandon(name, settingsPath);
     let survived: HarnessStillRunning | null = null;
     if (settingsPath) {
       try {
-        await stopHarness(procs, settingsPath, config.stop);
+        await stopHarness(procs, settingsPath, {
+          ...config.stop,
+          ...(workspace ? { worktree: workspace.path } : {}),
+        });
         survivors.delete(job.jobId);
       } catch (err) {
         survived =
@@ -506,11 +570,26 @@ export function createLocalRunner(
     },
 
     async capacity(): Promise<Capacity> {
-      await retrySurvivors();
+      kickMaintenance();
       const max = config.maxConcurrent ?? 2;
       const alive = [...streams.values()].filter(streamAlive).length + survivors.size;
       try {
-        return { max, inUse: (await tmux.jobSessions()).length + alive, accepting: true };
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const sessions = await Promise.race([
+          quickTmux.jobSessions(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new TmuxUnavailable("tmux list-sessions took too long")),
+              CAPACITY_DEADLINE_MS,
+            );
+          }),
+        ]).finally(() => clearTimeout(timer));
+        // A dead pane (kept by remain-on-exit) holds nothing; nor does a session this adapter
+        // abandoned whose harness is confirmed gone. Both are cleaned up in the background.
+        const holding = sessions.filter(
+          (s) => !s.dead && !(abandoned.get(s.name)?.harnessGone ?? false),
+        );
+        return { max, inUse: holding.length + alive, accepting: true };
       } catch (err) {
         // tmux can't say how many sessions it holds: never read that as none (incident
         // 2026-11-12 #1). Count the ones this adapter started, and take nothing new for now.
@@ -548,12 +627,18 @@ export function createLocalRunner(
         job.jobId,
       );
       // A crashed run of this same job may have left its Claude running (ADR 0550): stop it first.
-      await stopHarness(procs, join(runDir, RUN_SETTINGS_FILE), config.stop);
+      await stopHarness(procs, join(runDir, RUN_SETTINGS_FILE), {
+        ...config.stop,
+        ...((await exists(path)) ? { worktree: path } : {}),
+      });
       // A worktree left by a crashed run of this same job goes first.
       if (await exists(path)) await removeWorktree(checkout, path);
       // So does a local copy of the run branch: `job.branch` is this run's alone (ADR 0035, one
       // branch per run), whatever its name (an attached PR's runs are `<pr-branch>-run-<k>`), so a
-      // copy no worktree has checked out is stale (ADR 0551). Checked out anywhere: refuse.
+      // copy no worktree has checked out is stale (ADR 0551). It is deleted only when that loses
+      // nothing (the factory's marker, or the pushed run branch, has its tip); otherwise it is moved
+      // aside, so the owner's commits are kept and the run still gets its name. Checked out
+      // anywhere: refuse.
       const holder = (await checkedOutBranches(checkout, exec)).get(job.branch);
       if (holder) {
         throw new Error(
@@ -561,7 +646,11 @@ export function createLocalRunner(
         );
       }
       if (await branchExists(checkout, job.branch, exec)) {
-        await deleteRunBranch(checkout, job.branch, exec);
+        if (await runBranchDisposable(checkout, job.branch, exec)) {
+          await deleteRunBranch(checkout, job.branch, exec);
+        } else {
+          await moveAsideRunBranch(checkout, job.branch, exec);
+        }
       }
       const start = config.startPoint ? await config.startPoint(job, checkout) : job.repo.baseRef;
       // Hooks off (the owner's post-checkout hooks are theirs), no upstream written to the
@@ -709,6 +798,7 @@ export function createLocalRunner(
       };
       // A session left by a crashed run of this same job would block the name.
       await stopAll();
+      abandoned.delete(name);
       // The harness's own command (ADR 0270), on the factory's own tmux server. A new-session
       // that timed out may still have started: stop it before failing.
       started.add(job.jobId);
@@ -719,6 +809,8 @@ export function createLocalRunner(
           command: `exec /bin/sh ${shellQuote(workspace.launchScript)}`,
         });
       } catch (err) {
+        // It may have started anyway (a timed-out new-session): keep at it in the background.
+        abandon(name, settingsPath);
         await stopAll().catch(() => {});
         throw err;
       }
@@ -861,6 +953,18 @@ export function createLocalRunner(
       let lastSubmitAt = 0;
       /** Since when a Stop came while a steer's turn was still owed. */
       let steerOwedSince: number | null = null;
+      /** That Stop's own time. */
+      let owedStopAt = 0;
+      /**
+       * The steered turn is under way: any sign of work after the Stop (a hook line, a transcript
+       * message, new terminal lines) counts, not only its UserPromptSubmit, which a hook under load
+       * can deliver late or not at all. The job then ends at that turn's Stop.
+       */
+      const steerTaken = () => {
+        if (steerOwedSince === null) return;
+        lastSubmitAt = Math.max(lastSubmitAt, session.steeredAt ?? 0);
+        steerOwedSince = null;
+      };
       let waitingSince: number | null = null;
       let transcript: string | null = null;
       // The transcript is tailed for what the agent says (ADR 0400). A resumed planning
@@ -881,6 +985,7 @@ export function createLocalRunner(
         transcriptOffset = read.offset;
         for (const m of read.messages) {
           if (m.at !== null && m.at < since) continue;
+          if (m.at !== null && m.at > owedStopAt) steerTaken();
           said.push({
             at: m.at,
             event: { type: "message", role: m.role, text: clip(m.text, MESSAGE_MAX - 1) },
@@ -1034,6 +1139,8 @@ export function createLocalRunner(
         await readSaid();
         for (const line of read.lines) {
           yield* saidUpTo(line.time);
+          // Work after an owed Stop (later in the file than it): the steered turn is under way.
+          if (line.event === "PreToolUse" || line.event === "PostToolUse") steerTaken();
           switch (line.event) {
             case "UserPromptSubmit":
               if (line.time >= session.promptSentAt) {
@@ -1093,7 +1200,10 @@ export function createLocalRunner(
               // after a grace period if Claude folded it into this one.
               if ((session.steeredAt ?? 0) > lastSubmitAt) {
                 yield* setStatus("idle");
-                steerOwedSince ??= Date.now();
+                if (steerOwedSince === null) {
+                  steerOwedSince = Date.now();
+                  owedStopAt = line.time;
+                }
                 break;
               }
               yield* endAtStop();

@@ -58,9 +58,35 @@ export async function markedRunBranches(checkout: string, exec: Exec = nodeExec)
     .map((l) => l.slice(RUN_BRANCH_MARKERS.length));
 }
 
+const revParse = async (checkout: string, ref: string, exec: Exec) => {
+  const r = await exec("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+    cwd: checkout,
+  });
+  return r.code === 0 ? r.stdout.trim() : null;
+};
+
+/**
+ * Whether deleting a branch loses nothing: its tip is still where the factory marked it, or is in
+ * the remote's copy of the run branch. Anything else (the owner committed on it) is kept.
+ */
+export async function runBranchDisposable(
+  checkout: string,
+  branch: string,
+  exec: Exec = nodeExec,
+): Promise<boolean> {
+  const tip = await revParse(checkout, `refs/heads/${branch}`, exec);
+  if (!tip) return true;
+  if ((await revParse(checkout, marker(branch), exec)) === tip) return true;
+  const remote = await revParse(checkout, `refs/remotes/origin/${branch}`, exec);
+  if (!remote) return false;
+  const r = await exec("git", ["merge-base", "--is-ancestor", tip, remote], { cwd: checkout });
+  return r.code === 0;
+}
+
 /**
  * Deletes a run branch (and its marker) unless a worktree has it checked out. Returns the path that
- * has it when it was left alone, else null.
+ * has it when it was left alone, else null. Only for a branch this job just made, or one
+ * `runBranchDisposable` says loses nothing.
  */
 export async function deleteRunBranch(
   checkout: string,
@@ -71,7 +97,7 @@ export async function deleteRunBranch(
   const at = out.get(branch);
   if (at) return at;
   if (await branchExists(checkout, branch, exec)) {
-    const r = await exec("git", ["branch", "-D", branch], { cwd: checkout });
+    const r = await exec("git", ["branch", "-D", "--", branch], { cwd: checkout });
     if (r.code !== 0)
       throw new Error(`git branch -D ${branch} exited ${r.code}: ${r.stderr.trim()}`);
   }
@@ -80,20 +106,46 @@ export async function deleteRunBranch(
 }
 
 /**
+ * Moves a branch that is in the way but can't be deleted without losing commits out of the way
+ * (`<branch>-kept-<time>`), so the new run can take its name. Returns the new name.
+ */
+export async function moveAsideRunBranch(
+  checkout: string,
+  branch: string,
+  exec: Exec = nodeExec,
+): Promise<string> {
+  const kept = `${branch}-kept-${new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15)}`;
+  const r = await exec("git", ["branch", "-m", "--", branch, kept], { cwd: checkout });
+  if (r.code !== 0) throw new Error(`git branch -m ${branch} exited ${r.code}: ${r.stderr.trim()}`);
+  await exec("git", ["update-ref", "-d", marker(branch)], { cwd: checkout });
+  return kept;
+}
+
+export interface SweptBranch {
+  branch: string;
+  /** False: it has commits the factory can't account for, so it is left for its owner. */
+  disposable: boolean;
+}
+
+/**
  * The marked run branches no worktree has checked out (left by crashed jobs), and, unless
- * `dryRun`, deletes them. Returns their names.
+ * `dryRun`, deletes the ones that lose nothing (`runBranchDisposable`).
  */
 export async function sweepRunBranches(
   checkout: string,
   options: { exec?: Exec; dryRun?: boolean } = {},
-): Promise<string[]> {
+): Promise<SweptBranch[]> {
   const exec = options.exec ?? nodeExec;
   const marked = await markedRunBranches(checkout, exec);
   if (marked.length === 0) return [];
   const out = await checkedOutBranches(checkout, exec);
-  const stale = marked.filter((b) => !out.has(b));
-  if (!options.dryRun) {
-    for (const b of stale) await deleteRunBranch(checkout, b, exec).catch(() => {});
+  const found: SweptBranch[] = [];
+  for (const branch of marked.filter((b) => !out.has(b))) {
+    const disposable = await runBranchDisposable(checkout, branch, exec);
+    found.push({ branch, disposable });
+    if (disposable && !options.dryRun) {
+      await deleteRunBranch(checkout, branch, exec).catch(() => {});
+    }
   }
-  return stale;
+  return found;
 }

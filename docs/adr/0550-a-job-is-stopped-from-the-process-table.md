@@ -59,3 +59,16 @@ and nothing checked that it had worked.
   daemon the agent started on purpose. The sandbox already limits what it can reach, and the next
   doctor run doesn't see it either, since it carries no settings path. That's a known limit.
 - One `ps` per release, and per poll only while tmux is silent or the pane is gone.
+
+> Amended 2026-11-12 (review of #87):
+>
+> - **Who is the job.** Only the runner user's processes with `--settings <path>` on their command
+>   line are the job's. A process that names the file, or another user's, is not. EPERM counts as not
+>   ours, never as alive.
+> - **Strays.** Release also stops the runner user's processes that were re-parented to init and
+>   work in the job's worktree (by cwd: `/proc` on Linux, `lsof` on macOS).
+> - **Abandoned sessions.** A session whose kill didn't answer, or a new-session that failed, is
+>   killed again in a background clean-up that `capacity()` starts and never awaits. It doesn't
+>   count as in use once its harness is gone, and dead panes never count.
+> - **Capacity is bounded.** `capacity()` answers within 30 s.
+> - **Typing.** It is never retried.
