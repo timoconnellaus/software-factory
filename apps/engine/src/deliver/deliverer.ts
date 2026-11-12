@@ -72,7 +72,7 @@ interface HeadRow {
 type Called =
   | { status: "ok"; output: Record<string, unknown> }
   | { status: "pending"; pendingActionId: string }
-  | { status: "refused"; code: string; message: string };
+  | { status: "refused"; code: string; message: string; details?: Record<string, unknown> };
 
 /**
  * One key per repository, never a project-wide alias over the same queue head (an item with no
@@ -237,7 +237,12 @@ async function call(
   } catch (error) {
     if (!isOperationError(error)) throw error;
     if (error.code === "fenced") throw new LeaseLost(error.message);
-    return { status: "refused", code: error.code, message: error.message };
+    return {
+      status: "refused",
+      code: error.code,
+      message: error.message,
+      ...(error.details ? { details: error.details } : {}),
+    };
   }
 }
 
@@ -382,10 +387,13 @@ async function deliverHead(
   const why = landed.status === "refused" ? landed.message : "still pending";
   // GitHub didn't merge: the mark goes, so the item can be cancelled again.
   await call(env, lease, "mergeQueue.merging", { workItemId: id, merging: false });
-  // GitHub refused the merge itself (the default branch moved since the snapshot): never retried as
-  // is. Re-snapshot: a moved default branch updates the head again (bounded) and CI runs there; a
-  // refusal with nothing changed goes back (spec 53 review; asking a person is PR d's).
-  if (landed.status === "refused" && landed.code === "conflict" && /merge refused/.test(why)) {
+  // GitHub refused the merge itself (the default branch or the head moved since the snapshot):
+  // never retried as is. pr.merge says so in `details.mergeRefused`, never only in its message.
+  // Re-snapshot: a moved branch updates the head again (bounded) and CI runs there; a refusal with
+  // nothing changed goes back (spec 53 review; asking a person is PR d's). A moved head is the
+  // babysitter's to handle on a v11 item: pr.merge leaves the approval to it.
+  const mergeRefused = landed.status === "refused" ? landed.details?.mergeRefused : undefined;
+  if (mergeRefused === "headMoved" || mergeRefused === "refused") {
     const again = await snapshot();
     if ("wait" in again) return again.wait;
     if (again.state === "updated") return CI_RECHECK_MS;

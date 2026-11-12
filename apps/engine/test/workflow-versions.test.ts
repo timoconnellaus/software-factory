@@ -88,6 +88,27 @@ const V8_STEPS = [
   "verify #{b}: check names",
   "build #{b}: checks failing",
 ].map((name) => `\`${name.replaceAll("{", "$" + "{")}\``);
+// The steps v9 adds (spec 23 part B, ADR 0304): triage's readiness, its quick rounds and parking.
+const V9_STEPS = [
+  '"triage: park"',
+  "`triage #${k - 1}: park`",
+  "`triage #${k}: ask`",
+  "`triage #${k}: answers`",
+  "`triage #${k}`",
+  "`triage #${k}: record`",
+  '"planning: triage questions"',
+];
+// The steps v10 adds (spec 23 part C): the spec critic before each planning gate.
+const V10_STEPS = [
+  "`planning #${k}: critic`",
+  "`${name}: spec`",
+  "`${name}: yield`",
+  "`${name}: enqueue`",
+  "`${name}: wait`",
+  "`${name}: result`",
+  "`${name}: expire`",
+  "`${name}: record`",
+];
 // The tags v4 builds `{p}` from: frozen like the step names.
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
@@ -164,5 +185,7 @@ describe("Workflow versions", () => {
     // No feature is switched by comparing version numbers (spec 53, Workflow versions).
     expect(source).not.toMatch(/version\s*(>=|<=|>|<)\s*\d/);
     for (const name of V8_STEPS) expect(source, name).toContain(name);
+    for (const name of V9_STEPS) expect(source, name).toContain(name);
+    for (const name of V10_STEPS) expect(source, name).toContain(name);
   });
 });

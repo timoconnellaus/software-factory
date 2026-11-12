@@ -477,7 +477,8 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       // GitHub refuses to merge a PR twice (405 "Pull Request is not mergeable"): a caller that
       // merges again after a merge it lost track of must find it merged instead (spec 53 review).
       if (pull.state !== "open") return { merged: false, reason: "Pull Request is not mergeable" };
-      if (state.refs[pull.head] !== expected) return { merged: false, reason: "head moved" };
+      if (state.refs[pull.head] !== expected)
+        return { merged: false, reason: "head moved", headMoved: true };
       const merge = await commit(state, expected, `merge-${number}`);
       state.refs[pull.base] = merge;
       pull.state = "merged";

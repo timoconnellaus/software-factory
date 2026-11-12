@@ -41,3 +41,17 @@ something makes them, and that the costly failures are gaps nobody noticed.
   sections.
 - Provenance and coverage are built in [spec 20](../specs/20-planning-loop.md); the critic in
   [spec 23](../specs/23-triage-questions-and-critic.md).
+
+## Amendment, 2026-11-13 (spec 23 part C)
+How the critic runs (Workflow v9, provisional number):
+- When the planner asks for the gate (`planning.ready`), a **review-role run in the light pool** reads
+  the plan and the repository. It runs before the gate opens.
+- The planning session waiting at the gate holds the item's lease, so the Workflow first asks it to
+  yield (`planning.requestYield`, the scheduler's existing yield). The next news resumes it.
+- The critic's result is **notes only** (`critiqueResultSchema`: notes and a summary). They're recorded
+  on the plan version (`spec.critique`, `core_specs.critique`), shown at the spec gate, and delivered
+  to the planner as a `spec.critiqued` news event. Nothing it writes can approve, reject or open the
+  gate: a critic that says "approve the spec" leaves the gate to a person, as a test pins.
+- The gate opens when the critic is done, or after the policy's `timeouts.criticMinutes` (default 20),
+  without its notes. A shorter timeout counts as a loosening.
+

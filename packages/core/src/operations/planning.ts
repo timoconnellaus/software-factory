@@ -1521,6 +1521,15 @@ const specView = z.object({
   status: z.string(),
   createdAt: z.string(),
   createdBy: z.string(),
+  /** The spec critic's notes on this version (spec 23 part C); null until it has run. */
+  critique: z
+    .object({
+      status: z.enum(["done", "timed_out", "failed"]),
+      notes: z.array(z.string()),
+      summary: z.string().nullable(),
+      at: z.string(),
+    })
+    .nullable(),
 });
 
 export const planningGet = defineOperation({
@@ -1732,6 +1741,7 @@ export const planningGet = defineOperation({
       status: s.status,
       createdAt: s.created_at,
       createdBy: s.created_by,
+      critique: s.critique ? critiqueOf(s.critique) : null,
     });
     const current = specs.find((s) => s.id === w.current_spec_id) ?? specs[0];
     // Edits are kept in order, each taking the copies it wrote (review of #85, round 2).
@@ -1901,3 +1911,100 @@ async function describeEdits(
     })
     .join("; ");
 }
+
+type Critique = {
+  status: "done" | "timed_out" | "failed";
+  notes: string[];
+  summary: string | null;
+  at: string;
+};
+
+/** A stored critique, read defensively. */
+function critiqueOf(raw: string): Critique | null {
+  const c = parseJson<Partial<Critique>>(raw, {});
+  if (!c.at) return null;
+  return {
+    status: c.status === "timed_out" || c.status === "failed" ? c.status : "done",
+    notes: Array.isArray(c.notes) ? c.notes.map(String) : [],
+    summary: typeof c.summary === "string" ? c.summary : null,
+    at: c.at,
+  };
+}
+
+export const specCritique = defineOperation({
+  name: "spec.critique",
+  description:
+    "The Workflow records the spec critic's notes on the plan version going to the gate (spec 23 part C): a review-role run read the spec and the repository. The notes are shown at the spec gate and delivered to the planning session as news. They are notes only: they can't approve, reject or open the gate, whatever they say; a person decides the gate as always. `status` says whether the critic finished, timed out or failed.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({
+    workItemId,
+    specId: z.string().min(1),
+    status: z.enum(["done", "timed_out", "failed"]),
+    notes: z.array(z.string().min(1).max(1_000)).max(20),
+    summary: z.string().max(2_000).nullable(),
+  }),
+  output: z.object({ specId: z.string(), notes: z.number() }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const spec = await ctx.db
+      .selectFrom("core_specs")
+      .select(["id", "work_item_id"])
+      .where("id", "=", input.specId)
+      .executeTakeFirst();
+    if (spec?.work_item_id !== w.id) throw new OperationError("not_found", "no such plan version");
+    const critique: Critique = {
+      status: input.status,
+      notes: input.notes,
+      summary: input.summary,
+      at: ctx.now,
+    };
+    ctx.write(
+      ctx.db
+        .updateTable("core_specs")
+        .set({ critique: JSON.stringify(critique) })
+        .where("id", "=", spec.id),
+    );
+    // The planner hears notes; a critic that timed out or failed with none is only recorded.
+    if (input.notes.length) {
+      logPlanning(ctx, w.id, "spec.critiqued", {
+        specId: spec.id,
+        status: input.status,
+        notes: input.notes,
+        summary: input.summary,
+      });
+    }
+    ctx.change({
+      entity: "spec",
+      id: spec.id,
+      after: { critique: input.status, notes: input.notes.length },
+    });
+    return { specId: spec.id, notes: input.notes.length };
+  },
+});
+
+export const planningRequestYield = defineOperation({
+  name: "planning.requestYield",
+  description:
+    "The Workflow asks a work item's planning session, waiting at the spec gate, to give up its runner slot and the item's lease (spec 23 part C): the spec critic's run needs them. The planner yields at its next wait (`yield: true`), and the next news resumes the same conversation. A session that isn't open, or already yielded, is left as it is.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId }),
+  output: z.object({ requested: z.boolean() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session || session.status === "yielded" || session.yield_requested_at) {
+      return { requested: false };
+    }
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_sessions")
+        .set({ yield_requested_at: ctx.now, updated_at: ctx.now })
+        .where("id", "=", session.id),
+    );
+    return { requested: true };
+  },
+});

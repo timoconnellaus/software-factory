@@ -1054,3 +1054,69 @@ export const questionAnswerFromEdit = defineOperation({
     return { questionId: q.id, revision: q.answer_revision + 1 };
   },
 });
+
+export const planningSeedQuestions = defineOperation({
+  name: "planning.seedQuestions",
+  description:
+    "The Workflow asks triage's questions in a work item's planning session as it opens (spec 23): a medium or large item triage found needs answers enters the spec stage with them already open in the Planning tab, as the planner's questions. They're ordinary blocking planning questions the person answers and the planner reads as news.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId, questions: z.array(questionDraftSchema).min(1).max(5) }),
+  output: z.object({ questionIds: z.array(z.string()) }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no planning session is open to ask in");
+    const approvers = await approverIds(ctx.db, w.org_id, ctx.scope.policy);
+    const assignee = approvers.includes(w.requester_user_id)
+      ? w.requester_user_id
+      : (approvers[0] ?? null);
+    const hours = ctx.scope.policy?.timeouts.questionHours ?? 48;
+    const timeoutAt = new Date(Date.parse(ctx.now) + hours * 3_600_000).toISOString();
+    const counters = await ctx.db
+      .selectFrom("core_questions")
+      .select((eb) => [eb.fn.max("number").as("n"), eb.fn.max("position").as("p")])
+      .where("work_item_id", "=", w.id)
+      .executeTakeFirst();
+    let number = Number(counters?.n ?? 0);
+    let position = Number(counters?.p ?? 0);
+    const ids: string[] = [];
+    for (const q of input.questions) {
+      const id = newId("question");
+      ids.push(id);
+      ctx.write(
+        ctx.db.insertInto("core_questions").values({
+          id,
+          work_item_id: w.id,
+          project_id: w.project_id,
+          org_id: w.org_id,
+          assignee_user_id: assignee,
+          planning_round: w.planning_round,
+          planning_session_id: session.id,
+          timeout_at: timeoutAt,
+          asked_by: ctx.actor.id,
+          created_at: ctx.now,
+          number: ++number,
+          position: ++position,
+          domain: q.domain,
+          prompt: q.prompt,
+          context:
+            q.context ??
+            "Asked at triage: the request needs this answered before it can be planned.",
+          options: JSON.stringify(q.options),
+          default_answer: q.defaultAnswer ?? null,
+          default_values: q.defaultAnswer ? JSON.stringify([q.defaultAnswer]) : null,
+          recommendation: q.recommendation ?? null,
+          recommendation_reason: q.recommendationReason ?? null,
+          kind: q.options.length ? "single-choice" : "text",
+          blocking: 1,
+          irreversible: q.irreversible ? 1 : 0,
+        }),
+      );
+    }
+    logPlanning(ctx, w.id, "question.asked", { questionIds: ids, fromTriage: true });
+    ctx.change({ entity: "work_item", id: w.id, after: { triageQuestions: ids.length } });
+    return { questionIds: ids };
+  },
+});
