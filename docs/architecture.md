@@ -12,8 +12,10 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   one Workflow per work item, outbox delivery, the minute cron and the signed runner channel
   (`sf-engine.zerobsai.com/runner/v1/*`). Both bind one D1 database, `software-factory`: work items,
   questions, gates, runs, leases, audit journal, outbox and Better Auth, all `core_*` tables
-  (`packages/db/migrations`, ADR 0050). `sf-engine` also binds one private R2 bucket,
-  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes.
+  (`packages/db/migrations`, ADR 0050). `sf-engine` also binds two private R2 buckets:
+  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes, and `sf-archive` (`ARCHIVE`),
+  where a run's events and steers go 30 days after it ended. Tables that only grow are pruned by the
+  minute cron in bounded batches (`apps/engine/src/retention.ts`, AGENTS.md "Cloudflare cost").
 - **Operations** (ADR 0003, 0004) are the only way to change state. Every call goes through
   `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, from
   its current config version, and no looser than the version a work item started under), fencing
