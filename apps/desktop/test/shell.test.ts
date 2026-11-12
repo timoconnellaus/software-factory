@@ -2,12 +2,14 @@
 // org scoping, the status bar's wording, the Inbox's list and selection, the tab titles and search,
 // the Work views and board, and how the merge gate words a packet. Fixtures come from the
 // screenshot harness's door, so the screens and the tests see the same data.
+
 import type { Inbox } from "@software-factory/client/ops";
 import { parsePacket } from "@software-factory/client/packet";
 import { describe, expect, it } from "vitest";
 import { ANSWERS, ITEMS } from "../screenshots/fixtures.ts";
 import { entryText, inboxEntries, selectedEntry } from "../src/mainview/lib/inbox-list.ts";
-import { matchItems, sectionOf, tabTitle } from "../src/mainview/lib/places.ts";
+import { panelWidth } from "../src/mainview/lib/panel.ts";
+import { matchItems, peekItem, sectionOf, tabTitle } from "../src/mainview/lib/places.ts";
 import { verdictChips, verdictHeadline } from "../src/mainview/lib/review.ts";
 import {
   orgInitial,
@@ -30,10 +32,16 @@ import {
   togglePin,
 } from "../src/mainview/lib/view-state.ts";
 import {
+  boardLanes,
   cardState,
   countsByView,
-  lanes,
+  cutList,
+  laneLabel,
+  outcomeOf,
+  PHASE_COLUMNS,
+  phaseColumn,
   viewOf,
+  waitingOn,
   workItemsFor,
 } from "../src/mainview/lib/work-board.ts";
 
@@ -190,7 +198,7 @@ describe("status bar", () => {
   });
 
   it("counts only running items as running", () => {
-    expect(runningCount(inbox)).toBe(3);
+    expect(runningCount(inbox)).toBe(4);
   });
 
   it("says when it last heard from the factory, or that it can't", () => {
@@ -255,10 +263,35 @@ describe("places and search", () => {
   const find = (id: string) => ITEMS.find((i) => i.id === id) ?? null;
   it("titles tabs", () => {
     expect(tabTitle("/", find)).toBe("Inbox");
-    expect(tabTitle("/work?view=done", find)).toBe("Work");
+    expect(tabTitle("/work?view=done", find)).toBe("Done");
+    expect(tabTitle("/work?view=backlog&project=prj_factory", find)).toBe("Backlog");
+    expect(tabTitle("/work?project=prj_factory", find)).toBe("Project");
+    expect(
+      tabTitle("/work?project=prj_factory", find, (id) =>
+        id === "prj_factory" ? "Factory" : null,
+      ),
+    ).toBe("Factory");
+    // A project's board is the project's, as its header says.
+    expect(
+      tabTitle("/work?view=active&project=prj_factory", find, (id) =>
+        id === "prj_factory" ? "Factory" : null,
+      ),
+    ).toBe("Factory");
+    expect(tabTitle("/work", find)).toBe("In the factory");
     expect(tabTitle("/work/wi_13?tab=review", find)).toBe("#13 Guard the tests in verify");
     expect(tabTitle("/work/unknown", find)).toBe("Work item");
     expect(tabTitle("/settings", find)).toBe("This Mac");
+  });
+
+  it("opens a card in the side panel, keeping the list's search", () => {
+    const link = peekItem("wi_9");
+    expect(link.to).toBe("/work");
+    expect(link.search({ view: "active", project: "prj_factory", itemTab: "runs" })).toEqual({
+      view: "active",
+      project: "prj_factory",
+      item: "wi_9",
+      itemTab: undefined,
+    });
   });
 
   it("puts paths in sections", () => {
@@ -269,7 +302,7 @@ describe("places and search", () => {
   });
 
   it("finds by number first, else by every word of the title", () => {
-    expect(matchItems(ITEMS, "#1").map((i) => i.number)).toEqual([1, 13, 11, 12]);
+    expect(matchItems(ITEMS, "#1").map((i) => i.number)).toEqual([1, 13, 11, 12, 17, 15, 16, 14]);
     expect(matchItems(ITEMS, "13").map((i) => i.number)).toEqual([13]);
     expect(matchItems(ITEMS, "guard verify").map((i) => i.number)).toEqual([13]);
     expect(matchItems(ITEMS, "nothing like this")).toEqual([]);
@@ -281,29 +314,123 @@ describe("Work views and the board", () => {
   it("sorts statuses into views", () => {
     expect(viewOf("waiting")).toBe("active");
     expect(viewOf("done")).toBe("done");
-    expect(viewOf("cancelled")).toBe("stopped");
+    // Done shows every way out of the factory, with its outcome.
+    expect(viewOf("cancelled")).toBe("done");
+    expect(viewOf("backlog")).toBe("backlog");
+    expect(viewOf("shaping")).toBe("planning");
+    expect(viewOf("ready")).toBe("ready");
+    // Released work is in the factory, waiting in its first lane.
+    expect(viewOf("queued")).toBe("active");
   });
 
   it("filters by view, project and org, and counts per view", () => {
     expect(
       workItemsFor(ITEMS, { view: "active", orgId: "org_personal" }).map((i) => i.number),
-    ).toEqual([13, 9, 11, 12, 26]);
+    ).toEqual([13, 9, 11, 12, 26, 28]);
     expect(workItemsFor(ITEMS, { view: "active", orgId: null, projectId: "prj_crm" })).toHaveLength(
       1,
     );
-    expect(countsByView(ITEMS, null)).toEqual({ active: 6, done: 3, stopped: 0 });
+    expect(countsByView(ITEMS, null)).toEqual({
+      backlog: 6,
+      planning: 0,
+      ready: 3,
+      active: 7,
+      done: 5,
+    });
   });
 
-  it("puts each active item in its stage's lane, in the factory's order", () => {
-    const board = lanes(workItemsFor(ITEMS, { view: "active", orgId: "org_personal" }));
-    expect(board.map((l) => `${l.stage}:${l.items.map((i) => i.number).join(",")}`)).toEqual([
-      "intake:",
-      "triage:",
-      "spec:12",
-      "build:9,11",
-      "verify:26",
-      "merge:13",
+  // biome-ignore lint/style/noNonNullAssertion: the fixtures define these answers.
+  const stagesOf = (projectId: string) => ANSWERS["project.workflow"]!({ projectId }).stages;
+  const inFactory = () =>
+    (ANSWERS["workItem.board"]?.({ orgId: "org_personal" }).items ?? [])
+      .filter((i) => ["queued", "running", "waiting", "paused"].includes(i.status))
+      .map((i) => ({ ...i, orgId: "org_personal" }));
+
+  it("gives a project's board Queued then every stage of its workflow, in the read's order", () => {
+    const board = boardLanes(inFactory(), stagesOf("prj_factory"));
+    expect(board.map((l) => `${l.label}:${l.items.map((i) => i.number).join(",")}`)).toEqual([
+      "Queued:28",
+      // Empty lanes stay, so columns don't move as items do.
+      "Triage:",
+      // A released item in its spec stage is in the Spec lane; nothing calls it shaping.
+      "Spec:12",
+      "Build:9,11",
+      "Verify:26",
+      "Merge:13",
     ]);
+    // Another workflow's stages come out in its own order, labelled by the read.
+    const other = boardLanes(
+      [{ ...(inFactory()[1] as ReturnType<typeof inFactory>[number]), stage: "publish" }],
+      [
+        { stage: "draft", label: "Draft" },
+        { stage: "publish", label: "Publish" },
+      ],
+    );
+    expect(other.map((l) => `${l.label}:${l.items.length}`)).toEqual([
+      "Queued:0",
+      "Draft:0",
+      "Publish:1",
+    ]);
+    expect(laneLabel({ status: "running", stage: "intake" }, stagesOf("prj_factory"))).toBe(
+      "Triage",
+    );
+  });
+
+  it("puts every item in one of six phase columns, never by its stage", () => {
+    const col = (status: string, phase?: string) => phaseColumn({ status, phase });
+    expect(
+      ["backlog", "shaping", "ready", "queued", "running", "waiting", "paused"].map((s) =>
+        col(s, ["backlog", "shaping", "ready"].includes(s) ? "shaping" : "delivery"),
+      ),
+    ).toEqual(["backlog", "shaping", "ready", "queued", "delivery", "delivery", "delivery"]);
+    expect(["done", "failed", "rejected", "cancelled"].map((s) => col(s))).toEqual([
+      "done",
+      "done",
+      "done",
+      "done",
+    ]);
+    expect(PHASE_COLUMNS.map((c) => c.label)).toEqual([
+      "Backlog",
+      "Shaping",
+      "Ready",
+      "Queued",
+      "Delivery",
+      "Done",
+    ]);
+  });
+
+  it("says when the board's read was cut, by its counts", () => {
+    const counts = [
+      { orgId: "o", projectId: "p", status: "backlog", n: 450 },
+      { orgId: "o", projectId: "p", status: "running", n: 112 },
+      { orgId: "o", projectId: "p", status: "done", n: 900 },
+    ];
+    const opts = { states: ["backlog", "running"], orgId: null, projectId: "p" };
+    expect(cutList(counts, 500, opts)).toEqual({ shown: 500, of: 562 });
+    expect(cutList(counts.slice(0, 1), 450, opts)).toBeNull();
+  });
+
+  it("says who an item waits on, and words its outcome", () => {
+    const needs = new Set(["wi_13"]);
+    expect(waitingOn({ id: "wi_13", status: "waiting", blockedBy: [] }, needs).label).toBe(
+      "Waiting on you",
+    );
+    expect(waitingOn({ id: "x", status: "running", blockedBy: [] }, needs).label).toBe(
+      "Agent working",
+    );
+    expect(
+      waitingOn({ id: "x", status: "queued", blockedBy: [{ number: 26 } as never] }, needs).label,
+    ).toBe("Waiting for #26");
+    expect(waitingOn({ id: "x", status: "queued", blockedBy: [] }, needs).label).toBe(
+      "Waiting for a slot",
+    );
+    expect(outcomeOf({ status: "done", statusReason: null })).toEqual({
+      label: "Done",
+      status: "done",
+    });
+    expect(outcomeOf({ status: "cancelled", statusReason: "cancelled from the app" }).label).toBe(
+      "Cancelled: cancelled from the app",
+    );
   });
 
   it("marks a card that needs you", () => {
@@ -336,6 +463,39 @@ describe("the merge gate's words", () => {
     expect(verdictHeadline({ ...packet, verdict: "fail" }).status).toBe("failed");
   });
 
+  it("never heads a packet with checks not run as plain Passed, until a person merged without them", () => {
+    const executed = {
+      declared: ["tests"],
+      results: [
+        {
+          name: "tests",
+          command: "pnpm test",
+          exitCode: null,
+          timedOut: false,
+          durationMs: 0,
+          logTail: "not run: this Mac runner has no container runtime",
+          round: 0,
+          notRun: "this Mac runner has no container runtime",
+          passed: false,
+        },
+      ],
+      notRun: [{ name: "tests", reason: "this Mac runner has no container runtime" }],
+    };
+    const notRun = { ...packet, sections: { ...packet.sections, executed } };
+    expect(verdictHeadline(notRun)).toEqual({
+      text: "Passed, but one check could not be run",
+      status: "waiting",
+    });
+    const waived = {
+      ...notRun,
+      sections: {
+        ...notRun.sections,
+        notRunWaived: { by: "usr_1", at: "2026-11-12T00:00:00.000Z", checks: ["tests"] },
+      },
+    };
+    expect(verdictHeadline(waived).text).not.toMatch(/could not be run/);
+  });
+
   it("chips the checks, criteria, reviewer and risk", () => {
     expect(verdictChips(packet).map((c) => c.label)).toEqual([
       "Checks 1 of 1",
@@ -343,5 +503,18 @@ describe("the merge gate's words", () => {
       "Reviewer approves",
       "No risk flags",
     ]);
+  });
+});
+
+describe("the item side panel's width", () => {
+  it("is what was asked, within 360px and half the content area, or the whole page when narrow", () => {
+    // 1200 wide: a 733px page beside the 212px list; half the content area is 472.
+    expect(panelWidth(520, 733, 212)).toBe(472);
+    expect(panelWidth(400, 733, 212)).toBe(400);
+    expect(panelWidth(200, 733, 212)).toBe(360);
+    // A wide window: the asked width.
+    expect(panelWidth(520, 1228, 212)).toBe(520);
+    // Too narrow to share: all of the page area.
+    expect(panelWidth(520, 493, 212)).toBe(493);
   });
 });

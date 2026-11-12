@@ -2,6 +2,7 @@
 // (git worktrees + tmux, ADR 0380) with the Claude harness. This is the one place that names a
 // runner adapter; the host loop and the job lifecycle only see the contract.
 
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_IDENTITY, type HarnessAccount } from "@software-factory/harness-claude";
@@ -19,6 +20,7 @@ import {
   type ModelCredential,
   nodeExec,
   readSpritesToken,
+  reapCheckContainers,
   reapContainers,
   reapOrphans,
   reapSprites,
@@ -35,10 +37,13 @@ import {
   noteUsage,
   useAccount,
 } from "./accounts.ts";
+import { type CheckModeName, checkModeReport, localChecks } from "./check-mode.ts";
+import { checkSandbox, sandboxAvailable, sandboxTrial } from "./check-sandbox.ts";
 import { checkoutDirs } from "./checkouts.ts";
-import type { Paths, RunnerConfig } from "./config.ts";
+import { checkSettingsSchema, type Paths, type RunnerConfig } from "./config.ts";
 import { FETCH_NAMESPACE, hostGit } from "./git.ts";
 import { RunnerHost } from "./host.ts";
+import { APPARMOR_USERNS } from "./linux.ts";
 import { hostLoad, LoadGate, type LoadReading, loadPolicySchema } from "./load.ts";
 import { findOnPath } from "./pairing.ts";
 import type { SelfUpdate } from "./self-update.ts";
@@ -93,6 +98,90 @@ export const containerDirs = (
   runsDir: dirs.runsDir,
   runtime: dockerRuntime({ exec, bin: dockerBin(config) }),
 });
+
+/** The OS sandbox's options for a `sandbox` runner's checks: the runner's dirs none may read. */
+export const checkSandboxOptions = (config: RunnerConfig, dirs: Paths) => ({
+  protectPaths: [
+    dirs.configDir,
+    dirs.runsDir,
+    dirs.reposDir,
+    dirs.worktreesDir,
+    ...checkoutDirs(config),
+  ],
+  socketsDir: dirs.checkSocketsDir,
+  checksDir: dirs.checksDir,
+});
+
+/**
+ * Whether this runner can run a job's checks, in which mode, and why (ADR 0501): what the host
+ * declares as `checks` and what `sf-runner doctor` prints. A container runner checks in its check
+ * containers; a sprite runner runs none here; a `sandbox` runner as ./check-mode.ts says, and an OS
+ * sandbox only when its start-up trial passes (on Ubuntu, naming AppArmor's userns restriction).
+ */
+export async function checkReadiness(
+  config: RunnerConfig,
+  dirs: Paths,
+  exec: Exec = nodeExec,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ mode: CheckModeName; why: string; ok: boolean }> {
+  const isolation = config.isolation ?? "sandbox";
+  if (isolation === "container") {
+    return {
+      mode: "container",
+      why: "a container runner: each check in a fresh check container from the agent image, with no network",
+      ok: true,
+    };
+  }
+  if (isolation !== "sandbox") {
+    return {
+      mode: "none",
+      why: `a ${isolation} runner runs no checks on this machine, so it doesn't declare \`checks\``,
+      ok: false,
+    };
+  }
+  const report = await checkModeReport({
+    platform,
+    weakerMacSandbox: config.checks?.weakerMacSandbox ?? false,
+    runtime: platform === "darwin" ? dockerRuntime({ exec, bin: dockerBin(config) }) : null,
+    sandboxAvailable: sandboxAvailable(platform),
+  });
+  if (report.mode === "none" || report.mode === "container") {
+    return { ...report, ok: report.mode === "container" };
+  }
+  const trial = await sandboxTrial(checkSandboxOptions(config, dirs));
+  if (trial.ok) return { ...report, ok: true };
+  const restricted =
+    platform === "linux" &&
+    (await readFile(APPARMOR_USERNS, "utf8").catch(() => "")).trim() === "1";
+  return {
+    mode: "none",
+    why: `the check sandbox's start-up trial failed: ${trial.reason}${
+      restricted
+        ? `. AppArmor restricts unprivileged user namespaces here (${APPARMOR_USERNS} = 1): add an AppArmor profile for bwrap or set the sysctl to 0, as Claude Code's sandboxing docs describe`
+        : ""
+    }`,
+    ok: false,
+  };
+}
+
+/** Readiness as one line: doctor's and Factory > Runners'. */
+export const checkLine = (r: { mode: CheckModeName; why: string }) =>
+  `${r.mode === "none" ? "not run here" : r.mode}: ${r.why}`;
+
+/** `fn`, answered from its last result for `ms` after it settled. */
+function every<T>(ms: number, fn: () => Promise<T>): () => Promise<T> {
+  let last: { at: number; value: Promise<T> } | undefined;
+  return () => {
+    if (!last || Date.now() - last.at > ms) {
+      const value = fn();
+      last = { at: Date.now(), value };
+      value.catch(() => {
+        last = undefined;
+      });
+    }
+    return last.value;
+  };
+}
 
 /** The most a sprite may live (ADR 0480), from runner.json. */
 export const spriteLifetimeMs = (config: Pick<RunnerConfig, "sprites">) =>
@@ -154,7 +243,23 @@ export function buildRunner(
   });
   const accounts = accountPaths(dirs);
   const containers = config.isolation === "container";
+  const checkSettings = checkSettingsSchema.parse(config.checks ?? {});
   const sprites = config.isolation === "sprites";
+  // A Mac sandbox runner's check containers (ADR 0501, fourth review): the runtime its checks run
+  // on, and that reaps what a runner that died mid-check left (fifth review).
+  const checkRuntime =
+    !containers && !sprites && process.platform === "darwin"
+      ? (options.container?.runtime ?? dockerRuntime({ exec, bin: dockerBin(config) }))
+      : null;
+  const reapChecks = (running: Set<string>) =>
+    checkRuntime ? reapCheckContainers(checkRuntime, running) : Promise.resolve([] as string[]);
+  // Claim nothing heavy, then nothing at all, while the machine is overloaded (ADR 0552). Checks
+  // wait on the same gate before they start (fifth review).
+  const load = new LoadGate(
+    loadPolicySchema.parse(config.load ?? {}),
+    options.loadReading ?? hostLoad,
+    log,
+  );
   // A stream-json session (ADR 0450) runs on the host only: a container or sprite job keeps tmux.
   const sessionMode = containers || sprites ? "tmux" : config.session;
   if ((containers || sprites) && config.session === "stream-json") {
@@ -182,7 +287,15 @@ export function buildRunner(
     attachmentsDir: dirs.attachmentsDir,
     startPoint: (job, checkout) => git.startPoint(job, checkout),
     // The harness must not read the runner's key, its other runs, or the clones' git internals.
-    protectPaths: [dirs.configDir, dirs.runsDir, dirs.reposDir],
+    // ADR 0501: nor the jobs' check trees (another job's agent could forge this job's evidence).
+    // Nor the check sandbox's sockets (a check's network goes through them).
+    protectPaths: [
+      dirs.configDir,
+      dirs.runsDir,
+      dirs.reposDir,
+      dirs.checksDir,
+      dirs.checkSocketsDir,
+    ],
     identity,
     ...(config.capabilities ? { capabilities: config.capabilities } : {}),
     // tmux (default) or a stream-json session shown as a chat (ADR 0450).
@@ -241,6 +354,32 @@ export function buildRunner(
     git,
     maxConcurrent: config.maxConcurrent,
     maxLight: config.maxLight,
+    // ADR 0501: a job without a container runs its checks under the host's OS sandbox, never as the
+    // owner; none of the runner's own dirs or the owner's checkouts are readable there. Only for the
+    // default isolation: a container runner checks in containers, and any other (a sprite per job)
+    // never runs a job's checks on this machine (they are reported not run).
+    // Fourth review: on a Mac, a fresh check container when a container runtime answers; with
+    // none, not run, unless runner.json opts in to the weaker macOS sandbox (./check-mode.ts).
+    checkSandbox:
+      (config.isolation ?? "sandbox") !== "sandbox"
+        ? null
+        : localChecks({
+            weakerMacSandbox: checkSettings.weakerMacSandbox,
+            limits: {
+              cpus: checkSettings.cpus,
+              memory: `${Math.round(checkSettings.memoryGb * 1024)}m`,
+              tmpSize: `${Math.round(checkSettings.tmpGb * 1024)}m`,
+            },
+            runtime: checkRuntime,
+            sandbox: checkSandbox(checkSandboxOptions(config, dirs)),
+          }),
+    checksDir: dirs.checksDir,
+    // Fifth review: a `sandbox` runner always declares `checks` (a check that can't run comes back
+    // not run with the reason, and the gate asks a person); a container runner's adapter has its
+    // own exec; a sprite runner never declares it. The one line doctor prints rides on the
+    // manifest, asked again every 10 minutes, never per heartbeat.
+    declareChecks: (config.isolation ?? "sandbox") === "sandbox",
+    checksNote: every(10 * 60_000, async () => checkLine(await checkReadiness(config, dirs, exec))),
     heartbeatMs: config.heartbeatMs,
     reapOrphans: async (running) => {
       // Container jobs first, with plain file operations: their job repos are never touched by git.
@@ -262,7 +401,12 @@ export function buildRunner(
                 );
                 return [] as string[];
               })
-          : [];
+          : // A Mac sandbox runner's check containers, their proxies and networks: at start-up
+            // `running` is empty, so every one a dead runner left goes.
+            await reapChecks(running).catch((err) => {
+              log(`reaping check containers: ${err instanceof Error ? err.message : err}`);
+              return [] as string[];
+            });
       const local = await reapOrphans(
         {
           ...hostDirs(dirs, exec),
@@ -280,12 +424,10 @@ export function buildRunner(
       return [...new Set([...reaped, ...local])];
     },
     liveJobsFile: liveJobsFile(dirs),
-    // Claim nothing heavy, then nothing at all, while the machine is overloaded (ADR 0552).
-    load: new LoadGate(
-      loadPolicySchema.parse(config.load ?? {}),
-      options.loadReading ?? hostLoad,
-      log,
-    ),
+    load,
+    // At most this many checks at once, each a heavy job while it runs (fifth review).
+    maxChecks: checkSettings.maxConcurrent,
+    maxTreeBytes: Math.round(checkSettings.maxTreeGb * 1024 ** 3),
     // A sprites runner sweeps while it runs (ADR 0480): sprites no live job holds, or past their
     // lifetime, so none is left billing between restarts.
     ...(sprites
@@ -293,7 +435,11 @@ export function buildRunner(
           sweep: async (running: Set<string>) =>
             reapSprites(await spriteDirs(config, dirs, options.sprites?.api), running),
         }
-      : {}),
+      : checkRuntime
+        ? // And a Mac sandbox runner's check containers whose job it no longer runs (fifth review).
+          // A runtime that isn't answering has none running: nothing to do, quietly.
+          { sweep: (running: Set<string>) => reapChecks(running).catch(() => [] as string[]) }
+        : {}),
     log,
     ...(options.selfUpdate ? { selfUpdate: options.selfUpdate } : {}),
     ...(options.onUpdated ? { onUpdated: options.onUpdated } : {}),

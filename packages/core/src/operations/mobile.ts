@@ -1,0 +1,1024 @@
+// The phone app's sign-in and pairing (ADR 0541, spec 60 PR 1a).
+//
+// The phone makes an EC P-256 key in Android Keystore (StrongBox or the TEE, a fingerprint for
+// every use), generated with an attestation challenge derived from a one-use nonce
+// (mobile.nonce). It sends the key's certificate chain with mobile.authStart, and the engine checks
+// the attestation (attestation/android.ts) before anything is stored. Then one of two ways in, each
+// ending with a person's approval and exactly one `sfm_` token:
+// - **Browser**: authStart returns the website page where the person signs in and approves
+//   (mobile.approveDevice, browser-only). The site sends the browser to the App Link
+//   `/mobile/callback?code=…&state=…`, and the phone trades the code and its PKCE verifier for a
+//   token (mobile.authExchange).
+// - **QR or typed code**: a person signed in on the website, or on the desktop with Touch ID, makes
+//   a pair offer (mobile.pairOffer). The offer *is* the approval: one use, 5 minutes, stored only as
+//   hashes. The phone sends its secret (from the QR) or the typed code with authStart, gets the
+//   one-time code back directly, and exchanges it as above.
+//
+// The nonce is stateless until used (ADR 0541 amendment, 2026-11-12, second review): an expiry and
+// random bytes signed with an HMAC under the engine's secret. Asking for one stores nothing, so no
+// number of callers can use them up and block other people's sign-in. The per-caller courtesy limit
+// is sf-engine's (a Workers rate limiting binding in front of the door), so asking writes nothing
+// to D1 either. mobile.authStart checks the signature and the expiry, then records the nonce as
+// spent in a statement of its own, committed before anything else is decided, so it is spent
+// whatever the answer and whatever happens to the rest of the call.
+//
+// The typed code's limits. A guess costs a real phone running the real app: the attestation is
+// checked before the code is even looked at, and each try needs a new nonce and a new Keystore key.
+// Then, counted in SQL in the call's own batch, so parallel tries can't race past them:
+// - every wrong code counts against the live offer it names (its `attempts`, incremented in place,
+//   whatever the caller limits below say), and the fifth closes it. A live offer's tag is unique,
+//   so a wrong code counts against one offer only;
+// - one caller (the network address the door saw) gets ten typed codes an hour;
+// - once thirty wrong codes have come in an hour, a caller who has already sent a wrong one this
+//   hour is held. A caller's first code isn't, so other people's guessing never stops the owner's
+//   right code: only their offer's own five can.
+// Every refusal of a code or a QR secret is one answer (the same status and body): wrong, used,
+// expired, closed, or a right code whose offer closed while it was on its way. Nothing tells a
+// guesser whether a tag is live or how many tries an offer has left; the screen showing the code
+// (mobile.pairOfferStatus) tells its owner how many wrong tries it has had.
+//
+// The phone isn't anyone before it signs in, so the client door calls mobile.nonce,
+// mobile.authStart and mobile.authExchange unsigned, as MOBILE_DEVICE_ACTOR.
+import { z } from "zod";
+import type { Actor } from "../actors.ts";
+import {
+  AttestationError,
+  attestationChallenge,
+  MOBILE_PACKAGE,
+  type VerifiedAttestation,
+} from "../attestation/android.ts";
+import { OperationError } from "../errors.ts";
+import { newId } from "../ids.ts";
+import { defineOperation, type HandlerContext } from "../operation.ts";
+import {
+  DESKTOP_PENDING_LIMIT,
+  deviceName,
+  expired,
+  keyFingerprint,
+  type PublicKeyJwk,
+  pkceChallenge,
+} from "./desktop.ts";
+import { attestationSummary, parseAttestation } from "./device.ts";
+import { randomToken, sha256Hex } from "./onboarding.ts";
+
+/** The actor the client door uses for the phone's three unsigned sign-in calls. */
+export const MOBILE_DEVICE_ACTOR: Actor = { type: "runner", id: "mobile-device-login" };
+/** Where a person approves a phone's browser sign-in on the website. */
+export const MOBILE_APPROVE_PATH = "/mobile/connect";
+/** The App Link the website sends the browser back to (verified by assetlinks.json). */
+export const MOBILE_CALLBACK_PATH = "/mobile/callback";
+/** The App Link a pair offer's QR code holds; its secret is in the fragment. */
+export const MOBILE_PAIR_PATH = "/mobile/pair";
+/** Phone tokens start with this, so they're recognisable in a leak scan. */
+export const MOBILE_TOKEN_PREFIX = "sfm_";
+/** A phone token lasts this long; in its last week the app renews it with a fingerprint. */
+export const MOBILE_TOKEN_TTL_MS = 30 * 24 * 3_600_000;
+/** A nonce, an offer and a sign-in request each live this long. */
+export const MOBILE_NONCE_TTL_MS = 5 * 60_000;
+export const PAIR_OFFER_TTL_MS = 5 * 60_000;
+export const MOBILE_AUTH_TTL_MS = 10 * 60_000;
+/** Wrong typed codes that close an offer. */
+export const PAIR_CODE_ATTEMPTS = 5;
+/** Typed codes one caller may send an hour. */
+export const PAIR_CODE_TRIES_PER_CALLER = 10;
+/** Wrong typed codes an hour, across the factory, after which a caller with a wrong one is held. */
+export const PAIR_CODE_WRONG_PER_HOUR = 30;
+/** The answer to every refused code or QR secret, whatever the reason (one answer, see above). */
+export const PAIR_CODE_REFUSED =
+  "this pairing code is wrong, used or expired: check it against the screen, or make a new one on the desktop or the website";
+/** At most this many live offers per person. */
+export const PAIR_OFFER_LIMIT = 5;
+
+/**
+ * Crockford base32 for typed codes: no I, L, O or U. Ten characters: two name the offer (so a wrong
+ * code counts against it), eight are the secret (40 bits, against 5 tries per offer).
+ */
+const CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CODE_LENGTH = 10;
+const TAG_LENGTH = 2;
+
+function randomCode(length: number): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(bytes, (b) => CODE_ALPHABET[b & 31]).join("");
+}
+
+/** `abcde-fghjk`, `ABCDEFGHJK`, with I→1, L→1, O→0 → `ABCDEFGHJK`. */
+export function normalizePairCode(text: string): string {
+  return text
+    .toUpperCase()
+    .replace(/[IL]/g, "1")
+    .replace(/O/g, "0")
+    .replace(/[^0-9A-Z]/g, "");
+}
+
+/** `ABCDEFGHJK` → `ABCDE-FGHJK`, as the screens show it. */
+export const formatPairCode = (code: string) => `${code.slice(0, 5)}-${code.slice(5)}`;
+
+/** The attestation checks' settings and the revocation list (sf-engine supplies them). */
+export interface MobileAttestationService {
+  /** SHA-256 of the signing certificates the app may be signed with (MOBILE_SIGNING_CERTS). */
+  signingCerts: readonly string[];
+  /** Google's revocation list, cached for a day. Throws when it can't be had: sign-in is refused. */
+  revoked(): Promise<ReadonlySet<string>>;
+  /**
+   * HMAC-SHA256 of `message` under the engine's secret, separated by `label` (base64url). Signs the
+   * stateless nonces. Throws `unavailable` when the engine has no secret: sign-in is refused.
+   */
+  mac(label: string, message: string): Promise<string>;
+  /** Checks a chain. sf-engine passes Google's roots; tests may pass a test root here. */
+  verify(
+    chain: readonly string[],
+    expected: { challenge: Uint8Array; revoked: ReadonlySet<string>; now: number },
+  ): Promise<VerifiedAttestation>;
+}
+
+const b64url = /^[A-Za-z0-9_-]+$/;
+const requestId = z.string().regex(/^dar_[0-9a-f]{32}$/);
+const offerId = z.string().regex(/^pof_[0-9a-f]{32}$/);
+const certificate = z.string().min(100).max(16_000);
+const statusEnum = z.enum(["pending", "approved", "denied", "consumed", "expired"]);
+
+function requireMobileActor(ctx: HandlerContext) {
+  if (ctx.actor.id !== MOBILE_DEVICE_ACTOR.id) {
+    throw new OperationError("forbidden", "only the phone app's sign-in calls this");
+  }
+}
+
+const baseUrl = (ctx: HandlerContext) => (ctx.services.publicBaseUrl ?? "").replace(/\/+$/, "");
+
+/**
+ * Checks the phone's attestation. A chain that fails comes back as `refused` (the caller spends
+ * the nonce); an engine that can't check at all throws `unavailable`.
+ */
+async function verifyAttestation(
+  ctx: HandlerContext,
+  nonce: string,
+  chain: readonly string[],
+): Promise<{ ok: VerifiedAttestation } | { refused: { message: string; reason: string } }> {
+  const service = attestationService(ctx);
+  let revoked: ReadonlySet<string>;
+  try {
+    revoked = await service.revoked();
+  } catch {
+    throw new OperationError(
+      "unavailable",
+      "Google's attestation revocation list can't be checked right now: try again in a minute",
+    );
+  }
+  try {
+    return {
+      ok: await service.verify(chain, {
+        challenge: await attestationChallenge(nonce),
+        revoked,
+        now: Date.parse(ctx.now),
+      }),
+    };
+  } catch (error) {
+    if (error instanceof AttestationError) {
+      return {
+        refused: {
+          message: `this phone's key attestation was refused: ${error.message}`,
+          reason: error.reason,
+        },
+      };
+    }
+    throw error;
+  }
+}
+
+/** Encodes a stateless nonce: `<expiry ms, base 36>.<random>.<mac>`. */
+async function signNonce(service: MobileAttestationService, expiresMs: number): Promise<string> {
+  const body = `${expiresMs.toString(36)}.${randomToken(24)}`;
+  return `${body}.${await service.mac("nonce", body)}`;
+}
+
+/** Whether a nonce is one this engine signed and it hasn't expired (stateless: spent is checked apart). */
+async function nonceValid(
+  service: MobileAttestationService,
+  nonce: string,
+  now: string,
+): Promise<boolean> {
+  const parts = nonce.split(".");
+  if (parts.length !== 3) return false;
+  const [expiry = "", random = "", mac = ""] = parts;
+  if (!/^[0-9a-z]{1,12}$/.test(expiry) || !b64url.test(random) || !b64url.test(mac)) return false;
+  const expected = await service.mac("nonce", `${expiry}.${random}`);
+  if (!constantTimeEqual(expected, mac)) return false;
+  const expiresMs = Number.parseInt(expiry, 36);
+  const nowMs = Date.parse(now);
+  return expiresMs > nowMs && expiresMs <= nowMs + MOBILE_NONCE_TTL_MS;
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function attestationService(ctx: HandlerContext): MobileAttestationService {
+  const service = ctx.services.mobileAttestation;
+  if (!service) {
+    throw new OperationError("unavailable", "phone sign-in isn't set up on this engine");
+  }
+  return service;
+}
+
+export const mobileNonce = defineOperation({
+  name: "mobile.nonce",
+  description:
+    "A one-use nonce (5 minutes) for the phone's key attestation (ADR 0541): the phone generates its Keystore key with SHA-256 of this nonce as the attestation challenge, then sends both with mobile.authStart. Stateless: signed by the engine and recorded only when mobile.authStart spends it. sf-engine's client door limits it per network address before the call (a courtesy). Called unsigned by sf-engine's client door. A read: it writes nothing, so it isn't audited either.",
+  risk: "read",
+  actors: ["runner"],
+  permission: "signed-in",
+  input: z.object({}),
+  output: z.object({ nonce: z.string(), expiresAt: z.string() }),
+  redact: { output: (o) => ({ ...o, nonce: "[redacted]" }) },
+  async handler(_input, ctx) {
+    requireMobileActor(ctx);
+    const service = attestationService(ctx);
+    const nowMs = Date.parse(ctx.now);
+    const expiresMs = nowMs + MOBILE_NONCE_TTL_MS;
+    return {
+      nonce: await signNonce(service, expiresMs),
+      expiresAt: new Date(expiresMs).toISOString(),
+    };
+  },
+});
+
+const startOutput = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("pending"),
+    requestId: z.string(),
+    approveUrl: z.string(),
+    expiresAt: z.string(),
+    keyStorage: z.string(),
+  }),
+  z.object({
+    status: z.literal("approved"),
+    requestId: z.string(),
+    /** The one-time code for mobile.authExchange (the offer was the approval). */
+    code: z.string(),
+    expiresAt: z.string(),
+    keyStorage: z.string(),
+  }),
+  /**
+   * Refused after the nonce was found: a bad chain, a wrong or dead typed code, a wrong QR secret,
+   * or a limit. The call commits (the nonce is spent, a typed code is counted) and the door answers
+   * with `code`'s status.
+   */
+  z.object({
+    status: z.literal("refused"),
+    code: z.enum(["forbidden", "denied", "unavailable"]),
+    error: z.string(),
+    /** The attestation check that failed. */
+    attestation: z.string().optional(),
+  }),
+]);
+
+export const mobileAuthStart = defineOperation({
+  name: "mobile.authStart",
+  description:
+    "Start a phone sign-in (ADR 0541): the nonce from mobile.nonce, the Keystore key's attestation chain (base64 DER, leaf first), a device name, a PKCE S256 challenge and a state. The engine checks the attestation (Google's pinned roots and revocation list, the challenge, a hardware P-256 key bound to a fingerprint for every use, our package and signing certificate) and refuses the sign-in if it fails; a phone whose boot isn't verified or whose bootloader is unlocked registers but can't approve. Without an offer it returns the website page where a person approves (10 minutes). With a pair offer (the QR's offerId and secret, or the typed code) it is already approved and returns the one-time code. Called unsigned by sf-engine's client door.",
+  risk: "write",
+  actors: ["runner"],
+  permission: "signed-in",
+  input: z.object({
+    nonce: z.string().min(20).max(200),
+    attestationChain: z.array(certificate).min(2).max(10),
+    deviceName,
+    codeChallenge: z.string().regex(b64url).length(43),
+    state: z.string().regex(b64url).min(16).max(200),
+    offer: z
+      .union([
+        z.object({ offerId, secret: z.string().min(20).max(200) }),
+        z.object({ code: z.string().min(CODE_LENGTH).max(20) }),
+      ])
+      .optional(),
+  }),
+  output: startOutput,
+  redact: {
+    input: (i) => ({
+      deviceName: i.deviceName,
+      attestationChain: `[${i.attestationChain.length} certificates]`,
+      offer: i.offer
+        ? "offerId" in i.offer
+          ? { offerId: i.offer.offerId }
+          : { code: "[redacted]" }
+        : null,
+      nonce: "[redacted]",
+    }),
+    output: (o) => (o.status === "approved" ? { ...o, code: "[redacted]" } : o),
+  },
+  async handler(input, ctx) {
+    requireMobileActor(ctx);
+    const service = attestationService(ctx);
+    const usedOrExpired = () =>
+      new OperationError("forbidden", "this sign-in's nonce is used or expired: start again");
+    if (!(await nonceValid(service, input.nonce, ctx.now))) throw usedOrExpired();
+    // Spend the nonce first, in a statement of its own that commits now: whatever is decided next,
+    // and whatever happens to the rest of this call's batch, it stays spent. Another try needs a
+    // new nonce, and so a new Keystore key attested with its challenge. (The one write outside the
+    // batch, on purpose: a rolled-back batch must not give the nonce back.)
+    const spent = await ctx.d1
+      .prepare(
+        `INSERT INTO core_mobile_nonces (nonce_hash, caller, created_at, expires_at, consumed_at)
+         VALUES (?1, ?2, ?3, ?4, ?3) ON CONFLICT (nonce_hash) DO NOTHING`,
+      )
+      .bind(
+        await sha256Hex(input.nonce),
+        ctx.origin.caller ?? "",
+        ctx.now,
+        new Date(Date.parse(ctx.now) + MOBILE_NONCE_TTL_MS).toISOString(),
+      )
+      .run();
+    if (spent.meta.changes !== 1) throw usedOrExpired();
+    const refuse = (refusal: Omit<Refusal, "status">): Refusal => ({
+      status: "refused",
+      ...refusal,
+    });
+
+    // The attestation first: a typed code is only looked at for a real phone running our app.
+    const checked = await verifyAttestation(ctx, input.nonce, input.attestationChain);
+    if ("refused" in checked) {
+      return refuse({
+        code: "forbidden",
+        error: checked.refused.message,
+        attestation: checked.refused.reason,
+      });
+    }
+    const attested = checked.ok;
+
+    const pending = await ctx.db
+      .selectFrom("core_desktop_auth_requests")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("status", "=", "pending")
+      .where("expires_at", ">", ctx.now)
+      .executeTakeFirst();
+    if (Number(pending?.n ?? 0) >= DESKTOP_PENDING_LIMIT) {
+      return refuse({
+        code: "unavailable",
+        error: "too many sign-ins are waiting: try again in a few minutes",
+      });
+    }
+
+    let offer: { id: string; user_id: string } | null = null;
+    if (input.offer && "code" in input.offer) {
+      const found = await redeemTypedCode(ctx, normalizePairCode(input.offer.code));
+      if ("refused" in found) return refuse(found.refused);
+      offer = found.offer;
+    } else if (input.offer) {
+      const row = await ctx.db
+        .selectFrom("core_pair_offers")
+        .selectAll()
+        .where("id", "=", input.offer.offerId)
+        .executeTakeFirst();
+      if (
+        !row ||
+        row.secret_hash !== (await sha256Hex(input.offer.secret)) ||
+        row.consumed_at ||
+        row.closed_at ||
+        expired(ctx, row)
+      ) {
+        return refuse({ code: "forbidden", error: PAIR_CODE_REFUSED });
+      }
+      ctx.write(
+        ctx.db
+          .updateTable("core_pair_offers")
+          .set({ consumed_at: ctx.now })
+          .where("id", "=", row.id)
+          .where("consumed_at", "is", null)
+          .where("closed_at", "is", null)
+          .where("expires_at", ">", ctx.now),
+      );
+      ctx.guardChanged("use the offer once");
+      offer = row;
+    }
+
+    const id = newId("desktopAuthRequest");
+    const expiresAt = new Date(Date.parse(ctx.now) + MOBILE_AUTH_TTL_MS).toISOString();
+    const code = offer ? randomToken() : null;
+    ctx.write(
+      ctx.db.insertInto("core_desktop_auth_requests").values({
+        id,
+        code_challenge: input.codeChallenge,
+        device_name: input.deviceName,
+        public_key: JSON.stringify(attested.publicKey),
+        key_storage: attested.keyStorage,
+        platform: "android",
+        attestation: JSON.stringify(attested.record),
+        offer_id: offer?.id ?? null,
+        state: input.state,
+        status: offer ? "approved" : "pending",
+        user_id: offer?.user_id ?? null,
+        code_hash: code ? await sha256Hex(code) : null,
+        device_id: null,
+        created_at: ctx.now,
+        expires_at: expiresAt,
+        decided_at: offer ? ctx.now : null,
+        consumed_at: null,
+      }),
+    );
+    if (offer && code) {
+      ctx.change({
+        entity: "desktop_auth_request",
+        id,
+        after: { status: "approved", by: offer.user_id, offer: offer.id, device: input.deviceName },
+      });
+      return {
+        status: "approved" as const,
+        requestId: id,
+        code,
+        expiresAt,
+        keyStorage: attested.keyStorage,
+      };
+    }
+    return {
+      status: "pending" as const,
+      requestId: id,
+      approveUrl: `${baseUrl(ctx)}${MOBILE_APPROVE_PATH}?request=${id}`,
+      expiresAt,
+      keyStorage: attested.keyStorage,
+    };
+  },
+});
+
+type Refusal = Extract<z.output<typeof startOutput>, { status: "refused" }>;
+
+/**
+ * The try counts toward the caps only if they hold when the batch runs (one statement). Each count
+ * stops at its cap (a LIMIT in the subquery), so it reads at most that many index rows
+ * (core_pair_code_tries_caller_idx, core_pair_code_tries_at_idx) however many tries there were.
+ */
+const UNDER_CAPS = `(SELECT COUNT(*) FROM (SELECT 1 FROM core_pair_code_tries WHERE caller = ?4 AND at > ?5 LIMIT ?6)) < ?6
+  AND NOT (EXISTS (SELECT 1 FROM core_pair_code_tries WHERE caller = ?4 AND at > ?5 AND ok = 0)
+           AND (SELECT COUNT(*) FROM (SELECT 1 FROM core_pair_code_tries WHERE at > ?5 AND ok = 0 LIMIT ?7)) >= ?7)`;
+
+/**
+ * Finds the live offer a typed code names. Counts the try, and a wrong one against the offer its
+ * first two characters name, in SQL in the call's batch. A right code consumes its offer there too,
+ * guarded, so a code can't pair twice or after its offer closed; if a guard fails the batch rolls
+ * back and the door answers PAIR_CODE_REFUSED, as for any other refused code.
+ */
+async function redeemTypedCode(
+  ctx: HandlerContext,
+  code: string,
+): Promise<{ offer: { id: string; user_id: string } } | { refused: Omit<Refusal, "status"> }> {
+  const caller = ctx.origin.caller ?? "";
+  const hourAgo = new Date(Date.parse(ctx.now) - 3_600_000).toISOString();
+  const counts = await ctx.d1
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM (SELECT 1 FROM core_pair_code_tries WHERE caller = ?1 AND at > ?2 LIMIT ?3)) AS mine,
+              EXISTS (SELECT 1 FROM core_pair_code_tries WHERE caller = ?1 AND at > ?2 AND ok = 0) AS mineWrong,
+              (SELECT COUNT(*) FROM (SELECT 1 FROM core_pair_code_tries WHERE at > ?2 AND ok = 0 LIMIT ?4)) AS wrong`,
+    )
+    .bind(caller, hourAgo, PAIR_CODE_TRIES_PER_CALLER, PAIR_CODE_WRONG_PER_HOUR)
+    .first<{ mine: number; mineWrong: number; wrong: number }>();
+  const held =
+    Number(counts?.mine ?? 0) >= PAIR_CODE_TRIES_PER_CALLER ||
+    (Number(counts?.mineWrong ?? 0) > 0 && Number(counts?.wrong ?? 0) >= PAIR_CODE_WRONG_PER_HOUR);
+  if (held) {
+    return {
+      refused: {
+        code: "unavailable",
+        error: "too many typed codes this hour: scan the QR code instead, or try again later",
+      },
+    };
+  }
+  const hash = await sha256Hex(code);
+  // The right code for some offer, live or not.
+  const named =
+    code.length === CODE_LENGTH
+      ? await ctx.db
+          .selectFrom("core_pair_offers")
+          .selectAll()
+          .where("code_hash", "=", hash)
+          .executeTakeFirst()
+      : undefined;
+  const live = (o: { consumed_at: string | null; closed_at: string | null; expires_at: string }) =>
+    !o.consumed_at && !o.closed_at && o.expires_at > ctx.now;
+  const match = named && live(named) && named.attempts < PAIR_CODE_ATTEMPTS ? named : undefined;
+  const tryId = crypto.randomUUID();
+  const recordTry = (ok: boolean) =>
+    ctx.write(
+      ctx.d1
+        .prepare(
+          `INSERT INTO core_pair_code_tries (id, at, ok, caller) SELECT ?1, ?2, ?3, ?4 WHERE ${UNDER_CAPS}`,
+        )
+        .bind(
+          tryId,
+          ctx.now,
+          ok ? 1 : 0,
+          caller,
+          hourAgo,
+          PAIR_CODE_TRIES_PER_CALLER,
+          PAIR_CODE_WRONG_PER_HOUR,
+        ),
+    );
+
+  if (match) {
+    recordTry(true);
+    ctx.guardChanged("under the typed-code limits");
+    ctx.write(
+      ctx.d1
+        .prepare(
+          `UPDATE core_pair_offers SET consumed_at = ?1
+           WHERE id = ?2 AND consumed_at IS NULL AND closed_at IS NULL AND expires_at > ?1 AND attempts < ?3`,
+        )
+        .bind(ctx.now, match.id, PAIR_CODE_ATTEMPTS),
+    );
+    ctx.guardChanged("use the offer once");
+    return { offer: match };
+  }
+
+  recordTry(false);
+  // A wrong code counts against the live offer its first two characters name, in place and
+  // whatever the caller limits said of the try: parallel tries each add one, and the fifth closes
+  // the offer. The answer is the same whether or not a live offer has that tag, and whether this
+  // was the right code for a dead offer: the code is refused, and that is all a caller learns.
+  if (!named) {
+    ctx.write(
+      ctx.d1
+        .prepare(
+          `UPDATE core_pair_offers
+           SET attempts = attempts + 1,
+               closed_at = CASE WHEN attempts + 1 >= ?1 THEN ?2 ELSE closed_at END
+           WHERE code_tag = ?3 AND consumed_at IS NULL AND closed_at IS NULL AND expires_at > ?2`,
+        )
+        .bind(PAIR_CODE_ATTEMPTS, ctx.now, code.slice(0, TAG_LENGTH)),
+    );
+  }
+  return { refused: { code: "forbidden", error: PAIR_CODE_REFUSED } };
+}
+
+async function phoneRequest(ctx: HandlerContext, id: string) {
+  const row = await ctx.db
+    .selectFrom("core_desktop_auth_requests")
+    .selectAll()
+    .where("id", "=", id)
+    .where("platform", "=", "android")
+    .executeTakeFirst();
+  if (!row) throw new OperationError("not_found", "no such sign-in: start it again on the phone");
+  return row;
+}
+
+export const mobileAuthLookup = defineOperation({
+  name: "mobile.authLookup",
+  description:
+    "What a phone sign-in is waiting for, so the website can show it before a person approves: the phone's name, where its key lives (StrongBox, the TEE, or software if it can't approve), its attested boot state and patch level, the key's fingerprint, its status and expiry.",
+  risk: "read",
+  actors: ["human"],
+  permission: "signed-in",
+  input: z.object({ requestId }),
+  output: z.object({
+    requestId: z.string(),
+    deviceName: z.string(),
+    keyStorage: z.string(),
+    keyFingerprint: z.string(),
+    attestation: attestationSummary,
+    status: statusEnum,
+    expiresAt: z.string(),
+  }),
+  async handler(input, ctx) {
+    const row = await phoneRequest(ctx, input.requestId);
+    return {
+      requestId: row.id,
+      deviceName: row.device_name,
+      keyStorage: row.key_storage,
+      keyFingerprint: await keyFingerprint(JSON.parse(row.public_key) as PublicKeyJwk),
+      attestation: parseAttestation(row.attestation),
+      status: row.status === "pending" && expired(ctx, row) ? ("expired" as const) : row.status,
+      expiresAt: row.expires_at,
+    };
+  },
+});
+
+export const mobileApproveDevice = defineOperation({
+  name: "mobile.approveDevice",
+  description:
+    "Approve a phone's browser sign-in (ADR 0541): the phone gets a token that acts as you, and can decide a merge, a plan or a policy change only with a fingerprint each time. Returns the App Link that hands the one-time code back to the phone. Browser-only, for a pending, unexpired request.",
+  risk: "write",
+  actors: ["human"],
+  permission: "signed-in",
+  browserOnly: true,
+  input: z.object({ requestId }),
+  output: z.object({ approved: z.boolean(), redirectUrl: z.string() }),
+  redact: { output: (o) => ({ ...o, redirectUrl: "[redacted]" }) },
+  async handler(input, ctx) {
+    const row = await phoneRequest(ctx, input.requestId);
+    if (row.status !== "pending") {
+      throw new OperationError(
+        "conflict",
+        "this sign-in was already decided: start again on the phone",
+      );
+    }
+    if (expired(ctx, row)) {
+      throw new OperationError("conflict", "this sign-in expired: start again on the phone");
+    }
+    const code = randomToken();
+    ctx.write(
+      ctx.db
+        .updateTable("core_desktop_auth_requests")
+        .set({
+          status: "approved",
+          user_id: ctx.actor.id,
+          code_hash: await sha256Hex(code),
+          decided_at: ctx.now,
+        })
+        .where("id", "=", row.id)
+        .where("status", "=", "pending"),
+    );
+    ctx.guardChanged("decide once");
+    ctx.change({
+      entity: "desktop_auth_request",
+      id: row.id,
+      after: { status: "approved", by: ctx.actor.id, device: row.device_name },
+    });
+    const query = new URLSearchParams({ code, state: row.state });
+    return { approved: true, redirectUrl: `${baseUrl(ctx)}${MOBILE_CALLBACK_PATH}?${query}` };
+  },
+});
+
+export const mobileDenyDevice = defineOperation({
+  name: "mobile.denyDevice",
+  description:
+    "Deny a phone sign-in you didn't start: it can't be exchanged for a token. Browser-only.",
+  risk: "write",
+  actors: ["human"],
+  permission: "signed-in",
+  browserOnly: true,
+  input: z.object({ requestId }),
+  output: z.object({ denied: z.boolean() }),
+  async handler(input, ctx) {
+    const row = await phoneRequest(ctx, input.requestId);
+    if (row.status !== "pending")
+      throw new OperationError("conflict", "this sign-in was already decided");
+    ctx.write(
+      ctx.db
+        .updateTable("core_desktop_auth_requests")
+        .set({ status: "denied", user_id: ctx.actor.id, decided_at: ctx.now })
+        .where("id", "=", row.id)
+        .where("status", "=", "pending"),
+    );
+    ctx.guardChanged("decide once");
+    return { denied: true };
+  },
+});
+
+/** Mints a phone token for a device. */
+async function mintMobileToken(
+  ctx: HandlerContext,
+  userId: string,
+  deviceId: string,
+  name: string,
+) {
+  const token = `${MOBILE_TOKEN_PREFIX}${randomToken(32)}`;
+  const tokenId = newId("cliToken");
+  const expiresAt = new Date(Date.parse(ctx.now) + MOBILE_TOKEN_TTL_MS).toISOString();
+  ctx.write(
+    ctx.db.insertInto("core_cli_tokens").values({
+      id: tokenId,
+      token_hash: await sha256Hex(token),
+      user_id: userId,
+      name,
+      scope: "write",
+      kind: "mobile",
+      device_id: deviceId,
+      created_at: ctx.now,
+      expires_at: expiresAt,
+      revoked_at: null,
+    }),
+  );
+  return { token, tokenId, expiresAt };
+}
+
+export const mobileAuthExchange = defineOperation({
+  name: "mobile.authExchange",
+  description:
+    "The phone trades the one-time code (from the App Link, or from mobile.authStart with a pair offer) and its PKCE verifier for a phone token (30 days) bound to the device it registered. Once only. `decides: false` registers the phone with fingerprint approvals off. Called unsigned by sf-engine's client door.",
+  risk: "write",
+  actors: ["runner"],
+  permission: "signed-in",
+  input: z.object({
+    code: z.string().min(20).max(200),
+    codeVerifier: z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/),
+    decides: z.boolean().optional(),
+  }),
+  output: z.object({
+    token: z.string(),
+    tokenId: z.string(),
+    deviceId: z.string(),
+    expiresAt: z.string(),
+    login: z.string().nullable(),
+    keyStorage: z.string(),
+    decides: z.boolean(),
+  }),
+  redact: {
+    input: (i) => ({ code: "[redacted]", codeVerifier: "[redacted]", decides: i.decides }),
+    output: (o) => ({ ...o, token: "[redacted]" }),
+  },
+  async handler(input, ctx) {
+    requireMobileActor(ctx);
+    const refused = () =>
+      new OperationError("denied", "this sign-in can't be completed: start again on the phone");
+    const row = await ctx.db
+      .selectFrom("core_desktop_auth_requests")
+      .selectAll()
+      .where("code_hash", "=", await sha256Hex(input.code))
+      .where("platform", "=", "android")
+      .executeTakeFirst();
+    if (row?.status !== "approved" || !row.user_id || expired(ctx, row)) throw refused();
+    if ((await pkceChallenge(input.codeVerifier)) !== row.code_challenge) throw refused();
+    const user = await ctx.db
+      .selectFrom("core_user")
+      .select(["id", "github_login"])
+      .where("id", "=", row.user_id)
+      .executeTakeFirst();
+    if (!user) throw refused();
+
+    const deviceId = newId("desktopDevice");
+    const decides = input.decides ?? true;
+    ctx.write(
+      ctx.db
+        .updateTable("core_desktop_auth_requests")
+        .set({ status: "consumed", consumed_at: ctx.now, device_id: deviceId })
+        .where("id", "=", row.id)
+        .where("status", "=", "approved"),
+    );
+    ctx.guardChanged("exchange the code once");
+    ctx.write(
+      ctx.db.insertInto("core_desktop_devices").values({
+        id: deviceId,
+        user_id: user.id,
+        name: row.device_name,
+        public_key: row.public_key,
+        key_storage: row.key_storage,
+        platform: "android",
+        attestation: row.attestation,
+        decides: decides ? 1 : 0,
+        created_at: ctx.now,
+        last_seen_at: null,
+        revoked_at: null,
+      }),
+    );
+    if (row.offer_id) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_pair_offers")
+          .set({ device_id: deviceId })
+          .where("id", "=", row.offer_id),
+      );
+    }
+    const minted = await mintMobileToken(ctx, user.id, deviceId, row.device_name);
+    ctx.change({
+      entity: "desktop_device",
+      id: deviceId,
+      after: {
+        user: user.id,
+        name: row.device_name,
+        platform: "android",
+        keyStorage: row.key_storage,
+        decides,
+        offer: row.offer_id,
+      },
+    });
+    return {
+      ...minted,
+      deviceId,
+      login: user.github_login ?? null,
+      keyStorage: row.key_storage,
+      decides,
+    };
+  },
+});
+
+export const mobilePairOffer = defineOperation({
+  name: "mobile.pairOffer",
+  description:
+    'Add a phone (ADR 0541 decision 6): a one-use pairing offer for your account, live 5 minutes, shown as a QR code and a typed code. Making it is the approval, so only a person makes it: on the website, or on the desktop with Touch ID ("Add a phone to your account"). Five wrong typed codes close it. Watch it with mobile.pairOfferStatus.',
+  risk: "write",
+  actors: ["human"],
+  permission: "signed-in",
+  browserOnly: true,
+  // Offering from a device that already proves presence is the one exception ADR 0541 makes; a
+  // phone can't offer a pairing. Not a gate decision, so not `presenceDecidable`.
+  presenceSurfaces: ["desktop"],
+  input: z.object({}),
+  output: z.object({
+    offerId: z.string(),
+    /** What the QR code holds: the App Link with the secret in its fragment. */
+    pairUrl: z.string(),
+    /** Ten characters, shown as two groups of five. */
+    code: z.string(),
+    expiresAt: z.string(),
+  }),
+  redact: { output: (o) => ({ ...o, pairUrl: "[redacted]", code: "[redacted]" }) },
+  async handler(_input, ctx) {
+    const surface = ctx.origin.surface;
+    if (surface !== "app" && surface !== "desktop" && surface !== "test") {
+      throw new OperationError("forbidden", "add a phone from the website or the desktop app");
+    }
+    const live = await ctx.db
+      .selectFrom("core_pair_offers")
+      .select(["code_tag"])
+      .where("expires_at", ">", ctx.now)
+      .where("consumed_at", "is", null)
+      .where("closed_at", "is", null)
+      .execute();
+    const mine = await ctx.db
+      .selectFrom("core_pair_offers")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("user_id", "=", ctx.actor.id)
+      .where("expires_at", ">", ctx.now)
+      .where("consumed_at", "is", null)
+      .where("closed_at", "is", null)
+      .executeTakeFirst();
+    if (Number(mine?.n ?? 0) >= PAIR_OFFER_LIMIT) {
+      throw new OperationError(
+        "unavailable",
+        "too many open pairing codes: wait for them to expire",
+      );
+    }
+    // A tag no live offer uses, so a wrong code counts against one offer only.
+    const used = new Set(live.map((o) => o.code_tag));
+    let code = randomCode(CODE_LENGTH);
+    for (let i = 0; i < 20 && used.has(code.slice(0, TAG_LENGTH)); i++)
+      code = randomCode(CODE_LENGTH);
+    if (used.has(code.slice(0, TAG_LENGTH))) {
+      throw new OperationError("unavailable", "too many pairings at once: try again in a minute");
+    }
+    const secret = randomToken();
+    const id = newId("pairOffer");
+    const expiresAt = new Date(Date.parse(ctx.now) + PAIR_OFFER_TTL_MS).toISOString();
+    // The tag again, in the insert itself: two offers made at once never share one, so one
+    // person's wrong codes never count against another person's offer.
+    ctx.write(
+      ctx.d1
+        .prepare(
+          `INSERT INTO core_pair_offers (id, user_id, surface, secret_hash, code_tag, code_hash, attempts, created_at, expires_at)
+           SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8
+           WHERE NOT EXISTS (SELECT 1 FROM core_pair_offers WHERE code_tag = ?5
+             AND consumed_at IS NULL AND closed_at IS NULL AND expires_at > ?7)`,
+        )
+        .bind(
+          id,
+          ctx.actor.id,
+          surface === "desktop" ? "desktop" : "app",
+          await sha256Hex(secret),
+          code.slice(0, TAG_LENGTH),
+          await sha256Hex(code),
+          ctx.now,
+          expiresAt,
+        ),
+    );
+    ctx.guardChanged("a tag no live offer uses");
+    ctx.change({ entity: "pair_offer", id, after: { by: ctx.actor.id, surface } });
+    return {
+      offerId: id,
+      pairUrl: `${baseUrl(ctx)}${MOBILE_PAIR_PATH}?offer=${id}#secret=${secret}`,
+      code: formatPairCode(code),
+      expiresAt,
+    };
+  },
+});
+
+export const mobilePairOfferStatus = defineOperation({
+  name: "mobile.pairOfferStatus",
+  description:
+    "Where one of your pairing offers stands, for the screen that shows the code: how many wrong codes it has had (five close it), and waiting, paired (with the phone's name, where its key lives and its attested security level, so you can check it and remove it if it isn't yours), expired or closed.",
+  risk: "read",
+  actors: ["human"],
+  permission: "signed-in",
+  input: z.object({ offerId }),
+  output: z.object({
+    status: z.enum(["waiting", "pairing", "paired", "expired", "closed"]),
+    expiresAt: z.string(),
+    /** Wrong typed codes counted against it; only its owner sees this, never the phone guessing. */
+    wrongTries: z.number(),
+    /** The wrong codes that close it. */
+    maxWrongTries: z.number(),
+    device: z
+      .object({
+        id: z.string(),
+        name: z.string(),
+        keyStorage: z.string(),
+        decides: z.boolean(),
+        attestation: attestationSummary,
+        revoked: z.boolean(),
+      })
+      .nullable(),
+  }),
+  async handler(input, ctx) {
+    const row = await ctx.db
+      .selectFrom("core_pair_offers")
+      .selectAll()
+      .where("id", "=", input.offerId)
+      .executeTakeFirst();
+    if (!row || row.user_id !== ctx.actor.id)
+      throw new OperationError("not_found", "no such offer");
+    const device = row.device_id
+      ? await ctx.db
+          .selectFrom("core_desktop_devices")
+          .select(["id", "name", "key_storage", "decides", "attestation", "revoked_at"])
+          .where("id", "=", row.device_id)
+          .executeTakeFirst()
+      : undefined;
+    const status = device
+      ? ("paired" as const)
+      : row.consumed_at
+        ? ("pairing" as const)
+        : row.closed_at
+          ? ("closed" as const)
+          : expired(ctx, row)
+            ? ("expired" as const)
+            : ("waiting" as const);
+    return {
+      status,
+      expiresAt: row.expires_at,
+      wrongTries: row.attempts,
+      maxWrongTries: PAIR_CODE_ATTEMPTS,
+      device: device
+        ? {
+            id: device.id,
+            name: device.name,
+            keyStorage: device.key_storage,
+            decides: device.decides === 1,
+            attestation: parseAttestation(device.attestation),
+            revoked: device.revoked_at !== null,
+          }
+        : null,
+    };
+  },
+});
+
+export const mobileRenew = defineOperation({
+  name: "mobile.renew",
+  description:
+    "Renew this phone's sign-in for another 30 days (ADR 0541 decision 7): a new token for the same device, and its other tokens revoked. Only the phone itself, with a fingerprint for this exact call. The proof shows the phone holds its key, not a decision, so a phone with approvals off, or one registered as software (its boot isn't verified), renews too.",
+  risk: "write",
+  actors: ["human"],
+  permission: "signed-in",
+  browserOnly: true,
+  presenceSurfaces: ["mobile"],
+  input: z.object({}),
+  output: z.object({ token: z.string(), tokenId: z.string(), expiresAt: z.string() }),
+  redact: { output: (o) => ({ ...o, token: "[redacted]" }) },
+  async handler(_input, ctx) {
+    const deviceId = ctx.origin.deviceId;
+    if (ctx.origin.surface !== "mobile" || !deviceId || !ctx.presence) {
+      throw new OperationError("forbidden", "renew from the phone, with your fingerprint", {
+        presenceRequired: true,
+      });
+    }
+    const device = await ctx.db
+      .selectFrom("core_desktop_devices")
+      .select(["id", "user_id", "name", "revoked_at"])
+      .where("id", "=", deviceId)
+      .executeTakeFirst();
+    if (!device || device.user_id !== ctx.actor.id || device.revoked_at) {
+      throw new OperationError("forbidden", "this phone was removed: pair it again");
+    }
+    ctx.write(
+      ctx.db
+        .updateTable("core_cli_tokens")
+        .set({ revoked_at: ctx.now })
+        .where("device_id", "=", device.id)
+        .where("kind", "=", "mobile")
+        .where("revoked_at", "is", null),
+    );
+    const minted = await mintMobileToken(ctx, device.user_id, device.id, device.name);
+    ctx.change({ entity: "desktop_device", id: device.id, after: { renewed: minted.tokenId } });
+    return minted;
+  },
+});
+
+/** The person, device and token behind a phone bearer token, or null if unknown, revoked or expired. */
+export async function resolveMobileToken(
+  db: HandlerContext["db"],
+  token: string,
+  now: string,
+): Promise<{ id: string; user_id: string; device_id: string } | null> {
+  if (!token.startsWith(MOBILE_TOKEN_PREFIX)) return null;
+  const row = await db
+    .selectFrom("core_cli_tokens as t")
+    .innerJoin("core_desktop_devices as d", "d.id", "t.device_id")
+    .select([
+      "t.id as id",
+      "t.user_id as user_id",
+      "t.device_id as device_id",
+      "t.expires_at as expires_at",
+      "t.revoked_at as revoked_at",
+      "d.revoked_at as device_revoked_at",
+      "d.platform as platform",
+    ])
+    .where("t.token_hash", "=", await sha256Hex(token))
+    .where("t.kind", "=", "mobile")
+    .executeTakeFirst();
+  if (!row?.device_id || row.revoked_at || row.device_revoked_at || row.platform !== "android") {
+    return null;
+  }
+  if (Date.parse(row.expires_at) <= Date.parse(now)) return null;
+  return { id: row.id, user_id: row.user_id, device_id: row.device_id };
+}
+
+export { MOBILE_PACKAGE };

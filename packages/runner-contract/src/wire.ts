@@ -4,6 +4,7 @@
 // RUNNER_COMPAT in ./types.ts: optional, additive fields and growing enums only, new kinds of job
 // gated on a capability, and anything else bumps RUNNER_COMPAT in the same PR.
 import { z } from "zod";
+import { executedCheckSchema, jobChecksSchema } from "./checks.ts";
 import { PLANNING_OPS } from "./planning.ts";
 import {
   CAPABILITIES,
@@ -37,6 +38,11 @@ export const capabilityManifestSchema = z.object({
   runnerKind: z.string().min(1).max(40),
   harnesses: z.array(z.enum(HARNESSES)).min(1),
   capabilities: z.array(capabilitySchema),
+  /**
+   * One line on where the project's checks run on this runner, or why they can't (ADR 0501, fifth
+   * review): what `sf-runner doctor` says, shown in Factory > Runners. Optional: older hosts omit it.
+   */
+  checksNote: z.string().max(300).optional(),
 });
 
 export const capacityPausedSchema = z.object({
@@ -163,6 +169,12 @@ export const jobSchema = z.object({
   /** Visual evidence to capture after the session, when the runner has `browser`. */
   evidence: z.object({ screenshotUrls: z.array(z.string()).optional() }).optional(),
   limits: z.object({ sessionTimeoutMs: z.number().int().positive() }),
+  /**
+   * The project's checks (ADR 0501): the host runs them itself in the worktree, on the commit it
+   * hands back, and reports each on the hand-back. Optional: a runner that predates it ignores it,
+   * and the verdict then fails for want of results.
+   */
+  checks: jobChecksSchema.optional(),
   /** Every job-scoped call carries `fencingToken`; a stale one is refused (ADR 0035). */
   lease: z.object({ fencingToken, expiresAt: iso }),
 });
@@ -332,6 +344,8 @@ export const handbackSchema = z.object({
   headSha: sha.optional(),
   /** The stage's structured result (./stage-results.ts), parsed by the cloud per stage. */
   result: z.unknown().optional(),
+  /** The job's checks as the host ran them (ADR 0501), on `headSha` (or the verify job's head). */
+  checks: z.array(executedCheckSchema).max(60).optional(),
 });
 
 // ---- requests and responses ----

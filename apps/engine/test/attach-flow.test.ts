@@ -6,6 +6,7 @@ import { env } from "cloudflare:workers";
 import { sign } from "@software-factory/connector-webhook";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
+import { definitionFor, expectPhasesAsDefined, expectStagesAsDefined } from "./definition.ts";
 import {
   all,
   first,
@@ -23,6 +24,7 @@ import {
 } from "./helpers.ts";
 
 type World = Awaited<ReturnType<typeof world>>;
+
 const SECRET = "test-webhook-secret";
 
 async function deliver(event: string, payload: unknown) {
@@ -134,6 +136,10 @@ describe("an attached PR's Workflow (spec 05)", () => {
     for (const s of stages.filter((x) => x.status === "skipped")) {
       expect(s.reason).toBe("attached PR: built outside the factory");
     }
+    // The built-in Attached PR definition passes and skips the same stages (spec 52 PR (a)).
+    const { def } = definitionFor({ version: 1, autonomyPolicy: "balanced" }, "attached");
+    await expectStagesAsDefined(item.workItemId, def, "large");
+    await expectPhasesAsDefined(item.workItemId, def, "large");
     const size = await first<{ size: string }>(
       "SELECT size FROM core_work_items WHERE id = ?",
       item.workItemId,

@@ -16,12 +16,13 @@
 // as DESKTOP_DEVICE_ACTOR.
 import type { KeyStorage } from "@software-factory/db";
 import { z } from "zod";
-import type { Actor } from "../actors.ts";
+import { type Actor, type DeviceSurface, isDeviceSurface } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
-import { inputDigest } from "../invoke.ts";
+import { inputDigest, presenceSurfaceAllowed } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { getOperation } from "../registry.ts";
+import { deviceList, deviceRevoke } from "./device.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
 
 /** The actor the client door uses for the two unsigned desktop sign-in calls. */
@@ -45,14 +46,14 @@ export const DESKTOP_PENDING_LIMIT = 50;
 export const DESKTOP_TOKEN_PREFIX = "sfd_";
 
 const b64url = /^[A-Za-z0-9_-]+$/;
-const publicKeyJwk = z.object({
+export const publicKeyJwk = z.object({
   kty: z.literal("EC"),
   crv: z.literal("P-256"),
   x: z.string().regex(b64url).length(43),
   y: z.string().regex(b64url).length(43),
 });
-type PublicKeyJwk = z.infer<typeof publicKeyJwk>;
-const deviceName = z
+export type PublicKeyJwk = z.infer<typeof publicKeyJwk>;
+export const deviceName = z
   .string()
   .trim()
   .min(1)
@@ -62,7 +63,7 @@ const keyStorage = z.enum(["secure-enclave", "software"]);
 const digestHex = z.string().regex(/^[0-9a-f]{64}$/, "a SHA-256 digest, as 64 hex characters");
 const requestId = z.string().regex(/^dar_[0-9a-f]{32}$/);
 
-const expired = (ctx: HandlerContext, row: { expires_at: string }) =>
+export const expired = (ctx: HandlerContext, row: { expires_at: string }) =>
   Date.parse(row.expires_at) <= Date.parse(ctx.now);
 
 function requireDeviceActor(ctx: HandlerContext) {
@@ -71,15 +72,20 @@ function requireDeviceActor(ctx: HandlerContext) {
   }
 }
 
-function requireDesktop(ctx: HandlerContext): string {
+/** The signed-in device behind a desktop or phone call (ADR 0391, 0541). */
+function requireDevice(ctx: HandlerContext): { deviceId: string; surface: DeviceSurface } {
   const deviceId = ctx.origin.deviceId;
-  if (ctx.origin.surface !== "desktop" || !deviceId) {
-    throw new OperationError("forbidden", "only a signed-in desktop device can do this (ADR 0391)");
+  const surface = ctx.origin.surface;
+  if (!isDeviceSurface(surface) || !deviceId) {
+    throw new OperationError(
+      "forbidden",
+      "only a signed-in desktop or phone can do this (ADR 0391, 0541)",
+    );
   }
-  return deviceId;
+  return { deviceId, surface };
 }
 
-function base64UrlEncode(bytes: Uint8Array): string {
+export function base64UrlEncode(bytes: Uint8Array): string {
   let s = "";
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
@@ -92,12 +98,12 @@ function base64Decode(text: string): Uint8Array {
 }
 
 /** PKCE S256: base64url(SHA-256(verifier)). */
-async function pkceChallenge(verifier: string): Promise<string> {
+export async function pkceChallenge(verifier: string): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
   return base64UrlEncode(new Uint8Array(hash));
 }
 
-function importKey(jwk: PublicKeyJwk) {
+export function importKey(jwk: PublicKeyJwk) {
   return crypto.subtle.importKey(
     "jwk",
     { ...jwk, ext: true },
@@ -174,11 +180,22 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     case "spec.requestChanges":
       return `Request changes to the spec for ${await named(input.workItemId)}`;
     case "review.merge": {
+      // With a head SHA the prompt names the commit (spec 60): `Merge 3f2a91c "…" into main`.
       const w = await item(input.workItemId);
+      const commit =
+        typeof input.headSha === "string" ? `${input.headSha.slice(0, 7)} ` : `#${w?.number} `;
       return w
-        ? `Merge #${w.number} ${quoted(w.title)} into ${w.default_branch ?? "the default branch"}`
+        ? `Merge ${commit}${quoted(w.title)} into ${w.default_branch ?? "the default branch"}`
         : "Merge a work item";
     }
+    case "mobile.pairOffer":
+      return "Add a phone to your account";
+    case "mobile.renew":
+      return "Renew this phone's sign-in for 30 days";
+    case "device.update":
+      return input.decides === true
+        ? "Turn on fingerprint approvals on this device"
+        : "Change this device's settings";
     case "review.sendBack":
       return `Send ${await named(input.workItemId)} back`;
     case "question.acceptDefaults":
@@ -218,6 +235,31 @@ export interface DesktopTokenRow {
   device_id: string;
 }
 
+/** Refuses a challenge on a device whose approvals are off, except to turn them back on. */
+/**
+ * Operations whose proof shows the person holds the device, not a decision (ADR 0541 amendment,
+ * 2026-11-12): a phone with approvals off, or one registered as `software` (its boot isn't
+ * verified), still renews its own token, or it would lapse after 30 days.
+ */
+export const POSSESSION_PROOFS = ["mobile.renew"] as const;
+const possessionOnly = (op: string) => (POSSESSION_PROOFS as readonly string[]).includes(op);
+
+async function requireDecides(ctx: HandlerContext, deviceId: string, op: string) {
+  if (op === "device.update" || possessionOnly(op)) return;
+  const d = await ctx.db
+    .selectFrom("core_desktop_devices")
+    .select(["decides"])
+    .where("id", "=", deviceId)
+    .executeTakeFirst();
+  if (d && !d.decides) {
+    throw new OperationError(
+      "forbidden",
+      "fingerprint approvals are off on this device: turn them on in You, or decide elsewhere",
+      { approvalsOff: true },
+    );
+  }
+}
+
 export async function resolveDesktopToken(
   db: HandlerContext["db"],
   token: string,
@@ -244,10 +286,12 @@ export async function resolveDesktopToken(
 }
 
 async function requestById(ctx: HandlerContext, id: string) {
+  // A phone's sign-in (ADR 0541) is looked up and approved through mobile.*, not here.
   const row = await ctx.db
     .selectFrom("core_desktop_auth_requests")
     .selectAll()
     .where("id", "=", id)
+    .where("platform", "=", "macos")
     .executeTakeFirst();
   if (!row) throw new OperationError("not_found", "no such sign-in: start it again from the app");
   return row;
@@ -332,7 +376,8 @@ export const desktopAuthLookup = defineOperation({
     return {
       requestId: row.id,
       deviceName: row.device_name,
-      keyStorage: row.key_storage,
+      // A Mac's request is only ever secure-enclave or software (requestById reads macos only).
+      keyStorage: row.key_storage === "secure-enclave" ? row.key_storage : ("software" as const),
       keyFingerprint: await keyFingerprint(JSON.parse(row.public_key) as PublicKeyJwk),
       status: row.status === "pending" && expired(ctx, row) ? ("expired" as const) : row.status,
       expiresAt: row.expires_at,
@@ -440,6 +485,7 @@ export const desktopAuthExchange = defineOperation({
       .selectFrom("core_desktop_auth_requests")
       .selectAll()
       .where("code_hash", "=", await sha256Hex(input.code))
+      .where("platform", "=", "macos")
       .executeTakeFirst();
     if (row?.status !== "approved" || !row.user_id || expired(ctx, row)) throw refused();
     if ((await pkceChallenge(input.codeVerifier)) !== row.code_challenge) throw refused();
@@ -497,88 +543,24 @@ export const desktopAuthExchange = defineOperation({
   },
 });
 
-export const desktopDeviceList = defineOperation({
+/** device.list under its first name (ADR 0541): the desktop app calls it. */
+export const desktopDeviceList = {
+  ...deviceList,
   name: "desktopDevice.list",
-  description:
-    "Your desktop devices (ADR 0391): name, where the key lives, when added, last seen and revoked. Never a token or a key.",
-  risk: "read",
-  actors: ["human"],
-  permission: "signed-in",
-  input: z.object({}),
-  output: z.object({
-    devices: z.array(
-      z.object({
-        id: z.string(),
-        name: z.string(),
-        keyStorage,
-        createdAt: z.string(),
-        lastSeenAt: z.string().nullable(),
-        revokedAt: z.string().nullable(),
-      }),
-    ),
-  }),
-  async handler(_input, ctx) {
-    const rows = await ctx.db
-      .selectFrom("core_desktop_devices")
-      .select(["id", "name", "key_storage", "created_at", "last_seen_at", "revoked_at"])
-      .where("user_id", "=", ctx.actor.id)
-      .orderBy("created_at", "desc")
-      .limit(100)
-      .execute();
-    return {
-      devices: rows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        keyStorage: r.key_storage,
-        createdAt: r.created_at,
-        lastSeenAt: r.last_seen_at,
-        revokedAt: r.revoked_at,
-      })),
-    };
-  },
-});
+  description: `The same as device.list (its first name). ${deviceList.description}`,
+};
 
-export const desktopDeviceRevoke = defineOperation({
+/** device.revoke under its first name (ADR 0541). */
+export const desktopDeviceRevoke = {
+  ...deviceRevoke,
   name: "desktopDevice.revoke",
-  description:
-    "Revoke one of your desktop devices (signing out, or a Mac you no longer trust): its tokens stop working at once and it can't decide anything. Only your own devices.",
-  risk: "write",
-  actors: ["human"],
-  permission: "signed-in",
-  input: z.object({ deviceId: z.string().regex(/^dsk_[0-9a-f]{32}$/) }),
-  output: z.object({ revoked: z.boolean() }),
-  async handler(input, ctx) {
-    const row = await ctx.db
-      .selectFrom("core_desktop_devices")
-      .select(["id", "user_id", "revoked_at"])
-      .where("id", "=", input.deviceId)
-      .executeTakeFirst();
-    if (!row || row.user_id !== ctx.actor.id)
-      throw new OperationError("not_found", "no such device");
-    if (row.revoked_at) return { revoked: false };
-    ctx.write(
-      ctx.db
-        .updateTable("core_desktop_devices")
-        .set({ revoked_at: ctx.now })
-        .where("id", "=", row.id)
-        .where("revoked_at", "is", null),
-    );
-    ctx.write(
-      ctx.db
-        .updateTable("core_cli_tokens")
-        .set({ revoked_at: ctx.now })
-        .where("device_id", "=", row.id)
-        .where("revoked_at", "is", null),
-    );
-    ctx.change({ entity: "desktop_device", id: row.id, after: { revoked: true } });
-    return { revoked: true };
-  },
-});
+  description: `The same as device.revoke (its first name). ${deviceRevoke.description}`,
+};
 
 export const presenceChallenge = defineOperation({
   name: "presence.challenge",
   description:
-    "A one-time challenge (60 s) for deciding one gate from the desktop app (ADR 0391): bound to the operation and the SHA-256 of its canonical input, with a summary of the decision written from the factory's own records (the Touch ID prompt shows it). The device signs nonce, op, digest and summary with its Secure Enclave key. Desktop devices only, for presence-decidable operations.",
+    "A one-time challenge (60 s) for deciding one gate from the desktop app or the phone (ADR 0391, 0541): bound to the operation and the SHA-256 of its canonical input, with a summary of the decision written from the factory's own records (the Touch ID or fingerprint prompt shows it). The device signs nonce, op, digest and summary with its hardware key. Desktop and phone devices only, for operations presence-decidable on that surface; refused for a device whose approvals are off.",
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
@@ -599,14 +581,15 @@ export const presenceChallenge = defineOperation({
     output: (o) => ({ ...o, nonce: "[redacted]" }),
   },
   async handler(input, ctx) {
-    const deviceId = requireDesktop(ctx);
+    const { deviceId, surface } = requireDevice(ctx);
     const target = getOperation(input.op);
-    if (!target?.presenceDecidable) {
+    if (!target || !presenceSurfaceAllowed(target, surface, input.input)) {
       throw new OperationError(
         "forbidden",
-        `${input.op} can't be decided with a presence proof: it stays in the browser (ADR 0391)`,
+        `${input.op} can't be decided with a presence proof from the ${surface}: it stays in the browser (ADR 0391, 0541)`,
       );
     }
+    await requireDecides(ctx, deviceId, input.op);
     const digest = await inputDigest(input.input);
     const summary = await describeDecision(ctx, input.op, input.input);
     const nonce = randomToken();
@@ -632,7 +615,7 @@ export const presenceChallenge = defineOperation({
 export const presenceRedeem = defineOperation({
   name: "presence.redeem",
   description:
-    "The client door spends a signed presence challenge before running the decision it is for (ADR 0391). Checks the challenge belongs to this device, is unused and unexpired, names this operation and input digest, that the device key is in the Secure Enclave, and that the signature (ECDSA P-256 over nonce, op, digest and summary) verifies with the device key. Desktop devices only.",
+    "The client door spends a signed presence challenge before running the decision it is for (ADR 0391, 0541). Checks the challenge belongs to this device, is unused and unexpired, names this operation and input digest, that the device key is in hardware (the Secure Enclave, StrongBox or the TEE) and its approvals are on, and that the signature (ECDSA P-256 over nonce, op, digest and summary) verifies with the device key. Desktop and phone devices only.",
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
@@ -646,7 +629,7 @@ export const presenceRedeem = defineOperation({
   output: z.object({ redeemed: z.boolean() }),
   redact: { input: (i) => ({ ...i, nonce: "[redacted]", signature: "[redacted]" }) },
   async handler(input, ctx) {
-    const deviceId = requireDesktop(ctx);
+    const { deviceId, surface } = requireDevice(ctx);
     const refused = (why: string) =>
       new OperationError("forbidden", `presence proof refused: ${why}`, { browserOnly: true });
     const challenge = await ctx.db
@@ -663,15 +646,33 @@ export const presenceRedeem = defineOperation({
     if ((await sha256Hex(input.nonce)) !== challenge.nonce_hash) throw refused("wrong nonce");
     const device = await ctx.db
       .selectFrom("core_desktop_devices")
-      .select(["public_key", "revoked_at", "key_storage"])
+      .select(["public_key", "revoked_at", "key_storage", "platform", "decides"])
       .where("id", "=", deviceId)
       .executeTakeFirst();
     if (!device || device.revoked_at) throw refused("device revoked");
-    // A software key can be read by any process of the user: it proves nothing (ADR 0391).
-    if (device.key_storage !== "secure-enclave" && !ctx.services.allowSoftwareDeviceKeys) {
+    if ((device.platform === "android") !== (surface === "mobile")) {
+      throw refused(`this device isn't a ${surface === "mobile" ? "phone" : "Mac"}`);
+    }
+    // A software key can be read by any process of the user: it proves nothing (ADR 0391). A phone
+    // whose boot isn't verified or whose bootloader is unlocked is stored as `software` too (0541).
+    // DESKTOP_ALLOW_SOFTWARE_KEYS is for a Mac's unsigned dev build only: a phone never decides
+    // with a software key, whatever the engine's settings. Renewing a phone's own token isn't a
+    // decision: its Keystore key (attested at sign-in) signs it, whatever the boot state.
+    const hardware =
+      device.platform === "android"
+        ? device.key_storage === "strongbox" || device.key_storage === "tee"
+        : device.key_storage === "secure-enclave";
+    const renewal = device.platform === "android" && possessionOnly(input.op);
+    const devSoftwareMac = device.platform === "macos" && ctx.services.allowSoftwareDeviceKeys;
+    if (!hardware && !renewal && !devSoftwareMac) {
       throw refused(
-        "this device's key isn't in the Secure Enclave (an unsigned build): decide on the website",
+        device.platform === "android"
+          ? "this phone can't approve: its key isn't attested in secure hardware on a verified, locked phone"
+          : "this device's key isn't in the Secure Enclave (an unsigned build): decide on the website",
       );
+    }
+    if (!device.decides && input.op !== "device.update" && !possessionOnly(input.op)) {
+      throw refused("approvals are off on this device");
     }
     let valid = false;
     try {

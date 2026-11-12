@@ -27,6 +27,18 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The OS sandbox the runner host runs a project's checks in (ADR 0501): srt needs bubblewrap
+      # and socat on Linux, and Ubuntu 24.04 restricts the unprivileged user namespaces bwrap uses.
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat ripgrep
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0 || true
+          # srt's seccomp layer makes a nested user namespace inside bwrap's; the distro profile
+          # for bwrap strips its children's capabilities, so that fails (srt's README, Ubuntu 24.04).
+          if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
+            sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict || true
+          fi
 
       # Turborepo's local cache (.turbo/cache), keyed by commit and restored from the newest
       # earlier entry, so unchanged packages replay their typecheck and test results.
@@ -40,11 +52,63 @@ jobs:
       - run: pnpm typecheck
       # Capped like local runs (docs/parallel-work.md): workerd tests are CPU-heavy.
       - run: pnpm test --concurrency=2
+      # The real check sandbox, outside Turborepo's cache (a cached result would hide a runner
+      # without bubblewrap), and required: SF_REQUIRE_SANDBOX fails the tests where it can't run.
+      - run: pnpm --filter @software-factory/runner-host exec vitest run test/checks.test.ts
+        env:
+          SF_REQUIRE_SANDBOX: "1"
       # The deploy scripts and the repo guards (model ids, runner imports) aren't a workspace
       # package; their tests run on Node directly.
       - run: node --test "scripts/*/*.test.ts"
+      # Hostile planning mockups in real engines (spec 21, ADR 0472): Chromium, and WebKit for the
+      # desktop app's WKWebView. Nothing they try may reach the trap server or leave the frame.
+      - run: pnpm --filter @software-factory/desktop exec playwright install --with-deps chromium webkit
+      - run: pnpm --filter @software-factory/desktop test:browser
       # The deploy refuses it too; failing here catches a floor raised too early before merge.
       - name: Desktop floor vs the published builds (ADR 0393)
         run: node scripts/deploy/desktop-floor.ts
       # Every Worker must bundle; a dry run catches what typecheck can't (bad bindings, imports).
       - run: pnpm build
+
+  # The real check sandbox on macOS (ADR 0501, third review): sandbox-exec, the real home and its
+  # toolchain under it (hostedtoolcache, setup-pnpm), required.
+  check-sandbox-macos:
+    name: check sandbox (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @software-factory/runner-host exec vitest run test/checks.test.ts
+        env:
+          SF_REQUIRE_SANDBOX: "1"
+
+  # A Linux runner host with Ubuntu's AppArmor restriction on unprivileged user namespaces left ON
+  # (ADR 0501, third review, 6): the sandbox can't start, so the start-up trial must say so and every
+  # check must come back "not run", never a failure sent to a fix round.
+  check-sandbox-apparmor:
+    name: check sandbox (AppArmor restriction on)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat ripgrep
+          # On, whatever the image's default: this job is about a host that left it on.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+      - run: pnpm --filter @software-factory/runner-host exec vitest run test/checks.test.ts
+        env:
+          SF_EXPECT_SANDBOX_BLOCKED: "1"

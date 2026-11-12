@@ -43,6 +43,7 @@ import {
 import { findCheckout, isUnder } from "../checkouts.ts";
 import { nodeExec } from "../exec.ts";
 import { sessionName } from "../tmux.ts";
+import { execInCheckContainer } from "./check-exec.ts";
 import { egressAllowlist } from "./egress.ts";
 import { ensureImage, IMAGE_CONTEXT, IMAGE_NODE } from "./image.ts";
 import { checkJobGitDir, createJobRepo, HOST_FETCH_NAMESPACE, scanForSecrets } from "./job-repo.ts";
@@ -153,6 +154,8 @@ export interface ContainerOptions {
   extraMounts?: Mount[];
   /** Tests: `--add-host` entries for the proxy (`host.docker.internal:host-gateway` on Linux). */
   proxyAddHosts?: string[];
+  /** Tests: `host:port` entries the proxy lets through to a private address (a local upstream). */
+  proxyPrivateOk?: string[];
   /** Tests: how the live command line is read from the container (default `docker exec … ps`). */
   readCommand?: (runtime: ContainerRuntime, container: string) => ReadCommand;
   log?: (message: string) => void;
@@ -453,6 +456,7 @@ export function createContainerRunner(
           jobId: job.jobId,
           allow,
           ...(options.proxyAddHosts ? { addHosts: options.proxyAddHosts } : {}),
+          ...(options.proxyPrivateOk ? { privateOk: options.proxyPrivateOk } : {}),
         });
         const record: ContainerRecord = {
           jobId: job.jobId,
@@ -635,5 +639,31 @@ export function createContainerRunner(
     steer: local.steer
       ? (session, text) => local.steer?.(session, text) ?? Promise.resolve()
       : undefined,
+
+    // The project's checks run in a fresh container over the job repo, never on the host (ADR
+    // 0501). No `continueSession`: the agent's container stops when its turn ends, so a failing
+    // check goes to a person rather than back into the session.
+    async exec(_job, workspace, command, signal) {
+      // A job that runs without a container here (never on the host's own shell): "not run", so a
+      // person decides, never a failed check and a fix round it can't win.
+      if (!isContainer(workspace)) {
+        return { exitCode: null, timedOut: false, output: "", notRun: "this job has no container" };
+      }
+      const { pnpmStore } = jobDirs(dirname(workspace.jobRoot), workspace.name);
+      return execInCheckContainer(
+        runtime,
+        exec,
+        workspace.container.agent,
+        command,
+        signal,
+        pnpmStore,
+      );
+    },
+
+    // The job repo's tamper check, again, before the host's git follows a check or a fix round
+    // (ADR 0501): the same check `afterSession` runs.
+    async checkWorkspace(_job, workspace) {
+      return isContainer(workspace) ? checkJobGitDir(workspace.container.repo) : [];
+    },
   };
 }

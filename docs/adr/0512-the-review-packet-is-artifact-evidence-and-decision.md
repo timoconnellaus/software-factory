@@ -1,6 +1,6 @@
 # ADR 0512: The review packet is an artifact, its evidence and a decision on its digest
 
-Status: **proposed**, 2026-11-12 (spec [52](../specs/52-workflows-from-stage-types.md)). Would amend
+Status: accepted, 2026-11-12 (spec [52](../specs/52-workflows-from-stage-types.md); the owner answered its questions). Amends
 [ADR 0020](0020-verification-and-review-packet.md), [ADR 0037](0037-factory-verify-pinned-and-sha-bound.md)
 and [ADR 0041](0041-in-app-review-packet-is-the-merge-gate.md).
 
@@ -24,3 +24,5 @@ are "a person decides on exactly this thing, with this evidence".
 - Software's checks-on-a-SHA and marketing's preview are one mechanism, one screen family and one
   set of tests.
 - Existing packets read through an adapter; nothing about `factory/verify` changes.
+
+> Amended 2026-11-12 (spec 52's answers, questions 2 and 12): **one approval may cover two gates on the same digest.** A person's approval of a Preview also approves the Publish stage that follows it directly, when nothing changed in between (same digest, no stage between them, no new evidence). The adjudicator may approve a Preview once it has earned it, but its approval doesn't carry to Publish. The merge gate's decision may be made by `autoApprove` ([ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md)), still bound to the head SHA.
