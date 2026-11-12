@@ -490,6 +490,11 @@ export interface CoreRunnersTable {
   update_state: string | null;
   update_target: string | null;
   update_reason: string | null;
+  /** 0180 (ADR 0410): the runner's Claude accounts as it last reported them (names only). */
+  accounts: JsonText | null;
+  /** The account the owner asked for, until the runner reports it active. */
+  account_requested: string | null;
+  account_requested_at: Iso | null;
 }
 
 export interface CoreRunnerSharesTable {

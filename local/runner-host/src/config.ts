@@ -55,6 +55,14 @@ export interface Paths {
   /** Each run's attachments (`<attachmentsDir>/<jobId>`), which the agent reads: also not under state. */
   attachmentsDir: string;
   /**
+   * Claude accounts (ADR 0410): the registry (the active name, each account's kind; no secret),
+   * the token files (0600), both under the config dir every run denies, and each account's Claude
+   * config dir, under the data dir (Claude's sandboxed shell reads its snapshots from there).
+   */
+  accountsFile: string;
+  accountTokensDir: string;
+  accountConfigsDir: string;
+  /**
    * The service's log (`runner.log`): `~/Library/Logs/software-factory` on macOS, else
    * `$XDG_STATE_HOME/software-factory/logs` (ADR 0420), under the state root the harness denies.
    */
@@ -83,6 +91,9 @@ export function paths(
     runsDir: join(stateDir, "runs"),
     worktreesDir: join(dataDir, "worktrees"),
     attachmentsDir: join(dataDir, "attachments"),
+    accountsFile: join(configDir, "accounts.json"),
+    accountTokensDir: join(configDir, "accounts"),
+    accountConfigsDir: join(dataDir, "accounts"),
     logDir:
       platform === "darwin"
         ? join(home, "Library", "Logs", "software-factory")

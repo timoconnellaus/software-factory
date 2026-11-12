@@ -15,6 +15,10 @@
 //                                  socat, the user systemd and linger
 //   sf-runner install | uninstall  the service: ~/Library/LaunchAgents on macOS,
 //                                  ~/.config/systemd/user on Linux
+//   sf-runner account list | add <name> [--token-stdin [--oauth|--api-key]] [--no-login]
+//                     | use <name> | remove <name>
+//                                  Claude accounts on this host (ADR 0410): new jobs use the
+//                                  active one; credentials never leave this machine
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile } from "node:fs/promises";
@@ -31,6 +35,8 @@ import {
   tmuxAtLeast,
   tmuxCli,
 } from "@software-factory/runner-local";
+import { accountCommand } from "./account-cli.ts";
+import { AccountError, accountPaths, listAccounts } from "./accounts.ts";
 import { checkoutDirs, migrateCheckouts } from "./checkouts.ts";
 import type { RunnerConfig } from "./config.ts";
 import {
@@ -300,6 +306,13 @@ async function status() {
   const state = service ? await service.status(nodeExec) : null;
   console.log(
     `service: ${service ? `${state ?? "not installed"} (${service.kind}, ${service.file})` : `none on ${process.platform}`}`,
+  );
+  const accounts = await listAccounts(accountPaths(dirs)).catch(() => null);
+  const active = accounts?.find((a) => a.active);
+  console.log(
+    active
+      ? `Claude account for new jobs: ${active.name} (${accounts?.length} on this host; sf-runner account list)`
+      : "Claude account: unknown (accounts.json unreadable)",
   );
   const live = await readLiveJobs(liveJobsFile(dirs));
   console.log(
@@ -578,13 +591,33 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     await service.uninstall(nodeExec, service.file);
     console.log(`Removed ${service.name} (${service.file})`);
   },
+  account: async (args) => {
+    const code = await accountCommand(args, {
+      paths: accountPaths(dirs),
+      runsDir: dirs.runsDir,
+      liveJobs,
+      allRuns: () => readdir(dirs.runsDir).catch(() => [] as string[]),
+      readStdin,
+      runClaude: (env) =>
+        new Promise((resolve) => {
+          const child = spawn("claude", [], { stdio: "inherit", env });
+          child.on("error", (err) => {
+            console.error(`couldn't start claude: ${err.message}`);
+            resolve(null);
+          });
+          child.on("exit", (code) => resolve(code));
+        }),
+      log: (line) => console.log(line),
+    });
+    if (code !== 0) process.exit(code);
+  },
 };
 const fn = command ? commands[command] : undefined;
 if (!fn) {
-  console.log("usage: sf-runner login|run|status|doctor [--fix]|install|uninstall");
+  console.log("usage: sf-runner login|run|status|doctor [--fix]|install|uninstall|account");
   process.exit(command ? 2 : 0);
 }
 fn(rest).catch((err) => {
   console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
+  process.exit(err instanceof AccountError ? 2 : 1);
 });
