@@ -1,0 +1,8 @@
+{
+  "name": "sf-check-fixture",
+  "private": true,
+  "packageManager": "pnpm@10.23.0",
+  "scripts": {
+    "test": "pnpm -r test"
+  }
+}

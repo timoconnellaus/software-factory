@@ -46,8 +46,18 @@ a worktree and a branch; `release` never unregisters or deletes a checkout.
    32 KiB; drop while the socket buffers over 1 MiB and redraw once under 256 KiB) and `size`, apply
    `input`, `resize` and `redraw`, and stop on `close`; send `ended` when the session ends. The
    frames and limits are in `src/terminal.ts`.
-6. Read the stage result from `RESULT_FILE` (`.factory-result.json`, never committed), push the run
-   branch, then `handback { branch, headSha, result }` and `release`.
+6. Read the stage result from `RESULT_FILE` (`.factory-result.json`, never committed). If the job
+   carries `checks` (ADR 0501), run each command on a clean copy of the commit to hand back (no
+   ignored files, no git dir; `exec`'s `dir`), through `adapter.exec` when the adapter has it (a
+   container runs them in a check container), else under the host's OS sandbox with the harness's
+   floor; with neither, report each check `NOT_RUN_NO_ISOLATION`. Before host git after the session,
+   a check or a fix round, re-check the git config and call `adapter.checkWorkspace`. A failure with
+   `fixRounds` left goes back into the same session (`adapter.continueSession(job, session,
+   checkFailureMessage(...))`), and the fix is checked again. Push exactly the last checked commit,
+   then `handback { branch, headSha, result, checks }` (log tails through `redactSecrets`) and
+   `release`. An attached PR's verify job runs its checks before the session. The cloud stores each
+   executed check against its SHA (only the run's head and its ancestors);
+   the verdict uses them, never the agent's own report.
 7. Any `409` with code `fenced` or `killed`: stop the session, release the workspace, drop the job.
 
 `httpControlPlane({ baseUrl: "https://sf-engine.zerobsai.com", runnerId, key })` implements all of

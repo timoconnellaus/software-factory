@@ -9,6 +9,20 @@ import { CAPABILITIES, type Capability } from "@software-factory/runner-contract
 import { z } from "zod";
 import { loadPolicySchema } from "./load.ts";
 
+/** runner.json `checks`: see `checks` in the config below (ADR 0501, fourth and fifth reviews). */
+export const checkSettingsSchema = z
+  .object({
+    weakerMacSandbox: z.boolean().default(false),
+    cpus: z.number().min(0.5).max(64).default(2),
+    memoryGb: z.number().min(0.5).max(256).default(4),
+    tmpGb: z.number().min(0.1).max(64).default(1),
+    maxTreeGb: z.number().min(0.1).max(1024).default(10),
+    maxConcurrent: z.number().int().min(1).max(16).default(1),
+  })
+  .strict()
+  .refine((c) => c.tmpGb < c.memoryGb, "checks.tmpGb must be less than checks.memoryGb");
+export type CheckSettings = z.output<typeof checkSettingsSchema>;
+
 export const DEFAULT_BASE_URL = "https://sf-engine.zerobsai.com";
 /** The app, where a person approves `sf-runner login` (when the engine's link is relative). */
 export const DEFAULT_APP_URL = "https://software-factory.zerobsai.com";
@@ -65,6 +79,21 @@ export const configSchema = z.object({
    * permissions off; `sprites` is a cloud sandbox per job on Sprites, made by this host (ADR 0480).
    */
   isolation: z.enum(["sandbox", "container", "sprites"]).default("sandbox"),
+  /**
+   * Where a `sandbox` runner runs the project's checks (ADR 0501, fourth review). On a Mac they run
+   * in a fresh check container when a container runtime answers (`container.docker`, else `docker`
+   * on PATH); with none, they are "not run". `weakerMacSandbox: true` lets them run under the macOS
+   * OS sandbox instead, which can't stop a process a check leaves from outliving it, nor give a
+   * check a loopback of its own: the merge gate then says they ran in the weaker sandbox. Only this
+   * file sets it: never the repo, never the cloud. Linux runners always use the OS sandbox.
+   *
+   * The limits (fifth review): a Mac's check container gets `cpus` CPUs and `memoryGb` of memory,
+   * its `/tmp` is a `tmpGb` tmpfs inside that memory, and a check whose tree grew past `maxTreeGb`
+   * isn't copied for the next check (that one is not run). At most `maxConcurrent` checks run at
+   * once on this runner, each counted as a heavy job while it runs, and a check waits to start
+   * while the load backoff (`load`) has stopped heavy work.
+   */
+  checks: checkSettingsSchema.optional(),
   /** Container isolation's settings (ADR 0430). */
   container: z
     .object({
@@ -139,6 +168,19 @@ export interface Paths {
    * must read its own worktree (incident 2026-11-11-bootstrap #10).
    */
   worktreesDir: string;
+  /**
+   * The jobs' check trees (ADR 0501): `<checksDir>/<jobId>-…`. Not the system temp dir, which every
+   * agent may write, and not under the state dir, which the harness's floor denies (a check could
+   * then not read its own tree). Every harness's protectPaths names it, so no agent reaches it.
+   */
+  checksDir: string;
+  /**
+   * The check sandbox's own sockets (ADR 0501, amended 2026-11-12, third review): the sandbox
+   * runtime's proxy sockets go in a short private dir here (`<checkSocketsDir>/c…`), not in the
+   * check's temp, whose path is too long for a unix socket (104 bytes on macOS, 108 on Linux). No
+   * check can write it, and every harness's protectPaths names it, so no agent reaches it.
+   */
+  checkSocketsDir: string;
   /** Each run's attachments (`<attachmentsDir>/<jobId>`), which the agent reads: also not under state. */
   attachmentsDir: string;
   /**
@@ -187,6 +229,8 @@ export function paths(
     runsDir: join(stateDir, "runs"),
     worktreesDir: join(dataDir, "worktrees"),
     attachmentsDir: join(dataDir, "attachments"),
+    checksDir: join(dataDir, "checks"),
+    checkSocketsDir: join(dataDir, "s"),
     containersDir: join(dataDir, "containers"),
     spritesTokenFile: join(configDir, "sprites.token"),
     spritesDir: join(dataDir, "sprites"),
