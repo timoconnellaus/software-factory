@@ -3,11 +3,11 @@
 // The heartbeat answers with `desiredVersion`. When the runner's checkout is behind it, the runner
 // checks it can move (auto-update on, a clean checkout on `main` or detached, the commit on
 // `origin/main`, forward only), stops claiming until its jobs end, then fast-forwards to exactly
-// that commit, reinstalls with the frozen lockfile and exits non-zero so launchd starts the new
+// that commit, reinstalls with the frozen lockfile and exits non-zero so the service starts the new
 // code. The first successful heartbeat on the new code confirms the update.
 //
-// Only the launchd service (`bin/sf-runner-service` sets SF_RUNNER_SERVICE=1) applies an update; a
-// runner started in a terminal reports where it stands but leaves its checkout alone.
+// Only the service (launchd or systemd: `bin/sf-runner-service` sets SF_RUNNER_SERVICE=1) applies
+// an update; a runner started in a terminal reports where it stands but leaves its checkout alone.
 //
 // The update record lives in `<stateDir>/update/`, one small file per field, so the `sh` wrapper
 // `bin/sf-runner-service` can read and write it without jq. The wrapper rolls an update back after
@@ -22,9 +22,9 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunnerVersion } from "@software-factory/runner-contract";
-import type { Exec } from "@software-factory/runner-orca";
+import type { Exec } from "@software-factory/runner-local";
 
-/** The exit code that asks launchd to start the runner on its new code (EX_TEMPFAIL). */
+/** The exit code that asks the service (launchd or systemd) to start the new code (EX_TEMPFAIL). */
 export const UPDATE_EXIT_CODE = 75;
 
 export type UpdateState = RunnerVersion["update"]["state"];
@@ -124,7 +124,7 @@ export interface SelfUpdaterOptions {
   stateDir: string;
   autoUpdate: boolean;
   /**
-   * Whether something restarts the runner after it exits: true under the launchd wrapper
+   * Whether something restarts the runner after it exits: true under the service wrapper
    * (`SF_RUNNER_SERVICE=1`). A runner in a terminal reports its version but never updates itself.
    */
   canRestart?: boolean;
@@ -145,7 +145,7 @@ export interface SelfUpdate {
   report(): RunnerVersion;
   /**
    * After each heartbeat: `claim` as usual, `drain` (claim nothing this turn, the update waits
-   * for the running jobs) or `restart` (updated: stop and exit so launchd starts the new code).
+   * for the running jobs) or `restart` (updated: stop and exit so the service starts the new code).
    */
   consider(desired: string | null, idle: boolean): Promise<"claim" | "drain" | "restart">;
   /** The first successful heartbeat since start: an update that got this far worked. */
@@ -377,8 +377,7 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
           set({
             state: "blocked",
             target: desired,
-            reason:
-              "not running as the launchd service (sf-runner install), so nothing would restart it",
+            reason: "not running as the service (sf-runner install), so nothing would restart it",
           });
         } else if (!idle) {
           set({ state: "waiting", target: desired, reason: "waiting for running jobs to finish" });

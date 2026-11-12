@@ -1,4 +1,4 @@
-// The trampoline (ADR 0382, spec 40 M1 criterion 9): website links hand off to sf:// in the app.
+// The trampoline (ADR 0392, spec 40 M1 criterion 9): website links hand off to sf:// in the app.
 import { describe, expect, it } from "vitest";
 import { appLink } from "#/lib/open-link";
 

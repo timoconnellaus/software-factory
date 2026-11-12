@@ -1,4 +1,4 @@
-// AppKit and ServiceManagement bits Electrobun 2.0.6 has no API for (ADR 0380): the dock badge and
+// AppKit and ServiceManagement bits Electrobun 2.0.6 has no API for (ADR 0390): the dock badge and
 // launch at login, through the Objective-C runtime over bun:ffi. AppKit is main-thread only and the
 // Bun main process may not be on it, so the badge goes through performSelectorOnMainThread.
 import { dlopen, FFIType, type Pointer } from "bun:ffi";

@@ -1,6 +1,7 @@
-// The view's end of the RPC (ADR 0380). Everything privileged is in the main process.
+// The view's end of the RPC (ADR 0390). Everything privileged is in the main process.
 import Electrobun, { Electroview } from "electrobun/view";
 import type { AppRPC, RunnerState, Session } from "../shared/rpc.ts";
+import { bunRequests } from "./request.ts";
 
 type Listener<T> = (v: T) => void;
 const listeners = {
@@ -32,11 +33,11 @@ const rpc = Electroview.defineRPC<AppRPC>({
 });
 const view = new Electrobun.Electroview({ rpc });
 
-type Requests = AppRPC["bun"]["requests"];
-// biome-ignore lint/suspicious/noExplicitAny: Electroview's request proxy is loosely typed.
-export const bun = (view.rpc as any).request as {
-  [K in keyof Requests]: (p: Requests[K]["params"]) => Promise<Requests[K]["response"]>;
-};
+// Not `view.rpc.request.<name>`: see request.ts (`request.call` would be Function.prototype.call).
+export const bun = bunRequests((method, params) =>
+  // biome-ignore lint/suspicious/noExplicitAny: Electroview's request function is loosely typed.
+  (view.rpc as any).request(method, params),
+);
 
 function on<K extends keyof typeof listeners>(
   kind: K,

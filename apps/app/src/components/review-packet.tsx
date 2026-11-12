@@ -14,8 +14,15 @@ import {
 } from "@software-factory/client/packet";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@software-factory/ui/components/collapsible";
 import { type Status, StatusBadge, StatusDot } from "@software-factory/ui/components/status-dot";
+import { Table, TableBody, TableCell, TableRow } from "@software-factory/ui/components/table";
 import { cn } from "@software-factory/ui/lib/utils";
+import { ChevronRightIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import type { WorkItemDetail } from "#/lib/ops";
@@ -223,29 +230,29 @@ function Section({
               <Empty>The packet has no criteria.</Empty>
             </div>
           ) : (
-            <table className="w-full text-sm">
-              <tbody>
+            <Table className="w-full text-sm">
+              <TableBody>
                 {packet.criteria.map((c) => {
                   const runner = keptOnRunner(c.evidence);
                   return (
-                    <tr key={c.criterion} className="border-t align-top" data-met={c.met}>
-                      <td className="w-10 py-2.5 pr-2 pl-5">
+                    <TableRow key={c.criterion} className="border-t align-top" data-met={c.met}>
+                      <TableCell className="w-10 py-2.5 pr-2 pl-5">
                         <StatusDot status={c.met ? "done" : "failed"} className="mt-1.5" />
                         <span className="sr-only">{c.met ? "met" : "not met"}</span>
-                      </td>
-                      <td className="py-2.5 pr-3">{c.criterion}</td>
-                      <td className="py-2.5 pr-5 text-muted-foreground text-xs">
+                      </TableCell>
+                      <TableCell className="whitespace-normal py-2.5 pr-3">{c.criterion}</TableCell>
+                      <TableCell className="whitespace-normal py-2.5 pr-5 text-muted-foreground text-xs">
                         {runner ? (
                           <span data-testid="kept-on-runner">kept on runner · {runner}</span>
                         ) : (
                           c.evidence || "no evidence"
                         )}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   );
                 })}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           )}
         </Panel>
       );
@@ -365,35 +372,40 @@ function Section({
     case "diff": {
       const diff = packet.sections.diff;
       return (
-        <details
-          className="rounded-xl border px-5 py-4 text-sm"
-          onToggle={(e) => (e.currentTarget.open ? onOpenDiff() : undefined)}
+        <Collapsible
+          className="group/collapsible rounded-xl border px-5 py-4 text-sm"
+          onOpenChange={(open) => (open ? onOpenDiff() : undefined)}
           data-testid="section-diff"
         >
-          <summary className="cursor-pointer font-semibold">Diff</summary>
-          {typeof diff === "string" && diff ? (
-            <pre className="mt-3 max-h-[480px] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
-              {diff}
-            </pre>
-          ) : (
-            <div className="mt-2 text-muted-foreground">
-              The packet doesn't carry the diff.{" "}
-              {detail.item.prUrl ? (
-                <a
-                  href={`${detail.item.prUrl}/files`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline"
-                  onClick={onOpenDiff}
-                >
-                  Open it on GitHub
-                </a>
-              ) : (
-                "There is no PR yet."
-              )}
-            </div>
-          )}
-        </details>
+          <CollapsibleTrigger className="flex items-center gap-1 text-left cursor-pointer font-semibold">
+            <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-[state=open]/collapsible:rotate-90" />
+            Diff
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            {typeof diff === "string" && diff ? (
+              <pre className="mt-3 max-h-[480px] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
+                {diff}
+              </pre>
+            ) : (
+              <div className="mt-2 text-muted-foreground">
+                The packet doesn't carry the diff.{" "}
+                {detail.item.prUrl ? (
+                  <a
+                    href={`${detail.item.prUrl}/files`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                    onClick={onOpenDiff}
+                  >
+                    Open it on GitHub
+                  </a>
+                ) : (
+                  "There is no PR yet."
+                )}
+              </div>
+            )}
+          </CollapsibleContent>
+        </Collapsible>
       );
     }
   }
@@ -509,17 +521,20 @@ function ChangedFiles({ packet }: { packet: ParsedPacket }) {
   const { changed } = packetExtras(packet);
   if (!changed || changed.files === null) return null;
   return (
-    <details className="mt-2 text-sm">
-      <summary className="cursor-pointer text-muted-foreground">
+    <Collapsible className="group/collapsible mt-2 text-sm">
+      <CollapsibleTrigger className="flex items-center gap-1 text-left cursor-pointer text-muted-foreground">
+        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-[state=open]/collapsible:rotate-90" />
         {changed.files} {changed.files === 1 ? "file" : "files"} changed
-      </summary>
-      <ul className="mt-1 grid gap-0.5 font-mono text-xs">
-        {changed.paths.map((f) => (
-          <li key={f.path}>
-            <span className="text-muted-foreground">{f.status.padEnd(9, " ")}</span> {f.path}
-          </li>
-        ))}
-      </ul>
-    </details>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <ul className="mt-1 grid gap-0.5 font-mono text-xs">
+          {changed.paths.map((f) => (
+            <li key={f.path}>
+              <span className="text-muted-foreground">{f.status.padEnd(9, " ")}</span> {f.path}
+            </li>
+          ))}
+        </ul>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

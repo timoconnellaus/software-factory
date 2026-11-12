@@ -1,6 +1,7 @@
 // The runner's configuration and its key (ADR 0016). The key is the runner's only secret: it signs
 // every channel call. It lives in a 0600 file in a 0700 directory, and the harness's settings deny
-// reading it. Paths follow XDG on every platform so the launchd service and a shell agree.
+// reading it. Paths follow XDG on every platform so the service (launchd or systemd) and a shell
+// agree; only the log moves to ~/Library/Logs on macOS.
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,7 +24,12 @@ export const configSchema = z.object({
   /** Capabilities to declare (default: everything the adapter supports). */
   capabilities: z.array(z.enum(CAPABILITIES)).optional(),
   identity: z.object({ name: z.string(), email: z.string() }).optional(),
-  orcaBin: z.string().optional(),
+  /**
+   * Directories whose immediate git repos are this machine's checkouts (ADR 0260, amended by ADR
+   * 0380): a job runs as a worktree of the one whose `origin` is the job's repo, else in the host's
+   * own clone. Unset until `login` or `doctor --fix` fills it in once.
+   */
+  checkouts: z.array(z.string()).optional(),
   /**
    * Update the runner's own checkout to the commit the factory was deployed from (ADR 0360).
    * `false` turns it off; the runner then reports `blocked` when it is behind.
@@ -40,23 +46,47 @@ export interface Paths {
   stateDir: string;
   reposDir: string;
   runsDir: string;
+  /**
+   * Job worktrees: `<worktreesDir>/sf-<jobId>`. Under the data dir, not the state dir: the harness
+   * denies reads of `~/.local/state/software-factory` (harness-claude `DENY_HOME`), and the agent
+   * must read its own worktree (incident 2026-11-11-bootstrap #10).
+   */
+  worktreesDir: string;
+  /** Each run's attachments (`<attachmentsDir>/<jobId>`), which the agent reads: also not under state. */
+  attachmentsDir: string;
+  /**
+   * The service's log (`runner.log`): `~/Library/Logs/software-factory` on macOS, else
+   * `$XDG_STATE_HOME/software-factory/logs` (ADR 0420), under the state root the harness denies.
+   */
   logDir: string;
 }
 
-export function paths(env: NodeJS.ProcessEnv = process.env): Paths {
+export function paths(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Paths {
   const home = env.HOME ?? homedir();
   const configDir = join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "software-factory");
-  // The service gets SF_RUNNER_STATE_DIR from its plist, so the `sh` wrapper and Node agree on it.
-  const stateDir =
-    env.SF_RUNNER_STATE_DIR ??
-    join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "software-factory", "runner");
+  const stateRoot = join(env.XDG_STATE_HOME ?? join(home, ".local", "state"), "software-factory");
+  // The service gets SF_RUNNER_STATE_DIR from its definition, so the `sh` wrapper and Node agree.
+  const stateDir = env.SF_RUNNER_STATE_DIR ?? join(stateRoot, "runner");
+  const dataDir = join(
+    env.XDG_DATA_HOME ?? join(home, ".local", "share"),
+    "software-factory",
+    "runner",
+  );
   return {
     configFile: env.SF_RUNNER_CONFIG ?? join(configDir, "runner.json"),
     configDir,
     stateDir,
     reposDir: join(stateDir, "repos"),
     runsDir: join(stateDir, "runs"),
-    logDir: join(home, "Library", "Logs", "software-factory"),
+    worktreesDir: join(dataDir, "worktrees"),
+    attachmentsDir: join(dataDir, "attachments"),
+    logDir:
+      platform === "darwin"
+        ? join(home, "Library", "Logs", "software-factory")
+        : join(stateRoot, "logs"),
   };
 }
 

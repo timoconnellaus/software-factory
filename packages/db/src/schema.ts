@@ -810,7 +810,7 @@ export interface CoreCliTokensTable {
   created_at: Iso;
   expires_at: Iso;
   revoked_at: Iso | null;
-  /** `cli` (sf) or `desktop` (the desktop app, bound to `device_id`; ADR 0381). */
+  /** `cli` (sf) or `desktop` (the desktop app, bound to `device_id`; ADR 0391). */
   kind: Generated<"cli" | "desktop">;
   device_id: string | null;
 }

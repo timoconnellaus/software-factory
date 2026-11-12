@@ -6,11 +6,20 @@ import { ago } from "@software-factory/client/format";
 import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@software-factory/ui/components/collapsible";
 import { Input } from "@software-factory/ui/components/input";
+import { Label } from "@software-factory/ui/components/label";
+import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
+import { Table, TableBody, TableCell, TableRow } from "@software-factory/ui/components/table";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { ChevronDownIcon, ChevronRightIcon, ChevronUpIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -30,6 +39,7 @@ import {
   strs,
   useConfigDraft,
 } from "#/components/config-editor";
+import { OptionSelect } from "#/components/option-select";
 import { op, submitKey } from "#/lib/op";
 import { OpError } from "#/lib/ops";
 import { adjudicatorQuery, configQuery, trialsQuery } from "#/lib/queries";
@@ -204,21 +214,21 @@ function SettingsPage() {
           <Button size="sm" variant="ghost" onClick={exportBundle} data-testid="config-export">
             Export
           </Button>
-          <label className="inline-flex">
-            <input
-              type="file"
-              accept="application/json,.json"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void importBundle(f);
-                e.target.value = "";
-              }}
-            />
-            <span className="inline-flex h-8 cursor-pointer items-center rounded-md px-3 text-sm hover:bg-accent">
+          <Button size="sm" variant="ghost" asChild>
+            <label className="cursor-pointer">
+              <input
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void importBundle(f);
+                  e.target.value = "";
+                }}
+              />
               Import
-            </span>
-          </label>
+            </label>
+          </Button>
         </>
       }
     >
@@ -265,31 +275,38 @@ function SettingsPage() {
         changed={changedPaths.has("autonomyPolicy") || changedPaths.has("gate")}
         description="How much agents may do without asking. Merge, deploy and self-modify always go to a person."
       >
-        <div className="grid gap-2 md:grid-cols-3" data-testid="autonomy-picker">
+        <RadioGroup
+          className="gap-2 md:grid-cols-3"
+          aria-label="Autonomy policy"
+          data-testid="autonomy-picker"
+          value={typeof doc.autonomyPolicy === "string" ? doc.autonomyPolicy : ""}
+          onValueChange={(v) =>
+            set((d) => {
+              d.autonomyPolicy = v;
+            })
+          }
+        >
           {AUTONOMY.map((a) => (
-            <button
+            <Label
               key={a.key}
-              type="button"
-              onClick={() =>
-                set((d) => {
-                  d.autonomyPolicy = a.key;
-                })
-              }
               className={cn(
-                "rounded-lg border px-3 py-2.5 text-left text-sm",
+                "flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2.5 font-normal",
                 doc.autonomyPolicy === a.key && "border-primary ring-1 ring-primary",
               )}
             >
-              <div className="font-semibold">
-                {a.title}
-                {current?.policy?.autonomyPolicy === a.key && (
-                  <span className="ml-2 font-normal text-muted-foreground text-xs">current</span>
-                )}
-              </div>
-              <div className="text-muted-foreground text-xs">{a.text}</div>
-            </button>
+              <RadioGroupItem value={a.key} className="mt-0.5" />
+              <span className="grid gap-0.5">
+                <span className="font-semibold">
+                  {a.title}
+                  {current?.policy?.autonomyPolicy === a.key && (
+                    <span className="ml-2 font-normal text-muted-foreground text-xs">current</span>
+                  )}
+                </span>
+                <span className="text-muted-foreground text-xs">{a.text}</span>
+              </span>
+            </Label>
           ))}
-        </div>
+        </RadioGroup>
         <OverridesEditor
           overrides={overrides}
           onChange={(next) =>
@@ -590,71 +607,61 @@ function OverridesEditor({
     onChange(next);
   };
   return (
-    <details className="pt-2 text-sm" open={rows.length > 0}>
-      <summary className="cursor-pointer font-medium">
+    <Collapsible className="group/collapsible pt-2 text-sm" defaultOpen={rows.length > 0}>
+      <CollapsibleTrigger className="flex items-center gap-1 text-left cursor-pointer font-medium">
+        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-[state=open]/collapsible:rotate-90" />
         Overrides ({rows.length}){" "}
         <span className="font-normal text-muted-foreground">
           · per actor and risk class, on top of the autonomy policy
         </span>
-      </summary>
-      <table className="mt-2 w-full text-xs">
-        <tbody>
-          {rows.map((r) => (
-            <tr key={`${r.actor}.${r.risk}`} className="border-b last:border-b-0">
-              <td className="py-1.5">{r.actor}</td>
-              <td className="font-mono">{r.risk}</td>
-              <td>
-                <Segmented
-                  options={["allow", "review", "deny"]}
-                  value={r.decision}
-                  onChange={(d) => put(r.actor, r.risk, d)}
-                />
-              </td>
-              <td className="text-right">
-                <Button size="sm" variant="ghost" onClick={() => put(r.actor, r.risk, null)}>
-                  Remove
-                </Button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="flex flex-wrap items-center gap-2 pt-2">
-        <select
-          className="h-8 rounded-md border bg-background px-2"
-          value={actor}
-          onChange={(e) => setActor(e.target.value)}
-        >
-          {ACTORS.map((a) => (
-            <option key={a}>{a}</option>
-          ))}
-        </select>
-        <select
-          className="h-8 rounded-md border bg-background px-2"
-          value={risk}
-          onChange={(e) => setRisk(e.target.value)}
-        >
-          {RISKS.map((r) => (
-            <option key={r} disabled={LOCKED_RISKS.has(r)}>
-              {r}
-              {LOCKED_RISKS.has(r) ? " (always a person)" : ""}
-            </option>
-          ))}
-        </select>
-        <select
-          className="h-8 rounded-md border bg-background px-2"
-          value={decision}
-          onChange={(e) => setDecision(e.target.value)}
-        >
-          {["allow", "review", "deny"].map((d) => (
-            <option key={d}>{d}</option>
-          ))}
-        </select>
-        <Button size="sm" variant="outline" onClick={() => put(actor, risk, decision)}>
-          Add override
-        </Button>
-      </div>
-    </details>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <Table className="mt-2 w-full text-xs">
+          <TableBody>
+            {rows.map((r) => (
+              <TableRow key={`${r.actor}.${r.risk}`} className="border-b last:border-b-0">
+                <TableCell className="py-1.5">{r.actor}</TableCell>
+                <TableCell className="font-mono">{r.risk}</TableCell>
+                <TableCell>
+                  <Segmented
+                    options={["allow", "review", "deny"]}
+                    value={r.decision}
+                    onChange={(d) => put(r.actor, r.risk, d)}
+                  />
+                </TableCell>
+                <TableCell className="text-right">
+                  <Button size="sm" variant="ghost" onClick={() => put(r.actor, r.risk, null)}>
+                    Remove
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        <div className="flex flex-wrap items-center gap-2 pt-2">
+          <OptionSelect aria-label="Actor" value={actor} options={ACTORS} onChange={setActor} />
+          <OptionSelect
+            aria-label="Risk class"
+            value={risk}
+            options={RISKS.map((r) =>
+              LOCKED_RISKS.has(r)
+                ? { value: r, label: `${r} (always a person)`, disabled: true }
+                : r,
+            )}
+            onChange={setRisk}
+          />
+          <OptionSelect
+            aria-label="Decision"
+            value={decision}
+            options={["allow", "review", "deny"]}
+            onChange={setDecision}
+          />
+          <Button size="sm" variant="outline" onClick={() => put(actor, risk, decision)}>
+            Add override
+          </Button>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -684,24 +691,26 @@ function PacketEditor({
         return (
           <li key={key} className="flex items-center gap-2 border-b py-2 last:border-b-0">
             <div className="flex flex-col">
-              <button
-                type="button"
+              <Button
+                size="icon"
+                variant="ghost"
+                className="size-5"
                 aria-label="Up"
                 disabled={!on}
                 onClick={() => move(key, -1)}
-                className="text-xs disabled:opacity-30"
               >
-                ▲
-              </button>
-              <button
-                type="button"
+                <ChevronUpIcon />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="size-5"
                 aria-label="Down"
                 disabled={!on}
                 onClick={() => move(key, 1)}
-                className="text-xs disabled:opacity-30"
               >
-                ▼
-              </button>
+                <ChevronDownIcon />
+              </Button>
             </div>
             <div className={cn("grow", !on && "opacity-50")}>
               <div className="font-medium text-sm">

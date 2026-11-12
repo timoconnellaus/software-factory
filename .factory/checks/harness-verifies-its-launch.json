@@ -1,6 +1,6 @@
 {
   "name": "harness-verifies-its-launch",
-  "description": "Incident 2026-11-11 bootstrap #6 (ADR 0270): runner-orca started Claude with `orca agent launch`, which added the owner's own `--permission-mode auto` over the factory's settings, and nothing checked the live process. A runner adapter must start the harness with the harness's own launch command and verify the live process against the launch record before it sends the prompt.",
+  "description": "Incident 2026-11-11 bootstrap #6 (ADR 0270): the first runner adapter (runner-orca, since deleted) started Claude with `orca agent launch`, which added the owner's own `--permission-mode auto` over the factory's settings, and nothing checked the live process. A runner adapter must start the harness with the harness's own launch command and verify the live process against the launch record before it sends the prompt.",
   "appliesTo": ["packages/runner-*/src/adapter.ts"],
   "forbid": ["agentLaunch\\(", "[\"']agent[\"'],\\s*[\"']launch[\"']"],
   "require": ["verifyLaunch\\(", "HarnessConfigMismatch|HARNESS_CONFIG_MISMATCH"],

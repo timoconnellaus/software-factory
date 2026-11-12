@@ -1,4 +1,4 @@
-# ADR 0381: One client door; desktop devices decide gates with a presence proof
+# ADR 0391: One client door; desktop devices decide gates with a presence proof
 
 Status: accepted, 2026-11-12. Spec [40](../specs/40-desktop-app.md). Amends
 [ADR 0340](0340-a-cli-for-people-gates-stay-in-the-browser.md) (gate decisions are browser-only).

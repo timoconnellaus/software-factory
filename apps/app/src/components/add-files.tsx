@@ -1,6 +1,8 @@
 // Adding files (spec wi-1, ADR 0310): the drop zone and picker, the paste listener and the pending
 // rows with per-file progress or the reason a file was refused. Shared by the work item's
 // Attachments card and the New work form.
+import { Button } from "@software-factory/ui/components/button";
+import { Progress } from "@software-factory/ui/components/progress";
 import { cn } from "@software-factory/ui/lib/utils";
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -63,14 +65,14 @@ export function AddFiles({
         data-testid="attachment-drop"
       >
         Drop files, paste a screenshot, or{" "}
-        <button
-          type="button"
-          className="underline"
+        <Button
+          variant="link"
+          className="h-auto p-0 text-inherit underline"
           onClick={() => input.current?.click()}
           data-testid="attachment-pick"
         >
           choose files
-        </button>
+        </Button>
         <input
           ref={input}
           type="file"
@@ -88,25 +90,21 @@ export function AddFiles({
           <div className="flex items-center gap-2">
             <span className="min-w-0 truncate">{p.name}</span>
             {p.error && (
-              <button
-                type="button"
-                className="ml-auto text-muted-foreground"
+              <Button
+                size="icon"
+                variant="ghost"
+                className="ml-auto size-5 text-muted-foreground"
                 aria-label={`Dismiss ${p.name}`}
                 onClick={() => onDismiss(p.key)}
               >
                 <X className="size-3" />
-              </button>
+              </Button>
             )}
           </div>
           {p.error ? (
             <div className="text-destructive">{p.error}</div>
           ) : (
-            <div className="h-1 overflow-hidden rounded bg-muted">
-              <div
-                className="h-full bg-primary transition-[width]"
-                style={{ width: `${Math.round(p.progress * 100)}%` }}
-              />
-            </div>
+            <Progress className="h-1" value={Math.round(p.progress * 100)} />
           )}
         </div>
       ))}

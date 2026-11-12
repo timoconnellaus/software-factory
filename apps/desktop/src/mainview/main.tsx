@@ -1,4 +1,4 @@
-// The desktop app's view (ADR 0380, spec 40): a TanStack Router (hash history) + Query SPA on
+// The desktop app's view (ADR 0390, spec 40): a TanStack Router (hash history) + Query SPA on
 // packages/ui. Operations go over RPC to the main process, which calls the client door; gate
 // decisions go through `decide` (Touch ID). The view holds no token.
 import { QueryClientProvider } from "@tanstack/react-query";

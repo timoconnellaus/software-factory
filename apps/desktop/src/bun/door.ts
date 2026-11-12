@@ -1,4 +1,4 @@
-// The desktop app's client for sf-engine's client door (/client/v1, ADR 0381). Lives in the main
+// The desktop app's client for sf-engine's client door (/client/v1, ADR 0391). Lives in the main
 // process only: the token never reaches the webview.
 import type { CallResult } from "../shared/rpc.ts";
 import { inputDigest, presenceMessage } from "./digest.ts";
@@ -6,7 +6,7 @@ import { inputDigest, presenceMessage } from "./digest.ts";
 export type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 /**
  * Signs a presence message with the device key. Asking for Touch ID is the OS's job, and the prompt
- * shows the message's own summary line (ADR 0381): nothing the caller says.
+ * shows the message's own summary line (ADR 0391): nothing the caller says.
  */
 export type Signer = (message: string) => Promise<string>;
 
@@ -92,7 +92,7 @@ export class Door {
   }
 
   /**
-   * A gate decision (ADR 0381): a one-time challenge for this op and input, with the engine's
+   * A gate decision (ADR 0391): a one-time challenge for this op and input, with the engine's
    * summary of the decision, signed (Touch ID shows the summary), then the call with the proof.
    */
   async decide(

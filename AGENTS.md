@@ -49,6 +49,8 @@ Fresh session? Read [`docs/handoff.md`](docs/handoff.md), then [`docs/parallel-w
 - pnpm + Turborepo, Node 24 (`.nvmrc`). Run `pnpm lint`, `pnpm typecheck` and `pnpm test` before
   pushing.
 - Biome formats and lints. Don't add ESLint or Prettier.
+- The app's UI is shadcn/ui from `packages/ui`. Use its components, not native `<select>`, `<input
+  type="checkbox">`, `<details>` or hand-styled buttons; if one is missing, add the shadcn component there.
 - Tests run in workerd via `@cloudflare/vitest-plugin`, except Node packages (`local/*`, `presets`,
   `evals`). Prefer integration tests against real bindings over mocks.
 - TypeScript strict. No `any` without a comment saying why.

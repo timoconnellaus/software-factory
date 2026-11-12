@@ -1,4 +1,4 @@
-// Secrets in the login keychain, through Security.framework over bun:ffi (ADR 0381): the desktop
+// Secrets in the login keychain, through Security.framework over bun:ffi (ADR 0391): the desktop
 // token, and a software device key on builds without the Secure Enclave. The spike showed the
 // keychain can't keep these from other processes of the same user (they trust the app's `bun`), so
 // nothing here is proof of a person: gate decisions need the presence proof.

@@ -1,8 +1,8 @@
 # Spec 40: The desktop app
 
-**Read first**: [ADR 0380](../adr/0380-the-desktop-app-is-the-daily-ui.md),
-[0381](../adr/0381-the-client-door-desktop-devices-and-presence.md),
-[0382](../adr/0382-the-website-shrinks-to-auth.md),
+**Read first**: [ADR 0390](../adr/0390-the-desktop-app-is-the-daily-ui.md),
+[0391](../adr/0391-the-client-door-desktop-devices-and-presence.md),
+[0392](../adr/0392-the-website-shrinks-to-auth.md),
 [ADR 0340](../adr/0340-a-cli-for-people-gates-stay-in-the-browser.md) (the CLI door and the
 browser-only rule this amends), the spike [`spikes/electrobun`](../../spikes/electrobun/README.md),
 and the plan [`.kim/plans/2026-11-11-software-factory-desktop-app-electrobun.md`](../../.kim/plans/2026-11-11-software-factory-desktop-app-electrobun.md).
@@ -20,7 +20,7 @@ The build lands as five milestones, each one PR (or more), in order.
 
 ## M1: the client door, desktop devices and presence (cloud only)
 **Scope**
-- **Migration 0150:**
+- **Migration 0160:**
   - `core_desktop_auth_requests`: id, the PKCE challenge, device name, device public key (JWK),
     state, status `pending|approved|denied|consumed`, `user_id`, the hash of the one-time code,
     timestamps, expiry 10 min.
@@ -37,7 +37,7 @@ The build lands as five milestones, each one PR (or more), in order.
   - `desktopDevice.list` and `desktopDevice.revoke`. Revoking a device revokes its tokens.
   - `presence.challenge { op, inputDigest }`: desktop surface only. Returns the nonce and a summary
     of the decision the engine writes from the input (the Touch ID prompt shows it).
-  - The browser-only operations listed as presence-decidable in ADR 0381 carry
+  - The browser-only operations listed as presence-decidable in ADR 0391 carry
     `presenceDecidable: true`.
 - **`invoke()`:**
   - `desktop` joins `SURFACES`.
@@ -175,4 +175,4 @@ The in-app updater follows the channel. The client door's version handshake can 
 ## Out of scope
 - Windows and Linux.
 - A phone path for gate decisions (would need WebAuthn presence).
-- A presence reuse window: not adopted (ADR 0381).
+- A presence reuse window: not adopted (ADR 0391).

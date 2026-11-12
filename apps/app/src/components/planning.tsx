@@ -21,6 +21,7 @@ import {
 import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
+import { Checkbox } from "@software-factory/ui/components/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -31,6 +32,8 @@ import {
 } from "@software-factory/ui/components/dialog";
 import { Input } from "@software-factory/ui/components/input";
 import { Kbd } from "@software-factory/ui/components/kbd";
+import { Label } from "@software-factory/ui/components/label";
+import { RadioGroup, RadioGroupItem } from "@software-factory/ui/components/radio-group";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
@@ -469,29 +472,28 @@ function QuestionCard({
         </div>
       )}
       {choice && (
-        <fieldset className="grid gap-1.5">
+        <fieldset>
           <legend className="sr-only">{q.prompt}</legend>
-          {options.map((option) => {
-            const isDefault = q.defaultValues?.includes(option);
-            return (
-              <label
-                key={option}
-                className={cn(
-                  "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm",
-                  values.includes(option) && "border-foreground/40 bg-accent",
-                )}
-              >
-                <input
-                  type={q.kind === "multiple-choice" ? "checkbox" : "radio"}
-                  name={q.id}
-                  checked={values.includes(option)}
-                  onChange={() => toggle(option)}
-                />
-                <span className="grow">{option}</span>
-                {isDefault && <span className="text-muted-foreground text-xs">recommended</span>}
-              </label>
-            );
-          })}
+          {q.kind === "multiple-choice" ? (
+            <div className="grid gap-1.5">
+              {options.map((option) => (
+                <ChoiceRow key={option} option={option} question={q} values={values}>
+                  <Checkbox
+                    checked={values.includes(option)}
+                    onCheckedChange={() => toggle(option)}
+                  />
+                </ChoiceRow>
+              ))}
+            </div>
+          ) : (
+            <RadioGroup className="gap-1.5" value={values[0] ?? ""} onValueChange={toggle}>
+              {options.map((option) => (
+                <ChoiceRow key={option} option={option} question={q} values={values}>
+                  <RadioGroupItem value={option} />
+                </ChoiceRow>
+              ))}
+            </RadioGroup>
+          )}
         </fieldset>
       )}
       {q.kind === "number" && (
@@ -572,6 +574,34 @@ function hastText(node: unknown): string {
   if (!n) return "";
   if (typeof n.value === "string") return n.value;
   return (n.children ?? []).map(hastText).join("");
+}
+
+/** One answer option: a shadcn checkbox or radio inside a clickable, highlighted row. */
+function ChoiceRow({
+  option,
+  question,
+  values,
+  children,
+}: {
+  option: string;
+  question: PlanningQuestion;
+  values: string[];
+  children: ReactNode;
+}) {
+  return (
+    <Label
+      className={cn(
+        "flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 font-normal",
+        values.includes(option) && "border-foreground/40 bg-accent",
+      )}
+    >
+      {children}
+      <span className="grow">{option}</span>
+      {question.defaultValues?.includes(option) && (
+        <span className="text-muted-foreground text-xs">recommended</span>
+      )}
+    </Label>
+  );
 }
 
 function Chip({ tag }: { tag: string }) {

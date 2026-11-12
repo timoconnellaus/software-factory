@@ -3,6 +3,7 @@
 import { ago, STAGE_LABEL } from "@software-factory/client/format";
 import { Card } from "@software-factory/ui/components/card";
 import { type Status, StatusBadge } from "@software-factory/ui/components/status-dot";
+import { Table, TableBody, TableCell, TableRow } from "@software-factory/ui/components/table";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { workListQuery } from "#/lib/queries";
@@ -56,36 +57,36 @@ function WorkList() {
             </Link>
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <tbody>
+          <Table className="w-full text-sm">
+            <TableBody>
               {items.map((i) => (
-                <tr key={i.id} className="border-t first:border-t-0">
-                  <td className="py-2.5 pr-3 pl-5 font-mono text-muted-foreground text-xs">
+                <TableRow key={i.id}>
+                  <TableCell className="py-2.5 pr-3 pl-5 font-mono text-muted-foreground text-xs">
                     #{i.number}
-                  </td>
-                  <td className="w-full py-2.5 pr-3">
+                  </TableCell>
+                  <TableCell className="whitespace-normal w-full py-2.5 pr-3">
                     <Link to="/work/$id" params={{ id: i.id }} className="hover:underline">
                       {i.title}
                     </Link>
                     {i.kind === "incident" && (
                       <span className="ml-2 text-muted-foreground text-xs">factory incident</span>
                     )}
-                  </td>
-                  <td className="py-2.5 pr-3">
+                  </TableCell>
+                  <TableCell className="py-2.5 pr-3">
                     <StatusBadge status={DOT[i.status] ?? "idle"}>
                       {STAGE_LABEL[i.stage] ?? i.stage} · {i.status}
                     </StatusBadge>
-                  </td>
-                  <td className="whitespace-nowrap py-2.5 pr-3 text-muted-foreground">
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap py-2.5 pr-3 text-muted-foreground">
                     {projectName(i.projectId)}
-                  </td>
-                  <td className="whitespace-nowrap py-2.5 pr-5 text-muted-foreground text-xs">
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap py-2.5 pr-5 text-muted-foreground text-xs">
                     {ago(i.updatedAt)}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
       </Card>
     </main>

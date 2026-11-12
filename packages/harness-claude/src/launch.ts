@@ -1,6 +1,6 @@
 // How Claude Code is started for a run, and the check that it really started that way (ADR 0270,
 // incident 2026-11-11 bootstrap #6). The harness owns the exact invocation: a runner adapter only
-// hosts it (an Orca terminal, a headless process) and runs the launch script as it is.
+// hosts it (a tmux session, a headless process) and runs the launch script as it is.
 //
 //   claude --permission-mode <mode> --setting-sources project,local
 //          --settings <runDir>/claude-settings.json --strict-mcp-config [--model <model>]
@@ -11,7 +11,7 @@
 // it once the launch is verified, so nothing runs before the check passes.
 //
 // After launch, `inspectLaunch` reads the pid the launch script recorded, the live process's
-// command line (`ps`), and both copies of the settings file, and `launchProblems` compares them with
+// command line (`/proc/<pid>/cmdline` on Linux, `ps` elsewhere), and both copies of the settings file, and `launchProblems` compares them with
 // the launch record. Any difference is `harness-config-mismatch`: the adapter kills the session and
 // the job fails, which opens a factory incident.
 import { execFile } from "node:child_process";
@@ -84,8 +84,8 @@ export function shellQuote(word: string): string {
 
 /**
  * Environment variables the launch script unsets before starting Claude: every credential the
- * harness env blanks, and the launcher's own additions that would bring the owner's config back
- * (Orca adds its plugin dirs to every terminal).
+ * harness env blanks, and `CLAUDE_CODE_PLUGIN_DIRS`, which a terminal host may set to bring
+ * plugins in (harmless when unset).
  */
 export function launchUnsets(env: Record<string, string>): string[] {
   return [
@@ -163,8 +163,22 @@ export function launchProblems(record: LaunchRecord, observed: ObservedLaunch): 
 
 export type ReadCommand = (pid: number) => Promise<string | null>;
 
-/** `ps -ww -o command= -p <pid>`: the process's argv, or null when it is gone. */
+/**
+ * The live process's argv joined with spaces (what `ps -o command=` prints), or null when it is
+ * gone. On Linux it reads `/proc/<pid>/cmdline`, so a host without procps (a slim image) can still
+ * run the ADR 0270 check (ADR 0420); elsewhere it runs `ps -ww -o command= -p <pid>`.
+ */
 export const psCommand: ReadCommand = (pid) =>
+  process.platform === "linux" ? procCommand(pid) : bsdPsCommand(pid);
+
+/** `/proc/<pid>/cmdline`: NUL-separated argv. Empty for a zombie or kernel thread (null). */
+export const procCommand: ReadCommand = async (pid) => {
+  const raw = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
+  const argv = raw.replace(/\0$/, "").split("\0");
+  return raw === "" ? null : argv.join(" ");
+};
+
+const bsdPsCommand: ReadCommand = (pid) =>
   new Promise((resolve) => {
     execFile("ps", ["-ww", "-o", "command=", "-p", String(pid)], (error, stdout) => {
       const line = String(stdout).replace(/\n$/, "");
