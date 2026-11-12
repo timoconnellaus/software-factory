@@ -17,13 +17,14 @@ is asked. Most gate decisions on a mature project are approvals made without cha
 3. **It goes active per gate kind** once it has at least 20 decisions with at least 95% precision
    on approvals. A person switches it on; it is never automatic.
    - Active, it may **approve** a gate. It never rejects: a "no" still goes to the person.
-   - It **never** decides merge, deploy or self-modify.
+   - It **never** decides merge, deploy or self-modify. (Since amended: for merge it may be one
+     condition of ADR 0515's `autoApprove`, never deciding alone; see the notes below.)
    - If its precision drops below the bar over the last 20 decisions, it falls back to shadow mode.
 4. Its approvals are journaled with actor `self-improve` and its reason, and show in the digest.
 
 ## Consequences
 - Spec gates and person `gate` steps are the gate kinds it can take. The merge gate is not
-  (`ALWAYS_REVIEW`).
+  (`ALWAYS_REVIEW`). (Since amended: Preview and, as a condition of `autoApprove`, merge; see below.)
 - It is a policy setting, so enabling it is a human change (ADR 0373).
 
 > Amended 2026-11-12 (spec 09 M4, as built): it runs outside the Workflow, as a minute cron that
@@ -32,4 +33,4 @@ is asked. Most gate decisions on a mature project are approvals made without cha
 > a person, so precision stays measured on fresh decisions. The fallback to shadow is a config
 > version written by the system, a tightening.
 
-> Amended 2026-11-12 (spec 52's answers, questions 12 and 21; [ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md)): two new gate kinds. **Preview** (spec 52's `preview` stage) under the same bar as plan gates. **Merge**, in shadow on every project, and active only per project and only as one condition of `autoApprove`: its approval never merges by itself, the other conditions are checked in code, and "never decides merge" still holds for a project without `autoApprove`. It still never decides deploy or self-modify; deploys are auto-approved only by ADR 0515's conditions once a deploy stage exists. Its approval of a Preview does not carry over to Publish (spec 52, question 2): only a person's does.
+> Amended 2026-11-12 (spec 52's answers, questions 12 and 21; [ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md)): two new gate kinds. **Preview** (spec 52's `preview` stage) under the same bar as plan gates. **Merge**, in shadow on every project, and active only per project and only as one condition of `autoApprove`: its approval never merges by itself, the other conditions are checked in code, and "never decides merge" still holds for a project without `autoApprove`. It still never decides deploy or self-modify; deploys are auto-approved only by ADR 0515's conditions once a deploy stage exists. Its approval of a Preview carries over to Publish only in a workflow whose Publish gate has `autoApprove` on and whose conditions hold; otherwise Publish asks a person (spec 52, questions 2 and 12; working answer, owner to confirm). With `autoApprove` on, the "every fifth approval" sample is not held: the sampled merge goes ahead and a person reviews it after the merge (ADR 0515; working answer, owner to confirm).

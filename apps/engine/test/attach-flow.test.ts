@@ -4,6 +4,8 @@
 // factory never pushes to the PR's branch.
 import { env } from "cloudflare:workers";
 import { sign } from "@software-factory/connector-webhook";
+import { parseProjectPolicy } from "@software-factory/core";
+import { compileItemWorkflow, engineStages } from "@software-factory/core/stages";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import {
@@ -23,6 +25,16 @@ import {
 } from "./helpers.ts";
 
 type World = Awaited<ReturnType<typeof world>>;
+
+/** `core_stages` rows as the compiled definition says (spec 52 PR (a)): each stage run or skipped. */
+function asDefinitionSays(rows: { stage: string; status: string }[]) {
+  const seen = new Map<string, boolean>();
+  for (const r of rows) if (!seen.has(r.stage)) seen.set(r.stage, r.status !== "skipped");
+  return [...seen].filter(([stage]) =>
+    ["triage", "spec", "build", "verify", "merge"].includes(stage),
+  );
+}
+
 const SECRET = "test-webhook-secret";
 
 async function deliver(event: string, payload: unknown) {
@@ -134,6 +146,15 @@ describe("an attached PR's Workflow (spec 05)", () => {
     for (const s of stages.filter((x) => x.status === "skipped")) {
       expect(s.reason).toBe("attached PR: built outside the factory");
     }
+    // The built-in Attached PR definition passes and skips the same stages (spec 52 PR (a)).
+    const parsed = parseProjectPolicy(JSON.stringify({ version: 1, autonomyPolicy: "balanced" }));
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(asDefinitionSays(stages)).toEqual(
+      engineStages(compileItemWorkflow(parsed.policy, null, "attached"), "large").map((x) => [
+        x.stage,
+        x.runs,
+      ]),
+    );
     const size = await first<{ size: string }>(
       "SELECT size FROM core_work_items WHERE id = ?",
       item.workItemId,
