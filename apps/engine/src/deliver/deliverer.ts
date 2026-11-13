@@ -475,8 +475,9 @@ async function deliverHead(
     return end("left", "failed", "the babysitter lands only an approved merge");
   }
   const touchesFactoryConfig = await approvedFlag(env, head.pending_action_id);
-  // A head held while main was red (decision 7) reads pending until it is evaluated again: release
-  // it now, or GitHub would refuse the merge for its required check.
+  // A head held while main was red (decision 7), or still waiting on CI the deliverer just read as
+  // green, reads pending until it is evaluated again: evaluate it now, or pr.merge (and GitHub's
+  // required check) would refuse the merge.
   await releaseHeld(env, lease, head, at);
   // Marked merging first, so a cancel from here until GitHub answers is refused ("this is
   // merging") rather than racing the merge (spec 53 review).
@@ -503,6 +504,10 @@ async function deliverHead(
   // nothing changed goes back (spec 53 review; asking a person is PR d's). A moved head is the
   // babysitter's to handle on a v11 item: pr.merge leaves the approval to it.
   const mergeRefused = landed.status === "refused" ? landed.details?.mergeRefused : undefined;
+  // Verified, but its factory/verify hasn't caught up with CI yet (#190 review): wait, then retry.
+  if (mergeRefused === "unverified" && landed.status === "refused" && landed.details?.pending) {
+    return CI_RECHECK_MS;
+  }
   if (mergeRefused === "headMoved" || mergeRefused === "refused") {
     const again = await snapshot();
     if ("wait" in again) return again.wait;
@@ -761,19 +766,27 @@ async function settleBabysit(
 
 /**
  * When `factory/verify` on the head still says "held: main is red" (main went green and the
- * re-evaluation hasn't run yet), evaluates it again now. Primary-key reads: core_verify_checks
+ * re-evaluation hasn't run yet), or still waits for CI that the deliverer has just read as green
+ * (the check-suite webhook not processed yet), evaluates it again now: pr.merge requires it to be a
+ * success on this exact head (#190 review). Primary-key reads: core_verify_checks
  * (project_id, head_sha), then the item and its repository.
  */
 async function releaseHeld(env: Env, lease: Lease, head: HeadRow, at: string): Promise<void> {
   const row = await env.DB.prepare(
-    `SELECT v.held_at, r.owner, r.name, w.pr_number FROM core_verify_checks v
+    `SELECT v.held_at, v.status, r.owner, r.name, w.pr_number FROM core_verify_checks v
      JOIN core_work_items w ON w.id = ?3
      JOIN core_repositories r ON r.id = w.repository_id
      WHERE v.project_id = ?1 AND v.head_sha = ?2`,
   )
     .bind(head.project_id, at, head.work_item_id)
-    .first<{ held_at: string | null; owner: string; name: string; pr_number: number | null }>();
-  if (!row?.held_at) return;
+    .first<{
+      held_at: string | null;
+      status: string;
+      owner: string;
+      name: string;
+      pr_number: number | null;
+    }>();
+  if (!row || (!row.held_at && row.status === "completed")) return;
   await call(env, lease, "verify.refresh", {
     repo: { owner: row.owner, name: row.name },
     headSha: at,

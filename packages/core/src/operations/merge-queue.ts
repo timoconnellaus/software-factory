@@ -236,6 +236,64 @@ export async function requireQueueHead(
 }
 
 /**
+ * Verified on this exact head (#190 review): pr.merge refuses unless the factory itself verified the
+ * commit being merged, read from its own records and never from GitHub alone (the default branch's
+ * ruleset may be off, and a customer's repository may have none): a stored review packet for this
+ * item and SHA with verdict `pass`, and the factory's own `factory/verify` result for that SHA
+ * completed with `success`. So a normal approval, an approval carried over an update (verified again
+ * on the new head first), a resolution and a repair all merge only a head verify passed on. A head
+ * held while main is red isn't `success`, so it doesn't merge until main is green (decision 7).
+ */
+export async function requireVerifiedHead(
+  ctx: HandlerContext,
+  item: WorkItemRow,
+  headSha: string,
+): Promise<void> {
+  const [packet, check] = await Promise.all([
+    ctx.db
+      .selectFrom("core_review_packets")
+      .select("verdict")
+      .where("work_item_id", "=", item.id)
+      .where("head_sha", "=", headSha)
+      .orderBy("created_at", "desc")
+      .limit(1)
+      .executeTakeFirst(),
+    ctx.db
+      .selectFrom("core_verify_checks")
+      .select(["status", "conclusion", "work_item_id"])
+      .where("project_id", "=", item.project_id)
+      .where("head_sha", "=", headSha)
+      .executeTakeFirst(),
+  ]);
+  const at = headSha.slice(0, 7);
+  if (packet?.verdict !== "pass") {
+    throw new OperationError(
+      "conflict",
+      packet
+        ? `merge refused: verify failed on ${at}`
+        : `merge refused: the factory hasn't verified ${at} (no review packet for this commit)`,
+      { mergeRefused: "unverified" },
+    );
+  }
+  if (
+    check?.work_item_id !== item.id ||
+    check.status !== "completed" ||
+    check.conclusion !== "success"
+  ) {
+    throw new OperationError(
+      "conflict",
+      `merge refused: factory/verify isn't a success on ${at} (${check ? (check.status === "completed" ? check.conclusion : check.status) : "not posted"})`,
+      // `pending`: verify passed but its check is still waiting (CI on this commit, or held while
+      // main is red): the babysitter waits and tries again rather than send the item back.
+      {
+        mergeRefused: "unverified",
+        pending: check?.work_item_id === item.id && check.status !== "completed",
+      },
+    );
+  }
+}
+
+/**
  * What pr.merge requires beyond the queue's head (spec 53 review): the item is still open, and a
  * merge by the babysitter is of an entry still open in its queue. Read now, before GitHub is asked,
  * and guarded in the call's batch, so a cancel, a finish or a leave that commits first refuses it.

@@ -7,7 +7,7 @@ import { BABYSITTER } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { defineOperation } from "../operation.ts";
 import { has } from "../workflow-features.ts";
-import { requireOpenToMerge, requireQueueHead } from "./merge-queue.ts";
+import { requireOpenToMerge, requireQueueHead, requireVerifiedHead } from "./merge-queue.ts";
 import { repoRef, requireRepository, requireWorkItem, sha, workItemId } from "./shared.ts";
 
 export const branchEnsure = defineOperation({
@@ -145,7 +145,7 @@ export const BRANCH_MOVED_AFTER_APPROVAL =
 export const prMerge = defineOperation({
   name: "pr.merge",
   description:
-    'Merge the work item\'s PR through the GitHub App. Risk `merge` (`self-modify` when the diff touches `.factory/`): always reviewed, for every actor and policy, so it opens the merge gate; it runs once a person approves with review.merge. Refused if the head moved since the packet was made, for an item that is no longer open (cancelled, done, failed), for a queued item unless it is the head of the merge queue at the head the queue recorded (ADR 0330), and for the babysitter unless the item\'s entry is still open in its queue (spec 53). When GitHub says the head moved after approval, the refusal carries `details.mergeRefused: "headMoved"`: on a call by the babysitter for a Workflow v11+ item the approval is left to the babysitter, which owns the moved head; otherwise (v10 and earlier, an attached PR) the approval is closed (review the new commit). Any other GitHub refusal carries `mergeRefused: "refused"`.',
+    'Merge the work item\'s PR through the GitHub App. Risk `merge` (`self-modify` when the diff touches `.factory/`): always reviewed, for every actor and policy, so it opens the merge gate; it runs once a person approves with review.merge. Refused if the head moved since the packet was made, for an item that is no longer open (cancelled, done, failed), for a queued item unless it is the head of the merge queue at the head the queue recorded (ADR 0330), and for the babysitter unless the item\'s entry is still open in its queue (spec 53). When GitHub says the head moved after approval, the refusal carries `details.mergeRefused: "headMoved"`: on a call by the babysitter for a Workflow v11+ item the approval is left to the babysitter, which owns the moved head; otherwise (v10 and earlier, an attached PR) the approval is closed (review the new commit). Any other GitHub refusal carries `mergeRefused: "refused"`. Refused before GitHub is asked unless the factory itself verified this exact head: a review packet with verdict pass and its own `factory/verify` a success for that SHA (`mergeRefused: "unverified"`, with `pending: true` while that check is still waiting).',
   risk: "merge",
   riskOf: (input) => (input.touchesFactoryConfig ? "self-modify" : "merge"),
   actors: ["agent"],
@@ -164,6 +164,8 @@ export const prMerge = defineOperation({
     // review): read now, before GitHub is asked, and guarded again in this call's batch so a cancel
     // or a leave that commits in between refuses it.
     await requireOpenToMerge(ctx, w);
+    // Verified on this exact head, from the factory's own records (#190 review).
+    await requireVerifiedHead(ctx, w, input.headSha);
     const repo = await repoRef(ctx, requireRepository(ctx));
     const github = ctx.services.github;
     // A PR GitHub already shows merged at this head was merged by a call that lost track of it (a
