@@ -64,6 +64,8 @@ export interface UpdateStatus {
   channel: string | null;
   /** Why the last check failed, or why this build takes no updates, in plain words. */
   reason: string | null;
+  /** The last update didn't install (read after the relaunch): shown with Retry, not as new. */
+  installFailure?: { version: string; reason: string } | null;
 }
 
 /**

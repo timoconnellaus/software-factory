@@ -106,8 +106,64 @@ function expect(actual, label) {
 const checked = (p, label) =>
   p.evaluate(`document.querySelector('[aria-label="${label}"]')?.getAttribute("data-state")`);
 
+/** The router's own error screen, which must never show (the app's is `app-error`). */
+const ROUTER_ERROR = "document.body.textContent.includes('Something went wrong!')";
+
 /** The tests, in order. Each opens its own fresh view. */
 export const TESTS = [
+  {
+    name: "sign-in: completing it with a route mounted shows the app, not an error screen",
+    async run(p) {
+      await p.open("/work", "?session=out");
+      expect(await p.exists("[data-testid=sign-in]"), "the sign-in screen").toBeTruthy();
+      expect(await p.evaluate(ROUTER_ERROR), "no router error while signed out").toBeFalsy();
+      await p.evaluate("window.__sfSignIn()");
+      await p.waitFor("document.querySelector('[data-testid=toolbar]')");
+      await p.waitFor("document.querySelector('[data-testid=work-board], [data-nested-list]')");
+      expect(await p.evaluate(ROUTER_ERROR), "no router error after signing in").toBeFalsy();
+      expect(
+        await p.exists("[data-testid=app-error]"),
+        "no app error after signing in",
+      ).toBeFalsy();
+    },
+  },
+  {
+    name: "sign-in: the token ending mid-session (device replaced) leads to sign-in, then back",
+    async run(p) {
+      await p.open("/work");
+      await p.waitFor("document.querySelector('[data-testid=toolbar]')");
+      await p.evaluate("window.__sfRevoke()");
+      // A read refused as signed out on the way, as the old token's next call would be.
+      await p.evaluate("location.hash = '#/settings'");
+      await p.waitFor("document.querySelector('[data-testid=sign-in]')");
+      await sleep(300);
+      expect(await p.evaluate(ROUTER_ERROR), "no router error once signed out").toBeFalsy();
+      expect(await p.exists("[data-testid=app-error]"), "no app error once signed out").toBeFalsy();
+      await p.evaluate("window.__sfSignIn()");
+      await p.waitFor("document.querySelector('[data-testid=toolbar]')");
+      await sleep(300);
+      expect(await p.evaluate(ROUTER_ERROR), "no router error signed in again").toBeFalsy();
+      expect(await p.exists("[data-testid=app-error]"), "no app error signed in again").toBeFalsy();
+    },
+  },
+  {
+    name: "errors: an unexpected one lands on the app's error screen, with Retry and Reload",
+    async run(p) {
+      await p.open("/", "?crash=1");
+      await p.waitFor("document.querySelector('[data-testid=app-error]')");
+      expect(await p.evaluate(ROUTER_ERROR), "not the router's default").toBeFalsy();
+      expect(await p.text("[data-testid=app-error] h1"), "its heading").toContain(
+        "Something went wrong",
+      );
+      expect(await p.text("[data-testid=app-error]"), "its buttons").toContain("Retry");
+      expect(await p.text("[data-testid=app-error]"), "its buttons").toContain("Reload");
+      // Under the traffic lights, the strip still moves the window.
+      expect(
+        await p.exists("[data-testid=app-error] .electrobun-webkit-app-region-drag"),
+        "the drag strip",
+      ).toBeTruthy();
+    },
+  },
   {
     name: "bulk release: every refusal is reported and the refused item stays selected",
     async run(p) {

@@ -312,6 +312,7 @@ function updateStatus(): UpdateStatus {
     installed: u.installed,
     channel: u.channel,
     reason: u.reason,
+    installFailure: u.installFailure ?? null,
   };
 }
 
@@ -374,7 +375,15 @@ function updateItems() {
   const jobs = liveJobs().length;
   if (jobs === 0)
     return [
-      { type: "normal" as const, label: `Restart to update to ${u.version}`, action: "update" },
+      {
+        type: "normal" as const,
+        // The last try didn't install (read after the relaunch): say so, and offer it again.
+        label:
+          u.installFailure?.version === u.version
+            ? `Update to ${u.version} didn't install: try again`
+            : `Restart to update to ${u.version}`,
+        action: "update",
+      },
     ];
   const n = `${jobs} job${jobs === 1 ? "" : "s"}`;
   return [
