@@ -124,17 +124,18 @@ describe("the shadow reconciler", () => {
     const w = await world();
     const moved = await ended(w, "done", SMALL_DONE);
     const still = await ended(w, "done", SMALL_DONE);
-    await env.DB.prepare(
-      "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, sections, created_at) VALUES ('rp_carried', ?, 'b2', 'pass', ?, ?)",
-    )
-      .bind(moved, JSON.stringify({ carriedFrom: "a1" }), new Date().toISOString())
-      .run();
+    // Each item's packet is made during its verify stage, as the Workflow makes it: stamped at that
+    // stage row's start (a fixture timing matter; the replay reads a packet within its verify entry).
+    const packet = (id: string, pid: string, sections: string) =>
+      env.DB.prepare(
+        `INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, sections, created_at)
+         SELECT ?, ?, 'b2', 'pass', ?, started_at FROM core_stages WHERE work_item_id = ? AND stage = 'verify'`,
+      )
+        .bind(pid, id, sections, id)
+        .run();
+    await packet(moved, "rp_carried", JSON.stringify({ carriedFrom: "a1" }));
     // The other has a packet too, so the two differ only by the named difference.
-    await env.DB.prepare(
-      "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, sections, created_at) VALUES ('rp_still', ?, 'b2', 'pass', '{}', ?)",
-    )
-      .bind(still, new Date().toISOString())
-      .run();
+    await packet(still, "rp_still", "{}");
     while ((await shadowPass(env, later())) > 0);
     const report = async (id: string) =>
       ok<{ report: { known: { reason: string }[]; divergences: number } }>(
