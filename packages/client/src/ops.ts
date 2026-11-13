@@ -101,6 +101,9 @@ export interface OpMap {
   "agent.save": Def<typeof operations.agentSave>;
   "orgConfig.get": Def<typeof operations.orgConfigGet>;
   "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
+  "orgConfig.adoptProjectWorkflows": Def<typeof operations.orgConfigAdoptProjectWorkflows>;
+  "override.approve": Def<typeof operations.overrideApprove>;
+  "workItem.markRepair": Def<typeof operations.workItemMarkRepair>;
   "stageType.list": Def<typeof operations.stageTypeList>;
   // The reconciler in shadow (spec 52 PR (c)).
   "reconcile.report": Def<typeof operations.reconcileReport>;

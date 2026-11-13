@@ -74,7 +74,8 @@ The build lands as five milestones, each one PR (or more), in order.
    - an expired challenge;
    - a signature from another device or a revoked device.
 5. `cli.approveDevice`, `desktop.approveDevice`, runner registration and turning a kill switch off
-   stay refused on `desktop` even with a proof.
+   stay refused on `desktop` even with a proof. *(Amended 2026-11-13, ADR 0610: turning a kill
+   switch off is decided on the desktop with a proof; the rest stay refused.)*
 6. A proof from a device with a software key is refused, unless the engine runs with
    `DESKTOP_ALLOW_SOFTWARE_KEYS=1`. The default refuses.
 7. A CLI token can't ask for a challenge (`presence.challenge` is desktop-only). Its gate calls are

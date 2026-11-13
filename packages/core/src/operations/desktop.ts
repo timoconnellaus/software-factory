@@ -25,6 +25,12 @@ import { getOperation } from "../registry.ts";
 import { describeConfigDecision } from "./config.ts";
 import { deviceList, deviceRevoke } from "./device.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
+import {
+  describeKillSwitchOff,
+  describeOrgConfigDecision,
+  describeOverrideApprove,
+} from "./policy-summary.ts";
+import { ORG_CONFIG_WRITES } from "./workflows.ts";
 
 /** The actor the client door uses for the two unsigned desktop sign-in calls. */
 export const DESKTOP_DEVICE_ACTOR: Actor = { type: "runner", id: "desktop-device-login" };
@@ -228,10 +234,36 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
       // A config change names the project, the versions and what it loosens (ADR 0610).
       const config = pa ? await describeConfigDecision(ctx, pa, verb) : null;
       if (config) return config;
+      const org =
+        pa && (ORG_CONFIG_WRITES as readonly string[]).includes(pa.operation)
+          ? await describeOrgConfigDecision(ctx.db, pa.operation, parsed(pa.input), verb)
+          : null;
+      if (org) return org;
       return `${verb} ${pa ? `${pa.operation} on ${await named(pa.work_item_id)}` : "a pending action"}`;
     }
+    case "workflow.save":
+    case "agent.save":
+    case "workflow.archive":
+    case "workflow.createFromTemplate":
+    case "orgConfig.rollback":
+    case "orgConfig.adoptProjectWorkflows":
+      return (await describeOrgConfigDecision(ctx.db, op, input)) ?? `Decide ${op}`;
+    case "killSwitch.set":
+      return (await describeKillSwitchOff(ctx.db, input)) ?? `Decide ${op}`;
+    case "override.approve":
+      return describeOverrideApprove(ctx.db, ctx.floor, input);
     default:
       return `Decide ${op}`;
+  }
+}
+
+/** A stored pending input, or `{}`. */
+function parsed(raw: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
   }
 }
 

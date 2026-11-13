@@ -183,6 +183,12 @@ export const orgConfigAdoptProjectWorkflows = defineOperation({
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
+  // Its dry run writes nothing and decides nothing: one tap on the desktop (ADR 0610).
+  desktopOneTap: (input) => input.dryRun !== false,
+  // Decidable on the desktop with a presence proof for this exact call (ADR 0610); never the phone,
+  // and never a CLI, MCP, runner or agent token.
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({
     orgId: z.string().min(1),
     /** The org config version this was planned from (0 before the first): a stale one is a conflict. */

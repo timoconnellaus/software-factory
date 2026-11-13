@@ -26,7 +26,10 @@ describe("gate decisions", () => {
           !!o &&
           typeof o === "object" &&
           (o as { presenceDecidable?: boolean }).presenceDecidable === true &&
-          (o as { desktopDecidable?: boolean }).desktopDecidable !== true,
+          (o as { desktopDecidable?: boolean }).desktopDecidable !== true &&
+          // A proof for some inputs only: the rest go through call.
+          typeof (o as { browserOnly?: unknown }).browserOnly !== "function" &&
+          typeof (o as { desktopOneTap?: unknown }).desktopOneTap !== "function",
       )
       .map((o) => o.name)
       .sort();

@@ -267,7 +267,10 @@ _Avoid_: API key, PAT
 **Desktop device**
 A Mac running the desktop app, registered by a browser sign-in (ADR 0391): a Secure Enclave key
 plus a desktop token. Its token acts as the person on the `desktop` surface, like a `write` CLI
-token; it can decide a gate only with a **presence proof** (Touch ID signing that exact call).
+token; it can decide a gate only with a **presence proof** (Touch ID signing that exact call). Since
+ADR 0610 the same proof also makes policy decisions there: org workflow and agent saves, org config
+rollbacks and approvals, adopting projects' workflows, approving a looser override, and turning a kill
+switch off. Approving device logins and registering runners stay on the website.
 Listed and revoked on the website.
 _Avoid_: client, install
 

@@ -23,7 +23,8 @@ import {
   resolveProjectWorkflow,
 } from "../stages/project-workflow.ts";
 import { requireAdjudicatorEarned } from "./adjudicator.ts";
-import { projectId, requireProject } from "./shared.ts";
+import { impactWords, quotedName } from "./policy-summary.ts";
+import { policyDecisionSurface, projectId, requireProject } from "./shared.ts";
 import { currentOrgConfig } from "./workflows.ts";
 
 /** The config operations whose loosening saves wait for an approver. */
@@ -819,15 +820,6 @@ export async function applyApprovedConfig(
   return written;
 }
 
-/** At most this much of a summary lists changes; the Touch ID prompt has little room. */
-const SUMMARY_CHANGES = 3;
-
-/**
- * The words for deciding a waiting config save or rollback (ADR 0391, 0610), from the engine's own
- * records, never the caller's: the project, the versions, and the change as the engine classifies
- * it against the current version. The Touch ID prompt and the audit journal show them. Null when
- * the pending action isn't a project config change.
- */
 export async function describeConfigDecision(
   ctx: { db: Db; floor: FloorParse },
   pa: { operation: string; input: string; project_id: string | null },
@@ -862,13 +854,8 @@ export async function describeConfigDecision(
       })();
   if (!target) return `${head}: the change can't be read`;
   const impact = await impactOf(ctx.db, project, before?.policy ?? null, target, ctx.floor);
-  const shown = impact.changes.filter((c) => c.class === impact.class).slice(0, SUMMARY_CHANGES);
-  const rest = impact.changes.length - shown.length;
-  const what = shown.map((c) => c.summary.replace(/\.$/, "")).join("; ");
-  return `${head}: ${impact.class}${what ? `: ${what}` : ""}${rest > 0 ? ` (+${rest} more)` : ""}`;
+  return `${head}: ${impactWords(impact)}`;
 }
-
-const quotedName = (name: string) => `"${name.replace(/\s+/g, " ").slice(0, 60)}"`;
 
 /**
  * An org admin approves a project's existing looser override in one step (review of spec 52 (d2)):
@@ -885,9 +872,11 @@ export const overrideApprove = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "admin",
-  // A policy decision (it lets a looser setting apply): made in the app (ADR 0340), never from the
-  // CLI, MCP or a desktop device until a presence proof covers policy decisions.
+  // A policy decision (it lets a looser setting apply): never from the CLI, MCP, a phone or an
+  // agent; on the desktop with a presence proof for this exact call (ADR 0610).
   browserOnly: true,
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({
     projectId,
     stageId: z.string().min(1).max(40),
@@ -898,10 +887,10 @@ export const overrideApprove = defineOperation({
   output: z.object({ approved: z.boolean(), orgVersion: z.number(), value: z.unknown() }),
   async handler(input, ctx) {
     const project = requireProject(ctx);
-    if (ctx.origin.surface !== "app" && ctx.origin.surface !== "test")
+    if (!policyDecisionSurface(ctx))
       throw new OperationError(
         "forbidden",
-        `an override is approved in the app, not from ${ctx.origin.surface}`,
+        `an override is approved in the app or on the desktop with Touch ID, not from ${ctx.origin.surface}`,
         { browserOnly: true },
       );
     const raw = ctx.scope.rawPolicy;
