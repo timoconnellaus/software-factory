@@ -5,7 +5,7 @@
 // decided them, send-back targets and rounds, retries, slot steps and every kind of end.
 import { z } from "zod";
 import { defineOperation } from "../operation.ts";
-import { SHADOW_NOT_COMPARED, type ShadowVerdict } from "../stages/shadow.ts";
+import { COVERAGE, SHADOW_NOT_COMPARED, type ShadowVerdict } from "../stages/shadow.ts";
 import { requireWorkItem, workItemId } from "./shared.ts";
 
 /** The switch-over PR is opened only once the streak reaches this (spec 52, Q14). */
@@ -29,6 +29,8 @@ export const reconcileReport = defineOperation({
         ),
         uncompared: z.array(z.string()),
         known: z.array(z.object({ reason: z.string(), note: z.string() })),
+        equivalences: z.array(z.object({ reason: z.string(), note: z.string() })),
+        covers: z.array(z.string()),
         divergences: z.number(),
       })
       .nullable(),
@@ -51,6 +53,8 @@ export const reconcileReport = defineOperation({
         uncompared: verdict.uncompared,
         // Verdicts written before known differences were named carry none.
         known: verdict.known ?? [],
+        equivalences: verdict.equivalences ?? [],
+        covers: verdict.covers ?? [],
         divergences: verdict.divergences,
       },
     };
@@ -59,7 +63,7 @@ export const reconcileReport = defineOperation({
 
 export const reconcileStreak = defineOperation({
   name: "reconcile.streak",
-  description: `The shadow reconciler's agreement streak for an org (spec 52 PR (c)): how many ended items in a row, newest first, agreed with no divergence. The switch-over waits for ${AGREEMENT_STREAK_TARGET}; any divergence resets it. The comparison covers stages, jobs and attempts, gates and who decided them, send-backs, retries, slot steps and every kind of end; were any of it left out, it would report "comparison incomplete" and what is missing, never a number. Members only.`,
+  description: `The shadow reconciler's agreement streak for an org (spec 52 PR (c)): how many ended items in a row, newest first, agreed with no divergence. The switch-over waits for ${AGREEMENT_STREAK_TARGET}; any divergence resets it. Beside the number, which of the scenarios the switch-over needs (a verify that fails, slot and merge-gate send-backs, retries past the limit, changes requested at the spec gate, a parked item, a cancel, a carried approval, an attached PR, an incident) the streak's items covered, and which are missing. The comparison covers stages, jobs and attempts, gates and who decided them, send-backs, retries, slot steps and every kind of end; were any of it left out, it would report "comparison incomplete" and what is missing, never a number. Members only.`,
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
@@ -79,6 +83,11 @@ export const reconcileStreak = defineOperation({
       lastDivergence: z
         .object({ workItemId: z.string(), finishedAt: z.string(), divergences: z.number() })
         .nullable(),
+      /**
+       * Which of the scenarios the switch-over needs (`COVERAGE`) the items in the streak exercised
+       * and agreed on, and which none has yet.
+       */
+      coverage: z.object({ covered: z.array(z.string()), missing: z.array(z.string()) }),
     }),
   ]),
   async handler(input, ctx) {
@@ -94,16 +103,25 @@ export const reconcileStreak = defineOperation({
     // first divergence.
     const rows = await ctx.db
       .selectFrom("core_reconcile_items")
-      .select(["work_item_id", "divergences", "finished_at"])
+      .select(["work_item_id", "divergences", "finished_at", "report"])
       .where("org_id", "=", input.orgId)
       .orderBy("finished_at", "desc")
       .limit(100)
       .execute();
     const firstBad = rows.findIndex((r) => r.divergences > 0);
     const bad = firstBad >= 0 ? rows[firstBad] : undefined;
+    const streak = firstBad < 0 ? rows : rows.slice(0, firstBad);
+    const covered = new Set<string>();
+    for (const r of streak) {
+      try {
+        for (const c of (JSON.parse(r.report) as ShadowVerdict).covers ?? []) covered.add(c);
+      } catch {
+        // An unreadable report covers nothing.
+      }
+    }
     return {
       status: "comparable" as const,
-      streak: firstBad < 0 ? rows.length : firstBad,
+      streak: streak.length,
       target: AGREEMENT_STREAK_TARGET,
       ended: rows.length,
       lastDivergence: bad
@@ -113,6 +131,10 @@ export const reconcileStreak = defineOperation({
             divergences: bad.divergences,
           }
         : null,
+      coverage: {
+        covered: COVERAGE.filter((c) => covered.has(c)),
+        missing: COVERAGE.filter((c) => !covered.has(c)),
+      },
     };
   },
 });

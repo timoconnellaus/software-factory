@@ -66,7 +66,55 @@ export interface ShadowObserved {
   queueHeadMoved?: boolean;
   /** The babysitter delivered it (Workflow v11+): a carried approval was proven (spec 53). */
   babysitter?: boolean;
+  /** The project's adjudicator modes (ADR 0374): whether its runs on a gate kind were expected. */
+  adjudicator?: { spec: string; step: string; merge?: string };
+  /** The plan's kept designs were written back with it (spec 22): not modelled. */
+  keptDesigns?: boolean;
+  /** Shaped before release (ADR 0493): delivery waited for this time, the pull. */
+  releasedAt?: string | null;
+  /** A release flag is still on the item (Q4). */
+  releaseFlag?: boolean;
 }
+
+/**
+ * What a run or a gate the reconciler doesn't model, or an event it has no point for, means for the
+ * item: an entry in `uncompared`, so it never counts toward the streak (nothing dropped silently).
+ */
+export const NOT_MODELLED = {
+  gate: (operation: string) => `a gate the reconciler doesn't model: ${operation}`,
+  repin: "a re-pin to a tightened org version mid-flight (Q3): compared against one definition",
+  releaseChoice: "a person's release choice (Q4)",
+  releaseFlag: "a release flag (Q4)",
+  question:
+    "questions put to a person (triage readiness, a slot's ask, the checks-failed question)",
+  parked: "parked for its requester (triage readiness, spec 23)",
+  keptDesigns: "the plan's kept designs written back with it (spec 22)",
+  noPacket: "a verify outcome with no review packet to read the verdict from",
+} as const;
+
+/**
+ * Today's history records a row the definition has no stage for (an attached PR's skipped spec and
+ * build): the reconciler does nothing there, which is the same. Reported by name, not a divergence.
+ */
+export const EQUIVALENCES = {
+  "absent-stage-skipped":
+    "today's history records a skip for a stage this workflow doesn't have; the reconciler does nothing there",
+} as const;
+
+/** What the switch-over needs the streak to have seen agree at least once (the coordinator's list). */
+export const COVERAGE = [
+  "a verify that fails",
+  "a slot step's send-back",
+  "a send-back at the merge gate",
+  "retries past the limit",
+  "a spec gate with changes requested",
+  "a parked item or one with questions",
+  "a cancel",
+  "an approval the babysitter carried",
+  "an attached PR",
+  "an incident",
+] as const;
+export type Coverage = (typeof COVERAGE)[number];
 
 /** A `core_stages` row. */
 export interface StageRow {
@@ -87,6 +135,8 @@ export interface JobRow {
   critic: boolean;
   /** The adjudicator's run (`context.adjudicate`): not a step of the stage. */
   adjudicate: boolean;
+  /** The gate kind the adjudicator was asked about (`context.adjudicate.kind`). */
+  adjudicateKind?: string | null;
   status: "queued" | "claimed" | "done" | "failed" | "cancelled";
   at: string;
   endedAt: string | null;
@@ -110,12 +160,31 @@ export interface GateRow {
   /** The head a merge gate was opened on. */
   headSha: string | null;
   note: string | null;
+  /** Who decided it (`decided_by`). */
+  decidedBy?: string | null;
+  /** The adjudicator's record on it (ADR 0374): its mode then, and whether it decided it. */
+  adjudication?: { mode: string; acted: boolean } | null;
+}
+
+/** A review packet on the item (`core_review_packets`). */
+export interface PacketRow {
+  headSha: string;
+  verdict: "pass" | "fail";
+  at: string;
+}
+
+/** Audit events with no point of their own in the replay. */
+export interface EventRow {
+  kind: "repin" | "releaseChoice" | "question" | "parked";
+  at: string;
 }
 
 export interface ShadowHistory {
   stages: readonly StageRow[];
   jobs?: readonly JobRow[];
   gates?: readonly GateRow[];
+  packets?: readonly PacketRow[];
+  events?: readonly EventRow[];
 }
 
 /** How the item ended (`core_work_items.status` once closed). */
@@ -133,6 +202,10 @@ export interface ShadowVerdict {
   uncompared: string[];
   /** Known differences this item hit, by name (`KNOWN_DIFFERENCES`); each counts as a divergence. */
   known: { reason: KnownDifference; note: string }[];
+  /** Named equivalences it relied on (`EQUIVALENCES`): reported, not divergences. */
+  equivalences?: { reason: keyof typeof EQUIVALENCES; note: string }[];
+  /** The scenarios this item exercised (`COVERAGE`): the streak's coverage, when it agreed. */
+  covers?: Coverage[];
   /** Transitions that disagree, plus every uncompared aspect and known difference. */
   divergences: number;
 }
@@ -178,7 +251,8 @@ type Point =
   | { t: string; pri: number; kind: "job"; stage: string; step: string; job: JobRow }
   | { t: string; pri: number; kind: "jobEnd"; stage: string; step: string; job: JobRow }
   | { t: string; pri: number; kind: "gate"; stage: string; step: string; gate: GateRow }
-  | { t: string; pri: number; kind: "decided"; stage: string; step: string; gate: GateRow };
+  | { t: string; pri: number; kind: "decided"; stage: string; step: string; gate: GateRow }
+  | { t: string; pri: number; kind: "release" };
 
 /** Where a job sits in the definition: its stage and the type's step id, or null (not a step). */
 function jobPlace(
@@ -251,9 +325,24 @@ export function shadowVerdict(
   // Every row and event as points in time. On a tie, a stage closes before the next one opens, and
   // a step's start before its end.
   const points: Point[] = [];
+  // Nothing is dropped silently: what the replay has no point for is named here, and the item then
+  // doesn't count toward the streak; what it treats as the same is named in `equivalences`.
+  const uncompared = new Set<string>(SHADOW_NOT_COMPARED);
+  const equivalences: NonNullable<ShadowVerdict["equivalences"]> = [];
+  const transitions: ShadowComparison[] = [];
+  const spec = def.stages.find((s) => s.type === "interview-planning");
+  const specSettings = spec
+    ? (stageType(spec.type)?.settings.safeParse(spec.settings ?? {}).data as
+        | { critic?: boolean }
+        | undefined)
+    : undefined;
   h.stages.forEach((r, i) => {
     if (r.stage === "intake" || r.stage === "done" || r.status === "cancelled") return;
     const t = r.at ?? String(i).padStart(8, "0");
+    if (r.status !== "skipped" && !has(r.stage)) {
+      uncompared.add(`a stage the workflow doesn't have: ${r.stage}`);
+      return;
+    }
     if (r.status === "skipped") {
       points.push({ t, pri: 1, kind: "skip", stage: r.stage });
       return;
@@ -270,27 +359,64 @@ export function shadowVerdict(
   });
   for (const job of h.jobs ?? []) {
     if (job.status === "cancelled") continue; // not an attempt, as today's retries don't count it
+    if (job.critic) {
+      // The spec critic (spec 23 part C) runs when the spec stage's `critic` setting is on.
+      const want = specSettings?.critic === true;
+      transitions.push({
+        observed: "spec critic ran",
+        predicted: want ? "spec critic ran" : "no spec critic (the setting is off)",
+        agrees: want,
+      });
+      continue;
+    }
+    if (job.adjudicate) {
+      // The adjudicator is asked only where the project has it on for that gate kind (ADR 0374).
+      const kind = job.adjudicateKind ?? "?";
+      const mode = (observed.adjudicator as Record<string, string> | undefined)?.[kind] ?? "off";
+      transitions.push({
+        observed: `adjudicator asked (${kind})`,
+        predicted: mode !== "off" ? `adjudicator asked (${kind})` : `no adjudicator for ${kind}`,
+        agrees: mode !== "off",
+      });
+      continue;
+    }
     const at = jobPlace(def, job, slotOf);
-    if (!at || !has(at.stage)) continue;
+    if (!at || !has(at.stage)) {
+      uncompared.add(
+        `a ${job.stage} job for a step the workflow doesn't have${job.step ? ` (${job.step})` : ""}`,
+      );
+      continue;
+    }
     points.push({ t: job.at, pri: 2, kind: "job", ...at, job });
     if ((job.status === "done" || job.status === "failed") && job.endedAt)
       points.push({ t: job.endedAt, pri: 4, kind: "jobEnd", ...at, job });
   }
   for (const gate of h.gates ?? []) {
     const at = gatePlace(gate, slotOf);
-    if (!at || !has(at.stage)) continue;
+    if (!at || !has(at.stage)) {
+      uncompared.add(NOT_MODELLED.gate(gate.operation));
+      continue;
+    }
     points.push({ t: gate.at, pri: 3, kind: "gate", ...at, gate });
     if (gate.decidedAt) points.push({ t: gate.decidedAt, pri: 5, kind: "decided", ...at, gate });
   }
+  for (const e of h.events ?? []) uncompared.add(NOT_MODELLED[e.kind]);
+  if (observed.keptDesigns) uncompared.add(NOT_MODELLED.keptDesigns);
+  if (observed.releaseFlag) uncompared.add(NOT_MODELLED.releaseFlag);
+  // A shaped item waits for its release before delivery (ADR 0493): a point of its own.
+  let released = observed.releasedAt ? false : item.released;
+  if (observed.releasedAt) points.push({ t: observed.releasedAt, pri: 0.5, kind: "release" });
   points.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : a.pri - b.pri));
 
   const entries: StageEntry[] = [];
   const steps: StepAttempt[] = [];
   const obs: Observations = {};
-  const transitions: ShadowComparison[] = [];
   let cancelled = false;
+  /** When each entry started, and the time of the point being replayed: to find its packet. */
+  const startedAt = new Map<StageEntry, string>();
+  let now = "";
   const snap = (): ItemSnapshot => ({
-    item: { ...item, cancelled },
+    item: { ...item, released, cancelled },
     definition: def,
     stages: entries,
     steps,
@@ -330,9 +456,18 @@ export function shadowVerdict(
     return "done";
   };
 
-  /** The checks stage reads CI and the verify run's failures: today's verdict, as observations. */
-  const observeChecks = (e: StageEntry, passed: boolean) => {
+  /**
+   * The checks stage reads CI and the verify run's failures. Both come from the review packet's
+   * verdict (`assemblePacket`, packages/core/src/verify/packet.ts), the function the reconciler's
+   * checks stage reads at the switch-over: the stored verdict of the packet on this round, never
+   * the Workflow's own outcome, so a Workflow that moved on against its packet diverges.
+   */
+  const observeChecks = (e: StageEntry, outcome: boolean) => {
     if (def.stages.find((s) => s.id === e.stageId)?.type !== "checks") return;
+    const from = startedAt.get(e) ?? "";
+    const packet = (h.packets ?? []).filter((x) => x.at >= from && x.at <= (now || x.at)).at(-1);
+    if (!packet) uncompared.add(NOT_MODELLED.noPacket);
+    const passed = packet ? packet.verdict === "pass" : outcome;
     obs.ci = passed ? "pass" : "fail";
     const v = lastStep(e, "verify");
     if (v) v.output = { ...v.output, failures: passed ? [] : ["today's verdict: not passed"] };
@@ -383,12 +518,21 @@ export function shadowVerdict(
     if (implicitEnter) {
       const round = entries.filter((x) => x.stageId === stage).length + 1;
       compare(`enter ${stage}`);
-      entries.push({ stageId: stage, round, typeVersion: 1, status: "active" });
+      const entry: StageEntry = { stageId: stage, round, typeVersion: 1, status: "active" };
+      entries.push(entry);
+      startedAt.set(entry, now);
     }
   };
 
   for (const pt of points) {
+    now = pt.t;
     switch (pt.kind) {
+      case "release": {
+        // Before it the reconciler waits for the release; after it, delivery runs.
+        if (!active()) compare("wait release");
+        released = true;
+        break;
+      }
       case "close": {
         const a = active();
         if (a && a.stageId === pt.stage) closedAs.set(a, pt.status);
@@ -409,9 +553,14 @@ export function shadowVerdict(
         if (!has(pt.stage)) {
           // A skip of a stage the definition doesn't have (an attached PR's spec and build): the
           // reconciler does nothing there, which is the same thing.
+          if (!equivalences.some((x) => x.reason === "absent-stage-skipped"))
+            equivalences.push({
+              reason: "absent-stage-skipped",
+              note: EQUIVALENCES["absent-stage-skipped"],
+            });
           transitions.push({
             observed: `skip ${pt.stage}`,
-            predicted: `skip ${pt.stage}`,
+            predicted: `nothing (${def.name} has no ${pt.stage} stage)`,
             agrees: true,
           });
           break;
@@ -536,11 +685,23 @@ export function shadowVerdict(
         if (pt.gate.note) s.output = { note: pt.gate.note };
         const person = gateOpenedAs.get(s) === true;
         // A gate whose type says a person decides (`alwaysReview`) must have been decided by one;
-        // any other may also be decided by the adjudicator, once it has earned it (ADR 0374).
+        // any other may also be decided by the adjudicator, only where it had earned it: active for
+        // that gate kind, and acting on it (ADR 0374, which acts only once it is eligible).
+        const a = pt.gate.adjudication;
+        const earned =
+          !pt.gate.byPerson &&
+          pt.gate.decidedBy === "improver" &&
+          !!a?.acted &&
+          a.mode === "active";
+        const by = pt.gate.byPerson
+          ? "a person"
+          : earned
+            ? "the adjudicator, having earned it"
+            : `the factory (${pt.gate.decidedBy ?? "unknown"})`;
         transitions.push({
-          observed: `${pt.stage} ${pt.step} decided by ${pt.gate.byPerson ? "a person" : "the factory"}`,
-          predicted: `${pt.stage} ${pt.step} decided by ${person ? "a person" : "a person or the adjudicator"}`,
-          agrees: pt.gate.byPerson || !person,
+          observed: `${pt.stage} ${pt.step} decided by ${by}`,
+          predicted: `${pt.stage} ${pt.step} decided by ${person ? "a person" : "a person or the adjudicator, having earned it"}`,
+          agrees: pt.gate.byPerson || (!person && earned),
         });
         break;
       }
@@ -600,11 +761,47 @@ export function shadowVerdict(
     }
     compare(`end ${end}`, p);
   }
-  const uncompared = [...SHADOW_NOT_COMPARED];
+  const seen = transitions.filter((t) => t.agrees).map((t) => t.observed);
+  const covers: Coverage[] = [];
+  const cover = (c: Coverage, yes: boolean) => yes && covers.push(c);
+  cover(
+    "a verify that fails",
+    seen.some((x) => /^sendBack verify → /.test(x)),
+  );
+  cover(
+    "a slot step's send-back",
+    seen.some((x) => {
+      const id = /^sendBack (\S+) → /.exec(x)?.[1];
+      return !!id && small(id);
+    }),
+  );
+  cover(
+    "a send-back at the merge gate",
+    seen.some((x) => /^sendBack merge → build/.test(x)),
+  );
+  cover(
+    "retries past the limit",
+    end === "failed" && seen.includes("end failed") && steps.some((x) => x.status === "failed"),
+  );
+  cover(
+    "a spec gate with changes requested",
+    (h.gates ?? []).some((g) => g.kind === "spec" && g.decision === "changes_requested"),
+  );
+  cover(
+    "a parked item or one with questions",
+    (h.events ?? []).some((e) => e.kind === "parked" || e.kind === "question"),
+  );
+  cover("a cancel", end === "cancelled");
+  cover("an approval the babysitter carried", !!obs.carriedApproval);
+  cover("an attached PR", item.kind === "attached");
+  cover("an incident", item.kind === "incident");
+  const missing = [...uncompared];
   return {
     transitions,
-    uncompared,
+    uncompared: missing,
     known,
-    divergences: transitions.filter((t) => !t.agrees).length + uncompared.length + known.length,
+    equivalences,
+    covers,
+    divergences: transitions.filter((t) => !t.agrees).length + missing.length + known.length,
   };
 }

@@ -6,8 +6,15 @@ import { describe, expect, it } from "vitest";
 import { SHADOW_NOT_COMPARED } from "../src/stages/index.ts";
 import { newItem, ok, world } from "./helpers.ts";
 
-async function verdict(item: string, org: string, finishedAt: string, divergences: number) {
+async function verdict(
+  item: string,
+  org: string,
+  finishedAt: string,
+  divergences: number,
+  covers: string[] = [],
+) {
   const report = {
+    covers,
     transitions: [
       { observed: "enter triage", predicted: "enter triage", agrees: true },
       { observed: "enter build", predicted: "enter spec", agrees: false },
@@ -57,8 +64,12 @@ describe("the reconciler in shadow: report and streak", () => {
         w.orgId,
         `2026-11-12T0${1 + Math.floor(i / 10)}:${10 + (i % 10)}:00.000Z`,
         0,
+        i === 3 ? ["a cancel", "an incident"] : [],
       );
     const got = await ok<Record<string, unknown>>("reconcile.streak", { orgId: w.orgId }, w.human);
+    // Beside the number, the scenarios its items covered, and the ones none has yet.
+    expect(got.coverage).toMatchObject({ covered: ["a cancel", "an incident"] });
+    expect((got.coverage as { missing: string[] }).missing).toHaveLength(8);
     expect(got).toMatchObject({
       status: "comparable",
       streak: 20,

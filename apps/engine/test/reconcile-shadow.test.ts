@@ -87,9 +87,13 @@ describe("the shadow reconciler", () => {
     expect(before?.value ?? "").not.toContain(item.workItemId);
     const seen: Recorded[] = [];
     while ((await shadowPass(recordingEnv(env, seen), later())) > 0);
-    // The audit table is the hottest write table, with no index to find ends by: never read here.
+    // The audit table is the hottest write table, with no index to find ends by: it is never scanned
+    // here, only read for one ended item at a time by its item index, a few operations, bounded.
     expect(seen.length).toBeGreaterThan(0);
-    expect(seen.filter((r) => /core_audit/.test(r.sql))).toEqual([]);
+    for (const r of seen.filter((x) => /core_audit/.test(x.sql))) {
+      expect(r.sql).toMatch(/FROM core_audit WHERE work_item_id = \?/);
+      expect(r.sql).toMatch(/LIMIT 50/);
+    }
     const cursor = await first<{ value: string }>(
       "SELECT value FROM core_meta WHERE key = ?",
       SHADOW_CURSOR,
