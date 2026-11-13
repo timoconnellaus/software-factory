@@ -345,8 +345,6 @@ export interface CoreWorkItemsTable {
   shaped_base_sha: string | null;
   /** 0351 (spec 53, ADR 0581): its merge repairs a red default branch; it lands while held. */
   repairs_main: Generated<number>;
-  /** 0392: what the babysitter's conflict resolution changed (JSON), for the reopened gate. */
-  babysit_resolution: string | null;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
@@ -988,6 +986,15 @@ export interface CoreDeliveryStateTable {
   babysit_reasons: Generated<JsonText>;
 }
 
+/** 0392: what the babysitter's conflict resolution changed, for the reopened gate. */
+export interface CoreBabysitResolutionsTable {
+  work_item_id: string;
+  head_sha: string;
+  summary: string;
+  patches: Generated<string>;
+  created_at: Iso;
+}
+
 /** 0390 (spec 53 §4): a check rerun as a flake, once per check per SHA. */
 export interface CoreCiRerunsTable {
   repository_id: string;
@@ -1370,6 +1377,7 @@ export interface CoreDatabase {
   core_ci_reruns: CoreCiRerunsTable;
   core_flakes: CoreFlakesTable;
   core_flake_fixes: CoreFlakeFixesTable;
+  core_babysit_resolutions: CoreBabysitResolutionsTable;
   core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;
   core_planning_events: CorePlanningEventsTable;

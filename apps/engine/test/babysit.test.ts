@@ -159,8 +159,11 @@ describe("the babysit job (spec 53 §4)", () => {
     }>("workItem.get", { workItemId: a.id }, w.human);
     expect(got.babysitResolution).toMatchObject({
       sha: resolution,
-      files: [{ path: "src/a.ts", conflicted: true }],
+      status: "clean",
+      files: [{ path: "src/a.ts", conflicted: true, previousPath: null }],
       outside: [],
+      notShown: 0,
+      patchBase: "itemHead",
     });
     // No build: the resolution is verified, not rebuilt.
     expect(
@@ -197,40 +200,6 @@ describe("the babysit job (spec 53 §4)", () => {
     ).toBeNull();
     await approve(w, a.id);
     await itemStatus(a.id, "done");
-  });
-
-  it("a resolution that edits a file outside the conflict is flagged at the reopened gate", async () => {
-    const w = await world();
-    const a = await toMergeGate(w, "Resolves too much", "src/a.ts");
-    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
-    await github.setMergeable(w.repo, a.pr, false);
-    await approve(w, a.id);
-    await babysitJob(a.id);
-    await runStage(w, a.id, "babysit", async (claimed) => {
-      await github.createBranch(w.repo, claimed.branch, a.head);
-      const merged = await github.craftMerge(w.repo, claimed.branch, "main", {
-        tree: {
-          set: {
-            "src/a.ts": { mode: "100644", sha: "a-resolved" },
-            "src/unrelated.ts": { mode: "100644", sha: "sneaked-in" },
-          },
-        },
-      });
-      return { headSha: merged, result: { verdict: "resolved", note: "and tidied a file" } };
-    });
-    await github.setMergeable(w.repo, a.pr, true);
-    await runStage(w, a.id, "verify", () => verifyPass);
-    const got = await ok<{
-      babysitResolution: { files: { path: string; conflicted: boolean }[]; outside: string[] };
-    }>("workItem.get", { workItemId: a.id }, w.human);
-    expect(got.babysitResolution.outside).toEqual(["src/unrelated.ts"]);
-    expect(got.babysitResolution.files).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: "src/a.ts", conflicted: true }),
-        expect.objectContaining({ path: "src/unrelated.ts", conflicted: false }),
-      ]),
-    );
-    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
   });
 
   it("a check failed after approval: one job, judged a flake, rerun once (a second rerun is refused), passes, recorded, lands", async () => {
@@ -475,5 +444,147 @@ describe("the known-flake list (decision 3)", () => {
       ),
     ).rejects.toMatchObject({ code: "fenced" });
     await ok("workItem.cancel", { workItemId: item.id, reason: "end of test" }, w.human);
+  });
+});
+
+type Tree = { set?: Record<string, { mode: string; sha: string }>; remove?: string[] };
+interface ResolutionView {
+  status: string;
+  reason: string | null;
+  files: { path: string; conflicted: boolean; patchOmitted: boolean }[];
+  outside: string[];
+  notShown: number;
+}
+
+/**
+ * A conflict at delivery, resolved by the babysit job's run branch as `craft` makes it, then the
+ * resolution as the reopened gate reads it.
+ */
+async function resolvedAs(
+  title: string,
+  craft: (w: World, a: Item, branch: string) => Promise<string>,
+): Promise<{ w: World; a: Item; view: ResolutionView | null }> {
+  const w = await world();
+  const a = await toMergeGate(w, title, "src/a.ts");
+  await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+  await github.setMergeable(w.repo, a.pr, false);
+  await approve(w, a.id);
+  await babysitJob(a.id);
+  await runStage(w, a.id, "babysit", async (claimed) => ({
+    headSha: await craft(w, a, claimed.branch),
+    result: { verdict: "resolved", note: "resolved" },
+  }));
+  await waitFor("the resolution recorded", () =>
+    first("SELECT work_item_id FROM core_babysit_resolutions WHERE work_item_id = ?", a.id),
+  );
+  const got = await ok<{ babysitResolution: ResolutionView | null }>(
+    "workItem.get",
+    { workItemId: a.id },
+    w.human,
+  );
+  return { w, a, view: got.babysitResolution };
+}
+
+const mergeOf = (tree: Tree) => async (w: World, a: Item, branch: string) => {
+  await github.createBranch(w.repo, branch, a.head);
+  return github.craftMerge(w.repo, branch, "main", { tree });
+};
+
+describe("the resolution at the reopened gate (decision 1)", () => {
+  it("flags a file outside the conflict; a mode change counts as the resolution's", async () => {
+    const { w, a, view } = await resolvedAs(
+      "Resolves too much",
+      mergeOf({
+        set: {
+          "src/a.ts": { mode: "100755", sha: "a-resolved" },
+          "src/unrelated.ts": { mode: "100644", sha: "sneaked-in" },
+        },
+      }),
+    );
+    expect(view?.status).toBe("clean");
+    expect(view?.outside.sort()).toEqual(["src/unrelated.ts"]);
+    expect(view?.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "src/a.ts", conflicted: true }),
+        expect.objectContaining({ path: "src/unrelated.ts", conflicted: false }),
+      ]),
+    );
+    // The patches are read on demand, not with the item.
+    const patches = await ok<{ headSha: string | null }>(
+      "babysit.resolutionPatches",
+      { workItemId: a.id },
+      w.human,
+    );
+    expect(patches.headSha).not.toBeNull();
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("a resolution that deletes the conflicted file lists the deletion", async () => {
+    const { w, a, view } = await resolvedAs(
+      "Resolved by deleting",
+      mergeOf({ remove: ["src/a.ts"] }),
+    );
+    expect(view).toMatchObject({
+      status: "clean",
+      files: [{ path: "src/a.ts", conflicted: true }],
+      outside: [],
+    });
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("a merge whose first parent isn't the approved head is unclean: review the whole diff", async () => {
+    const { w, a, view } = await resolvedAs("Changed before merging", async (w_, a_, branch) => {
+      // The agent commits on top of the approved head, then merges main: its change would pass
+      // for a parent's content.
+      await github.createBranch(w_.repo, branch, a_.head);
+      await github.push(w_.repo, branch, undefined, ["src/hidden.ts"]);
+      return github.craftMerge(w_.repo, branch, "main", {
+        tree: { set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } } },
+      });
+    });
+    expect(view).toMatchObject({ status: "unclean", files: [], outside: [] });
+    expect(view?.reason).toMatch(/not a merge of the approved head.*review the whole diff/);
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("past what it lists, it says how many aren't shown", async () => {
+    const set: NonNullable<Tree["set"]> = { "src/a.ts": { mode: "100644", sha: "a-resolved" } };
+    for (let i = 0; i < 52; i++) set[`src/extra-${i}.ts`] = { mode: "100644", sha: `x${i}` };
+    const { w, a, view } = await resolvedAs("Resolves a lot", mergeOf({ set }));
+    expect(view?.status).toBe("clean");
+    expect(view?.files).toHaveLength(50);
+    expect(view?.notShown).toBe(3);
+    expect(view?.outside).toHaveLength(52);
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("a change too large to read in full is incomplete: review the whole diff", async () => {
+    const { w, a, view } = await resolvedAs("Too large", async (w_, a_, branch) => {
+      await github.truncateTree(w_.repo, a_.head);
+      return mergeOf({ set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } } })(
+        w_,
+        a_,
+        branch,
+      );
+    });
+    expect(view).toMatchObject({ status: "incomplete", files: [] });
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("once the head moves past the resolution, it isn't shown", async () => {
+    const { w, a } = await resolvedAs(
+      "Then pushed again",
+      mergeOf({ set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } } }),
+    );
+    await env.DB.prepare("UPDATE core_work_items SET head_sha = ? WHERE id = ?")
+      .bind("f".repeat(40), a.id)
+      .run();
+    const got = await ok<{ babysitResolution: unknown }>(
+      "workItem.get",
+      { workItemId: a.id },
+      w.human,
+    );
+    expect(got.babysitResolution).toBeNull();
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
   });
 });

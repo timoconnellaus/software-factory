@@ -103,7 +103,7 @@ export const BABYSIT_KEEP_DAYS = 30;
  */
 export async function pruneBabysit(db: D1Database, now: Date, limit = 500): Promise<number> {
   const cutoff = new Date(now.getTime() - BABYSIT_KEEP_DAYS * 86_400_000).toISOString();
-  const [reruns, flakes] = await db.batch([
+  const [reruns, flakes, resolutions] = await db.batch([
     db
       .prepare(
         `DELETE FROM core_ci_reruns WHERE rowid IN
@@ -116,8 +116,21 @@ export async function pruneBabysit(db: D1Database, now: Date, limit = 500): Prom
            (SELECT id FROM core_flakes WHERE seen_at < ? ORDER BY seen_at LIMIT ?)`,
       )
       .bind(cutoff, limit),
+    // A resolution is kept while its item is open (the gate shows it), then goes. One row per
+    // item that had one: a handful, read through the primary key's join.
+    db
+      .prepare(
+        `DELETE FROM core_babysit_resolutions WHERE work_item_id IN
+           (SELECT r.work_item_id FROM core_babysit_resolutions r
+            CROSS JOIN core_work_items w ON w.id = r.work_item_id
+            WHERE w.status NOT IN ('running', 'waiting', 'paused', 'queued', 'shaping', 'ready', 'backlog')
+            LIMIT ?)`,
+      )
+      .bind(limit),
   ]);
-  return (reruns?.meta.changes ?? 0) + (flakes?.meta.changes ?? 0);
+  return (
+    (reruns?.meta.changes ?? 0) + (flakes?.meta.changes ?? 0) + (resolutions?.meta.changes ?? 0)
+  );
 }
 
 /** How long the factory's check results outlive their item (ADR 0501, fourth review). */

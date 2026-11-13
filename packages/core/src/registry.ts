@@ -199,6 +199,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   babysit.babysitWake,
   babysit.babysitNext,
   babysit.babysitResolution,
+  babysit.babysitResolutionPatches,
   babysit.ciRerun,
   babysit.flakeRecord,
   verify.reviewPacketRecord,
