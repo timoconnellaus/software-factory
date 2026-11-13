@@ -383,7 +383,7 @@ describe("kill switches", () => {
     );
     expect(pauses).toHaveLength(1);
 
-    await ok("killSwitch.set", { scope: "project", id: a.projectId, on: false }, a.human);
+    await ok("killSwitch.set", { scope: "project", id: a.projectId, on: false, epoch: 1 }, a.human);
     await ok("workItem.enterStage", { workItemId: itemA.workItemId, stage: "triage" }, FOREMAN);
     const resumes = await rows<{ payload: string }>(
       "SELECT payload FROM core_outbox WHERE kind = 'workflow.resume' AND payload LIKE ?",
@@ -418,7 +418,7 @@ describe("kill switches", () => {
     const error = await refusal(
       call(
         "killSwitch.set",
-        { scope: "org", id: w.orgId, on: false },
+        { scope: "org", id: w.orgId, on: false, epoch: 1 },
         { type: "human", id: memberId },
       ),
     );

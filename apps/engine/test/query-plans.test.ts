@@ -290,6 +290,33 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Spec 44 host ack (review of #189): a take that acks a planning steer marks it, and its chat
+    // message (core_planning_messages_steer_idx, migration 0410), delivered.
+    name: "the steer call's ack of a planning steer (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      const run = await env.DB.prepare("SELECT id, work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job.jobId)
+        .first<{ id: string; work_item_id: string }>();
+      if (!run) return null;
+      const steerId = uid("st_");
+      const at = new Date().toISOString();
+      await env.DB.batch([
+        env.DB.prepare(
+          "INSERT INTO core_run_steers (id, run_id, work_item_id, author_user_id, text, created_at, offered_until, offers) VALUES (?, ?, ?, ?, 'hi', ?, ?, 1)",
+        ).bind(steerId, run.id, run.work_item_id, w.human.id, at, at),
+        env.DB.prepare(
+          "INSERT INTO core_planning_messages (id, work_item_id, author_kind, author_id, text, steer_id, created_at) VALUES (?, ?, 'person', ?, 'hi', ?, ?)",
+        ).bind(uid("pm_"), run.work_item_id, w.human.id, steerId, at),
+      ]);
+      return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 0,
+        ack: [steerId],
+      });
+    },
+  },
+  {
     // Spec 44 part A: the held terminal call reads whether the run has an open attach
     // (core_run_terminal_attaches_open_idx), and asks the relay only when it does.
     name: "the held terminal call's poll (spec 44)",

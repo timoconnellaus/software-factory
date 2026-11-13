@@ -393,7 +393,7 @@ describe("the work-item Workflow", () => {
     expect(nothing.job).toBeNull();
     await runStage(other, free.workItemId, "triage", () => triage("small"));
 
-    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: false }, w.human);
+    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: false, epoch: 1 }, w.human);
     await itemStatus(item.workItemId, "running");
     await runStage(w, item.workItemId, "build", () => build());
     await runStage(w, item.workItemId, "verify", () => verifyPass);

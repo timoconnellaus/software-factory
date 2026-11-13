@@ -33,8 +33,11 @@ export const IDLE: ApplyState = { step: "idle", version: null, reason: null };
 export function applyTransition(s: ApplyState, e: ApplyEvent): ApplyState {
   switch (e.type) {
     case "start":
-      // One restart at a time: a second click while one runs changes nothing.
-      return s.step === "idle" ? { step: "verifying", version: e.version, reason: null } : s;
+      // One restart at a time: a second click while one runs changes nothing. From a refusal (the
+      // screen still up, or a tray click while it is) a new try starts over.
+      return s.step === "idle" || s.step === "refused"
+        ? { step: "verifying", version: e.version, reason: null }
+        : s;
     case "waiting":
       return s.step === "verifying" ? { ...s, step: "waiting" } : s;
     case "restarting":

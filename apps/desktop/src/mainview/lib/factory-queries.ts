@@ -75,6 +75,30 @@ export const orgWorkflowsQuery = (orgId: string) =>
     staleTime: 60_000,
   });
 
+/** An org's config (spec 52): its workflows and agents, history, and changes waiting. */
+export const orgConfigQuery = (orgId: string) =>
+  queryOptions({
+    queryKey: ["orgConfig", orgId],
+    queryFn: () => read("orgConfig.get", { orgId }),
+    staleTime: 30_000,
+  });
+
+/** The stage types a workflow is built from, with their settings' defaults. */
+export const stageTypesQuery = () =>
+  queryOptions({
+    queryKey: ["stageTypes"],
+    queryFn: () => read("stageType.list", {}),
+    staleTime: 10 * 60_000,
+  });
+
+/** An org's kill switches and its projects' (ADR 0044). */
+export const killSwitchesQuery = (orgId: string) =>
+  queryOptions({
+    queryKey: ["killSwitches", orgId],
+    queryFn: () => read("killSwitch.list", { orgId }),
+    staleTime: 30_000,
+  });
+
 /** The org workflow a project's config runs on, if it names one (`wf_…`). */
 export const orgWorkflowOf = (doc: Record<string, unknown> | null | undefined): string | null =>
   typeof doc?.workflow === "string" && doc.workflow.startsWith("wf_") ? doc.workflow : null;

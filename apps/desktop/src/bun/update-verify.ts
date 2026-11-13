@@ -15,17 +15,64 @@
 //   build served under a manifest saying 9.9.9 passes both checks above, so the bundle's own
 //   version must equal the manifest's and be newer than the running one (updates.ts).
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 export const APP_IDENTIFIER = "com.software-factory.desktop";
 
-/** Runs a command; `code` is its exit status, `out` its stdout and stderr together. */
-export type Exec = (cmd: string, args: string[]) => Promise<{ code: number; out: string }>;
+/**
+ * Runs a command; `code` is its exit status, `out` its stdout and stderr together. `timeoutMs`, when
+ * given, is how long the command may run before it is killed (bunExec's own default otherwise).
+ */
+export type Exec = (
+  cmd: string,
+  args: string[],
+  opts?: { timeoutMs?: number },
+) => Promise<{ code: number; out: string }>;
 
-export const bunExec: Exec = async (cmd, args) => {
-  const p = Bun.spawn([cmd, ...args], { stdout: "pipe", stderr: "pipe" });
+/**
+ * How long one command may run. spctl's first assessment of a bundle asks Apple's notary service and
+ * took 7.5–13 s on the owner's Mac; a helper or check that hangs past this is killed and reported as
+ * failed, so it can't stop update checks (or a restart to update) for the rest of the session.
+ */
+export const EXEC_TIMEOUT_MS = 120_000;
+/** The exit code reported for a command that ran out of time (as coreutils' timeout(1) does). */
+export const TIMED_OUT = 124;
+
+/**
+ * `exec` bounded to `ms` (or a caller's shorter `timeoutMs`): a command still running then is
+ * reported as failed (`TIMED_OUT`). The deadline is passed down, so the spawner kills the process at
+ * it (bunExec asks Bun to SIGKILL it); this bound holds even when a child keeps the output pipes open
+ * after that.
+ */
+export function withTimeout(exec: Exec, ms: number = EXEC_TIMEOUT_MS): Exec {
+  return async (cmd, args, opts) => {
+    const limit = Math.min(ms, opts?.timeoutMs ?? ms);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        exec(cmd, args, { timeoutMs: limit }),
+        new Promise<{ code: number; out: string }>((resolve) => {
+          timer = setTimeout(
+            () => resolve({ code: TIMED_OUT, out: `${cmd} timed out after ${limit / 1000} s` }),
+            limit,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+const spawnExec: Exec = async (cmd, args, opts) => {
+  const p = Bun.spawn([cmd, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: opts?.timeoutMs ?? EXEC_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  });
   const [out, err, code] = await Promise.all([
     new Response(p.stdout).text(),
     new Response(p.stderr).text(),
@@ -33,6 +80,9 @@ export const bunExec: Exec = async (cmd, args) => {
   ]);
   return { code, out: `${out}${err}` };
 };
+
+/** Runs a command under Bun, killed after EXEC_TIMEOUT_MS. */
+export const bunExec: Exec = withTimeout(spawnExec);
 
 /** The running .app (Contents/MacOS/<exe> → the bundle), as Electrobun's updater computes it. */
 export const runningAppPath = () => resolve(dirname(process.execPath), "..", "..");
@@ -150,4 +200,33 @@ export function stagedUpdate(
   } catch {
     return null;
   }
+}
+
+/**
+ * Removes a staged update so Electrobun downloads it again: its prepared-update record, then the
+ * staging folder, only when it is Electrobun's own `<running app>.prepared-<hash>` beside the running
+ * bundle (anything else is left alone). Without the record, Electrobun's next check reports nothing
+ * prepared.
+ */
+export function discardStaged(
+  appDataFolder: string,
+  stagingPath: string,
+  appPath: string,
+  rm: (p: string, opts: { recursive: boolean; force: boolean }) => void = rmSync,
+): void {
+  rm(join(appDataFolder, "self-extraction", ".electrobun-prepared-update.json"), {
+    recursive: false,
+    force: true,
+  });
+  if (isOwnStaging(stagingPath, appPath)) rm(stagingPath, { recursive: true, force: true });
+}
+
+/** `staging` is `<app>.prepared-<hash>` in the running app's own folder (no `..`, no other name). */
+export function isOwnStaging(staging: string, appPath: string): boolean {
+  const app = resolve(appPath);
+  if (!app.endsWith(".app") || resolve(staging) !== staging) return false;
+  if (dirname(staging) !== dirname(app)) return false;
+  const name = basename(staging);
+  const prefix = `${basename(app)}.prepared-`;
+  return name.startsWith(prefix) && /^[a-z0-9]{1,13}$/.test(name.slice(prefix.length));
 }
