@@ -5,6 +5,8 @@
 
 /** Tables sized by configuration, not by use: a SCAN of one of these is fine. Every other table grows. */
 export const SMALL_TABLES = new Set([
+  // One row per open item the babysitter resolved a conflict for; pruned hourly once it ends.
+  "core_babysit_resolutions",
   "core_organization",
   "core_member",
   "core_user",

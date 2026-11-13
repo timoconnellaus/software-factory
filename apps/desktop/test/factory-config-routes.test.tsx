@@ -218,3 +218,73 @@ describe("Policy: follow-ups from the review of #145", () => {
     expect(text).toContain("Spec approval Needed from");
   });
 });
+
+describe("Org workflows (spec 52, ADR 0610)", () => {
+  it("lists the org's workflows, a workflow's stages, waiting changes, agents and history", async () => {
+    const html = await renderPage("/factory/org-workflows");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="org-workflows"');
+    expect(text).toContain("Release notes");
+    expect(text).toContain("1 change is waiting for an org admin");
+    expect(text).toContain("Save a workflow: Skip the reviewer for docs");
+    expect(html).toContain('data-testid="org-agents"');
+    expect(html).toContain('data-testid="org-adopt"');
+    expect(html).toContain('data-testid="org-history"');
+    expect(html).toContain('data-testid="edit-org-workflow"');
+  });
+
+  it("edits a workflow's stages, with every decision behind Touch ID", async () => {
+    const html = await renderPage("/factory/org-workflows?workflow=wf_software&edit=1");
+    expect(html).toContain('data-testid="org-workflow-form"');
+    expect(html).toContain('data-testid="org-stage-review"');
+    expect(textOf(html)).toContain("Add a stage");
+  });
+
+  it("leaves a built-in workflow uneditable here", async () => {
+    const html = await renderPage("/factory/org-workflows?workflow=wf_incident");
+    expect(html).not.toContain('data-testid="edit-org-workflow"');
+    expect(textOf(html)).toContain("Built in");
+  });
+
+  it("on a software key, offers no live org decision", async () => {
+    const html = await renderPage("/factory/org-workflows", {
+      session: { keyStorage: "software" },
+    });
+    expect(textOf(html)).toContain("This Mac can't approve yet");
+  });
+});
+
+describe("Org workflows: deciding a waiting change (review of #159)", () => {
+  it("shows the engine's classification and the difference before Approve", async () => {
+    const html = await renderPage("/factory/org-workflows");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="org-pending-impact"');
+    expect(text).toContain("Removes the agent check Reviewer.");
+    expect(html).toContain('data-testid="org-pending-diff"');
+    expect(text).toContain("Reviewer (removed)");
+    expect(html).toContain('data-testid="org-pending-approve"');
+  });
+
+  it("offers only Reject when a change can't be shown or no longer applies", async () => {
+    const { cannotApproveOrg } = await import("../src/mainview/routes/factory.org.tsx");
+    const base = {
+      pendingActionId: "pa_1",
+      operation: "workflow.save",
+      note: null,
+      by: null,
+      createdAt: "",
+      baseVersion: 4,
+      proposal: { id: "wf_x", name: "New" },
+      current: null,
+      toVersion: null,
+      impact: { class: "loosens" as const, changes: [] },
+    };
+    expect(cannotApproveOrg(base, 4)).toBeNull();
+    expect(cannotApproveOrg(base, 5)).toMatch(/drafted on v4/);
+    expect(cannotApproveOrg({ ...base, impact: null }, 4)).toMatch(/couldn't classify/);
+    expect(cannotApproveOrg({ ...base, proposal: null }, 4)).toMatch(/can't be shown/);
+    // Fail closed: no base version, or nothing shown, is nothing to approve.
+    expect(cannotApproveOrg({ ...base, baseVersion: null }, 4)).toMatch(/unknown version/);
+    expect(cannotApproveOrg({ ...base, proposal: { id: "wf_x" } }, 4)).toMatch(/changes nothing/);
+  });
+});

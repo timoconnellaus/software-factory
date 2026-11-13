@@ -267,6 +267,78 @@ describe("the engine's revert (spec 53 §5)", () => {
     });
   });
 
+  it("GitHub's answer is committed before the item is made, and the next step adopts that exact PR", async () => {
+    const w = await world();
+    const a = await provenCulprit(w, "Answered then lost");
+    await backdate(w, 31);
+    const step = (input: Record<string, unknown> = {}) =>
+      ok<{ status: string; attempt: number | null; prNumber: number | null }>(
+        "mainRed.revert",
+        { workItemId: a.id, ...input },
+        w.human,
+      );
+    await step();
+    const lease = await step();
+    const asked = await step({ attempt: lease.attempt });
+    expect(asked).toMatchObject({ status: "calling" });
+    const row = await first<{ revert_branch: string; revert_pr_number: number }>(
+      "SELECT revert_branch, revert_pr_number FROM core_reverts WHERE original_work_item_id = ?",
+      a.id,
+    );
+    expect(row?.revert_pr_number).toBe(asked.prNumber);
+    expect(row?.revert_branch).toMatch(new RegExp(`^revert-${a.pr}-`));
+    const pulls = (await github.state(w.repo)).pulls.length;
+    expect(await step({ attempt: lease.attempt })).toMatchObject({
+      status: "opened",
+      prNumber: asked.prNumber,
+    });
+    expect((await github.state(w.repo)).pulls.length).toBe(pulls);
+  });
+
+  it("giving up at the try cap closes the revert PR the App left open", async () => {
+    const w = await world();
+    const a = await provenCulprit(w, "Tries run out");
+    await backdate(w, 31);
+    await ok("mainRed.revert", { workItemId: a.id }, w.human);
+    const made = await github.revertPullRequest(w.repo, {
+      number: a.pr,
+      title: "Revert",
+      body: "",
+    });
+    await env.DB.prepare(
+      "UPDATE core_reverts SET status = 'calling', attempts = 3, lease_until = ? WHERE original_work_item_id = ?",
+    )
+      .bind(new Date(Date.now() - 60_000).toISOString(), a.id)
+      .run();
+    expect(
+      await ok<{ status: string }>("mainRed.revert", { workItemId: a.id }, w.human),
+    ).toMatchObject({ status: "failed" });
+    expect((await github.state(w.repo)).pulls.find((p) => p.number === made.number)?.state).toBe(
+      "closed",
+    );
+  });
+
+  it("the babysitter stops at any step once another repair is under way", async () => {
+    const w = await world();
+    const a = await provenCulprit(w, "Someone else repairs");
+    await backdate(w, 31);
+    await ok("mainRed.revert", { workItemId: a.id }, BABYSITTER);
+    const fix = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "A person's fix" },
+      w.human,
+    );
+    await env.DB.prepare(
+      "UPDATE core_work_items SET repairs_main = 1, status = 'running', repository_id = (SELECT repository_id FROM core_work_items WHERE id = ?) WHERE id = ?",
+    )
+      .bind(a.id, fix.workItemId)
+      .run();
+    await expect(call("mainRed.revert", { workItemId: a.id }, BABYSITTER)).rejects.toMatchObject({
+      code: "conflict",
+      message: /a repair is already under way/,
+    });
+  });
+
   it("GitHub refusing the revert is recorded once, with an incident, and not tried again", async () => {
     const w = await world();
     const a = await provenCulprit(w, "Can't be reverted");

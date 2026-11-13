@@ -94,6 +94,25 @@ export interface CoreOrgConfigsTable {
   impact: "loosens" | "tightens" | "neutral" | null;
 }
 
+/** A skill's versions (spec 52 (f), ADR 0513, migration 0283). */
+export interface CoreSkillVersionsTable {
+  org_id: string;
+  skill_id: string;
+  version: number;
+  name: string;
+  description: string;
+  body: string;
+  sha256: string;
+  overrides: string | null;
+  provenance: string | null;
+  status: "current" | "proposed" | "rejected";
+  source: string;
+  created_by: string | null;
+  note: string | null;
+  parent_version: number | null;
+  created_at: Iso;
+}
+
 /** Spec 52 PR (c): an ended item's shadow verdict (migration 0281), one row per item. */
 export interface CoreReconcileItemsTable {
   work_item_id: string;
@@ -841,6 +860,10 @@ export interface CoreRunSteersTable {
   kind: Generated<"message" | "takeover">;
   /** 0369: until when an acking host has been offered it (spec 44 host ack); null otherwise. */
   offered_until: Iso | null;
+  /** 0410: how many times it has been offered to an acking host (spec 44, capped). */
+  offers: Generated<number>;
+  /** 0410: when the factory gave up offering it (no host acked it); delivered_at is set too. */
+  undeliverable_at: Iso | null;
 }
 
 /** A person opening a run's web terminal (spec 35, ADR 0440). */
@@ -1053,6 +1076,15 @@ export interface CoreDeliveryStateTable {
   babysit_fence: Generated<number>;
   /** 0390: JSON `BabysitReason[]` the deliverer waits on the job for. */
   babysit_reasons: Generated<JsonText>;
+}
+
+/** 0392: what the babysitter's conflict resolution changed, for the reopened gate. */
+export interface CoreBabysitResolutionsTable {
+  work_item_id: string;
+  head_sha: string;
+  summary: string;
+  patches: Generated<string>;
+  created_at: Iso;
 }
 
 /** 0393 (spec 53 §5): the engine's revert of a red main's culprit, claimed, then opened. */
@@ -1442,6 +1474,7 @@ export interface CoreDatabase {
   core_intake_keys: CoreIntakeKeysTable;
   core_intake_events: CoreIntakeEventsTable;
   core_stages: CoreStagesTable;
+  core_skill_versions: CoreSkillVersionsTable;
   core_questions: CoreQuestionsTable;
   core_specs: CoreSpecsTable;
   core_pending_actions: CorePendingActionsTable;
@@ -1478,6 +1511,7 @@ export interface CoreDatabase {
   core_ci_reruns: CoreCiRerunsTable;
   core_flakes: CoreFlakesTable;
   core_flake_fixes: CoreFlakeFixesTable;
+  core_babysit_resolutions: CoreBabysitResolutionsTable;
   core_reverts: CoreRevertsTable;
   core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;
