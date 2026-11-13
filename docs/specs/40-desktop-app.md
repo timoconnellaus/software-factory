@@ -206,6 +206,14 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
     "com.software-factory.desktop" and certificate leaf[subject.OU] = "<Team ID>"`, with the Team ID
     read from the running app's own signature (never the manifest), and `spctl --assess`. An
     unsigned build takes no updates (`src/bun/update-verify.ts`);
+  - that full check runs when the download lands, with the staged bundle's content hash taken
+    before and after it (amended 2026-11-13). At the click, and again inside `apply()`, only the
+    hash is taken: equal means the bundle applied is, byte for byte, the bundle checked. A different
+    hash is never applied and never silently checked again: it is logged and counted, the staged
+    update is discarded and downloaded again, and the window says *The downloaded update changed on
+    disk: downloading it again*. When the full check is more than 24 hours old at the click, it runs
+    again in full. **So a certificate revoked between the download and the click is noticed only by
+    the next full check**: the next download, or the click once the last full check is a day old;
   - after that check it reads the version and channel from the staged bundle's own
     `Contents/Resources/version.json`, which is inside the seal just verified, and requires the
     manifest's version, higher than its own, on its own channel. The manifest's version is only
@@ -239,7 +247,11 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
   rewrites `live-jobs.json` once any claim in flight has landed), reads the jobs again, and stops
   only an idle runner; if a job turned up it waits for idle, the runner still drained. If the
   update doesn't start (nothing staged, a refused signature, a quit handler said no, or a throw),
-  the runner and the live socket come back (`src/bun/restart-update.ts`).
+  the runner and the live socket come back (`src/bun/restart-update.ts`). A restart that hasn't
+  happened 90 s after *Restarting…* (Electrobun's `applyUpdate` or its helper hung) is treated the
+  same way, and the window shows why with *Back to Software Factory*; from that screen, or after it,
+  *Restart to update* in the menu bar starts again. Every command the updater runs (the helper,
+  `codesign`, `spctl`) is killed after 120 s, the helper's record rewrite after 60 s.
 - **CI without the upload token:** a push to `main` checks for `DESKTOP_R2_*` first and, without
   them, skips building, signing, notarizing and uploading with one notice in the job summary.
   `publish-release.ts` fails closed: only a real 404 means "not published".

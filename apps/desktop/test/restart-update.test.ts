@@ -100,4 +100,29 @@ describe("restartToUpdate", () => {
     await expect(restartToUpdate(d, { anyway: false })).rejects.toThrow("boom");
     expect(calls.slice(-2)).toEqual(["startRunner", "startLive"]);
   });
+
+  it("a restart that hangs (applyUpdate or its helper) is reported as stalled, and everything comes back", async () => {
+    const { d, calls } = deps({
+      apply: () => {
+        calls.push("apply");
+        return new Promise(() => {});
+      },
+    });
+    d.restarting = () => calls.push("restarting");
+    expect(await restartToUpdate(d, { anyway: false, applyTimeoutMs: 5 })).toBe("stalled");
+    expect(calls).toEqual([
+      "drain",
+      "restarting",
+      "stopLive",
+      "stopRunner",
+      "apply",
+      "startRunner",
+      "startLive",
+    ]);
+  });
+
+  it("an apply that returns in time is not stalled", async () => {
+    const { d } = deps();
+    expect(await restartToUpdate(d, { anyway: true, applyTimeoutMs: 1_000 })).toBe("failed");
+  });
 });

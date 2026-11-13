@@ -6,10 +6,16 @@
 // While the drain is in flight the app shows "Waiting for the runner" with its deadline (`waiting`),
 // and the wait is bounded (DRAIN_TIMEOUT_MS) even if the runner never answers: a runner that
 // doesn't confirm in time is reported as "timeout" and the app updates once it is idle instead.
+// Applying is bounded too (APPLY_TIMEOUT_MS): Electrobun's applyUpdate quits the app once the
+// helper has the plan, so one still pending after that has hung (it or the helper). It is reported
+// as "stalled", and the runner and live socket come back, so the window never sits on
+// "Restarting…" for good.
 // Nothing here imports Electrobun, so the tests run on Node.
 
 /** How long "Restart to update" waits for the runner to confirm it has stopped claiming. */
 export const DRAIN_TIMEOUT_MS = 30_000;
+/** How long applying may take before the restart counts as stuck. */
+export const APPLY_TIMEOUT_MS = 90_000;
 
 export interface RestartDeps {
   /**
@@ -34,12 +40,13 @@ export interface RestartDeps {
 /**
  * "deferred": a job turned up: wait for idle, the runner stays drained meanwhile. "timeout": the
  * runner didn't confirm the drain in time: wait for idle too. "failed": the update didn't start and
- * everything was brought back.
+ * everything was brought back. "stalled": applying didn't return or restart within
+ * APPLY_TIMEOUT_MS; everything was brought back too.
  */
 export async function restartToUpdate(
   d: RestartDeps,
-  opts: { anyway: boolean; timeoutMs?: number },
-): Promise<"deferred" | "timeout" | "failed"> {
+  opts: { anyway: boolean; timeoutMs?: number; applyTimeoutMs?: number },
+): Promise<"deferred" | "timeout" | "failed" | "stalled"> {
   if (!opts.anyway) {
     const timeoutMs = opts.timeoutMs ?? DRAIN_TIMEOUT_MS;
     d.waiting?.((d.now ?? Date.now)() + timeoutMs);
@@ -62,11 +69,19 @@ export async function restartToUpdate(
   }
   d.restarting?.();
   d.stopLive();
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
     await d.stopRunner();
-    await d.apply();
+    const applied = await Promise.race([
+      d.apply().then(() => "returned" as const),
+      new Promise<"stalled">((resolve) => {
+        watchdog = setTimeout(() => resolve("stalled"), opts.applyTimeoutMs ?? APPLY_TIMEOUT_MS);
+      }),
+    ]);
+    if (applied === "stalled") return "stalled";
   } finally {
-    // Still running: the update didn't start (or something threw on the way).
+    clearTimeout(watchdog);
+    // Still running: the update didn't start (or something threw, or it hung, on the way).
     d.startRunner();
     d.startLive();
   }

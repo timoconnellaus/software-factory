@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   lastFailure,
+  parseUpdateResult,
   plainInstallFailure,
   readUpdateResults,
   recordVerdict,
@@ -16,13 +17,17 @@ import { liveJobs, liveJobsFile, runnerChildEnv } from "../src/bun/runner-jobs.t
 import type { Exec } from "../src/bun/update-verify.ts";
 import {
   bundleInfo,
+  discardStaged,
   requirement,
   stagedBundle,
   stagedUpdate,
+  TIMED_OUT,
   teamIdOf,
   verifyBundle,
+  withTimeout,
 } from "../src/bun/update-verify.ts";
 import {
+  CHANGED_ON_DISK,
   installProblem,
   OFF_DEV,
   OFF_UNSIGNED,
@@ -30,6 +35,7 @@ import {
   RETRY_MS,
   type UpdaterLike,
   Updates,
+  VERIFIED_FOR_MS,
 } from "../src/bun/updates.ts";
 import type { UpdateStatus } from "../src/shared/rpc.ts";
 import { checkSummary, checkView, lastCheckedText } from "../src/shared/update-check.ts";
@@ -118,6 +124,9 @@ function make(
     synced?: string[];
     /** The staged bundle's content hash, as it is each time it is taken. */
     fingerprint?: () => Promise<string>;
+    now?: () => number;
+    discarded?: string[][];
+    logs?: string[];
   } = {},
 ) {
   const timers: number[] = [];
@@ -140,13 +149,18 @@ function make(
             : () => over.bundle ?? null,
       setInterval: () => 0,
       setTimeout: (_fn, ms) => timers.push(ms),
-      now: () => NOW,
+      now: over.now ?? (() => NOW),
+      discard: (folder, staging) => {
+        over.discarded?.push([folder, staging]);
+      },
       syncRecord: async (root) => {
         over.synced?.push(root);
       },
       results: () => over.results ?? [],
       fingerprint: over.fingerprint ?? (async () => "same"),
-      log: () => {},
+      log: (line) => {
+        over.logs?.push(line);
+      },
     },
     (st) => phases.push(st.phase),
   );
@@ -684,34 +698,76 @@ describe("what the person sees", () => {
 
 describe("Electrobun's install record (InvalidUpdateIdentity)", () => {
   const record = (path: string) =>
-    JSON.stringify({ schema_version: 2, app_bundle_path: path, channel: "canary" });
+    JSON.stringify({
+      schema_version: 2,
+      identifier: "com.software-factory.desktop",
+      app_bundle_path: path,
+      channel: "canary",
+    });
 
   it("leaves a record that names the running bundle alone", () => {
-    expect(recordVerdict({ record: record(APP), helper: true, appPath: APP })).toEqual({
+    expect(
+      recordVerdict({ record: record(APP), helper: true, appPath: APP, channel: "canary" }),
+    ).toEqual({
       action: "ok",
     });
   });
 
   it("rewrites one that names another copy (the app was moved after its first run)", () => {
     const dev = "/Users/x/repo/apps/desktop/build/canary-macos-arm64/Software Factory-canary.app";
-    expect(recordVerdict({ record: record(dev), helper: true, appPath: APP })).toEqual({
+    expect(
+      recordVerdict({ record: record(dev), helper: true, appPath: APP, channel: "canary" }),
+    ).toEqual({
       action: "bootstrap",
       why: "moved",
       recorded: dev,
     });
   });
 
+  it("rewrites one for another identifier or channel (the helper refuses those too)", () => {
+    const facts = (over: Record<string, unknown>) => ({
+      record: JSON.stringify({
+        identifier: "com.software-factory.desktop",
+        channel: "canary",
+        app_bundle_path: APP,
+        ...over,
+      }),
+      helper: true,
+      appPath: APP,
+      channel: "canary",
+    });
+    expect(recordVerdict(facts({ channel: "stable" }))).toEqual({
+      action: "bootstrap",
+      why: "identity",
+      recorded: "com.software-factory.desktop/stable",
+    });
+    expect(recordVerdict(facts({ identifier: "com.example.other" }))).toMatchObject({
+      why: "identity",
+    });
+    expect(recordVerdict(facts({ identifier: undefined }))).toMatchObject({ why: "unreadable" });
+    expect(recordVerdict({ ...facts({}), record: "null" })).toMatchObject({ why: "unreadable" });
+    expect(recordVerdict(facts({}))).toEqual({ action: "ok" });
+  });
+
   it("rewrites a missing or unreadable record, or a missing helper copy", () => {
-    expect(recordVerdict({ record: null, helper: true, appPath: APP })).toMatchObject({
+    expect(
+      recordVerdict({ record: null, helper: true, appPath: APP, channel: "canary" }),
+    ).toMatchObject({
       why: "missing",
     });
-    expect(recordVerdict({ record: record(APP), helper: false, appPath: APP })).toMatchObject({
+    expect(
+      recordVerdict({ record: record(APP), helper: false, appPath: APP, channel: "canary" }),
+    ).toMatchObject({
       why: "missing",
     });
-    expect(recordVerdict({ record: "{", helper: true, appPath: APP })).toMatchObject({
+    expect(
+      recordVerdict({ record: "{", helper: true, appPath: APP, channel: "canary" }),
+    ).toMatchObject({
       why: "unreadable",
     });
-    expect(recordVerdict({ record: "{}", helper: true, appPath: APP })).toMatchObject({
+    expect(
+      recordVerdict({ record: "{}", helper: true, appPath: APP, channel: "canary" }),
+    ).toMatchObject({
       why: "unreadable",
     });
   });
@@ -729,9 +785,14 @@ describe("Electrobun's install record (InvalidUpdateIdentity)", () => {
       realpath: (p: string) => p,
       log: () => {},
     });
-    await syncInstallRecord("/data/canary", APP, deps(record(APP)));
+    await syncInstallRecord("/data/canary", APP, "canary", deps(record(APP)));
     expect(runs).toEqual([]);
-    const out = await syncInstallRecord("/data/canary", APP, deps(record("/elsewhere/A.app")));
+    const out = await syncInstallRecord(
+      "/data/canary",
+      APP,
+      "canary",
+      deps(record("/elsewhere/A.app")),
+    );
     expect(out).toMatchObject({ action: "bootstrap", why: "moved" });
     expect(runs).toEqual([
       [`${APP}/Contents/Resources/uninstall`, "--bootstrap-install", "/data/canary", "--quiet"],
@@ -739,7 +800,7 @@ describe("Electrobun's install record (InvalidUpdateIdentity)", () => {
   });
 
   it("reports a helper that fails, and never throws", async () => {
-    const out = await syncInstallRecord("/data/canary", APP, {
+    const out = await syncInstallRecord("/data/canary", APP, "canary", {
       exec: async () => ({ code: 1, out: "InvalidInstallLocation" }),
       read: () => null,
       exists: () => false,
@@ -747,7 +808,7 @@ describe("Electrobun's install record (InvalidUpdateIdentity)", () => {
       log: () => {},
     });
     expect(out).toMatchObject({ action: "failed" });
-    const thrown = await syncInstallRecord("/data/canary", APP, {
+    const thrown = await syncInstallRecord("/data/canary", APP, "canary", {
       exec: async () => ({ code: 0, out: "" }),
       realpath: () => {
         throw new Error("ENOENT");
@@ -755,6 +816,19 @@ describe("Electrobun's install record (InvalidUpdateIdentity)", () => {
       log: () => {},
     });
     expect(thrown).toMatchObject({ action: "failed", error: "ENOENT" });
+  });
+
+  it("gives up on a helper that hangs, so update checks carry on", async () => {
+    const out = await syncInstallRecord("/data/canary", APP, "canary", {
+      exec: () => new Promise(() => {}),
+      read: () => null,
+      exists: () => false,
+      realpath: (p) => p,
+      log: () => {},
+      timeoutMs: 5,
+    });
+    expect(out).toMatchObject({ action: "failed" });
+    expect((out as { error: string }).error).toMatch(/didn't finish: .* timed out after 0.005 s/);
   });
 
   it("puts the record right before checking and again before applying", async () => {
@@ -796,9 +870,69 @@ describe("an update that didn't install", () => {
     );
     expect(
       plainInstallFailure({ version: "0.1.70", message: "AccessDenied", phase: "swapping" }),
-    ).toBe(
-      "The update to 0.1.70 didn't install: the updater stopped while swapping (AccessDenied).",
+    ).toBe("The update to 0.1.70 didn't install: the updater stopped while replacing the app.");
+    // Codes and phases this app doesn't know are never shown as written.
+    expect(plainInstallFailure({ version: "<b>9</b>", message: "Weird", phase: "elsewhere" })).toBe(
+      "The update to the new version didn't install: the updater stopped before it finished.",
     );
+  });
+
+  it("passes only semver versions and bare codes from a result file", () => {
+    const doc = (over: Record<string, unknown>) =>
+      JSON.stringify({
+        success: false,
+        phase: "validating",
+        message: "InvalidUpdateIdentity",
+        version: "0.1.70",
+        ...over,
+      });
+    expect(parseUpdateResult(doc({}), 5)).toEqual({
+      success: false,
+      phase: "validating",
+      message: "InvalidUpdateIdentity",
+      version: "0.1.70",
+      modifiedAt: 5,
+    });
+    expect(parseUpdateResult(doc({ version: "0.1.70-canary.3" }), 5)).not.toBeNull();
+    for (const bad of [
+      { version: "0.1" },
+      { version: "0.1.70 <script>" },
+      { version: `0.1.70-${"x".repeat(80)}` },
+      { phase: "validating!" },
+      { message: "Couldn't open /Users/someone/file" },
+      { message: "A".repeat(65) },
+      { message: "" },
+      { success: "no" },
+    ])
+      expect(parseUpdateResult(doc(bad), 5)).toBeNull();
+    expect(parseUpdateResult("[1]", 5)).toBeNull();
+    expect(parseUpdateResult("nope", 5)).toBeNull();
+  });
+
+  it("sorts result files newest first before the limit, and prunes the older ones", () => {
+    // 25 results; the newest failure listed last (directory order is arbitrary).
+    const names = Array.from(
+      { length: 25 },
+      (_, i) => `.electrobun-update-${i.toString(16).padStart(32, "0")}.result.json`,
+    );
+    const mtime = (path: string) => Number.parseInt(path.slice(-44, -12), 16);
+    const removed: string[] = [];
+    const results = readUpdateResults("/data", 20, {
+      list: () => [...names].reverse().concat("other.json"),
+      stat: (p) => ({ isFile: () => true, size: 100, mtimeMs: mtime(p) }),
+      read: (p) =>
+        JSON.stringify({
+          success: mtime(p) !== 24,
+          phase: mtime(p) === 24 ? "swapping" : "complete",
+          message: mtime(p) === 24 ? "AccessDenied" : "ok",
+          version: `0.1.${mtime(p)}`,
+        }),
+      remove: (p) => removed.push(p),
+    });
+    expect(results).toHaveLength(20);
+    expect(results[0]).toMatchObject({ success: false, version: "0.1.24" });
+    expect(lastFailure(results, "0.1.1")?.version).toBe("0.1.24");
+    expect(removed.map(mtime).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4]);
   });
 
   it("reads the helper's result files and nothing else", () => {
@@ -876,24 +1010,90 @@ describe("the click is fast: the check is done at download", () => {
     expect(u.calls).toContain("apply");
   });
 
-  it("checks in full again when the bundle changed since, and refuses it if it fails", async () => {
+  it("never applies a bundle that changed since it was checked: counts it, says so and downloads it again", async () => {
     const u = fakeUpdater();
     const e = fakeExec();
     let hash = "first";
+    const discarded: string[][] = [];
+    const logs: string[] = [];
+    const { updates } = make(u, e, { fingerprint: async () => hash, discarded, logs });
+    await updates.check();
+    const checks = verifies(e.runs);
+    const downloads = u.calls.filter((c) => c === "download").length;
+    hash = "changed";
+    const why = await updates.verifyForApply();
+    expect(why).toBe(CHANGED_ON_DISK);
+    expect(updates.state.reason).toBe(
+      "The downloaded update changed on disk: downloading it again.",
+    );
+    expect(updates.hashMismatches).toBe(1);
+    expect(logs.some((l) => /changed on disk .*hash mismatch 1 this session/.test(l))).toBe(true);
+    expect(discarded).toEqual([["/data", STAGED]]);
+    // Not silently checked again in place: downloaded again, then checked in full when it lands.
+    await updates.check();
+    expect(u.calls.filter((c) => c === "download").length).toBe(downloads + 1);
+    expect(verifies(e.runs)).toBe(checks + 2);
+    expect(u.calls).not.toContain("apply");
+  });
+
+  it("checks in full again at the click when the last full check is more than a day old", async () => {
+    const u = fakeUpdater();
+    const e = fakeExec();
+    let now = NOW;
+    const logs: string[] = [];
+    const { updates } = make(u, e, { now: () => now, logs });
+    await updates.check();
+    const before = verifies(e.runs);
+    now = NOW + VERIFIED_FOR_MS - 1;
+    expect(await updates.verifyForApply()).toBeNull();
+    expect(verifies(e.runs)).toBe(before); // a day, just: the hash is enough
+    now = NOW + VERIFIED_FOR_MS + 1;
+    expect(await updates.verifyForApply()).toBeNull();
+    expect(verifies(e.runs)).toBe(before + 2); // codesign --verify and spctl again
+    expect(logs.some((l) => /checked 24 h ago: checking it in full again/.test(l))).toBe(true);
+    // Checked in full just now: the next click only hashes again.
+    expect(await updates.verifyForApply()).toBeNull();
+    expect(verifies(e.runs)).toBe(before + 2);
+  });
+
+  it("refuses a bundle that fails its full check again", async () => {
+    const u = fakeUpdater();
+    const e = fakeExec();
+    let now = NOW;
     let bad = false;
     const exec: Exec = (cmd, args) =>
       bad && cmd.endsWith("codesign") && args[0] === "--verify"
-        ? Promise.resolve({ code: 1, out: "a sealed resource is missing or invalid" })
+        ? Promise.resolve({ code: 1, out: "CSSMERR_TP_CERT_REVOKED" })
         : e.exec(cmd, args);
-    const { updates } = make(u, { exec, runs: e.runs }, { fingerprint: async () => hash });
+    const { updates } = make(u, { exec, runs: e.runs }, { now: () => now });
     await updates.check();
-    hash = "changed";
+    now = NOW + VERIFIED_FOR_MS + 1;
     bad = true;
-    const why = await updates.verifyForApply();
-    expect(why).toMatch(/signature/);
+    expect(await updates.verifyForApply()).toMatch(/signature/);
     expect(updates.state.reason).toBe("Version 0.1.5 was refused: its signature didn't check out.");
     await updates.apply();
     expect(u.calls).not.toContain("apply");
+  });
+
+  it("discards only Electrobun's own staging folder and its record", () => {
+    const removed: string[] = [];
+    discardStaged("/data", "/Applications/A.app.prepared-16goeidwc86x6", (p) => removed.push(p));
+    discardStaged("/data", "/Users/someone", (p) => removed.push(p));
+    expect(removed).toEqual([
+      "/data/self-extraction/.electrobun-prepared-update.json",
+      "/Applications/A.app.prepared-16goeidwc86x6",
+      "/data/self-extraction/.electrobun-prepared-update.json",
+    ]);
+  });
+
+  it("bounds a command that hangs (withTimeout)", async () => {
+    const hung = withTimeout(() => new Promise(() => {}), 5);
+    expect(await hung("/usr/sbin/spctl", [])).toEqual({
+      code: TIMED_OUT,
+      out: "/usr/sbin/spctl timed out after 0.005 s",
+    });
+    const quick = withTimeout(async () => ({ code: 0, out: "ok" }), 1_000);
+    expect(await quick("x", [])).toEqual({ code: 0, out: "ok" });
   });
 
   it("doesn't remember a bundle that changed while it was being checked", async () => {

@@ -10,7 +10,11 @@
 //   That takes seconds (spctl asks Apple's notary service), so it is done once the download lands,
 //   and the bundle's content hash (bundleFingerprint) is recorded with it, taken before and after
 //   the checks. Right before applying the hash is taken again: equal means the bundle applied is
-//   the one checked; anything else (a changed bundle, another staging folder) is checked in full;
+//   the one checked. A different hash means the bundle changed on disk: it is counted, logged,
+//   discarded and downloaded again, and the person is told so. Another staging folder, or a check
+//   more than VERIFIED_FOR_MS old, is checked in full again. So a certificate revoked between the
+//   download and the click is noticed only by a full check: at the next download, or at the click
+//   once the last full check is a day old (spec 40 M4);
 // - the staged bundle's own version.json (inside that seal) says the manifest's version, newer than
 //   the running one, on this build's channel: the manifest alone can't vouch for an old build;
 // - the app sits where it can replace itself (not translocated, its folder writable). If it can't,
@@ -40,6 +44,7 @@ import type { Exec, StagedUpdate } from "./update-verify.ts";
 import {
   bundleFingerprint,
   bundleInfo,
+  discardStaged,
   stagedBundle,
   stagedUpdate,
   teamIdOf,
@@ -99,9 +104,11 @@ export interface UpdatesDeps {
   setInterval?: (fn: () => void, ms: number) => unknown;
   setTimeout?: (fn: () => void, ms: number) => unknown;
   /** Makes Electrobun's install record name this bundle (install-record.ts). */
-  syncRecord?: (channelRoot: string, appPath: string) => Promise<unknown>;
+  syncRecord?: (channelRoot: string, appPath: string, channel: string) => Promise<unknown>;
   /** A bundle's content hash (bundleFingerprint). */
   fingerprint?: (app: string) => Promise<string>;
+  /** Removes a staged update (its prepared record and staging folder) so it is downloaded again. */
+  discard?: (appDataFolder: string, stagingPath: string) => void;
   /** The update helper's results in the channel root. */
   results?: (channelRoot: string) => UpdateResult[];
   log?: (line: string) => void;
@@ -112,6 +119,10 @@ export const EVERY_MS = 6 * 3_600_000;
 export const RETRY_MS = 30 * 60_000;
 /** The door's update_required asks for a check at most this often (ADR 0393). */
 export const ON_DEMAND_GAP_MS = 10 * 60_000;
+/** A full check (signature, Gatekeeper) older than this is done again at the click, not just the hash. */
+export const VERIFIED_FOR_MS = 24 * 3_600_000;
+/** The error for a staged bundle whose content hash changed after it was checked. */
+export const CHANGED_ON_DISK = "refused: the staged update changed on disk after it was checked";
 
 export const OFF_DEV = "Updates are off in this build (a development build).";
 export const OFF_UNSIGNED =
@@ -158,7 +169,11 @@ export class Updates {
     bundle: string;
     version: string;
     fingerprint: string;
+    /** When the full check passed (epoch ms). */
+    at: number;
   } | null = null;
+  /** How many times a checked bundle's hash differed at the click, this session (logged each time). */
+  hashMismatches = 0;
   private readonly d: Required<UpdatesDeps>;
 
   constructor(
@@ -172,7 +187,9 @@ export class Updates {
       setInterval: (fn, ms) => setInterval(fn, ms),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       now: () => Date.now(),
-      syncRecord: (root, app) => syncInstallRecord(root, app, { exec: deps.exec }),
+      syncRecord: (root, app, channel) =>
+        syncInstallRecord(root, app, channel, { exec: deps.exec }),
+      discard: (folder, staging) => discardStaged(folder, staging),
       results: (root) => readUpdateResults(root),
       fingerprint: (app) => bundleFingerprint(app),
       log: (line) => console.log(line),
@@ -244,8 +261,9 @@ export class Updates {
     try {
       if (installProblem(this.d.appPath, this.d.writable)) return;
       const root = await this.d.updater.appDataFolder();
-      await this.d.syncRecord(root, this.d.appPath);
-      const running = (await this.d.updater.getLocalInfo()).version;
+      const local = await this.d.updater.getLocalInfo();
+      await this.d.syncRecord(root, this.d.appPath, local.channel);
+      const running = local.version;
       const failed: InstallFailure | null = lastFailure(this.d.results(root), running);
       if (failed) {
         this.d.log(
@@ -359,27 +377,58 @@ export class Updates {
    */
   async verifyForApply(): Promise<string | null> {
     const why = await this.recheck();
-    if (why) this.fail(why, this.state.version, false);
+    if (why) {
+      this.fail(why, this.state.version, false);
+      // Discarded above: fetched again now, and checked in full when it lands.
+      if (why === CHANGED_ON_DISK) void this.check();
+    }
     return why;
   }
 
   private async recheck(): Promise<string | null> {
     const v = this.verified;
     if (v) {
+      this.verified = null;
       try {
+        const age = this.d.now() - v.at;
+        if (age > VERIFIED_FOR_MS) {
+          this.d.log(
+            `updates: ${v.version} was checked ${Math.round(age / 3_600_000)} h ago: checking it in full again`,
+          );
+          return this.verifyStaged();
+        }
+        const folder = await this.d.updater.appDataFolder();
         const running = (await this.d.updater.getLocalInfo()).version;
-        const staged = this.d.staged(await this.d.updater.appDataFolder());
-        const same =
+        const staged = this.d.staged(folder);
+        if (
           staged !== null &&
           staged.path === v.stagingPath &&
           staged.version === v.version &&
-          isNewer(v.version, running) &&
-          (await this.d.fingerprint(v.bundle)) === v.fingerprint;
-        if (same) return null;
+          isNewer(v.version, running)
+        ) {
+          if ((await this.d.fingerprint(v.bundle)) === v.fingerprint) {
+            this.verified = v;
+            return null;
+          }
+          // The bundle checked isn't the bundle on disk any more: never applied, never silently
+          // checked again. Counted and logged, then discarded and downloaded again.
+          this.hashMismatches++;
+          this.d.log(
+            `updates: the staged ${v.version} changed on disk after it was checked (hash mismatch ${this.hashMismatches} this session): discarding it and downloading it again`,
+          );
+          try {
+            this.d.discard(folder, v.stagingPath);
+          } catch (error) {
+            this.d.log(
+              `updates: couldn't discard the staged ${v.version}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          this.set({ ready: false });
+          return CHANGED_ON_DISK;
+        }
       } catch {
         // Unreadable: checked in full below.
       }
-      this.verified = null;
     }
     return this.verifyStaged();
   }
@@ -422,6 +471,7 @@ export class Updates {
         bundle,
         version: staged.version,
         fingerprint: before,
+        at: this.d.now(),
       };
     return null;
   }
@@ -456,6 +506,8 @@ export function plainReason(error: string, running: string | null = null): strin
   if (refused) {
     const [, version, why = ""] = refused;
     const which = version ? `Version ${version}` : "The update";
+    if (/changed on disk/.test(why))
+      return "The downloaded update changed on disk: downloading it again.";
     if (/not newer/.test(why))
       return `${which} was refused: it isn't newer than this version${running ? ` (${running})` : ""}.`;
     if (/isn't signed/.test(why)) return OFF_UNSIGNED;

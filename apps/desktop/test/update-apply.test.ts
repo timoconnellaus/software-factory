@@ -50,6 +50,19 @@ describe("applyTransition", () => {
     ).toMatchObject({ step: "refused" });
   });
 
+  it("a restart from the tray while the refusal shows starts over (it isn't ignored)", () => {
+    const refused = run([
+      { type: "start", version: "0.1.70" },
+      { type: "restarting" },
+      { type: "refused", reason: "The app didn't restart into the update within 90 seconds." },
+    ]);
+    expect(run([{ type: "start", version: "0.1.70" }], refused)).toEqual({
+      step: "verifying",
+      version: "0.1.70",
+      reason: null,
+    });
+  });
+
   it("a busy runner sends it back to idle (it updates once idle)", () => {
     expect(
       run([{ type: "start", version: "0.1.70" }, { type: "waiting" }, { type: "deferred" }]),

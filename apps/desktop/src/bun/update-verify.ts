@@ -15,7 +15,7 @@
 //   build served under a manifest saying 9.9.9 passes both checks above, so the bundle's own
 //   version must equal the manifest's and be newer than the running one (updates.ts).
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -24,8 +24,46 @@ export const APP_IDENTIFIER = "com.software-factory.desktop";
 /** Runs a command; `code` is its exit status, `out` its stdout and stderr together. */
 export type Exec = (cmd: string, args: string[]) => Promise<{ code: number; out: string }>;
 
-export const bunExec: Exec = async (cmd, args) => {
-  const p = Bun.spawn([cmd, ...args], { stdout: "pipe", stderr: "pipe" });
+/**
+ * How long one command may run. spctl's first assessment of a bundle asks Apple's notary service and
+ * took 7.5–13 s on the owner's Mac; a helper or check that hangs past this is killed and reported as
+ * failed, so it can't stop update checks (or a restart to update) for the rest of the session.
+ */
+export const EXEC_TIMEOUT_MS = 120_000;
+/** The exit code reported for a command that ran out of time (as coreutils' timeout(1) does). */
+export const TIMED_OUT = 124;
+
+/**
+ * `exec` bounded to `ms`: a command still running then is reported as failed (`TIMED_OUT`). The
+ * kill itself is the spawner's (bunExec asks Bun to kill it at the same deadline); this bound holds
+ * even when a child keeps the output pipes open after that.
+ */
+export function withTimeout(exec: Exec, ms: number = EXEC_TIMEOUT_MS): Exec {
+  return async (cmd, args) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        exec(cmd, args),
+        new Promise<{ code: number; out: string }>((resolve) => {
+          timer = setTimeout(
+            () => resolve({ code: TIMED_OUT, out: `${cmd} timed out after ${ms / 1000} s` }),
+            ms,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+const spawnExec: Exec = async (cmd, args) => {
+  const p = Bun.spawn([cmd, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: EXEC_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  });
   const [out, err, code] = await Promise.all([
     new Response(p.stdout).text(),
     new Response(p.stderr).text(),
@@ -33,6 +71,9 @@ export const bunExec: Exec = async (cmd, args) => {
   ]);
   return { code, out: `${out}${err}` };
 };
+
+/** Runs a command under Bun, killed after EXEC_TIMEOUT_MS. */
+export const bunExec: Exec = withTimeout(spawnExec);
 
 /** The running .app (Contents/MacOS/<exe> → the bundle), as Electrobun's updater computes it. */
 export const runningAppPath = () => resolve(dirname(process.execPath), "..", "..");
@@ -150,4 +191,22 @@ export function stagedUpdate(
   } catch {
     return null;
   }
+}
+
+/**
+ * Removes a staged update so Electrobun downloads it again: its prepared-update record, then the
+ * staging folder, which Electrobun requires to be `<running app>.prepared-<hash>` (anything else is
+ * left alone). Without the record, Electrobun's next check reports nothing prepared.
+ */
+export function discardStaged(
+  appDataFolder: string,
+  stagingPath: string,
+  rm: (p: string, opts: { recursive: boolean; force: boolean }) => void = rmSync,
+): void {
+  rm(join(appDataFolder, "self-extraction", ".electrobun-prepared-update.json"), {
+    recursive: false,
+    force: true,
+  });
+  if (/\.app\.prepared-[a-z0-9]{1,13}$/.test(stagingPath))
+    rm(stagingPath, { recursive: true, force: true });
 }
