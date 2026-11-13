@@ -72,10 +72,14 @@ import { op, submitKey } from "../lib/op.ts";
 import { orphanedComments } from "../lib/plan-blocks.ts";
 import { planningQuery } from "../lib/queries.ts";
 import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
+import { splitApproveLabel } from "../lib/splits.ts";
+import { planningLayout, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
+import { SystemPane } from "./planning-system.tsx";
 import { CanvasPane, FullSize, MockupsPane, type Pin } from "./planning-visuals.tsx";
+import { SplitList } from "./split-list.tsx";
 import { approveLabel, useWriteBack, WriteBack } from "./write-back.tsx";
 
 /** How often an open Planning tab says it is still here. */
@@ -94,13 +98,15 @@ export function Planning({
   useLive(item.id, planning.data);
   usePresence(item.id);
   const focus = mode === "focus";
-  // Docked, chat folds to a strip on the right; in focus it stays open.
+  // Docked, chat folds to a strip on the right; in focus it stays open, unless the window is too
+  // narrow for three panes, where it folds too so it never covers the workspace (review of #130).
+  const wide = useMedia(WIDE_PLANNING);
   const [chatOpen, setChatOpen] = useState(false);
   // Spec 21: the workspace's tab, comment mode, a hovered option's preview, a mockup opened full size.
-  const [tab, setTab] = useState<"plan" | "mockups" | "canvas">(() => {
+  const [tab, setTab] = useState<"plan" | "mockups" | "system" | "canvas">(() => {
     // A link can open the workspace on a tab: `pane=mockups` or `pane=canvas` (spec 21).
     const pane = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("pane");
-    return pane === "mockups" || pane === "canvas" ? pane : "plan";
+    return pane === "mockups" || pane === "system" || pane === "canvas" ? pane : "plan";
   });
   const [pinMode, setPinMode] = useState(false);
   const [preview, setPreview] = useState<{
@@ -154,7 +160,9 @@ export function Planning({
     setDraft({ text, questionId });
     setChatOpen(true);
   };
-  const showChat = focus || chatOpen;
+  const layout = planningLayout(focus, wide);
+  const chatPinned = layout.chatPinned;
+  const showChat = chatPinned || chatOpen;
   // Designs (spec 22) are text in their own notation, not HTML: the mockup panes leave them out.
   const visuals = { ...view, artifacts: view.artifacts.filter((x) => x.kind !== "design") };
 
@@ -172,8 +180,8 @@ export function Planning({
           onDiscuss={discuss}
           onPreview={setPreview}
           className={cn(
-            "w-[300px] flex-none overflow-y-auto border-line-soft border-r px-3 py-3",
-            focus && "w-[336px]",
+            "flex-none overflow-y-auto border-line-soft border-r px-3 py-3",
+            layout.questionsWidth,
           )}
         />
         <section className="flex min-w-0 flex-1 flex-col bg-panel" data-testid="workspace">
@@ -221,6 +229,20 @@ export function Planning({
                 onOpen={setOpened}
               />
             </div>
+          ) : tab === "system" ? (
+            <div className="min-h-0 flex-1">
+              <SystemPane
+                view={view}
+                workItemId={item.id}
+                pinMode={pinMode}
+                onPin={(pin) => {
+                  // As on a mockup: the pin joins the message being written (spec 22, criterion 2).
+                  setDraft((d) => ({ text: d.text, pin }));
+                  setPinMode(false);
+                  setChatOpen(true);
+                }}
+              />
+            </div>
           ) : (
             <div className="min-h-0 flex-1">
               <CanvasPane view={visuals} workItemId={item.id} onOpen={setOpened} />
@@ -239,8 +261,8 @@ export function Planning({
             workItemId={item.id}
             draft={draft}
             onDraft={setDraft}
-            onClose={focus ? undefined : () => setChatOpen(false)}
-            className="w-[330px] flex-none border-line-soft border-l"
+            onClose={chatPinned ? undefined : () => setChatOpen(false)}
+            className={cn("flex-none border-line-soft border-l", layout.chatWidth)}
           />
         ) : (
           <button
@@ -997,22 +1019,23 @@ function WorkspaceTabs({
   onPinMode,
 }: {
   view: PlanningView;
-  tab: "plan" | "mockups" | "canvas";
-  onTab: (tab: "plan" | "mockups" | "canvas") => void;
+  tab: "plan" | "mockups" | "system" | "canvas";
+  onTab: (tab: "plan" | "mockups" | "system" | "canvas") => void;
   pinMode: boolean;
   onPinMode: () => void;
 }) {
   // Designs (spec 22) are text in their own notation, drawn in the System tab: not mockups.
   const mockups = view.artifacts.filter((a) => a.kind !== "design").length;
+  const designs = view.artifacts.length - mockups;
   return (
     <div
-      className="flex h-11 flex-none items-center gap-2 border-line-soft border-b px-4"
+      className="flex h-11 min-w-0 flex-none items-center gap-2 overflow-x-auto border-line-soft border-b px-4"
       data-testid="workspace-tabs"
     >
       <ToggleGroup
         type="single"
         value={tab}
-        onValueChange={(v) => v && onTab(v as "plan" | "mockups" | "canvas")}
+        onValueChange={(v) => v && onTab(v as "plan" | "mockups" | "system" | "canvas")}
         size="sm"
         variant="outline"
       >
@@ -1023,21 +1046,30 @@ function WorkspaceTabs({
           Mockups
           {mockups > 0 && <span className="font-mono text-ink-muted text-xs">{mockups}</span>}
         </ToggleGroupItem>
+        <ToggleGroupItem value="system" className="gap-1.5 px-3" data-testid="tab-system">
+          System
+          {designs > 0 && <span className="font-mono text-ink-muted text-xs">{designs}</span>}
+        </ToggleGroupItem>
         <ToggleGroupItem value="canvas" className="px-3" data-testid="tab-canvas">
           Canvas
         </ToggleGroupItem>
       </ToggleGroup>
       <span className="grow" />
-      {mockups > 0 && (
+      {(tab === "system" ? designs : mockups) > 0 && (
         <Button
           size="sm"
           variant={pinMode ? "default" : "outline"}
           onClick={onPinMode}
-          title="Pin a comment to an element of a mockup"
+          title={
+            tab === "system"
+              ? "Pin a comment to a table, a box or an arrow"
+              : "Pin a comment to an element of a mockup"
+          }
           data-testid="comment-mode"
         >
           <MapPinIcon className="size-3.5" />
-          {pinMode ? "Click a spot to comment" : "Comment"} <Kbd>C</Kbd>
+          {pinMode ? (tab === "system" ? "Click a part" : "Click a spot to comment") : "Comment"}{" "}
+          <Kbd>C</Kbd>
         </Button>
       )}
     </div>
@@ -1219,6 +1251,7 @@ function Spec({
               </ul>
             </div>
           )}
+          <SplitList items={spec.children ?? []} unreadable={spec.childrenUnreadable === true} />
           {spec.clarifications.length > 0 && (
             <div data-testid="clarifications">
               <b>Clarifications</b>
@@ -1656,12 +1689,36 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
           </Button>
           <Button
             size="sm"
-            disabled={!canApprove || pending !== null || !writeBack}
-            title={canApprove ? undefined : "Only an approver on this project can approve the spec"}
-            onClick={() => decide({ kind: "spec.approve", workItemId: item.id })}
+            disabled={
+              !canApprove ||
+              pending !== null ||
+              !writeBack ||
+              !view.spec ||
+              view.spec.childrenUnreadable === true ||
+              ((view.spec.children?.length ?? 0) > 0 && !view.spec.splitDigest)
+            }
+            title={
+              !canApprove
+                ? "Only an approver on this project can approve the spec"
+                : view.spec?.childrenUnreadable
+                  ? "This plan's split can't be read: request changes so the planner revises it"
+                  : undefined
+            }
+            onClick={() =>
+              // A split is approved as shown (review of #173): the version and the digest the
+              // server sent with the plan this screen shows; nothing is hashed here.
+              decide({
+                kind: "spec.approve",
+                workItemId: item.id,
+                ...(view.spec?.children?.length && view.spec.splitDigest
+                  ? { specVersion: view.spec.version, splitDigest: view.spec.splitDigest }
+                  : {}),
+              })
+            }
             data-testid="approve-spec"
           >
-            {approveLabel(writeBack?.kimCount)}
+            {splitApproveLabel(view.spec?.children?.length ?? 0, writeBack?.kimCount) ??
+              approveLabel(writeBack?.kimCount)}
           </Button>
         </>
       ) : (

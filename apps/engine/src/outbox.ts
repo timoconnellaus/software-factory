@@ -7,6 +7,7 @@ import { deliverRepository } from "./deliver/deliverer.ts";
 import { invokeDeps } from "./deps.ts";
 import { planningHub } from "./planning-hub.ts";
 import { failDeadRelease, pullProject } from "./pull.ts";
+import { terminalRelay } from "./terminal-relay.ts";
 
 interface OutboxRow {
   id: string;
@@ -144,16 +145,24 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
       await pullProject(env, message.payload.projectId);
       return;
-    case "planning.changed":
+    case "planning.changed": {
       // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
       await planningHub(env, message.payload.workItemId).notify();
       await notifyPlanningViewers(env, message.payload.workItemId);
+      // Last, and only a wake: the planning job's line, when its runner keeps one (spec 44 part B).
+      // A failed push never holds up the rest; the host's safety poll covers it.
+      const planningJob = await activeJob(env, message.payload.workItemId, "planning");
+      if (planningJob) await pushLine(env, planningJob, "planning");
       return;
-    case "run.steered":
-      // The runner host's held steer call waits on the work item's hub (ADR 0400). A wake, not a
-      // change: open Planning tabs don't re-read.
-      await planningHub(env, message.payload.workItemId).wake();
+    }
+    case "run.steered": {
+      // Pushed down the job's line (spec 44 part B, ADR 0592): the host then takes its steers with
+      // its own fenced call. A host without a line finds them on its held call's poll (part A).
+      // Queued only for a runner that declared `job-line`, so today's hosts pay nothing.
+      const jobId = message.payload.jobId ?? (await activeJob(env, message.payload.workItemId));
+      if (jobId) await pushLine(env, jobId, "steer");
       return;
+    }
     case "device.revoked":
       // A revoked device's live socket closes now, not when it next calls (ADR 0541).
       await clientHub(env, message.payload.userId).closeDevice(message.payload.deviceId);
@@ -215,4 +224,32 @@ export async function notifyClients(env: Env, payload: NotifyPayload): Promise<s
     ),
   );
   return users;
+}
+
+/** A wake down a job's line: never throws, since the rest of the delivery mustn't wait on it. */
+async function pushLine(env: Env, jobId: string, t: "steer" | "planning"): Promise<void> {
+  try {
+    await terminalRelay(env, jobId).push(t);
+  } catch (error) {
+    console.warn(`job line push ${t} to ${jobId} failed: ${String(error)}`);
+  }
+}
+
+/**
+ * The work item's running job (optionally of one stage) whose runner declared `job-line`: the
+ * newest active run, read backwards on UNIQUE (work_item_id, run_no) (a few runs per item), and its
+ * runner by primary key. For a `run.steered` queued before it carried `jobId`, and for
+ * `planning.changed` (spec 44 part B). Null for every runner without the line: no relay request.
+ */
+async function activeJob(env: Env, workItemId: string, stage?: string): Promise<string | null> {
+  return env.DB.prepare(
+    `SELECT r.job_id FROM core_runs r JOIN core_runners rn ON rn.id = r.runner_id
+     WHERE r.work_item_id = ?
+       AND r.status IN ('claimed', 'preparing', 'running', 'collecting')
+       ${stage ? "AND r.stage = ?" : ""}
+       AND rn.manifest LIKE '%"job-line"%'
+     ORDER BY r.run_no DESC LIMIT 1`,
+  )
+    .bind(...(stage ? [workItemId, stage] : [workItemId]))
+    .first<string>("job_id");
 }

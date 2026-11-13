@@ -207,6 +207,10 @@ describe("third review of #85", () => {
     const back = `${e.result}\n- Use MySQL`;
     expect(droppedEdits(back, [e])).toEqual([e]);
     expect(whyNotKept(back, e.footprint)).toContain("is back in Stack");
+    // Case, spacing and the list marker don't bring it back either (review of #85).
+    for (const again of ["- use mysql", "* Use  MySQL", "1. USE MYSQL"]) {
+      expect(droppedEdits(`${e.result}\n${again}`, [e])).toEqual([e]);
+    }
     const tbd = edit("## Stack\n- TBD", 1, 1, "- Postgres");
     expect(droppedEdits(`${tbd.result}\n- Auth: TBD`, [tbd])).toEqual([]);
   });
@@ -257,6 +261,39 @@ describe("third review of #85", () => {
     }
     expect(editAnswer(span("- Database: postgres. [Q3]"), options)).toBe("Postgres");
     expect(editAnswer(span("- Database: SQLite on disk [Q3]"), [])).toBe("SQLite on disk");
+  });
+
+  it("tells options apart by the symbols in their names, and asks when it can't (reviews of #85, #160)", () => {
+    const span = (after: string) => changedSpan("- Language: TBD [Q4]", after, "[Q4]");
+    const options = ["C", "C#", "C++"];
+    expect(editAnswer(span("- Language: C# [Q4]"), options)).toBe("C#");
+    expect(editAnswer(span("- Language: C++ [Q4]"), options)).toBe("C++");
+    expect(editAnswer(span("- Language: C [Q4]"), options)).toBe("C");
+    expect(editAnswer(span("- Language: c# [Q4]"), options)).toBe("C#");
+    expect(editAnswer(span("- Language: C. [Q4]"), options)).toBe("C");
+    // One loose match isn't enough when the edit names another thing (review of #160).
+    expect(editAnswer(span("- Language: C# [Q4]"), ["C", "Rust"])).toBeNull();
+    expect(editAnswer(span("- Language: C++ [Q4]"), ["C", "Go"])).toBeNull();
+    expect(editAnswer(span("- Language: rust. [Q4]"), ["C", "Rust"])).toBe("Rust");
+    expect(editAnswer(span('- Language: "Go" [Q4]'), ["C", "Go"])).toBe("Go");
+  });
+
+  it("keeps a case-fix edit stored before the case-insensitive comparison (review of #160)", () => {
+    // The old stored shape: `max` counted by exact text, so the edit's own line counted 0.
+    const old: EditFootprint = {
+      blocks: [{ section: "Stack", parent: "", text: "- Use Postgres" }],
+      gone: [{ section: "Stack", parent: "", text: "- use postgres", max: 0 }],
+    };
+    const md = "## Stack\n- Use Postgres";
+    expect(droppedEdits(md, [{ footprint: old }])).toEqual([]);
+    expect(whyNotKept(md, old)).not.toContain("is back");
+    // Both lines: the old one is back (review of #160's follow-up).
+    const both = `${md}\n- use postgres`;
+    expect(droppedEdits(both, [{ footprint: old }])).toHaveLength(1);
+    expect(whyNotKept(both, old)).toContain("is back");
+    // A new case-fix edit is kept too.
+    const e = edit("## Stack\n- use postgres", 1, 1, "- Use Postgres");
+    expect(droppedEdits(e.result, [e])).toEqual([]);
   });
 
   it("accepts an edit of a fence inside a 10. item (7)", () => {

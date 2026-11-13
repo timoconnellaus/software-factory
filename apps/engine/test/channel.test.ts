@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { EngineApi } from "../src/rpc.ts";
 import { all, first, MANIFEST, ok, uid, waitFor, world } from "./helpers.ts";
+import { type Recorded, recordingEnv } from "./query-plans.ts";
 
 const base = "https://sf-engine.example";
 const engineFetch: typeof fetch = async (input, init) =>
@@ -43,6 +44,7 @@ describe("the signed runner channel", () => {
       leases: [],
       desiredVersion: null,
       minRunnerCompat: RUNNER_COMPAT,
+      engine: { capabilities: ["job-line"] },
     });
     const seen = await first<{ capacity_max: number; last_seen_at: string }>(
       "SELECT capacity_max, last_seen_at FROM core_runners WHERE id = ?",
@@ -568,6 +570,7 @@ describe("device login over the channel (ADR 0056)", () => {
       leases: [],
       desiredVersion: null,
       minRunnerCompat: RUNNER_COMPAT,
+      engine: { capabilities: ["job-line"] },
     });
     expect(
       await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json(),
@@ -644,6 +647,63 @@ describe("planning over the channel (spec 20, ADR 0350)", () => {
       w.runner.runnerId,
     );
     expect(stored).toEqual([]);
+  });
+
+  it("an idle held wait wakes no object and writes the session at most once (spec 44 part A3)", async () => {
+    const w = await world();
+    const { job } = await planningJob(w);
+    const seen: Recorded[] = [];
+    const objects: string[] = [];
+    const counted = (ns: DurableObjectNamespace, name: string) =>
+      new Proxy(ns, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop);
+          if (prop === "get" && typeof value === "function") {
+            return (...args: unknown[]) => {
+              objects.push(name);
+              return value.apply(target, args);
+            };
+          }
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    const e = {
+      ...recordingEnv(env, seen),
+      PLANNING_HUB: counted(env.PLANNING_HUB as never, "PlanningHub"),
+      TERMINAL_RELAY: counted(env.TERMINAL_RELAY as never, "TerminalRelay"),
+    } as Env;
+    const c = await httpControlPlane({
+      baseUrl: base,
+      runnerId: w.runner.runnerId,
+      key: await runnerChannelKey("test-channel-secret", w.runner.runnerId, 1),
+      fetch: async (input, init) => worker.fetch(new Request(input, init), e),
+    });
+    // The first evaluation goes idle (a write); then 8 s of nothing.
+    await c.planning?.(job.jobId, {
+      fencingToken: job.lease.fencingToken,
+      op: "planning.wait",
+      input: { timeoutMs: 0 },
+    });
+    // That evaluation's own `planning.changed` reaches the hub for the website's SSE stream (until
+    // spec 44 PR 3); count only what the hold itself touches.
+    await new Promise((r) => setTimeout(r, 300));
+    seen.length = 0;
+    objects.length = 0;
+    const hold = 8_000;
+    const answer = (await c.planning?.(job.jobId, {
+      fencingToken: job.lease.fencingToken,
+      op: "planning.wait",
+      input: { timeoutMs: hold },
+    })) as { due: boolean };
+    expect(answer.due).toBe(false);
+    expect(objects).toEqual([]);
+    const sessionWrites = seen.filter((r) => /update "core_planning_sessions"/i.test(r.sql));
+    expect(sessionWrites.length).toBeLessThanOrEqual(1);
+    const peeks = seen.filter((r) => /from "core_planning_events"/i.test(r.sql));
+    expect(peeks.length).toBeGreaterThanOrEqual(2);
+    console.log(
+      `spec 44 measure: an idle ${hold} ms planning hold = ${seen.length} D1 statements, ${sessionWrites.length} session writes, ${objects.length} object calls`,
+    );
   });
 
   it("streams a change to an open Planning tab from the engine's RPC", async () => {

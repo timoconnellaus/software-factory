@@ -17,7 +17,9 @@ import {
   planningWaitInputSchema,
   rekeyFootprint,
   sameFootprint,
+  specChildSchema,
   specReviseInputSchema,
+  splitDigest,
   structureMoves,
   whyNotKept,
 } from "@software-factory/runner-contract";
@@ -38,6 +40,7 @@ import {
   NEWS_EVENTS,
   newsEnvelope,
   OPEN_SESSION,
+  openQuestionCount,
   openSession,
   type PlanningSessionRow,
   planningPrompt,
@@ -47,11 +50,14 @@ import {
   STANDING_EDITS_MAX,
   standingEdits,
   takeBackFromGate,
+  USER_EVENTS,
   wakeSession,
   withdrawSpecGate,
 } from "../planning.ts";
 import { liveArtifact } from "../planning-visuals.ts";
 import { approverIds } from "../scope.ts";
+import { childrenOf } from "../splits.ts";
+import { has } from "../workflow-features.ts";
 import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 import { RUNNER_OFFLINE_MS } from "./work-items.ts";
@@ -465,6 +471,20 @@ export const specRevise = defineOperation({
         "the spec is waiting at the gate: wait for a decision (changes arrive in the chat)",
       );
     }
+    // An item on a Workflow without `splits` can't build a split (review of #171).
+    if (input.children?.length && !has(w.workflow_version, "splits")) {
+      throw new OperationError(
+        "invalid_input",
+        "this item's Workflow can't split work: plan it as one piece of work",
+      );
+    }
+    // Depth 1 (spec 24, ADR 0303): a child's plan can't split again.
+    if (input.children?.length && w.parent_work_item_id) {
+      throw new OperationError(
+        "invalid_input",
+        "this item was split off a parent's plan, and a child can't split again (depth 1): plan it as one piece of work, or ask in the chat to change the parent's plan",
+      );
+    }
     // A person's edit stays word for word (ADR 0471): the planner asks before changing it.
     const dropped = droppedEdits(input.specMd, await standingEdits(ctx, w.id));
     if (dropped.length) {
@@ -500,6 +520,7 @@ export const specRevise = defineOperation({
         coverage: json(input.coverage),
         clarifications: json(input.clarifications),
         summary: input.summary ?? null,
+        children: input.children?.length ? json(input.children) : null,
         status: "draft",
         created_by: ctx.actor.id,
         created_at: ctx.now,
@@ -631,7 +652,7 @@ export const planningNews = defineOperation({
 export const planningPeek = defineOperation({
   name: "planning.peek",
   description:
-    "Whether there is planning news after a cursor (default: the last one delivered), and whether the session must yield or has ended (spec 26). A read, so a hook's look between the agent's steps costs no write.",
+    "Whether there is planning news after a cursor (default: the last one delivered), when a batch of it is due (`dueAt`, the same rule as planning.wait, null while paused or with nothing a person did), and whether the session must yield or has ended (spec 26, 44). A read, so a hook's look between the agent's steps, and sf-engine's held wait polling it, cost no write.",
   risk: "read",
   actors: ["runner"],
   permission: "signed-in",
@@ -639,6 +660,8 @@ export const planningPeek = defineOperation({
   output: z.object({
     latest: z.number(),
     news: z.boolean(),
+    /** When planning.wait would hand this news over (ISO), or null: nothing due, or paused. */
+    dueAt: z.string().nullable(),
     yield: z.boolean(),
     ended: z.boolean(),
   }),
@@ -646,17 +669,26 @@ export const planningPeek = defineOperation({
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
     const from = Math.max(input.cursor ?? 0, session.delivered_cursor);
-    const rows = await ctx.db
-      .selectFrom("core_planning_events")
-      .select(["id", "type"])
-      .where("work_item_id", "=", session.work_item_id)
-      .where("id", ">", from)
-      .orderBy("id", "desc")
-      .limit(200)
-      .execute();
+    const events = (types?: readonly string[]) =>
+      ctx.db
+        .selectFrom("core_planning_events")
+        .where("work_item_id", "=", session.work_item_id)
+        .where("id", ">", from)
+        .$if(types !== undefined, (q) => q.where("type", "in", types as string[]));
+    // Only what is pending for the agent, each on (work_item_id, id): the newest event, whether any
+    // is news (LIMIT 1), and a person's latest (the batch rule needs only that one).
+    const [newest, anyNews, latestUser, open] = await Promise.all([
+      events().select("id").orderBy("id", "desc").limit(1).executeTakeFirst(),
+      events(NEWS_EVENTS).select("id").limit(1).executeTakeFirst(),
+      events(USER_EVENTS).select(["type", "at"]).orderBy("id", "desc").limit(1).executeTakeFirst(),
+      openQuestionCount(ctx, session.work_item_id),
+    ]);
+    const dueAt =
+      session.paused_at === null && latestUser ? batchDue([latestUser], open, input.idleMs) : null;
     return {
-      latest: rows[0]?.id ?? from,
-      news: rows.some((r) => (NEWS_EVENTS as readonly string[]).includes(r.type)),
+      latest: newest?.id ?? from,
+      news: anyNews !== undefined,
+      dueAt: dueAt === null ? null : new Date(dueAt).toISOString(),
       yield: session.yield_requested_at !== null,
       ended: !OPEN_SESSION.includes(session.status),
     };
@@ -758,7 +790,7 @@ function deliver(
 export const planningWait = defineOperation({
   name: "planning.wait",
   description:
-    "The planning agent's Stop hook waits for news (spec 20, kim's batch rule): due once a person has paused 15 s after their latest answer, at once after a chat message or when no question is left open. This evaluates once and answers `due: false` with when to look again; sf-engine's channel holds the call and re-evaluates on every change. A wait that asks the session to yield answers `yield: true`.",
+    "The planning agent's Stop hook waits for news (spec 20, kim's batch rule): due once a person has paused 15 s after their latest answer, at once after a chat message or when no question is left open. This evaluates once and answers `due: false` with when to look again; sf-engine's channel holds the call in the Worker, polling planning.peek, and evaluates again when news falls due (spec 44). A wait that asks the session to yield answers `yield: true`.",
   risk: "write",
   // Re-evaluated on every change and every 50 s: audited when news is handed over or the
   // session changes (logPlanning marks it), ADR 0590.
@@ -799,7 +831,12 @@ export const planningWait = defineOperation({
       );
       logPlanning(ctx, session.work_item_id, "session.changed", { status: "idle" });
       if (await agentDrafted(ctx)) await announce(ctx, session);
-    } else {
+    } else if (
+      session.agent_seen_at === null ||
+      Date.parse(ctx.now) - Date.parse(session.agent_seen_at) >= SEEN_REFRESH_MS
+    ) {
+      // Kept fresh under the same rule as markWorking: a wait evaluated often (sf-engine's held
+      // wait re-calls it when news falls due) writes at most every SEEN_REFRESH_MS (spec 44).
       ctx.write(
         ctx.db
           .updateTable("core_planning_sessions")
@@ -1335,6 +1372,7 @@ export const specEdit = defineOperation({
         assumptions: spec.assumptions,
         coverage: spec.coverage,
         clarifications: spec.clarifications,
+        children: spec.children,
         summary: "edited by a person",
         status: "draft",
         created_by: ctx.actor.id,
@@ -1527,6 +1565,12 @@ const specView = z.object({
   assumptions: z.array(z.string()),
   coverage: z.array(z.record(z.string(), z.unknown())),
   clarifications: z.array(z.record(z.string(), z.unknown())),
+  /** Spec 24: the work items this version splits into, approved with it. */
+  children: z.array(specChildSchema).default([]),
+  /** The stored split can't be read: approving is refused until the planner revises it. */
+  childrenUnreadable: z.boolean().default(false),
+  /** Spec 24: the digest of `children`, sent back with the approval. Null: no split. */
+  splitDigest: z.string().nullable().optional(),
   summary: z.string().nullable(),
   status: z.string(),
   createdAt: z.string(),
@@ -1756,6 +1800,14 @@ export const planningGet = defineOperation({
       assumptions: parseJson<string[]>(s.assumptions, []),
       coverage: parseJson<Record<string, unknown>[]>(s.coverage, []),
       clarifications: parseJson<Record<string, unknown>[]>(s.clarifications, []),
+      ...(() => {
+        // An unreadable split is said, not shown as no split (review of #173).
+        try {
+          return { children: childrenOf(s.children), childrenUnreadable: false };
+        } catch {
+          return { children: [], childrenUnreadable: true };
+        }
+      })(),
       summary: s.summary,
       status: s.status,
       createdAt: s.created_at,
@@ -1848,7 +1900,17 @@ export const planningGet = defineOperation({
         escalated: q.escalated_at !== null,
         planning: q.planning_session_id !== null,
       })),
-      spec: current ? toSpec(current) : null,
+      spec: current
+        ? await (async () => {
+            const out = toSpec(current);
+            // The digest the plan's screen sends back with its approval (review of #173): the app
+            // hashes nothing, it returns what it was given with what it showed.
+            return {
+              ...out,
+              splitDigest: out.children.length ? await splitDigest(out.children) : null,
+            };
+          })()
+        : null,
       previousSpec: previous ? toSpec(previous) : null,
       messages: messages.map((m) => ({
         id: m.id,

@@ -8,6 +8,7 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { classifyIncident, ROOT_CAUSES } from "../incidents/classify.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { isOrgAdmin } from "../scope.ts";
 import { startPipeline } from "./backlog.ts";
 import { createWorkItem, requireProject, requireWorkItem, workItemId } from "./shared.ts";
 
@@ -175,8 +176,24 @@ export const incidentListArchiveMissing = defineOperation({
     ),
     /** More are open than were returned. */
     more: z.boolean(),
+    /**
+     * The audit archiver has stopped three ticks in a row (ADR 0591): the factory's incident, not an
+     * org's, resolved by the archiver itself once it archives again. Null while it runs.
+     */
+    auditArchiveStopped: z
+      .object({ id: z.string(), reason: z.string().nullable(), createdAt: z.string() })
+      .nullable(),
   }),
   async handler(input, ctx) {
+    // core_incidents_audit_archive_idx: the one open archiver incident, if any.
+    const stoppedRead = ctx.db
+      .selectFrom("core_incidents")
+      .select(["id", "reason", "created_at"])
+      .where("kind", "=", "audit_archive_stopped")
+      .where("resolved_at", "is", null)
+      .orderBy("created_at", "desc")
+      .limit(1)
+      .executeTakeFirst();
     // core_incidents_open_archive_idx: (org_id, created_at) over the open archive incidents only.
     const rows = await ctx.db
       .selectFrom("core_incidents as i")
@@ -209,6 +226,16 @@ export const incidentListArchiveMissing = defineOperation({
         createdAt: r.created_at,
       })),
       more: rows.length > ARCHIVE_INCIDENTS_MAX,
+      auditArchiveStopped: await stoppedRead.then(async (r) =>
+        r
+          ? {
+              id: r.id,
+              // Why it stopped names the archive's objects: for the org's admins only.
+              reason: (await isOrgAdmin(ctx.db, input.orgId, ctx.actor.id)) ? r.reason : null,
+              createdAt: r.created_at,
+            }
+          : null,
+      ),
     };
   },
 });

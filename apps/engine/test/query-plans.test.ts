@@ -4,18 +4,22 @@
 import { env } from "cloudflare:workers";
 import {
   clearOrgConfigCache,
+  FOREMAN,
   invoke,
   r2AttachmentBlobs,
   recentOutcomes,
   resolveScope,
+  SCHEDULER,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
 import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
+import { archiveAudit } from "../src/audit-archive.ts";
 import { invokeDeps } from "../src/deps.ts";
 import worker, { pruneBabysit, pruneCheckResults } from "../src/index.ts";
+import { deliverOutbox } from "../src/outbox.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import { archiveRunEvents, pruneExpired, sampleArchive } from "../src/retention.ts";
 import { github, MANIFEST, ok, uid, type World, waitFor, world } from "./helpers.ts";
@@ -45,6 +49,49 @@ function minute17(): number {
 
 /** The registered hot paths: each runs once, then every statement it ran is EXPLAINed. */
 const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
+  {
+    // Spec 24: a split's parent waits for its children (each event, and once a day in its held
+    // wait), by core_work_items_parent_idx (migration 0401).
+    // Review of #171: a child's end (its siblings, and who waits for it), the release, and the
+    // existing-children check at approval.
+    name: "a split's child ends: its siblings and who waits for it",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT * FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT work_item_id FROM core_work_item_links WHERE waits_for_id = ? AND work_item_id IN (?, ?)",
+      )
+        .bind("wi_child", "wi_a", "wi_b")
+        .all();
+    },
+  },
+  {
+    name: "a split's release and its existing-children check",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' AND status = 'ready' LIMIT 8",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 1",
+      )
+        .bind("wi_parent")
+        .all();
+    },
+  },
+  {
+    name: "a split's parent reads its children",
+    run: (e) =>
+      e.DB.prepare(
+        "SELECT status FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
+        .bind("wi_parent")
+        .all(),
+  },
   {
     // The minute cron, on the minute that also sweeps attachment blobs and runs the improver.
     name: "the minute cron",
@@ -139,6 +186,71 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
           .bind(was, job.jobId)
           .run();
       }
+    },
+  },
+  {
+    // Spec 44 part A3: the held planning wait polls planning.peek in the Worker (the session by its
+    // job, the events after the cursor on (work_item_id, id), the open questions), every 3 s.
+    name: "the held planning wait's poll (planning.peek, spec 44)",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "Plan the guard" },
+        w.human,
+      );
+      await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+      const c = await channel(env, w.runner.runnerId);
+      let planningJob: { jobId: string; fencingToken: number } | null = null;
+      for (let i = 0; i < 200 && !planningJob; i++) {
+        const { job: got } = await c.claim({
+          claimId: uid("claim-"),
+          manifest: MANIFEST,
+          capacity: { max: 4, inUse: 1, accepting: true, light: { max: 6, inUse: 0 } },
+        });
+        if (got?.stage === "planning") {
+          planningJob = { jobId: got.jobId, fencingToken: got.lease.fencingToken };
+        } else if (!got) await new Promise((r) => setTimeout(r, 50));
+      }
+      if (!planningJob) throw new Error("no planning job");
+      return (await channel(e, w.runner.runnerId)).planning?.(planningJob.jobId, {
+        fencingToken: planningJob.fencingToken,
+        op: "planning.wait",
+        input: { timeoutMs: 3_500 },
+      });
+    },
+  },
+  {
+    // Spec 44 part B: the job line's call (the fenced run check, then a ticket from the relay).
+    name: "the job line call (spec 44 part B)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).line?.(job.jobId, {
+        fencingToken: job.fencingToken,
+      });
+    },
+  },
+  {
+    // Spec 44 part B: delivering a run.steered queued before it carried jobId, and a
+    // planning.changed, each finds the item's running job on UNIQUE (work_item_id, run_no).
+    name: "the job line's routing of run.steered and planning.changed",
+    run: async (e) => {
+      if (!job) return null;
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job.jobId)
+        .first<string>("work_item_id");
+      const ids = [uid("ob_"), uid("ob_")];
+      const now = new Date().toISOString();
+      await env.DB.batch(
+        [
+          ["run.steered", { workItemId: item }],
+          ["planning.changed", { workItemId: item }],
+        ].map(([kind, payload], i) =>
+          env.DB.prepare(
+            "INSERT INTO core_outbox (id, at, kind, payload, attempts, next_at) VALUES (?, ?, ?, ?, 0, ?)",
+          ).bind(ids[i], now, kind, JSON.stringify(payload), now),
+        ),
+      );
+      return deliverOutbox(e, ids);
     },
   },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
@@ -390,6 +502,50 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         .first<string>("work_item_id");
       await as(e, "run.live", { workItemId: run }, w.human);
       return as(e, "run.live", { workItemId: run, afterSeq: 0 }, w.human);
+    },
+  },
+  {
+    // Every five minutes: the audit archiver's tick (ADR 0591). With a day recorded 100 days ago,
+    // the days after it are due: each takes its lease, finds the rowid floor with probes, bounds
+    // the window, reads a page and records the (empty) day. Its chunk batches run over real old
+    // rows in audit-archive.test.ts, under the same check.
+    name: "the audit archive's tick",
+    run: async (e) => {
+      const day = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES (?, 0, 0, ?, ?, ?)",
+      )
+        .bind(day, "0".repeat(64), "0".repeat(64), new Date().toISOString())
+        .run();
+      return archiveAudit(e, new Date(), { rows: 1_000 });
+    },
+  },
+  {
+    // Polled by an open item's Activity tab: the D1 entries and the item's archived chunks, one
+    // request; then, on demand, the archived entries read back.
+    name: "workItem.timeline, with its archived entries",
+    run: async (e) => {
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("work_item_id");
+      await as(e, "workItem.timeline", { workItemId: item }, w.human);
+      return as(e, "workItem.timeline", { workItemId: item, archived: true }, w.human);
+    },
+  },
+  {
+    // The archiver's health report (only after three stopped ticks, or the tick after): the open
+    // archiver incident on core_incidents_audit_archive_idx.
+    name: "audit.archiveHealth",
+    run: (e) =>
+      as(e, "audit.archiveHealth", { stopped: false }, SCHEDULER as unknown as World["human"]),
+  },
+  {
+    // An org admin's verify of the chain (on demand): the days and their chunks by primary key.
+    name: "audit.verify",
+    run: (e) => {
+      const to = new Date(Date.now() - 95 * 86_400_000).toISOString().slice(0, 10);
+      const from = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      return as(e, "audit.verify", { orgId: w.orgId, from, to }, w.human);
     },
   },
   {
