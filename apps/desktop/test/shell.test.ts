@@ -502,9 +502,9 @@ describe("the merge gate's words", () => {
     expect(verdictHeadline(waived).text).not.toMatch(/could not be run/);
   });
 
-  it("chips the checks, criteria, reviewer and risk", () => {
+  it("chips CI, the criteria, the proof, the reviewer and risk", () => {
     expect(verdictChips(packet).map((c) => c.label)).toEqual([
-      "Checks 1 of 1",
+      "CI 1 of 1",
       "Criteria 4 met",
       "Proven 2 of 4",
       "Reviewer approves",
@@ -528,6 +528,16 @@ describe("the merge gate's words", () => {
       label: "Proven 2 of 4",
       status: "waiting",
     });
+    // Triage's ties are counted apart, never as proven.
+    const both = verdictChips(
+      proven({ proven: 2, total: 3, checksSetUp: true, triage: { passed: 4, total: 5 } }),
+    ).map((c) => c.label);
+    expect(both).toContain("Proven 2 of 3");
+    expect(both).toContain("Passed the check triage named 4 of 5");
+    const triageOnly = verdictChips(
+      proven({ proven: 0, total: 0, checksSetUp: true, triage: { passed: 1, total: 2 } }),
+    ).map((c) => c.label);
+    expect(triageOnly.some((l) => l.startsWith("Proven"))).toBe(false);
     expect(verdictChips(proven({ proven: 4, total: 4 }))).toContainEqual({
       label: "Proven 4 of 4",
       status: "done",

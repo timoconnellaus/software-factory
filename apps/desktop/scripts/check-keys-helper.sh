@@ -53,12 +53,15 @@ if [ "$assess" != "--no-assess" ]; then
   xcrun stapler validate "$app" || die "the app has no stapled ticket"
 fi
 
-# The launch smoke test: macOS kills (SIGKILL, 137) a helper whose profile doesn't authorise its
-# entitlements; the spike's helper prints them and exits 0.
+# Every entitlement the helper claims is allowed by its profile, the profile names the signing
+# certificate, and its expiry is printed.
+node "$(dirname "$0")/check-profile.ts" "$helper" || die "the profile doesn't allow the helper's signature"
+
+# The launch smoke test: `public` on the test tag exits 3 (no key). macOS kills (SIGKILL, 137) a
+# helper whose profile doesn't authorise its entitlements; 1 with -34018 is a refused access group.
 set +e
-out=$("$helper/Contents/MacOS/sf-keys")
+err=$("$helper/Contents/MacOS/sf-keys" public com.software-factory.desktop.m4b-test 2>&1 >/dev/null)
 code=$?
 set -e
-[ "$code" -eq 0 ] || die "the helper exited $code (137 is SIGKILL: macOS refused it)"
-printf %s "$out" | grep -q "\"$group\"" || die "the running helper doesn't hold $group: $out"
-say "ok: $helper ($out)"
+[ "$code" -eq 3 ] || die "the helper exited $code, not 3 (137 is SIGKILL: macOS refused it): $err"
+say "ok: $helper"
