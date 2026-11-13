@@ -254,7 +254,7 @@ export function validated(doc: unknown): OrgConfig {
 }
 
 /** The document with `workflow` saved in it: a built-in's copy, or an org workflow by id. */
-function withWorkflow(config: OrgConfig, workflow: WorkflowDefinition): OrgConfig {
+export function withWorkflow(config: OrgConfig, workflow: WorkflowDefinition): OrgConfig {
   const kind = builtInKind(workflow.id);
   if (kind) return { ...config, builtIns: { ...config.builtIns, [kind]: workflow } };
   const exists = config.workflows.some((w) => w.id === workflow.id);
@@ -633,9 +633,13 @@ export const workflowSave = defineOperation({
     ),
   actors: ["human"],
   permission: "admin",
-  // Config is a decision made in the app (ADR 0340): never from the CLI, MCP, a desktop device or
-  // any other token an agent session might hold.
+  // Config is a person's decision (ADR 0340): never from the CLI, MCP or any other token an agent
+  // session might hold.
   browserOnly: true,
+  // Decidable on the desktop with a presence proof for this exact call (ADR 0610); never the phone,
+  // and never a CLI, MCP, runner or agent token.
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({ orgId, baseVersion, workflow: definitionView, note }),
   output: z.object({ version: z.number(), impact: impactView }),
   async handler(input, ctx) {
@@ -683,6 +687,10 @@ export const workflowCreateFromTemplate = defineOperation({
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
+  // Decidable on the desktop with a presence proof for this exact call (ADR 0610); never the phone,
+  // and never a CLI, MCP, runner or agent token.
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({
     orgId,
     baseVersion,
@@ -730,6 +738,10 @@ export const workflowArchive = defineOperation({
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
+  // Decidable on the desktop with a presence proof for this exact call (ADR 0610); never the phone,
+  // and never a CLI, MCP, runner or agent token.
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({ orgId, baseVersion, workflowId: z.string().min(1), note }),
   output: z.object({ version: z.number() }),
   async handler(input, ctx) {
@@ -783,6 +795,10 @@ export const agentSave = defineOperation({
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
+  // Decidable on the desktop with a presence proof for this exact call (ADR 0610); never the phone,
+  // and never a CLI, MCP, runner or agent token.
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({ orgId, baseVersion, agent: agentSchema, note }),
   output: z.object({ version: z.number() }),
   async handler(input, ctx) {
@@ -790,7 +806,7 @@ export const agentSave = defineOperation({
   },
 });
 
-function withAgent(config: OrgConfig, agent: z.infer<typeof agentSchema>): OrgConfig {
+export function withAgent(config: OrgConfig, agent: z.infer<typeof agentSchema>): OrgConfig {
   const name = agent.name.toLowerCase();
   const exists = config.agents.some((a) => a.name.toLowerCase() === name);
   return {
@@ -933,6 +949,10 @@ export const orgConfigRollback = defineOperation({
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
+  // Decidable on the desktop with a presence proof for this exact call (ADR 0610); never the phone,
+  // and never a CLI, MCP, runner or agent token.
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({ orgId, baseVersion, toVersion: z.number().int().positive(), note }),
   output: z.object({ version: z.number(), impact: impactView }),
   async handler(input, ctx) {

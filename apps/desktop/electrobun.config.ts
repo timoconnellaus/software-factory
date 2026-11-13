@@ -35,11 +35,11 @@ export default {
     copy: {
       "dist/index.html": "views/mainview/index.html",
       "dist/assets": "views/mainview/assets",
-      // The runner child (ADR 0390): a pinned Node 24 and the bundled sf-runner. The key helper
-      // makes and uses the Secure Enclave key (ADR 0391). All three come from scripts/bundle.sh.
+      // The runner child (ADR 0390): a pinned Node 24 and the bundled sf-runner, from
+      // scripts/bundle.sh. The key helper is not copied here: the postPackage hook puts it in
+      // Contents/Helpers after Electrobun signs (spec 40 M4b, scripts/keys-helper.ts).
       "vendor/node": "runner/node",
       "vendor/sf-runner.mjs": "runner/sf-runner.mjs",
-      "vendor/sf-keys": "native/sf-keys",
     },
     watchIgnore: ["dist/**"],
     mac: {

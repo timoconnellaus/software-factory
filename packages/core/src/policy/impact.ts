@@ -523,6 +523,48 @@ function slotSteps(
   return out;
 }
 
+/**
+ * The order of judging steps within a slot is policy (review of #156; org workflows already have the
+ * rule, stages/impact.ts): an agent check moved after the gate it ran before reaches the person
+ * unchecked, and a gate moved ahead of a check decides before it. So within each slot of a workflow
+ * both versions have, any change in the relative order of two steps where one is a gate loosens,
+ * whichever way it moved, and each reversed pair is reported. Fail-closed: two work steps swapping
+ * loosens too, since a work step can ask a person or send back to build, so the order of two checks
+ * isn't provably inert (review of #161).
+ */
+function orderChanges(
+  before: ProjectPolicy,
+  after: ProjectPolicy,
+  add: (path: string, cls: ImpactClass, summary: string) => void,
+) {
+  const skip = handedToOrg(before, after);
+  for (const wb of before.workflows) {
+    const key = wb.name.toLowerCase();
+    if (key === skip) continue;
+    const wa = after.workflows.find((w) => w.name.toLowerCase() === key);
+    if (!wa) continue;
+    for (const slot of SLOTS) {
+      const was = wb.slots[slot];
+      const nowIds = wa.slots[slot].map((s) => s.id);
+      // The steps in both, in their old order, with their new places.
+      const kept = was
+        .map((step) => ({ step, at: nowIds.indexOf(step.id) }))
+        .filter((x) => x.at >= 0);
+      for (let i = 0; i < kept.length; i++)
+        for (let j = i + 1; j < kept.length; j++) {
+          const first = kept[i];
+          const second = kept[j];
+          if (!first || !second || first.at < second.at) continue;
+          add(
+            `workflows.${key}/${first.step.id}`,
+            "loosens",
+            `${wb.name} → ${first.step.name} now runs after ${second.step.name} (${slot}).`,
+          );
+        }
+    }
+  }
+}
+
 /** The agents (lower-cased names) a `work` step hands to: each judges the work it reads. */
 function judgingAgents(policy: ProjectPolicy): Set<string> {
   const out = new Set<string>();
@@ -626,6 +668,7 @@ function workflowChanges(
     );
   }
   judgeChanges(before, after, add);
+  orderChanges(before, after, add);
   if (!same(before.workflows, after.workflows)) {
     const skip = handedToOrg(before, after);
     const was = gateSteps(before, skip);

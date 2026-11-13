@@ -506,6 +506,8 @@ const run = (over: Partial<WorkItemDetail["runs"][number]>): WorkItemDetail["run
   takeover: null,
   startedAt: "2026-11-12T00:00:00Z",
   endedAt: null,
+  log: "kept",
+  archiveIncident: null,
   ...over,
 });
 

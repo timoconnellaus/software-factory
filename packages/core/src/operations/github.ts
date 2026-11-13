@@ -243,6 +243,10 @@ export const prMerge = defineOperation({
         .where("end_reason", "like", "cancelled:%")
         .where("ended_at", ">=", ctx.now),
     );
+    // The landing's merge commit: if main goes red, it is a suspect (spec 53 part e).
+    ctx.happened(
+      ctx.db.updateTable("core_work_items").set({ merge_sha: sha }).where("id", "=", w.id),
+    );
     ctx.change({ entity: "work_item", id: w.id, after: { merged: sha } });
     // Dark factory mode (ADR 0515): an auto-approved merge starts its red-main window at the merge
     // commit, is remembered for a revert, and may be sampled for a person's review after it.

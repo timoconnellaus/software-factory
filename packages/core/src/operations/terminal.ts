@@ -109,3 +109,56 @@ export const runTerminalHost = defineOperation({
     return { runId: run.id, workItemId: run.work_item_id };
   },
 });
+
+export const runTerminalCloseStale = defineOperation({
+  name: "run.terminal.closeStale",
+  description:
+    "The runner host's channel closes the run's terminal attaches that its relay no longer has (spec 44): an attach opened longer ago than a viewer ticket lives, whose viewer the relay doesn't hold, was left open by a deploy or a crash. Without this, a stale attach would wake the relay on every poll. Fenced; audited only when it closes something.",
+  risk: "write",
+  actors: ["runner"],
+  permission: "signed-in",
+  fenced: true,
+  audit: { changesOnly: true },
+  input: z.object({
+    jobId,
+    fencingToken,
+    /** Attaches opened before this are stale when the relay holds no viewer. */
+    before: z.string().datetime(),
+  }),
+  output: z.object({ closed: z.number() }),
+  async handler(input, ctx) {
+    const run = await ctx.db
+      .selectFrom("core_runs")
+      .select(["id", "runner_id"])
+      .where("job_id", "=", input.jobId)
+      .executeTakeFirst();
+    if (!run) throw new OperationError("not_found", `no run for job ${input.jobId}`);
+    if (run.runner_id !== ctx.actor.id) {
+      throw new OperationError("forbidden", "this job belongs to another runner");
+    }
+    // core_run_terminal_attaches_open_idx: the run's open attaches only.
+    const stale = await ctx.db
+      .selectFrom("core_run_terminal_attaches")
+      .select("id")
+      .where("run_id", "=", run.id)
+      .where("closed_at", "is", null)
+      .where("opened_at", "<", input.before)
+      .limit(50)
+      .execute();
+    for (const row of stale) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_run_terminal_attaches")
+          .set({ closed_at: ctx.now })
+          .where("id", "=", row.id)
+          .where("closed_at", "is", null),
+      );
+      ctx.change({
+        entity: "run_terminal_attach",
+        id: row.id,
+        after: { closed: true, stale: true },
+      });
+    }
+    return { closed: stale.length };
+  },
+});

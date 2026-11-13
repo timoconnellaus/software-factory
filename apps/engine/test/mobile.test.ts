@@ -1413,7 +1413,7 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
     const fresh = { workItemId, openedFullDiff: true, headSha: head };
     const proof = await prove(token, p, "review.merge", fresh);
     expect(proof.summary).toMatch(
-      /^Merge 3f2a91c "Guard the tests in verify" into main of [^ ]+\/[^ ]+$/,
+      /^Merge 3f2a91c into main of [^ ]+\/[^ ]+: "Guard the tests in verify"$/,
     );
     // Merging without checks the runner couldn't run is refused on the phone, in the engine: no
     // challenge is issued for it, and a proof for the plain merge doesn't carry it (fifth review).

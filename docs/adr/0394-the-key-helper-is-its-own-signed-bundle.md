@@ -132,4 +132,10 @@ build` (Electrobun 2.0.6):
   helper without its profile is killed at launch (exit 137), which is what the smoke test catches.
   Notarization, `spctl --assess` and the stapled ticket are proved on the first release run with
   `MACOS_KEYS_PROFILE` (the `release` environment only runs on main).
+- **Proved on a real release, 2026-11-13: canary 0.1.55** (the first run with the profile). The
+  hook's second notarization was accepted and stapled; `spctl` accepts the app as Notarized
+  Developer ID in the download zip and in the update archive; the helper keeps its identifier,
+  hardened runtime, secure timestamp, its three entitlements and the byte-identical profile; and
+  the published zip, downloaded to the M5, launches the helper with its access group (macOS
+  accepted the profile).
 

@@ -20,10 +20,13 @@ import { overrideApprovals } from "../scope.ts";
 import {
   configImpact,
   normaliseOverrides,
+  projectWorkflowById,
   resolveProjectWorkflow,
 } from "../stages/project-workflow.ts";
 import { requireAdjudicatorEarned } from "./adjudicator.ts";
-import { projectId, requireProject } from "./shared.ts";
+import { facts } from "./policy-summary.ts";
+import { policyDecisionSurface, projectId, requireProject } from "./shared.ts";
+import { titled } from "./summary.ts";
 import { currentOrgConfig } from "./workflows.ts";
 
 /** The config operations whose loosening saves wait for an approver. */
@@ -836,15 +839,6 @@ export async function applyApprovedConfig(
   return written;
 }
 
-/** At most this much of a summary lists changes; the Touch ID prompt has little room. */
-const SUMMARY_CHANGES = 3;
-
-/**
- * The words for deciding a waiting config save or rollback (ADR 0391, 0610), from the engine's own
- * records, never the caller's: the project, the versions, and the change as the engine classifies
- * it against the current version. The Touch ID prompt and the audit journal show them. Null when
- * the pending action isn't a project config change.
- */
 export async function describeConfigDecision(
   ctx: { db: Db; floor: FloorParse },
   pa: { operation: string; input: string; project_id: string | null },
@@ -858,16 +852,18 @@ export async function describeConfigDecision(
     .executeTakeFirst()) as ProjectRow | undefined;
   if (!project) return null;
   const input = pendingInput(pa.input);
-  const name = quotedName(project.name);
   const current = versionOf(project.policy_sha) ?? 0;
   const versions =
     input.baseVersion !== undefined && input.baseVersion !== current
-      ? `drafted on v${input.baseVersion}, the policy is now v${current}`
+      ? `drafted on v${input.baseVersion}, now v${current}`
       : `v${current} to v${current + 1}`;
   const rollback = pa.operation === "config.rollback";
+  // The engine's facts first, the project's name last (titled, spec 40 M4b): a name can't push the
+  // versions or what the change loosens off the prompt.
+  const named = (facts: string) => titled(facts, project.name, "; project");
   const head = rollback
-    ? `${verb}: roll ${name} back to v${input.toVersion} (${versions})`
-    : `${verb} a change to ${name}'s policy (${versions})`;
+    ? `${verb}: roll the policy back to v${Number(input.toVersion)} (${versions})`
+    : `${verb} a change to the policy (${versions})`;
   const before = current ? await storedVersion(ctx.db, project.id, current) : null;
   const target = rollback
     ? typeof input.toVersion === "number"
@@ -877,15 +873,35 @@ export async function describeConfigDecision(
         const parsed = parseProjectPolicy(JSON.stringify(input.policy ?? null));
         return parsed.ok ? parsed.policy : undefined;
       })();
-  if (!target) return `${head}: the change can't be read`;
+  if (!target) return named(facts(head, "the change can't be read"));
   const impact = await impactOf(ctx.db, project, before?.policy ?? null, target, ctx.floor);
-  const shown = impact.changes.filter((c) => c.class === impact.class).slice(0, SUMMARY_CHANGES);
-  const rest = impact.changes.length - shown.length;
-  const what = shown.map((c) => c.summary.replace(/\.$/, "")).join("; ");
-  return `${head}: ${impact.class}${what ? `: ${what}` : ""}${rest > 0 ? ` (+${rest} more)` : ""}`;
+  return named(facts(head, impact));
 }
 
-const quotedName = (name: string) => `"${name.replace(/\s+/g, " ").slice(0, 60)}"`;
+/** The org workflow's own value of a setting a project overrides (for the override's summary). */
+export async function overrideOrgValue(
+  db: Db,
+  projectId: string,
+  stageId: string,
+  setting: string,
+): Promise<unknown> {
+  const project = await db
+    .selectFrom("core_projects")
+    .select(["org_id", "policy_sha"])
+    .where("id", "=", projectId)
+    .executeTakeFirst();
+  const version = versionOf(project?.policy_sha ?? null);
+  if (!project || !version) return undefined;
+  const stored = await storedVersion(db, projectId, version);
+  if (!stored || !onOrgWorkflow(stored.policy)) return undefined;
+  const { config } = await currentOrgConfig(db, project.org_id);
+  const def = projectWorkflowById(config, stored.policy.workflow as string);
+  const stage = def?.stages.find((x) => x.id === stageId);
+  const settings = stage?.settings;
+  return settings && typeof settings === "object"
+    ? (settings as Record<string, unknown>)[setting]
+    : undefined;
+}
 
 /**
  * An org admin approves a project's existing looser override in one step (review of spec 52 (d2)):
@@ -902,23 +918,32 @@ export const overrideApprove = defineOperation({
   risk: "write",
   actors: ["human"],
   permission: "admin",
-  // A policy decision (it lets a looser setting apply): made in the app (ADR 0340), never from the
-  // CLI, MCP or a desktop device until a presence proof covers policy decisions.
+  // A policy decision (it lets a looser setting apply): never from the CLI, MCP, a phone or an
+  // agent; on the desktop with a presence proof for this exact call (ADR 0610).
   browserOnly: true,
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({
     projectId,
     stageId: z.string().min(1).max(40),
     setting: z.string().min(1).max(40),
     orgVersion: z.number().int().positive(),
+    /**
+     * The override's value and the project's config version the person was shown: the proof covers
+     * them, and the engine refuses if the stored ones differ, so a fingerprint approves one value
+     * (review of #156).
+     */
+    value: z.unknown(),
+    configVersion: z.number().int().nonnegative(),
     note: z.string().max(2_000).optional(),
   }),
   output: z.object({ approved: z.boolean(), orgVersion: z.number(), value: z.unknown() }),
   async handler(input, ctx) {
     const project = requireProject(ctx);
-    if (ctx.origin.surface !== "app" && ctx.origin.surface !== "test")
+    if (!policyDecisionSurface(ctx))
       throw new OperationError(
         "forbidden",
-        `an override is approved in the app, not from ${ctx.origin.surface}`,
+        `an override is approved in the app or on the desktop with Touch ID, not from ${ctx.origin.surface}`,
         { browserOnly: true },
       );
     const raw = ctx.scope.rawPolicy;
@@ -937,6 +962,12 @@ export const overrideApprove = defineOperation({
       throw new OperationError(
         "invalid_input",
         `the project has no ${input.stageId} ${input.setting} override looser than the org's value: nothing to approve`,
+      );
+    const configVersion = versionOf(project.policy_sha) ?? 0;
+    if (configVersion !== input.configVersion || !same(looser.value, input.value))
+      throw new OperationError(
+        "conflict",
+        `the project's config moved on (v${configVersion}) since you looked: look again before approving`,
       );
     // Guarded on the org still being at the version the admin saw.
     ctx.guardExists(
