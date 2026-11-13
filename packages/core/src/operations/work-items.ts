@@ -14,6 +14,7 @@ import { provableChecks, specRequired } from "../policy/project-policy.ts";
 import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
+import { childEnded, childrenOf, PLAN_MERGED_OUTSIDE, SPLIT_MAX, sliceHash } from "../splits.ts";
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
@@ -106,6 +107,8 @@ const itemSummary = z.object({
   priority: priority.optional(),
   repositoryId: z.string().nullable().optional(),
   releasedAt: z.string().nullable().optional(),
+  /** Spec 24: the item whose plan split this one off (null when not split off a plan). */
+  parentWorkItemId: z.string().nullable().optional(),
 });
 
 type ItemRow = NonNullable<HandlerContext["scope"]["workItem"]>;
@@ -129,6 +132,7 @@ const summarise = (w: ItemRow): z.input<typeof itemSummary> => ({
   priority: priorityOf(w.priority),
   repositoryId: w.repository_id,
   releasedAt: w.released_at,
+  parentWorkItemId: w.source === "planning" ? w.parent_work_item_id : null,
 });
 
 export const workItemCreate = defineOperation({
@@ -426,6 +430,27 @@ export const workItemGet = defineOperation({
      * flags `outside`, and shows the whole diff when `status` isn't `clean`.
      */
     babysitResolution: resolutionSchema.nullable().optional(),
+     * Spec 24: the plan this item was split off (`parent`), and the work items its own approved
+     * plan split into (`children`), each with where it is.
+     */
+    split: z
+      .object({
+        parent: z
+          .object({ id: z.string(), number: z.number(), title: z.string(), status: z.string() })
+          .nullable(),
+        children: z.array(
+          z.object({
+            id: z.string(),
+            number: z.number(),
+            title: z.string(),
+            status: z.string(),
+            stage: z.string(),
+            size: z.string().nullable(),
+          }),
+        ),
+        held: z.boolean().default(false),
+      })
+      .optional(),
     stages: z.array(stageView),
     spec: z
       .object({
@@ -437,6 +462,7 @@ export const workItemGet = defineOperation({
         assumptions: z.array(z.string()),
         path: z.string().nullable(),
         commitSha: z.string().nullable(),
+        splitInto: z.number().default(0),
       })
       .nullable(),
     questions: z.array(
@@ -562,6 +588,8 @@ export const workItemGet = defineOperation({
         waitsForRows,
         waitedOnRows,
         resolutionRows,
+        parentRows,
+        childRows,
       ],
     ] = await Promise.all([
       approversLookup,
@@ -625,6 +653,20 @@ export const workItemGet = defineOperation({
           .selectFrom("core_babysit_resolutions")
           .select(["head_sha", "summary"])
           .where("work_item_id", "=", w.id),
+        // Spec 24: the parent by primary key; the children by core_work_items_parent_idx (≤ 8).
+        // Only a plan's child has a parent to show (review of #173): no lookup otherwise.
+        ctx.db
+          .selectFrom("core_work_items")
+          .select(["id", "number", "title", "status", "awaiting_children"])
+          .where("id", "=", w.parent_work_item_id ?? "")
+          .where(sql<boolean>`${w.source === "planning" && w.parent_work_item_id ? 1 : 0} = 1`),
+        ctx.db
+          .selectFrom("core_work_items")
+          .select(["id", "number", "title", "status", "stage", "size"])
+          .where("parent_work_item_id", "=", w.id)
+          .where("source", "=", "planning")
+          // At most SPLIT_MAX rows: sorted below, not by a temp B-tree (the query-plan guard).
+          .limit(SPLIT_MAX),
       ]),
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
@@ -667,6 +709,24 @@ export const workItemGet = defineOperation({
         : null,
       waitsFor: waitsForRows.map(toLink),
       waitedOnBy: waitedOnRows.map(toLink),
+      split: {
+        parent: parentRows[0]
+          ? {
+              id: parentRows[0].id,
+              number: parentRows[0].number,
+              title: parentRows[0].title,
+              status: parentRows[0].status,
+            }
+          : null,
+        // Held until its parent's plan merges (review of #169): not released or shaped yet.
+        held:
+          !!parentRows[0] &&
+          parentRows[0].awaiting_children !== 1 &&
+          parentRows[0].status !== "done",
+        children: childRows
+          .map((c) => ({ ...c, size: c.size ?? null }))
+          .sort((a, b) => a.number - b.number),
+      },
       stages: stages.map((s) => ({
         stage: s.stage,
         attempt: s.attempt,
@@ -685,6 +745,14 @@ export const workItemGet = defineOperation({
             assumptions: parseJson<string[]>(spec.assumptions, []),
             path: spec.path,
             commitSha: spec.commit_sha,
+            // Spec 24: how many work items approving it creates (-1: its split can't be read).
+            splitInto: (() => {
+              try {
+                return childrenOf(spec.children).length;
+              } catch {
+                return -1;
+              }
+            })(),
           }
         : null,
       questions: questions.map((q) => ({
@@ -1011,6 +1079,7 @@ export const workItemCancel = defineOperation({
         before: { status: w.status },
         after: { status: "cancelled", reason: input.reason },
       });
+      await childEnded(ctx, w, "cancelled");
       return { cancelled: true };
     }
     if (
@@ -1027,6 +1096,7 @@ export const workItemCancel = defineOperation({
     cancelWorkItem(ctx, w, input.reason);
     // Its slot is free: the next queued item may start, after this commits (ADR 0491).
     requestPull(ctx, w.project_id);
+    await childEnded(ctx, w, "cancelled");
     return { cancelled: true };
   },
 });
@@ -1085,10 +1155,33 @@ export const workItemTriage = defineOperation({
           : null;
     }
     // An attached PR is already built: spec and build are skipped whatever its size (spec 05).
+    // Spec 24 (review of #171): a plan's child whose body and criteria still hash to the slice a
+    // person approved with the parent's spec keeps the approved criteria, and skips planning when
+    // triage finds the slice complete and the approved size isn't large. Anything changed since
+    // (an edit while it waited) and it plans under the policy like any item.
+    const slice = w.split_slice
+      ? parseJson<{ size?: string; sha256?: string } | null>(w.split_slice, null)
+      : null;
+    const approvedCriteria = parseJson<string[] | null>(w.acceptance_criteria ?? "null", null);
+    const sliceBound =
+      w.source === "planning" &&
+      w.parent_work_item_id !== null &&
+      slice?.sha256 !== undefined &&
+      approvedCriteria !== null &&
+      slice.sha256 === (await sliceHash(w.title, w.body, approvedCriteria));
+    const sliceApproved =
+      sliceBound && input.result.specRequested === "skip" && slice?.size !== "large";
+    if (sliceBound && approvedCriteria) input.result.acceptanceCriteria = approvedCriteria;
     const decision =
       w.kind === "attached"
         ? { required: false, reason: ATTACHED_SKIP_REASON }
-        : specRequired(policy, input.result.size, input.result.specRequested);
+        : sliceApproved
+          ? {
+              required: false,
+              reason:
+                "its slice of the parent's plan is complete, and a person approved it with the parent's spec (spec 24)",
+            }
+          : specRequired(policy, input.result.size, input.result.specRequested);
     const reason = `${decision.reason}. Triage: ${input.result.reason}`;
     const specId = newId("spec");
     // `triage-ties`: the check that proves each criterion, as data the code validates. Only
@@ -1267,7 +1360,8 @@ export const workItemFinish = defineOperation({
   permission: "signed-in",
   input: z.object({
     workItemId,
-    status: z.enum(["done", "failed", "rejected"]),
+    /** `cancelled`: a split's parent whose children all ended without merging (spec 24). */
+    status: z.enum(["done", "failed", "rejected", "cancelled"]),
     reason: z.string().max(4_000),
   }),
   output: z.object({ status: z.string() }),
@@ -1275,6 +1369,10 @@ export const workItemFinish = defineOperation({
     const w = requireWorkItem(ctx);
     // `shaping`: a spec rejected while shaping before release ends the item too (ADR 0493).
     if (!["running", "waiting", "paused", "shaping"].includes(w.status))
+      return { status: w.status };
+    // A split parent whose plan merged outside the factory waits for its children with no
+    // Workflow (review of #169): its old Workflow ending (its gate was closed) doesn't end it.
+    if (w.awaiting_children === 1 && w.status_reason === PLAN_MERGED_OUTSIDE)
       return { status: w.status };
     setItemStatus(
       ctx,
@@ -1329,7 +1427,7 @@ export const workItemFinish = defineOperation({
         event: `workItem.${input.status}`,
         userId: w.requester_user_id,
         workItemId: w.id,
-        title: `${input.status === "done" ? "Shipped" : input.status === "failed" ? "Failed" : "Rejected"}: ${w.title}`,
+        title: `${input.status === "done" ? "Shipped" : input.status === "failed" ? "Failed" : input.status === "cancelled" ? "Cancelled" : "Rejected"}: ${w.title}`,
         url: `/work/${w.id}`,
       },
     });
@@ -1341,9 +1439,28 @@ export const workItemFinish = defineOperation({
     });
     // Its slot is free, and what waited on it may start (ADR 0491).
     await requestPullsAfterEnd(ctx, w, input.status);
+    // A split's child: its siblings and parent hear of it (spec 24).
+    await childEnded(ctx, w, input.status);
     return { status: input.status };
   },
 });
+
+/**
+ * The plan a card's item was split off (spec 24), from a left join by primary key on the item's
+ * `parent_work_item_id` (only for a plan's children, source `planning`; incidents are children too).
+ */
+const splitParent = z
+  .object({ id: z.string(), number: z.number(), title: z.string() })
+  .nullable()
+  .optional();
+const parentOf = (r: {
+  parent_id: string | null;
+  parent_number: number | null;
+  parent_title: string | null;
+}) =>
+  r.parent_id && r.parent_number !== null
+    ? { id: r.parent_id, number: r.parent_number, title: r.parent_title ?? "" }
+    : null;
 
 export const inboxList = defineOperation({
   name: "inbox.list",
@@ -1365,6 +1482,8 @@ export const inboxList = defineOperation({
         createdAt: z.string(),
         timeoutAt: z.string().nullable(),
         escalated: z.boolean(),
+        /** Spec 24: the plan this card's item was split off, for grouping under it. */
+        parent: splitParent,
       }),
     ),
     questions: z.array(
@@ -1379,6 +1498,7 @@ export const inboxList = defineOperation({
         defaultAnswer: z.string().nullable(),
         recommendation: z.string().nullable(),
         irreversible: z.boolean(),
+        parent: splitParent,
       }),
     ),
     running: z.array(itemSummary),
@@ -1422,6 +1542,7 @@ export const inboxList = defineOperation({
         openQuestions: z.number(),
         atGate: z.boolean(),
         announcedAt: z.string(),
+        parent: splitParent,
       }),
     ),
     wipHolds: z.array(z.object({ projectId: z.string(), waitingBuilds: z.number() })),
@@ -1497,7 +1618,17 @@ export const inboxList = defineOperation({
       ctx.db
         .selectFrom("core_pending_actions")
         .leftJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
+        .leftJoin("core_work_items as parent", (j) =>
+          j
+            .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            // Never across orgs (review of #169): a parent is in its child's org.
+            .onRef("parent.org_id", "=", "core_work_items.org_id")
+            .on("core_work_items.source", "=", "planning"),
+        )
         .select([
+          "parent.id as parent_id",
+          "parent.number as parent_number",
+          "parent.title as parent_title",
           "core_pending_actions.id",
           "core_pending_actions.kind",
           "core_pending_actions.work_item_id",
@@ -1517,7 +1648,17 @@ export const inboxList = defineOperation({
       ctx.db
         .selectFrom("core_questions")
         .innerJoin("core_work_items", "core_work_items.id", "core_questions.work_item_id")
+        .leftJoin("core_work_items as parent", (j) =>
+          j
+            .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            // Never across orgs (review of #169): a parent is in its child's org.
+            .onRef("parent.org_id", "=", "core_work_items.org_id")
+            .on("core_work_items.source", "=", "planning"),
+        )
         .select([
+          "parent.id as parent_id",
+          "parent.number as parent_number",
+          "parent.title as parent_title",
           "core_questions.id",
           "core_questions.work_item_id",
           "core_questions.project_id",
@@ -1575,7 +1716,17 @@ export const inboxList = defineOperation({
       ctx.db
         .selectFrom("core_planning_sessions")
         .innerJoin("core_work_items", "core_work_items.id", "core_planning_sessions.work_item_id")
+        .leftJoin("core_work_items as parent", (j) =>
+          j
+            .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            // Never across orgs (review of #169): a parent is in its child's org.
+            .onRef("parent.org_id", "=", "core_work_items.org_id")
+            .on("core_work_items.source", "=", "planning"),
+        )
         .select((eb) => [
+          "parent.id as parent_id",
+          "parent.number as parent_number",
+          "parent.title as parent_title",
           "core_planning_sessions.work_item_id",
           "core_planning_sessions.status",
           "core_planning_sessions.at_gate",
@@ -1635,6 +1786,7 @@ export const inboxList = defineOperation({
         createdAt: g.created_at,
         timeoutAt: g.timeout_at,
         escalated: g.escalations > 0,
+        parent: parentOf(g),
       }));
     const nowMs = Date.parse(ctx.now);
     const runners = runnerRows.map((r) => {
@@ -1682,6 +1834,7 @@ export const inboxList = defineOperation({
         defaultAnswer: q.default_answer,
         recommendation: q.recommendation,
         irreversible: q.irreversible === 1,
+        parent: parentOf(q),
       })),
       running: running.map(summarise),
       runners,
@@ -1694,6 +1847,7 @@ export const inboxList = defineOperation({
         openQuestions: Number(p.open_questions ?? 0),
         atGate: p.at_gate === 1,
         announcedAt: p.announced_at ?? "",
+        parent: parentOf(p),
       })),
       wipHolds: holds.map((h) => ({ projectId: h.project_id, waitingBuilds: Number(h.n) })),
       releaseFlags: flagged.flatMap((f) => {

@@ -347,6 +347,10 @@ export interface CoreWorkItemsTable {
   repairs_main: Generated<number>;
   /** 0391: the merge commit pr.merge made for it (spec 53 part e: an episode's suspects). */
   merge_sha: string | null;
+  /** A split parent waiting for its children: holds no active slot (migration 0402). */
+  awaiting_children: Generated<number>;
+  /** A plan's child: its approved slice {key, size, sha256} as JSON (migration 0402). */
+  split_slice: string | null;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
@@ -474,6 +478,10 @@ export interface CoreSpecsTable {
    * [{path, artifactId, revision, sha256}]; spec.commit writes exactly these. Null: none.
    */
   kim_files: string | null;
+  /** The children this version splits into (spec 24, migration 0401), JSON; null: no split. */
+  children: string | null;
+  /** What spec.commit wrote, JSON [{path, sha256}] (migration 0402). */
+  committed_files: string | null;
 }
 
 export type PendingActionKind = "spec" | "merge" | "approval";
@@ -1242,6 +1250,8 @@ export interface CorePlanningArtifactRevisionsTable {
   size: number;
   controls: Generated<string>;
   created_at: Iso;
+  /** A design's preview from the runner's checks (spec 22 part B, migration 0400), JSON. */
+  preview: string | null;
 }
 
 /** A person's edit to the plan's source lines (spec 27, ADR 0471). */

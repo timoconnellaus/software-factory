@@ -1,0 +1,29 @@
+{
+  "name": "@software-factory/planning-designs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "System design checks and previews for planning (spec 22 part B), run on the runner: DBML, D2, Mermaid and OpenAPI parse with their own engines; an error refuses the save with its line and a fix; layout warnings save; each design is drawn to a static SVG with the box of every part, for the app to show as an image.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "3.1.3",
+    "@dbml/parse": "11.0.1",
+    "@software-factory/runner-contract": "workspace:*",
+    "@terrastruct/d2": "0.1.33",
+    "dompurify": "3.4.17",
+    "mermaid": "12.3.0",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@software-factory/config": "workspace:*",
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}

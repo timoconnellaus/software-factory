@@ -62,6 +62,13 @@ export const WORKFLOW_FEATURES = [
    * those ties, recorded before any check ran (the owner's decision, 2026-11-13).
    */
   "triage-ties",
+  /**
+   * v16 (provisional: the next number above main's at merge; spec 24, ADR 0630): a spec that
+   * splits the item builds nothing. The parent's PR carries exactly the approved plan's files
+   * (decided in code from the diff), goes through verify and the merge gate, then releases the
+   * children, and the parent closes when its last child ends.
+   */
+  "splits",
 ] as const;
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 
@@ -80,6 +87,7 @@ const v12 = [...v11, "reverify-on-withdrawal"] as const;
 const v13 = [...v12, "repin-tightening"] as const;
 const v14 = [...v13, "reverify-on-push"] as const;
 const v15 = [...v14, "triage-ties"] as const;
+const v16 = [...v15, "splits"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -98,6 +106,7 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   13: new Set(v13),
   14: new Set(v14),
   15: new Set(v15),
+  16: new Set(v16),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */

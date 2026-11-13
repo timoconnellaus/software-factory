@@ -78,7 +78,12 @@ export function NextStep({ detail }: { detail: WorkItemDetail }) {
   const [busy, setBusy] = useState(false);
   const project = projects.data?.find((p) => p.id === item.projectId);
   const blocker = releaseBlocker(
-    { status: item.status, repositoryId: item.repositoryId ?? null },
+    {
+      status: item.status,
+      repositoryId: item.repositoryId ?? null,
+      // Spec 24 (review of #169): a held child says so here too.
+      heldForParent: detail.split?.held === true,
+    },
     project,
   );
   const blocked = (detail.waitsFor ?? []).filter((w) => w.status !== "done");
