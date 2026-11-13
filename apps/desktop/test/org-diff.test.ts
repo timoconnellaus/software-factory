@@ -224,4 +224,26 @@ describe("round 5 of #159", () => {
     // An emoji is one character: a change to it isn't split into halves.
     expect(changedRegion("go 😀", "go 😁").now).toBe("😁⟨U+1F601⟩");
   });
+
+  it("shows each autopilot by name, with every field that differs (review of #197)", async () => {
+    const { orgConfigDiff } = await import("../src/mainview/lib/org-diff.ts");
+    const ap = {
+      id: "ap_triage",
+      name: "Overnight triage",
+      enabled: false,
+      trigger: { kind: "schedule", cron: "0 2 * * *", timezone: "UTC" },
+      agent: "Triager",
+      output: { kind: "labels" },
+    };
+    const rows = orgConfigDiff(
+      { version: 1, autopilots: [ap] },
+      { version: 1, autopilots: [{ ...ap, enabled: true, agent: "Other" }] },
+    );
+    expect(rows.map((r) => r.label)).toEqual([
+      "Autopilot Overnight triage: agent",
+      "Autopilot Overnight triage: enabled",
+    ]);
+    const added = orgConfigDiff({ version: 1, autopilots: [] }, { version: 1, autopilots: [ap] });
+    expect(added[0]).toMatchObject({ label: "Autopilot Overnight triage", now: "added" });
+  });
 });

@@ -78,6 +78,7 @@ export const ORG_CONFIG_KEYS = [
   "agents",
   "skills",
   "agentSkills",
+  "autopilots",
 ] as const;
 
 /** A keyed part of the config (skills by id, an agent's attached skills): one row per entry that differs. */
@@ -146,6 +147,18 @@ export function orgConfigDiff(before: unknown, after: unknown): DiffRow[] {
   // Skills (ADR 0513): each skill by id, and the skills attached to each agent, in full.
   rows.push(...recordDiff(b.skills, a.skills, "Skill "));
   rows.push(...recordDiff(b.agentSkills, a.agentSkills, "Skills attached to agent "));
+  // Autopilots (ADR 0514): each by id, named, with every field that differs.
+  const pb = list(b, "autopilots");
+  const pa = list(a, "autopilots");
+  for (const id of [...new Set([...pb, ...pa].map((x) => String(x.id)))]) {
+    const was = pb.find((x) => String(x.id) === id) ?? null;
+    const now = pa.find((x) => String(x.id) === id) ?? null;
+    const label = `Autopilot ${text((now ?? was)?.name)}`;
+    if (!was || !now)
+      rows.push({ label, was: was ? "present" : "none", now: now ? "added" : "removed" });
+    for (const r of agentDiff(was ?? {}, now ?? {}))
+      rows.push({ ...r, label: `${label}: ${r.label}` });
+  }
   // A key the schema gains later and this diff doesn't know yet: shown whole, never hidden.
   for (const k of new Set([...Object.keys(b), ...Object.keys(a)]))
     if (!(ORG_CONFIG_KEYS as readonly string[]).includes(k) && differ(b[k], a[k]))

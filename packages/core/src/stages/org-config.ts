@@ -2,6 +2,7 @@
 // used by its projects, with the tightened copies of the built-in workflows. Stored as versions in
 // `core_org_configs` (migration 0280) and written only through the `workflow.*` operations.
 import { z } from "zod";
+import { autopilotSchema, MAX_AUTOPILOTS } from "../autopilots/schema.ts";
 import { type AgentConfig, agentSchema } from "../policy/project-policy.ts";
 import { BUILTIN_BY_ID } from "../skills/builtin.ts";
 import {
@@ -58,6 +59,8 @@ export const orgConfigSchema = z
      * same id is compared against it, so archiving and re-adding can't drop a gate unnoticed.
      */
     archived: z.array(workflowDefinitionSchema).max(MAX_ARCHIVED).default([]),
+    /** Work the factory starts on its own (ADR 0514): it files work, never ships it. */
+    autopilots: z.array(autopilotSchema).max(MAX_AUTOPILOTS).default([]),
     /**
      * The org's skills (ADR 0513): each one's current version (`core_skill_versions`), and the
      * built-in skill it extends or replaces, if any. A pinned org config version pins its skills.
@@ -88,6 +91,7 @@ export const EMPTY_ORG_CONFIG: OrgConfig = {
   workflows: [],
   builtIns: {},
   archived: [],
+  autopilots: [],
   skills: {},
   agentSkills: {},
 };
@@ -236,6 +240,20 @@ export function parseOrgConfig(input: unknown): OrgConfigParse {
     for (const c of loosened)
       doc(`a built-in workflow can only be tightened: ${c.summary}`, copy.id);
     builtIns[kind] = checked;
+  }
+  // Autopilots (ADR 0514): unique ids and names, and an org agent each.
+  const apIds = new Set<string>();
+  const apNames = new Set<string>();
+  for (const a of config.autopilots) {
+    if (apIds.has(a.id)) doc(`two autopilots have the id "${a.id}"`);
+    if (apNames.has(a.name.toLowerCase())) doc(`two autopilots are called "${a.name}"`);
+    apIds.add(a.id);
+    apNames.add(a.name.toLowerCase());
+    if (!agentNames.has(a.agent.toLowerCase()))
+      doc(`the autopilot ${a.name} hands to "${a.agent}", which isn't one of the org's agents`);
+    for (const id of a.skills)
+      if (!known(id))
+        doc(`the autopilot ${a.name} has the skill ${id}, which the org doesn't have`);
   }
   if (errors.length > 0) return { ok: false, errors };
   return { ok: true, config: { ...config, workflows, builtIns } };

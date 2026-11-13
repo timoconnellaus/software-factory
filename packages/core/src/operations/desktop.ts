@@ -323,6 +323,8 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     }
     case "workflow.save":
     case "agent.save":
+    case "autopilot.save":
+    case "autopilot.enable":
     case "workflow.archive":
     case "workflow.createFromTemplate":
     case "orgConfig.rollback":
@@ -373,6 +375,8 @@ export const POLICY_DECISION_OPS = [
   "workflow.createFromTemplate",
   "workflow.archive",
   "agent.save",
+  "autopilot.save",
+  "autopilot.enable",
   "orgConfig.rollback",
   "orgConfig.adoptProjectWorkflows",
   "override.approve",
