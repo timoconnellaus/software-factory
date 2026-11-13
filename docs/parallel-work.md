@@ -52,6 +52,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AP | 0350–0359 | 0580–0589 | The babysitter (`babysitter`): spec 53. Approval separated from delivery, stop the line on red main, approval across a clean merge of main, the `babysit` job, red-main repair. ADRs 0580–0585, 0587 (a person's push re-verifies, Workflow v14); Workflow v11 (provisional: next free at merge); migrations 0350 delivery, 0351 main health, 0352 approved change, 0353 flakes | in progress |
 | AR | 0370–0379 | 0600–0609 | Planning to kim's standard, continued (`planning`, block AE ran out above the 0261 rebuild of `core_work_items`): spec 23's parked items (`core_work_items.needs_info`) and what follows. Used: migrations 0370 (`needs_info`), 0371 (`core_work_items_project_title_idx`), 0372 (`core_specs.critique`) | in progress |
 | AS | 0380–0389 | 0610–0619 | The website shrinks to sign-in (`web-shrink`): spec 40 M5 brought forward, policy screens and decisions move to the desktop. Used: ADR 0610 | in progress |
+| AU | 0400–0409 | 0630–0639 | Planning, finished (`planning`): spec 22 part B (the runner's design checks and previews, the System tab, pins on designs, `.svg` write-back) and spec 24 (splits). Used: migration 0400 (`core_planning_artifact_revisions.preview`) | in progress |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
