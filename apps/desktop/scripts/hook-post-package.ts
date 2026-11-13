@@ -1,5 +1,6 @@
-// Electrobun postPackage hook (spec 40 M4): the artifacts folder is final, so the first-install
-// download goes in now. Only signed release builds get one.
+// Electrobun postPackage hook (spec 40 M4): the artifacts folder is final, so the key helper goes
+// into the app (spec 40 M4b, scripts/keys-helper.ts) and then the first-install download is made.
+// Only signed release builds get either.
 //
 // The download is the plain app, not Electrobun's self-extracting wrapper. The wrapper shows a
 // "Software Factory Setup" window that waits for a click, fails when macOS runs it translocated
@@ -7,9 +8,10 @@
 // inside the update archive: Electrobun signed, notarized and stapled it, and updates replace it with
 // the same archive, so first install and every update run the same bundle.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HELPER_SOURCE, helperPlan, installHelper } from "./keys-helper.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -42,8 +44,11 @@ function run(cmd: string, args: string[]): void {
   if (r.status !== 0) throw new Error(`postPackage: ${cmd} failed (${r.status})`);
 }
 
-function main() {
+async function main() {
   const artifacts = process.env.ELECTROBUN_ARTIFACT_DIR ?? "artifacts";
+  const helper = helperPlan(process.env, readdirSync(artifacts), existsSync(HELPER_SOURCE));
+  if ("skip" in helper) console.log(`postPackage: no key helper (${helper.skip})`);
+  else await installHelper(helper, artifacts, process.env.ELECTROBUN_BUILD_DIR ?? "build");
   const plan = zipPlan(process.env, readdirSync(artifacts));
   if ("skip" in plan) {
     console.log(`postPackage: no download zip (${plan.skip})`);
@@ -66,4 +71,4 @@ function main() {
 }
 
 // Electrobun runs the hook as a script; the tests import it.
-if (!process.env.VITEST) main();
+if (!process.env.VITEST) await main();

@@ -199,6 +199,7 @@ touches the app or anything it bundles publishes a **canary** (`0.1.<run>`). **S
 | `APPLE_TEAM_ID` | The Team ID |
 | `ASC_KEY_P8`, `ASC_KEY_ID`, `ASC_ISSUER_ID` | An App Store Connect API key (Developer role) for `notarytool` |
 | `DESKTOP_R2_ACCESS_KEY_ID`, `DESKTOP_R2_SECRET_ACCESS_KEY` | An R2 API token scoped to `sf-desktop-releases` only (below) |
+| `MACOS_KEYS_PROFILE` | Optional. The key helper's Developer ID provisioning profile (base64, one line; spec 40 M4b, "Owner checklist"). Without it a release ships without `SF Keys.app` and says so; with it the helper is added at `postPackage`, notarized again and checked, and delta patches are off |
 
 It also reads the repo variable `CLOUDFLARE_ACCOUNT_ID` (for the R2 endpoint) and, for stable,
 `DESKTOP_STABLE_ENABLED`.
