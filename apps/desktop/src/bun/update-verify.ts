@@ -21,8 +21,15 @@ import { basename, dirname, join, resolve } from "node:path";
 
 export const APP_IDENTIFIER = "com.software-factory.desktop";
 
-/** Runs a command; `code` is its exit status, `out` its stdout and stderr together. */
-export type Exec = (cmd: string, args: string[]) => Promise<{ code: number; out: string }>;
+/**
+ * Runs a command; `code` is its exit status, `out` its stdout and stderr together. `timeoutMs`, when
+ * given, is how long the command may run before it is killed (bunExec's own default otherwise).
+ */
+export type Exec = (
+  cmd: string,
+  args: string[],
+  opts?: { timeoutMs?: number },
+) => Promise<{ code: number; out: string }>;
 
 /**
  * How long one command may run. spctl's first assessment of a bundle asks Apple's notary service and
@@ -34,20 +41,22 @@ export const EXEC_TIMEOUT_MS = 120_000;
 export const TIMED_OUT = 124;
 
 /**
- * `exec` bounded to `ms`: a command still running then is reported as failed (`TIMED_OUT`). The
- * kill itself is the spawner's (bunExec asks Bun to kill it at the same deadline); this bound holds
- * even when a child keeps the output pipes open after that.
+ * `exec` bounded to `ms` (or a caller's shorter `timeoutMs`): a command still running then is
+ * reported as failed (`TIMED_OUT`). The deadline is passed down, so the spawner kills the process at
+ * it (bunExec asks Bun to SIGKILL it); this bound holds even when a child keeps the output pipes open
+ * after that.
  */
 export function withTimeout(exec: Exec, ms: number = EXEC_TIMEOUT_MS): Exec {
-  return async (cmd, args) => {
+  return async (cmd, args, opts) => {
+    const limit = Math.min(ms, opts?.timeoutMs ?? ms);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        exec(cmd, args),
+        exec(cmd, args, { timeoutMs: limit }),
         new Promise<{ code: number; out: string }>((resolve) => {
           timer = setTimeout(
-            () => resolve({ code: TIMED_OUT, out: `${cmd} timed out after ${ms / 1000} s` }),
-            ms,
+            () => resolve({ code: TIMED_OUT, out: `${cmd} timed out after ${limit / 1000} s` }),
+            limit,
           );
         }),
       ]);
@@ -57,11 +66,11 @@ export function withTimeout(exec: Exec, ms: number = EXEC_TIMEOUT_MS): Exec {
   };
 }
 
-const spawnExec: Exec = async (cmd, args) => {
+const spawnExec: Exec = async (cmd, args, opts) => {
   const p = Bun.spawn([cmd, ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    timeout: EXEC_TIMEOUT_MS,
+    timeout: opts?.timeoutMs ?? EXEC_TIMEOUT_MS,
     killSignal: "SIGKILL",
   });
   const [out, err, code] = await Promise.all([
@@ -195,18 +204,29 @@ export function stagedUpdate(
 
 /**
  * Removes a staged update so Electrobun downloads it again: its prepared-update record, then the
- * staging folder, which Electrobun requires to be `<running app>.prepared-<hash>` (anything else is
- * left alone). Without the record, Electrobun's next check reports nothing prepared.
+ * staging folder, only when it is Electrobun's own `<running app>.prepared-<hash>` beside the running
+ * bundle (anything else is left alone). Without the record, Electrobun's next check reports nothing
+ * prepared.
  */
 export function discardStaged(
   appDataFolder: string,
   stagingPath: string,
+  appPath: string,
   rm: (p: string, opts: { recursive: boolean; force: boolean }) => void = rmSync,
 ): void {
   rm(join(appDataFolder, "self-extraction", ".electrobun-prepared-update.json"), {
     recursive: false,
     force: true,
   });
-  if (/\.app\.prepared-[a-z0-9]{1,13}$/.test(stagingPath))
-    rm(stagingPath, { recursive: true, force: true });
+  if (isOwnStaging(stagingPath, appPath)) rm(stagingPath, { recursive: true, force: true });
+}
+
+/** `staging` is `<app>.prepared-<hash>` in the running app's own folder (no `..`, no other name). */
+export function isOwnStaging(staging: string, appPath: string): boolean {
+  const app = resolve(appPath);
+  if (!app.endsWith(".app") || resolve(staging) !== staging) return false;
+  if (dirname(staging) !== dirname(app)) return false;
+  const name = basename(staging);
+  const prefix = `${basename(app)}.prepared-`;
+  return name.startsWith(prefix) && /^[a-z0-9]{1,13}$/.test(name.slice(prefix.length));
 }

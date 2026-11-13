@@ -484,12 +484,13 @@ async function restartToUpdate(anyway = false) {
         stopRunner: () => runner.stop(),
         startRunner: () => void runner.start(),
         // The relaunch comes back where the window is now (window-frame.ts).
-        apply: () => {
+        apply: (gate) => {
           laps.push(`stop runner ${lap()} ms`);
           frames.flush(win);
           console.log(`updates: restart to update: ${laps.join(", ")}; applying`);
-          return updates.apply();
+          return updates.apply(gate);
         },
+        log: (line) => console.log(line),
       },
       { anyway },
     );

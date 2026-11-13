@@ -248,9 +248,12 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
   only an idle runner; if a job turned up it waits for idle, the runner still drained. If the
   update doesn't start (nothing staged, a refused signature, a quit handler said no, or a throw),
   the runner and the live socket come back (`src/bun/restart-update.ts`). A restart that hasn't
-  happened 90 s after *Restarting…* (Electrobun's `applyUpdate` or its helper hung) is treated the
-  same way, and the window shows why with *Back to Software Factory*; from that screen, or after it,
-  *Restart to update* in the menu bar starts again. Every command the updater runs (the helper,
+  happened 90 s after *Restarting…* (the record rewrite, the hash or Electrobun's `applyUpdate` hung)
+  is treated the same way, and the window shows why with *Back to Software Factory*; from that
+  screen, or after it, *Restart to update* in the menu bar starts again. The apply given up on is
+  cancelled: it stops just before handing off to `applyUpdate`, so the app is never replaced under
+  that message. Once the handoff has started nothing comes back (the helper may be replacing the
+  app); the window stays on *Restarting…* until the app restarts or `applyUpdate` returns. Every command the updater runs (the helper,
   `codesign`, `spctl`) is killed after 120 s, the helper's record rewrite after 60 s.
 - **CI without the upload token:** a push to `main` checks for `DESKTOP_R2_*` first and, without
   them, skips building, signing, notarizing and uploading with one notice in the job summary.

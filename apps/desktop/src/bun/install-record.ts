@@ -213,7 +213,7 @@ export function lastFailure(results: UpdateResult[], running: string): InstallFa
   return { version: newest.version, message: newest.message, phase: newest.phase };
 }
 
-/** The most result files listed, read or kept. Electrobun's own scan stops at 1024 entries. */
+/** The most old result files deleted in one read (the rest go next time). */
 const MAX_LISTED = 1024;
 
 export interface ResultDeps {
@@ -239,9 +239,8 @@ export function readUpdateResults(
   const remove = deps.remove ?? ((p) => unlinkSync(p));
   let names: string[];
   try {
-    names = list(channelRoot)
-      .filter((n) => RESULT_FILE.test(n))
-      .slice(0, MAX_LISTED);
+    // Every matching name is statted: the newest may be anywhere in the listing's order.
+    names = list(channelRoot).filter((n) => RESULT_FILE.test(n));
   } catch {
     return [];
   }
@@ -266,7 +265,8 @@ export function readUpdateResults(
       // Not a result this app can read: left alone.
     }
   }
-  for (const f of files.slice(limit)) {
+  // Beyond the newest `limit`, at most MAX_LISTED a call: the rest go next time.
+  for (const f of files.slice(limit, limit + MAX_LISTED)) {
     try {
       remove(f.path);
     } catch {
@@ -279,8 +279,9 @@ export function readUpdateResults(
 /** Electrobun's failure in our own sentences, for a person; its code goes to the log only. */
 export function plainInstallFailure(f: InstallFailure): string {
   const version = SEMVER.test(f.version) ? f.version : "the new version";
-  const known = CODES[f.message];
-  const where = PHASES[f.phase];
+  // Own keys only: a message of "toString" or "__proto__" is not a code we know.
+  const known = Object.hasOwn(CODES, f.message) ? CODES[f.message] : undefined;
+  const where = Object.hasOwn(PHASES, f.phase) ? PHASES[f.phase] : undefined;
   const plain =
     known ??
     (where ? `the updater stopped while ${where}` : "the updater stopped before it finished");

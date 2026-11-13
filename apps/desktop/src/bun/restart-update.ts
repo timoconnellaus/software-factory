@@ -9,7 +9,10 @@
 // Applying is bounded too (APPLY_TIMEOUT_MS): Electrobun's applyUpdate quits the app once the
 // helper has the plan, so one still pending after that has hung (it or the helper). It is reported
 // as "stalled", and the runner and live socket come back, so the window never sits on
-// "Restarting…" for good.
+// "Restarting…" for good. The apply given up on is cancelled: it asks the gate immediately before
+// handing off to Electrobun's applyUpdate, and a cancelled one stops there, so the app is never
+// replaced under a window that says it didn't restart. Once the handoff has started there is no
+// bring-back: the helper may already be replacing the app, so the window stays on "Restarting…".
 // Nothing here imports Electrobun, so the tests run on Node.
 
 /** How long "Restart to update" waits for the runner to confirm it has stopped claiming. */
@@ -33,8 +36,18 @@ export interface RestartDeps {
   startLive(): void;
   stopRunner(): Promise<void>;
   startRunner(): void;
-  /** Restarts into the update; returns only when it didn't. */
-  apply(): Promise<void>;
+  /**
+   * Restarts into the update; returns only when it didn't. It calls `gate.handoff()` immediately
+   * before handing off to the updater, and stops there (returns) when that says false.
+   */
+  apply(gate: ApplyGate): Promise<void>;
+  log?(line: string): void;
+}
+
+/** The point of no return in applying, decided once: whichever of handoff and cancel comes first. */
+export interface ApplyGate {
+  /** True: go ahead (the watchdog won't bring anything back now). False: cancelled, don't apply. */
+  handoff(): boolean;
 }
 
 /**
@@ -70,15 +83,38 @@ export async function restartToUpdate(
   d.restarting?.();
   d.stopLive();
   let watchdog: ReturnType<typeof setTimeout> | undefined;
+  // "open" until one of them happens: the handoff to the updater, or the watchdog giving up.
+  let gateState: "open" | "handed-off" | "cancelled" = "open";
+  const gate: ApplyGate = {
+    handoff: () => {
+      if (gateState === "cancelled") return false;
+      gateState = "handed-off";
+      return true;
+    },
+  };
+  const applyMs = opts.applyTimeoutMs ?? APPLY_TIMEOUT_MS;
   try {
     await d.stopRunner();
+    const applying = d.apply(gate).then(() => "returned" as const);
     const applied = await Promise.race([
-      d.apply().then(() => "returned" as const),
+      applying,
       new Promise<"stalled">((resolve) => {
-        watchdog = setTimeout(() => resolve("stalled"), opts.applyTimeoutMs ?? APPLY_TIMEOUT_MS);
+        watchdog = setTimeout(() => resolve("stalled"), applyMs);
       }),
     ]);
-    if (applied === "stalled") return "stalled";
+    if (applied === "stalled") {
+      if (gateState === "open") {
+        // Not handed off yet: cancelled, so the apply still running stops before applyUpdate.
+        gateState = "cancelled";
+        return "stalled";
+      }
+      // Handed off: the app may be being replaced right now. Nothing comes back; it either
+      // restarts or applyUpdate returns (didn't restart), and only then is everything brought back.
+      d.log?.(
+        `updates: restart to update: still restarting after ${applyMs / 1000} s; the updater has the update, so waiting for it`,
+      );
+      await applying;
+    }
   } finally {
     clearTimeout(watchdog);
     // Still running: the update didn't start (or something threw, or it hung, on the way).

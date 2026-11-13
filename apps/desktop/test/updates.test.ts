@@ -150,6 +150,7 @@ function make(
       setInterval: () => 0,
       setTimeout: (_fn, ms) => timers.push(ms),
       now: over.now ?? (() => NOW),
+      monotonic: over.now ?? (() => NOW),
       discard: (folder, staging) => {
         over.discarded?.push([folder, staging]);
       },
@@ -290,6 +291,23 @@ describe("Updates", () => {
     await updates.apply();
     expect(u.calls).not.toContain("apply");
     expect(updates.state.ready).toBe(false);
+  });
+
+  it("asks the gate immediately before applyUpdate, and a cancelled one never applies", async () => {
+    const u = fakeUpdater();
+    const { updates } = make(u);
+    await updates.check();
+    const asked: string[] = [];
+    await updates.apply({
+      handoff: () => {
+        asked.push(u.calls.includes("apply") ? "after" : "before");
+        return false;
+      },
+    });
+    expect(asked).toEqual(["before"]);
+    expect(u.calls).not.toContain("apply");
+    await updates.apply({ handoff: () => true });
+    expect(u.calls).toContain("apply");
   });
 
   it("reports an apply that returned (nothing restarted)", async () => {
@@ -831,6 +849,23 @@ describe("Electrobun's install record (InvalidUpdateIdentity)", () => {
     expect((out as { error: string }).error).toMatch(/didn't finish: .* timed out after 0.005 s/);
   });
 
+  it("kills a helper that hangs at the record's own deadline, not the general one", async () => {
+    const asked: (number | undefined)[] = [];
+    await syncInstallRecord("/data/canary", APP, "canary", {
+      exec: (_cmd, _args, opts) => {
+        asked.push(opts?.timeoutMs);
+        return new Promise(() => {});
+      },
+      read: () => null,
+      exists: () => false,
+      realpath: (p) => p,
+      log: () => {},
+      timeoutMs: 5,
+    });
+    // The spawner kills the process at this deadline (bunExec: Bun.spawn's timeout, SIGKILL).
+    expect(asked).toEqual([5]);
+  });
+
   it("puts the record right before checking and again before applying", async () => {
     const synced: string[] = [];
     const u = fakeUpdater();
@@ -871,6 +906,11 @@ describe("an update that didn't install", () => {
     expect(
       plainInstallFailure({ version: "0.1.70", message: "AccessDenied", phase: "swapping" }),
     ).toBe("The update to 0.1.70 didn't install: the updater stopped while replacing the app.");
+    // Names an object inherits are not codes or phases.
+    for (const name of ["toString", "__proto__", "constructor", "hasOwnProperty"])
+      expect(plainInstallFailure({ version: "0.1.70", message: name, phase: name })).toBe(
+        "The update to 0.1.70 didn't install: the updater stopped before it finished.",
+      );
     // Codes and phases this app doesn't know are never shown as written.
     expect(plainInstallFailure({ version: "<b>9</b>", message: "Weird", phase: "elsewhere" })).toBe(
       "The update to the new version didn't install: the updater stopped before it finished.",
@@ -933,6 +973,28 @@ describe("an update that didn't install", () => {
     expect(results[0]).toMatchObject({ success: false, version: "0.1.24" });
     expect(lastFailure(results, "0.1.1")?.version).toBe("0.1.24");
     expect(removed.map(mtime).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("finds the newest result even past the 1024th name in the listing", () => {
+    const names = Array.from(
+      { length: 1100 },
+      (_, i) => `.electrobun-update-${i.toString(16).padStart(32, "0")}.result.json`,
+    );
+    const mtime = (path: string) => Number.parseInt(path.slice(-44, -12), 16);
+    const results = readUpdateResults("/data", 20, {
+      // Directory order puts the newest last.
+      list: () => names,
+      stat: (p) => ({ isFile: () => true, size: 100, mtimeMs: mtime(p) }),
+      read: (p) =>
+        JSON.stringify({
+          success: true,
+          phase: "complete",
+          message: "ok",
+          version: `0.1.${mtime(p)}`,
+        }),
+      remove: () => {},
+    });
+    expect(results[0]?.version).toBe("0.1.1099");
   });
 
   it("reads the helper's result files and nothing else", () => {
@@ -1056,6 +1118,18 @@ describe("the click is fast: the check is done at download", () => {
     expect(verifies(e.runs)).toBe(before + 2);
   });
 
+  it("treats a check from the future (a clock gone backwards) as stale", async () => {
+    const u = fakeUpdater();
+    const e = fakeExec();
+    let now = NOW;
+    const { updates } = make(u, e, { now: () => now });
+    await updates.check();
+    const before = verifies(e.runs);
+    now = NOW - 1;
+    expect(await updates.verifyForApply()).toBeNull();
+    expect(verifies(e.runs)).toBe(before + 2);
+  });
+
   it("refuses a bundle that fails its full check again", async () => {
     const u = fakeUpdater();
     const e = fakeExec();
@@ -1077,12 +1151,23 @@ describe("the click is fast: the check is done at download", () => {
 
   it("discards only Electrobun's own staging folder and its record", () => {
     const removed: string[] = [];
-    discardStaged("/data", "/Applications/A.app.prepared-16goeidwc86x6", (p) => removed.push(p));
-    discardStaged("/data", "/Users/someone", (p) => removed.push(p));
-    expect(removed).toEqual([
-      "/data/self-extraction/.electrobun-prepared-update.json",
+    const app = "/Applications/A.app";
+    const discard = (staging: string) =>
+      discardStaged("/data", staging, app, (p) => removed.push(p));
+    discard("/Applications/A.app.prepared-16goeidwc86x6");
+    for (const staging of [
+      "/Users/someone",
+      // The right suffix, but not beside the running app, or not its name.
+      "/Users/someone/B.app.prepared-16goeidwc86x6",
+      "/Users/someone/A.app.prepared-16goeidwc86x6",
+      "/Applications/B.app.prepared-16goeidwc86x6",
+      "/Applications/sub/../A.app.prepared-16goeidwc86x6",
+      "/Applications/A.app.prepared-",
+      "/Applications/A.app.prepared-x/y",
+    ])
+      discard(staging);
+    expect(removed.filter((p) => !p.endsWith("prepared-update.json"))).toEqual([
       "/Applications/A.app.prepared-16goeidwc86x6",
-      "/data/self-extraction/.electrobun-prepared-update.json",
     ]);
   });
 

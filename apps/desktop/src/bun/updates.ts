@@ -40,6 +40,7 @@ import {
   syncInstallRecord,
   type UpdateResult,
 } from "./install-record.ts";
+import type { ApplyGate } from "./restart-update.ts";
 import type { Exec, StagedUpdate } from "./update-verify.ts";
 import {
   bundleFingerprint,
@@ -96,6 +97,11 @@ export interface UpdatesDeps {
   appPath: string;
   /** The clock, for when a check finished. */
   now?: () => number;
+  /**
+   * A monotonic clock (ms), for how old the last full check is: it lives only in memory, so a wall
+   * clock set back (or forward) can't make it look fresher than it is.
+   */
+  monotonic?: () => number;
   /** Throws when `path` isn't writable (fs.accessSync with W_OK). */
   writable?: (path: string) => void;
   staged?: (appDataFolder: string) => StagedUpdate | null;
@@ -187,9 +193,10 @@ export class Updates {
       setInterval: (fn, ms) => setInterval(fn, ms),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       now: () => Date.now(),
+      monotonic: () => performance.now(),
       syncRecord: (root, app, channel) =>
         syncInstallRecord(root, app, channel, { exec: deps.exec }),
-      discard: (folder, staging) => discardStaged(folder, staging),
+      discard: (folder, staging) => discardStaged(folder, staging, deps.appPath),
       results: (root) => readUpdateResults(root),
       fingerprint: (app) => bundleFingerprint(app),
       log: (line) => console.log(line),
@@ -390,8 +397,9 @@ export class Updates {
     if (v) {
       this.verified = null;
       try {
-        const age = this.d.now() - v.at;
-        if (age > VERIFIED_FOR_MS) {
+        const age = this.d.monotonic() - v.at;
+        // A negative age can't happen on a monotonic clock; if it does, the check is treated as stale.
+        if (age < 0 || age > VERIFIED_FOR_MS) {
           this.d.log(
             `updates: ${v.version} was checked ${Math.round(age / 3_600_000)} h ago: checking it in full again`,
           );
@@ -471,7 +479,7 @@ export class Updates {
         bundle,
         version: staged.version,
         fingerprint: before,
-        at: this.d.now(),
+        at: this.d.monotonic(),
       };
     return null;
   }
@@ -481,9 +489,15 @@ export class Updates {
    * happen (nothing staged, a refused signature, or a quit handler said no): the caller then
    * brings back whatever it stopped. The reason is in `state.error`.
    */
-  async apply(): Promise<void> {
+  async apply(gate?: ApplyGate): Promise<void> {
     await this.prepareInstall();
     if (await this.verifyForApply()) return;
+    // The last moment to stop: past here the helper may replace the app. A restart that was given
+    // up on (restart-update.ts's watchdog) has already brought everything back and said so.
+    if (gate && !gate.handoff()) {
+      this.d.log("updates: restart to update was given up on before the handoff: not applying");
+      return;
+    }
     await this.d.updater.applyUpdate();
     // Still here: Electrobun didn't restart.
     const after = this.d.updater.updateInfo();
