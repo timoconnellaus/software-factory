@@ -1,4 +1,5 @@
 export * from "./adjudicator.ts";
+export * from "./adopt.ts";
 export * from "./artifacts.ts";
 export * from "./attach.ts";
 export * from "./attachments.ts";
