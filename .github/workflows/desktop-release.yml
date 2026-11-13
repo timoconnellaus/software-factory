@@ -239,11 +239,20 @@ jobs:
           xcrun stapler validate "$app"
 
       # A moved app can still update: Electrobun's install record follows it (InvalidUpdateIdentity
-      # otherwise, found on canary 0.1.56 → 0.1.70). Runs the built app's own helper.
+      # otherwise, found on canary 0.1.56 → 0.1.70). Runs the helper of the app as a Mac gets it:
+      # the bundle inside the download zip (the one under build/ is Electrobun's self-extracting
+      # wrapper, which has no Contents/Resources/uninstall).
       - name: Check the install record follows a moved app
         if: steps.secrets.outputs.ready == 'true'
         working-directory: apps/desktop
-        run: sh scripts/check-install-record.sh "$(ls -d build/*-macos-arm64/*.app)" "${{ steps.channel.outputs.channel }}"
+        env:
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          ditto -x -k "artifacts/$CHANNEL-macos-arm64-Software-Factory.zip" "$work"
+          installed=$(cd "$work" && ls -d -- *.app)
+          sh scripts/check-install-record.sh "$work/$installed" "$CHANNEL"
 
       # The helper as a downloaded and an updated Mac get it: signature, requirement, entitlements,
       # embedded profile, Gatekeeper, and the launch smoke test (spec 40 M4b).
