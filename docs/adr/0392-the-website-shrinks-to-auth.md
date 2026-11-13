@@ -28,3 +28,12 @@ GitHub App install redirect, approving device logins, and links that arrive from
   phone path would need its own presence proof (WebAuthn), not the old browser rule.
 - ADR 0241's page-load design stays relevant for the desktop's batched reads (`batch` on the client
   door), not for sf-app.
+
+## Amendment, 2026-11-13: brought forward, and policy screens move too (ADR 0610)
+The owner decided to shrink the website now, not after every screen had been in both apps for a
+while: "Let's leave the web just for auth as a utility. Everything else happens in the app", and
+"Remove them now." The project config editor and the org workflow editor, which came after this
+ADR, move to the desktop app with the other screens; their decisions become presence-decidable on
+the desktop ([ADR 0610](0610-everything-but-sign-in-moves-to-the-desktop-app.md)). Decision 1's list
+stands (device approval pages now include the phone's). Every removed route redirects through
+`/open/`, which says "open the Software Factory app" with a download link when the app isn't there.
