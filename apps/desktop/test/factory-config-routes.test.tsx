@@ -218,3 +218,147 @@ describe("Policy: follow-ups from the review of #145", () => {
     expect(text).toContain("Spec approval Needed from");
   });
 });
+
+describe("Org workflows (spec 52, ADR 0610)", () => {
+  it("lists the org's workflows, a workflow's stages, waiting changes, agents and history", async () => {
+    const html = await renderPage("/factory/org-workflows");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="org-workflows"');
+    expect(text).toContain("Release notes");
+    expect(text).toContain("1 change is waiting for an org admin");
+    expect(text).toContain("Save a workflow: Skip the reviewer for docs");
+    expect(html).toContain('data-testid="org-agents"');
+    expect(html).toContain('data-testid="org-adopt"');
+    expect(html).toContain('data-testid="org-history"');
+    expect(html).toContain('data-testid="edit-org-workflow"');
+  });
+
+  it("edits a workflow's stages, with every decision behind Touch ID", async () => {
+    const html = await renderPage("/factory/org-workflows?workflow=wf_software&edit=1");
+    expect(html).toContain('data-testid="org-workflow-form"');
+    expect(html).toContain('data-testid="org-stage-review"');
+    expect(textOf(html)).toContain("Add a stage");
+  });
+
+  it("leaves a built-in workflow uneditable here", async () => {
+    const html = await renderPage("/factory/org-workflows?workflow=wf_incident");
+    expect(html).not.toContain('data-testid="edit-org-workflow"');
+    expect(textOf(html)).toContain("Built in");
+  });
+
+  it("on a software key, offers no live org decision", async () => {
+    const html = await renderPage("/factory/org-workflows", {
+      session: { keyStorage: "software" },
+    });
+    expect(textOf(html)).toContain("This Mac can't approve yet");
+  });
+});
+
+describe("2c: the last website-only decisions, in the app (ADR 0610)", () => {
+  it("lists the kill switches on the Overview, with Turn off for one that is on", async () => {
+    const html = await renderPage("/factory");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="kill-switches"');
+    expect(text).toContain("Website On Deploys are failing on the host Turn off");
+  });
+
+  it("offers an org admin's Approve on a looser override that isn't approved", async () => {
+    const html = await renderPage("/factory/policy?project=prj_site&edit=1");
+    expect(html).toContain('data-testid="approve-override-retryLimit"');
+  });
+
+  it("offers Mark as a repair while the project's main is red, and Not a repair once marked", async () => {
+    const { repairShown } = await import("../src/mainview/components/repair-toggle.tsx");
+    expect(repairShown(true, false)).toBe(true);
+    expect(repairShown(false, true)).toBe(true);
+    expect(repairShown(false, false)).toBe(false);
+    // Only approvers decide repairs.
+    expect(repairShown(true, false, false)).toBe(false);
+  });
+
+  it("switches a runner's Claude account from the Runners page", async () => {
+    const html = await renderPage("/factory/runners");
+    expect(textOf(html)).toContain("Use personal");
+  });
+});
+
+describe("Org workflows: deciding a waiting change (review of #159)", () => {
+  it("shows the engine's classification and the difference before Approve", async () => {
+    const html = await renderPage("/factory/org-workflows");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="org-pending-impact"');
+    expect(text).toContain("Removes the agent check Reviewer.");
+    expect(html).toContain('data-testid="org-pending-diff"');
+    expect(text).toContain("Reviewer (removed)");
+    expect(html).toContain('data-testid="org-pending-approve"');
+  });
+
+  it("offers only Reject when a change can't be shown or no longer applies", async () => {
+    const { cannotApproveOrg } = await import("../src/mainview/routes/factory.org.tsx");
+    const base = {
+      pendingActionId: "pa_1",
+      operation: "workflow.save",
+      note: null,
+      by: null,
+      createdAt: "",
+      baseVersion: 4,
+      proposal: { id: "wf_x", name: "New" },
+      current: null,
+      toVersion: null,
+      impact: { class: "loosens" as const, changes: [] },
+    };
+    expect(cannotApproveOrg(base, 4)).toBeNull();
+    expect(cannotApproveOrg(base, 5)).toMatch(/drafted on v4/);
+    expect(cannotApproveOrg({ ...base, impact: null }, 4)).toMatch(/couldn't classify/);
+    expect(cannotApproveOrg({ ...base, proposal: null }, 4)).toMatch(/can't be shown/);
+    // Fail closed: no base version, or nothing shown, is nothing to approve.
+    expect(cannotApproveOrg({ ...base, baseVersion: null }, 4)).toMatch(/unknown version/);
+    expect(cannotApproveOrg({ ...base, proposal: { id: "wf_x" } }, 4)).toMatch(/changes nothing/);
+  });
+});
+
+describe("2c fixes (review of #165)", () => {
+  it("says the kill switches couldn't be read, never 'all off'", async () => {
+    const html = await renderPage("/factory", {
+      answers: { "killSwitch.list": { error: "the factory isn't reachable" } },
+    });
+    const text = textOf(html);
+    expect(text).toContain("Couldn't load the kill switches.");
+    expect(text).not.toContain("Turn on");
+  });
+
+  it("turns a switch on with a call, and off only through a decision", async () => {
+    const { killSwitchPath } = await import("../src/mainview/components/kill-switches.tsx");
+    expect(killSwitchPath(true)).toBe("call");
+    expect(killSwitchPath(false)).toBe("decide");
+    const { DECISION_OPS, DECIDE_OPS } = await import("../src/shared/decisions.ts");
+    // Off goes through decide (Touch ID); on stays a plain call.
+    expect(DECIDE_OPS.has("killSwitch.set")).toBe(true);
+    expect(DECISION_OPS.has("killSwitch.set")).toBe(false);
+  });
+
+  it("offers a runner's accounts only to its owner", async () => {
+    const { ANSWERS } = await import("../screenshots/fixtures.ts");
+    const runners = (
+      ANSWERS["runner.list"] as (i: unknown) => { runners: Record<string, unknown>[] }
+    )({});
+    const theirs = {
+      runners: runners.runners.map((r) => ({ ...r, ownerUserId: "usr_someone_else" })),
+    };
+    const html = await renderPage("/factory/runners", {
+      answers: { "runner.list": { result: theirs } },
+    });
+    expect(textOf(html)).not.toContain("Use personal");
+  });
+});
+
+describe("2c round two (review of #165)", () => {
+  it("shows a project past the list's cap as not loaded, with no Turn on", async () => {
+    const html = await renderPage("/factory", {
+      answers: { "killSwitch.list": { result: { org: null, projects: [], more: true } } },
+    });
+    const text = textOf(html);
+    expect(text).toContain("Website Not loaded");
+    expect(text).toContain("More projects have switches than are shown here");
+  });
+});

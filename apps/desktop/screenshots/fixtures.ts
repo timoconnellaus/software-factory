@@ -436,6 +436,51 @@ export const POLICY_DOC = {
   workflow: "Software",
 };
 
+/** The org's Software workflow's stages (spec 52), as `workflow.get` returns them. */
+export const ORG_STAGES = [
+  {
+    id: "plan",
+    type: "interview-planning",
+    typeVersion: 1,
+    name: "Planning",
+    phase: "shaping" as const,
+    settings: { requiredFrom: "medium" },
+  },
+  {
+    id: "build",
+    type: "build",
+    typeVersion: 1,
+    name: "Build",
+    phase: "delivery" as const,
+    settings: { retryLimit: 2 },
+  },
+  {
+    id: "review",
+    type: "agent-check",
+    typeVersion: 1,
+    name: "Reviewer",
+    phase: "delivery" as const,
+    settings: {},
+    agent: "Reviewer",
+  },
+  {
+    id: "verify",
+    type: "checks",
+    typeVersion: 1,
+    name: "Verify",
+    phase: "delivery" as const,
+    settings: { requiredChecks: ["ci", "typecheck"] },
+  },
+  {
+    id: "publish",
+    type: "publish",
+    typeVersion: 1,
+    name: "Merge",
+    phase: "delivery" as const,
+    settings: {},
+  },
+];
+
 /** A project on the org's Software workflow, with one override of the org's value (spec 52). */
 export const ON_ORG_WORKFLOW = {
   ...POLICY_DOC,
@@ -879,6 +924,7 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       headSha: atMerge ? "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f" : null,
       prNumber: atMerge ? 51 : null,
       policySha: "5da8988",
+      repairsMain: false,
       workflow: "wf_ship_it",
       workflowReason: "the project's default",
     },
@@ -1991,7 +2037,26 @@ export const ANSWERS: Answers = {
     ],
   }),
   "project.list": (input) => ({ projects: PROJECTS.filter((p) => p.orgId === input.orgId) }),
-  "inbox.list": () => INBOX,
+  // `?red=1` (before the hash): the Factory project's main is red (spec 53), for Mark as a repair.
+  "inbox.list": () =>
+    typeof location !== "undefined" && new URLSearchParams(location.search).get("red") === "1"
+      ? {
+          ...INBOX,
+          mainRed: [
+            {
+              projectId: FACTORY,
+              name: "Factory",
+              repositoryId: "repo_factory",
+              repo: { owner: "timoconnellaus", name: "software-factory" },
+              branch: "main",
+              headSha: "9b1e004",
+              failing: ["ci"],
+              redSince: ago(25),
+              lastGreenSha: "5da8988",
+            },
+          ],
+        }
+      : INBOX,
   "workItem.list": (input) => ({
     items: [...ITEMS, ...FACTORY_ITEMS, ...(redFixture() ? [HELD_44()] : [])].filter(
       (i) => !input.orgId || i.orgId === input.orgId,
@@ -2105,6 +2170,20 @@ export const ANSWERS: Answers = {
         : (CONFIG_HISTORY[0] ?? null),
     error: null,
     pendingMore: false,
+    // The Website overrides the org's retry limit, looser, not yet approved by an org admin.
+    orgOverrides:
+      input.projectId === SITE
+        ? [
+            {
+              stageId: "build",
+              key: "retryLimit",
+              value: 3,
+              looser: true,
+              approved: false,
+              orgVersion: 4,
+            },
+          ]
+        : [],
     history: CONFIG_HISTORY,
     pending:
       input.projectId === FACTORY
@@ -2187,17 +2266,194 @@ export const ANSWERS: Answers = {
         name: "Software",
         description: "Code changes, from the org",
         builtIn: null,
-        stages: [],
+        stages: ORG_STAGES.map(({ id, name, type, phase }) => ({ id, name, type, phase })),
+      },
+      {
+        id: "wf_release",
+        name: "Release notes",
+        description: "A draft, a check and a person's read",
+        builtIn: null,
+        stages: [
+          { id: "draft", name: "Draft", type: "build", phase: "delivery" },
+          { id: "publish", name: "Publish", type: "publish", phase: "delivery" },
+        ],
       },
       {
         id: "wf_incident",
         name: "Incident",
         description: "",
         builtIn: "incident" as const,
-        stages: [],
+        stages: [{ id: "fix", name: "Fix", type: "build", phase: "delivery" }],
       },
     ],
-    templates: [],
+    templates: [
+      { id: "wf_software", name: "Software", description: "", builtIn: null, stages: [] },
+    ],
+  }),
+  "orgConfig.get": () => ({
+    version: 4,
+    config: {
+      workflows: [],
+      agents: [
+        { name: "Reviewer", role: "review", tier: "standard", instructions: "" },
+        { name: "Writer", role: "implement", tier: "light", instructions: "" },
+      ],
+    },
+    history: [
+      {
+        version: 4,
+        source: "app",
+        note: "Release notes: a person reads it",
+        createdBy: "owner",
+        createdAt: ago(60 * 5),
+        impact: "tightens" as const,
+      },
+      {
+        version: 3,
+        source: "app",
+        note: "New workflow Release notes, from Software",
+        createdBy: "owner",
+        createdAt: ago(60 * 24),
+        impact: "neutral" as const,
+      },
+      {
+        version: 2,
+        source: "adopt",
+        note: "Moved 2 projects onto org workflows",
+        createdBy: "owner",
+        createdAt: ago(60 * 24 * 3),
+        impact: "neutral" as const,
+      },
+    ],
+    pending: [
+      {
+        pendingActionId: "pa_org_1",
+        operation: "workflow.save",
+        note: "Skip the reviewer for docs",
+        by: "owner",
+        createdAt: ago(20),
+        baseVersion: 4,
+        current: { id: "wf_software", name: "Software", stages: ORG_STAGES },
+        proposal: {
+          id: "wf_software",
+          name: "Software",
+          stages: ORG_STAGES.filter((s) => s.id !== "review"),
+        },
+        toVersion: null,
+        impact: {
+          class: "loosens" as const,
+          changes: [
+            {
+              path: "wf_software.stages",
+              class: "loosens" as const,
+              summary: "Removes the agent check Reviewer.",
+            },
+          ],
+        },
+      },
+    ],
+  }),
+  "orgConfig.adoptProjectWorkflows": () => ({
+    dryRun: true,
+    orgVersion: 5,
+    workflows: [{ id: "wf_crm", name: "CRM changes", added: true, projects: ["CRM"] }],
+    agents: [],
+    projects: [
+      {
+        projectId: "prj_crm",
+        name: "CRM",
+        from: "CRM changes",
+        workflow: "wf_crm",
+        overrides: {},
+        approved: [],
+        version: null,
+        changes: [],
+      },
+    ],
+    skipped: [
+      {
+        projectId: "prj_old",
+        name: "Old site",
+        reason: "its check runs only for auth work, which an org workflow can't say yet",
+      },
+    ],
+    remaining: [],
+    planDigest: "a".repeat(64),
+  }),
+  "killSwitch.list": () => ({
+    org: null,
+    projects: [
+      {
+        projectId: SITE,
+        on: true,
+        reason: "Deploys are failing on the host",
+        changedAt: ago(45),
+        epoch: 2,
+      },
+    ],
+    more: false,
+  }),
+  "orgConfig.previewRollback": () => ({
+    impact: {
+      class: "neutral" as const,
+      changes: [
+        {
+          path: "wf_release",
+          class: "neutral" as const,
+          summary: "Archives the workflow Release notes.",
+        },
+      ],
+    },
+    currentVersion: 4,
+    before: [
+      { id: "wf_software", name: "Software" },
+      { id: "wf_release", name: "Release notes" },
+    ],
+    after: [{ id: "wf_software", name: "Software" }],
+  }),
+  "stageType.list": () => ({
+    types: [
+      ["interview-planning", "Planning", ["shaping"]],
+      ["build", "Build", ["delivery"]],
+      ["checks", "Checks", ["delivery"]],
+      ["agent-check", "Agent check", ["delivery"]],
+      ["decision", "Decision", ["delivery", "shaping"]],
+      ["publish", "Publish", ["delivery"]],
+    ].map(([id, name, phases]) => ({
+      id: id as string,
+      version: 1,
+      name: name as string,
+      description: "",
+      phases: phases as string[],
+      surface: "packet",
+      small: false,
+      reversibility: "reversible",
+      needsPerson: id === "decision" || id === "publish",
+      consumes: [],
+      produces: [],
+      gate:
+        id === "decision" || id === "publish"
+          ? { kind: "merge", mode: "required", on: "pull-request" }
+          : null,
+      requires: { capabilities: [], connectors: [], repository: false, pool: "none", roles: [] },
+      settingsSchema: {},
+      defaults: {},
+    })),
+  }),
+  "workflow.preview": () => ({
+    valid: true,
+    errors: [],
+    impact: {
+      class: "loosens" as const,
+      changes: [
+        {
+          path: "wf_software.stages",
+          class: "loosens" as const,
+          summary: "Removes the agent check Reviewer.",
+        },
+      ],
+    },
+    currentVersion: 4,
   }),
   "workflow.get": (input) => ({
     version: 4,
@@ -2205,33 +2461,8 @@ export const ANSWERS: Answers = {
       schema: 1,
       id: input.workflowId,
       name: "Software",
-      description: "",
-      stages: [
-        {
-          id: "plan",
-          type: "interview-planning",
-          typeVersion: 1,
-          name: "Planning",
-          phase: "shaping",
-          settings: { requiredFrom: "medium" },
-        },
-        {
-          id: "build",
-          type: "build",
-          typeVersion: 1,
-          name: "Build",
-          phase: "delivery",
-          settings: { retryLimit: 2 },
-        },
-        {
-          id: "verify",
-          type: "checks",
-          typeVersion: 1,
-          name: "Verify",
-          phase: "delivery",
-          settings: { requiredChecks: ["ci", "typecheck"] },
-        },
-      ],
+      description: "Code changes, from the org",
+      stages: ORG_STAGES,
     },
     builtIn: null,
     shipped: null,

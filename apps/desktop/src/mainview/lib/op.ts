@@ -81,6 +81,11 @@ export type ReadOpName =
   | "adjudicator.stats"
   | "workflow.get"
   | "workflow.list"
+  | "orgConfig.get"
+  | "stageType.list"
+  | "workflow.preview"
+  | "killSwitch.list"
+  | "orgConfig.previewRollback"
   | "incident.listArchiveMissing"
   | "delivery.status"
   | "babysit.resolutionPatches";

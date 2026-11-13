@@ -96,6 +96,7 @@ export interface OpMap {
   "mobile.pairOffer": Def<typeof operations.mobilePairOffer>;
   "mobile.pairOfferStatus": Def<typeof operations.mobilePairOfferStatus>;
   "killSwitch.set": Def<typeof operations.killSwitchSet>;
+  "killSwitch.list": Def<typeof operations.killSwitchList>;
   // Org workflows (spec 52 PR (b)).
   "workflow.list": Def<typeof operations.workflowList>;
   "workflow.get": Def<typeof operations.workflowGet>;
@@ -106,6 +107,7 @@ export interface OpMap {
   "agent.save": Def<typeof operations.agentSave>;
   "orgConfig.get": Def<typeof operations.orgConfigGet>;
   "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
+  "orgConfig.previewRollback": Def<typeof operations.orgConfigPreviewRollback>;
   "orgConfig.adoptProjectWorkflows": Def<typeof operations.orgConfigAdoptProjectWorkflows>;
   "override.approve": Def<typeof operations.overrideApprove>;
   "workItem.markRepair": Def<typeof operations.workItemMarkRepair>;

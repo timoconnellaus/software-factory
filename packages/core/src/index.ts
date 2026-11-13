@@ -50,6 +50,7 @@ export {
 } from "./operations/gates.ts";
 export { BRANCH_MOVED_AFTER_APPROVAL } from "./operations/github.ts";
 export * as operations from "./operations/index.ts";
+export { STEER_OFFERS_MAX } from "./operations/live.ts";
 export {
   formatPairCode,
   MOBILE_APPROVE_PATH,

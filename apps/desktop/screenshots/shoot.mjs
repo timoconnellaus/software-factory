@@ -370,6 +370,48 @@ export const SCREENS = [
     scrollTo: "slot-afterVerify",
   },
   { name: "agents-edit", path: "/factory/agents?edit=1", design: "FactoryAgents.html" },
+  // Org workflows (spec 52, ADR 0610): the list, editing one (a stage removed: the save bar with
+  // the engine's impact), the adopt dry run, and a Mac with a software key.
+  { name: "org-workflows", path: "/factory/org-workflows", design: "FactoryWorkflow.html" },
+  // 2c (ADR 0610): kill switches on the Overview, an item marked as a repair while main is red,
+  // a runner's Claude accounts, and an org admin's Approve on a looser override.
+  {
+    name: "kill-switches",
+    path: "/factory",
+    design: "FactoryOverview.html",
+    scrollTo: "kill-switches",
+  },
+  {
+    name: "item-repair",
+    path: "/work/wi_9",
+    query: "?red=1",
+    design: "ItemOverview.html",
+  },
+  {
+    name: "org-workflow-edit",
+    path: "/factory/org-workflows?workflow=wf_software&edit=1",
+    design: "FactoryWorkflow.html",
+  },
+  {
+    name: "org-workflow-edit-draft",
+    path: "/factory/org-workflows?workflow=wf_software&edit=1",
+    design: "FactoryWorkflow.html",
+    clicks: ['[data-testid="org-stage-review"] [data-testid="remove-stage"]'],
+    scrollTo: "org-save-bar",
+  },
+  {
+    name: "org-adopt",
+    path: "/factory/org-workflows",
+    design: "FactoryWorkflow.html",
+    clicks: ['[data-testid="org-adopt"] button'],
+    scrollTo: "org-adopt",
+  },
+  {
+    name: "org-software-key",
+    path: "/factory/org-workflows",
+    query: "?key=software",
+    design: "FactoryWorkflow.html",
+  },
   {
     name: "settings-repositories",
     path: "/settings/repositories",
