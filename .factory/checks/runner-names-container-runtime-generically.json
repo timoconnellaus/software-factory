@@ -1,0 +1,10 @@
+{
+  "name": "runner-names-container-runtime-generically",
+  "description": "Work item #61, incident inc_6ac7d6353e1f474aad20b8fb4c96715c: a Mac sandbox runner's checks run in a container from whichever runtime answers (Docker Desktop or OrbStack), so the 'no container runtime' line (NO_MAC_CONTAINER_LINE in local/runner-host/src/check-mode.ts, used by the not-run reason and by sf-runner doctor) must not name OrbStack alone. An owner running Docker Desktop was told to start OrbStack.",
+  "appliesTo": ["local/runner-host/src/**/*.ts"],
+  "forbid": [
+    "\\(\\s*OrbStack (is )?not answering\\s*\\)",
+    "no container runtime\\s*\\(\\s*OrbStack\\b[^)]*\\)"
+  ],
+  "message": "Name the container runtime generically when a Mac runner's checks cannot run: 'no container runtime is answering (Docker Desktop or OrbStack): start it, or set checks.weakerMacSandbox'. Never name OrbStack alone; the runner uses whichever runtime answers."
+}
