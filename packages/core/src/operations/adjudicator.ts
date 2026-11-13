@@ -16,6 +16,8 @@ import { approvingSpecGate, decidePending, mergeGateHead } from "./gates.ts";
 import { pendingActionId, projectId, requireProject } from "./shared.ts";
 
 export const ADJUDICATOR_MIN_DECISIONS = 20;
+/** Approvals a person agreed with, at least (review of #152): defers alone earn nothing. */
+export const ADJUDICATOR_MIN_AGREED = 15;
 export const ADJUDICATOR_PRECISION = 0.95;
 /** In active mode, every Nth approval verdict is still left to a person, to keep it measured. */
 export const ADJUDICATOR_SAMPLE_EVERY = 5;
@@ -74,7 +76,10 @@ export async function adjudicatorStats(
     approvals: approvals.length,
     agreed,
     precision,
-    eligible: rows.length >= ADJUDICATOR_MIN_DECISIONS && precision >= ADJUDICATOR_PRECISION,
+    eligible:
+      rows.length >= ADJUDICATOR_MIN_DECISIONS &&
+      agreed >= ADJUDICATOR_MIN_AGREED &&
+      precision >= ADJUDICATOR_PRECISION,
   };
 }
 

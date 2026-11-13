@@ -1382,7 +1382,7 @@ screen needs).
    every-fifth review is counted and decided in the same batch, and goes to the gate's assignee or
    the project's first approver.
    Third round: on the factory's own repository it is default-deny (only `FACTORY_SOURCE_ALLOW`:
-   `docs/screenshots/**`, `docs/design/**`), recognised by the engine's package in the repository
+   `docs/design/**`), recognised by the engine's package in the repository
    unless the project's `factorySource` says otherwise (`no` loosens); package and config surfaces,
    native code and release scripts are risk paths everywhere, and a submodule bump is risky; a
    spec's ties count only when a person approved it; the item's Workflow version must have the
@@ -1394,8 +1394,19 @@ screen needs).
    default, empty means nothing qualifies; widening loosens), on top of a wider floor (manifests in
    every ecosystem, build scripts, CI, deploy and hook files, other agents' instruction files). On
    the factory's own repository the ceiling is `docs/design/**`; "auto" detection is "not the
-   factory" only when every marker (`FACTORY_MARKERS`) reads cleanly as absent; migration 0286 sets
-   `factorySource: "yes"` on the factory's own project.
+   factory" only when every marker (`FACTORY_MARKERS`) reads cleanly as absent; migration 0286 marks
+   the factory's own project (`core_projects.factory_source`, a column the running engine ignores).
+   Fourth round: the floor is structural as well as listed (`structuralRisk`): at any depth and in
+   any case, a hidden segment, a lock file by shape, a manifest, build, setup or task-runner file by
+   name, a migrations, migrate, alembic versions or hooks directory, owners and agent instruction
+   files, and any path with a control character. An empty file list, or one that doesn't match
+   GitHub's `changed_files` for the PR, fails; a symlink, a submodule or a changed mode fails;
+   `allowPaths` entries must name a place, not a bare wildcard. The babysitter reruns the whole
+   verdict at merge against the settings then. An attached PR (merged directly, no babysitter
+   re-check) never qualifies. The adjudicator is eligible only with at least 15 approvals a person
+   agreed with. The adjudicator's minute asks about merge gates only where the project shadows them
+   or has it active. The verdict's journal carries the head, the paths and both settings. All four
+   paths are in the query-plan guard.
 7. **(f) Skills** (migration **0283**: `core_skill_versions`). As in "Skills", plus agent instructions
    as proposals (Q17). The projection into the harness is a small hook in `harness-claude` and the
    runner host, said in the PR.

@@ -331,7 +331,10 @@ export async function runAdjudicator(env: Env, limit = 10): Promise<number> {
      LEFT JOIN core_adjudications a ON a.pending_action_id = pa.id
      WHERE pa.status = 'pending' AND a.id IS NULL AND pa.work_item_id IS NOT NULL
        AND ((pa.kind = 'spec' AND pa.operation = 'spec.accept') OR pa.operation = 'workflow.gate'
-         OR (pa.kind = 'merge' AND pa.operation = 'pr.merge'))
+         OR (pa.kind = 'merge' AND pa.operation = 'pr.merge'
+           -- Merge gates only where the project shadows them or has it active (review of #152):
+           -- otherwise nothing is written and the same gates would be asked every minute.
+           AND json_extract(pp.raw, '$.adjudicator.merge') IN ('shadow', 'active')))
        AND pp.raw LIKE '%"adjudicator"%'
      ORDER BY pa.created_at LIMIT ?`,
   )

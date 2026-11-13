@@ -19,6 +19,7 @@ import {
   type HandlerContext,
   type PendingActionRow,
   type ProjectRow,
+  type WorkItemRow,
 } from "../operation.ts";
 import {
   AUTO_APPROVE_OFF,
@@ -35,7 +36,7 @@ import { resolveProjectWorkflow } from "../stages/project-workflow.ts";
 import { stageType } from "../stages/registry.ts";
 import { has } from "../workflow-features.ts";
 import { formatPolicy, writeVersion } from "./config.ts";
-import { decidePending, mergeGateHead } from "./gates.ts";
+import { decidePending } from "./gates.ts";
 import { pendingActionId, repoRef } from "./shared.ts";
 import { currentOrgConfig, storedOrgConfig } from "./workflows.ts";
 
@@ -81,23 +82,23 @@ export async function autoApproveSetting(
 }
 
 /**
- * The adjudicator approved a merge gate's commit: decide it with no person when every condition of
- * ADR 0515 holds, else leave it to its person with the reason on the gate. Journaled either way.
+ * Everything dark factory mode reads about one merge gate on one head, and its verdict (ADR 0515).
+ * Run at the gate, and again by the babysitter just before it merges (review of #152): narrowed
+ * allowPaths, lowered limits or a hold since stop it there too.
  */
-export async function autoApproveMerge(
+export async function evaluateAutoApproval(
   ctx: HandlerContext,
-  pa: PendingActionRow,
-  adjudicator: { active: boolean; eligible: boolean; approved: boolean; jobId: string },
-): Promise<AutoApproveVerdict | null> {
-  if (pa.status !== "pending" || pa.kind !== "merge" || !pa.work_item_id) return null;
-  const w = await ctx.db
-    .selectFrom("core_work_items")
-    .selectAll()
-    .where("id", "=", pa.work_item_id)
-    .executeTakeFirst();
-  const project = ctx.scope.project;
-  if (!w || !project) return null;
-  // The workflow the item runs (the org version it pinned); a hold is the project's current config.
+  pa: Pick<PendingActionRow, "input">,
+  w: WorkItemRow,
+  project: ProjectRow,
+  adjudicator: { active: boolean; eligible: boolean; approved: boolean },
+): Promise<{
+  verdict: AutoApproveVerdict;
+  setting: AutoApproveSettings;
+  pinned: AutoApproveSettings;
+  current: AutoApproveSettings;
+  facts: AutoApproveFacts;
+}> {
   // On only while it is on in both the version the item pinned and the org's current one, with the
   // stricter limits (review of #152): an admin switching it off stops items already at a gate.
   const pinnedSetting = await autoApproveSetting(
@@ -108,31 +109,27 @@ export async function autoApproveMerge(
   );
   const currentSetting = await autoApproveSetting(ctx.db, project, project.policy_sha, null);
   const setting = stricterAutoApprove(pinnedSetting, currentSetting);
-  const headSha = mergeGateHead(pa) ?? w.head_sha ?? "";
-  let touchesFactoryConfig = false;
+  let input: { headSha?: unknown; touchesFactoryConfig?: unknown } = {};
   try {
-    touchesFactoryConfig =
-      (JSON.parse(pa.input) as { touchesFactoryConfig?: unknown }).touchesFactoryConfig === true;
+    input = JSON.parse(pa.input) as typeof input;
   } catch {
-    touchesFactoryConfig = true; // unreadable: treated as the factory's own change
+    input = { touchesFactoryConfig: true }; // unreadable: treated as the factory's own change
   }
+  const headSha = typeof input.headSha === "string" ? input.headSha : (w.head_sha ?? "");
   const facts: AutoApproveFacts = {
     headSha,
     packet: null,
-    adjudicator: {
-      active: adjudicator.active,
-      eligible: adjudicator.eligible,
-      approved: adjudicator.approved,
-    },
+    adjudicator,
     changes: null,
     hold: ctx.scope.rawPolicy?.autoApproveHold?.reason ?? null,
-    touchesFactoryConfig,
-    // Only an item whose Workflow the babysitter delivers, with its re-check (review of #152).
-    versionSupports: has(w.workflow_version, "dark-factory"),
+    touchesFactoryConfig: input.touchesFactoryConfig !== false,
+    // Only an item whose Workflow the babysitter delivers, with its re-check (review of #152); an
+    // attached PR merges directly on approval, with none, so it never qualifies.
+    versionSupports: has(w.workflow_version, "dark-factory") && w.kind !== "attached",
   };
   // Nothing more is read (no GitHub call) when the setting is off or the project is held.
-  const day = ctx.now.slice(0, 10);
   if (setting.enabled && !facts.hold && headSha) {
+    const day = ctx.now.slice(0, 10);
     // Today's count for the project (`core_meta`, one row a project: `<date>:<n>`), by key.
     const counted = await ctx.db
       .selectFrom("core_meta")
@@ -177,12 +174,10 @@ export async function autoApproveMerge(
           .executeTakeFirst()
       : undefined;
     if (repository) {
+      const repo = await repoRef(ctx, repository);
+      const github = ctx.services.github;
       try {
-        const files = await ctx.services.github.compareFiles(
-          await repoRef(ctx, repository),
-          repository.default_branch,
-          headSha,
-        );
+        const files = await github.compareFiles(repo, repository.default_branch, headSha);
         facts.changes = files.map((f) => ({
           path: f.path,
           changes: typeof f.changes === "number" ? f.changes : null,
@@ -193,23 +188,88 @@ export async function autoApproveMerge(
         }));
         // A rename also touches where it came from.
         for (const f of files)
-          if (f.previousPath) facts.changes.push({ path: f.previousPath, changes: 0 });
+          if (f.previousPath)
+            facts.changes.push({ path: f.previousPath, changes: 0, renamedFrom: true });
+        // GitHub's own count of the PR's files must match what was compared (fail closed).
+        const pr = w.pr_number ? await github.getPullRequest(repo, w.pr_number) : null;
+        facts.reportedFiles = typeof pr?.changedFiles === "number" ? pr.changedFiles : null;
+        // Modes: a symlink, a submodule, or any mode that changed, isn't low risk.
+        const paths = [...new Set(facts.changes.map((c) => c.path))];
+        const base = await github.getBranchSha(repo, repository.default_branch);
+        const [atHead, atBase] = await Promise.all([
+          github.pathEntries(repo, headSha, paths),
+          base ? github.pathEntries(repo, base, paths) : Promise.resolve({}),
+        ]);
+        facts.modeChanges = paths.filter((x) => {
+          const h = atHead[x]?.mode;
+          const b = (atBase as Record<string, { mode: string }>)[x]?.mode;
+          return (
+            h === "120000" ||
+            h === "160000" ||
+            b === "120000" ||
+            b === "160000" ||
+            (!!h && !!b && h !== b)
+          );
+        });
       } catch {
         facts.changes = null; // unread: a person decides
       }
-      facts.factorySource = await isFactorySource(
-        ctx,
-        project,
-        await repoRef(ctx, repository),
-        repository.default_branch,
-      );
+      facts.factorySource = await isFactorySource(ctx, project, repo, repository.default_branch);
     }
   }
-  const verdict = autoApproveVerdict(facts, setting);
+  return {
+    verdict: autoApproveVerdict(facts, setting),
+    setting,
+    pinned: pinnedSetting,
+    current: currentSetting,
+    facts,
+  };
+}
+
+/**
+ * The adjudicator approved a merge gate's commit: decide it with no person when every condition of
+ * ADR 0515 holds, else leave it to its person with the reason on the gate. Journaled either way.
+ */
+export async function autoApproveMerge(
+  ctx: HandlerContext,
+  pa: PendingActionRow,
+  adjudicator: { active: boolean; eligible: boolean; approved: boolean; jobId: string },
+): Promise<AutoApproveVerdict | null> {
+  if (pa.status !== "pending" || pa.kind !== "merge" || !pa.work_item_id) return null;
+  const w = await ctx.db
+    .selectFrom("core_work_items")
+    .selectAll()
+    .where("id", "=", pa.work_item_id)
+    .executeTakeFirst();
+  const project = ctx.scope.project;
+  if (!w || !project) return null;
+  const {
+    verdict,
+    setting,
+    pinned: pinnedSetting,
+    current: currentSetting,
+    facts,
+  } = await evaluateAutoApproval(ctx, pa, w, project, {
+    active: adjudicator.active,
+    eligible: adjudicator.eligible,
+    approved: adjudicator.approved,
+  });
+  const day = ctx.now.slice(0, 10);
+  // Journaled with what it read (review of #152): the head, the paths, both settings.
   ctx.change({
     entity: "pending_action",
     id: pa.id,
-    after: { autoApprove: verdict.approve, reason: verdict.reason, conditions: verdict.conditions },
+    after: {
+      autoApprove: verdict.approve,
+      reason: verdict.reason,
+      conditions: verdict.conditions,
+      headSha: facts.headSha,
+      paths: (facts.changes ?? []).map((c) => c.path).slice(0, 200),
+      settings: {
+        pinned: { orgVersion: w.org_config_version, ...pinnedSetting },
+        current: currentSetting,
+      },
+    },
   });
   if (!verdict.approve) {
     // The gate's card says which condition sent it to a person.
@@ -257,18 +317,18 @@ export async function autoApproveMerge(
 
 /** Whether a person (not the adjudicator) approved the item's latest approved spec gate. */
 async function specApprovedByPerson(ctx: HandlerContext, workItemId: string): Promise<boolean> {
-  // core_pending_actions_item_idx: the item's gates, newest approved spec gate first.
-  const gate = await ctx.db
+  // core_pending_actions_item_idx: the item's approved spec gates (a few), newest picked here.
+  const gates = await ctx.db
     .selectFrom("core_pending_actions as pa")
     .leftJoin("core_user as u", "u.id", "pa.decided_by")
-    .select(["u.id as person"])
+    .select(["u.id as person", "pa.decided_at"])
     .where("pa.work_item_id", "=", workItemId)
     .where("pa.kind", "=", "spec")
     .where("pa.status", "in", ["approved", "applied"])
-    .orderBy("pa.decided_at", "desc")
-    .limit(1)
-    .executeTakeFirst();
-  return !!gate?.person;
+    .limit(50)
+    .execute();
+  const newest = gates.sort((a, b) => (b.decided_at ?? "").localeCompare(a.decided_at ?? ""))[0];
+  return !!newest?.person;
 }
 
 /** Files only the factory's own source has: any one of them present means it is (any name). */
@@ -293,6 +353,8 @@ async function isFactorySource(
   repo: Awaited<ReturnType<typeof repoRef>>,
   branch: string,
 ): Promise<boolean> {
+  // Marked by migration 0286 on the factory's own project: always yes, whatever the config says.
+  if (_project.factory_source === 1) return true;
   const said = ctx.scope.rawPolicy?.factorySource ?? "auto";
   if (said !== "auto") return said === "yes";
   try {

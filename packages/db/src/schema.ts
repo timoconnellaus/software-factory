@@ -152,6 +152,8 @@ export interface CoreProjectsTable {
   repo_owner: string;
   /** @deprecated See `repo_owner`. Unique with it: a project with no repository writes its id. */
   repo_name: string;
+  /** 0286: 1 when the project is the factory's own source (auto-approval default-deny). */
+  factory_source: Generated<number | null>;
 }
 
 /**

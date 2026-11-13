@@ -155,6 +155,8 @@ export interface PullRequestInfo {
   base: { ref: string };
   /** The merge commit once merged (GitHub's `merge_commit_sha`); null or absent otherwise. */
   mergeCommitSha?: string | null;
+  /** How many files GitHub says the PR changes (`changed_files`; only on the single-PR read). */
+  changedFiles?: number;
 }
 
 export interface GitHubService {
