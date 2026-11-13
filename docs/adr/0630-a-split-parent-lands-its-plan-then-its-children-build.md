@@ -42,3 +42,23 @@ and no criteria to judge, and that can't be used to carry code to main.
 - `workItem.finish` takes `cancelled`, used only by a split's parent.
 - The parent waits for `split-<item>`, sent when its last child ends; it re-reads the children
   once a day in case the event was missed.
+
+> Amended 2026-11-13 (review of #171): what a split binds.
+> - **The approval names what was shown**: `spec.approve` for a split carries the gated spec's
+>   version and `splitDigest` (SHA-256 of each child's key, title, size, goal, scope, criteria and
+>   `after`, in order), and is refused otherwise. The children come from the gated spec, not the
+>   current one. The generic gate card and the adjudicator send neither, so a split always goes to a
+>   person on the plan's screen.
+> - **The plan's PR is checked by content**: `spec.commit` records each file it wrote with its
+>   SHA-256 (`core_specs.committed_files`, migration 0402). Verify reads each at the head SHA, and
+>   passes only when the PR's files are exactly that set with that content.
+> - **The parent holds no slot while it waits** (`core_work_items.awaiting_children`, set when its
+>   children are released): the pull's active count leaves it out, so its children start under any
+>   `activeLimit`.
+> - **A child is bound to its slice**: its approved slice's hash and size are stored with it
+>   (`split_slice`). Triage lets it skip planning, and keeps the approved criteria, only while its
+>   body and criteria still hash to the slice and the approved size isn't large. A held child can't
+>   be released by anyone until its parent's plan merged.
+> - An unreadable split fails closed; a PR closed or merged outside the factory tells the split's
+>   siblings and parent; splits apply only on Workflow feature `splits`.
+

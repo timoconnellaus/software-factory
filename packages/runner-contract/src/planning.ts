@@ -392,6 +392,33 @@ export function splitProblem(children: readonly SpecChild[]): string | null {
   return null;
 }
 
+/**
+ * The digest a person's approval of a split names (review of #171): SHA-256 (hex) of each child's
+ * key, title, size, goal, scope, criteria and `after`, in order. The app computes it from what it
+ * showed; the cloud refuses an approval whose digest isn't the gated spec's.
+ */
+export async function splitDigest(children: readonly SpecChild[]): Promise<string> {
+  const canonical = JSON.stringify(
+    children.map((c) => [
+      c.key,
+      c.title,
+      c.size,
+      c.goal,
+      c.scope,
+      c.acceptanceCriteria,
+      c.after ?? null,
+    ]),
+  );
+  // Web Crypto, in workerd, Node and the app's webview alike (this package has no DOM types).
+  const { subtle } = (
+    globalThis as unknown as {
+      crypto: { subtle: { digest(alg: string, data: Uint8Array): Promise<ArrayBuffer> } };
+    }
+  ).crypto;
+  const bytes = await subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export const specReviseInputSchema = z.object({
   title: z.string().max(200).optional(),
   /**

@@ -55,6 +55,7 @@ export function pinOnPart(
   preview: Pick<DesignPreview, "width">,
   part: Pick<DesignPart, "id" | "box">,
   at: { x: number; y: number },
+  revision?: number,
 ) {
   const box = part.box ?? { x: at.x, y: at.y, w: 1, h: 1 };
   const frac = (v: number, from: number, size: number) =>
@@ -68,6 +69,7 @@ export function pinOnPart(
     fx: frac(at.x, box.x, box.w),
     fy: frac(at.y, box.y, box.h),
     width: preview.width,
+    ...(revision !== undefined ? { revision } : {}),
   };
 }
 
@@ -78,4 +80,58 @@ export function pinPlace(
 ): { x: number; y: number } {
   const box = parts.find((p) => p.id === pin.element)?.box;
   return box ? { x: box.x + pin.fx * box.w, y: box.y + pin.fy * box.h } : { x: pin.x, y: pin.y };
+}
+
+/** A read as react-query reports it, as far as the comparison needs. */
+interface Read<T> {
+  isPending: boolean;
+  isError: boolean;
+  error?: unknown;
+  data?: T | undefined;
+}
+
+/**
+ * What the comparison against the pulled base can say (review of #168): a failed or missing read
+ * is never shown as "no changes". `ready` carries the base's drawing to compare with.
+ */
+export type Comparison =
+  | { kind: "off" }
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | { kind: "no-drawing" }
+  | { kind: "ready"; base: DesignPreview };
+
+export function comparison(
+  pulled: boolean,
+  on: boolean,
+  base: Read<{ preview: DesignPreview | null }>,
+): Comparison {
+  if (!pulled || !on) return { kind: "off" };
+  if (base.isError) {
+    return {
+      kind: "error",
+      message: base.error instanceof Error ? base.error.message : "the read failed",
+    };
+  }
+  if (base.isPending || !base.data) return { kind: "loading" };
+  return base.data.preview ? { kind: "ready", base: base.data.preview } : { kind: "no-drawing" };
+}
+
+/** Where a pin sits on this drawing, or null when its part is gone from it (then it's listed). */
+export function pinOn(
+  pin: {
+    element: string;
+    x: number;
+    y: number;
+    fx: number;
+    fy: number;
+    revision?: number | undefined;
+  },
+  parts: DesignPart[],
+  revision: number,
+): { x: number; y: number } | null {
+  const box = parts.find((p) => p.id === pin.element)?.box;
+  if (box) return { x: box.x + pin.fx * box.w, y: box.y + pin.fy * box.h };
+  // A pin placed on this very revision, on a spot that isn't a part: where it was put.
+  return pin.revision === revision ? { x: pin.x, y: pin.y } : null;
 }

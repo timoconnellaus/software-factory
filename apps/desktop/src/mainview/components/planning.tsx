@@ -1068,7 +1068,8 @@ function WorkspaceTabs({
           data-testid="comment-mode"
         >
           <MapPinIcon className="size-3.5" />
-          {pinMode ? "Click a spot to comment" : "Comment"} <Kbd>C</Kbd>
+          {pinMode ? (tab === "system" ? "Click a part" : "Click a spot to comment") : "Comment"}{" "}
+          <Kbd>C</Kbd>
         </Button>
       )}
     </div>

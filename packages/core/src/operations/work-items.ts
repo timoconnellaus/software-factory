@@ -13,7 +13,7 @@ import { provableChecks, specRequired } from "../policy/project-policy.ts";
 import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
-import { childEnded, SPLIT_MAX } from "../splits.ts";
+import { childEnded, SPLIT_MAX, sliceHash } from "../splits.ts";
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
@@ -956,14 +956,23 @@ export const workItemTriage = defineOperation({
           : null;
     }
     // An attached PR is already built: spec and build are skipped whatever its size (spec 05).
-    // Spec 24: a split's child whose approved slice triage finds complete skips planning, since a
-    // person approved the slice with the parent's spec; a large one still plans (as the policy
-    // always plans large work), and so does any child triage doesn't ask to skip.
-    const sliceApproved =
-      w.parent_work_item_id !== null &&
+    // Spec 24 (review of #171): a plan's child whose body and criteria still hash to the slice a
+    // person approved with the parent's spec keeps the approved criteria, and skips planning when
+    // triage finds the slice complete and the approved size isn't large. Anything changed since
+    // (an edit while it waited) and it plans under the policy like any item.
+    const slice = w.split_slice
+      ? parseJson<{ size?: string; sha256?: string } | null>(w.split_slice, null)
+      : null;
+    const approvedCriteria = parseJson<string[] | null>(w.acceptance_criteria ?? "null", null);
+    const sliceBound =
       w.source === "planning" &&
-      input.result.specRequested === "skip" &&
-      input.result.size !== "large";
+      w.parent_work_item_id !== null &&
+      slice?.sha256 !== undefined &&
+      approvedCriteria !== null &&
+      slice.sha256 === (await sliceHash(w.body, approvedCriteria));
+    const sliceApproved =
+      sliceBound && input.result.specRequested === "skip" && slice?.size !== "large";
+    if (sliceBound && approvedCriteria) input.result.acceptanceCriteria = approvedCriteria;
     const decision =
       w.kind === "attached"
         ? { required: false, reason: ATTACHED_SKIP_REASON }

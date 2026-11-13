@@ -18,7 +18,7 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangleIcon, MapPinIcon, Maximize2Icon } from "lucide-react";
 import { useMemo, useState } from "react";
-import { designOverlays, pinOnPart, pinPlace, svgDataUrl } from "../lib/design-view.ts";
+import { comparison, designOverlays, pinOn, pinOnPart, svgDataUrl } from "../lib/design-view.ts";
 import { lineDiff } from "../lib/line-diff.ts";
 import { read } from "../lib/op.ts";
 import { type Pin, pinsFor } from "./planning-visuals.tsx";
@@ -35,18 +35,22 @@ const TYPE_LABEL: Record<string, string> = {
   api: "API · OpenAPI",
 };
 
-/** A revision of a design from the door, with its preview (cached: a revision never changes). */
-function useDesign(workItemId: string, artifactId: string, revision: number | null) {
+/**
+ * A revision of a design from the door, with its preview. Keyed on the revision and the artifact's
+ * `updatedAt` (review of #168): a drawing can arrive after its revision (`design.preview`) and a
+ * re-pull rewrites revision 0, and both move `updatedAt`.
+ */
+function useDesign(
+  workItemId: string,
+  design: Pick<Artifact, "id" | "updatedAt">,
+  revision: number,
+  enabled = true,
+) {
   return useQuery({
-    queryKey: ["workItem", workItemId, "artifact", artifactId, revision ?? "latest"],
-    queryFn: () =>
-      read("artifact.get", {
-        workItemId,
-        artifactId,
-        ...(revision !== null ? { revision } : {}),
-      }),
+    queryKey: ["workItem", workItemId, "artifact", design.id, revision, design.updatedAt],
+    queryFn: () => read("artifact.get", { workItemId, artifactId: design.id, revision }),
     staleTime: Number.POSITIVE_INFINITY,
-    enabled: revision === null || revision >= 0,
+    enabled,
   });
 }
 
@@ -151,13 +155,15 @@ function Design({
   pinMode: boolean;
   onPin: (pin: Pin) => void;
 }) {
-  const latest = useDesign(workItemId, design.id, null);
+  const latest = useDesign(workItemId, design, design.revision);
   const pulled = design.pulledPath !== null;
-  const base = useDesign(workItemId, design.id, pulled ? 0 : -1);
+  const base = useDesign(workItemId, design, 0, pulled);
   const [compare, setCompare] = useState(true);
   const [full, setFull] = useState(false);
   const preview = latest.data?.preview ?? null;
-  const basePreview = pulled && compare ? (base.data?.preview ?? null) : null;
+  // A failed or missing read is never shown as "no changes" (review of #168).
+  const against = comparison(pulled, compare, base);
+  const basePreview = against.kind === "ready" ? against.base : null;
   const drawn = useMemo(
     () => (preview ? designOverlays(preview, basePreview) : null),
     [preview, basePreview],
@@ -179,13 +185,28 @@ function Design({
             from <span className="font-mono">{design.pulledPath}</span>
           </span>
         )}
-        {pulled && compare && drawn && (
+        {against.kind === "ready" && drawn && (
           <>
             <ChangeCount kind="added" n={drawn.counts.added} />
             <ChangeCount kind="changed" n={drawn.counts.changed} />
             <ChangeCount kind="removed" n={drawn.counts.removed} />
             {changed === 0 && <span className="text-ink-muted">No changes yet</span>}
           </>
+        )}
+        {against.kind === "loading" && (
+          <span className="text-ink-muted" data-testid="system-compare-loading">
+            Reading the default branch's copy…
+          </span>
+        )}
+        {against.kind === "error" && (
+          <span className="text-status-failed" data-testid="system-compare-error">
+            Couldn't read the default branch's copy: {against.message}
+          </span>
+        )}
+        {against.kind === "no-drawing" && (
+          <span className="text-ink-muted" data-testid="system-compare-none">
+            The default branch's copy has no drawing to compare with
+          </span>
         )}
         <span className="grow" />
         {preview && mode === "drawing" && (
@@ -205,7 +226,12 @@ function Design({
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
-        {latest.isPending ? (
+        {latest.isError ? (
+          <p className="text-status-failed text-sm" data-testid="system-error">
+            Couldn't read this design:{" "}
+            {latest.error instanceof Error ? latest.error.message : "the read failed"}
+          </p>
+        ) : latest.isPending ? (
           <p className="text-ink-muted text-sm">Loading the design…</p>
         ) : mode === "source" || !preview ? (
           <>
@@ -217,7 +243,11 @@ function Design({
             )}
             <Source
               content={latest.data?.content ?? ""}
-              base={pulled && compare ? (base.data?.content ?? null) : null}
+              base={
+                against.kind === "ready" || against.kind === "no-drawing"
+                  ? (base.data?.content ?? null)
+                  : null
+              }
             />
           </>
         ) : (
@@ -265,7 +295,7 @@ function Design({
             ))}
           </div>
         )}
-        <PinList view={view} design={design} />
+        <PinList view={view} design={design} parts={preview?.parts ?? null} />
       </div>
       {preview && (
         <Dialog open={full} onOpenChange={setFull}>
@@ -347,9 +377,10 @@ function Drawing({
         draggable={false}
       />
       {overlays.map(({ part, box, change }) => (
-        <button
+        <Button
           key={part.id}
           type="button"
+          variant="ghost"
           tabIndex={pinMode ? 0 : -1}
           title={part.id}
           aria-label={pinMode ? `Comment on ${part.id}` : part.id}
@@ -359,14 +390,17 @@ function Drawing({
             const sx = box.w / Math.max(1, r.width);
             const sy = box.h / Math.max(1, r.height);
             onPin(
-              pinOnPart(design.id, preview, part, {
-                x: box.x + (e.clientX - r.left) * sx,
-                y: box.y + (e.clientY - r.top) * sy,
-              }),
+              pinOnPart(
+                design.id,
+                preview,
+                part,
+                { x: box.x + (e.clientX - r.left) * sx, y: box.y + (e.clientY - r.top) * sy },
+                design.revision,
+              ),
             );
           }}
           className={cn(
-            "absolute rounded-[6px] border-2 border-transparent bg-transparent p-0 disabled:cursor-default",
+            "absolute h-auto min-h-0 rounded-[6px] border-2 border-transparent bg-transparent p-0 shadow-none hover:bg-transparent disabled:cursor-default disabled:opacity-100",
             change && CHANGE_STYLE[change],
             pinMode && "cursor-crosshair hover:border-status-running hover:bg-status-running/10",
           )}
@@ -384,7 +418,8 @@ function Drawing({
       {pins.map((p) => {
         const pin = p.message.pin;
         if (!pin) return null;
-        const at = pinPlace(pin, preview.parts);
+        const at = pinOn(pin, preview.parts, design.revision);
+        if (!at) return null;
         return (
           <span
             key={p.message.id}
@@ -401,7 +436,15 @@ function Drawing({
 }
 
 /** The comments pinned on this design, numbered as on the drawing. */
-function PinList({ view, design }: { view: PlanningView; design: Artifact }) {
+function PinList({
+  view,
+  design,
+  parts,
+}: {
+  view: PlanningView;
+  design: Artifact;
+  parts: DesignPreview["parts"] | null;
+}) {
   const pins = pinsFor(view, design.id);
   if (!pins.length) {
     return (
@@ -423,7 +466,16 @@ function PinList({ view, design }: { view: PlanningView; design: Artifact }) {
           </span>
           <span>
             <b className="font-medium">{p.message.authorName}</b> on{" "}
-            <span className="font-mono">{p.message.pin?.element}</span>: {p.message.text}
+            <span className="font-mono">{p.message.pin?.element}</span>
+            {parts && p.message.pin && !pinOn(p.message.pin, parts, design.revision) && (
+              <span className="text-status-failed" data-testid="system-pin-gone">
+                {" "}
+                (part removed
+                {p.message.pin.revision !== undefined ? ` since rev ${p.message.pin.revision}` : ""}
+                )
+              </span>
+            )}
+            : {p.message.text}
             <span className="text-ink-muted"> · {ago(p.message.createdAt)}</span>
           </span>
         </div>

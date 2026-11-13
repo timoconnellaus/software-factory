@@ -59,8 +59,14 @@ decision.
   merge, `source: "split"`; answering "Start #N without #M" drops the link, "Cancel #N" cancels it)
   and, as the last, the parent. A parent that ends before merging cancels the children it holds.
 - A child triage finds complete (asks to skip, not large) skips planning, with the reason logged.
-- Tests: `core/test/splits.test.ts`, `engine/test/split-flow.test.ts`, the query-plan guard (the
-  parent's read of its children), `engine/test/workflow-versions.test.ts`.
+- After the review of #171 (ADR 0630 amended, migration 0402): `spec.approve` for a split carries
+  `specVersion` and `splitDigest`; verify compares every committed file's content hash at the head
+  (`core_specs.committed_files`); the parent waiting for its children holds no active slot
+  (`awaiting_children`); a child is bound to its approved slice (`split_slice`) for skipping
+  planning and keeps the approved criteria; a held child can't be released before the plan merged.
+- Tests: `core/test/splits.test.ts`, `engine/test/split-flow.test.ts` (the cancelled path, and the
+  done path with `activeLimit` 1), the query-plan guard (the parent's read of its children),
+  `engine/test/workflow-versions.test.ts`.
 
 ### Part B: the app (desktop)
 - Under the plan, "Splits into · N work items, approved together", one row per child with its size

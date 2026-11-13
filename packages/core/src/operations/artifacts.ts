@@ -473,7 +473,15 @@ export const designPreview = defineOperation({
         .where("content", "=", r.content),
     );
     ctx.guardChanged("the revision is still the content the preview was drawn from");
+    // The artifact changed for whoever shows it (review of #168): its drawing arrived after it.
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_artifacts")
+        .set({ updated_at: ctx.now })
+        .where("id", "=", a.id),
+    );
     guardBudget(ctx, w.id);
+    logPlanning(ctx, w.id, "artifact.updated", { artifactId: a.id, preview: input.revision });
     return { artifactId: a.id, revision: input.revision };
   },
 });

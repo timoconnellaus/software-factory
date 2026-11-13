@@ -71,7 +71,9 @@ export interface PacketInput {
    * The verdict is then decided in code from the diff and CI: any other path, or a file removed or
    * renamed, fails it, so this path can't carry code to main without criteria being judged.
    */
-  splitFiles?: readonly string[] | null | undefined;
+  splitFiles?: readonly { path: string; sha256: string }[] | null | undefined;
+  /** Each of `splitFiles`' content hash at the head SHA (null: not there). */
+  splitAtHead?: Readonly<Record<string, string | null>> | undefined;
 }
 
 export interface AssembledPacket {
@@ -108,18 +110,28 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
 
   const split = input.splitFiles ?? null;
   if (split) {
-    // Spec 24: exactly the approved spec and .kim/ files, added or changed; nothing else.
-    const allowed = new Set(split);
+    // Spec 24 (review of #171): exactly the files spec.commit wrote, with the content it wrote, and
+    // nothing else; any other path, a removal or a rename, or a changed byte fails it.
+    const expected = new Map(split.map((f) => [f.path, f.sha256]));
+    if (expected.size === 0) missing.push("what the plan's commit wrote isn't recorded");
     for (const f of input.files ?? []) {
-      if (!allowed.has(f.path)) reasons.push(`not one of the approved plan's files: ${f.path}`);
+      if (!expected.has(f.path)) reasons.push(`not one of the approved plan's files: ${f.path}`);
       else if (f.status !== "added" && f.status !== "modified")
         reasons.push(`the approved plan's file was ${f.status}: ${f.path}`);
-      if (f.previousPath && !allowed.has(f.previousPath))
+      if (f.previousPath && !expected.has(f.previousPath))
         reasons.push(`not one of the approved plan's files: ${f.previousPath}`);
     }
-    const spec = split[0];
-    if (spec && input.files && !input.files.some((f) => f.path === spec))
-      missing.push(`the approved spec (${spec}) isn't in the pull request`);
+    for (const [path, sha256] of expected) {
+      if (input.files && !input.files.some((f) => f.path === path))
+        reasons.push(`the approved plan's file isn't in the pull request: ${path}`);
+      const at = input.splitAtHead?.[path];
+      if (at === undefined || at === null) {
+        if (input.files?.some((f) => f.path === path))
+          reasons.push(`the approved plan's file couldn't be read at the head: ${path}`);
+      } else if (at !== sha256) {
+        reasons.push(`the approved plan's file was changed after approval: ${path}`);
+      }
+    }
   } else {
     if (evidence.criteria.length === 0) missing.push("no acceptance criteria were checked");
     for (const c of evidence.criteria) {

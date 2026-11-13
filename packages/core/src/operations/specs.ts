@@ -3,6 +3,7 @@
 import { parseJson } from "@software-factory/db";
 import { DRAWN_BY, droppedEdits, specResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
+import { sha256Hex } from "../attachments.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { approvedKimFiles, planPath, writeBackFiles } from "../kim.ts";
@@ -178,6 +179,14 @@ export const specCommit = defineOperation({
       ...kept.map((f) => ({ path: f.path, content: f.content })),
     ];
     const unique = [...new Map(files.map((f) => [f.path, f])).values()];
+    // What this commit writes, by content hash (review of #171): a split parent's PR must hold
+    // exactly these at the head verify judges.
+    const committed = await Promise.all(
+      unique.map(async (f) => ({
+        path: f.path,
+        sha256: await sha256Hex(new TextEncoder().encode(f.content)),
+      })),
+    );
     const { commitSha } = await ctx.services.github.commitFiles(repo, {
       branch: w.branch,
       files: unique,
@@ -186,7 +195,7 @@ export const specCommit = defineOperation({
     ctx.write(
       ctx.db
         .updateTable("core_specs")
-        .set({ path, commit_sha: commitSha })
+        .set({ path, commit_sha: commitSha, committed_files: JSON.stringify(committed) })
         .where("id", "=", spec.id),
     );
     ctx.write(
