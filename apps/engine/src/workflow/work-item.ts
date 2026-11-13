@@ -136,11 +136,26 @@ export type WorkItemOutcome =
  * re-reading its entry after each timeout, `merge #b: deliver: read #i`); the engine's deliverer
  * updates, CIs and merges it. v11 has every feature of v10 (triage readiness and the spec critic). An incident's check-only auto-merge still lands itself, as v7.
  */
+/*
+ * v14 (ADR 0587): a person's push to the item's branch, from verify on ("reverify-on-push").
+ * push.observe records the new head and withdraws an open merge gate (or the approval the
+ * babysitter holds); the withdrawal sends the item back to verify the head, without a build, as
+ * v12's withdrawal at delivery does. A verify run that finishes on a head that is no longer the
+ * item's (`verify #b: head after run`), a CI wait on one (`ci.read` says `stale`) and a packet for
+ * one (`verify #b: head after packet`) open no gate: the item verifies the newest head instead,
+ * once, however many pushes came meanwhile. Any version whose open merge gate is withdrawn this
+ * way goes back to verify too (the decision never reached a factory item's gate before).
+ */
 /** Whether the table has a row for `version`: an instance on any other version errors. */
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 13;
+export const WORKFLOW_VERSION = 14;
+/** v14: the stage note when verify finished on a head a person has since pushed past (ADR 0587). */
+const movedNote = (was: string, now: string): string =>
+  now === was
+    ? `the pull request's head moved past ${was.slice(0, 7)}: verifying again`
+    : `a new commit (${now.slice(0, 7)}) was pushed while verify ran on ${was.slice(0, 7)}: verifying again`;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
@@ -733,6 +748,17 @@ class ItemFlow {
             ...(reverify !== null && has(version, "host-checks") ? { runChecks: true } : {}),
           },
         );
+        // v14: a person pushed while verify ran: whatever it found is about a stale head. Verify
+        // the newest head, without a build and without counting a failure.
+        const movedAfterRun = await this.headMoved(
+          `verify #${b}: head after run`,
+          headSha,
+          version,
+        );
+        if (movedAfterRun) {
+          withdrawn = movedAfterRun;
+          continue;
+        }
         if (verify.outcome === "cancelled") {
           await this.act(`verify #${b}: back`, "workItem.enterStage", {
             workItemId: id,
@@ -762,6 +788,10 @@ class ItemFlow {
             await this.askNoCi(meta, b, k, headSha);
             ci = await this.waitForCi(b, headSha, version, k + 1);
           }
+          if (ci === "stale") {
+            withdrawn = await this.movedReason(`verify #${b}: head after ci`, headSha);
+            continue;
+          }
           if (ci === "conflict") {
             note = await conflicted(b, verify);
             continue;
@@ -778,6 +808,16 @@ class ItemFlow {
           reviewer: r.reviewer ? { ...r.reviewer, sameModelAsImplementer: false } : null,
           riskFlags: r.riskFlags,
         });
+        // v14: a push between CI settling and the packet: the packet is the old head's record only.
+        const movedAfterPacket = await this.headMoved(
+          `verify #${b}: head after packet`,
+          headSha,
+          version,
+        );
+        if (movedAfterPacket) {
+          withdrawn = movedAfterPacket;
+          continue;
+        }
         // v2: the packet's verdict (green CI on the head SHA + a complete packet) decides.
         const passed = has(version, "verify-packet") ? packet.verdict === "pass" : runnerPassed;
         if (!passed && has(version, "verify-packet")) {
@@ -898,6 +938,11 @@ class ItemFlow {
             reason: "merged",
           });
           return { status: "done", workItemId: id };
+        }
+        if (decided.decision === "withdrawn") {
+          // A person pushed to the branch while the gate was open (ADR 0587): verify the new head.
+          withdrawn = decided.note ?? "a new commit was pushed";
+          continue;
         }
         if (decided.decision === "sent_back") {
           note = `Sent back at review: ${decided.note ?? ""}`;
@@ -1110,6 +1155,21 @@ class ItemFlow {
       if (!row?.head_sha) throw new Error(`work item ${this.workItemId} has no head`);
       return row.head_sha;
     });
+  }
+
+  /**
+   * v14: why the item goes back to verify when its head is no longer `headSha` (a person pushed
+   * while verify ran on it, ADR 0587), or null when it hasn't moved. One step; nothing before v14.
+   */
+  private async headMoved(name: string, headSha: string, version: number): Promise<string | null> {
+    if (!has(version, "reverify-on-push")) return null;
+    const now = await this.head(name);
+    return now === headSha ? null : movedNote(headSha, now);
+  }
+
+  /** The reason for a head the PR says moved (v14's `stale` CI read), from the item's head. */
+  private async movedReason(name: string, headSha: string): Promise<string> {
+    return movedNote(headSha, await this.head(name));
   }
 
   /**
@@ -1349,7 +1409,7 @@ class ItemFlow {
     version: number = 2,
     round = 1,
     label?: string,
-  ): Promise<"success" | "failure" | "missing" | "pending" | "conflict" | "unreadable"> {
+  ): Promise<"success" | "failure" | "missing" | "pending" | "conflict" | "unreadable" | "stale"> {
     for (let i = 1; i <= CI_ROUNDS; i++) {
       const sfx = (round === 1 ? "" : ` r${round}`) + (i === 1 ? "" : ` #${i}`);
       // v2's names, frozen; v4's merge queue waits under its own `label`.
@@ -1360,6 +1420,15 @@ class ItemFlow {
         headSha,
       });
       if (ci.status !== "ok") return "unreadable"; // the packet records why and fails
+      // v14: the PR's head is no longer this SHA and the item has recorded the push (ADR 0587):
+      // its CI decides nothing. Not recorded yet: wait on, the push's webhook wakes this wait.
+      if (
+        has(version, "reverify-on-push") &&
+        ci.output.mergeableState === "stale" &&
+        (await this.head(`${ciName}: head`)) !== headSha
+      ) {
+        return "stale";
+      }
       if (has(version, "conflicts") && ci.output.mergeable === false) return "conflict";
       const state = String(ci.output.state);
       if (state === "success" || state === "failure") return state;
@@ -1469,7 +1538,7 @@ class ItemFlow {
     if (has(version, "babysitter-delivery")) {
       if (decided.decision !== "approved") return this.notApproved(decided);
       if (!decided.pendingActionId) return { kind: "done", reason: "merged" };
-      const delivered = await this.deliverV11(b, headSha, decided.pendingActionId);
+      const delivered = await this.deliverV11(b, headSha, decided.pendingActionId, version);
       if (delivered.kind !== "withdrawn" && delivered.kind !== "reverify") return delivered;
       if (!has(version, "reverify-on-withdrawal")) {
         return { kind: "failed", reason: delivered.reason };
@@ -1494,12 +1563,16 @@ class ItemFlow {
   }
 
   private notApproved(decided: {
-    // `withdrawn` and `refused` are an attached PR's (its head moved); a factory item's head
-    // doesn't move while its merge gate is open, so they end it like a rejection.
+    // `withdrawn`: a person pushed to the branch while the gate was open (ADR 0587), at any
+    // version: the item verifies the new head. `refused` is an attached PR's (its head moved
+    // under the approval); for a factory item it ends it like a rejection.
     decision: Exclude<GateEventPayload["decision"], "approved"> | "refused";
     note: string | null;
-  }): { kind: "sent_back"; note: string | null } {
+  }): { kind: "sent_back"; note: string | null } | { kind: "withdrawn"; reason: string } {
     if (decided.decision === "sent_back") return { kind: "sent_back", note: decided.note };
+    if (decided.decision === "withdrawn") {
+      return { kind: "withdrawn", reason: decided.note ?? "a new commit was pushed" };
+    }
     throw new Ended("rejected", `merge rejected${decided.note ? `: ${decided.note}` : ""}`);
   }
 
@@ -1615,6 +1688,7 @@ class ItemFlow {
     b: number,
     headSha: string,
     approvalId: string,
+    version: number,
   ): Promise<
     | { kind: "done"; reason: string }
     | { kind: "conflict" }
@@ -1624,12 +1698,25 @@ class ItemFlow {
   > {
     const id = this.workItemId;
     const p = `merge #${b}: deliver`;
-    await this.act(`${p}: enqueue`, "mergeQueue.enter", {
+    const entering = {
       workItemId: id,
       headSha,
       pendingActionId: approvalId,
       driver: "babysitter",
-    });
+    };
+    if (has(version, "reverify-on-push")) {
+      // v14: a person's push can land between the approval and this call (ADR 0587). Then
+      // mergeQueue.enter refuses the old head; the item verifies the new one, as for any push.
+      const entered = await this.call(`${p}: enqueue`, "mergeQueue.enter", entering);
+      if (entered.status === "refused") {
+        const moved = await this.headMoved(`${p}: head after enqueue`, headSha, version);
+        if (moved !== null) return { kind: "withdrawn", reason: moved };
+        throw new Ended("failed", `mergeQueue.enter refused: ${entered.message}`);
+      }
+      if (entered.status !== "ok") throw new Ended("failed", "mergeQueue.enter is not gated");
+    } else {
+      await this.act(`${p}: enqueue`, "mergeQueue.enter", entering);
+    }
     for (let i = 1; ; i++) {
       let told: DeliveredEventPayload | null = null;
       try {

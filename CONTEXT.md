@@ -101,7 +101,9 @@ item of kind `attached` (`workItem.attachPr`, the `/attach` page that its failin
 check links to, or New work's list of open PRs). Triage drafts criteria from the PR. Spec and build
 are skipped, and the factory never pushes to its branch. Verify runs on the PR's own head and a pass
 opens the merge gate. A failure or send-back waits for a push, a push withdraws a pending merge
-gate, and closing the PR cancels the item (spec 05, ADR 0290).
+gate, and closing the PR cancels the item (spec 05, ADR 0290). A person's push to a factory-built item's
+branch, from verify on, also withdraws its merge gate and verifies the new head without a build
+(Workflow v14, ADR 0587).
 _Avoid_: imported PR, adopted PR, external work item
 
 **Attachment**
