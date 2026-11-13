@@ -94,6 +94,25 @@ export interface CoreOrgConfigsTable {
   impact: "loosens" | "tightens" | "neutral" | null;
 }
 
+/** A skill's versions (spec 52 (f), ADR 0513, migration 0283). */
+export interface CoreSkillVersionsTable {
+  org_id: string;
+  skill_id: string;
+  version: number;
+  name: string;
+  description: string;
+  body: string;
+  sha256: string;
+  overrides: string | null;
+  provenance: string | null;
+  status: "current" | "proposed" | "rejected";
+  source: string;
+  created_by: string | null;
+  note: string | null;
+  parent_version: number | null;
+  created_at: Iso;
+}
+
 /** Spec 52 PR (c): an ended item's shadow verdict (migration 0281), one row per item. */
 export interface CoreReconcileItemsTable {
   work_item_id: string;
@@ -1442,6 +1461,7 @@ export interface CoreDatabase {
   core_intake_keys: CoreIntakeKeysTable;
   core_intake_events: CoreIntakeEventsTable;
   core_stages: CoreStagesTable;
+  core_skill_versions: CoreSkillVersionsTable;
   core_questions: CoreQuestionsTable;
   core_specs: CoreSpecsTable;
   core_pending_actions: CorePendingActionsTable;

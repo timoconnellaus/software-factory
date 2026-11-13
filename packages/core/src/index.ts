@@ -80,6 +80,7 @@ export * from "./policy/project-policy.ts";
 export * from "./registry.ts";
 export * from "./scope.ts";
 export * from "./services.ts";
+export * from "./skills/index.ts";
 export { childrenOf, SPLIT_MAX, splitSettledEvent } from "./splits.ts";
 export * from "./verify/index.ts";
 export * from "./workflow-events.ts";
