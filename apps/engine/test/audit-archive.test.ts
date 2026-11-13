@@ -15,7 +15,7 @@ import {
   parseChunk,
 } from "@software-factory/core/audit-chain";
 import { beforeAll, describe, expect, it } from "vitest";
-import { AUDIT_ARCHIVE, archiveAudit } from "../src/audit-archive.ts";
+import { AUDIT_ARCHIVE, archiveAudit, STOPS_BEFORE_INCIDENT } from "../src/audit-archive.ts";
 import { invokeDeps } from "../src/deps.ts";
 import { ok, type World, world } from "./helpers.ts";
 import { growingScans, type Recorded, recordingEnv } from "./query-plans.ts";
@@ -165,12 +165,27 @@ describe("the audit archive", () => {
     const rows = results.sort(byAtId);
     const key = auditChunkKey(dayAgo(100), 1, rows[0] as AuditRow, rows.at(-1) as AuditRow);
     await env.ARCHIVE.put(key, "not this chunk\n");
-    const stopped = await archiveAudit(env, new Date(), { rows: 1_000_000 });
-    expect(stopped.archived).toBe(0);
+    const openIncidents = () =>
+      env.DB.prepare(
+        "SELECT reason FROM core_incidents WHERE kind = 'audit_archive_stopped' AND resolved_at IS NULL",
+      ).all<{ reason: string }>();
+    // Three stopped ticks in a row: nothing deleted, and an incident for a person on the third.
+    for (let i = 1; i <= STOPS_BEFORE_INCIDENT; i++) {
+      const stopped = await archiveAudit(env, new Date(), { rows: 1_000_000 });
+      expect(stopped.archived).toBe(0);
+      expect(stopped.stopped).toMatch(/the existing object differs/);
+      expect((await openIncidents()).results).toHaveLength(i < STOPS_BEFORE_INCIDENT ? 0 : 1);
+    }
     expect(await ids()).toEqual(expect.arrayContaining(machine));
     expect((await env.DB.prepare("SELECT * FROM core_audit_archive_leases").all()).results).toEqual(
       [],
     );
+    const listed = await ok<{ auditArchiveStopped: { reason: string } | null }>(
+      "incident.listArchiveMissing",
+      { orgId: w.orgId },
+      w.human,
+    );
+    expect(listed.auditArchiveStopped?.reason).toMatch(/stopped 3 ticks in a row/);
     // As a tick that died after its put would leave it: exactly the chunk. The next tick uses it.
     const { lines } = await chainLines(GENESIS, rows);
     await env.ARCHIVE.delete(key);
@@ -178,6 +193,8 @@ describe("the audit archive", () => {
     const t = await archiveAudit(env, new Date(), { rows: 4 });
     expect(t.archived).toBe(4);
     expect(await ids()).not.toContain(machine[0]);
+    // It archives again: the incident resolves itself.
+    expect((await openIncidents()).results).toEqual([]);
   });
 
   it("archives the machine rows of each due day as a verified chain and deletes only them", async () => {
@@ -296,11 +313,31 @@ describe("the audit archive", () => {
   it("audit.verify proves the chain, and names a day whose object was altered or lost", async () => {
     const from = dayAgo(100);
     const to = dayAgo(92);
-    type Verdict = { ok: boolean; days: { day: string; ok: boolean; why: string | null }[] };
+    type Verdict = {
+      ok: boolean;
+      days: { day: string; ok: boolean; status: string; why: string | null }[];
+    };
     const verify = () => ok<Verdict>("audit.verify", { orgId: w.orgId, from, to }, w.human);
     const good = await verify();
     expect(good.ok).toBe(true);
     expect(good.days).toHaveLength(9);
+    // Before the archive's first day and after its last: not gaps.
+    const edges = await ok<Verdict>(
+      "audit.verify",
+      { orgId: w.orgId, from: dayAgo(110), to: dayAgo(101) },
+      w.human,
+    );
+    expect(edges.ok).toBe(true);
+    expect(new Set(edges.days.map((d) => d.status))).toEqual(new Set(["before the archive"]));
+    const later = await ok<Verdict>(
+      "audit.verify",
+      { orgId: w.orgId, from: dayAgo(30), to: dayAgo(20) },
+      w.human,
+    );
+    expect(later.ok).toBe(true);
+    expect(new Set(later.days.map((d) => d.status))).toEqual(new Set(["not yet"]));
+    // Verdicts only: no counts of another org's rows.
+    expect(Object.keys(good.days[0] ?? {}).sort()).toEqual(["day", "ok", "status", "why"]);
     const key = (await env.DB.prepare(
       "SELECT r2_key FROM core_audit_archive_chunks WHERE day = ? AND seq = 1",
     )
@@ -370,12 +407,18 @@ describe("the audit archive", () => {
     ];
     const { lines, last } = await chainLines(GENESIS, rows);
     const key = `audit/test/${day}.ndjson`;
-    await env.ARCHIVE.put(key, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+    const text = `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`;
+    await env.ARCHIVE.put(key, text);
+    const sha = [
+      ...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
+    ]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at)
-         VALUES (?, 1, ?, ?, 'au_old1', ?, 'au_other', 3, 1, 's', ?, ?, ?)`,
-      ).bind(day, key, rows[0]?.at, rows[2]?.at, GENESIS, last, ago(0)),
+         VALUES (?, 1, ?, ?, 'au_old1', ?, 'au_other', 3, 1, ?, ?, ?, ?)`,
+      ).bind(day, key, rows[0]?.at, rows[2]?.at, sha, GENESIS, last, ago(0)),
       env.DB.prepare(
         "INSERT INTO core_audit_archive_items (work_item_id, day, seq, rows) VALUES (?, ?, 1, 2)",
       ).bind(item.workItemId, day),
@@ -424,5 +467,41 @@ describe("the audit archive", () => {
       { actor: w.human, origin: { surface: "test" } },
     );
     expect(lost.status === "ok" && lost.output.archive.state).toBe("missing");
+    // An object that doesn't match its record's SHA-256 is shown as missing, never as what it holds.
+    await env.ARCHIVE.put(key, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n\n`);
+    const altered = await invoke<Timeline>(
+      uncached,
+      "workItem.timeline",
+      { workItemId: item.workItemId, archived: true },
+      { actor: w.human, origin: { surface: "test" } },
+    );
+    expect(altered.status === "ok" && altered.output.archive.state).toBe("missing");
+    // Past 20 objects, the archive pages with a cursor.
+    await env.DB.batch(
+      Array.from({ length: 21 }, (_, i) => [
+        env.DB.prepare(
+          `INSERT INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at)
+           VALUES (?, ?, ?, 'a', 'a', 'b', 'b', 1, 1, 's', 'p', 'h', 'x')`,
+        ).bind(dayAgo(140), i + 1, `audit/test/page-${i}`),
+        env.DB.prepare(
+          "INSERT INTO core_audit_archive_items (work_item_id, day, seq, rows) VALUES (?, ?, ?, 1)",
+        ).bind(item.workItemId, dayAgo(140), i + 1),
+      ]).flat(),
+    );
+    type Paged = {
+      archive: { chunks: number; more: boolean; next: { day: string; seq: number } | null };
+    };
+    const page1 = await ok<Paged>("workItem.timeline", { workItemId: item.workItemId }, w.human);
+    expect(page1.archive).toMatchObject({
+      chunks: 20,
+      more: true,
+      next: { day: dayAgo(140), seq: 19 },
+    });
+    const page2 = await ok<Paged>(
+      "workItem.timeline",
+      { workItemId: item.workItemId, archiveAfter: page1.archive.next },
+      w.human,
+    );
+    expect(page2.archive).toMatchObject({ chunks: 2, more: false, next: null });
   });
 });

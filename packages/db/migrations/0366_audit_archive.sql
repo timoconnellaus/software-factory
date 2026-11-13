@@ -139,4 +139,48 @@ BEGIN SELECT RAISE(ABORT, 'core_audit_archive_items is append-only'); END;
 CREATE TRIGGER core_audit_archive_items_no_delete BEFORE DELETE ON core_audit_archive_items
 BEGIN SELECT RAISE(ABORT, 'core_audit_archive_items is append-only'); END;
 
+-- A stopped archiver is an incident for a person (review of #170): after three ticks in a row that
+-- stopped (an object that disagrees with D1, a lost lease, an error), the archiver records one
+-- core_incidents row of kind `audit_archive_stopped`, listed on the desktop's Checks and incidents
+-- page (no Inbox card), and resolves it itself once a tick archives again. The archive is the
+-- factory's, not an org's, so that row has no org, project or work item: SQLite can't relax a NOT
+-- NULL or change a CHECK, so the table is rebuilt (as 0364 did); nothing references it.
+CREATE TABLE core_incidents_0366 (
+  id TEXT PRIMARY KEY NOT NULL,
+  org_id TEXT,
+  project_id TEXT,
+  source_work_item_id TEXT,
+  run_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('sent_back', 'run_failed', 'run_stalled', 'manual',
+                                     'archive_missing', 'audit_archive_stopped')),
+  reason TEXT NOT NULL,
+  fix_work_item_id TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  root_cause TEXT,
+  proposed_fix TEXT,
+  resolved_at TEXT,
+  resolved_by TEXT,
+  resolution TEXT,
+  -- Every incident but the archiver's names its org, project and work item.
+  CHECK (kind = 'audit_archive_stopped'
+         OR (org_id IS NOT NULL AND project_id IS NOT NULL AND source_work_item_id IS NOT NULL))
+);
+INSERT INTO core_incidents_0366 (id, org_id, project_id, source_work_item_id, run_id, kind, reason,
+  fix_work_item_id, created_by, created_at, root_cause, proposed_fix, resolved_at, resolved_by,
+  resolution)
+SELECT id, org_id, project_id, source_work_item_id, run_id, kind, reason, fix_work_item_id,
+  created_by, created_at, root_cause, proposed_fix, resolved_at, resolved_by, resolution
+FROM core_incidents;
+DROP TABLE core_incidents;
+ALTER TABLE core_incidents_0366 RENAME TO core_incidents;
+CREATE INDEX core_incidents_project_idx ON core_incidents (project_id, created_at);
+CREATE INDEX core_incidents_run_idx ON core_incidents (run_id, kind) WHERE run_id IS NOT NULL;
+CREATE INDEX core_incidents_open_archive_idx ON core_incidents (org_id, created_at)
+  WHERE kind = 'archive_missing' AND resolved_at IS NULL;
+-- Read by the archiver (is one open?) and incident.listArchiveMissing (the page shows it): the open
+-- archiver incident, at most one (`WHERE kind = 'audit_archive_stopped' AND resolved_at IS NULL`).
+CREATE INDEX core_incidents_audit_archive_idx ON core_incidents (created_at)
+  WHERE kind = 'audit_archive_stopped' AND resolved_at IS NULL;
+
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 366) WHERE key = 'schema_version';

@@ -360,6 +360,7 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       return as(e, "audit.verify", { orgId: w.orgId, from, to }, w.human);
     },
   },
+  {
     // The archive's daily sample, with one of the run's objects gone: it finds the gap (the top
     // rowid, then the picks by rowid) and reports it through run.reportArchiveMissing as the
     // scheduler, which opens the run's one incident record.

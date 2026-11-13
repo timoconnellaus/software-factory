@@ -541,7 +541,12 @@ export type IncidentKind =
   | "run_stalled"
   | "manual"
   /** 0364: a run's archived log is lost; for a person, no agent fix. */
-  | "archive_missing";
+  | "archive_missing"
+  /**
+   * 0366: the audit archiver stopped three ticks in a row. The factory's, not an org's: its row has
+   * no org, project or work item (the archiver writes it in SQL; reads by org never see it).
+   */
+  | "audit_archive_stopped";
 
 export interface CoreIncidentsTable {
   id: string;

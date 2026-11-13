@@ -89,6 +89,13 @@ export type AuditArchiveTick = {
   rowsRead: number;
   /** D1 rows this tick wrote, as D1 reported them. */
   rowsWritten: number;
+  /** Why the tick stopped part-way, when it did (null when it ran out of work or budget). */
+  stopped?: string | null;
+  /**
+   * Machine rows of an already archived day still in D1, seen in this tick's windows: calls that
+   * committed later than the skew allows. They stay in D1 (never deleted); counted in the health.
+   */
+  outran?: number;
 };
 
 type Meter = { queries: number; rowsRead: number; rowsWritten: number };
@@ -130,8 +137,11 @@ export async function archiveAudit(
   let held: string | null = null;
   let drain: { state: DrainState; rows: number } | null = null;
   let budget = opts.rows ?? Number.POSITIVE_INFINITY;
+  let stopped: string | null = null;
+  let unexpected: unknown = null;
+  const outran = { n: 0 };
   let scan = opts.scanRows ?? AUDIT_ARCHIVE.scanRows;
-  const room = () => m.queries + 6 <= AUDIT_ARCHIVE.maxQueriesPerTick;
+  const room = () => m.queries + 8 <= AUDIT_ARCHIVE.maxQueriesPerTick;
   try {
     while (budget > 0 && room()) {
       // The next day: the one after the last recorded, or the first row's (by rowid) less the skew.
@@ -204,14 +214,19 @@ export async function archiveAudit(
         widen: () => {
           scan = Math.min(scan * 2, AUDIT_ARCHIVE.maxScanRows);
         },
+        outran: (n) => {
+          outran.n += n;
+        },
       });
       if (!done) break;
       tick.days.push(day);
       held = null;
     }
   } catch (error) {
-    if (!(error instanceof AuditArchiveStop)) throw error;
-    console.warn(`audit archive stopped: ${error.message}`);
+    // Recorded below (three in a row open an incident); an unexpected error is rethrown after.
+    stopped = error instanceof Error ? error.message : String(error);
+    console.warn(`audit archive stopped: ${stopped}`);
+    if (!(error instanceof AuditArchiveStop)) unexpected = error;
   } finally {
     if (held) {
       const r = await env.DB.prepare(
@@ -221,7 +236,9 @@ export async function archiveAudit(
         .run();
       count(m, r);
     }
-    if (drain && tick.archived > 0) {
+    // The drain's credit and month carry over every drain tick, archived or not (so a tick whose
+    // credit was too small still builds toward a whole chunk).
+    if (drain) {
       const spent = Math.min(drain.rows, tick.archived);
       const state: DrainState = {
         ...drain.state,
@@ -236,13 +253,101 @@ export async function archiveAudit(
       count(m, r);
     }
   }
+  await recordHealth(env.DB, m, tick, stopped, outran.n);
   tick.queries = m.queries;
   tick.rowsRead = m.rowsRead;
   tick.rowsWritten = m.rowsWritten;
+  tick.stopped = stopped;
+  tick.outran = outran.n;
+  if (unexpected) throw unexpected;
   if (tick.archived > 0 || tick.days.length > 0) {
     console.log(`audit archive ${JSON.stringify(tick)}`);
   }
   return tick;
+}
+
+/** Stopped ticks in a row that open the archiver's incident. */
+export const STOPS_BEFORE_INCIDENT = 3;
+const HEALTH_KEY = "audit-archive:health";
+
+type Health = { stops: number; since: string | null; why: string | null; outran: number };
+
+/**
+ * The archiver's health in core_meta (`audit-archive:health`): ticks stopped in a row, since when
+ * and why, and the rows that outran the skew so far. Three stops in a row record one incident for a
+ * person (kind `audit_archive_stopped`, on the desktop's Checks and incidents page); the next tick
+ * that archives again resolves it. Writes only when something changed.
+ */
+async function recordHealth(
+  db: D1Database,
+  m: Meter,
+  tick: AuditArchiveTick,
+  stopped: string | null,
+  outran: number,
+): Promise<void> {
+  const read = await db
+    .prepare("SELECT value FROM core_meta WHERE key = ?")
+    .bind(HEALTH_KEY)
+    .all<{ value: string }>();
+  count(m, read);
+  let h: Health = { stops: 0, since: null, why: null, outran: 0 };
+  try {
+    const raw = read.results[0]?.value;
+    if (raw) h = { ...h, ...(JSON.parse(raw) as Partial<Health>) };
+  } catch {
+    // Starts again.
+  }
+  const progressed = tick.archived > 0 || tick.days.length > 0;
+  const now = new Date().toISOString();
+  const next: Health = stopped
+    ? { ...h, stops: h.stops + 1, since: h.since ?? now, why: stopped, outran: h.outran + outran }
+    : progressed
+      ? { stops: 0, since: null, why: null, outran: h.outran + outran }
+      : { ...h, outran: h.outran + outran };
+  if (outran > 0) console.warn(`audit archive: ${outran} machine rows outran the commit skew`);
+  const statements: D1PreparedStatement[] = [];
+  if (JSON.stringify(next) !== JSON.stringify(h)) {
+    statements.push(
+      db
+        .prepare(
+          "INSERT INTO core_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(HEALTH_KEY, JSON.stringify(next)),
+    );
+  }
+  if (stopped && next.stops >= STOPS_BEFORE_INCIDENT) {
+    // One open at a time (core_incidents_audit_archive_idx).
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO core_incidents (id, kind, reason, created_by, created_at)
+           SELECT ?, 'audit_archive_stopped', ?, 'scheduler', ?
+           WHERE NOT EXISTS (SELECT 1 FROM core_incidents
+             WHERE kind = 'audit_archive_stopped' AND resolved_at IS NULL)`,
+        )
+        .bind(
+          `inc_${crypto.randomUUID().replace(/-/g, "")}`,
+          `The audit archive has stopped ${next.stops} ticks in a row since ${next.since}: ${stopped}`,
+          now,
+        ),
+    );
+  }
+  if (progressed && h.stops >= STOPS_BEFORE_INCIDENT) {
+    statements.push(
+      db
+        .prepare(
+          `UPDATE core_incidents SET resolved_at = ?, resolved_by = 'scheduler',
+             resolution = 'The audit archive archived again.'
+           WHERE kind = 'audit_archive_stopped' AND resolved_at IS NULL`,
+        )
+        .bind(now),
+    );
+  }
+  if (statements.length > 0) {
+    const results = await db.batch(statements);
+    for (const r of results) count(m, r);
+    m.queries -= results.length - 1;
+  }
 }
 
 /**
@@ -300,6 +405,7 @@ type DayRun = {
   room: () => boolean;
   scan: () => number;
   widen: () => void;
+  outran: (n: number) => void;
 };
 
 /**
@@ -312,6 +418,18 @@ async function archiveDay(env: Pick<Env, "DB" | "ARCHIVE">, m: Meter, d: DayRun)
   let cont = d.cont;
   let floor = await findFloor(env.DB, m, new Date(Date.parse(cont.at) - skew).toISOString());
   let stalled = 0;
+  // Starting the day: machine rows of earlier (archived) days still in the first window are calls
+  // that committed later than the skew allows. They stay in D1; the health counts them.
+  if (d.seq === 0 && d.prevRoot !== GENESIS) {
+    const late = await env.DB.prepare(
+      `SELECT count(*) AS n FROM (SELECT 1 FROM core_audit
+       WHERE rowid > ? AND rowid <= ? AND at < ? AND ${MACHINE_ROW_SQL} LIMIT 1000)`,
+    )
+      .bind(floor, floor + d.scan(), `${d.day}T00:00:00.000Z`)
+      .all<{ n: number }>();
+    count(m, late);
+    d.outran(late.results[0]?.n ?? 0);
+  }
   while (d.room()) {
     const ceil = floor + d.scan();
     // The first row past the window bounds what the window provably holds: every later row has

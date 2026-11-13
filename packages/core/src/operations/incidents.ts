@@ -175,8 +175,24 @@ export const incidentListArchiveMissing = defineOperation({
     ),
     /** More are open than were returned. */
     more: z.boolean(),
+    /**
+     * The audit archiver has stopped three ticks in a row (ADR 0591): the factory's incident, not an
+     * org's, resolved by the archiver itself once it archives again. Null while it runs.
+     */
+    auditArchiveStopped: z
+      .object({ id: z.string(), reason: z.string(), createdAt: z.string() })
+      .nullable(),
   }),
   async handler(input, ctx) {
+    // core_incidents_audit_archive_idx: the one open archiver incident, if any.
+    const stoppedRead = ctx.db
+      .selectFrom("core_incidents")
+      .select(["id", "reason", "created_at"])
+      .where("kind", "=", "audit_archive_stopped")
+      .where("resolved_at", "is", null)
+      .orderBy("created_at", "desc")
+      .limit(1)
+      .executeTakeFirst();
     // core_incidents_open_archive_idx: (org_id, created_at) over the open archive incidents only.
     const rows = await ctx.db
       .selectFrom("core_incidents as i")
@@ -209,6 +225,9 @@ export const incidentListArchiveMissing = defineOperation({
         createdAt: r.created_at,
       })),
       more: rows.length > ARCHIVE_INCIDENTS_MAX,
+      auditArchiveStopped: await stoppedRead.then((r) =>
+        r ? { id: r.id, reason: r.reason, createdAt: r.created_at } : null,
+      ),
     };
   },
 });

@@ -1055,7 +1055,7 @@ const timeline = (archived: boolean): OpOutput<"workItem.timeline"> => ({
         ...TIMELINE.entries,
       ].sort((a, b) => (a.at < b.at ? -1 : 1))
     : TIMELINE.entries,
-  archive: { rows: 3, chunks: 1, state: archived ? "read" : "available", more: false },
+  archive: { rows: 3, chunks: 1, state: archived ? "read" : "available", more: false, next: null },
 });
 
 const TIMELINE: OpOutput<"workItem.timeline"> = {
@@ -1077,7 +1077,7 @@ const TIMELINE: OpOutput<"workItem.timeline"> = {
     pendingActionId: null,
     result: null,
   })),
-  archive: { rows: 0, chunks: 0, state: "none", more: false },
+  archive: { rows: 0, chunks: 0, state: "none", more: false, next: null },
 };
 
 const SETUP: OpOutput<"setup.status"> = {
@@ -1753,6 +1753,11 @@ export const ANSWERS: Answers = {
   "incident.listArchiveMissing": (input) => ({
     incidents: input.orgId === PERSONAL ? ARCHIVE_INCIDENTS() : [],
     more: false,
+    auditArchiveStopped: {
+      id: "incident_audit",
+      reason: `The audit archive has stopped 3 ticks in a row since ${ago(16)}: audit/2026/08/14/00001_…: the existing object differs`,
+      createdAt: ago(6),
+    },
   }),
   "incident.resolve": () => ({ resolved: true }),
   "org.list": () => ({

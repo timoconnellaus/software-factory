@@ -68,9 +68,12 @@ export const auditVerify = defineOperation({
         .orderBy("seq")
         .limit(VERIFY_MAX_CHUNKS + 1)
         .execute(),
+      // Each on its own (SQLite reads one end of the primary key for a lone min or max).
       ctx.db
-        .selectFrom("core_audit_archives")
-        .select([sql<string | null>`min(day)`.as("first"), sql<string | null>`max(day)`.as("last")])
+        .selectNoFrom([
+          sql<string | null>`(SELECT min(day) FROM core_audit_archives)`.as("first"),
+          sql<string | null>`(SELECT max(day) FROM core_audit_archives)`.as("last"),
+        ])
         .executeTakeFirst(),
     ]);
     const byDay = new Map(days.map((d) => [d.day, d]));

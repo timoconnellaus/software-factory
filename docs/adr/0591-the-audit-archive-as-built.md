@@ -17,9 +17,9 @@ the proposal left open.
    - written by a runner, the scheduler, an intake connector, or the foreman (`agent`/`foreman`).
      Never a person's row, another agent's or `self-improve`'s;
    - `decision = 'allow'` and `outcome = 'ok'`, with no `pending_action_id` and no `approval_id`;
-   - one of 36 routine operations: leases, heartbeats, claims, steers, run events, tokens,
-     hand-backs, stage and merge-queue moves, branch moves, device-login polls, news deliveries and
-     the intake's observations.
+   - one of 29 routine operations: leases, heartbeats, claims, steers, run events, artifacts,
+     hand-backs, stage moves, merge-queue moves short of merging, a branch's first push, news
+     deliveries and the intake's observations.
 
    The list is in migration 0366's trigger and in `AUDIT_ARCHIVE_OPERATIONS`
    (`packages/core/src/audit-chain.ts`), and a test keeps the two equal. These are never on it:
@@ -98,3 +98,44 @@ the proposal left open.
 - A lost audit object is reported by `audit.verify` and by the timeline's `missing` state. It does
   not open an incident, because there is no run to record it against, as #164 did. If the owner
   wants one, it is a small follow-up.
+
+## Changed in review, 2026-11-13 (#170)
+- **What stays in D1, by name.** The list now leaves out everything that issues a credential and
+  everything that records what reached main. `NEVER_ARCHIVED` names them, and a test keeps them off
+  both lists:
+  - the device logins (`runner.deviceStart` and `runner.devicePoll`, `cli.deviceStart` and
+    `cli.devicePoll`). Their settled row is the record that a runner key or CLI token was issued;
+  - `run.issueToken`, the GitHub job token's mint (ADR 0033);
+  - `mergeQueue.merging` and `branch.advance`, which record what reached main.
+
+  The list is 29 operations.
+- **The trigger checks a range, not membership.** It refuses a delete unless a chunk's
+  `(at, id)` range covers the row. Membership comes from the archiver's batch, which deletes exactly
+  the ids it wrote to the object, in the batch that records it. Checking membership in SQL would
+  cost 2 to 4 more rows written per archived row.
+- **No replace.** `INSERT OR REPLACE` deletes without firing delete triggers, so a person's row could
+  have been replaced by a machine row and then archived. `core_audit_no_replace` aborts an insert
+  whose id or idempotency key is already there, with a UNIQUE-conflict message, which `invoke()`
+  still recognizes. That is two index lookups per audited call. They are reads, with no write, and
+  the only addition to the hot path.
+- **The records are append-only.** `core_audit_archives`, `core_audit_archive_chunks` and
+  `core_audit_archive_items` refuse UPDATE and DELETE, so the chain's head only advances by a new
+  day. The new delete trigger is created before the old one is dropped.
+- **The timeline:**
+  - it pages past 20 objects with `archiveAfter` and `archive.next`;
+  - it checks each object against its record's SHA-256, since the isolate may cache it. One that
+    doesn't match shows as `missing`, never as what it holds.
+- **`audit.verify` gives verdicts only.** Each day comes back with `ok`, a status and why, and no row
+  or object counts, so another org's volume isn't shown. The statuses are `before the archive`,
+  `not yet`, `missing` (a gap between archived days) and `archived`. A missing chunk record is a
+  failure, never read as the call's cap.
+- **A stopped archiver is an incident.** After three stopped ticks in a row, the archiver records a
+  `core_incidents` row of kind `audit_archive_stopped`:
+  - it belongs to the factory, so it has no org, project or work item. `core_incidents` is rebuilt
+    in 0366 for that, with a CHECK that every other kind has all three;
+  - it shows on the desktop's Checks and incidents page, with no Inbox card;
+  - the archiver resolves it itself once a tick archives again.
+
+  Health is kept in `core_meta` (`audit-archive:health`). It also counts machine rows of archived
+  days still in D1, which are calls that outran the commit skew, and logs them.
+- **The drain's credit** carries over on every drain tick, archived or not.

@@ -77,6 +77,27 @@ function IncidentsPage() {
           )
         }
       </Reads>
+      {archive.data?.auditArchiveStopped && (
+        <div
+          role="alert"
+          className="rounded-[10px] bg-panel px-4 py-3 text-sm shadow-panel"
+          data-testid="audit-archive-stopped"
+        >
+          <span className="flex items-start gap-2">
+            <StatusDot className="mt-[7px]" status="failed" />
+            <span className="min-w-0">
+              <span className="block font-medium">The audit archive has stopped</span>
+              <span className="block text-ink-3 text-xs">
+                {archive.data.auditArchiveStopped.reason}
+              </span>
+              <span className="block text-ink-muted text-xs">
+                Nothing is deleted while it is stopped; it clears itself once the archiver runs
+                again.
+              </span>
+            </span>
+          </span>
+        </div>
+      )}
       <SectionTitle note="A record for a person: no agent can bring a lost object back.">
         Archived logs missing
       </SectionTitle>
