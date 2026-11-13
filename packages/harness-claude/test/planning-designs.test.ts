@@ -13,7 +13,14 @@ function fakeRelay(answers: Record<string, (input: Record<string, unknown>) => u
     const body = JSON.parse(String(init.body)) as { op: string; input: Record<string, unknown> };
     sent.push(body);
     const answer = answers[body.op];
-    return new Response(JSON.stringify({ ok: true, result: answer ? answer(body.input) : {} }));
+    try {
+      return new Response(JSON.stringify({ ok: true, result: answer ? answer(body.input) : {} }));
+    } catch (error) {
+      return new Response(
+        JSON.stringify({ ok: false, code: "conflict", error: (error as Error).message }),
+        { status: 409 },
+      );
+    }
   }) as typeof globalThis.fetch;
   const call = async (name: string, args: Record<string, unknown>) => {
     const r = (await handleMcp(
@@ -97,6 +104,43 @@ describe("design checks in the planning MCP server (spec 22 part B)", () => {
       ["design.preview", 0],
       ["design.preview", 1],
     ]);
+  });
+
+  it("reports a pull whose drawing wasn't stored as pulled, and never caches a failed read (review of #163)", async () => {
+    const { call } = fakeRelay({
+      "design.pull": () => ({ artifactId: "pa_q", revision: 1, changed: false }),
+      "artifact.read": () => ({
+        designType: "data-model",
+        kind: "design",
+        content: "Table users {\n  id int [pk]\n}\n",
+      }),
+      "design.preview": () => {
+        throw new Error("the plan is waiting at the gate");
+      },
+    });
+    const r = await call("design_pull", { path: ".kim/designs/users.dbml" });
+    expect(r.error).toBe(false);
+    expect(JSON.parse(r.text).design.previewNotStored).toMatch(/wasn't stored: .*gate/);
+
+    let reads = 0;
+    const flaky = fakeRelay({
+      "artifact.read": () => {
+        reads++;
+        if (reads === 1) throw new Error("try again");
+        return { designType: "data-model", kind: "design", content: "" };
+      },
+      "artifact.update": () => ({ artifactId: "pa_f", revision: 2, controls: [], warnings: [] }),
+    });
+    const first = await flaky.call("artifact_update", { artifactId: "pa_f", content: "Table a {" });
+    expect(first.error).toBe(true);
+    // The type wasn't remembered as "not a design": the next save is read again and checked.
+    const second = await flaky.call("artifact_update", {
+      artifactId: "pa_f",
+      content: "Table a {",
+    });
+    expect(second.error).toBe(true);
+    expect(second.text).toMatch(/won't draw/);
+    expect(flaky.sent.some((x) => x.op === "artifact.update")).toBe(false);
   });
 
   it("never offers the model the preview: no design_preview tool, no preview field", () => {

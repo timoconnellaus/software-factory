@@ -11,20 +11,22 @@ export type DesignChecker = (
   source: string,
   name?: string,
 ) => Promise<
-  | { ok: true; preview: DesignPreview }
+  | { ok: true; preview: DesignPreview | null; warnings: DesignPreview["warnings"] }
   | { ok: false; errors: DesignPreview["warnings"]; message: string }
 >;
 
 type Call = (op: PlanningOp, args: Record<string, unknown>) => Promise<unknown>;
 
+/** The checks, in a worker thread with a time bound (review of #163). */
 const loadChecker = async (): Promise<DesignChecker> =>
-  (await import("@software-factory/planning-designs")).checkDesign;
+  (await import("@software-factory/planning-designs")).checkDesignBounded;
 
 /** What this server knows of an artifact's type, from the saves and reads it relayed. */
 const known = new Map<string, DesignType | null>();
 
 async function designTypeOf(call: Call, artifactId: string): Promise<DesignType | null> {
   if (known.has(artifactId)) return known.get(artifactId) ?? null;
+  // A failed read throws (the save isn't relayed unchecked) and isn't remembered (review of #163).
   const read = (await call("artifact.read", { artifactId })) as { designType?: string | null };
   const type = (read.designType ?? null) as DesignType | null;
   known.set(artifactId, type);
@@ -56,8 +58,9 @@ export async function designBeforeSave(
   const name = typeof args.title === "string" ? `"${args.title}"` : undefined;
   const result = await (check ?? (await loadChecker()))(type, args.content, name);
   if (!result.ok) return { refused: refusal(result.message, result.errors) };
-  args.preview = result.preview;
-  return { warnings: result.preview.warnings };
+  // No preview kept (too big to store): the design saves without one, and the warning says so.
+  if (result.preview) args.preview = result.preview;
+  return { warnings: result.warnings };
 }
 
 /**
@@ -70,23 +73,36 @@ export async function designAfterPull(
   result: unknown,
   call: Call,
   check?: DesignChecker,
-): Promise<{ warnings?: DesignPreview["warnings"]; wontDraw?: string } | null> {
+): Promise<{
+  warnings?: DesignPreview["warnings"];
+  wontDraw?: string;
+  previewNotStored?: string;
+} | null> {
   const r = result as { artifactId?: string; revision?: number; changed?: boolean };
   if (op !== "design.pull" || !r.artifactId) return null;
-  const base = (await call("artifact.read", { artifactId: r.artifactId, revision: 0 }).catch(
-    () => null,
-  )) as { designType?: string | null; content?: string } | null;
-  known.set(r.artifactId, (base?.designType ?? null) as DesignType | null);
-  if (!base?.designType || typeof base.content !== "string") return null;
-  const result2 = await (check ?? (await loadChecker()))(
-    base.designType as DesignType,
-    base.content,
-    "the pulled file",
-  );
-  if (!result2.ok) return { wontDraw: `${result2.message}. Fix it in your next revision.` };
-  const revisions = r.changed ? [0] : [0, r.revision ?? 1];
-  for (const revision of revisions) {
-    await call("design.preview", { artifactId: r.artifactId, revision, preview: result2.preview });
+  // The pull itself succeeded: nothing after it may report it as failed (review of #163).
+  try {
+    const base = (await call("artifact.read", { artifactId: r.artifactId, revision: 0 })) as {
+      designType?: string | null;
+      content?: string;
+    };
+    known.set(r.artifactId, (base.designType ?? null) as DesignType | null);
+    if (!base.designType || typeof base.content !== "string") return null;
+    const drawn = await (check ?? (await loadChecker()))(
+      base.designType as DesignType,
+      base.content,
+      "the pulled file",
+    );
+    if (!drawn.ok) return { wontDraw: `${drawn.message}. Fix it in your next revision.` };
+    if (!drawn.preview) return { warnings: drawn.warnings };
+    const revisions = r.changed ? [0] : [0, r.revision ?? 1];
+    for (const revision of revisions) {
+      await call("design.preview", { artifactId: r.artifactId, revision, preview: drawn.preview });
+    }
+    return { warnings: drawn.warnings };
+  } catch (error) {
+    return {
+      previewNotStored: `The file was pulled, but its drawing wasn't stored: ${error instanceof Error ? error.message : error}. People see its source until your next revision.`,
+    };
   }
-  return { warnings: result2.preview.warnings };
 }

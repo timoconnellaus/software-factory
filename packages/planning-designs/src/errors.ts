@@ -8,12 +8,11 @@ export interface Problem {
 
 /** Thrown by this package's own readers, already carrying its places. */
 export class DesignParseError extends Error {
-  constructor(
-    message: string,
-    readonly problems: Problem[],
-  ) {
+  readonly problems: Problem[];
+  constructor(message: string, problems: Problem[]) {
     super(message);
     this.name = "DesignParseError";
+    this.problems = problems;
   }
 }
 

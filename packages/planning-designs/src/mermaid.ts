@@ -50,6 +50,20 @@ function statements(source: string): { n: number; text: string }[] {
   return out;
 }
 
+/** A warning that the drawing leaves some lines out (review of #163); the design keeps them. */
+function notDrawn(lines: number[], what: string): DesignFinding | null {
+  if (!lines.length) return null;
+  const shown = lines.slice(0, 8).join(", ");
+  return {
+    code: "preview/not-drawn",
+    message: `The drawing leaves out line${lines.length === 1 ? "" : "s"} ${shown}${lines.length > 8 ? ` and ${lines.length - 8} more` : ""} (${what}); the design keeps them`,
+    line: lines[0] ?? null,
+    column: null,
+    parts: [],
+    fixes: ["Nothing to fix: people read those lines in the System tab's source"],
+  };
+}
+
 const ARROW = /^(.+?)\s*(<<-->>|<<->>|-->>|->>|-->|->|--x|-x|--\)|-\))\s*([+-]?)(.+?)\s*:\s*(.*)$/;
 
 /** A sequence diagram: participants in order, and messages between them. */
@@ -61,7 +75,9 @@ export function drawSequence(source: string): Drawn {
     if (label || !names.has(id)) names.set(id, label ?? id);
   };
   const messages: { from: string; to: string; text: string; dashed: boolean }[] = [];
-  for (const { text: t } of statements(source).slice(1)) {
+  const skipped: number[] = [];
+  for (const { n, text: t } of statements(source).slice(1)) {
+    if (/^(autonumber|activate|deactivate|title)\b/.test(t)) continue;
     const p = /^(participant|actor)\s+(.+?)(?:\s+as\s+(.+))?$/.exec(t);
     if (p?.[2]) {
       add(p[2].trim(), p[3]?.trim());
@@ -74,7 +90,10 @@ export function drawSequence(source: string): Drawn {
       add(from);
       add(to);
       messages.push({ from, to, text: (m[5] ?? "").trim(), dashed: m[2].startsWith("--") });
+      continue;
     }
+    // Notes, and alt / loop / opt / par blocks: in the design, not in the drawing.
+    skipped.push(n);
   }
   const GAP = 40;
   const colW = order.map((id) => Math.max(120, textWidth(names.get(id) ?? id, 14) + 32));
@@ -159,6 +178,8 @@ export function drawSequence(source: string): Drawn {
     "Leave out participants this plan doesn't change",
   ]);
   if (small) warnings.push(small);
+  const left = notDrawn(skipped, "notes and alt, loop, opt or par blocks");
+  if (left) warnings.push(left);
   return { svg: svgDocument(width, height, body), width, height, parts, warnings };
 }
 
@@ -169,7 +190,8 @@ export function drawState(source: string): Drawn {
   let direction: "TB" | "LR" = "TB";
   const node = (raw: string, side: "from" | "to") =>
     raw === "[*]" ? (side === "from" ? "[*] start" : "[*] end") : raw;
-  for (const { text: t } of statements(source).slice(1)) {
+  const skipped: number[] = [];
+  for (const { n, text: t } of statements(source).slice(1)) {
     const dir = /^direction\s+(LR|RL|TB|BT)$/.exec(t);
     if (dir) {
       direction = dir[1] === "LR" || dir[1] === "RL" ? "LR" : "TB";
@@ -188,13 +210,20 @@ export function drawState(source: string): Drawn {
       labels.set(named[2], named[1]);
       continue;
     }
-    const plain = /^state\s+([\w.-]+)/.exec(t);
-    if (plain?.[1] && !labels.has(plain[1])) {
-      labels.set(plain[1], plain[1]);
+    const plain = /^state\s+([\w.-]+)\s*(\{)?/.exec(t);
+    if (plain?.[1]) {
+      if (!labels.has(plain[1])) labels.set(plain[1], plain[1]);
+      // A composite state is drawn flat: its inside is drawn beside it.
+      if (plain[2]) skipped.push(n);
       continue;
     }
+    if (t === "}") continue;
     const desc = /^([\w.-]+)\s*:\s*(.+)$/.exec(t);
-    if (desc?.[1] && desc[2]) labels.set(desc[1], desc[2].trim());
+    if (desc?.[1] && desc[2]) {
+      labels.set(desc[1], desc[2].trim());
+      continue;
+    }
+    skipped.push(n);
   }
   const isEnd = (id: string) => id.startsWith("[*]");
   const placed = placeGraph(
@@ -256,6 +285,8 @@ export function drawState(source: string): Drawn {
     "Try `direction LR`",
   ]);
   if (small) warnings.push(small);
+  const left = notDrawn(skipped, "notes, concurrent regions and the nesting of composite states");
+  if (left) warnings.push(left);
   return {
     svg: svgDocument(placed.width, placed.height, body),
     width: placed.width,

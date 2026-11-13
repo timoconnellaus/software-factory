@@ -164,6 +164,59 @@ describe("design previews (spec 22 part B)", () => {
     ]);
   });
 
+  it("never overwrites a hand-made .svg with a drawing, and clears a base's drawing on a re-pull (review of #163)", async () => {
+    const w = await world();
+    await onMain(w, ".kim/designs/system.d2", D2);
+    await onMain(w, ".kim/designs/system.d2.svg", "<svg>drawn by hand</svg>");
+    const { item, agent } = await planning(w);
+    const pulled = await agent<{ artifactId: string }>("design.pull", {
+      path: ".kim/designs/system.d2",
+    });
+    await agent("design.preview", {
+      artifactId: pulled.artifactId,
+      revision: 0,
+      preview: await previewOf(D2),
+    });
+    // The default branch moves on and the planner pulls again: the old base's drawing goes.
+    const next = `${D2}app -> cache: reads\n`;
+    await onMain(w, ".kim/designs/system.d2", next);
+    await agent("design.pull", { path: ".kim/designs/system.d2" });
+    const base = await ok<{ preview: unknown; content: string }>(
+      "artifact.get",
+      { workItemId: item.workItemId, artifactId: pulled.artifactId, revision: 0 },
+      w.human,
+    );
+    expect(base.content).toBe(next);
+    expect(base.preview).toBeNull();
+    // The planner's revision, drawn, is approved; the hand-made drawing on the branch stays.
+    const mine = `${next}app -> search: queries\n`;
+    await agent("artifact.update", {
+      artifactId: pulled.artifactId,
+      content: mine,
+      preview: await previewOf(mine),
+    });
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPEC);
+    await agent("planning.news");
+    await agent("planning.ready");
+    await call("spec.accept", { workItemId: item.workItemId, specId }, FOREMAN);
+    await ok("spec.approve", { workItemId: item.workItemId }, w.human);
+    await rows("UPDATE core_specs SET status = 'approved' WHERE id = ?", specId);
+    await ok("spec.commit", { workItemId: item.workItemId }, FOREMAN);
+    const branch = (
+      await first<{ branch: string }>(
+        "SELECT branch FROM core_work_items WHERE id = ?",
+        item.workItemId,
+      )
+    ).branch;
+    const read = (path: string) => services.github.readFile(w.repo, path, branch);
+    expect(await read(".kim/designs/system.d2")).toBe(mine);
+    // Not written over (the fake's branch doesn't carry main's copy; main's stays as it was).
+    expect((await read(".kim/designs/system.d2.svg")) ?? "").not.toContain("<rect");
+    expect(await services.github.readFile(w.repo, ".kim/designs/system.d2.svg", "main")).toBe(
+      "<svg>drawn by hand</svg>",
+    );
+  });
+
   it("stores a pulled base's preview, and reads revision 0 back (criterion 3)", async () => {
     const w = await world();
     await onMain(w, ".kim/designs/system.d2", D2);
@@ -230,7 +283,7 @@ describe("design previews (spec 22 part B)", () => {
       w.human,
     );
     expect(listed.files.map((f) => [f.path, f.kind])).toContainEqual([
-      ".kim/designs/system.svg",
+      ".kim/designs/system.d2.svg",
       "preview",
     ]);
     expect(listed.files.some((f) => f.path.includes("draft-schema"))).toBe(false);
@@ -245,7 +298,7 @@ describe("design previews (spec 22 part B)", () => {
         item.workItemId,
       )
     ).branch;
-    expect(await services.github.readFile(w.repo, ".kim/designs/system.svg", branch)).toBe(svg);
+    expect(await services.github.readFile(w.repo, ".kim/designs/system.d2.svg", branch)).toBe(svg);
     expect(await services.github.readFile(w.repo, ".kim/designs/system.d2", branch)).toBe(D2);
   });
 });

@@ -1,7 +1,7 @@
 // The living spec (CONTEXT.md): drafted by the spec stage's run, gated by `spec.accept` (risk
 // `plan`, always reviewed for agents), committed to the work item's branch on approval.
 import { parseJson } from "@software-factory/db";
-import { droppedEdits, specResultSchema } from "@software-factory/runner-contract";
+import { DRAWN_BY, droppedEdits, specResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
@@ -146,8 +146,29 @@ export const specCommit = defineOperation({
     const repo = await repoRef(ctx, requireRepository(ctx));
     // Spec 22: the plan and the kept artifacts, in the same commit as the spec. Only the files a
     // person approved at the gate, at the revision they saw (review of #130).
-    const kept = await approvedKimFiles(ctx, spec.kim_files);
-    const files = [{ path, content }, { path: planPath(w), content }, ...kept];
+    const approved = await approvedKimFiles(ctx, spec.kim_files);
+    // A design's drawing never overwrites a file the factory didn't draw (review of #163), on the
+    // item's branch or the default branch: two GitHub reads per drawing at the commit, at most two
+    // per kept design. A skipped drawing leaves the design itself to be written.
+    const repository = requireRepository(ctx);
+    const kept: typeof approved = [];
+    for (const f of approved) {
+      if (f.preview) {
+        const theirs = (
+          await Promise.all([
+            ctx.services.github.readFile(repo, f.path, w.branch),
+            ctx.services.github.readFile(repo, f.path, repository.default_branch),
+          ])
+        ).some((there) => there !== null && !there.includes(DRAWN_BY));
+        if (theirs) continue;
+      }
+      kept.push(f);
+    }
+    const files = [
+      { path, content },
+      { path: planPath(w), content },
+      ...kept.map((f) => ({ path: f.path, content: f.content })),
+    ];
     const unique = [...new Map(files.map((f) => [f.path, f])).values()];
     const { commitSha } = await ctx.services.github.commitFiles(repo, {
       branch: w.branch,

@@ -35,6 +35,9 @@ const ORDINARY: [string, string][] = [
   ["Make the sidebar collapsible", "Like Linear's."],
   ["Crash on save", "## What happened\nIt closes on save.\n- [x] I searched existing issues"],
   ["Logo", "Use the new one: [the logo](https://example.com/logo.svg)"],
+  // Review of #160: a ticked item is a request, and `[x](url)` is a link with its text.
+  ["Bug", "- [x] Crashes when saving a 2GB file"],
+  ["Docs", "- [x](https://example.com/docs) is broken"],
 ];
 
 /** Nothing to act on: every one parks. */
@@ -48,11 +51,14 @@ const EMPTY: [string, string][] = [
   // A template's checklist with its labels, and image-only bodies (review of #117).
   [
     "Bug report",
-    "## Checklist\n- [ ] I searched existing issues\n- [x] I read the docs\n* [ ] I can reproduce it",
+    "## Checklist\n- [ ] I searched existing issues\n- [ ] I read the docs\n* [ ] I can reproduce it",
   ],
   ["Screenshot", "![screenshot](https://example.com/s.png)"],
   ["Look", '<img src="https://example.com/s.png" alt="the bug" width="400">'],
   ["Crash", "## Screenshots\n![](https://example.com/a.png) ![b](https://example.com/b.png)"],
+  // Review of #160: a URL with parentheses, and a reference-style image with its definition.
+  ["Diagram", "![arch](https://example.com/wiki/File_(2).png)"],
+  ["Ref", "![screenshot][1]\n\n[1]: https://example.com/s.png"],
 ];
 
 type W = Awaited<ReturnType<typeof world>>;

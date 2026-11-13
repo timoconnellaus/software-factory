@@ -110,14 +110,22 @@ Creating a design system when none exists, unless asked (as in kim).
   `design.pull` of a design it reads the base, draws it, and stores its preview with
   **`design.preview`** (revision 0, and revision 1 on a first pull), a harness-only call.
 - **The cloud** keeps the preview with the revision (`core_planning_artifact_revisions.preview`,
-  migration 0400) only if it was drawn from exactly that content (its SHA-256) and the SVG has no
-  script, event attribute, foreign content, style, image, link or outside reference
-  (`unsafeSvg`); it counts in the revision's size (the item's byte budget and pruning cover it).
+  migration 0400) only if it was drawn from exactly that content (its SHA-256) and the SVG passes
+  `unsafeSvg`, a tokeniser over an allow-list of exactly the elements and attributes the package
+  draws (no prefixed names, comments, doctypes, or `url()` other than `#id`); it counts in the revision's size (the item's byte budget and pruning cover it).
   `artifact.get` returns `designType` and `preview`; `artifact.read` returns `kind` and
   `designType` and reads revision 0.
-- **Write-back** (criterion 4): each kept design's preview is written beside it as `.svg` (kim's
-  naming: `x.d2` → `x.svg`, `-2` on a collision), recorded in the approval's `kim_files` with
-  `preview: true` and committed in the same commit. The gate's file list shows it as an image.
+- **Write-back** (criterion 4): each kept design's preview is written beside it as its own path
+  plus `.svg` (`system.d2.svg`: stable, and two designs never share one; kim writes `system.svg`),
+  recorded in the approval's `kim_files` with `preview: true` and committed in the same commit. A
+  drawing never overwrites an `.svg` the factory didn't draw (on the item's branch or the default
+  branch; the factory's carry `data-drawn-by="software-factory"`). The gate's list shows it as an
+  image.
+- **Bounds** (review of #163): a design over 300 KB is refused; a check runs in a worker thread and
+  is stopped after 30 s; part ids and labels are cut to 300 characters; a drawing over 500 KB, or
+  one the cloud wouldn't take, saves the design without it (with a warning); Mermaid lines the
+  drawing leaves out (notes, alt/loop blocks, composite nesting) are named in a warning; a re-pull
+  clears the old base's drawing.
 - **Rendering untrusted design text**: no design text is executed. The SVG is this repo's code's
   drawing, its text escaped; the app only ever shows it as an image (`<img>` with a data URL), where
   nothing runs or loads.

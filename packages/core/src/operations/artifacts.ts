@@ -418,7 +418,7 @@ export const artifactRead = defineOperation({
     const revision = input.revision ?? a.revision;
     const r = await ctx.db
       .selectFrom("core_planning_artifact_revisions")
-      .selectAll()
+      .select(["content", "controls"])
       .where("artifact_id", "=", a.id)
       .where("revision", "=", revision)
       .executeTakeFirst();
@@ -633,6 +633,8 @@ export const designPull = defineOperation({
               content: base.content,
               size: base.size,
               controls: base.controls,
+              // The old base's drawing is stale (review of #163): the harness draws the new one.
+              preview: null,
               created_at: base.created_at,
             }),
           ),
