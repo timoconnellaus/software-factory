@@ -23,6 +23,13 @@ const settings = z
       .strict()
       .default({ waitHours: 1, updateReads: 8 }),
     decider: deciderSchema.default("approvers"),
+    /**
+     * Spec 53 decision 2: the engine's revert of a red main's named culprit may merge without a
+     * person, only when every condition of `revertVerdict()` holds. Off by default; turning it on
+     * is a loosening a person saves (self-modify). It approves nothing else, and `autoApprove`
+     * never approves a revert.
+     */
+    revertWithoutPerson: z.boolean().default(false),
   })
   .strict();
 
@@ -126,6 +133,14 @@ export const publish: StageType<typeof settings> = {
         path: `${stageId}.via`,
         class: after.via === "direct" ? "loosens" : "tightens",
         summary: `Merges ${after.via === "direct" ? "directly, not through the queue" : "through the merge queue"}.`,
+      });
+    if (before.revertWithoutPerson !== after.revertWithoutPerson)
+      out.push({
+        path: `${stageId}.revertWithoutPerson`,
+        class: after.revertWithoutPerson ? "loosens" : "tightens",
+        summary: after.revertWithoutPerson
+          ? "The engine's revert of a red main's culprit may merge without a person, when its own CI proves the repair."
+          : "Every revert of a red main's culprit goes to a person.",
       });
     if (!same(before.queue, after.queue))
       out.push({

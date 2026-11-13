@@ -40,8 +40,8 @@ export type OutboxMessage =
   | { kind: "workflow.resume"; payload: { instanceId: string; events: string[] } }
   | { kind: "workflow.terminate"; payload: { instanceId: string } }
   /**
-   * A work item's planning changed (spec 20, ADR 0350): sf-engine tells its PlanningHub, which
-   * pushes to open Planning tabs and wakes the agent's wait.
+   * A work item's planning changed (spec 20, ADR 0350): sf-engine tells the ClientHub of everyone
+   * with its Planning view open (spec 26, 44).
    */
   | { kind: "planning.changed"; payload: { workItemId: string } }
   /**
@@ -56,6 +56,18 @@ export type OutboxMessage =
   | {
       kind: "verify.recheck";
       payload: { repo: { owner: string; name: string }; headSha: string; prNumber: number | null };
+    }
+  /**
+   * Comment on a PR as the App after this call commits (spec 53: a reverted change's PR is told
+   * once, never from a call whose batch then failed).
+   */
+  | {
+      kind: "github.comment";
+      payload: {
+        repo: { installationId: string; owner: string; repo: string };
+        number: number;
+        body: string;
+      };
     }
   /** Run `queue.pull` for a project after this call commits (ADR 0491). */
   | { kind: "queue.pull"; payload: { projectId: string } }

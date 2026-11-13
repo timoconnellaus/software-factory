@@ -3,6 +3,7 @@
 import { OpError } from "@software-factory/client/ops";
 import { QueryClient } from "@tanstack/react-query";
 import { createHashHistory, createRouter } from "@tanstack/react-router";
+import { AppError } from "./components/app-error.tsx";
 import { PagePending } from "./components/page-pending.tsx";
 import { appRoute } from "./routes/_app.tsx";
 import { factoryLayout } from "./routes/_factory.tsx";
@@ -69,6 +70,8 @@ export function makeRouter() {
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
     defaultPendingComponent: PagePending,
+    // Any error a route doesn't handle itself: the app's error screen, not the router's default.
+    defaultErrorComponent: AppError,
     defaultPendingMs: 150,
     defaultPendingMinMs: 200,
   });
