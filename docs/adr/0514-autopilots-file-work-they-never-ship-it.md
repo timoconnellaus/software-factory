@@ -31,3 +31,11 @@ reference. The risk is an agent that creates and ships its own work.
 - `core_work_items.kind` gains `autopilot`; boards and `activeLimit` ignore that kind.
 
 > Amended 2026-11-12 (spec 52's answers, questions 18 and 19): a run is a work item of kind `autopilot`, **hidden only from the Work lists**. Each run is a full work item, shown as run history on the autopilot's own page, and anything a run produces for a person (an item it filed, a proposal, a digest) appears in Work or the Inbox linked back to the run. (The owner asked "why hidden?", was given this answer, and didn't object.) Until a budget exists, each **autopilot** has its own limits: a time limit per run, a cap on how much one run can file, and a daily run cap. Items an autopilot files may be merged under `autoApprove` like any other ([ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md)); the autopilot itself still never merges.
+
+> Amended 2026-11-13 (build step (g1)): the actor, config and operations are built; runs and firing
+> are next. The actor's deny is enforced in code before the floor (`AUTOPILOT_NEVER`), so no
+> project override can turn it into review or allow. Classification is stricter than §5 says:
+> besides releasing work and widening the scope, raising a limit, changing the output kind or the
+> backlog project, and widening an event trigger's projects loosen; it is judged whether or not the
+> autopilot is on, so widening one while it is off and then turning it on can't slip through.
+

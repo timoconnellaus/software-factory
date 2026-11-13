@@ -4,6 +4,7 @@ export * from "./artifacts.ts";
 export * from "./attach.ts";
 export * from "./attachments.ts";
 export * from "./audit.ts";
+export * from "./autopilots.ts";
 export * from "./babysit.ts";
 export * from "./backlog.ts";
 export * from "./cli.ts";

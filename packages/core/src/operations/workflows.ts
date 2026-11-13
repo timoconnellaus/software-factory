@@ -7,6 +7,7 @@
 import type { Db } from "@software-factory/db";
 import { sql } from "kysely";
 import { z } from "zod";
+import { autopilotImpact } from "../autopilots/impact.ts";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { type ImpactChange, type PolicyImpact, same } from "../policy/impact.ts";
@@ -40,6 +41,7 @@ import {
 import { STAGE_TYPES, stageType } from "../stages/registry.ts";
 import { validateWorkflow } from "../stages/validate.ts";
 import { type WorkflowDefinition, workflowDefinitionSchema } from "../stages/workflow.ts";
+import { saveAutopilot, setAutopilotEnabled } from "./autopilots.ts";
 
 /** How many of an org's admins one org config write notifies, and how many overrides it names. */
 export const NOTIFY_ADMINS = 10;
@@ -54,6 +56,8 @@ export const ORG_CONFIG_WRITES = [
   "workflow.save",
   "orgConfig.rollback",
   "agent.save",
+  "autopilot.save",
+  "autopilot.enable",
   // Skills (ADR 0513): through the org config version and its impact check.
   "skill.save",
   "skill.attach",
@@ -169,6 +173,8 @@ export function orgConfigImpact(before: OrgConfig, after: OrgConfig): PolicyImpa
         : { path: `agents.${label}`, class: "neutral", summary: `The agent ${label} changed.` },
     );
   }
+  // Autopilots (ADR 0514 §5): practice, except releasing work or widening their reach.
+  changes.push(...autopilotImpact(before.autopilots, after.autopilots));
   return summarise(changes);
 }
 
@@ -1004,7 +1010,11 @@ export async function applyApprovedOrgConfig(
       ? await rollbackOrgConfig(ctx, input, pa.actor_id)
       : pa.operation === "agent.save"
         ? await saveAgent(ctx, input, pa.actor_id)
-        : await saveWorkflow(ctx, input, pa.actor_id);
+        : pa.operation === "autopilot.save"
+          ? await saveAutopilot(ctx, input, pa.actor_id)
+          : pa.operation === "autopilot.enable"
+            ? await setAutopilotEnabled(ctx, input, true, pa.actor_id)
+            : await saveWorkflow(ctx, input, pa.actor_id);
   ctx.writePendingStatus(
     "apply",
     ctx.db.updateTable("core_pending_actions").set({ status: "applied" }).where("id", "=", pa.id),

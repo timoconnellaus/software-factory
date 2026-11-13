@@ -11,6 +11,9 @@ export const ACTOR_TYPES = [
   "intake",
   "self-improve",
   "scheduler",
+  // Work the factory starts on its own (ADR 0514): it files work and never ships it. Merge, deploy,
+  // check-merge and self-modify are denied to it in code, whatever a policy or override says.
+  "autopilot",
 ] as const;
 export type ActorType = (typeof ACTOR_TYPES)[number];
 

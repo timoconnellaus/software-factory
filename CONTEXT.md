@@ -614,7 +614,7 @@ only a person accepts one (ADR 0513). Org skills reach the reviewer only by exte
 skills, as a policy change.
 _Avoid_: playbook, recipe
 
-**Autopilot** (designed, spec 52, not built)
+**Autopilot** (spec 52; config, actor and operations built, runs not yet)
 A trigger (schedule or event), an agent, its skills, an instruction and an output target: work the
 factory starts on its own. It files through the backlog, never merges or deploys (ADR 0514). Each run
 is a work item of kind `autopilot`, hidden from the Work lists and shown as run history on the

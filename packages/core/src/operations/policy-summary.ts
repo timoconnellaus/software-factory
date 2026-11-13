@@ -8,9 +8,11 @@
 // - every piece that came from a document (a change sentence naming a stage, an id) is cleaned too.
 // The rules are summary.ts's (`titled`, `cleanTitle`, MAX_FACTS), shared with every other summary.
 import type { Db } from "@software-factory/db";
+import { autopilotSchema } from "../autopilots/schema.ts";
 import type { FloorParse } from "../policy/gate.ts";
 import type { PolicyImpact } from "../policy/impact.ts";
 import { type OrgConfig, parseOrgConfig } from "../stages/org-config.ts";
+import { withAutopilot, withAutopilotEnabled } from "./autopilots.ts";
 import { cleanTitle, MAX_FACTS, titled } from "./summary.ts";
 import {
   currentOrgConfig,
@@ -113,6 +115,23 @@ export async function describeOrgConfigDecision(
       return titled(
         facts(say(`save an org agent (${versions})`), impactOf(after)),
         `${String(agent.name ?? "")} in ${org}`,
+      );
+    }
+    case "autopilot.save": {
+      const ap = obj(raw.autopilot);
+      const after = attempt(() => withAutopilot(config, autopilotSchema.parse(ap)));
+      return titled(
+        facts(say(`save an org autopilot (${versions})`), impactOf(after)),
+        `${String(ap.name ?? "")} in ${org}`,
+      );
+    }
+    case "autopilot.enable": {
+      const id = String(raw.autopilotId ?? "");
+      const after = attempt(() => withAutopilotEnabled(config, id, true));
+      const name = config.autopilots.find((a) => a.id === id)?.name ?? id;
+      return titled(
+        facts(say(`turn on an org autopilot (${versions})`), impactOf(after)),
+        `${name} in ${org}`,
       );
     }
     case "workflow.archive": {
