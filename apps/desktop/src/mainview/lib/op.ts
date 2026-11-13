@@ -79,7 +79,8 @@ export type ReadOpName =
   | "config.trials"
   | "config.export"
   | "adjudicator.stats"
-  | "workflow.get";
+  | "workflow.get"
+  | "workflow.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,
