@@ -1390,6 +1390,12 @@ screen needs).
    after its merge commit; a revert is matched by its merge commit (GitHub's Revert button), the PR
    number only from a merge or squash title; the babysitter's re-check also confirms the approval
    is for this head; the review of every fifth is opened when the merge lands. ADR 0515 amended.
+   Last round: paths are an allow-list for every project (`allowPaths`, required to turn it on; no
+   default, empty means nothing qualifies; widening loosens), on top of a wider floor (manifests in
+   every ecosystem, build scripts, CI, deploy and hook files, other agents' instruction files). On
+   the factory's own repository the ceiling is `docs/design/**`; "auto" detection is "not the
+   factory" only when every marker (`FACTORY_MARKERS`) reads cleanly as absent; migration 0286 sets
+   `factorySource: "yes"` on the factory's own project.
 7. **(f) Skills** (migration **0283**: `core_skill_versions`). As in "Skills", plus agent instructions
    as proposals (Q17). The projection into the harness is a small hook in `harness-claude` and the
    runner host, said in the PR.

@@ -29,7 +29,20 @@ import {
   world,
 } from "./helpers.ts";
 
-const ON = autoApproveSettings.parse({ enabled: true });
+const ALLOW = [
+  "src/**",
+  "docs/**",
+  "assets/**",
+  "apps/**",
+  "packages/**",
+  "vendor/**",
+  "evals/**",
+  "infra/**",
+  "*.*",
+  ".*",
+  ".*/**",
+];
+const ON = autoApproveSettings.parse({ enabled: true, allowPaths: ALLOW });
 const good = (): AutoApproveFacts => ({
   headSha: "a".repeat(40),
   packet: {
@@ -147,7 +160,7 @@ describe("autoApproveVerdict: every condition, in code", () => {
     // Unreadable changes fail both size and risk: nothing is assumed.
     const unread = good();
     unread.changes = null;
-    expect(failing(unread)).toEqual(["limits", "risk"]);
+    expect(failing(unread)).toEqual(["risk", "limits"]);
   });
 
   it("a change to the factory itself is never auto-approved, whatever the workflow's lists say", () => {
@@ -167,8 +180,16 @@ describe("autoApproveVerdict: every condition, in code", () => {
       expect(v.reason, path).toMatch(/factory itself|risk path/);
     }
     // The setting has no field that could take a path off the built-in list.
-    expect(Object.keys(ON).sort()).toEqual(
-      ["enabled", "forbiddenPaths", "maxChangedLines", "maxFiles", "maxPerDay", "riskPaths"].sort(),
+    expect(Object.keys(autoApproveSettings.parse({})).sort()).toEqual(
+      [
+        "allowPaths",
+        "enabled",
+        "forbiddenPaths",
+        "maxChangedLines",
+        "maxFiles",
+        "maxPerDay",
+        "riskPaths",
+      ].sort(),
     );
     expect(SELF_MODIFY_PATHS).toContain(".factory/**");
   });
@@ -182,6 +203,52 @@ describe("autoApproveVerdict: every condition, in code", () => {
     expect(autoApproveVerdict(f, ON).approve).toBe(true);
     const off = { ...f, changes: [{ path: "docs/architecture.md", changes: 3 }] };
     expect(autoApproveVerdict(off, ON).reason).toMatch(/factory's own repository/);
+  });
+
+  it("every path must be inside allowPaths; none set, nothing qualifies; it can't be turned on without them", () => {
+    const f = { ...good(), changes: [{ path: "lib/x.ts", changes: 3 }] };
+    expect(autoApproveVerdict(f, ON).reason).toMatch(/outside allowPaths: lib\/x.ts/);
+    expect(autoApproveVerdict(good(), { ...ON, allowPaths: [] }).approve).toBe(false);
+    expect(autoApproveSettings.safeParse({ enabled: true }).success).toBe(false);
+    // A rename touches where it came from too: the compare's previousPath is checked (operations).
+  });
+
+  it("manifests, build scripts, CI, deploy, hooks and agent files in any ecosystem are refused twice", () => {
+    for (const path of [
+      "requirements.txt",
+      "pyproject.toml",
+      "go.mod",
+      "Cargo.toml",
+      "Gemfile",
+      "build.gradle",
+      "esbuild.mjs",
+      "build.mjs",
+      "Jenkinsfile",
+      "azure-pipelines.yml",
+      ".buildkite/pipeline.yml",
+      "bitbucket-pipelines.yml",
+      "vercel.json",
+      "netlify.toml",
+      "fly.toml",
+      "Procfile",
+      ".husky/pre-commit",
+      ".cursorrules",
+      "GEMINI.md",
+      ".windsurfrules",
+    ]) {
+      const f = { ...good(), changes: [{ path, changes: 1 }] };
+      // By the floor, even where allowPaths would allow it.
+      expect(failing(f, { ...ON, allowPaths: ["**"] }), path).toContain("risk");
+      // And by allowPaths, which names only the places a change may touch.
+      expect(failing(f, { ...ON, allowPaths: ["src/**"] }), path).toContain("limits");
+    }
+  });
+
+  it("widening allowPaths loosens; narrowing tightens", () => {
+    const a = { ...ON, allowPaths: ["src/**"] };
+    const b = { ...ON, allowPaths: ["src/**", "lib/**"] };
+    expect(autoApproveImpact(a, b, "m").map((c) => c.class)).toEqual(["loosens"]);
+    expect(autoApproveImpact(b, a, "m").map((c) => c.class)).toEqual(["tightens"]);
   });
 
   it("the workflow's own lists add to the floor", () => {
@@ -206,8 +273,8 @@ describe("autoApproveVerdict: every condition, in code", () => {
   it("turning it on, raising a limit or dropping a path loosens; the reverse tightens", () => {
     const cls = (a: typeof ON, b: typeof ON) =>
       autoApproveImpact(a, b, "merge.autoApprove").map((c) => c.class);
-    expect(cls(AUTO_APPROVE_OFF, ON)).toEqual(["loosens"]);
-    expect(cls(ON, AUTO_APPROVE_OFF)).toEqual(["tightens"]);
+    expect(cls(AUTO_APPROVE_OFF, ON)).toEqual(["loosens", "loosens"]);
+    expect(cls(ON, AUTO_APPROVE_OFF)).toEqual(["tightens", "tightens"]);
     expect(cls(ON, { ...ON, maxFiles: 20 })).toEqual(["loosens"]);
     expect(cls(ON, { ...ON, maxChangedLines: 100 })).toEqual(["tightens"]);
     expect(cls({ ...ON, riskPaths: ["a/**"] }, ON)).toEqual(["loosens"]);
@@ -228,7 +295,13 @@ const DARK: WorkflowDefinition = {
   template: { id: SOFTWARE.id, version: 1 },
   stages: SOFTWARE.stages.map((s) =>
     s.id === "merge"
-      ? { ...s, settings: { ...(s.settings as object), autoApprove: { enabled: true } } }
+      ? {
+          ...s,
+          settings: {
+            ...(s.settings as object),
+            autoApprove: { enabled: true, allowPaths: ["src/**", "docs/**"] },
+          },
+        }
       : s,
   ),
 };
@@ -650,6 +723,50 @@ describe("dark factory mode through the operations", () => {
     const old = await atMergeGate(w, { workflowVersion: 10 });
     expect(old.pa.status).toBe("pending");
     expect(old.pa.reason).toMatch(/no dark factory mode/);
+  });
+
+  it("auto detection says 'not the factory' only when every marker reads cleanly as absent", async () => {
+    const w = await world();
+    await dark(w);
+    // The engine package moved, but core is there: still the factory.
+    await github.setFile(w.repo, "main", "packages/core/package.json", '{"name":"x"}');
+    const moved = await atMergeGate(w);
+    expect(moved.pa.status).toBe("pending");
+    expect(moved.pa.reason).toMatch(/factory's own repository/);
+    // A read that fails: any doubt is yes.
+    const w2 = await world();
+    await dark(w2);
+    const read = github.readFile;
+    github.readFile = async () => {
+      throw new Error("GitHub is down");
+    };
+    try {
+      const failed = await atMergeGate(w2);
+      expect(failed.pa.status).toBe("pending");
+    } finally {
+      github.readFile = read;
+    }
+  });
+
+  it("turning auto-approval on with no allowPaths is refused", async () => {
+    const w = await world();
+    const refused = await refusal(
+      call(
+        "workflow.save",
+        {
+          orgId: w.orgId,
+          baseVersion: 0,
+          workflow: {
+            ...DARK,
+            stages: SOFTWARE.stages.map((x) =>
+              x.id === "merge" ? { ...x, settings: { autoApprove: { enabled: true } } } : x,
+            ),
+          },
+        },
+        w.human,
+      ),
+    );
+    expect(refused.message).toMatch(/needs allowPaths/);
   });
 
   it("on a project marked as the factory's own source, only the allow-list is auto-approved", async () => {

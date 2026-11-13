@@ -163,3 +163,18 @@ just a config option. Nothing special."
 > green on it or a later commit; a revert is matched to the merge commit; the review of every fifth
 > is opened when the merge lands.
 
+> Amended 2026-11-13, last round of the review of #152: **paths are an allow-list everywhere.** The
+> owner's condition 4 was "inside limits you set (size, and paths it may not touch)". This
+> implements the path limit as paths a change **may** touch, which is stricter: the setting carries
+> `allowPaths` (globs an org admin writes, such as `src/components/**`), with no default; empty
+> means nothing qualifies, and turning auto-approval on without them is refused. Every changed path
+> (a rename's old and new) must match `allowPaths` and none may hit the built-in risk and
+> self-modify lists, which stay as a floor no setting removes (now also manifests in every
+> ecosystem, build scripts by any name, CI, deploy and hook configuration, and other agents'
+> instruction files). Widening `allowPaths` loosens (an org admin approves); narrowing tightens. On
+> the factory's own repository `FACTORY_SOURCE_ALLOW` (`docs/design/**` only; screenshots dropped:
+> a PNG has no readable diff) is the ceiling `allowPaths` can't widen. Detection there is
+> default-deny: "not the factory" only when every marker file reads cleanly as absent; migration
+> 0286 sets `factorySource: "yes"` explicitly on the factory's own project. Only an org admin lifts
+> a hold. The coordinator is telling the owner.
+
