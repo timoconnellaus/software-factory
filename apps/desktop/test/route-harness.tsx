@@ -20,6 +20,8 @@ export interface RenderOptions {
   pending?: unknown[][];
   /** The desktop's own session, changed (e.g. no device id yet). */
   session?: Partial<typeof SESSION>;
+  /** Run against the cache after the loaders, before rendering (e.g. a refetch that failed). */
+  after?: (queryClient: QueryClient) => Promise<void>;
 }
 
 function answer(op: string, input: unknown, answers: RenderOptions["answers"]): CallResult {
@@ -55,6 +57,7 @@ export async function renderPage(path: string, options: RenderOptions = {}): Pro
   });
   await router.load();
   for (const key of options.pending ?? []) queryClient.removeQueries({ queryKey: key });
+  await options.after?.(queryClient);
   return renderToString(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />

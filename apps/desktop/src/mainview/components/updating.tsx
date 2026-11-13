@@ -1,13 +1,19 @@
 // "Updating to <version>" (spec 40 M4): from the click on Restart to update until the app restarts,
 // the whole window says what is happening, step by step (shared/update-apply.ts). It can't be
 // dismissed while the update runs; a refused update says why (the updater's own refusal message)
-// and offers the way back.
+// and offers the way back. A restart stuck in the updater offers only Quit: a relaunch is what
+// knows which version is installed.
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { cn } from "@software-factory/ui/lib/utils";
 import { CheckIcon, CircleAlertIcon, LoaderCircleIcon } from "lucide-react";
 import { useState } from "react";
-import { type ApplyState, type ApplyStep, applyStepText } from "../../shared/update-apply.ts";
+import {
+  type ApplyState,
+  type ApplyStep,
+  applyStepText,
+  STUCK_TEXT,
+} from "../../shared/update-apply.ts";
 import { DRAG, NO_DRAG } from "../lib/title-bar.ts";
 
 const STEPS: ApplyStep[] = ["verifying", "waiting", "restarting"];
@@ -23,6 +29,7 @@ export function stepMarks(step: ApplyStep): Record<ApplyStep, "done" | "now" | "
   return {
     idle: "later",
     refused: "later",
+    stuck: "later",
     verifying: mark("verifying"),
     waiting: mark("waiting"),
     restarting: mark("restarting"),
@@ -38,12 +45,15 @@ const LABEL: Record<"verifying" | "waiting" | "restarting", string> = {
 export function Updating({
   applying,
   back,
+  quit,
 }: {
   applying: ApplyState;
   back: () => Promise<unknown>;
+  quit: () => Promise<unknown>;
 }) {
   const [busy, setBusy] = useState(false);
   const refused = applying.step === "refused";
+  if (applying.step === "stuck") return <Stuck version={applying.version} quit={quit} />;
   const marks = stepMarks(applying.step);
   return (
     <main
@@ -115,6 +125,43 @@ export function Updating({
             </p>
           </>
         )}
+      </div>
+    </main>
+  );
+}
+
+/** Handed to the updater, which neither restarted nor returned: quit and reopen is the way on. */
+function Stuck({ version, quit }: { version: string | null; quit: () => Promise<unknown> }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <main
+      className="grid h-dvh place-content-center bg-window p-6 text-ink"
+      data-testid="updating"
+      aria-live="polite"
+    >
+      <div aria-hidden="true" className={`fixed inset-x-0 top-0 h-11 ${DRAG}`} />
+      <div className="grid w-full max-w-md gap-4">
+        <h1 className="font-semibold text-2xl tracking-tight">Updating to {version}</h1>
+        <Card className="flex-row items-start gap-2.5 px-4 py-3 text-sm" role="alert">
+          <CircleAlertIcon className="mt-0.5 size-4 flex-none text-destructive" />
+          <span data-testid="update-stuck">{STUCK_TEXT}</span>
+        </Card>
+        <div className={NO_DRAG}>
+          <Button
+            disabled={busy}
+            data-testid="update-quit"
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await quit();
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Quit Software Factory
+          </Button>
+        </div>
       </div>
     </main>
   );

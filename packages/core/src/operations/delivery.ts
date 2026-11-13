@@ -13,7 +13,7 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import { approverIds } from "../scope.ts";
 import type { CheckRunInfo } from "../services.ts";
 import { summarizeCi } from "../verify/ci.ts";
-import { queuedEntries } from "./merge-queue.ts";
+import { headStep, queuedEntries } from "./merge-queue.ts";
 import {
   projectId,
   repoName,
@@ -802,6 +802,16 @@ export const deliveryStatus = defineOperation({
             driver: z.enum(["workflow", "babysitter"]),
             headSha: z.string(),
             enqueuedAt: z.string(),
+            /**
+             * The head's step (null for the rest, and for a held head): `updating` (GitHub is
+             * merging the default branch in), `ci` (waiting on CI on its head before it merges),
+             * `merging` (GitHub was asked to merge it), `asking` (a person is asked "update once
+             * more, or wait?") or `holding` (the person said wait: until `heldUntil`).
+             */
+            // HEAD_STEPS, spelled out: merge-queue.ts imports this module, so its const is undefined here.
+            step: z.enum(["merging", "asking", "holding", "updating", "ci"]).nullable(),
+            /** `holding`: when the head updates again. */
+            heldUntil: z.string().nullable(),
           }),
         ),
       }),
@@ -834,22 +844,29 @@ export const deliveryStatus = defineOperation({
           name: r.name,
           branch: r.default_branch,
           main: h ? mainHealthOf(h) : null,
-          deliveries: mine.map((e, i) => ({
-            workItemId: e.work_item_id,
-            number: e.number,
-            title: e.title,
-            position: i + 1,
-            state:
-              stopped && e.repairs_main !== 1 && e.driver === "babysitter"
+          deliveries: mine.map((e, i) => {
+            // A head GitHub was already asked to merge is merging, red default branch or not.
+            const held =
+              stopped && !e.merging_at && e.repairs_main !== 1 && e.driver === "babysitter";
+            const step = i === 0 && !held ? headStep(e, ctx.now) : null;
+            return {
+              workItemId: e.work_item_id,
+              number: e.number,
+              title: e.title,
+              position: i + 1,
+              state: held
                 ? ("held" as const)
                 : i === 0
                   ? ("merging" as const)
                   : ("waiting" as const),
-            repair: e.repairs_main === 1,
-            driver: e.driver,
-            headSha: e.head_sha,
-            enqueuedAt: e.enqueued_at,
-          })),
+              repair: e.repairs_main === 1,
+              driver: e.driver,
+              headSha: e.head_sha,
+              enqueuedAt: e.enqueued_at,
+              step,
+              heldUntil: step === "holding" ? e.held_until : null,
+            };
+          }),
         };
       }),
     };

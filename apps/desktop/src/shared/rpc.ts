@@ -162,7 +162,8 @@ export type AppRPC = {
             | "download"
             | "retry"
             | "check"
-            | "back";
+            | "back"
+            | "quit";
         };
         response: UpdateStatus;
       };
