@@ -30,8 +30,9 @@ import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { CannotApproveYet, useCanDecide } from "../components/cannot-approve.tsx";
+import { ChangeDiff, ImpactList, LeaveGuard } from "../components/config-editor.tsx";
 import { CharCount, ImpactChip, Segmented } from "../components/config-fields.tsx";
-import { Cell, Empty, Row, TablePanel, WIDE, When } from "../components/data-table.tsx";
+import { Cell, Empty, Row, TablePanel, When, WIDE } from "../components/data-table.tsx";
 import { type OrgWorkflow, OrgWorkflowForm } from "../components/org-workflow-form.tsx";
 import { Reads } from "../components/read-state.tsx";
 import { Chip, PageArea, PageHeader, Panel, SectionTitle } from "../components/shell-list.tsx";
@@ -42,7 +43,7 @@ import {
   orgWorkflowsQuery,
   stageTypesQuery,
 } from "../lib/factory-queries.ts";
-import { op } from "../lib/op.ts";
+import { op, read } from "../lib/op.ts";
 import { usePolicyDecide } from "../lib/policy-decide.ts";
 import { orgScope } from "../lib/scope.ts";
 import { useSession } from "../lib/session.ts";
@@ -107,7 +108,7 @@ function OrgWorkflowsPage() {
       <Reads queries={[config, list]} what="the org's workflows">
         {() => (
           <>
-            {config.data && <PendingOrgChanges pending={config.data.pending} />}
+            {config.data && <PendingOrgChanges config={config.data} />}
             {search.edit && shown && !shown.builtIn ? (
               <EditOne orgId={orgId} workflowId={shown.id} config={config.data} />
             ) : (
@@ -381,10 +382,28 @@ const OPERATION_WORDS: Record<string, string> = {
   "orgConfig.rollback": "Roll back",
 };
 
-/** Org changes waiting for an org admin: Approve or Reject, each with Touch ID. */
-function PendingOrgChanges({ pending }: { pending: OpOutput<"orgConfig.get">["pending"] }) {
+type Pending = OpOutput<"orgConfig.get">["pending"][number];
+
+/** Why a waiting org change can't be approved here, or null (pure; tested). */
+export function cannotApproveOrg(p: Pending, version: number): string | null {
+  if (p.baseVersion !== null && p.baseVersion !== version)
+    return `This was drafted on v${p.baseVersion}; the org's workflows are now v${version}, so it can't apply. Reject it and propose it again.`;
+  if (!p.impact)
+    return "The engine couldn't classify this change, so it can't be approved here. Reject it, or look again later.";
+  if (p.operation !== "orgConfig.rollback" && !p.proposal)
+    return "This change can't be shown: what it would save isn't readable. Reject it.";
+  return null;
+}
+
+/**
+ * Org changes waiting for an org admin: each with the engine's classification against the current
+ * version and the difference itself, then Approve (only once both are on screen) or Reject, each
+ * with Touch ID. One that can't be shown or no longer applies can only be rejected.
+ */
+function PendingOrgChanges({ config }: { config: OpOutput<"orgConfig.get"> }) {
   const { run, pending: busy } = usePolicyDecide();
   const canDecide = useCanDecide();
+  const pending = config.pending;
   if (pending.length === 0) return null;
   return (
     <section className="flex flex-col gap-2" data-testid="org-pending">
@@ -394,36 +413,111 @@ function PendingOrgChanges({ pending }: { pending: OpOutput<"orgConfig.get">["pe
           : `${pending.length} changes are waiting for an org admin`}
       </SectionTitle>
       <CannotApproveYet />
-      {pending.map((p) => (
-        <Panel key={p.pendingActionId} needsYou className="flex-row flex-wrap items-center gap-2">
-          <span className="min-w-[min(100%,280px)] flex-1 text-[13px]">
-            <span className="font-medium">
-              {`${OPERATION_WORDS[p.operation] ?? p.operation}${p.note ? `: ${p.note}` : ""}`}
-            </span>
-            <span className="text-ink-3 text-xs">{p.by ? ` · by ${p.by}` : ""}</span>
-          </span>
-          {(["approved", "rejected"] as const).map((decision) => (
-            <Button
-              key={decision}
-              size="sm"
-              variant={decision === "approved" ? "default" : "outline"}
-              disabled={busy !== null || !canDecide}
-              onClick={() =>
-                void run(
-                  "approval.decide",
-                  { pendingActionId: p.pendingActionId, decision },
-                  decision === "approved" ? "Approved" : "Rejected",
-                  `${p.pendingActionId}:${decision}`,
-                )
-              }
-            >
-              {decision === "approved" ? "Approve" : "Reject"}
-            </Button>
-          ))}
-        </Panel>
-      ))}
+      {pending.map((p) => {
+        const why = cannotApproveOrg(p, config.version);
+        return (
+          <Panel key={p.pendingActionId} needsYou data-testid={`org-pending-${p.pendingActionId}`}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="min-w-[min(100%,280px)] flex-1 text-[13px]">
+                <span className="font-medium">
+                  {`${OPERATION_WORDS[p.operation] ?? p.operation}${p.note ? `: ${p.note}` : ""}`}
+                </span>
+                <span className="text-ink-3 text-xs">{p.by ? ` · by ${p.by}` : ""}</span>
+              </span>
+              {(["approved", "rejected"] as const)
+                .filter((d) => d === "rejected" || !why)
+                .map((decision) => (
+                  <Button
+                    key={decision}
+                    size="sm"
+                    variant={decision === "approved" ? "default" : "outline"}
+                    disabled={busy !== null || !canDecide}
+                    data-testid={`org-pending-${decision === "approved" ? "approve" : "reject"}`}
+                    onClick={() =>
+                      void run(
+                        "approval.decide",
+                        { pendingActionId: p.pendingActionId, decision },
+                        decision === "approved" ? "Approved" : "Rejected",
+                        `${p.pendingActionId}:${decision}`,
+                      )
+                    }
+                  >
+                    {decision === "approved" ? "Approve" : "Reject"}
+                  </Button>
+                ))}
+            </div>
+            {why ? (
+              <div className="text-ink-3 text-xs" data-testid="org-pending-why">
+                {why}
+              </div>
+            ) : (
+              <>
+                {p.impact && <ImpactList changes={p.impact.changes} testId="org-pending-impact" />}
+                <OrgDifference change={p} />
+              </>
+            )}
+          </Panel>
+        );
+      })}
     </section>
   );
+}
+
+/** What a waiting org change would change, before and after. */
+function OrgDifference({ change }: { change: Pending }) {
+  if (change.operation === "workflow.save") {
+    const stages = (v: Record<string, unknown> | null) =>
+      Array.isArray(v?.stages)
+        ? (v.stages as { id: string; name: string; settings?: unknown }[])
+        : [];
+    const was = stages(change.current);
+    const now = stages(change.proposal);
+    const settingsChanged = now.filter((s) => {
+      const b = was.find((x) => x.id === s.id);
+      return b && JSON.stringify(b.settings ?? {}) !== JSON.stringify(s.settings ?? {});
+    });
+    return (
+      <div
+        className="flex flex-col gap-1 rounded-lg bg-page px-3 py-2 text-xs"
+        data-testid="org-pending-diff"
+      >
+        <div>
+          <span className="text-ink-3">Stages now: </span>
+          {was.map((s) => s.name).join(" → ") || "none (a new workflow)"}
+        </div>
+        <div>
+          <span className="text-ink-3">Stages after: </span>
+          <span className="font-medium">{now.map((s) => s.name).join(" → ")}</span>
+        </div>
+        {settingsChanged.map((s) => (
+          <div key={s.id} className="break-words">
+            <span className="text-ink-3">{s.name} settings: </span>
+            <span className="line-through">
+              {JSON.stringify(was.find((x) => x.id === s.id)?.settings ?? {})}
+            </span>
+            {" → "}
+            <span className="font-medium">{JSON.stringify(s.settings ?? {})}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (change.operation === "agent.save")
+    return (
+      <ChangeDiff
+        before={change.current}
+        after={change.proposal}
+        changes={["name", "role", "tier", "instructions"].map((path) => ({
+          path,
+          summary: "",
+          class: "neutral",
+        }))}
+        testId="org-pending-diff"
+      />
+    );
+  if (change.operation === "orgConfig.rollback")
+    return <div className="text-ink-3 text-xs">Back to v{change.toVersion}, as a new version.</div>;
+  return null;
 }
 
 type Agent = { name: string; role: string; tier?: string; instructions?: string };
@@ -438,7 +532,13 @@ function OrgAgents({
   config: OpOutput<"orgConfig.get"> | undefined;
 }) {
   const agents = (Array.isArray(config?.config.agents) ? config.config.agents : []) as Agent[];
-  const [editing, setEditing] = useState<Agent | null>(null);
+  const [editing, setEditingState] = useState<Agent | null>(null);
+  const [original, setOriginal] = useState<Agent | null>(null);
+  const setEditing = (a: Agent | null) => {
+    setEditingState(a);
+    if (a === null || original === null || a.name !== original.name || editing === null)
+      setOriginal(a ? { ...a } : null);
+  };
   const { run, pending } = usePolicyDecide();
   const canDecide = useCanDecide();
   return (
@@ -485,6 +585,9 @@ function OrgAgents({
           ))}
         </TablePanel>
       )}
+      <LeaveGuard
+        dirty={editing !== null && JSON.stringify(editing) !== JSON.stringify(original)}
+      />
       {editing && (
         <Panel className="gap-2" data-testid="org-agent-form">
           <div className="flex flex-wrap items-center gap-2">
@@ -599,42 +702,47 @@ function AdoptProjects({ orgId, baseVersion }: { orgId: string; baseVersion: num
               Nothing to move: every project is on an org workflow.
             </span>
           ) : (
-            <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px]">
-              {plan.projects.map((p) => (
-                <li key={p.projectId}>
-                  <span className="font-medium">{p.name}</span>: {p.from ?? "the stages alone"} →{" "}
-                  {p.workflow}
-                  {p.approved.length
-                    ? ` (looser overrides approved: ${p.approved.join(", ")})`
-                    : ""}
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px]">
+                {plan.projects.map((p) => (
+                  <li key={p.projectId}>
+                    <span className="font-medium">{p.name}</span>: {p.from ?? "the stages alone"} →{" "}
+                    {plan.workflows.find((w) => w.id === p.workflow)?.name ?? p.workflow}
+                    {p.approved.length
+                      ? ` (looser overrides approved: ${p.approved.join(", ")})`
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+              <div>
+                <Button
+                  size="sm"
+                  disabled={pending !== null || !canDecide}
+                  onClick={async () => {
+                    const out = await run(
+                      "orgConfig.adoptProjectWorkflows",
+                      { orgId, baseVersion, dryRun: false, planDigest: plan.planDigest },
+                      "Moved",
+                    );
+                    if (out) setPlan(null);
+                  }}
+                >
+                  Move{" "}
+                  {plan.projects.length === 1
+                    ? "this project"
+                    : `these ${plan.projects.length} projects`}
+                </Button>
+              </div>
+            </>
           )}
-          {plan.skipped.map((s) => (
-            <div key={s.projectId} className="text-ink-3 text-xs">
-              {s.name} stays: {s.reason}
-            </div>
-          ))}
-          {plan.projects.length > 0 && (
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                disabled={pending !== null || !canDecide}
-                onClick={async () => {
-                  const out = await run(
-                    "orgConfig.adoptProjectWorkflows",
-                    { orgId, baseVersion, dryRun: false, planDigest: plan.planDigest },
-                    "Moved",
-                  );
-                  if (out) setPlan(null);
-                }}
-              >
-                Move{" "}
-                {plan.projects.length === 1
-                  ? "this project"
-                  : `these ${plan.projects.length} projects`}
-              </Button>
+          {plan.skipped.length > 0 && (
+            <div className="flex flex-col gap-0.5 border-line-soft border-t pt-2 text-xs">
+              <span className="font-medium text-ink-3">Staying as they are</span>
+              {plan.skipped.map((s) => (
+                <span key={s.projectId} className="text-ink-3">
+                  {s.name}: {s.reason}
+                </span>
+              ))}
             </div>
           )}
         </Panel>
@@ -655,6 +763,12 @@ function OrgHistory({
   const { run, pending } = usePolicyDecide();
   const canDecide = useCanDecide();
   const history = config?.history ?? [];
+  // The engine's classification of the rollback, before the person confirms it.
+  const preview = useQuery({
+    queryKey: ["orgConfig", orgId, "previewRollback", confirm],
+    queryFn: () => read("orgConfig.previewRollback", { orgId, toVersion: confirm ?? 0 }),
+    enabled: confirm !== null,
+  });
   if (history.length === 0) return null;
   return (
     <section className="flex flex-col gap-2" data-testid="org-history">
@@ -691,14 +805,39 @@ function OrgHistory({
           <AlertDialogHeader>
             <AlertDialogTitle>Make v{confirm} current again?</AlertDialogTitle>
             <AlertDialogDescription>
-              It saves v{confirm} as a new version. Touch ID shows what it loosens, if anything; a
-              rollback that loosens waits for an org admin.
+              {!preview.data
+                ? preview.isError
+                  ? "The engine couldn't classify this rollback, so it can't be confirmed here."
+                  : "Classifying the change…"
+                : preview.data.impact.class === "loosens"
+                  ? `It saves v${confirm} as a new version. It loosens the org's workflows, so it waits for an org admin.`
+                  : `It saves v${confirm} as a new version, at once.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {preview.data && (
+            <div
+              className="flex max-h-64 flex-col gap-2 overflow-y-auto"
+              data-testid="org-rollback-preview"
+            >
+              <ImpactList changes={preview.data.impact.changes} />
+              <div className="rounded-lg bg-page px-3 py-2 text-xs">
+                <div>
+                  <span className="text-ink-3">Workflows now: </span>
+                  {preview.data.before.map((w) => w.name).join(", ") || "none"}
+                </div>
+                <div>
+                  <span className="text-ink-3">After: </span>
+                  <span className="font-medium">
+                    {preview.data.after.map((w) => w.name).join(", ") || "none"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={pending !== null}
+              disabled={pending !== null || !preview.data}
               onClick={() => {
                 const toVersion = confirm;
                 setConfirm(null);

@@ -244,6 +244,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   workflows.agentSave,
   workflows.orgConfigGet,
   workflows.orgConfigRollback,
+  workflows.orgConfigPreviewRollback,
   adopt.orgConfigAdoptProjectWorkflows,
   workflows.stageTypeList,
   reconcile.reconcileReport,

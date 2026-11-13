@@ -393,7 +393,12 @@ export function SaveBar({ editor }: { editor: ConfigEditor }) {
  * blocker covers every navigation in the app).
  */
 export function UnsavedGuard({ editor }: { editor: ConfigEditor }) {
-  const blocker = useBlocker({ shouldBlockFn: () => editor.dirty, withResolver: true });
+  return <LeaveGuard dirty={editor.dirty} />;
+}
+
+/** Asks before unsaved changes are lost, for any editor (`dirty` while it differs from saved). */
+export function LeaveGuard({ dirty }: { dirty: boolean }) {
+  const blocker = useBlocker({ shouldBlockFn: () => dirty, withResolver: true });
   return (
     <AlertDialog open={blocker.status === "blocked"} onOpenChange={(o) => !o && blocker.reset?.()}>
       <AlertDialogContent>

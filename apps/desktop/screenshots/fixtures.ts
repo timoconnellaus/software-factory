@@ -1922,6 +1922,24 @@ export const ANSWERS: Answers = {
         note: "Skip the reviewer for docs",
         by: "owner",
         createdAt: ago(20),
+        baseVersion: 4,
+        current: { id: "wf_software", name: "Software", stages: ORG_STAGES },
+        proposal: {
+          id: "wf_software",
+          name: "Software",
+          stages: ORG_STAGES.filter((s) => s.id !== "review"),
+        },
+        toVersion: null,
+        impact: {
+          class: "loosens" as const,
+          changes: [
+            {
+              path: "wf_software.stages",
+              class: "loosens" as const,
+              summary: "Removes the agent check Reviewer.",
+            },
+          ],
+        },
       },
     ],
   }),
