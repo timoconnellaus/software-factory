@@ -3,7 +3,9 @@
 import type { DesignPreview } from "@software-factory/client/planning";
 import { describe, expect, it } from "vitest";
 import {
+  comparison,
   designOverlays,
+  pinOn,
   pinOnPart,
   pinPlace,
   svgDataUrl,
@@ -55,5 +57,34 @@ describe("the System tab's drawing (spec 22 part B)", () => {
     expect(svgDataUrl('<svg><text>a&b "c"</text></svg>')).toBe(
       "data:image/svg+xml;charset=utf-8,%3Csvg%3E%3Ctext%3Ea%26b%20%22c%22%3C%2Ftext%3E%3C%2Fsvg%3E",
     );
+  });
+
+  it("never shows a failed, pending or drawing-less base as no changes (review of #168)", () => {
+    const base = preview([part("table a", "1")]);
+    const read = (
+      r: Partial<{ isPending: boolean; isError: boolean; error: unknown; data: unknown }>,
+    ) => ({ isPending: false, isError: false, ...r }) as Parameters<typeof comparison>[2];
+    expect(comparison(false, true, read({ data: { preview: base } }))).toEqual({ kind: "off" });
+    expect(comparison(true, false, read({ data: { preview: base } }))).toEqual({ kind: "off" });
+    expect(comparison(true, true, read({ isPending: true }))).toEqual({ kind: "loading" });
+    expect(comparison(true, true, read({ isError: true, error: new Error("offline") }))).toEqual({
+      kind: "error",
+      message: "offline",
+    });
+    expect(comparison(true, true, read({ data: { preview: null } }))).toEqual({
+      kind: "no-drawing",
+    });
+    expect(comparison(true, true, read({ data: { preview: base } }))).toEqual({
+      kind: "ready",
+      base,
+    });
+  });
+
+  it("places a pin on its part, and not at all when the part is gone from a later revision", () => {
+    const pin = pinOnPart("a", { width: 400 }, part("table users", "1"), { x: 50, y: 25 }, 2);
+    expect(pin.revision).toBe(2);
+    expect(pinOn(pin, [part("table users", "1", 100)], 3)).toEqual({ x: 150, y: 25 });
+    expect(pinOn(pin, [], 3)).toBeNull();
+    expect(pinOn({ ...pin, element: "nowhere" }, [], 2)).toEqual({ x: 50, y: 25 });
   });
 });
