@@ -9,6 +9,7 @@ import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
+import { MainRedCard } from "../components/babysitter.tsx";
 import {
   GateDetail,
   PlanningDetail,
@@ -154,6 +155,9 @@ function InboxPage() {
               />
             )}
             {selected.kind === "protection" && <ProtectionChangedCard drift={selected.drift} />}
+            {selected.kind === "mainRed" && (
+              <MainRedCard red={selected.red} projectName={projectName(selected.red.projectId)} />
+            )}
           </>
         )}
       </PageArea>

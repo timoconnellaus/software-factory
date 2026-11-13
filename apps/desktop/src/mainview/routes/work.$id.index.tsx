@@ -32,6 +32,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { Attachments } from "../components/attachments.tsx";
+import { MarkRepair } from "../components/babysitter.tsx";
 import {
   BacklogDetails,
   isPreRelease,
@@ -744,6 +745,11 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
             </Button>
           </Panel>
         )}
+        <MarkRepair
+          projectId={detail.item.projectId}
+          repositoryId={detail.item.repositoryId ?? null}
+          workItemId={detail.item.id}
+        />
         <section className="flex flex-col gap-2">
           <SectionTitle>Description</SectionTitle>
           <Panel className="leading-normal [&_code]:font-mono [&_code]:text-xs [&_p]:my-0.5">

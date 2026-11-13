@@ -6,6 +6,7 @@ import { STAGE_LABEL } from "@software-factory/client/format";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
+import { BabysitterSection } from "../components/babysitter.tsx";
 import { Cell, Empty, Row, Stat, TablePanel, When, WIDE } from "../components/data-table.tsx";
 import { Reads, StatSkeleton } from "../components/read-state.tsx";
 import { PageArea, PageHeader, SectionTitle } from "../components/shell-list.tsx";
@@ -182,6 +183,8 @@ function OverviewPage() {
           )
         }
       </Reads>
+
+      <BabysitterSection projects={scopedProjects} />
 
       <SectionTitle note="Approved work lands one at a time per repository.">
         Merge queue

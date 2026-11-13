@@ -10,6 +10,8 @@ export const DECISION_OPS: ReadonlySet<string> = new Set([
   "approval.decide",
   "question.answer",
   "question.acceptDefaults",
+  // Spec 53: marking a fix as a repair of a red main lets it land while the line is stopped.
+  "workItem.markRepair",
 ]);
 
 /**

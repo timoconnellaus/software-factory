@@ -34,6 +34,7 @@ import {
   waitingOn,
   waitingOrder,
 } from "../lib/work-board.ts";
+import { HeldChip } from "./babysitter.tsx";
 import { Chip, PageArea, PageHeader, Panel } from "./shell-list.tsx";
 import { useOrgScope, useScopedInbox } from "./shell-sidebar.tsx";
 import { ProjectSwitcher } from "./work-backlog.tsx";
@@ -329,6 +330,7 @@ function BoardCard({ item, needsYou }: { item: ActiveItem; needsYou: Set<string>
         </Chip>
       </div>
       <div className="font-medium leading-snug">{item.title}</div>
+      <HeldChip projectId={item.projectId} workItemId={item.id} />
       <div className="flex items-start gap-1.5 text-ink-muted text-xs" data-testid="card-who">
         <StatusDot status={who.status} className="mt-1" />
         <span className="min-w-0 flex-1">{item.statusReason ?? who.label}</span>

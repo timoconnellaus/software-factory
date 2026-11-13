@@ -7,6 +7,7 @@ export * from "./backlog.ts";
 export * from "./cli.ts";
 export * from "./config.ts";
 export * from "./connector.ts";
+export * from "./delivery.ts";
 export * from "./desktop.ts";
 export * from "./device.ts";
 export * from "./devices.ts";

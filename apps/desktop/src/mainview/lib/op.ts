@@ -39,7 +39,8 @@ export type DecisionOp =
   | "review.sendBack"
   | "approval.decide"
   | "question.answer"
-  | "question.acceptDefaults";
+  | "question.acceptDefaults"
+  | "workItem.markRepair";
 
 /** Reads: operations the door's `batch` runs (risk `read`). */
 export type ReadOpName =
@@ -73,7 +74,8 @@ export type ReadOpName =
   | "config.export"
   | "adjudicator.stats"
   | "workflow.get"
-  | "incident.listArchiveMissing";
+  | "incident.listArchiveMissing"
+  | "delivery.status";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

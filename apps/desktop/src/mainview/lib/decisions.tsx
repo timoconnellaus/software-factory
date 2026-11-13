@@ -58,7 +58,8 @@ export type Decision =
       workItemId?: string;
       pendingActionId: string;
       decision: "approved" | "rejected";
-    };
+    }
+  | { kind: "workItem.markRepair"; workItemId: string; repair: boolean };
 
 const DONE: Record<Decision["kind"], string> = {
   "spec.approve": "Spec approved",
@@ -69,6 +70,7 @@ const DONE: Record<Decision["kind"], string> = {
   "question.acceptDefaults": "Accepted the remaining defaults",
   "planning.answer": "Answered",
   "approval.decide": "Decided",
+  "workItem.markRepair": "Marked as a repair",
 };
 
 export async function run(d: Decision): Promise<string> {
@@ -135,6 +137,14 @@ export async function run(d: Decision): Promise<string> {
       return r.skipped.length
         ? `Accepted ${r.accepted.length}; ${r.skipped.length} must be answered one by one`
         : `Accepted ${r.accepted.length} default${r.accepted.length === 1 ? "" : "s"}`;
+    }
+    case "workItem.markRepair": {
+      const r = await decideOp(
+        "workItem.markRepair",
+        { workItemId: d.workItemId, repair: d.repair },
+        key,
+      );
+      return r.repair ? DONE[d.kind] : "No longer a repair";
     }
     case "approval.decide": {
       const r = await decideOp(

@@ -28,6 +28,8 @@ export interface OpMap {
   "spec.approve": Def<typeof operations.specApprove>;
   "spec.requestChanges": Def<typeof operations.specRequestChanges>;
   "review.merge": Def<typeof operations.reviewMerge>;
+  "delivery.status": Def<typeof operations.deliveryStatus>;
+  "workItem.markRepair": Def<typeof operations.workItemMarkRepair>;
   "review.sendBack": Def<typeof operations.reviewSendBack>;
   "approval.decide": Def<typeof operations.approvalDecide>;
   "question.answer": Def<typeof operations.questionAnswer>;
