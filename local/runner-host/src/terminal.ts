@@ -8,6 +8,7 @@
 // Bytes are bounded here: output is coalesced into frames of at most TERMINAL_HOST_FRAME, and while
 // the socket buffers more than TERMINAL_HIGH_WATER output is dropped; once it is back under
 // TERMINAL_LOW_WATER the host asks the bridge for a redraw, so a slow link jumps instead of queueing.
+
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   ChannelCallError,
@@ -26,6 +27,7 @@ import {
   type TerminalBridge,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
+import type { JobLine } from "./job-line.ts";
 
 /** The bits of a WebSocket the relay client uses (Node's global WebSocket; a fake in tests). */
 export interface SocketLike {
@@ -64,6 +66,8 @@ export async function terminalLoop(options: {
   connect?: Connect;
   retryMs?: number;
   flushMs?: number;
+  /** The job line: when it is up, wait on its pushes and call without holding (spec 44 part B). */
+  line?: JobLine;
 }): Promise<void> {
   const { adapter, cp, job, signal, log } = options;
   if (!adapter.openTerminal || !cp.terminal) return;
@@ -72,10 +76,11 @@ export async function terminalLoop(options: {
   let failures = 0;
   while (!signal.aborted) {
     let url: string | null;
+    const viaLine = options.line?.up() ?? false;
     try {
       const answer = await wait(
         job.jobId,
-        { fencingToken: job.lease.fencingToken, waitMs: TERMINAL_WAIT_MAX_MS },
+        { fencingToken: job.lease.fencingToken, waitMs: viaLine ? 0 : TERMINAL_WAIT_MAX_MS },
         signal,
       );
       url = answer.connect?.url ?? null;
@@ -97,7 +102,11 @@ export async function terminalLoop(options: {
       await sleep(ms, undefined, { signal }).catch(() => {});
       continue;
     }
-    if (!url) continue;
+    if (!url) {
+      // On the line: wait for a push (or the line going up or down, or the safety poll).
+      if (viaLine && options.line) await options.line.next("viewer", signal);
+      continue;
+    }
     log(`${job.jobId}: someone opened the web terminal; relaying`);
     await relayTerminal({
       url,
