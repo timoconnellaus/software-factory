@@ -5,6 +5,7 @@
 import { CAPABILITIES } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { anySkillIdSchema, hasHidden } from "../skills/schema.ts";
+import { parseCron } from "./cron.ts";
 
 export const AUTOPILOT_EVENTS = [
   "ci.failedOnDefaultBranch",
@@ -17,36 +18,10 @@ export type AutopilotEvent = (typeof AUTOPILOT_EVENTS)[number];
 /** Most autopilots an org keeps. */
 export const MAX_AUTOPILOTS = 20;
 
-/**
- * Whether a five-field cron fires at most once an hour (the spec's floor): the minute field is one
- * fixed minute, every field is numbers, ranges, lists, steps or `*`, within its bounds.
- */
+/** Why a cron isn't one an autopilot runs, or null (the one evaluator, `cron.ts`). */
 export function cronError(cron: string): string | null {
-  const fields = cron.trim().split(/\s+/);
-  if (fields.length !== 5)
-    return "a cron has five fields: minute hour day-of-month month day-of-week";
-  const bounds: [number, number][] = [
-    [0, 59],
-    [0, 23],
-    [1, 31],
-    [1, 12],
-    [0, 7],
-  ];
-  const minute = fields[0] as string;
-  if (!/^\d{1,2}$/.test(minute) || Number(minute) > 59)
-    return "an autopilot runs at most hourly: the minute field is one minute (0-59)";
-  for (let i = 1; i < 5; i++) {
-    const [lo, hi] = bounds[i] as [number, number];
-    for (const part of (fields[i] as string).split(",")) {
-      const m = /^(\*|(\d{1,2})(?:-(\d{1,2}))?)(?:\/(\d{1,2}))?$/.exec(part);
-      if (!m) return `cron field ${i + 1} isn't valid: ${part}`;
-      for (const n of [m[2], m[3]])
-        if (n !== undefined && (Number(n) < lo || Number(n) > hi))
-          return `cron field ${i + 1} is out of range (${lo}-${hi}): ${part}`;
-      if (m[4] !== undefined && Number(m[4]) < 1) return `cron step must be at least 1: ${part}`;
-    }
-  }
-  return null;
+  const parsed = parseCron(cron);
+  return parsed.ok ? null : parsed.error;
 }
 
 const timezone = z

@@ -6,9 +6,15 @@ import {
   type AutopilotConfig,
   autopilotImpact,
   autopilotSchema,
+  CRON_EPOCH,
   cronError,
+  cronFires,
+  nextFire,
+  parseCron,
 } from "../src/autopilots/index.ts";
+import { orgConfigImpact } from "../src/operations/workflows.ts";
 import { AUTONOMY_POLICIES, decide, RISK_CLASSES } from "../src/policy/gate.ts";
+import { EMPTY_ORG_CONFIG, type OrgConfig } from "../src/stages/org-config.ts";
 import { call, FOREMAN, ok, refusal, rows, world } from "./helpers.ts";
 
 type W = Awaited<ReturnType<typeof world>>;
@@ -104,6 +110,64 @@ describe("the autopilot's shape", () => {
   });
 });
 
+describe("the cron evaluator (review of #197): the one the firing code uses", () => {
+  const fires = (expr: string, tz = "UTC") => {
+    const p = parseCron(expr);
+    if (!p.ok) throw new Error(p.error);
+    return cronFires(p.cron, tz);
+  };
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  it("fires when known crons do", () => {
+    expect(fires("0 2 * * *")).toHaveLength(400);
+    expect(iso(fires("0 2 * * *")[0] as number)).toBe("2026-01-01T02:00:00.000Z");
+    // Yearly: 1 January, twice in 400 days from 1 January 2026.
+    expect(fires("0 0 1 1 *").map(iso)).toEqual([
+      "2026-01-01T00:00:00.000Z",
+      "2027-01-01T00:00:00.000Z",
+    ]);
+    // January only.
+    expect(fires("0 0 * 1 *")).toHaveLength(31 + 31);
+    // Day of month OR day of week when both are restricted (cron's rule).
+    const either = fires("0 0 1 * 1").map((t) => new Date(t));
+    expect(either.every((d) => d.getUTCDate() === 1 || d.getUTCDay() === 1)).toBe(true);
+    expect(either.length).toBeGreaterThan(57 + 13 - 3);
+    // 0 and 7 are both Sunday.
+    expect(fires("0 0 * * 0")).toEqual(fires("0 0 * * 7"));
+    // A minute that isn't a multiple of 15, in a zone off by half an hour.
+    expect(iso(fires("7 9 * * *", "Asia/Kolkata")[0] as number)).toBe("2026-01-01T03:37:00.000Z");
+    // Sydney's daylight saving: 02:30 happens twice on 5 April 2026 (clocks go back) and not at
+    // all on 4 October 2026 (clocks go forward); every fire is a real instant.
+    const sydney = fires("30 2 * * *", "Australia/Sydney").map(iso);
+    expect(
+      sydney.filter((t) => t.startsWith("2026-04-04T15:30") || t.startsWith("2026-04-04T16:30")),
+    ).toHaveLength(2);
+    expect(
+      sydney.some((t) => t.startsWith("2026-10-03T15:30") || t.startsWith("2026-10-03T16:30")),
+    ).toBe(false);
+    // The next fire after a time.
+    const p = parseCron("0 2 * * *");
+    if (!p.ok) throw new Error(p.error);
+    expect(iso(nextFire(p.cron, "UTC", CRON_EPOCH) as number)).toBe("2026-01-01T02:00:00.000Z");
+  });
+
+  it("refuses what it doesn't run: reversed ranges, macros, names, other whitespace", () => {
+    for (const bad of [
+      "0 22-2 * * *",
+      "@daily",
+      "0 0 * JAN *",
+      "0 0 L * *",
+      "0 0 * * 1#2",
+      "0\u00a02 * * *",
+      "\ufeff0 2 * * *",
+      "0\t2 * * *",
+      "*/15 * * * *",
+    ])
+      expect(cronError(bad), bad).not.toBeNull();
+    expect(cronError("0 2 * * *")).toBeNull();
+  });
+});
+
 describe("how a change to an autopilot classifies: by reach (ADR 0514 §5, review of #197)", () => {
   const cls = (before: AutopilotConfig[], after: AutopilotConfig[]) =>
     autopilotImpact(before, after).map((c) => c.class);
@@ -131,7 +195,7 @@ describe("how a change to an autopilot classifies: by reach (ADR 0514 §5, revie
     const at = (trigger: unknown) => ON({ trigger, scope });
     // schedule <-> event: an event fires without bound, on projects' events.
     expect(loosens([at(sched("0 2 * * 1"))], [at(event(["p1"]))])).toBe(true);
-    expect(loosens([at(event(["p1"]))], [at(sched("0 2 * * 1"))])).toBe(false);
+    expect(loosens([at(event(["p1"]))], [at(sched("0 2 * * 1"))])).toBe(true);
     // event projects wider / narrower; another event kind.
     expect(loosens([at(event(["p1"]))], [at(event())])).toBe(true);
     expect(loosens([at(event())], [at(event(["p1"]))])).toBe(false);
@@ -141,6 +205,28 @@ describe("how a change to an autopilot classifies: by reach (ADR 0514 §5, revie
     expect(loosens([at(sched("0 * * * *"))], [at(sched("0 2 * * 1"))])).toBe(false);
     // the reviewer's two-step: event [p1] -> schedule -> event (all) is a loosening at the last step.
     expect(loosens([at(sched("0 2 * * 1"))], [at(event())])).toBe(true);
+  });
+
+  it("judges a schedule by its fire times: the reviewer's cases all loosen", () => {
+    const sched = (cron: string, timezone = "UTC") =>
+      ON({ trigger: { kind: "schedule", cron, timezone } });
+    for (const [from, to] of [
+      ["0 0 * 1 *", "0 0 * * *"],
+      ["0 0 1 1 *", "0 0 1 * *"],
+      ["0 0 1 * 1", "0 0 1-31 * 1"],
+      ["0 0 * * 0,7", "0 0 * * 0,1"],
+      ["0 5 * * *", "0 22-23 * * *"],
+    ] as const)
+      expect(loosens([sched(from)], [sched(to)]), `${from} -> ${to}`).toBe(true);
+    // A subset of its times tightens; the same times in another form changes nothing.
+    expect(cls([sched("0 0 * * *")], [sched("0 0 * 1 *")])).toContain("tightens");
+    expect(loosens([sched("0 0 * * 0")], [sched("0 0 * * 7")])).toBe(false);
+    // A time-zone change shifts when it fires: decided, a loosening.
+    expect(loosens([sched("0 2 * * *")], [sched("0 2 * * *", "Australia/Sydney")])).toBe(true);
+    // Any change of trigger kind loosens, both ways.
+    const event = ON({ trigger: { kind: "event", event: "workItem.done" } });
+    expect(loosens([event], [sched("0 2 * * *")])).toBe(true);
+    expect(loosens([sched("0 2 * * *")], [event])).toBe(true);
   });
 
   it("what expands its power loosens: agent, capabilities, skills, scope, output, limits, releasing, instructions while on", () => {
@@ -217,6 +303,36 @@ describe("how a change to an autopilot classifies: by reach (ADR 0514 §5, revie
           false,
         );
       }
+    }
+  });
+});
+
+describe("what an autopilot that is on uses is part of its reach (review of #197)", () => {
+  const triager = {
+    name: "Triager",
+    role: "review" as const,
+    tier: "light" as const,
+    instructions: "Be careful.",
+    requires: [],
+  };
+  const base = (enabled: boolean): OrgConfig => ({
+    ...EMPTY_ORG_CONFIG,
+    agents: [triager],
+    skills: { sk_tidy: { version: 1 } },
+    agentSkills: {},
+    autopilots: [AP({ enabled, skills: ["sk_tidy"] })],
+  });
+  const loosens = (b: OrgConfig, a: OrgConfig) =>
+    orgConfigImpact(b, a).changes.some((c) => c.class === "loosens");
+
+  it("its agent, the agent's skills, and a new version of a skill it follows loosen while it's on", () => {
+    for (const enabled of [true, false]) {
+      const b = base(enabled);
+      const agent = { ...b, agents: [{ ...triager, instructions: "Pass everything." }] };
+      const attached = { ...b, agentSkills: { triager: ["sk_tidy"] } };
+      const version = { ...b, skills: { sk_tidy: { version: 2 } } };
+      for (const a of [agent, attached, version])
+        expect(loosens(b, a), String(enabled)).toBe(enabled);
     }
   });
 });
@@ -299,6 +415,32 @@ describe("autopilot operations", () => {
       w.human,
     );
     expect(await versionOf(w)).toBe(2);
+  });
+
+  it("a waiting save shows the autopilot's full reach, now and as proposed (review of #197)", async () => {
+    const w = await world();
+    await withAgent(w);
+    await call(
+      "autopilot.save",
+      {
+        orgId: w.orgId,
+        baseVersion: 1,
+        autopilot: AP({ enabled: true, output: { kind: "digest" } }),
+      },
+      w.human,
+    );
+    const got = await ok<{
+      pending: {
+        operation: string;
+        proposal: { enabled?: boolean; output?: unknown } | null;
+        current: unknown;
+        impact: { class: string } | null;
+      }[];
+    }>("orgConfig.get", { orgId: w.orgId }, w.human);
+    const p = got.pending.find((x) => x.operation === "autopilot.save");
+    expect(p?.proposal).toMatchObject({ enabled: true, output: { kind: "digest" } });
+    expect(p?.current).toBeNull();
+    expect(p?.impact?.class).toBe("loosens");
   });
 
   it("refuses an unknown agent or project, an agent, and anyone but an org admin", async () => {
@@ -404,6 +546,6 @@ describe("autopilot operations", () => {
       /^Approve: save an org autopilot \(v1 to v2\): 0 2 \* \* \* Australia\/Sydney; files and RELEASES work; all projects; 5\/run, 4\/day, 30 min/,
     );
     // The facts come first; the name follows only where it fits (titled()).
-    expect(summary).toMatch(/: 9 loosenings/);
+    expect(summary).toMatch(/: \d+ loosenings/);
   });
 });

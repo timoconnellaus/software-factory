@@ -5,6 +5,7 @@
 // (the person approving sees all it would reach). A new autopilot is judged against nothing:
 // creating one that is on loosens; one created off is practice until it is turned on.
 import type { ImpactChange } from "../policy/impact.ts";
+import { cronFires, parseCron } from "./cron.ts";
 import type { AutopilotConfig } from "./schema.ts";
 
 type Projects = "all" | readonly string[];
@@ -17,8 +18,10 @@ interface Reach {
   /** Whose events fire it: none for a schedule (it fires on no project's events). */
   eventProjects: Projects;
   events: readonly string[];
-  /** How often a schedule fires, in firings a week; an event trigger: unbounded. */
-  perWeek: number;
+  /** A schedule (its cron and time zone), or null for an event trigger. */
+  schedule: { cron: string; timeZone: string } | null;
+  /** schedule | event | null (nothing). */
+  triggerKind: string | null;
   outputKind: string | null;
   outputProject: string | null;
   /** backlog < ready < queued: how close to running what it files is. */
@@ -36,7 +39,8 @@ const NOTHING: Reach = {
   scope: [],
   eventProjects: [],
   events: [],
-  perWeek: 0,
+  schedule: null,
+  triggerKind: null,
   outputKind: null,
   outputProject: null,
   outputState: -1,
@@ -49,34 +53,18 @@ const NOTHING: Reach = {
 
 const STATE_RANK: Record<string, number> = { backlog: 0, ready: 1, queued: 2 };
 
-/** How many values a cron field takes (bounded by `lo`..`hi`). */
-function fieldCount(field: string, lo: number, hi: number): number {
-  if (field === "*") return hi - lo + 1;
-  const seen = new Set<number>();
-  for (const part of field.split(",")) {
-    const m = /^(\*|(\d{1,2})(?:-(\d{1,2}))?)(?:\/(\d{1,2}))?$/.exec(part);
-    if (!m) return hi - lo + 1;
-    const from = m[2] !== undefined ? Number(m[2]) : lo;
-    const to = m[3] !== undefined ? Number(m[3]) : m[2] !== undefined && !m[4] ? from : hi;
-    const step = m[4] ? Math.max(1, Number(m[4])) : 1;
-    for (let v = from; v <= to; v += step) seen.add(v);
-  }
-  return Math.max(1, seen.size);
-}
-
-/** Firings a week of a five-field cron (one fixed minute): hours a day × days a week. */
-export function cronPerWeek(cron: string): number {
-  const f = cron.trim().split(/\s+/);
-  const hours = fieldCount(f[1] ?? "*", 0, 23);
-  const dom = f[2] ?? "*";
-  const dow = f[4] ?? "*";
-  const days =
-    dow !== "*"
-      ? Math.min(7, fieldCount(dow, 0, 6))
-      : dom !== "*"
-        ? Math.min(7, (fieldCount(dom, 1, 31) * 7) / 30)
-        : 7;
-  return hours * days;
+/** A schedule's fire times over the fixed horizon (cached: a version's schedules don't change). */
+const fireCache = new Map<string, ReadonlySet<number>>();
+function firesOf(cron: string, timeZone: string): ReadonlySet<number> | null {
+  const key = `${cron}|${timeZone}`;
+  const hit = fireCache.get(key);
+  if (hit) return hit;
+  const parsed = parseCron(cron);
+  if (!parsed.ok) return null;
+  const set = new Set(cronFires(parsed.cron, timeZone));
+  if (fireCache.size > 200) fireCache.clear();
+  fireCache.set(key, set);
+  return set;
 }
 
 function reachOf(a: AutopilotConfig): Reach {
@@ -87,7 +75,9 @@ function reachOf(a: AutopilotConfig): Reach {
     scope: a.scope.projects,
     eventProjects: event ? (a.trigger.kind === "event" ? (a.trigger.projects ?? "all") : []) : [],
     events: a.trigger.kind === "event" ? [a.trigger.event] : [],
-    perWeek: a.trigger.kind === "schedule" ? cronPerWeek(a.trigger.cron) : Number.POSITIVE_INFINITY,
+    schedule:
+      a.trigger.kind === "schedule" ? { cron: a.trigger.cron, timeZone: a.trigger.timezone } : null,
+    triggerKind: a.trigger.kind,
     outputKind: a.output.kind,
     outputProject: a.output.kind === "backlog" ? a.output.project : null,
     outputState: a.output.kind === "backlog" ? (STATE_RANK[a.output.state] ?? 0) : -1,
@@ -147,8 +137,23 @@ function compare(label: string, path: string, b: Reach, a: Reach): ImpactChange[
   if (adds(b.events, a.events)) add("trigger.event", "loosens", `${label} fires on another event.`);
   else if (adds(a.events, b.events))
     add("trigger.event", "tightens", `${label} fires on fewer events.`);
-  if (a.perWeek > b.perWeek) add("trigger", "loosens", `${label} fires more often.`);
-  else if (a.perWeek < b.perWeek) add("trigger", "tightens", `${label} fires less often.`);
+  // The trigger by its actual fire times (review of #197): any change of kind loosens (an event
+  // fires without bound; a schedule on its own clock); a schedule that fires at any time it didn't
+  // before (another month, day, hour or time zone) loosens; only a subset of its times tightens.
+  if (b.triggerKind !== null && a.triggerKind !== b.triggerKind)
+    add(
+      "trigger",
+      "loosens",
+      `${label} now runs on ${a.triggerKind === "event" ? "an event" : "a schedule"}.`,
+    );
+  else if (a.schedule && b.schedule && JSON.stringify(a.schedule) !== JSON.stringify(b.schedule)) {
+    const was = firesOf(b.schedule.cron, b.schedule.timeZone);
+    const now = firesOf(a.schedule.cron, a.schedule.timeZone);
+    const within = !!was && !!now && [...now].every((t) => was.has(t));
+    if (!within) add("trigger", "loosens", `${label} runs at times it didn't before.`);
+    else if ((now?.size ?? 0) < (was?.size ?? 0))
+      add("trigger", "tightens", `${label} runs less often.`);
+  }
   if (a.outputKind !== b.outputKind && a.outputKind !== null)
     add("output", "loosens", `${label}'s output is now ${a.outputKind}.`);
   else if (a.outputProject !== b.outputProject && a.outputProject !== null)

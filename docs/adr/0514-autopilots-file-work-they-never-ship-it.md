@@ -49,4 +49,14 @@ reference. The risk is an agent that creates and ships its own work.
 > holds that no run of practice or tightening saves ends where one direct change would loosen.
 > Turning one off is one tap on the desktop; saving and turning one on take a desktop presence
 > proof; the phone stays refused.
+>
+> Amended 2026-11-13 (second review of #197): a schedule is judged by its **actual fire times**,
+> enumerated over 400 days from a fixed epoch in the autopilot's time zone by the one cron evaluator
+> (`autopilots/cron.ts`), which the firing code uses too: a change is practice only when the new
+> times are a subset of the old; any time it didn't fire before loosens. **Decided:** a time-zone
+> change shifts when it fires, so it loosens like any other new time. Any change of trigger kind
+> loosens, both ways. Crons the evaluator doesn't fully run (macros, names, `L`/`W`/`#`, reversed
+> ranges, anything but ASCII spaces) are refused at save. The agent an enabled autopilot hands to,
+> the skills attached to that agent, and the skills it follows are part of its reach: changing them
+> loosens, as for an agent that judges work.
 

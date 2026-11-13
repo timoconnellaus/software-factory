@@ -124,6 +124,9 @@ export async function setAutopilotEnabled(
 ) {
   const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
   requireBase(version, input.baseVersion);
+  // Turning one on: it still names only the org's projects (review of #197).
+  const target = config.autopilots.find((a) => a.id === input.autopilotId);
+  if (enabled && target) await requireOrgProjects(ctx, input.orgId, target);
   const after = validated(withAutopilotEnabled(config, input.autopilotId, enabled));
   const name = config.autopilots.find((a) => a.id === input.autopilotId)?.name ?? input.autopilotId;
   return writeOrgVersion(ctx, input.orgId, version, after, {
@@ -170,7 +173,7 @@ export const autopilotGet = defineOperation({
 export const autopilotSave = defineOperation({
   name: "autopilot.save",
   description:
-    "Add an org autopilot, or replace one by id (ADR 0514): its trigger (an hourly-at-most schedule, or an event), the org agent it hands to, its instructions, the projects it reaches, its output and its limits. A new one is off unless saved on. Practice, except one that releases the work it files or reaches further (more projects, another output, higher limits): that loosens, so it waits for an org admin. Org admins only, in the app.",
+    "Add an org autopilot, or replace one by id (ADR 0514): its trigger (an hourly-at-most schedule, or an event), the org agent it hands to, its skills, its instructions, the projects it reaches, its output and its limits. Judged by reach: changing one that is off is practice; one that is on (or saved on) loosens when it would do anything it couldn't before (fire at new times, reach more projects or events, another agent, capabilities, skills, output, limits or instructions), so it waits for an org admin. Org admins only; on the desktop with a presence proof.",
   risk: "write",
   riskOf: (input, at) =>
     riskOfSave(at.db, input.orgId, input.baseVersion, (c) =>
@@ -194,7 +197,7 @@ const toggleInput = z.object({ orgId, baseVersion, autopilotId, note });
 export const autopilotEnable = defineOperation({
   name: "autopilot.enable",
   description:
-    "Turn an org autopilot on (ADR 0514). Practice, except one that releases the work it files: that loosens, so it waits for an org admin. Org admins only, in the app.",
+    "Turn an org autopilot on (ADR 0514). Always a loosening (what it reaches is judged when it is turned on), so it waits for an org admin; on the desktop with a presence proof. Org admins only.",
   risk: "write",
   riskOf: (input, at) =>
     riskOfSave(at.db, input.orgId, input.baseVersion, (c) =>
