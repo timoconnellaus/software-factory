@@ -13,6 +13,7 @@ import {
   globMatch,
   lockWithoutManifest,
   SELF_MODIFY_PATHS,
+  structuralRisk,
 } from "../src/index.ts";
 import { SOFTWARE, type WorkflowDefinition } from "../src/stages/index.ts";
 import {
@@ -38,9 +39,6 @@ const ALLOW = [
   "vendor/**",
   "evals/**",
   "infra/**",
-  "*.*",
-  ".*",
-  ".*/**",
 ];
 const ON = autoApproveSettings.parse({ enabled: true, allowPaths: ALLOW });
 const good = (): AutoApproveFacts => ({
@@ -61,6 +59,7 @@ const good = (): AutoApproveFacts => ({
   hold: null,
   touchesFactoryConfig: false,
   versionSupports: true,
+  reportedFiles: 2,
 });
 const failing = (f: AutoApproveFacts, s = ON) =>
   autoApproveVerdict(f, s)
@@ -199,6 +198,7 @@ describe("autoApproveVerdict: every condition, in code", () => {
       ...good(),
       factorySource: true,
       changes: [{ path: "docs/design/x.html", changes: 3 }],
+      reportedFiles: 1,
     };
     expect(autoApproveVerdict(f, ON).approve).toBe(true);
     const off = { ...f, changes: [{ path: "docs/architecture.md", changes: 3 }] };
@@ -206,7 +206,7 @@ describe("autoApproveVerdict: every condition, in code", () => {
   });
 
   it("every path must be inside allowPaths; none set, nothing qualifies; it can't be turned on without them", () => {
-    const f = { ...good(), changes: [{ path: "lib/x.ts", changes: 3 }] };
+    const f = { ...good(), reportedFiles: 1, changes: [{ path: "lib/x.ts", changes: 3 }] };
     expect(autoApproveVerdict(f, ON).reason).toMatch(/outside allowPaths: lib\/x.ts/);
     expect(autoApproveVerdict(good(), { ...ON, allowPaths: [] }).approve).toBe(false);
     expect(autoApproveSettings.safeParse({ enabled: true }).success).toBe(false);
@@ -252,7 +252,11 @@ describe("autoApproveVerdict: every condition, in code", () => {
   });
 
   it("the workflow's own lists add to the floor", () => {
-    const f = { ...good(), changes: [{ path: "src/payments-ui/x.ts", changes: 1 }] };
+    const f = {
+      ...good(),
+      reportedFiles: 1,
+      changes: [{ path: "src/payments-ui/x.ts", changes: 1 }],
+    };
     expect(autoApproveVerdict(f, ON).approve).toBe(true);
     expect(autoApproveVerdict(f, { ...ON, riskPaths: ["src/payments-ui/**"] }).approve).toBe(false);
     expect(autoApproveVerdict(f, { ...ON, forbiddenPaths: ["src/**"] }).reason).toMatch(
@@ -436,6 +440,9 @@ async function atMergeGate(
     ),
     new Date().toISOString(),
   );
+  // The PR, as verify opens it on the head (GitHub reports its file count).
+  await rows("UPDATE core_work_items SET head_sha = ? WHERE id = ?", head, item.workItemId);
+  await ok("pr.open", { workItemId: item.workItemId }, FOREMAN);
   const gate = await call(
     "pr.merge",
     { workItemId: item.workItemId, headSha: head, touchesFactoryConfig: false },
@@ -476,8 +483,6 @@ async function atMergeGate(
 
 /** Lands an approved merge as the babysitter would (`pr.merge` with the approval): its merge commit. */
 async function land(_w: W, at: Awaited<ReturnType<typeof atMergeGate>>): Promise<string> {
-  await rows("UPDATE core_work_items SET head_sha = ? WHERE id = ?", at.head, at.item.workItemId);
-  await ok("pr.open", { workItemId: at.item.workItemId }, FOREMAN);
   const merged = await ok<{ sha: string }>(
     "pr.merge",
     { workItemId: at.item.workItemId, headSha: at.head, touchesFactoryConfig: false },
@@ -836,8 +841,6 @@ describe("dark factory mode through the operations", () => {
     await dark(w);
     const { item, head, gate, pa } = await atMergeGate(w);
     expect(pa.status).toBe("approved");
-    await rows("UPDATE core_work_items SET head_sha = ? WHERE id = ?", head, item.workItemId);
-    await ok("pr.open", { workItemId: item.workItemId }, FOREMAN);
     await ok(
       "mergeQueue.enter",
       { workItemId: item.workItemId, headSha: head, pendingActionId: gate, driver: "babysitter" },
@@ -879,8 +882,6 @@ describe("dark factory mode through the operations", () => {
     const w = await world();
     await dark(w);
     const { item, head, gate } = await atMergeGate(w);
-    await rows("UPDATE core_work_items SET head_sha = ? WHERE id = ?", head, item.workItemId);
-    await ok("pr.open", { workItemId: item.workItemId }, FOREMAN);
     await ok(
       "mergeQueue.enter",
       { workItemId: item.workItemId, headSha: head, pendingActionId: gate, driver: "babysitter" },
@@ -907,3 +908,164 @@ const orgVersionOf = async (w: W) =>
       w.orgId,
     )
   ).config_version ?? 0;
+
+describe("dark factory mode, fourth review of #152", () => {
+  const STRUCTURAL = [
+    "bun.lock",
+    "npm-shrinkwrap.json",
+    "uv.lock",
+    "Pipfile.lock",
+    "composer.lock",
+    "pubspec.yaml",
+    "pubspec.lock",
+    "deno.json",
+    "mix.exs",
+    "Podfile",
+    "go.work",
+    "gradle.properties",
+    "gradle/wrapper/gradle-wrapper.properties",
+    "App.fsproj",
+    ".pnpmfile.cjs",
+    ".yarnrc.yml",
+    ".yarn/releases/yarn-4.cjs",
+    "conftest.py",
+    "vitest.setup.ts",
+    "jest.setup.js",
+    "Rakefile",
+    "Taskfile.yml",
+    "db/migrate/001_users.rb",
+    "alembic/versions/abc123.py",
+    ".mcp.json",
+    "AGENTS.override.md",
+    "CLAUDE.local.md",
+    ".codex/config.toml",
+    ".gemini/settings.json",
+    ".roo/rules.md",
+    ".clinerules",
+    "opencode.json",
+    "CODEOWNERS",
+    ".gitattributes",
+    ".devcontainer/devcontainer.json",
+    ".claude/settings.json",
+    ".cursor/rules.mdc",
+    ".husky/pre-commit",
+    "src/hooks/useThing.ts",
+  ];
+  it("refuses by shape at any depth: every name, at the root and nested", () => {
+    for (const name of STRUCTURAL)
+      for (const path of [name, `pkg/sub/${name}`]) {
+        expect(structuralRisk(path), path).not.toBeNull();
+        const f = { ...good(), reportedFiles: 1, changes: [{ path, changes: 1 }] };
+        expect(autoApproveVerdict(f, { ...ON, allowPaths: ["**"] }).approve, path).toBe(false);
+      }
+    expect(structuralRisk("src/components/Button.tsx")).toBeNull();
+  });
+
+  it("a path with a control character or a line break is never low risk", () => {
+    expect(structuralRisk("apps/x\n/package.json")).not.toBeNull();
+    expect(structuralRisk("src/a\u0007.ts")).not.toBeNull();
+  });
+
+  it("an empty file list, or one that doesn't match GitHub's count, is refused", () => {
+    expect(autoApproveVerdict({ ...good(), changes: [], reportedFiles: 0 }, ON).reason).toMatch(
+      /lists no files/,
+    );
+    expect(autoApproveVerdict({ ...good(), reportedFiles: 3 }, ON).reason).toMatch(
+      /doesn't match the 2 files/,
+    );
+    expect(autoApproveVerdict({ ...good(), reportedFiles: null }, ON).approve).toBe(false);
+  });
+
+  it("a symlink, a submodule or a changed mode is never low risk", () => {
+    const v = autoApproveVerdict({ ...good(), modeChanges: ["src/theme.ts"] }, ON);
+    expect(v.approve).toBe(false);
+    expect(v.reason).toMatch(/symlink, a submodule or a mode change/);
+  });
+
+  it("allowPaths entries name places: bare wildcards are refused", () => {
+    for (const g of ["**", "*", "**/*", "*/**"])
+      expect(autoApproveSettings.safeParse({ enabled: true, allowPaths: [g] }).success, g).toBe(
+        false,
+      );
+    expect(autoApproveSettings.safeParse({ enabled: true, allowPaths: ["src/**"] }).success).toBe(
+      true,
+    );
+  });
+
+  it("the adjudicator hasn't earned it on defers: it needs approvals a person agreed with", async () => {
+    const w = await world();
+    const now = new Date().toISOString();
+    for (let i = 0; i < 20; i++) {
+      const pa = uid("pa_");
+      await rows(
+        `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, status, decision, decided_by, created_at, decided_at)
+         VALUES (?, ?, ?, 'wi_x', 'merge', 'pr.merge', 'merge', 'agent', 'foreman', '{}', 'approved', 'approved', ?, ?, ?)`,
+        pa,
+        w.orgId,
+        w.projectId,
+        w.userId,
+        now,
+        now,
+      );
+      await rows(
+        `INSERT INTO core_adjudications (id, pending_action_id, project_id, work_item_id, kind, mode, job_id, verdict, reason, acted, created_at, decided_at)
+         VALUES (?, ?, ?, 'wi_x', 'merge', 'shadow', ?, ?, 'r', 0, ?, ?)`,
+        uid("adj_"),
+        pa,
+        w.projectId,
+        uid("job_"),
+        i === 0 ? "approve" : "defer",
+        now,
+        now,
+      );
+    }
+    const stats = await ok<{ merge: { eligible: boolean; precision: number } }>(
+      "adjudicator.stats",
+      { projectId: w.projectId },
+      w.human,
+    );
+    expect(stats.merge.precision).toBe(1);
+    expect(stats.merge.eligible).toBe(false);
+  });
+
+  it("the babysitter reruns the whole verdict at merge: narrowed allowPaths withdraw it", async () => {
+    const w = await world();
+    await dark(w);
+    const { item, head, gate, pa } = await atMergeGate(w);
+    expect(pa.status).toBe("approved");
+    await ok(
+      "mergeQueue.enter",
+      { workItemId: item.workItemId, headSha: head, pendingActionId: gate, driver: "babysitter" },
+      FOREMAN,
+    );
+    // An org admin narrows allowPaths (a tightening, saved at once).
+    const narrowed = {
+      ...DARK,
+      stages: DARK.stages.map((x) =>
+        x.id === "merge"
+          ? {
+              ...x,
+              settings: {
+                ...(x.settings as object),
+                autoApprove: { enabled: true, allowPaths: ["docs/**"] },
+              },
+            }
+          : x,
+      ),
+    };
+    await approveIfPending(
+      w,
+      await call(
+        "workflow.save",
+        { orgId: w.orgId, baseVersion: await orgVersionOf(w), workflow: narrowed },
+        w.human,
+      ),
+    );
+    const marked = await ok<{ merging: boolean; withdrawn?: string }>(
+      "mergeQueue.merging",
+      { workItemId: item.workItemId, merging: true },
+      BABYSITTER,
+    );
+    expect(marked.withdrawn).toMatch(/no longer qualifies: outside allowPaths/);
+  });
+});

@@ -75,6 +75,8 @@ interface RepoState {
 
 interface FakePull {
   number: number;
+  /** What GitHub reports as `changed_files`, when a test sets it (else counted from the commits). */
+  changedFiles?: number;
   head: string;
   base: string;
   title: string;
@@ -486,7 +488,13 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
     async getPullRequest(r, number) {
       const state = await load(r);
       const pull = state.pulls.find((p) => p.number === number);
-      return pull ? pullInfo(r, state, pull) : null;
+      if (!pull) return null;
+      // GitHub's `changed_files`: what the PR's head changes against its base.
+      const head = pull.headSha ?? state.refs[pull.head] ?? "";
+      const changed = head
+        ? touchesBetween(state, state.refs[pull.base] ?? pull.base, head).size
+        : 0;
+      return { ...pullInfo(r, state, pull), changedFiles: pull.changedFiles ?? changed };
     },
     async listOpenPullRequests(r) {
       const state = await load(r);

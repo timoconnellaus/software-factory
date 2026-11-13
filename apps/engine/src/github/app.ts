@@ -977,6 +977,7 @@ interface GitHubPull {
   merged_at?: string | null;
   merge_commit_sha?: string | null;
   draft?: boolean;
+  changed_files?: number;
   user?: { login: string } | null;
   head: { ref: string; sha: string; repo: { full_name: string } | null };
   base: { ref: string };
@@ -997,5 +998,6 @@ function pullInfo(p: GitHubPull): PullRequestInfo {
     base: { ref: p.base.ref },
     // Before a merge GitHub reports a test-merge commit here: only a merged PR's is its merge.
     mergeCommitSha: (p.merged ?? Boolean(p.merged_at)) ? (p.merge_commit_sha ?? null) : null,
+    ...(typeof p.changed_files === "number" ? { changedFiles: p.changed_files } : {}),
   };
 }

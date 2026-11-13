@@ -36,7 +36,17 @@ export const autoApproveSettings = z
      * No default: empty means nothing qualifies, and the setting can't be turned on without them.
      */
     allowPaths: z
-      .array(z.string().min(1).max(200))
+      .array(
+        z
+          .string()
+          .min(1)
+          .max(200)
+          // A place, not "anywhere" (review of #152): at least one segment with no wildcard.
+          .refine(
+            (g) => g.split("/").some((seg) => seg.length > 0 && !/[*?]/.test(seg)),
+            "an allowPaths entry names a place (src/components/**), not a bare wildcard",
+          ),
+      )
       .max(100)
       .default([])
       .describe(
@@ -214,6 +224,112 @@ export const RISK_PATHS = [
  */
 export const FACTORY_SOURCE_ALLOW = ["docs/design/**"] as const;
 
+/**
+ * The structural floor (review of #152): what is risky by its shape, at any depth and in any case,
+ * so a new ecosystem's file doesn't slip through a list. Returns why, or null.
+ */
+export function structuralRisk(path: string): string | null {
+  // A path with a control character or a line break isn't matched by globs as a person reads it.
+  if (/\p{Cc}|\p{Zl}|\p{Zp}/u.test(path)) return "a path with control characters";
+  const segs = path.split("/");
+  const lower = segs.map((x) => x.toLowerCase());
+  const base = lower.at(-1) ?? "";
+  // (a) any hidden file or directory, at any depth (.github, .claude, .husky, .devcontainer…).
+  if (segs.some((x) => x.startsWith("."))) return "a hidden file or directory";
+  // (b) lock files, by shape.
+  if (
+    /\.lockb?$/.test(base) ||
+    /lock.*\.(json|ya?ml|toml)$/.test(base) ||
+    /-lock\./.test(base) ||
+    base.includes("shrinkwrap")
+  )
+    return "a lock file";
+  // (c) manifests, build files, setup files and task runners, by name at any depth.
+  if (MANIFEST_NAMES.has(base) || MANIFEST_SHAPES.some((re) => re.test(base)))
+    return "a manifest, build or setup file";
+  // (d) migrations and hooks wherever they live.
+  if (lower.some((x) => x === "migrations" || x === "migrate" || x === "hooks"))
+    return "migrations or hooks";
+  if (lower.includes("alembic") && lower.includes("versions")) return "migrations";
+  // (e) owners and agent instruction files.
+  if (
+    base === "codeowners" ||
+    /^agents.*\.md$/.test(base) ||
+    /^claude.*\.md$/.test(base) ||
+    base === "gemini.md" ||
+    base === "opencode.json" ||
+    base.endsWith(".rules")
+  )
+    return "an owners or agent instruction file";
+  return null;
+}
+
+const MANIFEST_NAMES = new Set([
+  "package.json",
+  "deno.json",
+  "deno.jsonc",
+  "bunfig.toml",
+  "pyproject.toml",
+  "setup.py",
+  "setup.cfg",
+  "pipfile",
+  "conftest.py",
+  "go.mod",
+  "go.sum",
+  "go.work",
+  "cargo.toml",
+  "gemfile",
+  "rakefile",
+  "mix.exs",
+  "podfile",
+  "pubspec.yaml",
+  "pom.xml",
+  "gradle.properties",
+  "gradlew",
+  "gradlew.bat",
+  "composer.json",
+  "makefile",
+  "justfile",
+  "taskfile.yml",
+  "taskfile.yaml",
+  "procfile",
+  "jenkinsfile",
+  "dockerfile",
+  "vercel.json",
+  "netlify.toml",
+  "fly.toml",
+  "app.yaml",
+  "render.yaml",
+  "railway.json",
+  "codeowners",
+]);
+const MANIFEST_SHAPES = [
+  /^requirements.*\.txt$/,
+  /\.gemspec$/,
+  /^build\.gradle/,
+  /^settings\.gradle/,
+  /\.(cs|fs|vb)proj$/,
+  /^gradle-wrapper\./,
+  /^tsconfig.*\.json$/,
+  /^jsconfig.*\.json$/,
+  /\.config\.[cm]?[jt]s$/,
+  /\.config\.json$/,
+  /^(vitest|jest|playwright)\.setup\./,
+  /^build\./,
+  /^esbuild/,
+  /^rollup/,
+  /^webpack/,
+  /^gulpfile/,
+  /^gruntfile/,
+  /^dockerfile/,
+  /^docker-compose/,
+  /^azure-pipelines/,
+  /^bitbucket-pipelines/,
+  /^serverless\./,
+  /^wrangler\./,
+  /\.tf(vars)?$/,
+];
+
 /** Generated files: what made them isn't in the diff, so they aren't low risk. */
 export const GENERATED_PATHS = [
   "**/*.gen.*",
@@ -329,8 +445,19 @@ export interface AutoApproveFacts {
    * (binary, too large, a submodule): not low risk.
    */
   changes:
-    | { path: string; changes: number | null; unreadable?: boolean; submodule?: boolean }[]
+    | {
+        path: string;
+        changes: number | null;
+        unreadable?: boolean;
+        submodule?: boolean;
+        /** The old side of a rename (not a file GitHub counts on its own). */
+        renamedFrom?: boolean;
+      }[]
     | null;
+  /** How many files GitHub says the change touches (the PR's `changed_files`); must match. */
+  reportedFiles?: number | null;
+  /** Paths whose file mode is a symlink or a submodule, or changed between base and head. */
+  modeChanges?: string[];
   /** The repository is the factory's own source: default-deny (`FACTORY_SOURCE_ALLOW`). */
   factorySource?: boolean;
   /** The item's Workflow version has dark factory mode (the babysitter re-checks it). */
@@ -436,12 +563,20 @@ export function autoApproveVerdict(
   const allow = [setting.allowPaths, ...((setting as { alsoAllow?: string[][] }).alsoAllow ?? [])];
   const outside = paths.filter((p) => allow.some((list) => !list.some((g) => globMatch(g, p))));
   const today = facts.today ?? 0;
+  // At least one file, and exactly as many as GitHub says the change touches (fail closed).
+  const own = (changes ?? []).filter((c) => !c.renamedFrom).length;
+  const counted = !!changes && own > 0 && facts.reportedFiles === own;
 
   const self = matching(SELF_MODIFY_PATHS, paths);
   const risky = [
     ...matching([...RISK_PATHS, ...GENERATED_PATHS, ...setting.riskPaths], paths),
     ...(changes ?? []).filter((c) => c.unreadable).map((c) => `${c.path} (no readable diff)`),
     ...(changes ?? []).filter((c) => c.submodule).map((c) => `${c.path} (a submodule bump)`),
+    ...paths.flatMap((x) => {
+      const why = structuralRisk(x);
+      return why ? [`${x.replace(/\p{Cc}/gu, "?")} (${why})`] : [];
+    }),
+    ...(facts.modeChanges ?? []).map((x) => `${x} (a symlink, a submodule or a mode change)`),
     // The factory's own repository: anything off the allow-list.
     ...(facts.factorySource
       ? paths.filter((x) => !FACTORY_SOURCE_ALLOW.some((g) => globMatch(g, x)))
@@ -463,6 +598,7 @@ export function autoApproveVerdict(
   add(
     "limits",
     !!changes &&
+      counted &&
       changes.length <= setting.maxFiles &&
       lines !== null &&
       lines <= setting.maxChangedLines &&
@@ -471,19 +607,23 @@ export function autoApproveVerdict(
       today < setting.maxPerDay,
     !changes
       ? "the change couldn't be read from GitHub"
-      : today >= setting.maxPerDay
-        ? `${today} merges were auto-approved in this project today (the limit is ${setting.maxPerDay})`
-        : changes.length > setting.maxFiles
-          ? `${changes.length} files changed (the limit is ${setting.maxFiles})`
-          : lines === null || !Number.isFinite(lines)
-            ? "a file's changed lines couldn't be counted"
-            : lines > setting.maxChangedLines
-              ? `${lines} lines changed (the limit is ${setting.maxChangedLines})`
-              : forbidden.length
-                ? `touches a forbidden path: ${forbidden.slice(0, 5).join(", ")}`
-                : outside.length
-                  ? `outside allowPaths: ${outside.slice(0, 5).join(", ")}`
-                  : "inside the size and path limits",
+      : !counted
+        ? own === 0
+          ? "GitHub lists no files for this change"
+          : `GitHub's file count (${facts.reportedFiles ?? "missing"}) doesn't match the ${own} files compared`
+        : today >= setting.maxPerDay
+          ? `${today} merges were auto-approved in this project today (the limit is ${setting.maxPerDay})`
+          : changes.length > setting.maxFiles
+            ? `${changes.length} files changed (the limit is ${setting.maxFiles})`
+            : lines === null || !Number.isFinite(lines)
+              ? "a file's changed lines couldn't be counted"
+              : lines > setting.maxChangedLines
+                ? `${lines} lines changed (the limit is ${setting.maxChangedLines})`
+                : forbidden.length
+                  ? `touches a forbidden path: ${forbidden.slice(0, 5).join(", ")}`
+                  : outside.length
+                    ? `outside allowPaths: ${outside.slice(0, 5).join(", ")}`
+                    : "inside the size and path limits",
   );
   const failed = conditions.find((c) => !c.ok);
   return {

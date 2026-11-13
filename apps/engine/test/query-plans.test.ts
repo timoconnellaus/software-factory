@@ -169,6 +169,180 @@ async function skillsScenario(e: Env) {
   );
 }
 
+/**
+ * Dark factory mode end to end (review of #152): the adjudicator's verdict deciding a merge gate
+ * (`autoApproveMerge`: settings, packet, the day's count, GitHub's compare and modes), the merge
+ * landing (`autoApprovedMergeLanded`: the red-main marker, the merges remembered, the sampled review),
+ * a revert matched to it (`holdOnRevert`), and main going red after it (`main.observe`'s marker).
+ */
+async function autoApproveScenario(e: Env) {
+  const o = await world();
+  const human = o.human;
+  const run = async <T>(op: string, input: unknown, actor: World["human"] = human) => {
+    const r = await as(e, op, input, actor);
+    if (r.status === "pending" && actor === human) {
+      await as(
+        e,
+        "approval.decide",
+        { pendingActionId: r.pendingActionId, decision: "approved" },
+        human,
+      );
+      return null as T;
+    }
+    if (r.status !== "ok") throw new Error(`${op} is ${r.status}`);
+    return r.output as T;
+  };
+  const DARK = {
+    ...SOFTWARE,
+    id: "wf_dark",
+    name: "Dark",
+    stages: SOFTWARE.stages.map((x) =>
+      x.id === "merge"
+        ? {
+            ...x,
+            settings: {
+              ...(x.settings as object),
+              autoApprove: { enabled: true, allowPaths: ["src/**"] },
+            },
+          }
+        : x,
+    ),
+  };
+  await run("workflow.save", { orgId: o.orgId, baseVersion: 0, workflow: DARK });
+  // The adjudicator's record on merge gates (20 approvals a person agreed with).
+  const now = new Date().toISOString();
+  for (let i = 0; i < 20; i++) {
+    const pa = uid("pa_");
+    await e.DB.batch([
+      e.DB.prepare(
+        `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, status, decision, decided_by, created_at, decided_at)
+         VALUES (?, ?, ?, 'wi_x', 'merge', 'pr.merge', 'merge', 'agent', 'foreman', '{}', 'approved', 'approved', ?, ?, ?)`,
+      ).bind(pa, o.orgId, o.projectId, o.userId, now, now),
+      e.DB.prepare(
+        `INSERT INTO core_adjudications (id, pending_action_id, project_id, work_item_id, kind, mode, job_id, verdict, reason, acted, created_at, decided_at)
+         VALUES (?, ?, ?, 'wi_x', 'merge', 'shadow', ?, 'approve', 'fine', 0, ?, ?)`,
+      ).bind(uid("adj_"), pa, o.projectId, uid("job_"), now, now),
+    ]);
+  }
+  const cfg = await run<{
+    current: { version: number; policy: Record<string, unknown> | null } | null;
+  }>("config.get", { projectId: o.projectId });
+  await run("config.save", {
+    projectId: o.projectId,
+    baseVersion: cfg?.current?.version ?? 0,
+    policy: {
+      ...(cfg?.current?.policy ?? {}),
+      workflow: "wf_dark",
+      adjudicator: { merge: "active" },
+    },
+  });
+  const item = await run<{ workItemId: string }>("workItem.create", {
+    state: "backlog",
+    projectId: o.projectId,
+    title: "Dark",
+  });
+  const id = item?.workItemId as string;
+  const branch = (
+    await e.DB.prepare("SELECT branch FROM core_work_items WHERE id = ?")
+      .bind(id)
+      .first<{ branch: string }>()
+  )?.branch as string;
+  const base = (await github.getBranchSha(o.repo, "main")) ?? undefined;
+  const head = await github.push(o.repo, branch, base, [
+    { path: "src/theme.ts", status: "modified", patch: "@@ -1 +1 @@\n-a\n+b", changes: 4 },
+  ]);
+  const version = (
+    await e.DB.prepare("SELECT config_version FROM core_organization WHERE id = ?")
+      .bind(o.orgId)
+      .first<{ config_version: number }>()
+  )?.config_version;
+  await e.DB.batch([
+    e.DB.prepare(
+      "UPDATE core_work_items SET status = 'running', workflow_version = 16, org_config_version = ?, head_sha = ? WHERE id = ?",
+    ).bind(version, head, id),
+    e.DB.prepare(
+      `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, status, decision, decided_by, created_at, decided_at)
+       VALUES (?, ?, ?, ?, 'spec', 'spec.accept', 'write', 'agent', 'foreman', '{}', 'approved', 'approved', ?, ?, ?)`,
+    ).bind(uid("pa_"), o.orgId, o.projectId, id, o.userId, now, now),
+    e.DB.prepare(
+      "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, sections, created_at) VALUES (?, ?, ?, 'pass', ?, ?)",
+    ).bind(
+      uid("rp_"),
+      id,
+      head,
+      JSON.stringify({
+        ci: { state: "success" },
+        proof: [{ criterion: "a", proven: true, linkedBy: "spec", provenBy: ["t"] }],
+        testsIntact: { intact: true },
+      }),
+      now,
+    ),
+  ]);
+  await run("pr.open", { workItemId: id }, FOREMAN as never);
+  const gate = await as(
+    e,
+    "pr.merge",
+    { workItemId: id, headSha: head, touchesFactoryConfig: false },
+    FOREMAN as never,
+  );
+  if (gate.status !== "pending") throw new Error("expected the merge gate to wait");
+  const improver = { type: "self-improve", id: "improver" } as never;
+  await run("adjudicator.request", { pendingActionId: gate.pendingActionId }, improver);
+  const a = await e.DB.prepare("SELECT job_id FROM core_adjudications WHERE pending_action_id = ?")
+    .bind(gate.pendingActionId)
+    .first<{ job_id: string }>();
+  await e.DB.prepare(
+    `INSERT INTO core_runs (id, job_id, work_item_id, run_no, stage, runner_id, branch, base_branch,
+       fencing_token, status, result, started_at)
+     VALUES (?, ?, ?, 99, 'verify', 'rnr_x', 'b', 'main', 1, 'handed_back', ?, ?)`,
+  )
+    .bind(uid("run_"), a?.job_id, id, JSON.stringify({ verdict: "approve", reason: "Fine" }), now)
+    .run();
+  const recorded = await run<{ status: string }>(
+    "adjudicator.record",
+    { pendingActionId: gate.pendingActionId },
+    improver,
+  );
+  if (recorded?.status !== "approved") throw new Error(`not auto-approved: ${recorded?.status}`);
+  // It lands (the babysitter's pr.merge with the approval), then a revert, then main goes red.
+  const merged = await invoke(
+    invokeDeps(e),
+    "pr.merge",
+    { workItemId: id, headSha: head, touchesFactoryConfig: false },
+    { actor: FOREMAN as never, origin: { surface: "test" }, approvalId: gate.pendingActionId },
+  );
+  const mergeSha = merged.status === "ok" ? (merged.output as { sha: string }).sha : "";
+  const intake = { type: "intake", id: "github" } as never;
+  await run(
+    "push.observe",
+    {
+      repo: { owner: o.repo.owner, name: o.repo.repo },
+      ref: "refs/heads/main",
+      before: "b".repeat(40),
+      after: "f".repeat(40),
+      pusher: "tim",
+      pusherIsApp: false,
+      reverts: [{ sha: mergeSha || null, pr: null }],
+    },
+    intake,
+  );
+  const main = (await github.getBranchSha(o.repo, "main")) as string;
+  await github.setChecks(o.repo, main, [
+    {
+      name: "ci",
+      status: "completed",
+      conclusion: "failure",
+      appSlug: "github-actions",
+      url: null,
+    },
+  ]);
+  return run(
+    "main.observe",
+    { repo: { owner: o.repo.owner, name: o.repo.repo }, headSha: null, trigger: "recheck" },
+    FOREMAN as never,
+  );
+}
+
 /** The registered hot paths: each runs once, then every statement it ran is EXPLAINed. */
 const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
   {
@@ -420,7 +594,10 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     name: "skills: enqueue, list, propose, get, accept and skill.forJob",
     run: (e) => skillsScenario(e),
   },
-
+  {
+    name: "dark factory mode: auto-approve, land, revert, main red",
+    run: (e) => autoApproveScenario(e),
+  },
   {
     // Last two: they end the test's run 31 days ago, archive it, and read it back.
     name: "archiving an ended run's events (retention)",

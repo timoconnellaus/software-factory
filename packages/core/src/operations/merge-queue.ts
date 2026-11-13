@@ -30,8 +30,9 @@ import {
   onlyEitherSide,
 } from "../verify/change-digest.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
+import { adjudicatorStats } from "./adjudicator.ts";
 import { askOne } from "./ask.ts";
-import { AUTO_APPROVE, autoApproveSetting } from "./auto-approve.ts";
+import { AUTO_APPROVE, evaluateAutoApproval } from "./auto-approve.ts";
 import { lineStopped } from "./delivery.ts";
 import {
   pendingActionId,
@@ -1052,12 +1053,20 @@ async function autoApprovalLapsed(
   if (hold) return `auto-approved merges are held on this project: ${hold.reason}`;
   const project = ctx.scope.project;
   if (!project) return "the project can't be read";
-  const now = await autoApproveSetting(ctx.db, project, project.policy_sha, null);
-  const pinned = await autoApproveSetting(
-    ctx.db,
-    project,
-    w.policy_sha ?? project.policy_sha,
-    w.org_config_version,
-  );
-  return now.enabled && pinned.enabled ? null : "the workflow's auto-approval is off now";
+  // The whole verdict again, against the settings now (review of #152): narrowed allowPaths,
+  // lowered limits, a changed packet or a lost adjudicator record stop it here too.
+  const adjudication = await ctx.db
+    .selectFrom("core_adjudications")
+    .select(["verdict"])
+    .where("pending_action_id", "=", pendingActionId)
+    .executeTakeFirst();
+  const mode = ctx.scope.policy?.adjudicator.merge ?? "off";
+  const stats = await adjudicatorStats(ctx, project.id, "merge");
+  const { verdict } = await evaluateAutoApproval(ctx, pa, w, project, {
+    active: mode === "active",
+    eligible: stats.eligible,
+    approved: adjudication?.verdict === "approve",
+  });
+  if (verdict.approve) return null;
+  return `it no longer qualifies: ${verdict.reason}`;
 }

@@ -153,7 +153,7 @@ just a config option. Nothing special."
 > default-deny.** A project is the factory's own source when it says so (`factorySource: "yes"`), or
 > by default (`auto`) when its repository holds the engine's package; saying `no` is a loosening an
 > org admin approves. There a change qualifies only when every path it touches is on
-> `FACTORY_SOURCE_ALLOW` in code (`docs/screenshots/**`, `docs/design/**`); widening that list takes
+> `FACTORY_SOURCE_ALLOW` in code (`docs/design/**` only); widening that list takes
 > an ADR. On other repositories the deny-lists protect whole package and config surfaces (every
 > `package.json`, lock file, `tsconfig`, build and bundler config, CI and release script, native
 > code, `.factory/**`, agent instruction files) and a submodule pointer bump is risky. The criteria
@@ -175,6 +175,6 @@ just a config option. Nothing special."
 > the factory's own repository `FACTORY_SOURCE_ALLOW` (`docs/design/**` only; screenshots dropped:
 > a PNG has no readable diff) is the ceiling `allowPaths` can't widen. Detection there is
 > default-deny: "not the factory" only when every marker file reads cleanly as absent; migration
-> 0286 sets `factorySource: "yes"` explicitly on the factory's own project. Only an org admin lifts
+> 0286 marks the factory's own project (`core_projects.factory_source`). Only an org admin lifts
 > a hold. The coordinator is telling the owner.
 
