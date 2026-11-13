@@ -108,13 +108,20 @@ export const COVERAGE = [
   "a send-back at the merge gate",
   "retries past the limit",
   "a spec gate with changes requested",
-  "a parked item or one with questions",
   "a cancel",
   "an approval the babysitter carried",
   "an attached PR",
   "an incident",
 ] as const;
 export type Coverage = (typeof COVERAGE)[number];
+
+/**
+ * What the reconciler doesn't model yet, which blocks the switch-over whatever the streak says
+ * (spec 52, the switch-over rule): an item that hits one never agrees.
+ */
+export const KNOWN_GAPS = [
+  "question rounds and parking (triage readiness, a slot step's ask, the checks-failed question): an item with questions or parked is never comparable until the reconciler models them",
+] as const;
 
 /** A `core_stages` row. */
 export interface StageRow {
@@ -137,6 +144,8 @@ export interface JobRow {
   adjudicate: boolean;
   /** The gate kind the adjudicator was asked about (`context.adjudicate.kind`). */
   adjudicateKind?: string | null;
+  /** The gate it was asked about (`context.adjudicate.pendingActionId`). */
+  adjudicatePa?: string | null;
   status: "queued" | "claimed" | "done" | "failed" | "cancelled";
   at: string;
   endedAt: string | null;
@@ -147,6 +156,8 @@ export interface JobRow {
 
 /** A `core_pending_actions` row on the item. */
 export interface GateRow {
+  /** The pending action's id. */
+  id?: string;
   kind: "spec" | "merge" | "approval";
   operation: string;
   /** `workflow.gate`'s step id. */
@@ -337,7 +348,7 @@ export function shadowVerdict(
         | undefined)
     : undefined;
   h.stages.forEach((r, i) => {
-    if (r.stage === "intake" || r.stage === "done" || r.status === "cancelled") return;
+    if (r.stage === "intake" || r.stage === "done") return;
     const t = r.at ?? String(i).padStart(8, "0");
     if (r.status !== "skipped" && !has(r.stage)) {
       uncompared.add(`a stage the workflow doesn't have: ${r.stage}`);
@@ -390,6 +401,33 @@ export function shadowVerdict(
     points.push({ t: job.at, pri: 2, kind: "job", ...at, job });
     if ((job.status === "done" || job.status === "failed") && job.endedAt)
       points.push({ t: job.endedAt, pri: 4, kind: "jobEnd", ...at, job });
+  }
+  // A run the settings call for that never happened is a divergence too (second review of #148).
+  const ranCritic = (h.jobs ?? []).some((j) => j.critic && j.status !== "cancelled");
+  const specGate = (h.gates ?? []).some((g) => g.kind === "spec" && g.operation === "spec.accept");
+  if (specSettings?.critic === true && specGate && !ranCritic)
+    transitions.push({
+      observed: "no spec critic ran",
+      predicted: "spec critic ran",
+      agrees: false,
+    });
+  const asked = new Set((h.jobs ?? []).flatMap((j) => (j.adjudicatePa ? [j.adjudicatePa] : [])));
+  for (const g of h.gates ?? []) {
+    const kind =
+      g.kind === "spec" && g.operation === "spec.accept"
+        ? "spec"
+        : g.operation === "workflow.gate"
+          ? "step"
+          : null;
+    const mode = kind
+      ? ((observed.adjudicator as Record<string, string> | undefined)?.[kind] ?? "off")
+      : "off";
+    if (kind && mode !== "off" && g.id && !asked.has(g.id))
+      transitions.push({
+        observed: `no adjudicator on a ${kind} gate`,
+        predicted: `adjudicator asked (${kind})`,
+        agrees: false,
+      });
   }
   for (const gate of h.gates ?? []) {
     const at = gatePlace(gate, slotOf);
@@ -550,8 +588,12 @@ export function shadowVerdict(
         break;
       }
       case "skip": {
+        if (!has(pt.stage) && item.kind !== "attached") {
+          uncompared.add(`a skip of a stage the workflow doesn't have: ${pt.stage}`);
+          break;
+        }
         if (!has(pt.stage)) {
-          // A skip of a stage the definition doesn't have (an attached PR's spec and build): the
+          // A skip of a stage an attached PR's workflow doesn't have (its spec and build): the
           // reconciler does nothing there, which is the same thing.
           if (!equivalences.some((x) => x.reason === "absent-stage-skipped"))
             equivalences.push({
@@ -787,10 +829,7 @@ export function shadowVerdict(
     "a spec gate with changes requested",
     (h.gates ?? []).some((g) => g.kind === "spec" && g.decision === "changes_requested"),
   );
-  cover(
-    "a parked item or one with questions",
-    (h.events ?? []).some((e) => e.kind === "parked" || e.kind === "question"),
-  );
+
   cover("a cancel", end === "cancelled");
   cover("an approval the babysitter carried", !!obs.carriedApproval);
   cover("an attached PR", item.kind === "attached");

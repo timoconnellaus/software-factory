@@ -5,7 +5,7 @@
 // decided them, send-back targets and rounds, retries, slot steps and every kind of end.
 import { z } from "zod";
 import { defineOperation } from "../operation.ts";
-import { COVERAGE, SHADOW_NOT_COMPARED, type ShadowVerdict } from "../stages/shadow.ts";
+import { COVERAGE, KNOWN_GAPS, SHADOW_NOT_COMPARED, type ShadowVerdict } from "../stages/shadow.ts";
 import { requireWorkItem, workItemId } from "./shared.ts";
 
 /** The switch-over PR is opened only once the streak reaches this (spec 52, Q14). */
@@ -88,6 +88,10 @@ export const reconcileStreak = defineOperation({
        * and agreed on, and which none has yet.
        */
       coverage: z.object({ covered: z.array(z.string()), missing: z.array(z.string()) }),
+      /** What the reconciler doesn't model yet: the switch-over waits for none. */
+      knownGaps: z.array(z.string()),
+      /** The streak reached the target, every scenario is covered, and there are no known gaps. */
+      switchOverReady: z.boolean(),
     }),
   ]),
   async handler(input, ctx) {
@@ -135,6 +139,11 @@ export const reconcileStreak = defineOperation({
         covered: COVERAGE.filter((c) => covered.has(c)),
         missing: COVERAGE.filter((c) => !covered.has(c)),
       },
+      knownGaps: [...KNOWN_GAPS],
+      switchOverReady:
+        streak.length >= AGREEMENT_STREAK_TARGET &&
+        COVERAGE.every((c) => covered.has(c)) &&
+        (KNOWN_GAPS as readonly string[]).length === 0,
     };
   },
 });

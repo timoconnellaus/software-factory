@@ -1216,15 +1216,25 @@ screen needs).
    switch-over the reconciler's checks stage reads the verdict from the same function, so a
    Workflow that moved on against its packet diverges (tested). `reconcile.streak` reports, beside
    the number, which of the switch-over's scenarios (`COVERAGE`: a verify that fails, slot and
-   merge-gate send-backs, retries past the limit, changes requested at the spec gate, a parked item
-   or one with questions, a cancel, a carried approval, an attached PR, an incident) the streak's
-   items covered and which are missing. Not modelled, so reported as divergences on the
+   merge-gate send-backs, retries past the limit, changes requested at the spec gate, a cancel, a
+   carried approval, an attached PR, an incident) the streak's items covered and which are missing.
+   Second review: an item it can't compare (no config, an org workflow it can't resolve, a
+   definition that doesn't compile) still writes its row, with why, so it breaks the streak. The pass
+   reads nothing from the audit table: questions come from `core_questions` (by its item index),
+   parking from the needs-info marker, a re-pin from the pinned org version being saved after the
+   pull, a release choice from shaping under an earlier version or a reshape's instance. A critic or
+   adjudicator run the settings call for that never happened diverges; a cancelled stage row is
+   replayed; the absent-stage equivalence is for attached PRs only. **Known gap** (`KNOWN_GAPS`):
+   question rounds and parking aren't modelled, so an item with questions or parked never agrees,
+   and the switch-over waits until the reconciler models them. Not modelled, so reported as divergences on the
    items that hit them: triage's readiness rounds (re-triage on answers), a PR conflict's free
    rounds (v3), and a stage added by a re-pin before the item's stage (Q3). `reconcile()`, the
    snapshot loader and `next()` for Software's types. It runs on the outbox and the cron beside the
    Workflow, drives nothing, and records what it would do next to what the Workflow did; a report
    per item and the **agreement streak** (consecutive finished items with no divergence). The
-   **switch-over** is a separate PR, opened only when the streak reaches 20, and approved by the
+   **switch-over** is a separate PR, opened only when the streak reaches 20 **and** the streak's
+   items cover every scenario in `COVERAGE` **and** `KNOWN_GAPS` is empty (`reconcile.streak`'s
+   `switchOverReady`; amended 2026-11-13, second review of #148), and approved by the
    coordinator and the owner.
 5. **(d) Projects on org workflows: overrides and pinning on release** (migration **0282**: project
    config's `workflow` by id, `workflowOverrides`, the migration of each project's slot workflow to the
