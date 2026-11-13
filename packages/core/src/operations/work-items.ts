@@ -430,6 +430,7 @@ export const workItemGet = defineOperation({
      * flags `outside`, and shows the whole diff when `status` isn't `clean`.
      */
     babysitResolution: resolutionSchema.nullable().optional(),
+    /**
      * Spec 24: the plan this item was split off (`parent`), and the work items its own approved
      * plan split into (`children`), each with where it is.
      */
