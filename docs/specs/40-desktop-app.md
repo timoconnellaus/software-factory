@@ -371,10 +371,18 @@ the profile never ships a helper that failed a check.
     `embedded.provisionprofile` is intact, and that `spctl --assess` and `codesign --verify --deep
     --strict` accept, along with the outer app.
   The spike's PR reports exactly what works. The placement and hook it finds are written here and in
-  ADR 0394 (dated amendment) before the helper is built. If no hook works, the fallback is to sign,
+  ADR 0394 (dated amendment) before the helper is built.
+  **Found (2026-11-13, ADR 0394's amendment):** Electrobun re-signs a nested bundle in
+  `Contents/Helpers` or `Contents/Resources` with the app's entitlements, and `postWrap` comes
+  after the update archive is made, so the helper goes in at **`postPackage`**
+  (`scripts/keys-helper.ts`): into `Contents/Helpers/SF Keys.app` of the unpacked update archive,
+  signed with its own entitlements, the outer seal re-signed, notarized and stapled again, the
+  archive and its manifest rebuilt. Delta patches are off on releases with the helper. If no hook works, the fallback is to sign,
   notarize and package outside Electrobun (it builds unsigned, the release does the rest), recorded
   as its own ADR.
-- **The bundle.** `scripts/bundle.sh` builds `vendor/SF Keys.app` from `native/sf-keys.swift`: the
+- **The bundle.** `scripts/bundle.sh` builds `vendor/SF Keys.app` from the Swift package
+  `native/sf-keys-app` (built for macOS 14, arm64; `SFKeysCore` holds the parser, allowlist and exit
+  codes, unit-tested by `swift test` in CI's `key helper (macOS)` job and before each release): the
   executable in `Contents/MacOS/sf-keys`; an `Info.plist` with `CFBundleIdentifier`
   `com.software-factory.desktop.keys`, `CFBundleName` and `CFBundleDisplayName` `SF Keys` (the
   Touch ID sheet names the process by it), `CFBundleExecutable` `sf-keys` and `LSUIElement` true;
@@ -389,7 +397,9 @@ the profile never ships a helper that failed a check.
 - **The helper's surface.** Four commands: `create <tag>`, `public <tag>`, `sign <tag> <message>`,
   `delete <tag>`. The tag must be on an allowlist compiled into the helper: the device key
   (`com.software-factory.desktop.device-key`, as today) and the test tag (`com.software-factory.desktop.m4b-test`);
-  any other tag is refused before the keychain is touched. **The key signs presence messages only**:
+  any other tag is refused before the keychain is touched. The message's op must be one a desktop
+  presence proof decides: the list is generated from the registry into
+  `SFKeysCore/PresenceOps.swift`, and `test/keys-helper.test.ts` fails when it drifts. **The key signs presence messages only**:
   `sign` parses its message as a presence message (nonce, op, input digest, summary, ADR 0391) and
   refuses anything else, and that rule is what keeps the key from being used as a general signer.
   Every call adds `kSecUseDataProtectionKeychain` and `kSecAttrAccessGroup`

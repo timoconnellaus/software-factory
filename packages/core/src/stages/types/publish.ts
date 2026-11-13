@@ -58,6 +58,9 @@ export const publish: StageType<typeof settings> = {
     operation: "pr.merge",
     risk: "merge",
     // `autoApprove` (ADR 0515) is added with dark factory mode, build plan PR (e).
+    // Its condition "every acceptance criterion is proven by a check that ran" must read
+    // `everyCriterionProven` (verify/proof.ts): only a tie a person approved counts; a criterion that
+    // passed the check triage (an agent) named is not proven for it (ADR 0501, amended 2026-11-13).
     delegable: [],
     // `merge` is in ALWAYS_REVIEW (ADR 0008); `autoApprove` decides only under ADR 0515's conditions.
     alwaysReview: true,
