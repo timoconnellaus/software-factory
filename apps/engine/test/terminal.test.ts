@@ -570,7 +570,6 @@ function counting() {
     });
   const e = {
     ...recordingEnv(env, seen),
-    PLANNING_HUB: counted(env.PLANNING_HUB as never, "PlanningHub"),
     TERMINAL_RELAY: counted(env.TERMINAL_RELAY as never, "TerminalRelay"),
   } as Env;
   const fetchVia: typeof fetch = async (input, init) => worker.fetch(new Request(input, init), e);

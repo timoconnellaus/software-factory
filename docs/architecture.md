@@ -32,9 +32,9 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   channel path, `/runner/v1/jobs/:id/planning`, scoped by the job and fenced by its lease; the
   runner host relays them for the harness, so the runner key never leaves it. Every change is a row
   in the **planning log** (`core_planning_events`, its id the agent's cursor) and a
-  `planning.changed` outbox message, which `sf-engine`'s **PlanningHub** Durable Object (one per work
-  item) turns into a Server-Sent Event for open Planning tabs (`EngineApi.planningStream`) and a
-  wake-up for the agent's held `planning.wait`. The scheduler places jobs by pool: light (triage,
+  `planning.changed` outbox message, which `sf-engine` sends to the **ClientHub** of everyone with
+  the Planning view open (spec 26). The agent's held `planning.wait` waits in the Worker, polling
+  `planning.peek` every 3 s (spec 44); no Durable Object is held while nothing happens. The scheduler places jobs by pool: light (triage,
   spec, planning), heavy (build, verify); a resume is pinned to the session's runner.
 - **Connectors** are the only path to GitHub, Linear, Slack and other outside systems (ADR 0010).
   The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033). Its webhook
@@ -227,7 +227,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning (layout A: questions | spec | chat with the gate bar, full screen, phone tabs; live from `/api/work/<id>/planning/live`, spec 20) and Live (the run as it goes, and steering, spec 31; the Web terminal over `/api/work/<id>/runs/<run>/terminal`, spec 35; a Chat view for stream-json runs with takeover by resume, spec 37), review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). Pinned next to D1; loaders fetch a page's reads in one batched request (ADR 0241). MCP later |
 | `packages/ui` | shadcn/ui components and the factory theme (zinc, Geist, status dots) |
 | `packages/timeline` | A work item's event log in words: `describeEntry` turns an audit entry into a label, detail, note, actor and dot. Pure, no dependencies; the dashboard's timeline and `sf timeline` both use it (spec wi-4) |
-| `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC, the Durable Objects (PlanningHub per work item, ClientHub per person, TerminalRelay per job for the web terminal and the runner host's job line, ADR 0440, 0592; none held awake to wait, spec 44) |
+| `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC, the Durable Objects (ClientHub per person, TerminalRelay per job for the web terminal and the runner host's job line, ADR 0440, 0592; none held awake to wait, spec 44) |
 | `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, the config schema and versions (`config.*`, `policyImpact`), model roles, Workflow event names, verify logic (`verify/`: CI, packet assembly, risk flags, the check-only rule, onboarding), incident classes (`incidents/`), a fake GitHub for tests (`/testing`) |
 | `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |

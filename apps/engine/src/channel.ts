@@ -195,8 +195,8 @@ function toBase64(bytes: Uint8Array): string {
 /**
  * A planning job's operation (ADR 0350), relayed by the runner host for its harness: one operation
  * from the allowlist, as the runner, with the job id from the path. `planning.wait` is held here: it
- * is evaluated, then re-evaluated whenever the work item's PlanningHub hears of a change or a
- * person's pause runs out, until news is due, the session must yield or end, or the wait's time is up.
+ * is evaluated, then held in the Worker polling planning.peek (spec 44) until news is due, the
+ * session must yield or end, or the wait's time is up.
  */
 async function planningReply(
   env: Env,
