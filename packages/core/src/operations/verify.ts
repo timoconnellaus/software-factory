@@ -1163,7 +1163,7 @@ export const prAutoMerge = defineOperation({
     await requireQueueHead(ctx, w, input.headSha);
     // A head the babysitter resolved always goes to a person (#201 review, round 2), whatever
     // the resolution: check-only or not, nobody has looked at how the conflict was settled.
-    const resolved = await resolutionAtGate(ctx, w, input.headSha);
+    const resolved = await resolutionAtGate(ctx, w.id, input.headSha);
     if (resolved.expected || resolved.resolution) {
       refuse("the babysitter resolved a conflict on this commit: a person decides");
     }

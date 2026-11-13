@@ -11,6 +11,7 @@
     "./audit-chain": "./src/audit-chain.ts",
     "./policy-gate": "./src/policy/gate.ts",
     "./proof": "./src/verify/proof.ts",
+    "./resolution-rule": "./src/verify/resolution-rule.ts",
     "./stages": "./src/stages/index.ts",
     "./testing": "./src/testing/index.ts"
   },

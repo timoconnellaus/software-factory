@@ -7,6 +7,7 @@ import { parsePacket } from "@software-factory/client/packet";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { RESOLUTION_RULE_CASES } from "../../../packages/core/test/fixtures/resolution-rule-cases.ts";
 import { ANSWERS } from "../screenshots/fixtures.ts";
 import {
   Patch,
@@ -200,6 +201,32 @@ describe("the Review tab's Merge, after a resolution", () => {
     );
     expect(mergeButton(decision({ files: [file()] }, false))).not.toContain("disabled");
   });
+});
+
+// The same table the engine's rule runs against (packages/core/test/resolution-gate.test.ts): the
+// desktop's Merge and Inbox card can't drift from review.merge.
+describe("the desktop's rule is the engine's", () => {
+  for (const c of RESOLUTION_RULE_CASES) {
+    it(c.name, () => {
+      const d = withResolution(null, c.at.expected)({ workItemId: "wi_13" });
+      const r = c.at.resolution;
+      const detail: Detail = {
+        ...d,
+        resolvedHead: c.at.resolvedHead ?? null,
+        babysitResolution: r && {
+          sha: d.item.headSha ?? "9c41e07d2b",
+          itemHead: null,
+          main: null,
+          patchBase: "itemHead",
+          ...r,
+          outside: [...r.outside],
+          outsideNotShown: r.outsideNotShown ?? 0,
+          files: r.files.map((f, i) => file({ path: `src/f${i}.ts`, ...f })),
+        },
+      };
+      expect(resolutionNeedsFullDiff(detail)).toBe(c.needs);
+    });
+  }
 });
 
 describe("a resolution's patch, for exactly the head shown", () => {

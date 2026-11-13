@@ -18,12 +18,7 @@ import { childEnded, childrenOf, PLAN_MERGED_OUTSIDE, SPLIT_MAX, sliceHash } fro
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
-import {
-  lastEndedDelivery,
-  resolutionExpected,
-  resolutionFor,
-  resolutionSchema,
-} from "./babysit.ts";
+import { lastEndedDelivery, resolutionAtGate, resolutionSchema } from "./babysit.ts";
 import {
   ACTIVE_STATUSES,
   INTAKE_STATES,
@@ -38,7 +33,7 @@ import {
   requestPull,
   requestPullsAfterEnd,
 } from "./backlog.ts";
-import { refusePhoneCancel } from "./gates.ts";
+import { mergeGateHead, refusePhoneCancel } from "./gates.ts";
 import { queuedEntriesQuery, refuseWhileMerging, releaseMergeQueue } from "./merge-queue.ts";
 import { protectionDriftQuery } from "./protection.ts";
 import {
@@ -461,6 +456,11 @@ export const workItemGet = defineOperation({
      */
     resolutionExpected: z.boolean().optional(),
     /**
+     * The head the babysitter resolved, when the gate's head is a later one no person has approved
+     * since (a commit on top of the resolution): the gate is for the whole diff (#201 review).
+     */
+    resolvedHead: z.string().nullable().optional(),
+    /**
      * Spec 24: the plan this item was split off (`parent`), and the work items its own approved
      * plan split into (`children`), each with where it is.
      */
@@ -714,11 +714,18 @@ export const workItemGet = defineOperation({
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
     const packet = packetRows[0];
+    // The babysitter's resolution, for the head the pending merge gate is for (the gate a person
+    // decides), else the item's: the same reader review.merge uses (#201 reviews).
+    const pendingMerge = gates.find((g) => g.kind === "merge" && g.status === "pending");
+    const gateHead = (pendingMerge ? mergeGateHead(pendingMerge) : null) ?? w.head_sha;
+    const atGate =
+      resolutionRows.length > 0 || lastEndedRows.length > 0
+        ? await resolutionAtGate(ctx, w.id, gateHead)
+        : { resolution: null, expected: false, resolvedHead: null };
     return {
-      babysitResolution: resolutionFor(resolutionRows[0], w.head_sha),
-      resolutionExpected:
-        (!!w.head_sha && resolutionRows[0]?.head_sha === w.head_sha) ||
-        resolutionExpected(lastEndedRows[0], w.head_sha),
+      babysitResolution: atGate.resolution,
+      resolutionExpected: atGate.expected,
+      resolvedHead: atGate.resolvedHead,
       item: {
         ...summarise(w),
         body: w.body,

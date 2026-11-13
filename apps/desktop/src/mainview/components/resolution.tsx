@@ -6,6 +6,7 @@
 // it says so loudly: review the whole diff (and review.merge holds the person to that).
 
 import type { WorkItemDetail } from "@software-factory/client/ops";
+import { fullDiffNeeded } from "@software-factory/core/resolution-rule";
 import { Button } from "@software-factory/ui/components/button";
 import {
   Collapsible,
@@ -43,13 +44,18 @@ export function resolutionView(detail: WorkItemDetail): ResolutionView {
   const r = detail.babysitResolution;
   if (!atGate) return { kind: "none" };
   if (!r) {
-    return detail.resolutionExpected
+    if (!detail.resolutionExpected) return { kind: "none" };
+    return detail.resolvedHead
       ? {
+          kind: "whole",
+          why: `The babysitter resolved a conflict in ${detail.resolvedHead.slice(0, 7)}, and the branch has moved on since: nobody has reviewed the resolution or what came after it.`,
+          sha: detail.resolvedHead,
+        }
+      : {
           kind: "whole",
           why: "The babysitter resolved a conflict on this commit, but its resolution couldn't be shown.",
           sha: detail.item.headSha,
-        }
-      : { kind: "none" };
+        };
   }
   if (r.status === "clean") return { kind: "clean", resolution: r };
   const reason = r.reason ?? "it couldn't be read";
@@ -63,16 +69,20 @@ export function resolutionView(detail: WorkItemDetail): ResolutionView {
 }
 
 /**
- * Whether merging needs the full diff opened first (#201 review, round 2), as review.merge's rule
- * has it: the gate reopened for a resolution and there's more to look at than a clean conflict
- * (it isn't clean, can't be shown, or has files outside the conflict or unlisted).
+ * Whether merging needs the full diff opened first: review.merge's own rule (`fullDiffNeeded`, the
+ * one predicate core exports for both), at a pending merge gate, on what the engine computed for
+ * the gate's head.
  */
 export function resolutionNeedsFullDiff(detail: WorkItemDetail): boolean {
-  const view = resolutionView(detail);
-  if (view.kind === "none") return false;
-  if (view.kind === "whole") return true;
-  const r = view.resolution;
-  return r.outside.length + (r.outsideNotShown ?? 0) > 0 || r.notShown > 0;
+  const atGate = detail.gates.some((g) => g.kind === "merge" && g.status === "pending");
+  return (
+    atGate &&
+    fullDiffNeeded({
+      resolution: detail.babysitResolution ?? null,
+      expected: !!detail.resolutionExpected,
+      resolvedHead: detail.resolvedHead ?? null,
+    }) !== null
+  );
 }
 
 /** The resolution's commit and the review packet's, when they differ (any view). */
@@ -290,6 +300,11 @@ export function ResolutionSummary({ detail }: { detail: WorkItemDetail }) {
             {outside > 5 ? ", …" : ""}. Look at {outside === 1 ? "it" : "them"} in the full diff
             before you merge.
           </span>
+        </div>
+      )}
+      {outside === 0 && r.notShown === 0 && resolutionNeedsFullDiff(detail) && (
+        <div className="text-ink-muted text-xs">
+          Some patches aren't shown in full here: look at them in the full diff before you merge.
         </div>
       )}
       {outside === 0 && r.notShown > 0 && (

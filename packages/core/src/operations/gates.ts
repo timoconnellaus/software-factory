@@ -13,8 +13,9 @@ import { defineOperation, type HandlerContext, type PendingActionRow } from "../
 import { assertSpecGateCurrent } from "../planning.ts";
 import { backupOwnerId } from "../scope.ts";
 import { childrenOf, createSplitChildren } from "../splits.ts";
+import { fullDiffNeeded } from "../verify/resolution-rule.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
-import { fullDiffNeeded, resolutionAtGate } from "./babysit.ts";
+import { resolutionAtGate } from "./babysit.ts";
 import { applyApprovedConfig, applyOverrideApproval, CONFIG_WRITES } from "./config.ts";
 import { startTrial } from "./improve.ts";
 import { openIncident } from "./incidents.ts";
@@ -474,9 +475,17 @@ export const reviewMerge = defineOperation({
       // The babysitter's resolution (spec 53 decision 1, #201 review): unless there is nothing
       // but a clean conflict to look at, the person reviews the whole diff of the gate's head, and
       // the engine holds them to it: refused unless they opened the full diff in this decision.
-      const why = fullDiffNeeded(
-        await resolutionAtGate(ctx, item, mergeGateHead(pa) ?? item.head_sha),
-      );
+      const at = await resolutionAtGate(ctx, item.id, mergeGateHead(pa) ?? item.head_sha);
+      // The website's Review page (sign-in only now, due for removal) never approves a head the
+      // babysitter resolved: its opened-diff flag is its own, so the desktop decides those.
+      if (ctx.origin.surface === "app" && (at.expected || at.resolution)) {
+        throw new OperationError(
+          "conflict",
+          "The babysitter resolved a conflict on this commit: decide it in the desktop app, where its resolution and the full diff are shown.",
+          { fullDiffRequired: true },
+        );
+      }
+      const why = fullDiffNeeded(at);
       if (why && !input.openedFullDiff) {
         throw new OperationError(
           "conflict",

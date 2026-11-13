@@ -661,7 +661,7 @@ async function readResolution(
 export const babysitResolution = defineOperation({
   name: "babysit.resolution",
   description:
-    "Record what the babysitter's conflict resolution changed (spec 53 decision 1: the person sees only the resolution). Only for a merge of the approved head with a commit on the default branch, read in full: the files whose content is neither parent's, which of them both sides had changed (the conflict), the files outside the conflict (flagged), what isn't shown, and each patch (kept apart, read on demand). Anything else, or a read that fails, is recorded as such and the gate shows the whole diff. Carries the babysit job's delivery fence. The babysitter only.",
+    "Record what the babysitter's conflict resolution changed (spec 53 decision 1: the person sees only the resolution), for the item's current head only. Only for a merge of the approved head with a commit on the default branch, read in full: the files whose content is neither parent's, which of them both sides had changed (the conflict), the files outside the conflict (flagged), what isn't shown, and each patch (kept apart, read on demand). Anything else, or a read that fails, is recorded as such and the gate shows the whole diff. Carries the babysit job's delivery fence. The babysitter only.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -672,6 +672,14 @@ export const babysitResolution = defineOperation({
     const w = requireWorkItem(ctx);
     const repository = requireRepository(ctx);
     await requireFence(ctx, w, input.deliveryFence);
+    // Only the item's own head is recorded as its resolution (#201 review): a stale call can't
+    // put another commit's summary on the gate.
+    if (w.head_sha !== input.headSha) {
+      throw new OperationError(
+        "conflict",
+        `the item's head is ${w.head_sha?.slice(0, 7) ?? "none"}, not ${input.headSha.slice(0, 7)}`,
+      );
+    }
     const repo = await repoRef(ctx, repository);
     let read: { summary: Resolution; patches: Record<string, string> };
     try {
@@ -707,6 +715,15 @@ export const babysitResolution = defineOperation({
         .insertInto("core_babysit_resolutions")
         .values({ work_item_id: w.id, ...row })
         .onConflict((oc) => oc.column("work_item_id").doUpdateSet(row)),
+    );
+    // And still the head when this commits.
+    ctx.guardExists(
+      "the item's head is the resolution",
+      ctx.db
+        .selectFrom("core_work_items")
+        .select("id")
+        .where("id", "=", w.id)
+        .where("head_sha", "=", input.headSha),
     );
     ctx.change({
       entity: "work_item",
@@ -749,50 +766,60 @@ export function resolutionExpected(
   );
 }
 
-/**
- * The resolution at a gate's head, and whether that head came from a babysitter resolution at all
- * (#201 review, round 2): a resolution row for the head (written by branch.advance in the same
- * batch that moved the branch to a babysit run's head, then filled by babysit.resolution), or the
- * deliverer's RESOLVED_CONFLICT end for it. One reader for review.merge, pr.autoMerge and any
- * automatic approval.
- */
-export async function resolutionAtGate(
-  ctx: HandlerContext,
-  w: WorkItemRow,
-  headSha: string | null,
-): Promise<{ resolution: Resolution | null; expected: boolean }> {
-  const [row, lastEnded] = await Promise.all([
-    ctx.db
-      .selectFrom("core_babysit_resolutions")
-      .select(["head_sha", "summary"])
-      .where("work_item_id", "=", w.id)
-      .executeTakeFirst(),
-    lastEndedDelivery(ctx, w.id).executeTakeFirst(),
-  ]);
-  return {
-    resolution: resolutionFor(row, headSha),
-    expected: (!!headSha && row?.head_sha === headSha) || resolutionExpected(lastEnded, headSha),
-  };
+/** What the gate knows of the babysitter's resolution, for the gate's head (`resolutionAtGate`). */
+export interface ResolutionAtGate {
+  /** The stored resolution of this very head, when there is a readable one. */
+  resolution: Resolution | null;
+  /** The head came from a resolution, or sits on one no person has approved since. */
+  expected: boolean;
+  /** The head the babysitter resolved, when it isn't the gate's head (a commit on top of it). */
+  resolvedHead: string | null;
 }
 
 /**
- * Why a person must open the full diff before merging this head, or null (#201 review, round 2):
- * the head came from a babysitter resolution, and it isn't one with nothing else to look at (a
- * clean resolution read in full, no file outside the conflict, nothing unlisted).
+ * The resolution at a gate's head (#201 reviews): the one reader for workItem.get, review.merge
+ * and pr.autoMerge (and any automatic approval).
+ *
+ * - The head came from a resolution: its row (written by branch.advance in the batch that moved
+ *   the branch to a babysit run's head, then filled by babysit.resolution), or the deliverer's
+ *   RESOLVED_CONFLICT end for it.
+ * - A later head on top of a resolution still counts while no person has approved a merge since
+ *   the resolution was made: a push after it doesn't make an ordinary gate.
  */
-export function fullDiffNeeded(at: { resolution: Resolution | null; expected: boolean }) {
-  if (!at.expected && !at.resolution) return null;
-  const r = at.resolution;
-  if (!r)
-    return "the babysitter resolved a conflict on this commit, but its resolution couldn't be shown";
-  if (r.status !== "clean")
-    return `its resolution couldn't be shown on its own (${r.reason ?? r.status})`;
-  const outside = r.outside.length + (r.outsideNotShown ?? 0);
-  if (outside > 0) {
-    return `${outside === 1 ? "1 file" : `${outside} files`} outside the conflict differ from a plain merge`;
-  }
-  if (r.notShown > 0) return `${r.notShown} more resolution files aren't listed`;
-  return null;
+export async function resolutionAtGate(
+  ctx: Pick<HandlerContext, "db">,
+  workItemId: string,
+  headSha: string | null,
+): Promise<ResolutionAtGate> {
+  const [row, lastEnded] = await Promise.all([
+    ctx.db
+      .selectFrom("core_babysit_resolutions")
+      .select(["head_sha", "summary", "created_at"])
+      .where("work_item_id", "=", workItemId)
+      .executeTakeFirst(),
+    lastEndedDelivery(ctx, workItemId).executeTakeFirst(),
+  ]);
+  const onHead = !!headSha && row?.head_sha === headSha;
+  const approvedSince =
+    row && !onHead
+      ? await ctx.db
+          .selectFrom("core_pending_actions")
+          .select("id")
+          // core_pending_actions_item_idx (work_item_id, status): an item's few decided gates.
+          .where("work_item_id", "=", workItemId)
+          .where("status", "=", "approved")
+          .where("kind", "=", "merge")
+          .where("decided_by", "is not", null)
+          .where("decided_at", ">", row.created_at)
+          .limit(1)
+          .executeTakeFirst()
+      : undefined;
+  const since = !!row && !onHead && !approvedSince;
+  return {
+    resolution: resolutionFor(row, headSha),
+    expected: onHead || since || resolutionExpected(lastEnded, headSha),
+    resolvedHead: since && row ? row.head_sha : null,
+  };
 }
 
 /**
