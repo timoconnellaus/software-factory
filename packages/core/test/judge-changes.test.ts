@@ -83,15 +83,13 @@ describe("judge changes from the Workflows and Agents editors (review of #154)",
         }),
       ),
     };
-    // FINDING (reported, not changed here: it is policy code): moving a judging step after the
-    // person's gate is neutral for a project's own workflow, though ADR 0516 counts the order of a
-    // checked or gated pair as policy for org workflows.
+    // Moving a judging step after the person's gate loosens (#161: any reorder within a slot does).
     expect(results).toMatchInlineSnapshot(`
       {
         "a judging agent's instructions": "loosens",
         "a step's agent": "loosens",
         "a step's instructions": "loosens",
-        "moving a judging step after a gate": "neutral",
+        "moving a judging step after a gate": "loosens",
         "removing a judging step": "loosens",
         "running no workflow": "loosens",
       }
