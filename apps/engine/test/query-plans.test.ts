@@ -153,6 +153,18 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Spec 44 host ack: an acking host's held steer call, whose poll also skips steers on offer.
+    name: "the held steer call's poll, for a host that acks (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
+        ack: [],
+      });
+    },
+  },
+  {
     // Spec 44 part A: the held terminal call reads whether the run has an open attach
     // (core_run_terminal_attaches_open_idx), and asks the relay only when it does.
     name: "the held terminal call's poll (spec 44)",

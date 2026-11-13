@@ -521,7 +521,17 @@ export const attachmentResponseSchema = z.object({
 export const steersRequestSchema = z.object({
   fencingToken,
   waitMs: z.number().int().min(0).max(60_000).optional(),
+  /**
+   * The steers this host has received since its last call (spec 44, host ack). Sending the field
+   * at all, even empty, opts in: a take then only offers steers (for STEER_OFFER_MS), and a steer
+   * is delivered when the host acks it, so a take by a call whose host had gone is offered again.
+   * An older host never sends it, and its takes deliver as before.
+   */
+  ack: z.array(z.string().min(1).max(64)).max(100).optional(),
 });
+
+/** How long a taken steer stays offered to an acking host before it is offered again. */
+export const STEER_OFFER_MS = 60_000;
 export const steersResponseSchema = z.object({
   steers: z.array(
     z.object({

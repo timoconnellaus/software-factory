@@ -13,11 +13,6 @@ export interface EngineRpc {
     | { ok: true; result: InvokeResult<unknown>; ms?: number }
     | { ok: false; error: Refusal; ms?: number }
   >;
-  /** A work item's planning changes as Server-Sent Events (spec 20, ADR 0350). */
-  planningStream?(
-    workItemId: string,
-    options: { actor: Actor; origin: Origin },
-  ): Promise<{ ok: true; stream: ReadableStream<Uint8Array> } | { ok: false; error: Refusal }>;
   /**
    * Opens a run's web terminal for a person (spec 35, ADR 0440): `run.terminal.attach`, then a
    * one-use viewer socket path on the job's relay, opened with `fetch`.

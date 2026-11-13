@@ -195,8 +195,8 @@ function toBase64(bytes: Uint8Array): string {
 /**
  * A planning job's operation (ADR 0350), relayed by the runner host for its harness: one operation
  * from the allowlist, as the runner, with the job id from the path. `planning.wait` is held here: it
- * is evaluated, then re-evaluated whenever the work item's PlanningHub hears of a change or a
- * person's pause runs out, until news is due, the session must yield or end, or the wait's time is up.
+ * is evaluated, then held in the Worker polling planning.peek (spec 44) until news is due, the
+ * session must yield or end, or the wait's time is up.
  */
 async function planningReply(
   env: Env,
@@ -246,7 +246,10 @@ async function planningReply(
       const left = deadline - Date.now();
       if (left <= 0 || signal?.aborted) break;
       await pause(Math.min(HELD_POLL_MS, left, Math.max(0, recheck - Date.now())));
-      if (signal?.aborted) return { body: { ...body, due: false } };
+      if (signal?.aborted) {
+        heldAborted("planning", jobId, deadline - timeout);
+        return { body: { ...body, due: false } };
+      }
       if (Date.now() >= recheck || Date.now() >= deadline) break;
       const state = await env.DB.prepare(
         `SELECT s.status, s.yield_requested_at,
@@ -320,38 +323,70 @@ async function steerReply(
   }
   const { fencingToken } = parsed.data;
   const timeout = Math.min(parsed.data.waitMs ?? STEER_WAIT_MAX_MS, STEER_WAIT_MAX_MS);
-  const deadline = Date.now() + timeout;
+  const started = Date.now();
+  const deadline = started + timeout;
   const actor: Actor = { type: "runner", id: runner };
+  // A host that acks (spec 44 host ack) sends `ack` on every call: its acks go with the first
+  // take, and every take stays in acking mode (offers, never deliveries) with `ack: []`.
+  const acking = parsed.data.ack !== undefined;
+  let ack = parsed.data.ack ?? [];
   // A take that lost a race to another (two calls read the same queued steer; the guard lets one
   // hand it over) is tried again: the host never sees that 409, which it would take as "this job
   // can't be steered" and stop asking (review of #179).
   const take = async () => {
     for (let attempt = 0; ; attempt++) {
-      const reply = await invokeReply(env, "run.takeSteers", { jobId, fencingToken }, actor);
-      if (!(reply.body as { raced?: boolean } | undefined)?.raced) return reply;
-      if (attempt >= 3) return { body: { runId: "", workItemId: "", steers: [] } };
+      const reply = await invokeReply(
+        env,
+        "run.takeSteers",
+        { jobId, fencingToken, ...(acking ? { ack } : {}) },
+        actor,
+      );
+      if (!(reply.body as { raced?: boolean } | undefined)?.raced) {
+        if (!reply.status || reply.status === 200) ack = [];
+        return reply;
+      }
+      // Still racing after a few tries: end this hold with nothing (the host calls again).
+      if (attempt >= 3) return { exhausted: true as const, body: { steers: [] } };
     }
   };
   const first = await take();
+  if ("exhausted" in first) return { body: first.body };
   if (first.status && first.status !== 200) return first;
   const { runId, steers } = first.body as { runId: string; steers: unknown[] };
   if (steers.length > 0 || timeout <= 0) return { body: { steers } };
   while (Date.now() < deadline) {
     await pause(Math.min(HELD_POLL_MS, deadline - Date.now()));
-    // The host has gone: stop, so nothing is taken (marked delivered) for nobody.
-    if (signal?.aborted) return { body: { steers: [] } };
+    // The host has gone: stop, so nothing is taken for nobody (and log it, so a deploy can see
+    // that request signals abort: wrangler tail).
+    if (signal?.aborted) {
+      heldAborted("steer", jobId, started);
+      return { body: { steers: [] } };
+    }
+    // Queued and, for an acking host, not on offer (an unacked offer lapses after 60 s).
     const queued = await env.DB.prepare(
-      "SELECT 1 FROM core_run_steers WHERE run_id = ? AND delivered_at IS NULL LIMIT 1",
+      `SELECT 1 FROM core_run_steers WHERE run_id = ? AND delivered_at IS NULL
+         ${acking ? "AND (offered_until IS NULL OR offered_until <= ?)" : ""} LIMIT 1`,
     )
-      .bind(runId)
+      .bind(...(acking ? [runId, new Date().toISOString()] : [runId]))
       .first();
     if (!queued) continue;
     const reply = await take();
+    if ("exhausted" in reply) return { body: reply.body };
     // Any refusal (fenced, killed, the run ended) ends the hold: no re-take every 3 s.
     if (reply.status && reply.status !== 200) return reply;
     return { body: { steers: (reply.body as { steers: unknown[] }).steers } };
   }
   return { body: { steers: [] } };
+}
+
+/**
+ * One line when a held call's request signal aborts (its runner host went away mid-hold), so a
+ * deployed engine shows in `wrangler tail` that `enable_request_signal` works (spec 44).
+ */
+function heldAborted(hold: "steer" | "terminal" | "planning", jobId: string, started: number) {
+  console.log(
+    `held ${hold} call for ${jobId} aborted by its host after ${Date.now() - started} ms`,
+  );
 }
 
 /**
@@ -413,9 +448,12 @@ async function terminalReply(
       }
     }
     const left = deadline - Date.now();
-    if (left <= 0 || signal?.aborted) return { body: { connect: null } };
+    if (left <= 0) return { body: { connect: null } };
     await pause(Math.min(HELD_POLL_MS, left));
-    if (signal?.aborted) return { body: { connect: null } };
+    if (signal?.aborted) {
+      heldAborted("terminal", jobId, deadline - ms);
+      return { body: { connect: null } };
+    }
   }
 }
 
