@@ -55,7 +55,6 @@ export const SCREENS = [
     design: "WorkActive.html",
     scrollTo: "held-wi_44",
   },
-  { name: "babysitter-repair", path: "/work/wi_13?fixture=red", design: "ItemOverview.html" },
   { name: "item-overview", path: "/work/wi_13", design: "ItemOverview.html" },
   // #9 has a live run with a takeover hint, so the header shows Pin, Open terminal and Cancel.
   { name: "item-header", path: "/work/wi_9", design: "ItemOverview.html" },

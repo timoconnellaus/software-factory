@@ -32,7 +32,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { Attachments } from "../components/attachments.tsx";
-import { MarkRepair } from "../components/babysitter.tsx";
 import {
   BacklogDetails,
   isPreRelease,
@@ -47,7 +46,6 @@ import { CriteriaList } from "../components/review-parts.tsx";
 import { Chip, PageArea, Panel, SectionTitle } from "../components/shell-list.tsx";
 import { Timeline } from "../components/timeline.tsx";
 import { ExternalLink } from "../lib/external.tsx";
-import { deliveryStatusQuery } from "../lib/factory-queries.ts";
 import { OpError, op } from "../lib/op.ts";
 import { closeTerminal } from "../lib/open-terminals.ts";
 import {
@@ -102,13 +100,11 @@ export const Route = createRoute({
       // The org's board: what an item before release can wait for (its edit dialog).
       queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
       // Then its project's workflow, whose name the Details panel shows (spec 52 PR (d)).
-      queryClient.ensureQueryData(workItemQuery(params.id)).then((d) =>
-        Promise.all([
+      queryClient
+        .ensureQueryData(workItemQuery(params.id))
+        .then((d) =>
           queryClient.ensureQueryData(workflowQuery(d.item.projectId)).catch(() => null),
-          // Mark as repair reads the project's babysitter line (spec 53).
-          queryClient.ensureQueryData(deliveryStatusQuery(d.item.projectId)).catch(() => null),
-        ]),
-      ),
+        ),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
       queryClient.ensureQueryData(attachmentsQuery(params.id)).catch(() => null),
@@ -748,11 +744,6 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
             </Button>
           </Panel>
         )}
-        <MarkRepair
-          projectId={detail.item.projectId}
-          repositoryId={detail.item.repositoryId ?? null}
-          workItemId={detail.item.id}
-        />
         <section className="flex flex-col gap-2">
           <SectionTitle>Description</SectionTitle>
           <Panel className="leading-normal [&_code]:font-mono [&_code]:text-xs [&_p]:my-0.5">

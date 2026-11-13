@@ -1,15 +1,14 @@
 // The babysitter on the desktop (spec 53 §9): the Overview's Babysitter line per repository, the
-// Held badge on waiting items, the red-main Inbox card, and Mark as repair. Everything is read from
+// Held badge on waiting items, and the red-main Inbox card. Everything is read from
 // `delivery.status` (main's health, the episode's suspects and culprit, each delivery's state) and
-// `inbox.list`'s `mainRed`; marking a repair is a decision (Touch ID, ADR 0391).
+// `inbox.list`'s `mainRed`; a read that is out or failed says so, never "nothing held". Marking a
+// repair is the item page's RepairToggle (one implementation).
 // No design file covers these screens; they follow FactoryOverview, InboxMerge and WorkActive.
 import { ago } from "@software-factory/client/format";
 import type { Inbox, OpOutput } from "@software-factory/client/ops";
-import { Button } from "@software-factory/ui/components/button";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useDecide } from "../lib/decisions.tsx";
 import { deliveryStatusQuery } from "../lib/factory-queries.ts";
 import { openItem } from "../lib/places.ts";
 import { Cell, Empty, Row, TablePanel, WIDE } from "./data-table.tsx";
@@ -64,35 +63,45 @@ function MainLine({ r }: { r: Repository }) {
   );
 }
 
-/** Who turned it red: the culprit as named, a candidate being checked, or the suspects. */
-function Culprit({ r }: { r: Repository }) {
+/**
+ * Who turned it red, saying how it is known: proven in code (the red reproduced), named by a
+ * person, or only the babysit job's guess; a candidate whose proof is running stays visible.
+ */
+export function Culprit({ r }: { r: Repository }) {
   const m = r.main;
   if (!m?.redSince) return null;
   const named = m.suspects.find((s) => s.workItemId === m.culpritWorkItemId);
-  if (named)
-    return (
-      <span className="text-xs">
-        Culprit{" "}
-        <Link {...openItem(named.workItemId)} className="underline">
-          #{named.number}
-        </Link>{" "}
-        <span className="text-ink-muted">
-          ({m.attributedBy === "proven" ? "proven" : `named by ${m.attributedBy}`})
-        </span>
-      </span>
-    );
   const candidate = m.suspects.find((s) => s.workItemId === m.candidateWorkItemId);
-  if (candidate)
-    return (
-      <span className="text-ink-muted text-xs">
-        Checking #{candidate.number}: rerunning the failing checks
-      </span>
-    );
+  const link = (id: string, n: number) => (
+    <Link {...openItem(id)} className="underline">
+      #{n}
+    </Link>
+  );
   return (
-    <span className="text-ink-muted text-xs">
-      {m.suspects.length
-        ? `${m.suspects.length} suspect${m.suspects.length === 1 ? "" : "s"}, none proven`
-        : "No factory landing since green"}
+    <span className="flex flex-col gap-0.5 text-xs" data-testid="culprit">
+      {named && m.attributedBy === "proven" && (
+        <span>Culprit {link(named.workItemId, named.number)}: proven, the red reproduced</span>
+      )}
+      {named && m.attributedBy === "person" && (
+        <span>Culprit {link(named.workItemId, named.number)}: named by a person</span>
+      )}
+      {named && m.attributedBy === "agent" && (
+        <span className="text-ink-3">
+          Suspected {link(named.workItemId, named.number)}: the babysit job's guess, not proven
+        </span>
+      )}
+      {candidate && (
+        <span className="text-ink-muted">
+          Checking {link(candidate.workItemId, candidate.number)}: rerunning the failing checks
+        </span>
+      )}
+      {!named && !candidate && (
+        <span className="text-ink-muted">
+          {m.suspects.length
+            ? `${m.suspects.length} suspect${m.suspects.length === 1 ? "" : "s"}, none proven`
+            : "No factory landing since green"}
+        </span>
+      )}
     </span>
   );
 }
@@ -169,20 +178,34 @@ export function BabysitterSection({ projects }: { projects: { id: string; name: 
   );
 }
 
-/** Whether an item's delivery is held behind a red main (its project's `delivery.status`). */
-export function useHeld(projectId: string, workItemId: string): boolean {
-  const status = useQuery({ ...deliveryStatusQuery(projectId), enabled: !!projectId });
-  return !!status.data?.repositories.some((r) =>
+/**
+ * The Held badge: approved, waiting for its repository's main to be green (decision 4). Only for
+ * a card in delivery; while the read is out nothing shows, and a failed read says so.
+ */
+export function HeldChip({
+  projectId,
+  workItemId,
+  enabled = true,
+}: {
+  projectId: string;
+  workItemId: string;
+  enabled?: boolean;
+}) {
+  const status = useQuery({ ...deliveryStatusQuery(projectId), enabled: enabled && !!projectId });
+  if (!enabled || status.isPending) return null;
+  if (status.isError && !status.data)
+    return (
+      <Chip className="w-fit" data-testid={`held-unknown-${workItemId}`}>
+        Delivery unknown: couldn't read
+      </Chip>
+    );
+  const repo = status.data?.repositories.find((r) =>
     r.deliveries.some((d) => d.workItemId === workItemId && d.state === "held"),
   );
-}
-
-/** The Held badge: approved, waiting for main to be green (decision 4). */
-export function HeldChip({ projectId, workItemId }: { projectId: string; workItemId: string }) {
-  if (!useHeld(projectId, workItemId)) return null;
+  if (!repo) return null;
   return (
     <Chip tone="amber" className="w-fit" data-testid={`held-${workItemId}`}>
-      Held: main is red
+      Held: {repo.branch} is red
     </Chip>
   );
 }
@@ -190,14 +213,12 @@ export function HeldChip({ projectId, workItemId }: { projectId: string; workIte
 /** The Inbox's red-main card (decision 4): one per episode, for the project's approvers. */
 export function MainRedCard({ red, projectName }: { red: MainRed; projectName: string }) {
   const status = useQuery(deliveryStatusQuery(red.projectId));
-  const repo = status.data?.repositories.find((r) => r.repositoryId === red.repositoryId);
-  const held = repo?.deliveries.filter((d) => d.state === "held") ?? [];
   return (
     <div className="flex flex-col gap-4" data-testid={`main-red-${red.repositoryId}`}>
       <PageHeader
         above={
           <>
-            <Chip tone="amber">main is red</Chip>
+            <Chip tone="amber">{red.branch} is red</Chip>
             &nbsp;{" "}
             <span className="font-mono text-[11.5px] text-ink-muted">
               {red.repo.owner}/{red.repo.name} · {projectName}
@@ -216,88 +237,61 @@ export function MainRedCard({ red, projectName }: { red: MainRed; projectName: s
             <span className="text-ink-muted text-xs">last green {short(red.lastGreenSha)}</span>
           )}
         </div>
-        {repo && <Culprit r={repo} />}
       </Panel>
-      {repo?.main && repo.main.suspects.length > 0 && (
-        <Panel>
-          <span className="font-medium">Landed since it was green</span>
-          <ul className="m-0 flex list-none flex-col gap-1 p-0">
-            {repo.main.suspects.map((s) => (
-              <li key={s.workItemId} className="flex items-center gap-2">
-                <Link {...openItem(s.workItemId)} className="hover:underline">
-                  #{s.number} {s.title}
-                </Link>
-                <span className="font-mono text-ink-muted text-xs">{short(s.mergeSha)}</span>
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      )}
-      <Panel>
-        <span className="font-medium">Held {held.length ? `(${held.length})` : ""}</span>
-        {held.length === 0 ? (
-          <span className="text-ink-muted">Nothing is waiting to merge.</span>
-        ) : (
-          <ul className="m-0 flex list-none flex-col gap-1 p-0">
-            {held.map((d) => (
-              <li key={d.workItemId}>
-                <Link {...openItem(d.workItemId)} className="hover:underline">
-                  #{d.number} {d.title}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-        <span className="text-ink-muted text-xs">
-          A fix lands ahead of them once it is marked as a repair on its page.{" "}
-          <Link to="/factory" className="underline">
-            Open the Overview
-          </Link>
-        </span>
-      </Panel>
+      <Reads queries={[status]} what="the babysitter's line for this repository">
+        {() => {
+          const repo = status.data?.repositories.find((r) => r.repositoryId === red.repositoryId);
+          const held = repo?.deliveries.filter((d) => d.state === "held") ?? [];
+          return (
+            <>
+              {repo && (
+                <Panel>
+                  <Culprit r={repo} />
+                </Panel>
+              )}
+              {repo?.main && repo.main.suspects.length > 0 && (
+                <Panel>
+                  <span className="font-medium">Landed since it was green</span>
+                  <ul className="m-0 flex list-none flex-col gap-1 p-0">
+                    {repo.main.suspects.map((s) => (
+                      <li key={s.workItemId} className="flex items-center gap-2">
+                        <Link {...openItem(s.workItemId)} className="hover:underline">
+                          #{s.number} {s.title}
+                        </Link>
+                        <span className="font-mono text-ink-muted text-xs">
+                          {short(s.mergeSha)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </Panel>
+              )}
+              <Panel data-testid="held-list">
+                <span className="font-medium">Held {held.length ? `(${held.length})` : ""}</span>
+                {held.length === 0 ? (
+                  <span className="text-ink-muted">Nothing is waiting to merge.</span>
+                ) : (
+                  <ul className="m-0 flex list-none flex-col gap-1 p-0">
+                    {held.map((d) => (
+                      <li key={d.workItemId}>
+                        <Link {...openItem(d.workItemId)} className="hover:underline">
+                          #{d.number} {d.title}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <span className="text-ink-muted text-xs">
+                  A fix lands ahead of them once it is marked as a repair on its page.{" "}
+                  <Link to="/factory" className="underline">
+                    Open the Overview
+                  </Link>
+                </span>
+              </Panel>
+            </>
+          );
+        }}
+      </Reads>
     </div>
-  );
-}
-
-/**
- * Mark as repair (spec 53 §2): a fix for a red main lands while the line is stopped, ahead of held
- * work. Shown only while the item's repository is red; a decision, so Touch ID confirms it.
- */
-export function MarkRepair({
-  projectId,
-  repositoryId,
-  workItemId,
-}: {
-  projectId: string;
-  repositoryId: string | null;
-  workItemId: string;
-}) {
-  const status = useQuery({ ...deliveryStatusQuery(projectId), enabled: !!repositoryId });
-  const { decide, pending } = useDecide();
-  const repo = status.data?.repositories.find((r) => r.repositoryId === repositoryId);
-  if (!repo?.main?.redSince) return null;
-  const repair = repo.deliveries.find((d) => d.workItemId === workItemId)?.repair ?? false;
-  return (
-    <Panel needsYou={!repair} data-testid="mark-repair">
-      <span className="flex items-center gap-1.5 font-medium">
-        <StatusDot status="failed" />
-        {repo.branch} is red
-      </span>
-      <span className="text-ink-3">
-        {repair
-          ? "This item is a repair: it lands while the line is stopped, ahead of held work."
-          : "If this item fixes it, mark it as a repair: it then lands while the line is stopped, ahead of held work, through its own merge gate."}
-      </span>
-      <div>
-        <Button
-          size="sm"
-          variant={repair ? "outline" : "default"}
-          disabled={pending !== null}
-          onClick={() => void decide({ kind: "workItem.markRepair", workItemId, repair: !repair })}
-        >
-          {repair ? "Not a repair" : "Mark as repair"}
-        </Button>
-      </div>
-    </Panel>
   );
 }
