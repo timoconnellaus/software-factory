@@ -8,7 +8,18 @@ import {
 } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { FOREMAN } from "../src/index.ts";
-import { call, first, newItem, ok, RUNNER_ACTOR, refusal, rows, uid, world } from "./helpers.ts";
+import {
+  call,
+  first,
+  newItem,
+  ok,
+  RUNNER_ACTOR,
+  refusal,
+  rows,
+  services,
+  uid,
+  world,
+} from "./helpers.ts";
 
 const manifest: CapabilityManifest = {
   contractVersion: CONTRACT_VERSION,
@@ -161,7 +172,34 @@ describe("splits (spec 24)", () => {
       "UPDATE core_specs SET status = 'approved' WHERE work_item_id = ? AND status = 'draft'",
       item.workItemId,
     );
-    await ok("spec.commit", { workItemId: item.workItemId }, FOREMAN);
+    const committed = await ok<{ commitSha: string }>(
+      "spec.commit",
+      { workItemId: item.workItemId },
+      FOREMAN,
+    );
+    // The plan's PR merges (split.release checks GitHub says so).
+    const branch = (
+      await first<{ branch: string }>(
+        "SELECT branch FROM core_work_items WHERE id = ?",
+        item.workItemId,
+      )
+    ).branch;
+    const pr = await services.github.openPullRequest(w.repo, {
+      head: branch,
+      base: "main",
+      title: "plan",
+      body: "",
+    });
+    await rows(
+      "UPDATE core_work_items SET pr_number = ?, status = 'waiting' WHERE id = ?",
+      pr.number,
+      item.workItemId,
+    );
+    await services.github.mergePullRequest(w.repo, {
+      number: pr.number,
+      sha: committed.commitSha,
+      method: "merge",
+    });
     const released = await ok<{ released: number }>(
       "split.release",
       { workItemId: item.workItemId },
@@ -265,10 +303,16 @@ describe("splits (spec 24)", () => {
     const extra = packet([...all, { path: "src/app.ts", status: "added" }]);
     expect(extra.verdict).toBe("fail");
     expect(extra.reasons.join(" ")).toContain("not one of the approved plan's files: src/app.ts");
-    // A missing file.
-    const missing = packet(all.slice(1));
+    // A file identical to main isn't in the diff, but it's at the head: it passes (review of #171).
+    expect(packet(all.slice(1)).verdict).toBe("pass");
+    // A file missing at the head.
+    const missing = packet(all, { ...atHead, "docs/specs/wi-1-x.md": null });
     expect(missing.verdict).toBe("fail");
-    expect(missing.reasons.join(" ")).toContain("isn't in the pull request: docs/specs/wi-1-x.md");
+    expect(missing.reasons.join(" ")).toContain("isn't at the head: docs/specs/wi-1-x.md");
+    // A link to identical content isn't a file.
+    const link = packet(all, { ...atHead, ".kim/designs/a.d2": "mode:120000" });
+    expect(link.verdict).toBe("fail");
+    expect(link.reasons.join(" ")).toContain("a link or not a plain file");
     // A changed byte in an approved file.
     const changed = packet(all, { ...atHead, ".kim/designs/a.d2": "c" });
     expect(changed.verdict).toBe("fail");
@@ -321,6 +365,23 @@ describe("splits (spec 24)", () => {
     const [api] = await childrenOf(item.workItemId);
     const refused = await refusal(ok("workItem.release", { workItemId: api?.id }, w.human));
     expect(refused.message).toMatch(/hasn't merged yet/);
+    // Nor shaped (review of #171, round 2): shaping triages and plans it.
+    const shaped = await refusal(ok("workItem.shape", { workItemId: api?.id }, w.human));
+    expect(shaped.message).toMatch(/hasn't merged yet/);
+    // Nor pulled if queued by hand: the pull's guarded write leaves it.
+    await rows("UPDATE core_work_items SET status = 'queued' WHERE id = ?", api?.id);
+    await ok("queue.pull", { projectId: w.projectId }, { type: "scheduler", id: "scheduler" });
+    expect(
+      (await first<{ status: string }>("SELECT status FROM core_work_items WHERE id = ?", api?.id))
+        .status,
+    ).toBe("queued");
+    // split.release is refused until the plan's PR merged.
+    await rows(
+      "UPDATE core_specs SET status = 'approved' WHERE work_item_id = ? AND status = 'draft'",
+      item.workItemId,
+    );
+    const early = await refusal(ok("split.release", { workItemId: item.workItemId }, FOREMAN));
+    expect(early.message).toMatch(/hasn't merged/);
   });
 
   it("lets a child skip planning only while its body and criteria are the approved slice (review of #171)", async () => {

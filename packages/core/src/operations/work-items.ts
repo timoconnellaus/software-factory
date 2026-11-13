@@ -943,7 +943,7 @@ export const workItemTriage = defineOperation({
       w.parent_work_item_id !== null &&
       slice?.sha256 !== undefined &&
       approvedCriteria !== null &&
-      slice.sha256 === (await sliceHash(w.body, approvedCriteria));
+      slice.sha256 === (await sliceHash(w.title, w.body, approvedCriteria));
     const sliceApproved =
       sliceBound && input.result.specRequested === "skip" && slice?.size !== "large";
     if (sliceBound && approvedCriteria) input.result.acceptanceCriteria = approvedCriteria;

@@ -338,6 +338,30 @@ export const splitRelease = defineOperation({
     if (w.status !== "running" && w.status !== "waiting") {
       throw new OperationError("conflict", `#${w.number} isn't running`);
     }
+    // Only a split, and only once its plan's PR merged (review of #171): GitHub says so.
+    const spec = await ctx.db
+      .selectFrom("core_specs")
+      .select("children")
+      .where("work_item_id", "=", w.id)
+      .where("status", "=", "approved")
+      .orderBy("version", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (!childrenOf(spec?.children).length) {
+      throw new OperationError("conflict", `#${w.number}'s approved plan didn't split`);
+    }
+    const pr = w.pr_number
+      ? await ctx.services.github.getPullRequest(
+          await repoRef(ctx, requireRepository(ctx)),
+          w.pr_number,
+        )
+      : null;
+    if (!pr?.merged) {
+      throw new OperationError(
+        "conflict",
+        `#${w.number}'s plan hasn't merged: its children stay held`,
+      );
+    }
     return { released: await releaseSplitChildren(ctx, w) };
   },
 });

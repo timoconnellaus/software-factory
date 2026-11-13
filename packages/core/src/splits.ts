@@ -38,9 +38,30 @@ export function childrenOf(json: string | null | undefined): SpecChild[] {
   return parsed.data;
 }
 
-/** The hash a child's approved slice is bound by: its body and its criteria. */
-export const sliceHash = (body: string, criteria: readonly string[]) =>
-  sha256Hex(new TextEncoder().encode(JSON.stringify([body, criteria])));
+/** The hash a child's approved slice is bound by: its title, body and criteria. */
+export const sliceHash = (title: string, body: string, criteria: readonly string[]) =>
+  sha256Hex(new TextEncoder().encode(JSON.stringify([title, body, criteria])));
+
+/**
+ * Why a plan's child can't start yet, or null (review of #171): it is held until its parent's plan
+ * merged. Every start path asks: release, shape, and the pull's guarded write.
+ */
+export async function heldReason(
+  ctx: Pick<HandlerContext, "db">,
+  w: Pick<WorkItemRow, "number" | "source" | "parent_work_item_id">,
+): Promise<string | null> {
+  if (w.source !== "planning" || !w.parent_work_item_id) return null;
+  const parent = await ctx.db
+    .selectFrom("core_work_items")
+    .select(["awaiting_children", "status"])
+    .where("id", "=", w.parent_work_item_id)
+    .executeTakeFirst();
+  if (parent?.awaiting_children === 1 || parent?.status === "done") return null;
+  return `#${w.number} was split off a plan that hasn't merged yet: it starts with its siblings when that plan merges`;
+}
+
+/** The pull's guard, as SQL on core_work_items: not a plan's child still held for its parent. */
+export const NOT_HELD = sql<boolean>`NOT (core_work_items.source = 'planning' AND core_work_items.parent_work_item_id IS NOT NULL AND EXISTS (SELECT 1 FROM core_work_items p WHERE p.id = core_work_items.parent_work_item_id AND p.awaiting_children = 0 AND p.status <> 'done'))`;
 
 /** A Workflow event: the last of a parent's children ended. Payload `{ done, cancelled }`. */
 export const splitSettledEvent = (parentId: string) => `split-${parentId}`;
@@ -129,7 +150,11 @@ export async function createSplitChildren(
     ids.set(c.key, created.id);
     // Bound to what was approved (review of #171): triage lets it skip planning only while its
     // body and criteria still hash to this, at the approved size.
-    const slice = { key: c.key, size: c.size, sha256: await sliceHash(body, c.acceptanceCriteria) };
+    const slice = {
+      key: c.key,
+      size: c.size,
+      sha256: await sliceHash(c.title, body, c.acceptanceCriteria),
+    };
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -240,7 +265,8 @@ export async function childEnded(
         })
         .where("parent_work_item_id", "=", child.id)
         .where("source", "=", "planning")
-        .where("status", "=", "ready"),
+        // Held ones, in Ready or parked in the Backlog (review of #171).
+        .where("status", "in", ["ready", "backlog"]),
     );
   }
   // Only a plan's children (an incident is a child of its item too, ADR 0080, and isn't split work).
