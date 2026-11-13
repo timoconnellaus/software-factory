@@ -227,12 +227,26 @@ approval is actually about: the change.
     anything that can't be read in full: an error or a truncated tree has no digest, and no digest
     never matches. Taken when the item enters delivery (`approved_digest`, migration 0352).
   - **Only the merge the factory asked for counts.** The queue records its update-branch request
-    (`update_from_sha`, `update_base_sha`, migration 0352). A new head is accepted only when the
-    request was made from the approved head, the commit is GitHub's own (committer
-    `noreply@github.com`, signature verified), its parents are exactly the approved head and a commit
-    on the default branch, and every file in it is exactly the approved head's or that commit's, never
-    a third thing. Anything else: `moved` for an item landing itself (v4 to v7) and `withdrawn` for
-    the babysitter.
+    (`update_from_sha`, `update_base_sha`, migration 0352). A new head is accepted only when it is
+    bound to that request by its identity (`boundUpdate`, #190 review): exactly two parents, the
+    approved head the request was made from and exactly the default branch's head read when asking;
+    signed by GitHub and committed as `GitHub <noreply@github.com>`; authored by this App's bot, as
+    GitHub authors an update-branch the App asked for (a merge in GitHub's web conflict editor is
+    authored by the person, and isn't bound). A request no merge answered is cleared, and an accepted
+    merge uses it up. Anything else: `moved` for an item landing itself (v4 to v7) and `withdrawn`
+    for the babysitter.
+  - **A bound update keeps the approval over a file both sides changed** (#61, ADR 0582 amended
+    2026-11-13). Judged from the merge base: a path only the item changed must be the approved head's,
+    a path only main changed must be main's (`oneSidedMismatches`); an ambiguous merge base withdraws.
+    A path both changed is GitHub's three-way result, which **no person looked at**: main's change can
+    sit next to or inside the PR's hunk. It is covered only by the binding, the full verify stage on
+    the new head, and `factory/verify` on that head, which GitHub's ruleset requires for the merge
+    (`pr.merge` itself doesn't check it). With no path changed on both sides the change must also be
+    identical by the strict digest. The new head's digest then becomes the approval's. This reverses
+    the "a file both sides changed withdraws" rule above for bound updates only.
+  - **The loop guard:** after two withdrawals in a row at an update for the same reason (with no
+    update in between that carried the approval) the item isn't updated again on its own; it is held
+    and a person asked, recommending to wait.
   - **A withdrawal closes the approval** (`core_pending_actions` → `rejected`, decision `withdrawn`),
     copies no review packet and posts no `factory/verify` to the new head, so nobody can merge it on
     GitHub either. **Workflow v12** (provisional number; feature `reverify-on-withdrawal`) sends the

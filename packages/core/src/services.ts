@@ -66,6 +66,12 @@ export type Tree = Record<string, TreeEntry>;
 
 export interface CommitInfo {
   parents: string[];
+  /**
+   * The git author. GitHub's update-branch merge made through the API by an App is authored by
+   * `<slug>[bot]` (`<id>+<slug>[bot]@users.noreply.github.com`); a merge in GitHub's web conflict
+   * editor is authored by the person (recorded: test/fixtures/update-branch-merge.json).
+   */
+  author: { name: string; email: string } | null;
   committer: { name: string; email: string } | null;
   /** GitHub verified the commit's signature (its own web-flow signs update-branch merges). */
   verified: boolean;

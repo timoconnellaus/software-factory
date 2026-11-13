@@ -527,11 +527,15 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       if (r.status !== 200) fail(`commit ${sha}`, r);
       const c = r.json as {
         parents?: { sha: string }[];
+        author?: { name?: string; email?: string } | null;
         committer?: { name?: string; email?: string } | null;
         verification?: { verified?: boolean } | null;
       };
       return {
         parents: (c.parents ?? []).map((p) => p.sha),
+        author: c.author
+          ? { name: String(c.author.name ?? ""), email: String(c.author.email ?? "") }
+          : null,
         committer: c.committer
           ? { name: String(c.committer.name ?? ""), email: String(c.committer.email ?? "") }
           : null,

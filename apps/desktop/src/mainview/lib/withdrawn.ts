@@ -25,7 +25,7 @@ export function withdrawnBefore(gates: readonly GateRow[]): Withdrawal | null {
     .filter((g) => (g.decidedAt ?? "") <= open.createdAt)
     .sort((a, b) => (b.decidedAt ?? "").localeCompare(a.decidedAt ?? ""));
   const last = decided[0];
-  if (!last || last.decision !== "withdrawn" || !last.decidedAt) return null;
+  if (last?.decision !== "withdrawn" || !last.decidedAt) return null;
   return {
     at: last.decidedAt,
     reason: (last.note ?? "it was withdrawn").replace(/^withdrawn: /, ""),

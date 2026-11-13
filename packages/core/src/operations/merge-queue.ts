@@ -26,8 +26,9 @@ import {
 import type { RepoRef } from "../services.ts";
 import {
   approvalSurvivesMergeOfMain,
-  onlyEitherSide,
-  patchDigest,
+  boundUpdate,
+  changeDigest,
+  oneSidedMismatches,
 } from "../verify/change-digest.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
 import { askOne } from "./ask.ts";
@@ -427,6 +428,17 @@ export const mergeQueueEnter = defineOperation({
         id,
         after: { status: "queued", headSha: input.headSha },
       });
+      // On the item's timeline in words: a person's approval carried over a merge nobody looked at.
+      if (carried) {
+        const branch = requireRepository(ctx).default_branch;
+        ctx.change({
+          entity: "work_item",
+          id: w.id,
+          after: {
+            approval: `${branch} was merged in cleanly; your approval carried; verified again on ${input.headSha.slice(0, 7)}`,
+          },
+        });
+      }
       // The position read below runs before this write commits: count this entry at the back.
       const entries = await queuedEntries(ctx, w.project_id, w.repository_id);
       return {
@@ -554,13 +566,30 @@ export const mergeQueueUpdate = defineOperation({
         repo,
         entry,
         requestedFrom: entry.update_from_sha,
+        requestedBase: entry.update_base_sha,
         at,
         prHead,
       });
 
+    // A request no merge answered (already current, a conflict, a refusal) is cleared, so a later
+    // merge can never be taken as the answer to it (#190 review).
+    const clearRequest = () => {
+      if (entry.update_from_sha === null && entry.update_base_sha === null) return;
+      ctx.write(
+        ctx.db
+          .updateTable("core_merge_queue")
+          .set({ update_from_sha: null, update_base_sha: null })
+          .where("id", "=", entry.id)
+          .where("head_sha", "=", at),
+      );
+    };
     const behind = (await github.compareCommits(repo, repository.default_branch, at)).behindBy;
-    if (behind === 0) return { state: "current" as const, headSha: at, reason: null };
+    if (behind === 0) {
+      clearRequest();
+      return { state: "current" as const, headSha: at, reason: null };
+    }
     if (pr.mergeable === false) {
+      clearRequest();
       return {
         state: "conflict" as const,
         headSha: at,
@@ -579,33 +608,14 @@ export const mergeQueueUpdate = defineOperation({
         reason: `${repository.default_branch} keeps moving: this branch was updated ${entry.updates} times`,
       };
     }
-    // The loop guard (#61): an item whose approval was withdrawn twice for the same reason when
-    // the default branch was merged in isn't updated a third time on its own: it is held and a
-    // person asked, with the reason (until they grant one more update).
+    // The loop guard (#61): an item whose approval was withdrawn at an update twice in a row for
+    // the same reason, with no update since that carried it, isn't updated a third time on its
+    // own: it is held and a person asked, with the reason. A person's grant on this entry allows
+    // one more (granted updates carry only with an approval, so a fresh approval starts at 0).
     if (entry.driver === "babysitter" && entry.updates_granted === 0) {
-      const withdrawn = await ctx.db
-        .selectFrom("core_pending_actions")
-        .select(["note"])
-        // core_pending_actions_item_idx (work_item_id, status): the item's few decided gates.
-        .where("work_item_id", "=", w.id)
-        .where("status", "=", "rejected")
-        .where("kind", "=", "merge")
-        .where("decision", "=", "withdrawn")
-        .orderBy("decided_at", "desc")
-        .limit(2)
-        .execute();
-      const [last, before] = withdrawn;
-      if (
-        last?.note &&
-        before?.note &&
-        last.note === before.note &&
-        /^withdrawn: /.test(last.note)
-      ) {
-        return {
-          state: "held" as const,
-          headSha: at,
-          reason: `${WITHDRAWN_TWICE}${last.note.replace(/^withdrawn: /, "")}`,
-        };
+      const repeated = await repeatedWithdrawal(ctx, w.id, entry.id, repository.default_branch);
+      if (repeated) {
+        return { state: "held" as const, headSha: at, reason: `${WITHDRAWN_TWICE}${repeated}` };
       }
     }
     const mainHead = await github.getBranchSha(repo, repository.default_branch);
@@ -638,6 +648,7 @@ export const mergeQueueUpdate = defineOperation({
           repo,
           entry,
           requestedFrom: at,
+          requestedBase: mainHead,
           at,
           prHead: after,
         });
@@ -651,22 +662,24 @@ export const mergeQueueUpdate = defineOperation({
       });
       return { state: "updating" as const, headSha: at, reason: null };
     }
+    clearRequest();
     return { state: asked.status, headSha: at, reason: asked.reason };
   },
 });
 
 /**
  * The head moved after the queue asked GitHub to update it. Accepted only as the merge the factory
- * asked for (spec 53 review): GitHub's update-branch merge (made and signed by GitHub) of the
- * default branch into the head the request was made from, with exactly those two parents and the
- * second on the default branch. Anything else is a push the queue didn't make: `moved` for an item
- * that lands itself (v4–v7, ADR 0330), and for the babysitter `withdrawn`.
+ * asked for (spec 53 review, #190 review): bound to that call by the commit's identity
+ * (`boundUpdate`: parents exactly the head it asked from and the default branch's head it read when
+ * it asked, made by GitHub for this App's call). Anything else is a push the queue didn't make:
+ * `moved` for an item that lands itself (v4–v7, ADR 0330), and for the babysitter `withdrawn`.
  *
- * For the babysitter the approval is about the change (ADR 0582, spec 53 decision 1):
- * it carries over only when the merge holds nothing but its two parents' files and the change is
- * identical (`approvalSurvivesMergeOfMain`). Any doubt withdraws it: the approval is closed, the
- * review packet is not carried and `factory/verify` is not posted on the new head, so nobody can
- * merge it on GitHub either; the item verifies the new head again (Workflow v12).
+ * For the babysitter the approval is about the change (ADR 0582, spec 53 decision 1): it carries
+ * over a bound update only when the merge base is unambiguous and every path only one side changed
+ * is exactly that side's (`approvalSurvivesMergeOfMain`); a path both changed is GitHub's three-way
+ * result, verified again with the rest of the new head. Any doubt withdraws it: the approval is
+ * closed, the review packet is not carried and `factory/verify` is not posted on the new head, so
+ * nobody can merge it on GitHub either; the item verifies the new head again (Workflow v12).
  */
 async function acceptUpdate(
   ctx: HandlerContext,
@@ -678,6 +691,8 @@ async function acceptUpdate(
     entry: Selectable<CoreDatabase["core_merge_queue"]>;
     /** The head the factory asked GitHub to update from (null: it never asked). */
     requestedFrom: string | null;
+    /** The default branch's head the queue read when it asked (null: it never asked). */
+    requestedBase: string | null;
     at: string;
     prHead: string;
   },
@@ -685,69 +700,86 @@ async function acceptUpdate(
   const { w, project, repository, repo, entry, at, prHead } = args;
   const github = ctx.services.github;
   const info = await github.commitInfo(repo, prHead).catch(() => null);
-  const merged = info?.parents[1];
-  const requestedByFactory = args.requestedFrom === at;
-  const madeByGitHub =
-    info?.verified === true &&
-    info.committer?.email === "noreply@github.com" &&
-    info.parents.length === 2 &&
-    info.parents[0] === at &&
-    merged !== undefined &&
-    (await github.compareCommits(repo, repository.default_branch, merged)).aheadBy === 0;
+  const unbound = boundUpdate(info, {
+    from: args.requestedFrom,
+    base: args.requestedBase,
+    at,
+    appSlug: github.app.slug,
+  });
+  const merged = args.requestedBase;
   const babysitter = entry.driver === "babysitter";
-  if (!babysitter && !(requestedByFactory && madeByGitHub)) {
+  // The request is used up either way: only one merge answers it.
+  const consumed = { update_from_sha: null, update_base_sha: null };
+  if (!babysitter && unbound !== null) {
+    ctx.write(ctx.db.updateTable("core_merge_queue").set(consumed).where("id", "=", entry.id));
     return {
       state: "moved" as const,
       headSha: prHead,
       reason: `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${repository.default_branch} into ${at.slice(0, 7)}`,
     };
   }
-  let thirdThings: string[] | null = null;
+  let mismatches: string[] | null = null;
+  let bothChanged = 0;
+  let ambiguous = false;
   let digestNow: string | null = null;
-  if (babysitter && requestedByFactory && madeByGitHub && merged) {
-    // Only the paths the merge changed on the approved head are read, never whole trees (second
-    // review of #105): a path the merge left alone is the approved head's by definition.
+  if (babysitter && unbound === null && merged) {
     try {
-      // Judged from the merge base, as a resolution is (#175): a path only one side changed must be
-      // that side's; a path both sides changed is GitHub's own clean three-way merge of it (it made
-      // this merge for the factory's call, and refuses one with a conflict), not a third thing.
+      // Judged from the merge base, as a resolution is (#175). Only the paths either side changed
+      // since it, and the paths the merge changed on the approved head, are read (never whole trees).
       const [changed, ours, theirs] = await Promise.all([
         github.changedPaths(repo, at, prHead),
         github.changedPaths(repo, merged, at),
         github.changedPaths(repo, at, merged),
       ]);
+      ambiguous = await mergeBaseAmbiguous(ctx, repo, at, merged, ours.mergeBase);
+      const paths = [...new Set([...changed.paths, ...ours.paths, ...theirs.paths])];
       if (
         changed.complete &&
         ours.complete &&
         theirs.complete &&
-        changed.paths.length <= MAX_CHANGED_PATHS
+        ours.mergeBase !== null &&
+        ours.mergeBase === theirs.mergeBase &&
+        paths.length <= MAX_CHANGED_PATHS
       ) {
-        const both = new Set(ours.paths.filter((p) => theirs.paths.includes(p)));
-        const [a, m, h] = await Promise.all([
-          github.pathEntries(repo, at, changed.paths),
-          github.pathEntries(repo, merged, changed.paths),
-          github.pathEntries(repo, prHead, changed.paths),
+        const oursSet = new Set(ours.paths);
+        const theirsSet = new Set(theirs.paths);
+        bothChanged = ours.paths.filter((p) => theirsSet.has(p)).length;
+        const [approved, main, head] = await Promise.all([
+          github.pathEntries(repo, at, paths),
+          github.pathEntries(repo, merged, paths),
+          github.pathEntries(repo, prHead, paths),
         ]);
-        thirdThings = onlyEitherSide(a, m, h, both);
+        mismatches = oneSidedMismatches(
+          { approved, main, merged: head },
+          { ours: oursSet, theirs: theirsSet },
+        );
       }
     } catch {
-      thirdThings = null; // unreadable: fails closed
+      mismatches = null; // unreadable: fails closed
     }
     digestNow = await digestOf(ctx, prHead, repository, repo);
   }
   const survives =
     !babysitter ||
     approvalSurvivesMergeOfMain({
-      requestedByFactory,
-      madeByGitHub,
-      thirdThings,
+      bound: unbound === null,
+      mergeBaseAmbiguous: ambiguous,
+      mismatches,
+      bothChanged,
       approvedDigest: entry.approved_digest,
       digestNow,
     });
   ctx.write(
     ctx.db
       .updateTable("core_merge_queue")
-      .set({ head_sha: prHead, updated_at: ctx.now })
+      // A carried approval is bound to the new head's change from here on: `mergeQueue.enter` takes
+      // it back only for a head whose digest is this one.
+      .set({
+        head_sha: prHead,
+        updated_at: ctx.now,
+        ...consumed,
+        ...(babysitter && survives ? { approved_digest: digestNow } : {}),
+      })
       .where("id", "=", entry.id)
       .where("head_sha", "=", at),
   );
@@ -764,17 +796,17 @@ async function acceptUpdate(
     after: { sha: prHead, by: `merge queue: ${repository.default_branch} merged in` },
   });
   if (!survives) {
-    const why = !requestedByFactory
-      ? "the factory didn't ask for this merge"
-      : !madeByGitHub
-        ? "it isn't GitHub's update-branch merge of the default branch into the approved head"
-        : thirdThings === null
+    const why =
+      unbound ??
+      (ambiguous
+        ? "its merge base is ambiguous (a criss-cross history)"
+        : mismatches === null
           ? "its files couldn't be read in full"
-          : thirdThings.length > 0
-            ? `it changed files beyond a merge of its two sides (${thirdThings.slice(0, 5).join(", ")}${thirdThings.length > 5 ? ", …" : ""})`
+          : mismatches.length > 0
+            ? `it changed files beyond a merge of its two sides (${mismatches.slice(0, 5).join(", ")}${mismatches.length > 5 ? ", …" : ""})`
             : entry.approved_digest === null || digestNow === null
               ? "the approved change couldn't be read in full"
-              : `the PR's change against ${repository.default_branch} is not the one approved`;
+              : `the PR's change against ${repository.default_branch} is not the one approved`);
     // The approval no longer holds: closed, so nothing can carry it out (ADR 0582).
     if (entry.pending_action_id) {
       ctx.writePendingStatus(
@@ -794,15 +826,13 @@ async function acceptUpdate(
     return {
       state: "withdrawn" as const,
       headSha: prHead,
-      reason: `the approval was withdrawn when ${repository.default_branch} was merged in: ${why}`,
+      reason: `${WITHDRAWN_PREFIX(repository.default_branch)}${why}`,
     };
   }
-  // The change is the one approved, but the evidence is the old head's (second review of #105).
-  // Nothing is carried and `factory/verify` is not posted from the old packet: the new head is
-  // verified on its own (its checks run again there), and the approval carries over only once
-  // that passes (owner's answer to question 1, 2026-11-12). The approval stays approved meanwhile,
-  // bound to this change: `mergeQueue.enter` takes it back only for a head whose change digest is
-  // still the approved one.
+  // The evidence is the old head's (second review of #105): nothing is carried and
+  // `factory/verify` is not posted from the old packet. The new head is verified on its own (its
+  // checks run again there), and the approval carries over only once that passes (owner's answer
+  // to question 1, 2026-11-12). The approval stays approved meanwhile, bound to the new change.
   if (babysitter) {
     return {
       state: "reverify" as const,
@@ -812,6 +842,57 @@ async function acceptUpdate(
   }
   await carryReviewPacket(ctx, { item: w, project, repo, fromSha: at, toSha: prHead });
   return { state: "updated" as const, headSha: prHead, reason: null };
+}
+
+/** How a withdrawal at an update reads (`end_reason`): the loop guard compares what follows it. */
+const WITHDRAWN_PREFIX = (branch: string) =>
+  `the approval was withdrawn when ${branch} was merged in: `;
+
+/**
+ * The reason the item's last two ended entries were both withdrawn at an update, when they were
+ * (the loop guard), or null. Counted back from the latest ended entry and stopped at anything else,
+ * so an update that carried an approval (`reverify`) in between starts the count again.
+ */
+async function repeatedWithdrawal(
+  ctx: HandlerContext,
+  workItemId: string,
+  openEntryId: string,
+  branch: string,
+): Promise<string | null> {
+  const ended = await ctx.db
+    .selectFrom("core_merge_queue")
+    .select(["outcome", "end_reason"])
+    // core_merge_queue_item_idx (work_item_id, enqueued_at): the item's few entries, newest first.
+    .where("work_item_id", "=", workItemId)
+    .where("id", "!=", openEntryId)
+    .orderBy("enqueued_at", "desc")
+    .limit(2)
+    .execute();
+  const prefix = WITHDRAWN_PREFIX(branch);
+  const [last, before] = ended;
+  if (
+    last?.outcome === "withdrawn" &&
+    before?.outcome === "withdrawn" &&
+    last.end_reason?.startsWith(prefix) &&
+    last.end_reason === before.end_reason
+  ) {
+    return last.end_reason.slice(prefix.length);
+  }
+  return null;
+}
+
+/**
+ * Whether the merge base of the approved head and the default branch's head is ambiguous (a
+ * criss-cross history): then "the side that changed a path" isn't defined, and it fails closed.
+ */
+async function mergeBaseAmbiguous(
+  _ctx: HandlerContext,
+  _repo: RepoRef,
+  _at: string,
+  _main: string,
+  mergeBase: string | null,
+): Promise<boolean> {
+  return mergeBase === null; // MERGE-BASE-AMBIGUITY: replaced once #175 is on main
 }
 
 /**
@@ -844,15 +925,11 @@ async function digestOf(
     if (!changed.mergeBase || !changed.complete || changed.paths.length > MAX_CHANGED_PATHS) {
       return null;
     }
-    // The PR's own patch against its base (spec 53's change digest): identical after a clean merge
-    // of the default branch into other hunks of the same file (#61).
-    const files = await github.compareFiles(ref, changed.mergeBase, headSha);
-    if (files.length >= 300) return null;
     const [b, h] = await Promise.all([
       github.pathEntries(ref, changed.mergeBase, changed.paths),
       github.pathEntries(ref, headSha, changed.paths),
     ]);
-    return await patchDigest(files, b, h);
+    return await changeDigest(b, h);
   } catch {
     return null;
   }
@@ -1003,15 +1080,17 @@ export const mergeQueueHold = defineOperation({
       .where("id", "=", entry.id)
       .where("status", "=", "queued");
     if (!entry.hold_question_id) {
+      const looping = input.reason.startsWith(WITHDRAWN_TWICE);
       const questionId = await askOne(ctx, w, {
-        prompt: input.reason.startsWith(WITHDRAWN_TWICE)
-          ? `#${w.number}'s approval was withdrawn twice for the same reason when the default branch was merged in (${input.reason.slice(WITHDRAWN_TWICE.length)}). Update once more and verify again, or wait?`
+        prompt: looping
+          ? `#${w.number}'s approval was withdrawn twice in a row for the same reason when the default branch was merged in (${input.reason.slice(WITHDRAWN_TWICE.length)}). Another update will likely withdraw it again, and it then needs approving again. Update once more and verify again, or wait?`
           : `The default branch keeps moving: #${w.number} was updated ${entry.updates} times and the branch moved again while CI ran. Update once more and merge when CI passes on the new head, or wait?`,
         context: input.reason,
         options: [HOLD_ANSWERS.now, HOLD_ANSWERS.wait],
-        defaultAnswer: HOLD_ANSWERS.now,
-        recommendationReason:
-          "The change is approved and was green; another update only merges the default branch in again.",
+        defaultAnswer: looping ? HOLD_ANSWERS.wait : HOLD_ANSWERS.now,
+        recommendationReason: looping
+          ? "The same merge withdrew the approval twice: updating again repeats it unless the default branch or the change is different now. Wait, and look at why it was withdrawn."
+          : "The change is approved and was green; another update only merges the default branch in again.",
       });
       ctx.write(
         ctx.db

@@ -588,6 +588,22 @@ describe("the approval across a merge of main (ADR 0582)", () => {
         a,
       ),
     );
+  const updateAsked = (a: string) =>
+    waitFor("update asked", () =>
+      first(
+        "SELECT 1 AS q FROM core_merge_queue WHERE work_item_id = ? AND update_from_sha IS NOT NULL",
+        a,
+      ),
+    );
+  const branchOf = async (a: string) =>
+    String(
+      (await first<{ branch: string }>("SELECT branch FROM core_work_items WHERE id = ?", a))
+        ?.branch,
+    );
+  const deliverAgain = async (a: string) => {
+    const at = await ids(a);
+    await deliverRepository(env, at.projectId, at.repositoryId);
+  };
   /** What a withdrawal must leave: the approval closed, nothing carried, nothing merged. */
   async function expectWithdrawn(w: World, a: string) {
     const ended = await withdrawnEntry(a);
@@ -630,7 +646,7 @@ describe("the approval across a merge of main (ADR 0582)", () => {
         a,
       ),
     );
-    expect(ended.approved_digest).toMatch(/^p1:[0-9a-f]{64}$/);
+    expect(ended.approved_digest).toMatch(/^[0-9a-f]{64}$/);
     expect(ended.head_sha).not.toBe(ended.approved_sha);
     // Nothing from the old head's evidence on the new one: no packet, no passing factory/verify.
     expect(
@@ -788,22 +804,112 @@ describe("the approval across a merge of main (ADR 0582)", () => {
 
   // Review of #105 (1): the same lines in a different file version hashed the same; a file both
   // sides changed now withdraws, and the item verifies the new head before a person decides again.
-  it("is withdrawn when main changed a file the PR changed and GitHub gives no patch for it (binary, too large); the item verifies the new head again", async () => {
+  // #190 review: GitHub's update-branch merge for the factory's own call is bound by the commit's
+  // identity; a file both sides changed is then GitHub's three-way result, verified again on the new
+  // head. Nothing else carries an approval.
+  it("withdraws a merge made in GitHub's web conflict editor: signed by GitHub, the right parents, but a person's", async () => {
     const w = await world();
-    const a = await toMergeGateWith(w, "Both sides", files("src/a.ts"));
+    const a = await toMergeGateWith(w, "Web editor", files("src/a.ts"));
     await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+    await github.deferUpdates(w.repo, true);
     await approve(w, a);
+    await updateAsked(a);
+    // GitHub made no merge (main moved into conflict, say); a collaborator resolves it on the web.
+    await github.craftMerge(w.repo, await branchOf(a), "main", { byGitHub: "web-editor" });
+    await deliverAgain(a);
     const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/src\/a\.ts|not the one approved/);
+    expect(ended.end_reason).toMatch(/isn't GitHub's update-branch merge made for the factory/);
     // v12: back to verify on the new head (no build), then the merge gate, then it lands.
     await runStage(w, a, "verify", (job) => {
       expect(job.harness.prompt).toContain(ended.head_sha);
       return verifyPass;
     });
     await gateOpen(a, "merge");
+    await github.deferUpdates(w.repo, false);
     await approve(w, a);
     await itemStatus(a, "done");
     expect(await merges(a)).toHaveLength(1);
+  });
+
+  it("withdraws a GitHub-made merge of an older main than the one the queue asked for", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Older main", files("src/a.ts"));
+    const older = await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.push(w.repo, "main", undefined, ["docs/b.md"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await updateAsked(a);
+    await github.craftMerge(w.repo, await branchOf(a), older, { byGitHub: true });
+    await deliverAgain(a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/didn't merge in the default branch's head the factory asked/);
+  });
+
+  it("withdraws when a commit was pushed after GitHub's merge (it isn't the only new commit)", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Extra commit", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await updateAsked(a);
+    const branch = await branchOf(a);
+    await github.craftMerge(w.repo, branch, "main", { byGitHub: true });
+    await github.push(w.repo, branch, undefined, ["src/a.ts"]);
+    await deliverAgain(a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/isn't a merge of exactly two commits/);
+  });
+
+  it("withdraws a GitHub-signed merge that moved the PR's own hunk (the same lines, another blob)", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Moved hunk", files("src/a.ts"));
+    await github.setCiDefault(w.repo, CI(null));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await updateAsked(a);
+    await github.craftMerge(w.repo, await branchOf(a), "main", {
+      byGitHub: true,
+      tree: { set: { "src/a.ts": { mode: "100644", sha: "a-hunk-moved" } } },
+    });
+    await deliverAgain(a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/beyond a merge of its two sides \(src\/a\.ts\)/);
+    await github.setCiDefault(w.repo, null);
+  });
+
+  it("a renamed file: the update keeps the approval, re-verifies and lands", async () => {
+    const w = await world();
+    await github.push(w.repo, "main", undefined, ["src/old-name.ts"]);
+    const a = await toMergeGateWith(w, "Rename", [
+      { path: "src/new-name.ts", status: "renamed", previousPath: "src/old-name.ts" },
+    ]);
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await approve(w, a);
+    const ended = await waitFor("reverify", () =>
+      first<{ outcome: string }>(
+        "SELECT outcome FROM core_merge_queue WHERE work_item_id = ? AND status = 'left'",
+        a,
+      ),
+    );
+    expect(ended.outcome).toBe("reverify");
+    await runStage(w, a, "verify", () => verifyPass);
+    await itemStatus(a, "done");
+    expect(await merges(a)).toHaveLength(1);
+  });
+
+  it("withdraws when main brought in more files than are read (300), rather than judge a part", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Main moved a lot", files("src/a.ts"));
+    await github.push(
+      w.repo,
+      "main",
+      undefined,
+      Array.from({ length: 300 }, (_, i) => `vendor/m${i}.ts`),
+    );
+    await approve(w, a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/its files couldn't be read in full/);
   });
 
   // Work item #61 (2026-11-13): both sides changed one file in different hunks, GitHub's
@@ -843,8 +949,17 @@ describe("the approval across a merge of main (ADR 0582)", () => {
   it("the loop guard: an approval withdrawn twice for the same reason isn't updated a third time on its own; a person is asked, with the reason", async () => {
     const w = await world();
     const a = await toMergeGateWith(w, "Keeps being withdrawn", files("src/a.ts"));
+    let n = 0;
+    // Main brings in more files than are read: withdrawn for the same reason each time.
+    const mainMovesALot = () =>
+      github.push(
+        w.repo,
+        "main",
+        undefined,
+        Array.from({ length: operations.MAX_CHANGED_PATHS + 1 }, () => `vendor/m${n++}.ts`),
+      );
     const round = async () => {
-      await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+      await mainMovesALot();
       await approve(w, a);
       await waitFor("withdrawn", () =>
         first(
@@ -859,7 +974,7 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     await round();
     await round();
     // A third time: main moves again; the head is held and a person asked, no third withdrawal.
-    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+    await mainMovesALot();
     await approve(w, a);
     const held = await waitFor("held, a person asked", () =>
       first<{ hold_question_id: string | null }>(
@@ -871,7 +986,8 @@ describe("the approval across a merge of main (ADR 0582)", () => {
       "SELECT prompt FROM core_questions WHERE id = ?",
       held.hold_question_id,
     );
-    expect(q?.prompt).toMatch(/withdrawn twice for the same reason/);
+    expect(q?.prompt).toMatch(/withdrawn twice in a row for the same reason/);
+    expect(q?.prompt).toMatch(/couldn't be read in full/);
     expect(
       await all(
         "SELECT id FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND decision = 'withdrawn'",

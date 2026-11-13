@@ -70,6 +70,8 @@ interface RepoState {
   times?: Record<string, string>;
   /** Commits GitHub itself made and signed (update-branch merges), for `commitInfo`. */
   byGitHub?: Record<string, true>;
+  /** Of those, the ones a person made in GitHub's web conflict editor (authored by them). */
+  webEditor?: Record<string, true>;
   /** A commit's tree as a test set it (a crafted merge), instead of the one its history gives. */
   trees?: Record<string, Record<string, { mode: string; sha: string }>>;
   /** Commits whose compare GitHub can't give in full (`changedPaths`: too many files). */
@@ -147,7 +149,8 @@ export interface FakeGitHub extends GitHubService {
     branch: string,
     mergedIn: string,
     opts?: {
-      byGitHub?: boolean;
+      /** `"web-editor"`: signed by GitHub, but made by a person in its web conflict editor. */
+      byGitHub?: boolean | "web-editor";
       tree?: { set?: Record<string, { mode: string; sha: string }>; remove?: string[] };
     },
   ): Promise<string>;
@@ -579,8 +582,18 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const first = state.parents[at];
       const second = state.merged?.[at];
       const github = state.byGitHub?.[at] === true;
+      const person = { name: "A Person", email: "person@example.com" };
       return {
         parents: [...(first ? [first] : []), ...(second ? [second] : [])],
+        // GitHub's update-branch merge for the App is authored by the App's bot; one made in the web
+        // conflict editor (`craftMerge`'s `byGitHub: "web-editor"`) by the person who resolved it.
+        author:
+          github && !state.webEditor?.[at]
+            ? {
+                name: `${FAKE_APP.slug}[bot]`,
+                email: `1001+${FAKE_APP.slug}[bot]@users.noreply.github.com`,
+              }
+            : person,
         committer: github
           ? { name: "GitHub", email: "noreply@github.com" }
           : { name: "A Person", email: "person@example.com" },
@@ -613,6 +626,9 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const next = await commit(state, head, `crafted-${branch}`);
       state.merged = { ...(state.merged ?? {}), [next]: state.refs[mergedIn] ?? mergedIn };
       if (opts.byGitHub) state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
+      if (opts.byGitHub === "web-editor") {
+        state.webEditor = { ...(state.webEditor ?? {}), [next]: true };
+      }
       if (opts.tree) {
         const tree = { ...treeAt(state, next), ...opts.tree.set };
         for (const p of opts.tree.remove ?? []) delete tree[p];

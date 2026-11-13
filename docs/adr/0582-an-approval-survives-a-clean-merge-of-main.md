@@ -46,18 +46,40 @@ proves how the commit was made, not that the change the person approved is the c
 > Amended 2026-11-13: the owner answered spec 53's eight questions and accepted every
 > recommendation (spec 53, **Decisions**). This ADR is accepted as written.
 
-> Amended 2026-11-13 (work item #61, an approval withdrawn in a loop): a file both sides changed in
-> different hunks no longer withdraws the approval. (1) The update merge is judged from the merge
-> base, as a resolution is (#175): a path only one side changed must be that side's; a path both
-> sides changed may be new content, because the merge is GitHub's own update-branch merge for the
-> factory's call (checked: made and signed by GitHub, parents [approved head, main], the second on
-> main), and GitHub refuses one with a conflict. The textual three-way result can't be computed
-> from GitHub's API, so for those paths the factory trusts the merge it asked GitHub for; anyone
-> else's merge is still withdrawn. (2) The change digest is the PR's own patch, as spec 53's words
-> define it: per file, its status and the lines it adds and removes, line numbers and context
-> stripped (a file with no patch, binary or too large, counts by blob on both sides). A clean merge
-> of main into other hunks leaves it identical, so the approval survives, the new head is verified
-> again and it lands with no second approval (decision 1 as written). (3) A loop guard: after two
-> withdrawals for the same reason the item isn't updated a third time on its own; it is held and a
-> person asked, with the reason. (4) A reopened merge gate says plainly that the approval was
-> withdrawn, when and why, and that it was verified again.
+> Amended 2026-11-13 (work item #61, an approval withdrawn in a loop; revised after review): a file
+> both sides changed no longer withdraws the approval **when the merge is bound to the factory's own
+> update-branch call**. This reverses the 2026-11-12 "from git trees" rule (a file both sides changed
+> withdraws) for bound updates only; every other case keeps it, and the change digest stays the strict
+> one (mode and blob per changed path).
+>
+> - **Bound.** The trust anchor is the commit's identity. GitHub's update-branch API doesn't return
+>   the merge commit, so a new head is bound only when all of these hold: exactly two parents; the
+>   first is the head the queue asked GitHub to update from (`update_from_sha`); the second is exactly
+>   the default branch's head the queue read when it asked (`update_base_sha`), not any commit on it;
+>   GitHub signed it and committed it as its web-flow identity (`GitHub <noreply@github.com>`); and its
+>   author is this App's bot (`<slug>[bot]`, `<id>+<slug>[bot]@users.noreply.github.com`), which is how
+>   GitHub authors an update made through the API by the App (recorded from a real one:
+>   `packages/core/test/fixtures/update-branch-merge.json`). A merge in GitHub's web conflict editor
+>   is signed the same way and has the same parents, but is authored by the person: it isn't bound.
+>   The commit is the PR's head, so a commit pushed after it fails the parents. A request no merge
+>   answered (already current, a conflict, a refusal) is cleared, and an accepted merge uses it up.
+> - **Judged from the merge base** (as a resolution is, #175): a path only the item changed must be
+>   the approved head's, a path only the default branch changed must be its, a path neither changed
+>   must be unchanged. An ambiguous merge base (criss-cross history) withdraws. A path both changed
+>   is GitHub's three-way result. With none, the change must also be identical by the strict digest.
+> - **What is given up.** After a bound update, a file both sides changed holds content **no person
+>   looked at**: GitHub's textual merge, in which the default branch's change can land next to, or
+>   inside the context of, the PR's hunk. The safeguards are only these: the binding above; the full
+>   verify stage on the new head (Workflow v12), which the approval waits for; and `factory/verify`
+>   on that exact head. Traced for this amendment: `pr.merge` doesn't check `factory/verify` itself.
+>   It merges with `sha` = the head it was given, and GitHub refuses that merge unless the org
+>   ruleset's required `factory/verify` from the App is green on it (no bypass, ADR 0037). Where that
+>   ruleset is missing, the verify stage passing is the only check.
+> - **The new head's digest becomes the approval's** (`approved_digest`), so `mergeQueue.enter` takes
+>   the approval back only for that change. The timeline says, in words, that the default branch was
+>   merged in cleanly, the approval carried, and on which head it was verified again.
+> - **A loop guard:** when the item's last two delivery attempts were both withdrawn at an update for
+>   the same reason (counted back from the latest, so an update that carried the approval in between
+>   starts again), it isn't updated a third time on its own: it is held and a person asked, with the
+>   reason, recommending to wait. A reopened merge gate says plainly that the approval was withdrawn,
+>   when and why, and that it was verified again.
