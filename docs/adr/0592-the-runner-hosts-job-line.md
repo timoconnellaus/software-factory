@@ -65,3 +65,15 @@ to 3 s to be noticed.
 - **Stopping the held calls for good.** Once every runner that has heartbeated in 30 days declares
   `job-line`, the engine may stop answering held calls by raising `RUNNER_COMPAT` (spec 38). That is
   a separate decision.
+
+## Amended, 2026-11-13: steers are acked by the host
+A held steer call whose host had gone (its request signal not seen to abort) could take a steer
+nobody received. So a host that acks gets steers as offers:
+- Its every `steers` call sends `ack`: the ids it received since the last call, possibly none.
+  Sending the field at all opts in; an older host never sends it and is handed steers as before.
+- `run.takeSteers` delivers what is acked (`delivered_at`, and the planning chat message's), then
+  offers queued steers that are not on offer, for 60 s (`core_run_steers.offered_until`, migration
+  0369). An offer nobody acks lapses and the steer is offered again.
+- The host drops a steer it already has, by id, and acks it again.
+- The channel's poll skips steers on offer. It logs one line when a held call's request signal
+  aborts, so `wrangler tail` on the deployed engine shows whether `enable_request_signal` works.
