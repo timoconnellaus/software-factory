@@ -534,6 +534,26 @@ describe("workItem.repinWorkflow", () => {
     ).toHaveLength(1);
   });
 
+  it("an item that has ended is never asked, however often it's refused (seventh review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    await rows(
+      "UPDATE core_work_items SET org_config_adopted = '[99]', status = 'failed' WHERE id = ?",
+      item.workItemId,
+    );
+    const refused = await invoke(
+      deps,
+      "job.enqueue",
+      { workItemId: item.workItemId, stage: "build", role: "implement", prompt: "Go" },
+      { actor: FOREMAN, origin: { surface: "workflow" } },
+    ).catch((e: { code: string }) => e);
+    expect(refused).toMatchObject({ code: "workflow_unreadable" });
+    expect(
+      await rows("SELECT id FROM core_questions WHERE work_item_id = ?", item.workItemId),
+    ).toEqual([]);
+  });
+
   it("an item whose own pinned config doesn't parse fails closed too (review of #185)", async () => {
     const w = await world();
     await onShip(w);

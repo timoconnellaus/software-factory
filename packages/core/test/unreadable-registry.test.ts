@@ -114,6 +114,8 @@ describe("every non-read operation an agent, runner or intake can call is stoppe
         "babysit.next",
         "workItem.markUnreadable",
         "mainRed.revert",
+        "mainRed.closeRevert",
+        "mainRed.reland",
       ].sort(),
     );
   });

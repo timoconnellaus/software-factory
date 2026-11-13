@@ -164,7 +164,8 @@ export const mainRedRevert = defineOperation({
         .where("repairs_main", "=", 1)
         .where("status", "in", [...OPEN])
         .where("id", "!=", claim?.revert_work_item_id ?? "")
-        .limit(5)
+        // Bounded; enough that a readable repair behind unreadable ones isn't missed.
+        .limit(50)
         .execute();
       // A repair whose workflow can't be read is parked, not under way (sixth review of #185).
       for (const r of repairs)

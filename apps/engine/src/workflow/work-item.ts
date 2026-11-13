@@ -34,6 +34,7 @@ import {
   type RunEventPayload,
   releaseEvent,
   resolveOrgWorkflow,
+  resolveScope,
   runEvent,
   SLOTS,
   splitSettledEvent,
@@ -183,6 +184,10 @@ export const MERGEABLE_WAIT = "20 seconds";
 export const MERGE_ROUNDS = 3;
 /** v3: the answers to the no-CI question. */
 export const NO_CI_RECHECK = "Re-check CI";
+/** v17: the most times one call parks on an unreadable workflow before it ends (review of #185). */
+const MAX_UNREADABLE_PARKS = 10;
+/** v17: the pause after a park before the call tries again. */
+const UNREADABLE_PAUSE_MS = 60_000;
 /** v17 (review of #185): the item's pinned workflow version can't be read. */
 export const UNREADABLE_RECHECK = "Check again";
 export const NO_CI_STOP = "Stop this work item";
@@ -1460,6 +1465,7 @@ class ItemFlow {
    * new step name (spike ADR 0110).
    */
   async call(name: string, op: string, input: unknown, approvalId?: string): Promise<CallResult> {
+    let parks = 0;
     for (let attempt = 1; ; attempt++) {
       const stepName = attempt === 1 ? name : `${name} #${attempt}`;
       const attemptCall = async (): Promise<CallResult> => {
@@ -1505,7 +1511,19 @@ class ItemFlow {
         result.status === "refused" &&
         result.code === "workflow_unreadable"
       ) {
+        // Bounded, and never a tight loop: a pause before trying again, and a cap.
+        parks += 1;
+        if (parks > MAX_UNREADABLE_PARKS)
+          return {
+            status: "refused",
+            code: "workflow_unreadable",
+            message: result.message,
+            resumeEvent: null,
+          };
         await this.planOrPark(null, `${stepName}: unreadable`, null, true);
+        // It found nothing to ask about yet core refused: pause rather than spin.
+        if (!this.parkedOnQuestion)
+          await this.step.sleep(`${stepName}: unreadable pause`, UNREADABLE_PAUSE_MS);
         continue;
       }
       if (result.status !== "refused" || result.code !== "killed" || !result.resumeEvent)
@@ -2373,12 +2391,21 @@ class ItemFlow {
    * person, never runs it without its checks and gates. "Check again" re-reads it; "Stop" ends it.
    * An item that isn't on an org workflow keeps its plan (null: no workflow) as before.
    */
+  /** Whether the last `planOrPark` waited on the owner's question (rather than finding it reads). */
+  private parkedOnQuestion = false;
+
   async planOrPark(meta: Meta | null, name: string, plan: WorkflowPlan | null, force = false) {
+    this.parkedOnQuestion = false;
     if (plan && !force) return plan;
     for (let k = 1; ; k++) {
       // Any policy that doesn't resolve parks (third review of #185): an org version or adopted
       // list that no longer reads, the item's config that doesn't parse, or no config row at all.
+      // Core's own predicate first (scope.pinnedError, the same check that refuses its calls), then
+      // a plan that can't be made: one answer, so the Workflow and core never disagree (seventh
+      // review of #185).
       const why = await this.step.do(`${name}: pinned workflow #${k}`, async () => {
+        const scope = await resolveScope(createDb(this.env.DB), { workItemId: this.workItemId });
+        if (scope.pinnedError) return scope.pinnedError;
         const got = await this.pinnedPolicyResult();
         return got.policy ? "" : (got.error ?? "the item's config can't be read");
       });
@@ -2393,6 +2420,7 @@ class ItemFlow {
           "failed",
           `the item's workflow version can't be read (${why}), and its owner couldn't be asked`,
         );
+      this.parkedOnQuestion = true;
       await this.waitForAnswers(meta, `${name}: unreadable #${k}`);
       const answer = await this.step.do(`${name}: unreadable #${k}: answer`, async () => {
         const row = await this.env.DB.prepare("SELECT answer FROM core_questions WHERE id = ?")

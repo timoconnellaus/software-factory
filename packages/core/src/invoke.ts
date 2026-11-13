@@ -1083,6 +1083,9 @@ export const PINNED_ERROR_ALLOWED = [
   "workItem.markUnreadable",
   // Reverting a merged culprit doesn't need its workflow: main must be able to go green.
   "mainRed.revert",
+  // Closing or recording what a revert did: they only close or record (seventh review of #185).
+  "mainRed.closeRevert",
+  "mainRed.reland",
 ] as const;
 
 /**
@@ -1100,9 +1103,11 @@ export async function askWorkflowUnreadable(
   const db = createDb(deps.d1);
   const item = await db
     .selectFrom("core_work_items")
-    .select(["workflow_version", "number"])
+    .select(["workflow_version", "number", "status"])
     .where("id", "=", workItemId)
     .executeTakeFirst();
+  // Never asked again once it has ended: its owner already stopped it (seventh review).
+  if (!item || ["done", "failed", "rejected", "cancelled"].includes(item.status)) return null;
   const parks = has(item?.workflow_version, "repin-reverify");
   // A row that parks asks again only after its last question was answered (Check again, and it
   // still doesn't read); a row that ends is told once, ever (sixth review of #185).
