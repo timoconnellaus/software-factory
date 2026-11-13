@@ -1,9 +1,10 @@
 // Outbox delivery (ADR 0012; CRM ADR 0171): rows are written in an operation's batch, delivered
 // right after commit, and retried by the minute cron with backoff. Delivery is at least once;
 // Workflow ids and one-shot event types make a second delivery harmless.
-import type { OutboxMessage } from "@software-factory/core";
+import { BABYSITTER, invoke, type OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
 import { deliverRepository } from "./deliver/deliverer.ts";
+import { invokeDeps } from "./deps.ts";
 import { planningHub } from "./planning-hub.ts";
 import { failDeadRelease, pullProject } from "./pull.ts";
 
@@ -128,6 +129,16 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       if (message.payload.repositoryId) {
         await deliverRepository(env, message.payload.projectId, message.payload.repositoryId);
       }
+      return;
+    case "verify.recheck":
+      // A red episode opened or closed (spec 53, decision 7): `factory/verify` on this head is
+      // evaluated again, so "held: main is red" goes on or comes off. As the babysitter.
+      await invoke(
+        invokeDeps(env),
+        "verify.refresh",
+        { ...message.payload, trigger: "rerequested" },
+        { actor: BABYSITTER, origin: { surface: "cron", step: "verify.recheck" } },
+      );
       return;
     case "queue.pull":
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
