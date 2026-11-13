@@ -874,6 +874,14 @@ export const orgConfigGet = defineOperation({
         note: z.string().nullable(),
         by: z.string().nullable(),
         createdAt: z.string(),
+        /** The org config version it was drafted on: another version means it can't apply. */
+        baseVersion: z.number().nullable(),
+        /** What it would save (a workflow, an agent) and what is there now, for the difference. */
+        proposal: z.record(z.string(), z.unknown()).nullable(),
+        current: z.record(z.string(), z.unknown()).nullable(),
+        toVersion: z.number().nullable(),
+        /** The engine's classification against the current version; null if it can't be read. */
+        impact: impactView.nullable(),
       }),
     ),
   }),
@@ -914,32 +922,11 @@ export const orgConfigGet = defineOperation({
       .where("pa.status", "=", "pending")
       .where("pa.operation", "in", [...ORG_CONFIG_WRITES])
       .orderBy("pa.created_at", "desc")
-      .limit(50)
+      .limit(20)
       .execute();
-    return {
-      version,
-      config,
-      history,
-      pending: waiting.map((p) => {
-        let parsedInput: { note?: string; toVersion?: number } = {};
-        try {
-          parsedInput = JSON.parse(p.input);
-        } catch {
-          parsedInput = {};
-        }
-        return {
-          pendingActionId: p.id,
-          operation: p.operation,
-          note:
-            parsedInput.note ??
-            (p.operation === "orgConfig.rollback"
-              ? `Roll back to v${parsedInput.toVersion}`
-              : null),
-          by: p.github_login ?? p.name ?? null,
-          createdAt: p.created_at,
-        };
-      }),
-    };
+    const pending = [];
+    for (const p of waiting) pending.push(await pendingOrgChange(ctx.db, input.orgId, config, p));
+    return { version, config, history, pending };
   },
 });
 
@@ -1087,6 +1074,111 @@ export const stageTypeList = defineOperation({
           defaults,
         };
       }),
+    };
+  },
+});
+
+/**
+ * A waiting org change as an approver sees it (ADR 0610, review of #159): what it would save, what
+ * is there now, and the engine's classification against the current version. Bounded: at most 20
+ * are listed, and only a rollback reads a stored version (by primary key).
+ */
+async function pendingOrgChange(
+  db: Db,
+  orgId: string,
+  config: OrgConfig,
+  p: {
+    id: string;
+    operation: string;
+    input: string;
+    created_at: string;
+    github_login: string | null;
+    name: string | null;
+  },
+) {
+  let input: Record<string, unknown> = {};
+  try {
+    const v = JSON.parse(p.input) as unknown;
+    if (v && typeof v === "object") input = v as Record<string, unknown>;
+  } catch {
+    input = {};
+  }
+  const obj = (v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  const toVersion = typeof input.toVersion === "number" ? input.toVersion : null;
+  let proposal: Record<string, unknown> | null = null;
+  let current: Record<string, unknown> | null = null;
+  let after: OrgConfig | null = null;
+  try {
+    if (p.operation === "workflow.save") {
+      proposal = obj(input.workflow);
+      const id = proposal?.id;
+      current =
+        (config.workflows.find((w) => w.id === id) as unknown as Record<string, unknown>) ?? null;
+      if (proposal) after = withWorkflow(config, proposal as unknown as WorkflowDefinition);
+    } else if (p.operation === "agent.save") {
+      proposal = obj(input.agent);
+      const name = String(proposal?.name ?? "").toLowerCase();
+      current =
+        (config.agents.find((a) => a.name.toLowerCase() === name) as unknown as Record<
+          string,
+          unknown
+        >) ?? null;
+      if (proposal) after = withAgent(config, proposal as never);
+    } else if (p.operation === "orgConfig.rollback" && toVersion !== null) {
+      after = await storedOrgConfig(db, orgId, toVersion);
+      // The whole org config, now and as the rollback would make it: every workflow and agent
+      // compared field by field before anyone approves it (review of #159, round 4).
+      // The whole org config on both sides: a rollback replaces all of it (workflows, built-in
+      // copies, agents, archived versions), so the desktop shows every part (review of #159, 5).
+      current = config as unknown as Record<string, unknown>;
+      proposal = after ? (after as unknown as Record<string, unknown>) : null;
+    }
+  } catch {
+    after = null;
+  }
+  const parsed = after ? parseOrgConfig(after) : null;
+  return {
+    pendingActionId: p.id,
+    operation: p.operation,
+    note:
+      (typeof input.note === "string" ? input.note : null) ??
+      (p.operation === "orgConfig.rollback" ? `Roll back to v${toVersion}` : null),
+    by: p.github_login ?? p.name ?? null,
+    createdAt: p.created_at,
+    baseVersion: typeof input.baseVersion === "number" ? input.baseVersion : null,
+    proposal,
+    current,
+    toVersion,
+    impact: parsed?.ok ? orgConfigImpact(config, parsed.config) : null,
+  };
+}
+
+export const orgConfigPreviewRollback = defineOperation({
+  name: "orgConfig.previewRollback",
+  description:
+    "What rolling an org's workflows back to an earlier version would change, as the engine classifies it against the current version (each change loosens, tightens or is neutral), and the workflows before and after, before a person confirms. Members only.",
+  risk: "read",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ orgId, toVersion: z.number().int().positive() }),
+  output: z.object({
+    impact: impactView,
+    /** The version this was compared against: the rollback names it as its base. */
+    currentVersion: z.number(),
+    before: z.array(z.object({ id: z.string(), name: z.string() })),
+    after: z.array(z.object({ id: z.string(), name: z.string() })),
+  }),
+  async handler(input, ctx) {
+    const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
+    const target = await storedOrgConfig(ctx.db, input.orgId, input.toVersion);
+    if (!target) throw new OperationError("not_found", `no valid version ${input.toVersion}`);
+    const names = (c: OrgConfig) => c.workflows.map((w) => ({ id: w.id, name: w.name }));
+    return {
+      impact: orgConfigImpact(config, target),
+      currentVersion: version,
+      before: names(config),
+      after: names(target),
     };
   },
 });

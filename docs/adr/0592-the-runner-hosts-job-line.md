@@ -77,3 +77,27 @@ nobody received. So a host that acks gets steers as offers:
 - The host drops a steer it already has, by id, and acks it again.
 - The channel's poll skips steers on offer. It logs one line when a held call's request signal
   aborts, so `wrangler tail` on the deployed engine shows whether `enable_request_signal` works.
+
+## Amended, 2026-11-13: offers keep order, are capped, and acks outlive the run
+Review of the host ack (#189):
+- **Order.** No steer is offered while an earlier one of the run is on offer. Without this, A's lost
+  answer then B's delivery would put B in the session about a minute before A. The held call's poll
+  reads the run's oldest queued steer and waits while it is on offer.
+- **A cap.** A host that opts in and never acks would be offered the same steer every 60 s for the
+  run's life, each time with a write and an audit row. After `STEER_OFFERS_MAX` (10) offers, the
+  take gives the steer up: `delivered_at` and `undeliverable_at` are set (migration 0410), `run.live`
+  shows it as undelivered, and its author gets a `steer.undeliverable` notification.
+- **Acks are kept until they commit.** If the channel's take keeps racing until its retries run out
+  while the call carries acks, it answers 503 instead of an empty 200, so the host keeps the acks
+  for its next call.
+- **Acks after the run.** `run.takeSteers` takes an ack for an ended run: it only marks steers
+  delivered, and answers `ended` with no steers. The host flushes its acks in one last call when
+  its steer loop stops.
+- **A lapse is re-checked on the line.** After a call fails (its answer may have been lost with a
+  steer now on offer), the host's next wait on the job line ends once the offer has lapsed
+  (`STEER_OFFER_MS`, from the contract), not at the 5-minute safety poll.
+- **The seen-set stays in memory.** A host restart ends the job's session, since jobs aren't
+  re-adopted (spec 39), so no session is left to type a steer into twice. Spec 39's re-adoption must
+  persist it with the job.
+- `core_planning_messages_steer_idx` (partial, `steer_id IS NOT NULL`) serves the ack's update of
+  the chat message, which was a full scan. The ack is in the query-plan guard.
