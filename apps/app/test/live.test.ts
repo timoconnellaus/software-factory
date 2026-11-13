@@ -63,7 +63,7 @@ describe("an archived run that can't be read", () => {
     });
   };
 
-  it("says the log is missing, never that the run was empty, and links its incident", () => {
+  it("says the log is missing, never that the run was empty, and where its incident is", () => {
     const html = render(archived({ archive: "missing" }));
     expect(html).toContain('data-testid="live-archive-missing"');
     expect(html).toContain("missing from the archive");
@@ -71,11 +71,13 @@ describe("an archived run that can't be read", () => {
     const reported = render(
       archived({
         archive: "missing",
-        archiveMissing: { firstSeq: 1, incident: { workItemId: "wi_x", number: 42 } },
+        archiveMissing: {
+          firstSeq: 1,
+          incident: { id: "incident_x", openedAt: "2026-11-13T00:00:00Z", resolvedAt: null },
+        },
       }),
     );
-    expect(reported).toContain("Reported as incident #42.");
-    expect(reported).toContain('href="/work/wi_x"');
+    expect(reported).toContain("Recorded as an incident: see Checks and incidents");
   });
 
   it("says the archive couldn't be read, with a way to try again", () => {
