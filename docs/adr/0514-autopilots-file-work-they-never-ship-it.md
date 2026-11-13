@@ -39,3 +39,14 @@ reference. The risk is an agent that creates and ships its own work.
 > backlog project, and widening an event trigger's projects loosen; it is judged whether or not the
 > autopilot is on, so widening one while it is off and then turning it on can't slip through.
 
+> Amended 2026-11-13 (review of #197): a change is judged by **reach**, not shape. One that is off
+> reaches nothing: changing it is practice, and turning it on loosens, so the person approving sees
+> all it would reach; a new one that is on is judged against nothing (it loosens). For one that is
+> on, anything that widens what it may do loosens: releasing work or filing closer to running,
+> more projects or more projects' events (a schedule fires on no project's events, so schedule →
+> event widens), another event kind, a more frequent schedule, another output or project, higher
+> limits, another agent, more capabilities or skills, and a rewritten instruction. A property test
+> holds that no run of practice or tightening saves ends where one direct change would loosen.
+> Turning one off is one tap on the desktop; saving and turning one on take a desktop presence
+> proof; the phone stays refused.
+

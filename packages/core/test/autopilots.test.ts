@@ -74,6 +74,17 @@ describe("the autopilot's shape", () => {
       expect(cronError(c), c).not.toBeNull();
   });
 
+  it("refuses hidden characters in its name, description and instructions, and instructions over 4 kB", () => {
+    const bad = (over: Record<string, unknown>) =>
+      autopilotSchema.safeParse({ ...AP(), ...over }).success;
+    expect(bad({ name: "Triage\u202e" })).toBe(false);
+    expect(bad({ description: "ok\u200bnot" })).toBe(false);
+    expect(bad({ instructions: "do this\u2066" })).toBe(false);
+    expect(bad({ instructions: "line one\nline two" })).toBe(true);
+    // 4 kB in bytes: 1,500 three-byte characters is over, though under 4,000 characters.
+    expect(bad({ instructions: "€".repeat(1_500) })).toBe(false);
+  });
+
   it("refuses an unknown time zone and limits past their caps; fills defaults", () => {
     expect(
       autopilotSchema.safeParse({
@@ -93,31 +104,120 @@ describe("the autopilot's shape", () => {
   });
 });
 
-describe("how a change to an autopilot classifies (ADR 0514 §5)", () => {
+describe("how a change to an autopilot classifies: by reach (ADR 0514 §5, review of #197)", () => {
   const cls = (before: AutopilotConfig[], after: AutopilotConfig[]) =>
     autopilotImpact(before, after).map((c) => c.class);
+  const loosens = (b: AutopilotConfig[], a: AutopilotConfig[]) => cls(b, a).includes("loosens");
+  const ON = (over: Partial<Record<string, unknown>> = {}) => AP({ enabled: true, ...over });
   const queued = { kind: "backlog", project: "each", state: "queued" };
 
-  it("adding or enabling one is practice, unless it releases work", () => {
-    expect(cls([], [AP()])).toEqual(["neutral"]);
-    expect(cls([], [AP({ enabled: true })])).toEqual(["neutral"]);
-    expect(cls([], [AP({ enabled: true, output: queued })])).toEqual(["loosens"]);
-    expect(cls([AP({ output: queued })], [AP({ enabled: true, output: queued })])).toContain(
-      "loosens",
-    );
-    expect(cls([AP({ enabled: true })], [AP()])).toEqual(["tightens"]);
+  it("a new one: off is practice; on loosens (judged against nothing); turning on loosens, off tightens", () => {
+    expect(loosens([], [AP()])).toBe(false);
+    expect(loosens([], [ON()])).toBe(true);
+    expect(loosens([AP()], [ON()])).toBe(true);
+    expect(cls([ON()], [AP()])).toContain("tightens");
+    expect(loosens([ON()], [AP()])).toBe(false);
+    expect(cls([ON()], [])).toEqual(["tightens"]);
   });
 
-  it("widening its reach loosens; narrowing tightens; instructions are practice", () => {
-    const some = { projects: ["p1"] };
-    expect(cls([AP({ scope: some })], [AP({ scope: { projects: "all" } })])).toContain("loosens");
-    expect(cls([AP()], [AP({ scope: some })])).toContain("tightens");
-    expect(cls([AP()], [AP({ limits: { minutes: 30, maxOutputs: 10, runsPerDay: 4 } })])).toContain(
-      "loosens",
+  it("every pair of trigger kinds, both ways", () => {
+    const sched = (cron: string) => ({ kind: "schedule", cron, timezone: "UTC" });
+    const event = (projects?: string[], ev = "workItem.captured") => ({
+      kind: "event",
+      event: ev,
+      ...(projects ? { projects } : {}),
+    });
+    const scope = { projects: ["p1", "p2"] };
+    const at = (trigger: unknown) => ON({ trigger, scope });
+    // schedule <-> event: an event fires without bound, on projects' events.
+    expect(loosens([at(sched("0 2 * * 1"))], [at(event(["p1"]))])).toBe(true);
+    expect(loosens([at(event(["p1"]))], [at(sched("0 2 * * 1"))])).toBe(false);
+    // event projects wider / narrower; another event kind.
+    expect(loosens([at(event(["p1"]))], [at(event())])).toBe(true);
+    expect(loosens([at(event())], [at(event(["p1"]))])).toBe(false);
+    expect(loosens([at(event(["p1"]))], [at(event(["p1"], "workItem.done"))])).toBe(true);
+    // a more frequent schedule loosens; a rarer one doesn't.
+    expect(loosens([at(sched("0 2 * * 1"))], [at(sched("0 * * * *"))])).toBe(true);
+    expect(loosens([at(sched("0 * * * *"))], [at(sched("0 2 * * 1"))])).toBe(false);
+    // the reviewer's two-step: event [p1] -> schedule -> event (all) is a loosening at the last step.
+    expect(loosens([at(sched("0 2 * * 1"))], [at(event())])).toBe(true);
+  });
+
+  it("what expands its power loosens: agent, capabilities, skills, scope, output, limits, releasing, instructions while on", () => {
+    expect(loosens([ON()], [ON({ agent: "Other" })])).toBe(true);
+    expect(loosens([ON()], [ON({ requires: ["browser"] })])).toBe(true);
+    expect(loosens([ON()], [ON({ skills: ["sk_x"] })])).toBe(true);
+    expect(loosens([ON({ scope: { projects: ["p1"] } })], [ON()])).toBe(true);
+    expect(loosens([ON()], [ON({ output: { kind: "digest" } })])).toBe(true);
+    expect(loosens([ON()], [ON({ limits: { minutes: 30, maxOutputs: 10, runsPerDay: 4 } })])).toBe(
+      true,
     );
-    expect(cls([AP()], [AP({ output: { kind: "digest" } })])).toContain("loosens");
-    expect(cls([AP()], [AP({ instructions: "Be brief." })])).toEqual(["neutral"]);
-    expect(cls([AP({ enabled: true })], [])).toEqual(["tightens"]);
+    expect(loosens([ON()], [ON({ output: queued })])).toBe(true);
+    expect(loosens([ON()], [ON({ instructions: "Be brief." })])).toBe(true);
+    // While off, an edit is practice: turning it on is what a person approves.
+    expect(loosens([AP()], [AP({ instructions: "Be brief.", agent: "Other" })])).toBe(false);
+  });
+
+  it("records state and priority changes", () => {
+    const b = ON({ output: { kind: "backlog", project: "each", state: "backlog" } });
+    expect(
+      cls([b], [ON({ output: { kind: "backlog", project: "each", state: "ready" } })]),
+    ).toContain("loosens");
+    expect(
+      cls(
+        [b],
+        [ON({ output: { kind: "backlog", project: "each", state: "backlog", priority: 1 } })],
+      ),
+    ).toEqual(["neutral"]);
+  });
+
+  it("no sequence of practice or tightening saves reaches what one direct change would loosen", () => {
+    // Small random walks over the fields that set reach.
+    const options = {
+      enabled: [false, true],
+      trigger: [
+        { kind: "schedule", cron: "0 2 * * 1", timezone: "UTC" },
+        { kind: "schedule", cron: "0 * * * *", timezone: "UTC" },
+        { kind: "event", event: "workItem.captured", projects: ["p1"] },
+        { kind: "event", event: "workItem.captured" },
+        { kind: "event", event: "workItem.done" },
+      ],
+      scope: [{ projects: ["p1"] }, { projects: ["p1", "p2"] }, { projects: "all" }],
+      output: [
+        { kind: "labels" },
+        { kind: "digest" },
+        { kind: "backlog", project: "each", state: "backlog" },
+        { kind: "backlog", project: "each", state: "queued" },
+      ],
+      agent: ["Triager", "Other"],
+      instructions: ["", "Be brief."],
+      requires: [[], ["browser"]],
+      limits: [
+        { minutes: 30, maxOutputs: 5, runsPerDay: 4 },
+        { minutes: 60, maxOutputs: 20, runsPerDay: 24 },
+      ],
+    } as const;
+    let seed = 7;
+    const rand = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % n;
+    };
+    const keys = Object.keys(options) as (keyof typeof options)[];
+    const pick = (): AutopilotConfig =>
+      AP(Object.fromEntries(keys.map((k) => [k, options[k][rand(options[k].length)]])));
+    for (let walk = 0; walk < 300; walk++) {
+      const start = rand(4) === 0 ? null : pick();
+      let at = start;
+      for (let step = 0; step < 6; step++) {
+        const next = rand(5) === 0 ? null : pick();
+        const ok = !loosens(at ? [at] : [], next ? [next] : []);
+        if (!ok) continue; // only practice or tightening saves are taken
+        at = next;
+        expect(loosens(start ? [start] : [], at ? [at] : []), `walk ${walk} step ${step}`).toBe(
+          false,
+        );
+      }
+    }
   });
 });
 
@@ -129,7 +229,7 @@ describe("autopilot operations", () => {
   const versionOf = async (w: W) =>
     (await ok<{ version: number }>("autopilot.list", { orgId: w.orgId }, w.human)).version;
 
-  it("an org admin adds one (practice, at once), turns it on and off; members read them", async () => {
+  it("an org admin adds one off (practice, at once), turns it on (approved) and off; members read them", async () => {
     const w = await world();
     await withAgent(w);
     const saved = await ok<{ version: number }>(
@@ -138,9 +238,16 @@ describe("autopilot operations", () => {
       w.human,
     );
     expect(saved.version).toBe(2);
-    await ok(
+    // Turning it on loosens (what it reaches is judged then): an org admin approves it.
+    const on = await call(
       "autopilot.enable",
       { orgId: w.orgId, baseVersion: 2, autopilotId: "ap_triage" },
+      w.human,
+    );
+    if (on.status !== "pending") throw new Error("expected turning it on to wait");
+    await ok(
+      "approval.decide",
+      { pendingActionId: on.pendingActionId, decision: "approved" },
       w.human,
     );
     const listed = await ok<{ autopilots: { id: string; enabled: boolean }[] }>(
@@ -234,6 +341,25 @@ describe("autopilot operations", () => {
         )
       ).code,
     ).toBe("invalid_input");
+    // Its events must be inside its scope.
+    expect(
+      (
+        await refusal(
+          call(
+            "autopilot.save",
+            {
+              orgId: w.orgId,
+              baseVersion: 1,
+              autopilot: AP({
+                scope: { projects: [w.projectId] },
+                trigger: { kind: "event", event: "workItem.captured", projects: ["prj_other"] },
+              }),
+            },
+            w.human,
+          ),
+        )
+      ).code,
+    ).toBe("invalid_input");
     // The improver or any agent can't add or enable one.
     expect(
       (
@@ -273,6 +399,11 @@ describe("autopilot operations", () => {
       JSON.parse(pa[0]?.input ?? "{}"),
       "Approve",
     );
-    expect(summary).toMatch(/^Approve: save an org autopilot \(v1 to v2\).*releasing/);
+    // What it may do first, then how many loosenings.
+    expect(summary).toMatch(
+      /^Approve: save an org autopilot \(v1 to v2\): 0 2 \* \* \* Australia\/Sydney; files and RELEASES work; all projects; 5\/run, 4\/day, 30 min/,
+    );
+    // The facts come first; the name follows only where it fits (titled()).
+    expect(summary).toMatch(/: 9 loosenings/);
   });
 });

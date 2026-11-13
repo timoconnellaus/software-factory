@@ -4,7 +4,7 @@
 // is the shape and its checks, `impact.ts` how a change classifies.
 import { CAPABILITIES } from "@software-factory/runner-contract";
 import { z } from "zod";
-import { anySkillIdSchema } from "../skills/schema.ts";
+import { anySkillIdSchema, hasHidden } from "../skills/schema.ts";
 
 export const AUTOPILOT_EVENTS = [
   "ci.failedOnDefaultBranch",
@@ -118,15 +118,29 @@ export const autopilotLimitsSchema = z
 export const autopilotSchema = z
   .object({
     id: z.string().regex(/^ap_[a-z0-9][a-z0-9-]{0,39}$/, "ap_ then a short lowercase id"),
-    name: z.string().trim().min(1).max(60),
-    description: z.string().max(500).default(""),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(60)
+      .refine((t) => !hasHidden(t), "no control or invisible characters in the name"),
+    description: z
+      .string()
+      .max(500)
+      .refine((t) => !hasHidden(t), "no control or invisible characters in the description")
+      .default(""),
     enabled: z.boolean().default(false),
     trigger: autopilotTriggerSchema,
     /** An org agent, by name. */
     agent: z.string().trim().min(1).max(60),
     /** Skills it follows on top of its agent's own (ADR 0513): the org's, or built-ins. */
     skills: z.array(anySkillIdSchema).max(20).default([]),
-    instructions: z.string().max(4_000).default(""),
+    /** At most 4 kB (bytes, not characters); newlines and tabs only. */
+    instructions: z
+      .string()
+      .refine((t) => new TextEncoder().encode(t).length <= 4_000, "instructions are at most 4 kB")
+      .refine((t) => !hasHidden(t, true), "no control or invisible characters in the instructions")
+      .default(""),
     /** The projects it reads and files into. */
     scope: z
       .object({ projects: z.union([z.literal("all"), projectIds]) })

@@ -57,7 +57,7 @@ export function withAutopilotEnabled(config: OrgConfig, id: string, enabled: boo
 }
 
 /** Every project an autopilot names is one of the org's (its scope, its events, its output). */
-async function requireOrgProjects(ctx: HandlerContext, org: string, a: AutopilotConfig) {
+export async function requireOrgProjects(ctx: HandlerContext, org: string, a: AutopilotConfig) {
   const ids = new Set((await orgProjects(ctx.db, org)).map((p) => p.id));
   const named = [
     ...(a.scope.projects === "all" ? [] : a.scope.projects),
@@ -69,6 +69,16 @@ async function requireOrgProjects(ctx: HandlerContext, org: string, a: Autopilot
     throw new OperationError(
       "invalid_input",
       `the autopilot ${a.name} names projects that aren't the org's: ${unknown.join(", ")}`,
+    );
+  if (
+    a.trigger.kind === "event" &&
+    a.trigger.projects &&
+    a.scope.projects !== "all" &&
+    a.trigger.projects.some((p) => !(a.scope.projects as readonly string[]).includes(p))
+  )
+    throw new OperationError(
+      "invalid_input",
+      `the autopilot ${a.name} fires on events of projects outside its scope`,
     );
   if (
     a.output.kind === "backlog" &&
@@ -169,6 +179,9 @@ export const autopilotSave = defineOperation({
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
+  // On the desktop with a presence proof for this exact call (ADR 0610); never the phone.
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({ orgId, baseVersion, autopilot: autopilotSchema, note }),
   output: z.object({ version: z.number() }),
   async handler(input, ctx) {
@@ -190,6 +203,8 @@ export const autopilotEnable = defineOperation({
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: toggleInput,
   output: z.object({ version: z.number() }),
   async handler(input, ctx) {
@@ -205,6 +220,8 @@ export const autopilotDisable = defineOperation({
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
+  // A tightening: one tap on the desktop, no proof (review of #197). Never the phone.
+  desktopOneTap: () => true,
   input: toggleInput,
   output: z.object({ version: z.number() }),
   async handler(input, ctx) {

@@ -41,7 +41,7 @@ import {
 import { STAGE_TYPES, stageType } from "../stages/registry.ts";
 import { validateWorkflow } from "../stages/validate.ts";
 import { type WorkflowDefinition, workflowDefinitionSchema } from "../stages/workflow.ts";
-import { saveAutopilot, setAutopilotEnabled } from "./autopilots.ts";
+import { requireOrgProjects, saveAutopilot, setAutopilotEnabled } from "./autopilots.ts";
 
 /** How many of an org's admins one org config write notifies, and how many overrides it names. */
 export const NOTIFY_ADMINS = 10;
@@ -975,6 +975,8 @@ async function rollbackOrgConfig(
   if (!target) throw new OperationError("not_found", `no valid version ${input.toVersion}`);
   const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
   requireBase(version, input.baseVersion);
+  // Its autopilots still name only the org's projects (review of #197).
+  for (const a of target.autopilots) await requireOrgProjects(ctx, input.orgId, a);
   const impact = orgConfigImpact(config, target);
   const written = await writeOrgVersion(ctx, input.orgId, version, target, {
     source: "rollback",

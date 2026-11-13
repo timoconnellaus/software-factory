@@ -77,15 +77,15 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "mobile": "one tap",
         },
         "autopilot.disable": {
-          "desktop": "refused",
+          "desktop": "one tap",
           "mobile": "refused",
         },
         "autopilot.enable": {
-          "desktop": "refused",
+          "desktop": "proof",
           "mobile": "refused",
         },
         "autopilot.save": {
-          "desktop": "refused",
+          "desktop": "proof",
           "mobile": "refused",
         },
         "chat.send {"interrupt":true}": {
