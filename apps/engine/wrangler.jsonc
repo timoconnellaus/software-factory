@@ -125,7 +125,7 @@
     // `update_required` and update themselves. Empty or 0 = serve every build. Raise it only when
     // older builds must stop; the app's own number is DOOR_PROTOCOL in apps/desktop. CI and the
     // deploy refuse a floor above what the newest published build speaks (scripts/deploy/desktop-floor.ts).
-    "DESKTOP_MIN_PROTOCOL": "",
+    "DESKTOP_MIN_PROTOCOL": "2",
     // The phone app's signing certificates (ADR 0541): SHA-256, comma-separated, as `keytool -list
     // -v` prints them. A phone registers only if Android attests our package signed with one of
     // these. The release key's goes here once the owner makes it (spec 60, "What the owner must
