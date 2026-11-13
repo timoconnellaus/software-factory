@@ -897,8 +897,10 @@ export async function overrideOrgValue(
 export const overrideApprove = defineOperation({
   name: "override.approve",
   description:
-    "Approve a project's existing looser workflow override (spec 52, Q5/Q6): the value the project's config already sets for one stage setting, looser than the org workflow's, which the stricter org value replaces until an org admin approves it. Name the org config version you saw (`orgVersion`); a stale one is a conflict. Refused when the project has no such override or it isn't looser. Org admins only, in the app.",
-  risk: "write",
+    "Approve a project's existing looser workflow override (spec 52, Q5/Q6): the value the project's config already sets for one stage setting, looser than the org workflow's, which the stricter org value replaces until an org admin approves it. It lets a looser setting apply, so it is self-modify: it waits for an org admin's decision (`approval.decide`), and applies then. Name the org config version you saw (`orgVersion`); a stale one is a conflict. Refused when the project has no such override or it isn't looser. Org admins only, in the app.",
+  risk: "self-modify",
+  // Decided by an org admin, not the project's approvers (spec 52, Q6).
+  decidedByOrgAdmin: async () => true,
   actors: ["human"],
   permission: "admin",
   // A policy decision (it lets a looser setting apply): never from the CLI, MCP, a phone or an
@@ -922,55 +924,75 @@ export const overrideApprove = defineOperation({
   }),
   output: z.object({ approved: z.boolean(), orgVersion: z.number(), value: z.unknown() }),
   async handler(input, ctx) {
-    const project = requireProject(ctx);
-    if (!policyDecisionSurface(ctx))
-      throw new OperationError(
-        "forbidden",
-        `an override is approved in the app or on the desktop with Touch ID, not from ${ctx.origin.surface}`,
-        { browserOnly: true },
-      );
-    const raw = ctx.scope.rawPolicy;
-    if (!raw || !onOrgWorkflow(raw))
-      throw new OperationError("invalid_input", "the project isn't on an org workflow");
-    const { version, config } = await currentOrgConfig(ctx.db, project.org_id);
-    if (version !== input.orgVersion)
-      throw new OperationError(
-        "conflict",
-        `the org's workflows are at v${version}, not v${input.orgVersion}: look again before approving`,
-      );
-    const looser = normaliseOverrides(raw, config).looser.find(
-      (l) => l.stageId === input.stageId && l.key === input.setting,
-    );
-    if (!looser)
-      throw new OperationError(
-        "invalid_input",
-        `the project has no ${input.stageId} ${input.setting} override looser than the org's value: nothing to approve`,
-      );
-    const configVersion = versionOf(project.policy_sha) ?? 0;
-    if (configVersion !== input.configVersion || !same(looser.value, input.value))
-      throw new OperationError(
-        "conflict",
-        `the project's config moved on (v${configVersion}) since you looked: look again before approving`,
-      );
-    // Guarded on the org still being at the version the admin saw.
-    ctx.guardExists(
-      "org config unchanged",
-      ctx.db
-        .selectFrom("core_organization")
-        .select("id")
-        .where("id", "=", project.org_id)
-        .where("config_version", "=", version),
-    );
-    approveOverrides(ctx, project, { looser: [looser], orgVersion: version });
-    ctx.change({
-      entity: "project",
-      id: project.id,
-      after: {
-        overrideApproved: { stage: input.stageId, setting: input.setting, value: looser.value },
-        orgVersion: version,
-        ...(input.note ? { note: input.note } : {}),
-      },
-    });
-    return { approved: true, orgVersion: version, value: looser.value };
+    return applyOverrideApproval(ctx, input);
   },
 });
+
+/**
+ * Records an org admin's approval of a project's existing looser override (`override.approve`),
+ * once that approval is itself approved: it lets a looser setting apply, so it is `self-modify`
+ * (review of #144).
+ */
+export async function applyOverrideApproval(
+  ctx: HandlerContext,
+  input: {
+    stageId: string;
+    setting: string;
+    orgVersion: number;
+    value?: unknown;
+    configVersion?: number;
+    note?: string | undefined;
+  },
+) {
+  const project = requireProject(ctx);
+  if (!policyDecisionSurface(ctx))
+    throw new OperationError(
+      "forbidden",
+      `an override is approved in the app or on the desktop with Touch ID, not from ${ctx.origin.surface}`,
+      { browserOnly: true },
+    );
+  const raw = ctx.scope.rawPolicy;
+  if (!raw || !onOrgWorkflow(raw))
+    throw new OperationError("invalid_input", "the project isn't on an org workflow");
+  const { version, config } = await currentOrgConfig(ctx.db, project.org_id);
+  if (version !== input.orgVersion)
+    throw new OperationError(
+      "conflict",
+      `the org's workflows are at v${version}, not v${input.orgVersion}: look again before approving`,
+    );
+  const looser = normaliseOverrides(raw, config).looser.find(
+    (l) => l.stageId === input.stageId && l.key === input.setting,
+  );
+  if (!looser)
+    throw new OperationError(
+      "invalid_input",
+      `the project has no ${input.stageId} ${input.setting} override looser than the org's value: nothing to approve`,
+    );
+  // The value and config version the person was shown (review of #156): one value, approved once.
+  const configVersion = versionOf(project.policy_sha) ?? 0;
+  if (configVersion !== input.configVersion || !same(looser.value, input.value))
+    throw new OperationError(
+      "conflict",
+      `the project's config moved on (v${configVersion}) since you looked: look again before approving`,
+    );
+  // Guarded on the org still being at the version the admin saw.
+  ctx.guardExists(
+    "org config unchanged",
+    ctx.db
+      .selectFrom("core_organization")
+      .select("id")
+      .where("id", "=", project.org_id)
+      .where("config_version", "=", version),
+  );
+  approveOverrides(ctx, project, { looser: [looser], orgVersion: version });
+  ctx.change({
+    entity: "project",
+    id: project.id,
+    after: {
+      overrideApproved: { stage: input.stageId, setting: input.setting, value: looser.value },
+      orgVersion: version,
+      ...(input.note ? { note: input.note } : {}),
+    },
+  });
+  return { approved: true, orgVersion: version, value: looser.value };
+}

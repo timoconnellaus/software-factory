@@ -150,7 +150,7 @@ export type WorkItemOutcome =
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 15;
+export const WORKFLOW_VERSION = 16;
 /** v14: the stage note when verify finished on a head a person has since pushed past (ADR 0587). */
 const movedNote = (was: string, now: string): string =>
   now === was
@@ -620,6 +620,9 @@ class ItemFlow {
       // v12: an approval that held over a clean merge of main (`reverify`, second review of #105):
       // used again only if the new head passes its own verification in this round.
       let carried: string | null = null;
+      // v16: the merge boundary adopted a tightening of a stage the item already passed, so the
+      // re-verify runs the checks before verify too (a check adopted there would be skipped otherwise).
+      let slotsAgain = false;
       for (let b = 1; ; b++) {
         const carriedNow = carried;
         carried = null;
@@ -638,6 +641,18 @@ class ItemFlow {
               headSha,
             });
             checkNames = (declared.declared as string[]) ?? [];
+          }
+          if (slotsAgain && plan) {
+            slotsAgain = false;
+            const before = await this.runSlot(meta, plan, "beforeVerify", b, {
+              criteria,
+              specPath,
+              headSha,
+            });
+            if (before.kind === "sendBack") {
+              note = await failed(b, before.note, null);
+              continue;
+            }
           }
         } else {
           const build = await this.runJob(
@@ -858,7 +873,18 @@ class ItemFlow {
         }
 
         // v13: and here, before the merge gate (spec 52, Q3).
-        if (plan && has(version, "repin-tightening")) plan = await this.repin(`merge #${b}`, plan);
+        if (plan && has(version, "repin-reverify")) {
+          const moved = await this.repinAt(`merge #${b}`, plan);
+          plan = moved.plan;
+          // v16: a tightening of a stage already passed (verify's checks, a check before it) isn't
+          // skipped: the item verifies its head again under it, then comes back to the gate.
+          if (moved.behind.length) {
+            withdrawn = `the org's workflow tightened a stage this item already passed: ${moved.behind.join(" ")}`;
+            slotsAgain = true;
+            continue;
+          }
+        } else if (plan && has(version, "repin-tightening"))
+          plan = await this.repin(`merge #${b}`, plan);
         if (plan) {
           const after = await this.runSlot(meta, plan, "afterVerify", b, {
             criteria,
@@ -2160,12 +2186,21 @@ class ItemFlow {
    * did; a slot already past isn't run again. Unchanged when the item stays where it is.
    */
   async repin(name: string, plan: WorkflowPlan): Promise<WorkflowPlan> {
+    return (await this.repinAt(name, plan)).plan;
+  }
+
+  /** `repin`, with the tightenings the item had already passed (v16, review of #139). */
+  async repinAt(
+    name: string,
+    plan: WorkflowPlan,
+  ): Promise<{ plan: WorkflowPlan; behind: string[] }> {
     const moved = await this.act(`${name}: repin`, "workItem.repinWorkflow", {
       workItemId: this.workItemId,
       at: name,
     });
-    if (moved.repinned !== true) return plan;
-    return this.workflowPlan(`${name}: workflow plan`);
+    if (moved.repinned !== true) return { plan, behind: [] };
+    const behind = Array.isArray(moved.behind) ? (moved.behind as string[]) : [];
+    return { plan: await this.workflowPlan(`${name}: workflow plan`), behind };
   }
 
   /**
@@ -2174,7 +2209,7 @@ class ItemFlow {
    */
   private async pinnedPolicy() {
     const row = await this.env.DB.prepare(
-      `SELECT p.raw, w.org_id, w.project_id, w.org_config_version FROM core_work_items w
+      `SELECT p.raw, w.org_id, w.project_id, w.org_config_version, w.org_config_floor FROM core_work_items w
        JOIN core_project_policies p ON p.project_id = w.project_id
          AND p.sha = COALESCE(w.policy_sha, (SELECT policy_sha FROM core_projects WHERE id = w.project_id))
        WHERE w.id = ?`,
@@ -2185,6 +2220,7 @@ class ItemFlow {
         org_id: string;
         project_id: string;
         org_config_version: number | null;
+        org_config_floor: number | null;
       }>();
     if (!row) return null;
     const parsed = parseProjectPolicy(row.raw);
@@ -2196,6 +2232,7 @@ class ItemFlow {
         parsed.policy,
         row.org_config_version,
         row.project_id,
+        row.org_config_floor,
       )
     ).policy;
   }

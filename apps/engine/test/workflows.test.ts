@@ -342,4 +342,81 @@ describe("the default builder", () => {
     expect(journal).toHaveLength(1);
     expect(journal[0]?.diff).toMatch(/"workflow":"repinned"/);
   });
+  it("a tightening of a stage already passed sends the item back to verify at the merge boundary (v16)", async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
+    await ok(
+      "agent.save",
+      {
+        orgId: w.orgId,
+        baseVersion: 0,
+        agent: {
+          name: "Security",
+          role: "review",
+          tier: "light",
+          instructions: "Org: check auth.",
+        },
+      },
+      w.human,
+    );
+    const plain = {
+      ...SOFTWARE,
+      id: "wf_ship_it",
+      name: "Ship it",
+      template: { id: SOFTWARE.id, version: 1 },
+    };
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 1, workflow: plain }, w.human);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", () => build());
+    // While it verifies, the org adds a check before verify: the item has already passed there.
+    await runStage(w, item.workItemId, "verify", async (job) => {
+      expect(job.context.step).toBeUndefined();
+      await ok(
+        "workflow.save",
+        {
+          orgId: w.orgId,
+          baseVersion: 2,
+          workflow: {
+            ...plain,
+            stages: [
+              ...SOFTWARE.stages.slice(0, 3),
+              {
+                id: "security",
+                type: "agent-check",
+                typeVersion: 1,
+                name: "Security review",
+                phase: "delivery",
+                settings: {},
+                agent: "Security",
+              },
+              ...SOFTWARE.stages.slice(3),
+            ],
+          },
+        },
+        w.human,
+      );
+      return verifyPass;
+    });
+    // At the merge boundary it moves onto v3 and, rather than skip the check, runs it on its head
+    // and verifies again before the gate opens.
+    await runStage(w, item.workItemId, "verify", (job) => {
+      expect(job.context.step).toMatchObject({ id: "security" });
+      return { result: { verdict: "pass", summary: "Fine" } };
+    });
+    await runStage(w, item.workItemId, "verify", (job) => {
+      expect(job.context.step).toBeUndefined();
+      return verifyPass;
+    });
+    await gateOpen(item.workItemId, "merge");
+    const row = await first<{ org_config_version: number; workflow_version: number }>(
+      "SELECT org_config_version, workflow_version FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
+    expect(row?.org_config_version).toBe(3);
+    const stages = await all<{ stage: string; status: string; reason: string | null }>(
+      "SELECT stage, status, reason FROM core_stages WHERE work_item_id = ? AND stage = 'verify' ORDER BY started_at, rowid",
+      item.workItemId,
+    );
+    expect(stages[0]?.reason ?? "").toMatch(/tightened a stage this item already passed/);
+  });
 });

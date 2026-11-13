@@ -68,7 +68,7 @@ async function earned(w: W) {
   }
 }
 
-async function planningAtGate(w: W, changeMainAfterGate: boolean) {
+async function planningAtGate(w: W, changeMainAfterGate: boolean, unassigned = false) {
   await onMain(w, ".kim/designs/system.d2", D2);
   const r = await ok<{ runnerId: string }>("runner.register", { name: "M5" }, w.human);
   const m5 = RUNNER_ACTOR(r.runnerId);
@@ -102,6 +102,11 @@ async function planningAtGate(w: W, changeMainAfterGate: boolean) {
   await earned(w);
   if (changeMainAfterGate)
     await onMain(w, ".kim/designs/system.d2", `${D2}app -> search: queries\n`);
+  if (unassigned)
+    await rows(
+      "UPDATE core_pending_actions SET assignee_user_id = NULL WHERE id = ?",
+      gate.pendingActionId,
+    );
   // The adjudicator is asked and approves.
   await ok("adjudicator.request", { pendingActionId: gate.pendingActionId }, IMPROVER);
   const a = await first<{ job_id: string }>(
@@ -174,5 +179,16 @@ describe("an adjudicator-approved plan gate (review of #130)", () => {
     );
     expect(told).toHaveLength(1);
     expect(told[0]?.payload).toContain(".kim/designs/system.d2");
+  });
+
+  it("tells the project's first approver when the gate has no assignee (review of #144)", async () => {
+    const w = await world({ ...POLICY, adjudicator: { spec: "active" } });
+    const { recorded } = await planningAtGate(w, true, true);
+    expect(recorded.status).toBe("recorded");
+    const told = await rows<{ payload: string }>(
+      "SELECT payload FROM core_outbox WHERE kind = 'notify' AND instr(payload, 'adjudicator.blocked') > 0 AND instr(payload, ?) > 0",
+      w.userId,
+    );
+    expect(told).toHaveLength(1);
   });
 });

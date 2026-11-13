@@ -1,8 +1,11 @@
 // Spec 52, Q3: a saved org workflow version that only tightens reaches a running item at its next
 // stage boundary (`workItem.repinWorkflow`, called by the Workflow from v13); one that loosens
 // anything never moves a running item.
+
+import { env } from "cloudflare:workers";
+import { createDb } from "@software-factory/db";
 import { describe, expect, it } from "vitest";
-import { parseProjectPolicy } from "../src/index.ts";
+import { parseProjectPolicy, resolveScope } from "../src/index.ts";
 import {
   EMPTY_ORG_CONFIG,
   type OrgConfig,
@@ -207,7 +210,8 @@ describe("workItem.repinWorkflow", () => {
     expect(stayed.reason).toMatch(/loosens against v2: Removes Security review/);
     expect(await pinOf(item.workItemId)).toBe(2);
     expect(await audits(item.workItemId)).toHaveLength(0);
-    // A later tightening on top of the loosened version still loosens against what the item pinned.
+    // A later version that also tightens: the item takes only that tightening, stage by stage, and
+    // keeps the check the org dropped (review of #139, "adopt only the tightened parts").
     await orgSave(
       w,
       3,
@@ -218,8 +222,19 @@ describe("workItem.repinWorkflow", () => {
       { workItemId: item.workItemId, at: "merge #1" },
       FOREMAN,
     );
-    expect(still.repinned).toBe(false);
+    expect(still).toMatchObject({ repinned: true, partial: true, from: 2, to: 4 });
     expect(await pinOf(item.workItemId)).toBe(2);
+    const row = await first<{ org_config_floor: number | null }>(
+      "SELECT org_config_floor FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
+    expect(row.org_config_floor).toBe(4);
+    const scope = await resolveScope(createDb(env.DB), { workItemId: item.workItemId });
+    // The stricter spec threshold applies, and the dropped Security check is still there.
+    expect(scope.pinnedPolicy?.spec.requiredFrom).toBe("small");
+    expect(scope.pinnedPolicy?.workflows[0]?.slots.beforeVerify.map((x) => x.id)).toEqual([
+      "security",
+    ]);
   });
 
   it("leaves an item that isn't on an org workflow, or isn't running, where it is", async () => {

@@ -832,6 +832,12 @@ and after.
   before verify and before the merge gate, from Workflow v13). Gates and checks added *ahead* of the
   item apply to it; ones added before its current stage don't apply retroactively (the item doesn't
   go back). A version that loosens anything never moves a running item.
+  *Amended 2026-11-13 (review of #139):* a version that both tightens and loosens gives a running
+  item only its tightenings, stage by stage (`stricterDefinition`): the item keeps its pin and
+  records the newer version as `org_config_floor` (migration 0287), journaled as `workflow: tightened
+  parts adopted`. From Workflow v16 (`repin-reverify`), a tightening of a stage the item already
+  passed (a check added before verify, found at the merge boundary) sends it back to verify its head
+  again, with the checks before verify, instead of skipping it.
 - **Moving an item by hand** is `workItem.moveWorkflowVersion` (human): allowed at a stage boundary
   when the item's current stage exists in the new version with the same id and type, and every stage
   already done exists unchanged. If the move loosens for that item, it needs an approver.
@@ -1328,6 +1334,12 @@ screen needs).
    re-pin covers delivery only: a shaping item's version is decided at release (Q4), whose
    comparison needs the version it was shaped under. The call writes an audit row only when the
    item moved (ADR 0590).
+   *Follow-ups (review of #139/#144), 2026-11-13:* partial adoption of a mixed version's tightenings
+   (`org_config_floor`, migration 0287, resolved by `resolveOrgWorkflow`); `behind` lists the
+   adopted tightenings at stages the item has passed, and from v16 (`repin-reverify`) the merge
+   boundary re-verifies on them; the shadow replay counts an adopted floor as a re-pin (uncompared).
+   `override.approve` is self-modify, decided by an org admin through `approval.decide`; an
+   adjudicator-blocked plan notice goes to the project's first approver when the gate has none.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the

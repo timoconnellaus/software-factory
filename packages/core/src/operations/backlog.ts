@@ -28,12 +28,21 @@ import {
   refuseIfParked,
   TRIAGE_PARK_CAP,
 } from "../readiness.ts";
-import { activeKillSwitch, approverIds, loadPolicy, overrideApprovals } from "../scope.ts";
+import {
+  activeKillSwitch,
+  approverIds,
+  loadPolicy,
+  orgConfigAt,
+  overrideApprovals,
+} from "../scope.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
 import {
+  agentsAcross,
   repinImpact,
   resolveProjectWorkflow,
+  runsOnToday,
   shapingStagesOf,
+  stricterDefinition,
 } from "../stages/project-workflow.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
@@ -1922,7 +1931,7 @@ export const workItemParkForInfo = defineOperation({
 export const workItemRepinWorkflow = defineOperation({
   name: "workItem.repinWorkflow",
   description:
-    "At a stage boundary, move a running work item onto its org's current workflow version when that version only tightens against the one the item pinned (spec 52, Q3). Journaled as `workflow: repinned`. A version that loosens anything never moves a running item; `reason` says why it stayed. The Workflow calls it.",
+    "At a stage boundary, bring a running work item onto its org's current workflow version where it only tightens (spec 52, Q3). A version that only tightens moves the item onto it (`workflow: repinned`); one that tightens some stages and loosens others gives the item only its tightenings, stage by stage (`workflow: tightened parts adopted`, the item's `org_config_floor`). A loosening never reaches a running item. `behind` lists tightenings at stages the item has already passed, for the Workflow to verify again or show at the gate. The Workflow calls it.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -1935,59 +1944,134 @@ export const workItemRepinWorkflow = defineOperation({
   }),
   output: z.object({
     repinned: z.boolean(),
+    /** Only some stages' tightenings were adopted (the version also loosens). */
+    partial: z.boolean().default(false),
     from: z.number().nullable(),
     to: z.number().nullable(),
     reason: z.string().nullable(),
+    /** Tightenings at stages the item has passed (review of #139): it doesn't go back by itself. */
+    behind: z.array(z.string()).default([]),
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const project = requireProject(ctx);
     const pinned = w.org_config_version;
-    const stay = (reason: string) => ({ repinned: false, from: pinned, to: null, reason });
+    const floor = w.org_config_floor;
+    const stay = (reason: string) => ({
+      repinned: false,
+      partial: false,
+      from: pinned,
+      to: null,
+      reason,
+      behind: [] as string[],
+    });
     if (pinned === null) return stay("the item isn't on an org workflow");
     if (!(ACTIVE_STATUSES as readonly string[]).includes(w.status))
       return stay("the item isn't running");
-    // One point read of the org's row (and its current document, parsed).
-    const current = await currentOrgConfig(ctx.db, project.org_id);
-    if (current.version === 0 || current.version <= pinned)
+    // The org's current version: a point read of its row; documents through the per-isolate cache.
+    const at = (
+      await ctx.db
+        .selectFrom("core_organization")
+        .select("config_version")
+        .where("id", "=", project.org_id)
+        .executeTakeFirst()
+    )?.config_version;
+    if (!at || at <= Math.max(pinned, floor ?? 0))
       return stay("the item is on the org's current version");
     const raw = (
       await loadPolicy(ctx.db, { id: project.id, policy_sha: w.policy_sha ?? project.policy_sha })
     ).policy;
     if (!raw || !onOrgWorkflow(raw)) return stay("the item's config isn't on an org workflow");
-    const then = await storedOrgConfig(ctx.db, project.org_id, pinned);
-    if (!then) return stay(`org config v${pinned} can't be read`);
+    const [then, now] = await Promise.all([
+      orgConfigAt(ctx.db, project.org_id, pinned),
+      orgConfigAt(ctx.db, project.org_id, at),
+    ]);
+    if (!then.ok || !now.ok) return stay(`an org config version can't be read`);
+    const [approvalsThen, approvalsNow] = await Promise.all([
+      overrideApprovals(ctx.db, project.id, pinned),
+      overrideApprovals(ctx.db, project.id, at),
+    ]);
     const impact = repinImpact(
       raw,
-      { config: then, approvals: await overrideApprovals(ctx.db, project.id, pinned) },
-      {
-        config: current.config,
-        approvals: await overrideApprovals(ctx.db, project.id, current.version),
-      },
+      { config: then.config, approvals: approvalsThen },
+      { config: now.config, approvals: approvalsNow },
     );
+    const was = resolveProjectWorkflow(raw, then.config, {
+      kind: "effective",
+      approvals: approvalsThen,
+    });
+    const nowDef = resolveProjectWorkflow(raw, now.config, {
+      kind: "effective",
+      approvals: approvalsNow,
+    });
+    if (!was?.ok || !nowDef?.ok) return stay("the project's workflow can't be resolved");
+    // Behind the item: a stage it has passed. Before verify, the build and what precedes it; before
+    // the merge gate, verify and what precedes it.
+    const passed = input.at.startsWith("merge") ? "verify" : "build";
+    // Positions in the definition the item moves onto, so a stage it adds (a check before verify)
+    // is placed where it runs.
+    const behindOf = (
+      changes: { path: string; summary: string }[],
+      def: { stages: readonly { id: string }[] },
+    ) => {
+      const cut = def.stages.findIndex((s) => s.id === passed);
+      return changes
+        .filter((c) => {
+          const id = /^stages\.([^.]+)/.exec(c.path)?.[1];
+          const k = def.stages.findIndex((s) => s.id === id);
+          return k >= 0 && k <= cut;
+        })
+        .map((c) => c.summary);
+    };
+    let movesOnto: { stages: readonly { id: string }[] } = nowDef.value;
     const loosening = impact.changes.filter((c) => c.class === "loosens");
-    if (loosening.length)
-      return stay(
-        `v${current.version} loosens against v${pinned}: ${loosening.map((c) => c.summary).join(" ")}`,
-      );
+    let to = at;
+    let partial = false;
+    let adopted = impact.changes.filter((c) => c.class === "tightens");
+    if (loosening.length) {
+      // Only the tightened parts, stage by stage (review of #139).
+      const stricter = stricterDefinition(was.value, nowDef.value, {
+        before: agentsAcross(was.value, then.config, then.config),
+        after: agentsAcross(nowDef.value, now.config, now.config),
+      });
+      if (stricter.adopted.length === 0 || runsOnToday(stricter.def))
+        return stay(
+          `v${at} loosens against v${pinned}: ${loosening.map((c) => c.summary).join(" ")}`,
+        );
+      partial = true;
+      adopted = stricter.adopted;
+      movesOnto = stricter.def;
+      to = at;
+    }
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
-        .set({ org_config_version: current.version, updated_at: ctx.now })
+        .set(
+          partial
+            ? { org_config_floor: to, updated_at: ctx.now }
+            : { org_config_version: to, org_config_floor: null, updated_at: ctx.now },
+        )
         .where("id", "=", w.id)
-        .where("org_config_version", "=", pinned),
+        .where("org_config_version", "=", pinned)
+        .where((eb) =>
+          floor === null ? eb("org_config_floor", "is", null) : eb("org_config_floor", "=", floor),
+        ),
     );
+    // Exactly this item, at exactly the pin it read (review of #139).
+    ctx.guardChanged("the item is still at the org version it read");
+    const behind = behindOf(adopted, movesOnto);
     ctx.change({
       entity: "work_item",
       id: w.id,
-      before: { orgConfigVersion: pinned },
+      before: { orgConfigVersion: pinned, orgConfigFloor: floor },
       after: {
-        workflow: "repinned",
-        orgConfigVersion: current.version,
+        workflow: partial ? "tightened parts adopted" : "repinned",
+        ...(partial ? { orgConfigFloor: to } : { orgConfigVersion: to }),
         at: input.at,
-        tightens: impact.changes.filter((c) => c.class === "tightens").map((c) => c.summary),
+        tightens: adopted.map((c) => c.summary),
+        ...(behind.length ? { behind } : {}),
       },
     });
-    return { repinned: true, from: pinned, to: current.version, reason: null };
+    return { repinned: true, partial, from: pinned, to, reason: null, behind };
   },
 });

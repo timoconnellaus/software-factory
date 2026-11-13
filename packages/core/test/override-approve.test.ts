@@ -91,6 +91,19 @@ async function seen(w: Awaited<ReturnType<typeof world>>) {
   return { value: "medium", configVersion: got.current?.version ?? 0 };
 }
 
+/** Asks for an approval, then an org admin approves it: the refusal it applies with. */
+async function decided(w: Awaited<ReturnType<typeof world>>, input: Record<string, unknown>) {
+  const asked = await call("override.approve", input, w.human);
+  if (asked.status !== "pending") throw new Error("expected the approval to wait");
+  return refusal(
+    call(
+      "approval.decide",
+      { pendingActionId: asked.pendingActionId, decision: "approved" },
+      w.human,
+    ),
+  );
+}
+
 describe("override.approve", () => {
   it("binds the value and the config version the person was shown (review of #156)", async () => {
     const w = await world();
@@ -102,22 +115,19 @@ describe("override.approve", () => {
       orgVersion: 2,
     };
     const s = await seen(w);
-    const otherValue = await refusal(
-      call("override.approve", { ...base, ...s, value: "small" }, w.human),
+    // Checked when it applies, at the org admin's decision.
+    expect((await decided(w, { ...base, ...s, value: "small" })).code).toBe("conflict");
+    expect((await decided(w, { ...base, ...s, configVersion: s.configVersion + 1 })).code).toBe(
+      "conflict",
     );
-    expect(otherValue.code).toBe("conflict");
-    const otherVersion = await refusal(
-      call("override.approve", { ...base, ...s, configVersion: s.configVersion + 1 }, w.human),
-    );
-    expect(otherVersion.code).toBe("conflict");
     expect(await requiredFrom(w)).toBe("small");
   });
 
-  it("an org admin approves an existing looser override for the current org version, in one step", async () => {
+  it("an org admin's approval of an existing looser override is self-modify: it applies once an org admin decides it", async () => {
     const w = await world();
     await unapprovedOverride(w);
     expect(await requiredFrom(w)).toBe("small");
-    const out = await ok<{ approved: boolean; orgVersion: number; value: unknown }>(
+    const asked = await call(
       "override.approve",
       {
         projectId: w.projectId,
@@ -128,40 +138,44 @@ describe("override.approve", () => {
       },
       w.human,
     );
-    expect(out).toEqual({ approved: true, orgVersion: 2, value: "medium" });
+    if (asked.status !== "pending") throw new Error("expected the approval to wait");
+    const pa = await rows<{ risk: string; decider: string | null }>(
+      "SELECT risk, decider FROM core_pending_actions WHERE id = ?",
+      asked.pendingActionId,
+    );
+    expect(pa[0]).toEqual({ risk: "self-modify", decider: "org-admin" });
+    expect(await requiredFrom(w)).toBe("small");
+    await ok(
+      "approval.decide",
+      { pendingActionId: asked.pendingActionId, decision: "approved" },
+      w.human,
+    );
     expect(await requiredFrom(w)).toBe("medium");
   });
 
   it("refuses a stale org version, an override that isn't looser, and anyone but an org admin", async () => {
     const w = await world();
     await unapprovedOverride(w);
-    const stale = await refusal(
-      call(
+    // Asked and decided: what it would apply is checked when it applies.
+    const decide = async (input: Record<string, unknown>, actor = w.human) => {
+      const asked = await call(
         "override.approve",
-        {
-          projectId: w.projectId,
-          stageId: "spec",
-          setting: "requiredFrom",
-          orgVersion: 1,
-          ...(await seen(w)),
-        },
-        w.human,
-      ),
+        { projectId: w.projectId, ...(await seen(w)), ...input },
+        actor,
+      );
+      if (asked.status !== "pending") throw new Error("expected the approval to wait");
+      return refusal(
+        call(
+          "approval.decide",
+          { pendingActionId: asked.pendingActionId, decision: "approved" },
+          w.human,
+        ),
+      );
+    };
+    expect((await decide({ stageId: "spec", setting: "requiredFrom", orgVersion: 1 })).code).toBe(
+      "conflict",
     );
-    expect(stale.code).toBe("conflict");
-    const nothing = await refusal(
-      call(
-        "override.approve",
-        {
-          projectId: w.projectId,
-          stageId: "build",
-          setting: "retryLimit",
-          orgVersion: 2,
-          ...(await seen(w)),
-        },
-        w.human,
-      ),
-    );
+    const nothing = await decide({ stageId: "build", setting: "retryLimit", orgVersion: 2 });
     expect(nothing.code).toBe("invalid_input");
     expect(nothing.message).toMatch(/nothing to approve/);
     const plain = await member(w, "member");
@@ -180,9 +194,9 @@ describe("override.approve", () => {
     );
     expect(forbidden.code).toBe("forbidden");
     expect(await requiredFrom(w)).toBe("small");
-    // An org admin who isn't the owner may.
+    // An org admin who isn't the owner may ask, and an org admin decides.
     const admin = await member(w, "admin");
-    await ok(
+    const asked = await call(
       "override.approve",
       {
         projectId: w.projectId,
@@ -191,6 +205,12 @@ describe("override.approve", () => {
         orgVersion: 2,
         ...(await seen(w)),
       },
+      admin,
+    );
+    if (asked.status !== "pending") throw new Error("expected the approval to wait");
+    await ok(
+      "approval.decide",
+      { pendingActionId: asked.pendingActionId, decision: "approved" },
       admin,
     );
     expect(await requiredFrom(w)).toBe("medium");

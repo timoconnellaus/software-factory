@@ -6,7 +6,15 @@ import { OperationError } from "./errors.ts";
 import type { ProjectRow, RepositoryRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
 import { onOrgWorkflow, type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
 import { EMPTY_ORG_CONFIG, parseOrgConfig } from "./stages/org-config.ts";
-import { effectivePolicy, type OverrideApprovals } from "./stages/project-workflow.ts";
+import {
+  agentsAcross,
+  effectivePolicy,
+  type OverrideApprovals,
+  policyFromDefinition,
+  resolveProjectWorkflow,
+  runsOnToday,
+  stricterDefinition,
+} from "./stages/project-workflow.ts";
 
 const EMPTY: Scope = {
   orgId: null,
@@ -342,7 +350,7 @@ export async function withOrgWorkflow(
   orgId: string,
   raw: { policy: ProjectPolicy | null; policyError: string | null },
   pinnedRaw: ProjectPolicy | null,
-  workItem: Pick<WorkItemRow, "org_config_version"> | null,
+  workItem: Pick<WorkItemRow, "org_config_version" | "org_config_floor"> | null,
   projectId: string | null = null,
 ): Promise<{
   policy: ProjectPolicy | null;
@@ -355,7 +363,14 @@ export async function withOrgWorkflow(
   const pinnedBase = pinnedRaw ?? (pinnedVersion !== null ? raw.policy : null);
   const pinned =
     pinnedBase && (pinnedRaw || onOrgWorkflow(pinnedBase))
-      ? await resolveOrgWorkflow(db, orgId, pinnedBase, pinnedVersion, projectId)
+      ? await resolveOrgWorkflow(
+          db,
+          orgId,
+          pinnedBase,
+          pinnedVersion,
+          projectId,
+          workItem?.org_config_floor ?? null,
+        )
       : null;
   return {
     policy: current.policy,
@@ -380,7 +395,7 @@ export function clearOrgConfigCache() {
 }
 
 /** The org's config at `version`, parsed once per isolate (the document is up to 256 KiB). */
-async function orgConfigAt(db: Db, orgId: string, version: number): Promise<OrgConfigParse> {
+export async function orgConfigAt(db: Db, orgId: string, version: number): Promise<OrgConfigParse> {
   const key = `${orgId}:${version}`;
   const hit = ORG_CONFIGS.get(key);
   if (hit) {
@@ -443,6 +458,8 @@ export async function resolveOrgWorkflow(
   version: number | null,
   /** Whose override approvals apply; null: none (every looser override takes the stricter value). */
   projectId: string | null = null,
+  /** A newer org version whose tightenings the item adopted (Q3, `org_config_floor`). */
+  floor: number | null = null,
 ): Promise<{ policy: ProjectPolicy | null; error: string | null }> {
   if (!policy || !onOrgWorkflow(policy)) return { policy, error: null };
   // The org's current version is one point read of its row; the document is read and parsed only
@@ -466,6 +483,28 @@ export async function resolveOrgWorkflow(
     projectId && at !== null && Object.keys(policy.workflowOverrides).length
       ? await overrideApprovals(db, projectId, at)
       : {};
+  if (floor !== null && at !== null && floor > at) {
+    // The pinned workflow with the newer version's tightenings, stage by stage (review of #139).
+    const newer = await orgConfigAt(db, orgId, floor);
+    const was = resolveProjectWorkflow(policy, org.config, { kind: "effective", approvals });
+    const now = newer.ok
+      ? resolveProjectWorkflow(policy, newer.config, {
+          kind: "effective",
+          approvals: projectId ? await overrideApprovals(db, projectId, floor) : {},
+        })
+      : null;
+    if (newer.ok && was?.ok && now?.ok) {
+      const { def } = stricterDefinition(was.value, now.value, {
+        before: agentsAcross(was.value, org.config, org.config),
+        after: agentsAcross(now.value, newer.config, newer.config),
+      });
+      if (!runsOnToday(def))
+        return {
+          policy: policyFromDefinition(policy, def, agentsAcross(def, org.config, newer.config)),
+          error: null,
+        };
+    }
+  }
   const effective = effectivePolicy(policy, org.config, approvals);
   return effective.ok
     ? { policy: effective.value, error: null }

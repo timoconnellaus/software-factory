@@ -12,7 +12,7 @@ import { defineOperation, type HandlerContext, type PendingActionRow } from "../
 import { assertSpecGateCurrent } from "../planning.ts";
 import { backupOwnerId } from "../scope.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
-import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
+import { applyApprovedConfig, applyOverrideApproval, CONFIG_WRITES } from "./config.ts";
 import { openIncident } from "./incidents.ts";
 import {
   pendingActionId,
@@ -262,6 +262,21 @@ export const approvalDecide = defineOperation({
       (CONFIG_WRITES as readonly string[]).includes(pa.operation)
     ) {
       await applyApprovedConfig(ctx, pa);
+    }
+    // An override's approval (review of #144): self-modify, applied once an org admin decides it.
+    if (
+      input.decision === "approved" &&
+      !decided.alreadyDecided &&
+      pa.operation === "override.approve"
+    ) {
+      await applyOverrideApproval(ctx, JSON.parse(pa.input));
+      ctx.writePendingStatus(
+        "apply",
+        ctx.db
+          .updateTable("core_pending_actions")
+          .set({ status: "applied" })
+          .where("id", "=", pa.id),
+      );
     }
     // So is an org config proposal (spec 52 PR (b)): an org admin approves it (Q6).
     if (

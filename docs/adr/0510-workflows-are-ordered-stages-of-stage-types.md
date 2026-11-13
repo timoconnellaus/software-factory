@@ -61,3 +61,7 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 > - **Attached PRs and incidents** run built-in workflows people can see and tighten, not loosen (Q10).
 > - **Planning artifacts for a project with no repository** go to the factory's own storage (R2), attached to the item (Q15).
 > - Rule 4's "an irreversible outside action is preceded by a person's decision" now allows that decision to be made by `autoApprove` for **merge** and **deploy** stages only ([ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md), Q11 and Q20–Q23). The validator still requires the required gate; `autoApprove` is a typed setting of that gate, and the impact check treats it as a loosening.
+
+> Amended 2026-11-13 (review of #139): a version that both tightens and loosens reaches a running item
+> as its tightenings only, stage by stage; the loosenings never do. A tightening of a stage the item
+> has already passed sends it back to verify (Workflow v16) rather than skipping it.
