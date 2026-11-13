@@ -5,7 +5,7 @@
 //     (runner-local's `localCheckContainer`), with its own loopback, its own egress proxy, and every
 //     process gone with it;
 //   - macOS without one: nothing runs (`NO_MAC_CONTAINER_LINE`, "not run: this Mac runner has no
-//     container runtime: no container runtime is answering (Docker Desktop or OrbStack); …"), unless
+//     container runtime (neither Docker Desktop nor OrbStack is answering): …"), unless
 //     the runner's owner set `checks.weakerMacSandbox` in runner.json: then the macOS OS sandbox,
 //     and the merge gate says the checks ran in the weaker sandbox.
 // `sf-runner doctor` reports the same mode (`checkModeReport`).
@@ -23,7 +23,7 @@ export const NO_MAC_CONTAINER = "this Mac runner has no container runtime";
  * declared check comes back not run with it, and doctor and Factory > Runners say the same. The
  * runner still declares `checks`, so the item builds and reaches the gate, where a person decides.
  */
-export const NO_MAC_CONTAINER_LINE = `${NO_MAC_CONTAINER}: no container runtime is answering (Docker Desktop or OrbStack); start it, or set checks.weakerMacSandbox`;
+export const NO_MAC_CONTAINER_LINE = `${NO_MAC_CONTAINER} (neither Docker Desktop nor OrbStack is answering): start one, or set checks.weakerMacSandbox`;
 
 export type CheckModeName = "container" | "sandbox" | "weaker-sandbox" | "none";
 
