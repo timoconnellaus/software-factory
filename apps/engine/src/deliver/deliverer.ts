@@ -713,6 +713,16 @@ async function settleBabysit(
       });
       await next();
       if (moved.status === "ok" && moved.output.ok === true) {
+        // What the person reviews at the reopened gate: only the resolution (decision 1). A
+        // failure to read it doesn't block: the gate then shows the whole head.
+        // It records a failed read itself; a refusal here (a stale fence) leaves nothing, and the
+        // gate then has no resolution to show, so it shows the whole diff.
+        await call(env, lease, "babysit.resolution", {
+          workItemId: head.work_item_id,
+          headSha: job.head_sha,
+          approvedHead: reason.headSha,
+          deliveryFence: fence,
+        });
         // A new head: the approval no longer holds. The item verifies it, and a person approves
         // the resolution (decision 1).
         return {

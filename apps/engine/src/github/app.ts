@@ -14,10 +14,12 @@ import {
   type GitHubService,
   type InstallationInfo,
   type InstallationRepo,
+  mergeBaseAmbiguousFrom,
   OperationError,
   type PullRequestInfo,
   type RepoGuards,
   type RepoRef,
+  type SinceBase,
 } from "@software-factory/core";
 
 const API = "https://api.github.com";
@@ -566,6 +568,41 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         // GitHub lists at most 300 files in a compare: at the cap some may be missing.
         complete: files.length < COMPARE_FILES_CAP,
       };
+    },
+    async mergeBaseAmbiguous(repo, a, b) {
+      const since = async (base: string, head: string): Promise<SinceBase | null> => {
+        const r = await api(
+          repo,
+          "GET",
+          `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=250`,
+        );
+        if (r.status !== 200) return null;
+        const body = r.json as {
+          merge_base_commit?: { sha?: string };
+          total_commits?: number;
+          commits?: { sha: string; parents?: { sha: string }[] }[];
+        };
+        return {
+          base: body.merge_base_commit?.sha ?? null,
+          total: body.total_commits ?? 0,
+          commits: (body.commits ?? []).map((c) => ({
+            sha: c.sha,
+            parents: (c.parents ?? []).map((p) => p.sha),
+          })),
+        };
+      };
+      const [ab, ba] = await Promise.all([since(a, b), since(b, a)]);
+      if (!ab || !ba) return null;
+      // An ancestor of the base: the base is ahead of it and not behind (compare parent...base).
+      return mergeBaseAmbiguousFrom(ab, ba, async (sha, base) => {
+        const r = await api(
+          repo,
+          "GET",
+          `/compare/${encodeURIComponent(sha)}...${encodeURIComponent(base)}?per_page=1`,
+        );
+        if (r.status !== 200) return null;
+        return (r.json as { behind_by?: number }).behind_by === 0;
+      });
     },
     async pathEntries(repo, sha, paths) {
       // One GraphQL query per batch of directories: each directory's entries (name, mode, blob),
