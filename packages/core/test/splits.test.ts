@@ -424,4 +424,88 @@ describe("splits (spec 24)", () => {
     // ui changed: it plans under the policy like any item.
     expect((await triaged(ui.id)).specRequired).toBe(true);
   });
+
+  it("a parent whose plan merged outside the factory waits for its children, then closes (review of #169)", async () => {
+    const w = await world();
+    const { item } = await approvedSplit(w);
+    await rows(
+      "UPDATE core_specs SET status = 'approved' WHERE work_item_id = ? AND status = 'draft'",
+      item.workItemId,
+    );
+    const committed = await ok<{ commitSha: string }>(
+      "spec.commit",
+      { workItemId: item.workItemId },
+      FOREMAN,
+    );
+    const branch = (
+      await first<{ branch: string }>(
+        "SELECT branch FROM core_work_items WHERE id = ?",
+        item.workItemId,
+      )
+    ).branch;
+    const pr = await services.github.openPullRequest(w.repo, {
+      head: branch,
+      base: "main",
+      title: "plan",
+      body: "",
+    });
+    await rows(
+      "UPDATE core_work_items SET pr_number = ?, head_sha = ?, status = 'waiting' WHERE id = ?",
+      pr.number,
+      committed.commitSha,
+      item.workItemId,
+    );
+    await ok(
+      "verify.refresh",
+      {
+        repo: { owner: w.repo.owner, name: w.repo.repo },
+        headSha: committed.commitSha,
+        prNumber: pr.number,
+        trigger: "closed",
+        merged: true,
+        mergedBy: "octo",
+      },
+      { type: "intake", id: "github" },
+    );
+    const parent = () =>
+      first<{ status: string; awaiting_children: number }>(
+        "SELECT status, awaiting_children FROM core_work_items WHERE id = ?",
+        item.workItemId,
+      );
+    expect(await parent()).toEqual({ status: "waiting", awaiting_children: 1 });
+    const kids = await childrenOf(item.workItemId);
+    expect(kids.every((k) => k.status !== "ready")).toBe(true);
+    // Its old Workflow ending doesn't end it.
+    await ok(
+      "workItem.finish",
+      { workItemId: item.workItemId, status: "rejected", reason: "gate closed" },
+      FOREMAN,
+    );
+    expect((await parent()).status).toBe("waiting");
+    // The last child ending closes it.
+    for (const k of kids) {
+      await ok("workItem.cancel", { workItemId: k.id, reason: "not needed" }, w.human);
+    }
+    expect((await parent()).status).toBe("cancelled");
+  });
+
+  it("closes held children's questions when their parent ends before its plan merged (review of #169)", async () => {
+    const w = await world();
+    const { item } = await approvedSplit(w);
+    const [api] = await childrenOf(item.workItemId);
+    await rows(
+      "INSERT INTO core_questions (id, work_item_id, project_id, org_id, assignee_user_id, planning_round, timeout_at, asked_by, created_at, domain, prompt, options, kind, blocking, irreversible, position) SELECT 'q_held', id, project_id, org_id, requester_user_id, 0, '2099-01-01T00:00:00.000Z', 'test', '2026-11-13T00:00:00.000Z', 'product', 'Which?', '[]', 'text', 1, 0, 1 FROM core_work_items WHERE id = ?",
+      api?.id,
+    );
+    await ok(
+      "workItem.finish",
+      { workItemId: item.workItemId, status: "rejected", reason: "no" },
+      FOREMAN,
+    );
+    expect(
+      (await first<{ status: string }>("SELECT status FROM core_questions WHERE id = 'q_held'"))
+        .status,
+    ).toBe("withdrawn");
+    expect((await childrenOf(item.workItemId)).every((k) => k.status === "cancelled")).toBe(true);
+  });
 });

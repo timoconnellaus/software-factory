@@ -251,24 +251,10 @@ export async function childEnded(
   child: Pick<WorkItemRow, "id" | "number" | "parent_work_item_id" | "source">,
   outcome: string,
 ): Promise<void> {
-  // A parent that ends without merging its plan leaves no children held for it (spec 24): those
-  // still in Ready, never started, are cancelled with it. Bounded by the split.
-  if (outcome !== "done") {
-    ctx.write(
-      ctx.db
-        .updateTable("core_work_items")
-        .set({
-          status: "cancelled",
-          status_reason: `its parent #${child.number} ended (${outcome}) before its plan merged`,
-          closed_at: ctx.now,
-          updated_at: ctx.now,
-        })
-        .where("parent_work_item_id", "=", child.id)
-        .where("source", "=", "planning")
-        // Held ones, in Ready or parked in the Backlog (review of #171).
-        .where("status", "in", ["ready", "backlog"]),
-    );
-  }
+  // A parent that ends before its plan merged leaves no children held for it (spec 24): those in
+  // Ready or parked, never started, are cancelled with it, their questions closed and each change
+  // recorded (review of #169). Children already released after the plan merged carry on.
+  if (outcome !== "done") await cancelHeldChildren(ctx, child, outcome);
   // Only a plan's children (an incident is a child of its item too, ADR 0080, and isn't split work).
   if (!child.parent_work_item_id || child.source !== "planning") return;
   const siblings = await ctx.db
@@ -314,11 +300,38 @@ export async function childEnded(
   if (open.length) return;
   const parent = await ctx.db
     .selectFrom("core_work_items")
-    .select(["id", "workflow_id", "status"])
+    .select(["id", "workflow_id", "status", "status_reason", "awaiting_children"])
     .where("id", "=", child.parent_work_item_id)
     .executeTakeFirst();
   if (!parent?.workflow_id || (ENDED as readonly string[]).includes(parent.status)) return;
   const done = siblings.filter((s) => statusOf(s) === "done").length;
+  // A parent whose plan merged outside the factory has no Workflow waiting: it closes here.
+  if (parent.awaiting_children === 1 && parent.status_reason === PLAN_MERGED_OUTSIDE) {
+    const as = done > 0 ? "done" : "cancelled";
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          status: as,
+          status_reason:
+            as === "done"
+              ? `${done} of its ${siblings.length} children merged`
+              : `all ${siblings.length} of its children ended without merging`,
+          closed_at: ctx.now,
+          updated_at: ctx.now,
+          ...(as === "done" ? { stage: "done" as const } : {}),
+        })
+        .where("id", "=", parent.id)
+        .where("status", "=", "waiting"),
+    );
+    ctx.change({
+      entity: "work_item",
+      id: parent.id,
+      before: { status: "waiting" },
+      after: { status: as },
+    });
+    return;
+  }
   ctx.emit({
     kind: "workflow.event",
     payload: {
@@ -352,4 +365,66 @@ export async function splitFiles(
     .safeParse(parseJson<unknown>(spec.committed_files ?? "null", null));
   // Nothing recorded: nothing can match, so verify fails closed.
   return files.success ? files.data : [];
+}
+
+/** Why a split parent waits with no Workflow: its plan's PR merged outside the factory. */
+export const PLAN_MERGED_OUTSIDE = "its plan merged outside the factory: waiting for its children";
+
+/** Cancels a parent's held children (Ready or parked), closing their questions (review of #169). */
+async function cancelHeldChildren(
+  ctx: HandlerContext,
+  parent: Pick<WorkItemRow, "id" | "number">,
+  outcome: string,
+) {
+  const self = await ctx.db
+    .selectFrom("core_work_items")
+    .select("awaiting_children")
+    .where("id", "=", parent.id)
+    .executeTakeFirst();
+  // Its plan merged: the children were released and run on their own.
+  if (self?.awaiting_children === 1) return;
+  const held = await ctx.db
+    .selectFrom("core_work_items")
+    .select(["id", "status", "needs_info"])
+    .where("parent_work_item_id", "=", parent.id)
+    .where("source", "=", "planning")
+    .where("status", "in", ["ready", "backlog"])
+    .limit(SPLIT_MAX)
+    .execute();
+  for (const h of held) {
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          status: "cancelled",
+          status_reason: `its parent #${parent.number} ended (${outcome}) before its plan merged`,
+          needs_info: null,
+          closed_at: ctx.now,
+          updated_at: ctx.now,
+        })
+        .where("id", "=", h.id)
+        .where("status", "=", h.status),
+    );
+    ctx.write(
+      ctx.db
+        .updateTable("core_questions")
+        .set({ status: "withdrawn", note: "the work item was cancelled with its parent" })
+        .where("work_item_id", "=", h.id)
+        .where("status", "=", "open"),
+    );
+    ctx.change({
+      entity: "work_item",
+      id: h.id,
+      before: { status: h.status },
+      after: { status: "cancelled", reason: `parent #${parent.number} ${outcome}` },
+    });
+  }
+}
+
+/** Whether an item is a split's parent on Workflow `splits` (its approved spec has children). */
+export async function isSplitParent(
+  ctx: Pick<HandlerContext, "db">,
+  w: Pick<WorkItemRow, "id" | "workflow_version">,
+): Promise<boolean> {
+  return (await splitFiles(ctx, w)) !== null;
 }
