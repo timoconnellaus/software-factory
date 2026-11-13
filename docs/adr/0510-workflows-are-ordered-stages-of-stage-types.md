@@ -105,4 +105,12 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 > again by its asker, not its wording; it is worded by the item's Workflow row (Check again / Stop
 > where it parks, what happened and what to do where it ends), and the item's queued jobs are
 > cancelled. A registry test pins every non-read operation that finds its item some other way.
+>
+> Amended 2026-11-13 (fifth review of #185): when an item is first found unreadable it is marked
+> through an operation (`workItem.markUnreadable`, audited): its queued jobs are cancelled and a
+> `factory/verify` already green on its head is posted again as failing. `job.claim` never hands
+> out such an item's job. Clearing the repository's babysit state (`babysit.next`) is allowed for
+> it, and the deliverer only ever takes out the item a refusal names. **Outside the factory:** a
+> person who merges the PR on GitHub by hand is outside its control; what stops them is the failing
+> required `factory/verify` check, with no admin bypass (ADR 0020, 0021).
 

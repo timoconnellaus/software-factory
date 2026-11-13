@@ -1075,8 +1075,12 @@ export const PINNED_ERROR_ALLOWED = [
   "run.takeSteers",
   "lease.heartbeat",
   "lease.release",
-  // What only takes the item out of delivery (fourth review of #185).
+  // What only takes the item out of delivery, or clears the repository's babysit state for it
+  // (fourth and fifth reviews of #185).
   "mergeQueue.leave",
+  "babysit.next",
+  // Stops it: cancels its queued jobs and fails a passing check (audited).
+  "workItem.markUnreadable",
 ] as const;
 
 /**
@@ -1107,12 +1111,13 @@ export async function askWorkflowUnreadable(
       .select(["workflow_version", "number"])
       .where("id", "=", workItemId)
       .executeTakeFirst();
-    await db
-      .updateTable("core_jobs")
-      .set({ status: "cancelled", wait_reason: "the item's workflow version can't be read" })
-      .where("work_item_id", "=", workItemId)
-      .where("status", "=", "queued")
-      .execute();
+    // Its queued jobs cancelled and a passing check failed, through an operation (audited).
+    await runOperation(
+      deps,
+      getOperation("workItem.markUnreadable") as AnyOperation,
+      { workItemId },
+      { actor: { type: "agent", id: UNREADABLE_ASKER }, origin: { surface: "workflow" } },
+    );
     const parks = has(item?.workflow_version, "repin-reverify");
     const plain = unreadablePlain(why);
     const asked = await runOperation<{ questionIds: string[] }>(
@@ -1145,7 +1150,9 @@ export async function askWorkflowUnreadable(
       },
       { actor: { type: "agent", id: UNREADABLE_ASKER }, origin: { surface: "workflow" } },
     );
-    return asked.status === "ok" ? (asked.output.questionIds[0] ?? null) : null;
+    if (asked.status !== "ok" || !asked.output.questionIds[0])
+      throw new Error(`question.ask came back ${asked.status}`);
+    return asked.output.questionIds[0];
   } catch (error) {
     console.error(`couldn't ask about item ${workItemId}'s unreadable workflow`, error);
     await runOperation(

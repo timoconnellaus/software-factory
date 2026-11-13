@@ -71,8 +71,18 @@ interface Lease {
 
 /** Another pass took the repository over: this one stops, changing nothing more. */
 class LeaseLost extends Error {}
-/** The head's pinned workflow can't be read (fourth review of #185): it leaves, the rest go on. */
-class Unreadable extends Error {}
+/**
+ * An item's pinned workflow can't be read (fourth review of #185): that item, and only that item,
+ * leaves; the rest go on.
+ */
+class Unreadable extends Error {
+  constructor(
+    message: string,
+    readonly workItemId: string | null,
+  ) {
+    super(message);
+  }
+}
 
 interface HeadRow {
   id: string;
@@ -206,6 +216,9 @@ async function pass(
       waitMs = await deliverHead(env, lease, head, clock);
     } catch (error) {
       if (!(error instanceof Unreadable)) throw error;
+      // Never blame the head for another item's refusal (fifth review of #185): the pass stops and
+      // the next one looks again.
+      if (error.workItemId !== head.work_item_id) throw new Error(error.message);
       // It leaves the queue, sent back as withdrawn: its Workflow (v17) parks on the owner's
       // question, an older row ends; either way the items behind it go on.
       const left = await call(
@@ -286,8 +299,10 @@ async function call(
   } catch (error) {
     if (!isOperationError(error)) throw error;
     if (error.code === "fenced") throw new LeaseLost(error.message);
-    if (error.code === "workflow_unreadable" && op !== "mergeQueue.leave")
-      throw new Unreadable(error.message);
+    if (error.code === "workflow_unreadable" && op !== "mergeQueue.leave") {
+      const about = (input as { workItemId?: unknown } | null)?.workItemId;
+      throw new Unreadable(error.message, typeof about === "string" ? about : null);
+    }
     return {
       status: "refused",
       code: error.code,

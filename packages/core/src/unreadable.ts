@@ -17,8 +17,13 @@ export async function workflowUnreadable(
 ): Promise<string | null> {
   if (!workItemId) return null;
   if (ctx.scope.workItemId === workItemId) return ctx.scope.pinnedError ?? null;
-  const scope = await resolveScope(ctx.db, { workItemId }).catch(() => null);
-  return scope?.pinnedError ?? null;
+  // An error resolving it is "can't be read" too (fifth review of #185): fail closed.
+  try {
+    const scope = await resolveScope(ctx.db, { workItemId });
+    return scope.pinnedError ?? null;
+  } catch (error) {
+    return `the item's scope can't be resolved (${error instanceof Error ? error.message : String(error)})`;
+  }
 }
 
 /** A plain sentence for a person, from the resolver's reason (which may be a raw parse error). */

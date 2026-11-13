@@ -48,6 +48,7 @@ import { policyImpact } from "../policy/impact.ts";
 import { declaredChecks, onOrgWorkflow, type ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
+import { workflowUnreadable } from "../unreadable.ts";
 import { hostChecksOn } from "../verify/proof.ts";
 import { runEvent } from "../workflow-events.ts";
 import { protectionBlocksBuild } from "./protection.ts";
@@ -1305,6 +1306,20 @@ export const jobClaim = defineOperation({
       }
       if (!room[job.pool]) {
         lightBlocked = true;
+        continue;
+      }
+      // Never a job of an item whose pinned workflow can't be read (fifth review of #185): it was
+      // queued before the version broke; cancelled here, before a lease or a run exists. Only for
+      // the job about to be claimed, so an empty poll reads nothing more.
+      if (await workflowUnreadable(ctx, item.id)) {
+        ctx.changed();
+        ctx.write(
+          ctx.db
+            .updateTable("core_jobs")
+            .set({ status: "cancelled", wait_reason: "the item's workflow version can't be read" })
+            .where("id", "=", job.id)
+            .where("status", "=", "queued"),
+        );
         continue;
       }
 

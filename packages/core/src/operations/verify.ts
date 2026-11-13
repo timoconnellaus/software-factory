@@ -181,6 +181,74 @@ export async function postVerify(
   return { checkRunId, error };
 }
 
+/**
+ * What happens to an item the moment its pinned workflow is found unreadable (fifth review of
+ * #185), through an operation so it is audited: its queued jobs are cancelled (no runner claims
+ * them), and a `factory/verify` already green on its head is posted again as failing (a check
+ * passed before the break mustn't stay passed). Allowed for agents on such an item; does nothing
+ * when the item reads.
+ */
+export const workItemMarkUnreadable = defineOperation({
+  name: "workItem.markUnreadable",
+  description:
+    "Stop an item whose pinned workflow version can't be read: cancel its queued jobs and turn a passing factory/verify on its head into a failing one that says why. Called by the factory when it first finds the item unreadable; a no-op when the item reads.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId }),
+  output: z.object({ unreadable: z.boolean(), cancelled: z.number(), checkFailed: z.boolean() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const why = ctx.scope.pinnedError;
+    if (!why) return { unreadable: false, cancelled: 0, checkFailed: false };
+    const queued = await ctx.db
+      .selectFrom("core_jobs")
+      .select("id")
+      .where("work_item_id", "=", w.id)
+      .where("status", "=", "queued")
+      .limit(50)
+      .execute();
+    for (const j of queued)
+      ctx.write(
+        ctx.db
+          .updateTable("core_jobs")
+          .set({ status: "cancelled", wait_reason: "the item's workflow version can't be read" })
+          .where("id", "=", j.id)
+          .where("status", "=", "queued"),
+      );
+    let checkFailed = false;
+    const project = ctx.scope.project;
+    const repository = ctx.scope.repository;
+    if (w.head_sha && project && repository) {
+      const green = await ctx.db
+        .selectFrom("core_verify_checks")
+        .select("conclusion")
+        .where("project_id", "=", project.id)
+        .where("head_sha", "=", w.head_sha)
+        .executeTakeFirst();
+      if (green?.conclusion === "success") {
+        // postVerify turns a success for this item into the failing check that says why.
+        await postVerify(ctx, {
+          project,
+          repo: await repoRef(ctx, repository),
+          headSha: w.head_sha,
+          item: w,
+          prNumber: w.pr_number,
+          packetId: null,
+          output: { status: "completed", conclusion: "success", title: "", summary: "" },
+        });
+        checkFailed = true;
+      }
+    }
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      after: { workflowUnreadable: why, cancelledJobs: queued.length, checkFailed },
+    });
+    return { unreadable: true, cancelled: queued.length, checkFailed };
+  },
+});
+
 const reviewerSchema = z.object({
   role: z.literal("review"),
   model: z.string().optional(),
