@@ -50,11 +50,14 @@ function MainLine({ r }: { r: Repository }) {
     );
   return (
     <span className="flex min-w-0 flex-col gap-0.5">
-      <span className="flex items-center gap-1.5 font-medium">
-        <StatusDot status="failed" />
-        {r.branch} is red{m.redSince ? ` · ${ago(m.redSince)}` : ""}
+      <span className="flex flex-wrap items-center gap-x-1.5 font-medium">
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          <StatusDot status="failed" />
+          {r.branch} is red
+        </span>
+        {m.redSince && <span className="font-normal text-ink-muted">{ago(m.redSince)}</span>}
       </span>
-      <span className="truncate text-ink-muted text-xs">
+      <span className="break-words text-ink-muted text-xs">
         {m.failing.length ? m.failing.join(", ") : "CI failed"} on {short(m.headSha)}
       </span>
     </span>
@@ -111,7 +114,12 @@ export function BabysitterSection({ projects }: { projects: { id: string; name: 
             <Empty>No repository to deliver to yet.</Empty>
           ) : (
             <TablePanel
-              head={["Repository", "Main", "Doing", { label: "Held", className: WIDE }]}
+              head={[
+                "Repository",
+                "Main",
+                { label: "Doing", className: WIDE },
+                { label: "Held", className: WIDE },
+              ]}
               data-testid="babysitter"
             >
               {rows.map(({ r, project }) => {
@@ -128,9 +136,15 @@ export function BabysitterSection({ projects }: { projects: { id: string; name: 
                       <span className="flex flex-col gap-1">
                         <MainLine r={r} />
                         <Culprit r={r} />
+                        {/* Narrow: the Doing and Held columns fold in here. */}
+                        <span className="text-xs min-[1100px]:hidden">
+                          {doing(r)}
+                          {held.length > 0 &&
+                            ` · held: ${held.map((d) => `#${d.number}`).join(", ")}`}
+                        </span>
                       </span>
                     </Cell>
-                    <Cell>{doing(r)}</Cell>
+                    <Cell className={WIDE}>{doing(r)}</Cell>
                     <Cell className={`whitespace-normal ${WIDE}`}>
                       {held.length === 0 ? (
                         <span className="text-ink-muted">None</span>
@@ -167,7 +181,7 @@ export function useHeld(projectId: string, workItemId: string): boolean {
 export function HeldChip({ projectId, workItemId }: { projectId: string; workItemId: string }) {
   if (!useHeld(projectId, workItemId)) return null;
   return (
-    <Chip tone="amber" data-testid={`held-${workItemId}`}>
+    <Chip tone="amber" className="w-fit" data-testid={`held-${workItemId}`}>
       Held: main is red
     </Chip>
   );

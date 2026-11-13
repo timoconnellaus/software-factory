@@ -37,6 +37,25 @@ export const SCREENS = [
     design: "WorkActive.html",
   },
   { name: "work-done", path: "/work?view=done", design: "WorkDone.html" },
+  // Spec 53: the babysitter while main is red (no design file; nearest: the screens named).
+  {
+    name: "babysitter-overview",
+    path: "/factory?fixture=red",
+    design: "FactoryOverview.html",
+    scrollTo: "babysitter",
+  },
+  {
+    name: "babysitter-inbox",
+    path: "/?item=main-red-repo_software-factory&fixture=red",
+    design: "InboxMerge.html",
+  },
+  {
+    name: "babysitter-held",
+    path: "/work?fixture=red",
+    design: "WorkActive.html",
+    scrollTo: "held-wi_44",
+  },
+  { name: "babysitter-repair", path: "/work/wi_13?fixture=red", design: "ItemOverview.html" },
   { name: "item-overview", path: "/work/wi_13", design: "ItemOverview.html" },
   // #9 has a live run with a takeover hint, so the header shows Pin, Open terminal and Cancel.
   { name: "item-header", path: "/work/wi_9", design: "ItemOverview.html" },

@@ -606,6 +606,7 @@ function PhaseCard({
         <span className="truncate">{project}</span>
       </div>
       <div className="font-medium leading-snug">{item.title}</div>
+      {column === "delivery" && <HeldChip projectId={item.projectId} workItemId={item.id} />}
       <div className="flex items-start gap-1.5 text-ink-muted text-xs">
         <StatusDot status={line.status} className="mt-1" />
         <span className="min-w-0 flex-1">{line.label}</span>
