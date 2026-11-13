@@ -13,9 +13,7 @@ const sources = import.meta.glob("../src/**/*.ts", {
  * Still waiting inside an object, with the spec 44 PR that removes it. Remove the entry with it; a
  * new one needs a reason this short list can't give.
  */
-const PENDING: Record<string, string> = {
-  "../src/planning-hub.ts": "spec 44 PR 3: the website Planning tab's SSE keepalive (setInterval)",
-};
+const PENDING: Record<string, string> = {};
 
 const durableObjects = Object.entries(sources).filter(([, text]) =>
   /class \w+ extends DurableObject\b/.test(text),

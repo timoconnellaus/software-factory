@@ -24,7 +24,6 @@ import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
 export { ClientHub } from "./client-hub.ts";
-export { PlanningHub } from "./planning-hub.ts";
 export { EngineApi } from "./rpc.ts";
 export { TerminalRelay } from "./terminal-relay.ts";
 export { WorkItemWorkflow } from "./workflow/work-item.ts";

@@ -4,7 +4,6 @@
 import type { OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
 import { deliverRepository } from "./deliver/deliverer.ts";
-import { planningHub } from "./planning-hub.ts";
 import { failDeadRelease, pullProject } from "./pull.ts";
 
 interface OutboxRow {
@@ -134,8 +133,8 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       await pullProject(env, message.payload.projectId);
       return;
     case "planning.changed":
-      // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
-      await planningHub(env, message.payload.workItemId).notify();
+      // Open Planning views hear it on their ClientHub socket (spec 26; spec 44 PR 3 deleted the
+      // PlanningHub, the website's stream).
       await notifyPlanningViewers(env, message.payload.workItemId);
       return;
     case "run.steered":
@@ -159,7 +158,7 @@ const PLANNING_VIEWER_MS = 60_000;
 
 /**
  * Tells the desktop apps of everyone with this work item's Planning view open that it changed (spec
- * 26), so the desktop re-reads instead of polling; sf-app hears it from the PlanningHub's stream.
+ * 26), so the desktop re-reads instead of polling. The website's tab re-reads every 15 s.
  */
 export async function notifyPlanningViewers(env: Env, workItemId: string): Promise<string[]> {
   const since = new Date(Date.now() - PLANNING_VIEWER_MS).toISOString();

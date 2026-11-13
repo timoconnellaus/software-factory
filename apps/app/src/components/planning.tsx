@@ -156,20 +156,23 @@ export function Planning({ detail }: { detail: WorkItemDetail }) {
   );
 }
 
-/** Re-reads the planning view (and the item, for its gates) whenever the engine says it changed. */
+/** How often the website's Planning tab re-reads while visible (spec 44 PR 3). */
+const PLANNING_REREAD_MS = 15_000;
+
+/**
+ * Re-reads the planning view (and the item, for its gates) every 15 s while the tab is visible. The
+ * website's work pages are being removed (ADR 0610), and the desktop app hears `planning.changed` on
+ * its ClientHub socket, so the website no longer keeps a stream open (spec 44 PR 3: no Durable
+ * Object is held for an open tab).
+ */
 function useLive(workItemId: string) {
   const queryClient = useQueryClient();
   useEffect(() => {
-    if (typeof EventSource === "undefined") return;
-    const source = new EventSource(`/api/work/${workItemId}/planning/live`);
-    const changed = () => {
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       void queryClient.invalidateQueries({ queryKey: ["workItem", workItemId] });
-    };
-    source.addEventListener("changed", changed);
-    return () => {
-      source.removeEventListener("changed", changed);
-      source.close();
-    };
+    }, PLANNING_REREAD_MS);
+    return () => clearInterval(timer);
   }, [workItemId, queryClient]);
 }
 

@@ -64,11 +64,8 @@
     { "binding": "ATTACHMENTS", "bucket_name": "sf-attachments" },
     { "binding": "ARCHIVE", "bucket_name": "sf-archive" }
   ],
-  // One PlanningHub per work item (spec 20, ADR 0350): live Planning tabs and the planning
-  // agent's held waits hear about changes here.
   "durable_objects": {
     "bindings": [
-      { "name": "PLANNING_HUB", "class_name": "PlanningHub" },
       // One ClientHub per person (spec 40 M2b): their desktop apps' live connections.
       { "name": "CLIENT_HUB", "class_name": "ClientHub" },
       // One TerminalRelay per job (spec 35, ADR 0440): its web terminal's host and viewer sockets.
@@ -78,7 +75,11 @@
   "migrations": [
     { "tag": "v1-planning-hub", "new_sqlite_classes": ["PlanningHub"] },
     { "tag": "v2-client-hub", "new_sqlite_classes": ["ClientHub"] },
-    { "tag": "v3-terminal-relay", "new_sqlite_classes": ["TerminalRelay"] }
+    { "tag": "v3-terminal-relay", "new_sqlite_classes": ["TerminalRelay"] },
+    // Spec 44 PR 3: nothing waits on the PlanningHub any more (held calls poll in the Worker, and
+    // Planning views hear changes on the ClientHub), so the class and its objects are deleted. It
+    // kept no storage.
+    { "tag": "v4-delete-planning-hub", "deleted_classes": ["PlanningHub"] }
   ],
   // The phone's unsigned mobile/nonce (ADR 0541): ten a minute per caller (the keyed hash of its
   // address, mobileCaller), counted at Cloudflare's edge location, so an over-limit caller is
